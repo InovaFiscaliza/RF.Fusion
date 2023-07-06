@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ArrayOfCustomFolderSettings xmlns:xsi="https://www.w3.org/2001/XMLSchema-instance"
+    xmlns:xsd="https://www.w3.org/2001/XMLSchema">   <CustomFolderSettings
+        FolderID="ExampleKML_files">     <FolderEnabled>true</FolderEnabled>        <FolderDescription>Files
+    in format KML corresponding to the example project
+                  </FolderDescription>     <FolderFilter>*.KML</FolderFilter>     <FolderPath>
+    C:\Temp\testKML\</FolderPath>     <FolderIncludeSub>false</FolderIncludeSub>     <ExecutableFile>
+    CMD.EXE</ExecutableFile>     <!-- The block {0} will be automatically replaced with the
+      corresponding file name -->     <ExecutableArguments>/C echo It works properly for .KML
+    extension-- File {0}
+                  &gt; c:\temp\it_works_KML.txt</ExecutableArguments>   </CustomFolderSettings>   <CustomFolderSettings
+        FolderID="ExampleZIP_files">     <FolderEnabled>false</FolderEnabled>     <FolderDescription>Files
+    in format ZIP corresponding to the example project
+                  </FolderDescription>     <FolderFilter>*.ZIP</FolderFilter>     <FolderPath>
+    C:\Temp\testZIP\</FolderPath>     <FolderIncludeSub>false</FolderIncludeSub>     <ExecutableFile>
+    CMD.EXE</ExecutableFile>     <!-- The block {0} will be automatically replaced with the
+      corresponding file name -->     <ExecutableArguments>/C echo It works properly for .ZIP
+    extension -- File {0}
+                  &gt; c:\temp\it_works_ZIP.txt</ExecutableArguments>   </CustomFolderSettings>
+</ArrayOfCustomFolderSettings>

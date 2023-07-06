@@ -1,0 +1,6 @@
+#!/bin/bash
+# configure cron to execute the indexer script hourly, register log if error
+ln -s /usr/local/bin/indexerD.sh /etc/cron.hourly/indexerD || {
+    log "Upgrade Error: Could create symbolic link to indexerD.cfg in cron.hourly. Terminating"
+    exit
+}

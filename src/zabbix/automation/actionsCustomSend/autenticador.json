@@ -1,0 +1,5 @@
+{
+  "api_token": "0ac98519be112d97233b4bc8a617b2369b16aa34f8d307bce9f3a26d24130d6f",
+  "url": "http://zabbixsfi.anatel.gov.br/api_jsonrpc.php",
+  "url_servidor": "http://localhost/api_jsonrpc.php"
+}

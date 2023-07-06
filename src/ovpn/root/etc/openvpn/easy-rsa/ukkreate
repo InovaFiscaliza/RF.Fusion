@@ -1,0 +1,111 @@
+#!/bin/bash
+
+#* ABOUT:
+#     Quick configuration and packing of OpenVPN keys using easy-rsa 3.1.0
+
+#* USAGE:
+#     Install this script in /etc/openvpn/easy-rsa
+#     Server must be configured to operate in batch mode, without encryption of the CA key
+#     A folder with the /etc/openvpn/easy-rsa/pki/pkg must be created prior to the initial execution of this script
+#     Client template is defined within the script and should be validated before use
+
+#* OUTPUT:
+#     As output, a .tgz file will be created in the /etc/openvpn/easy-rsa/pki/pkg folder
+#     The client package  contains all client necessary files and customized scripts to use de openvpn in a linux machine
+#     Sharing of client keys should be made through a secure channel.
+
+server_name="rondon.anatel.gov.br"
+
+# Test input arguments
+if [ "$#" -ne 1 ]; then
+    echo "--------------------"
+    echo "Error: Usage: $0 <client name>"
+    exit 1
+else
+    client=$1
+    echo "--------------------"
+    echo "Starting key generation for $client"
+    logger "Initializing OpenVPN package generation to $client"
+fi
+
+# Create tar target name
+uniconf=/etc/openvpn/easy-rsa/pki/pkg/$client.ovpn
+
+if [ -e $uniconf ]; then
+    echo "--------------------"
+    message="Error: Nothing to do, $uniconf already exist"
+    logger $message
+    echo $message
+    exit 1
+fi
+
+# TODO: Check if keys are not revoked.
+# TODO:     Revoked keys may be identified by the serial in the revoked certificate folder as per server configuration.
+# TODO:     How associate serials with the key is a problem.
+# TODO:     Initial alternative is to use `grep -rnw '/etc/openvpn/easy-rsa/pki/revoked/certs_by_serial' -e '$client'
+# TODO:     to see if the corresponding PEM file is in the revoked folder.
+# TODO:     This may be resource consuming if there is a large number of revoked certificates
+
+
+# If key does not exist for the given entity name
+if [ ! -f "/etc/openvpn/easy-rsa/pki/private/$client.key" ]; then
+    echo "  >> Building keys with easy-rsa for $client..."
+
+    keyout=$(/etc/openvpn/easy-rsa/easyrsa gen-req $client nopass)
+
+    if [[ "$keyout" == *"error"* ]]; then
+        echo "Erro: Keys could not be generated."
+        echo $keyout
+        exit 1
+    else
+        echo ">> Keys file created..."
+    fi
+else 
+# else, if key already exists, just issue warning
+    echo "Warning: Entity name already in use. New tarball will be created using existing keys"
+fi
+
+# If CRT does not exist for the given entity name
+if ! [ -f "/etc/openvpn/easy-rsa/pki/issued/$client.crt" ]; then
+    echo "  >> Building CRT with easy-rsa for $client..."
+
+    keyout=$(/etc/openvpn/easy-rsa/easyrsa sign-req client $client)
+
+    if [[ "$keyout" == *"error"* ]]; then
+        echo "Erro: Keys could not be signed."
+        echo $keyout
+        exit 1
+    else
+        echo ">> CRT file created..."
+    fi
+else
+# else, if CRT already exists, just issue warning
+    echo "Warning: Existing keys already signed. New tarball will be created using existing CRT."
+fi
+
+echo "  >> Building package..."
+
+cp /etc/openvpn/easy-rsa/script_template/client.conf $uniconf
+sed -i 's|ca.crt|[inline]|' $uniconf
+sed -i 's|<client>.crt|[inline]|' $uniconf
+sed -i 's|<client>.key|[inline]|' $uniconf
+sed -i 's|<server_name>|'"$server_name"'|' $uniconf
+
+echo "<ca>" >> $uniconf
+cat /etc/openvpn/easy-rsa/pki/ca.crt >> $uniconf
+echo "</ca>" >> $uniconf
+
+echo "<cert>" >> $uniconf
+cat /etc/openvpn/easy-rsa/pki/issued/$client.crt >> $uniconf
+echo "</cert>" >> $uniconf
+
+echo "<key>" >> $uniconf
+cat /etc/openvpn/easy-rsa/pki/private/$client.key >> $uniconf
+echo "</key>" >> $uniconf
+
+if [ $? ]; then
+    message="Success: $uniconf created for $client."
+    echo $message
+    logger $message
+    echo "--------------------"
+fi

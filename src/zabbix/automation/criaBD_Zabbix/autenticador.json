@@ -1,0 +1,5 @@
+{
+  "api_token": "VER PAINEL PRODUCAO",
+  "url": "http://rhzbefipdin01.anatel.gov.br/",
+  "url_no_servidor": "http://localhost/api_jsonrpc.php"
+}

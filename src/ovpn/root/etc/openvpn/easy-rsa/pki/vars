@@ -1,0 +1,58 @@
+# Easy-RSA 3 parameter settings
+
+# NOTE: If you installed Easy-RSA from your package manager, do not edit
+# this file in place -- instead, you should copy the entire easy-rsa directory
+# to another location so future upgrades do not wipe out your changes.
+
+# HOW TO USE THIS FILE
+#
+# vars.example contains built-in examples to Easy-RSA settings. You MUST name
+# this file "vars" if you want it to be used as a configuration file. If you do
+# not, it WILL NOT be automatically read when you call easyrsa commands.
+#
+# It is not necessary to use this config file unless you wish to change
+# operational defaults. These defaults should be fine for many uses without the
+# need to copy and edit the "vars" file.
+#
+# All of the editable settings are shown commented and start with the command
+# "set_var" -- this means any set_var command that is uncommented has been
+# modified by the user. If you are happy with a default, there is no need to
+# define the value to its default.
+
+# A little housekeeping: DO NOT EDIT THIS SECTION
+#
+# Easy-RSA 3.x does not source into the environment directly.
+# Complain if a user tries to do this:
+
+if [ -z "$EASYRSA_CALLER" ]; then
+    echo "You appear to be sourcing an Easy-RSA *vars* file." >&2
+    echo "This is no longer necessary and is disallowed. See the section called" >&2
+    echo "*How to use this file* near the top comments for more details." >&2
+    return 1
+fi
+
+set_var EASYRSA "$PWD"
+set_var EASYRSA_PKI "$EASYRSA/pki"
+set_var EASYRSA_TEMP_DIR "$EASYRSA_PKI"
+set_var EASYRSA_DN "org"
+set_var EASYRSA_REQ_COUNTRY "BR"
+set_var EASYRSA_REQ_PROVINCE "Brasilia"
+set_var EASYRSA_REQ_CITY "Brasilia"
+set_var EASYRSA_REQ_ORG "anatel gov br"
+set_var EASYRSA_REQ_EMAIL "<DEFINE EMAIL>"
+set_var EASYRSA_REQ_OU "FISF SFI"
+set_var EASYRSA_KEY_SIZE 2048
+set_var EASYRSA_ALGO rsa
+set_var EASYRSA_CURVE secp384r1
+set_var EASYRSA_CA_EXPIRE 7210
+set_var EASYRSA_CERT_EXPIRE 7210
+set_var EASYRSA_CRL_DAYS 7210
+set_var EASYRSA_CERT_RENEW 30
+set_var EASYRSA_RAND_SN "yes"
+set_var EASYRSA_NS_SUPPORT "no"
+set_var EASYRSA_NS_COMMENT ""
+set_var EASYRSA_TEMP_FILE "$EASYRSA_PKI/extensions.temp"
+set_var EASYRSA_EXT_DIR "$EASYRSA/x509-types"
+set_var EASYRSA_SSL_CONF "$EASYRSA/openssl-easyrsa.cnf"
+set_var EASYRSA_DIGEST "<DEFINE AS THE ONE USED IN SERVER AUTH>"
+set_var EASYRSA_BATCH "Y"
