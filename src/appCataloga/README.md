@@ -12,22 +12,30 @@
   </ol>
 </details>
 
-# About Zabbix Source
+# About Agents
 
-Zabbix is used in the appCatalog to maintain the reference data about spectrum monitoring stations, including updated fix site locations and logical address to access each station.
+Agents perform file indexing in the remote monitoring stations, preparing then for copy into the repository.
 
-Source data for zabbix is provided in the form of:
+Two agent versions were created, for linux and windows systems
 
-* [templates](https://www.zabbix.com/documentation/current/en/manual/config/templates), definining itens, triggers, graphs and other artifacts that control how zabbix will monitor the existing hosts.
-* [external checks](https://www.zabbix.com/documentation/current/en/manual/config/items/itemtypes/external), intended to be used to capture and process specific information from hosts, when is not practical to use standard item types.
+Windows version include metadata extraction that is not present in the linux version due to differences in the capabilities of the target equipment.
 
-Zabbix documentation can be found at: <https://www.zabbix.com/documentation/current/en/manual>
+# Algorithm Overview
 
-The rationale behind the use of Zabbix is to provide a full feature tool for the day-to-day business of managing operations and maintenance for the spectrum monitoring network and, using the same database, automate file transfers and integration process that maintain the data flow from stations to central servers.
+Agent configuration uses file that provides the essential operational parameters (e.g. [indexerD.cfg](./linux/indexerd/etc/node/indexerD.cfg)), such as:
 
-Initial attempts of using simple tools like [rsync](https://linux.die.net/man/1/rsync) and similar tools to backup data produced by the monitoring stations failed due to the lack of support to the maintenance of the infrastructure, limitations in file handling capabilities and the services needed to maintain a central station database.
+* Target folder were measurement data is locally stored prior to backup (e.g. `LOCAL_REPO`)
+* Working folder were cookies and temporary files are stored (e.g. `SENTINELA_FOLDER`)
+* Identification of temporary files and folder (e.g. `TEMP_CHANGED`)
+* Identification of the output file, listing the measurement data files to be copied by the server. (e.g. `DUE_BACKUP`)
+* Cookie file to signal that file indexing is being performed and no further action should be taken (e.g. `HALT_FLAG`)
+* Cookie file to signal the timestamp when the last index task was performed (e.g. `LAST_BACKUP_FLAG`)
 
-when operating the monitoring network, many problems arises that may affect the data collection and processing, including changes in IP, location and other issues. Thus retrieving a large set of metadata by the network monitoring tool enable a more reliable automation of the data gathering process.
+Local indexing takes place by listing all files placed within the target folder that were changed since the last indexing was performed.
+
+Server halts the indexing process using the same cookie file. Download the index file and from there, the required measurement data files. The index file is removed at the end and new indexing recommences from a clean file when the server releases the agent.
+
+Server process reports to 
 
 # Repository layout
 
@@ -58,6 +66,7 @@ Existing python script uses only standard libraries, thus, no special setup is r
 In the event that more sophisticated processing is required, the use of environments and additional setup may be required.
 
 # External Checks
+
 | External Check | Description |
 | --- | --- |
 | `queryDigitizer.py` | Perform VISA SCPI query of the CW RMU digitizer in order to acquire information about the receiver identification, environmental and location data. |
@@ -70,7 +79,7 @@ In the event that more sophisticated processing is required, the use of environm
 
 This section presents a simplified view of the roadmap and knwon issues.
 
-For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/issues) 
+For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/issues)
 
 * [ ] Rfeye node
   * [x] Station availability status (ICMP)
@@ -121,7 +130,7 @@ For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/iss
 * [ ] Monitor and Automation (Zabbix)
   * [x] Server availability status (ICMP)
   * [x] Server resources (CPU, Memory, Process load, Storage)
-  * [ ] Server 
+  * [ ] Server
 * [ ] Publish (Landel)
   * [ ] Server availability status (ICMP)
   * [ ] Server resources (CPU, Memory, Process load, Storage)
@@ -135,7 +144,6 @@ For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/iss
   * [ ] Server resources (CPU, Memory, Process load, Storage)
   * [ ] Matlab web server status
   
-
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 <!-- CONTRIBUTING -->
@@ -159,12 +167,12 @@ This license model was selected with the idea of enabling collaboration of anyon
 It is in line with the Brazilian Public Software directives, as published at: <https://softwarepublico.gov.br/social/articles/0004/5936/Manual_do_Ofertante_Temporario_04.10.2016.pdf>
 
 Further reading material can be found at:
+
 * <http://copyfree.org/policy/copyleft>
 * <https://opensource.stackexchange.com/questions/9805/can-i-license-my-project-with-an-open-source-license-but-disallow-commercial-use>
 * <https://opensource.stackexchange.com/questions/21/whats-the-difference-between-permissive-and-copyleft-licenses/42#42>
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
-
 
 <!-- ACKNOWLEDGMENTS -->
 ## References
@@ -173,4 +181,3 @@ Further reading material can be found at:
 * [Readme Template](https://github.com/othneildrew/Best-README-Template)
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
-

@@ -23,7 +23,8 @@ This section presents a simplified view of the roadmap and knwon issues.
 
 For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/issues) 
 
-* [x] Review, document and upload grafana code
+* [ ] Review, document and upload grafana code
+* [ ] Include grafana web proxy configuration
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 

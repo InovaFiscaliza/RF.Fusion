@@ -3,6 +3,7 @@
   <ol>
     <li><a href="#about-nginx-source">About NGinx Source</a></li>
     <li><a href="#roadmap">Roadmap</a></li>
+    <li><a href="#setup">Setup</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#license">License</a></li>
     <li><a href="#references">References</a></li>
@@ -12,6 +13,8 @@
 # About NGINX Source
 
 NGINX is the component of RF.Fusion that provides a web interface to publish data via HTTP.
+
+NGINX is also used as part of the Zabbix depployment and some additional configuration is provided in order to use NGINX web service as proxy to Grafana.
 
 Configuration is minimal in order to reduce risk of attacks to the service.
 
@@ -23,16 +26,29 @@ This section presents a simplified view of the roadmap and knwon issues.
 
 For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/issues) 
 
-* [x] NGINX
+* [ ] NGINX Setup
+  * [ ] Document CIFS mapping and configuration
+* [x] NGINX Publishing
   * [x] index.html
   * [x] 404.html
   * [x] 50x.html
   * [x] nginx.conf
+* [x] NGINX Monitoring
+  * [x] index.html
+  * [x] 404.html
+  * [x] 50x.html
+  * [x] nginx.conf
+  * [ ] grafana.conf
+  * [ ] zabbix.conf
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
+# Setup
+
+Setup includes nginx instalation and mounting the required data repositories
+
 <!-- CONTRIBUTING -->
-## Contributing
+# Contributing
 
 Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
 
@@ -41,7 +57,7 @@ If you have a suggestion that would make this better, please fork the repo and c
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 <!-- LICENSE -->
-## License
+# License
 
 Distributed under the GNU General Public License (GPL), version 3. See [`LICENSE.txt`](../../LICENSE).
 
@@ -59,7 +75,7 @@ Further reading material can be found at:
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 <!-- ACKNOWLEDGMENTS -->
-## References
+# References
 
 * [Readme Template](https://github.com/othneildrew/Best-README-Template)
 

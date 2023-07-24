@@ -19,19 +19,19 @@
         <li><a href="#monitoring-unit">Monitoring Unit</a></li>
         <li><a href="#network-server-core">Network Server Core</a></li>
       </ul>
-    <li>
-      <a href="#getting-started">Getting Started</a>
-      <ul>
-        <li><a href="#prerequisites">Prerequisites</a></li>
-        <li><a href="#installation">Installation</a></li>
-      </ul>
-    </li>
-    <li><a href="#usage">Usage</a></li>
+    <li><a href="#bricks-and-blocks">Bricks and Blocks</a></li>
+    <ul>
+    <li><a href="#openvpn">OpenVPN</a></li>
+    <li><a href="#zabbix-and-grafana">Zabbix and Grafana</a></li>
+    <li><a href="#nginx">NGINX</a></li>
+    <li><a href="#appcataloga">appCataloga</a></li>
+    <li><a href="#other">Other</a></li>
+    </ul>
+    <li><a href="#getting-started">Getting Started</a></li>
     <li><a href="#roadmap">Roadmap</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#license">License</a></li>
-    <li><a href="#contact">Contact</a></li>
-    <li><a href="#acknowledgments">Acknowledgments</a></li>
+    <li><a href="#additional-references">Additional References</a></li>
   </ol>
 </details>
 
@@ -42,7 +42,9 @@ RF.Fusion is an integration framework to manage hardware and data across an Spec
 
 Although conceived with such network in mind, most of the modules could be easily adapted to suit other needs associated with data collection from any distributed automated sensor network, providing a base for projects such as those related to smart cities and environment monitoring.
 
-Modules were constructed with the idea of maximizing code reuse by employing standard open source tools to perform core tasks and specific modules to perform specific equipment and data integrations
+Modules were constructed with the idea of maximizing code reuse by employing standard open source tools to perform core tasks and dedicated modules to perform equipment specific data integrations
+
+<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 # Background
 
@@ -51,6 +53,8 @@ To better understand and maybe adapt the modules presented in this repository, i
 ![General Diagram for the Spectrum Monitoring Network](./docs/images/general_diagram.svg)
 
 The elements in the above diagram may be briefily described as follows:
+
+<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 ## Monitoring Unit
 
@@ -65,6 +69,8 @@ Each monitoring unit integrates a series of functional components as follows
 
 Monitoring units used with RF.Fusion include [CRFS RFeye Node 20-6](https://www.crfs.com/product/receivers/rfeye-node-20-6/); [Celplam CWRMU](https://www.celplan.com/products/test-measurement/cellwirelesssm/); [Rohde&Schwarz UMS300](https://www.rohde-schwarz.com/es/productos/sector-aeroespacial-defensa-seguridad/aplicacion-en-el-exterior/rs-ums300-compact-monitoring-and-location-system_63493-56146.html) and further units integrates by the use of appColeta using VISA/SCPI to access data from spectrum analysers and monitoring receivers from various manufacturers.
 
+<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+
 ## Network Server Core
 
 Composed by a series of functional components as follows
@@ -75,142 +81,89 @@ Composed by a series of functional components as follows
 - **Data Storage:** Network storage attached to the server core. Provide a shared file space to receive data from the monitoring units, share with users through the publication service and data analytics services.
 - **Data Analytics:** Rum services related to the data analysis, either autonomous processing and with user interfaces.
 
-# RF.Fusion Bricks and Blocks
+<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
-## OpenVPN Integration
+# Bricks and Blocks
 
-`ovpn_monitor.py`: Provide data from the OpenVPN management service as a JSON dataset that can be accessed by clients from selected servers using http to receive recent information about the VPN service.
+## OpenVPN
+OpenVPN provides a secure communication channel between all elements of the spectrum monitoring network.
 
-Data provided includes source IP addresses, IDs known sources, success, retries and errors associated.
-## Zabbix Integration
+The framework provides a set of script to automate the deployment of keys and configuration packages in batch.
 
-`dns_ip_switch`: Change host 
+It also provides scripts for integration of the OpenVPN server with other services, including DNS and Zabbix Monitoring.
 
+For more information see the detailed description for the [OpenVPN server setup](/src/ovpn/README.md).
 
-- VPN Server, required to enable the network integration and sensor security employs OpenVPN
-- Monitoring and basic automation employs Zabbix and Grafana as core applications
-- Data publication employs nginx as a core, enabling users to download data through http service for desktop processing
-- Data storage employs standard CIFS file sharing between servers
-- Data analytics is provided by appAnalise and future corresponding webApp.
+<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
+## Zabbix and Grafana
 
+Zabbix provides the core network monitoring and automation of the spectrum monitoring network equipment.
+
+Grafana provides a rich front-end to Zabbix for the end-users and allows for custom use of forms to access the zabbix database, including additional elements that may be required.
+
+The framework provides a set of Zabbix templates and external check scripts that enable the integration of various equipment and the automatic update of network deployment characteristics, including address based on the GPS data and essential network data.
+
+For more information, see the detailed description for the [Zabbix Service](/src/zabbix/README.md) and [Grafana Service](/src/grafana/README.md)
+
+<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+
+## NGINX
+
+Web server used by Zabbix, as proxy to Grafana and for data publication, enabling users to download data through http service for desktop processing
+
+The framework provides configuration files for both the Zabbix server and the raw data publishing server
+
+For more information, see the detailed description for the [NGINX Server](/src/nginx/README.md)
+
+<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+
+## appCataloga
+
+Include several scripts that perform a recurrent sweep of all servers monitored by Zabbix, and start the backup process.
+
+Backup process includes metadata extraction from raw files and organization of the data repository.
+
+For more information, see the detailed description of [appCataloga service](/src/appCataloga/README.md)
+
+<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+
+## Other
+
+Other components include the webApp for analysis and additional tools under the project repository to be expanded
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 <!-- GETTING STARTED -->
-## Getting Started
+# Getting Started
 
-.
+This initial page provide links to additional pages under the same project with detailed information about the installation of each component.
 
-### Prerequisites
-
-This is an example of how to list things you need to use the software and how to install them.
-
-* npm
-
-  ```sh
-  npm install npm@latest -g
-  ```
-
-#### Dependencies
-
-The next step is ensure your code is maintainable, realiable and reproducible by including
-any dependencies and requirements, such as packages, configurations, secrets (template) and addtional instructions.
-
-The <span style="color:#3EACAD">template suggests to use [conda](https://docs.conda.io/) (or [mamba](https://mamba.readthedocs.io/en/latest/)) as environment manager and, as [conventional](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html), the environment is controlled by the `environment.yml` file.
-
-The `environment.yml` file is where you specify any packages available on the [Anaconda repository](https://anaconda.org) as well as from the Anaconda Cloud (including [conda-forge](https://conda-forge.org)) to install for your project. Ensure to include the pinned version of packages required by your project (including by Jupyter notebooks).
-
-```
-channels:
-  - conda-forge
-  - defaults
-dependencies:
-  - python=3.9
-  - bokeh=2.4.3
-  - pandas=1.4.3
-  - pip:
-    - requests==2.28.1
-```
-
-To (re)create the environment on your installation of [conda](https://conda.io) via [anaconda](https://docs.anaconda.com/anaconda/install/), [miniconda](https://docs.conda.io/projects/continuumio-conda/en/latest/user-guide/install/) or preferably [miniforge](https://github.com/conda-forge/miniforge), you only need to pass the `environment.yml` file, which will install requirements and guarantee that whoever uses your code has the necessary packages (and correct versions). By default, the <span style="color:#3EACAD">template uses [Python 3.9](https://www.python.org).
-
-```
-conda env create -n <your-environment-name> -f environment.yml
-```
-
-In case your project uses Python, it is _strongly_ recommended to distribute it as a [package](https://packaging.python.org/).
-
-
-```{seealso}
-[Conda Managing Environments](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html)
-```
-
-
-### Installation
-
-_Below is an example of how you can instruct your audience on installing and setting up your app. This template doesn't rely on any external dependencies or services._
-
-1. Get a free API Key at [https://example.com](https://example.com)
-2. Clone the repo
-
-   ```sh
-   git clone https://github.com/your_username_/Project-Name.git
-   ```
-
-3. Install NPM packages
-
-   ```sh
-   npm install
-   ```
-
-4. Enter your API in `config.js`
-
-   ```js
-   const API_KEY = 'ENTER YOUR API';
-   ```
-
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
-
-
-#### Jupyter Notebooks
-
-[Jupyter Notebooks](https://jupyter.org) can be beautifully rendered and downloaded from your book. By default, the <span style="color:#3EACAD">template will render any files listed on the [table of contents](#table-of-contents) that have a notebook structure. The <span style="color:#3EACAD">template comes with a Jupyter notebook example, `notebooks/world-bank-api.ipynb`, to illustrate.
-
-```{important}
-Optionally, [Jupyter Book](https://jupyterbook.org) can execute notebooks during the build (on GitHub) and display **code outputs** and **interactive visualizations** as part of the *documentation* on the fly. In this case, Jupyter notebooks will be executed by [GitHub Actions](https://github.com/features/actions) during build on each commit to the `main` branch. Thus, it is important to include all [requirements and dependencies](#dependencies) in the repository. In case you would like to ignore a notebook, you can [exclude files from execution](https://jupyterbook.org/en/stable/content/execute.html#exclude-files-from-execution).
-```
-
-```{seealso}
-[Jupyter Book Write executable content](https://jupyterbook.org/en/stable/content/executable/index.html)
-```
-
-<!-- USAGE EXAMPLES -->
-## Usage
-
-Use this space to show useful examples of how a project can be used. Additional screenshots, code examples and demos work well in this space. You may also link to more resources.
-
-_For more examples, please refer to the [Documentation](https://example.com)_
+Currently there is no quick deployment tool and components need to be installed manually or with the aid of indicated scripts.
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 <!-- ROADMAP -->
-## Roadmap
+# Roadmap
 
-* [x] Add Changelog
-* [x] Add back to top links
-* [ ] Add Additional Templates w/ Examples
-* [ ] Add "components" document to easily copy & paste sections of the readme
-* [ ] Multi-language Support
-  * [ ] Chinese
-  * [ ] Spanish
+* [ ] Create main repository and upload existing data
+  * [x] Complete base upload
+  * [ ] Upload grafana nginx configuration
+  * [ ] Upload nginx zabbix-grafana proxy configuration
+* [ ] Start issue list
+* [ ] Adapt appCataloga to new architecture
+  * [ ] Test file catalog agent
+  * [ ] Test integration modes between Zabbix and appCataloga
+    * [ ] Use Zabbix external_check to call the backup microservice for a single host and get latest backup data results.
+    * [ ] Use Zabbix api to load station list, sweep list getting files, use zabbix trapper item to load data into host.
+    
 
 See the [open issues](https://github.com/othneildrew/Best-README-Template/issues) for a full list of proposed features (and known issues).
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 <!-- CONTRIBUTING -->
-## Contributing
+# Contributing
 
 Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
 
@@ -226,7 +179,7 @@ Don't forget to give the project a star! Thanks again!
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 <!-- LICENSE -->
-## License
+# License
 
 Distributed under the GNU General Public License (GPL), version 3. See [`LICENSE.txt`](.\LICENSE) for more information.
 
@@ -243,32 +196,10 @@ Further reading material can be found at:
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
-<!-- CONTACT -->
-## Contact
-
-Your Name - [@your_twitter](https://twitter.com/your_username) - <email@example.com>
-
-Project Link: [https://github.com/your_username/repo_name](https://github.com/your_username/repo_name)
-
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
-
-<!-- ACKNOWLEDGMENTS -->
-## Acknowledgments
-
-Use this space to list resources you find helpful and would like to give credit to. I've included a few of my favorites to kick things off!
-
-* [Choose an Open Source License](https://choosealicense.com)
-* [GitHub Emoji Cheat Sheet](https://www.webpagefx.com/tools/emoji-cheat-sheet)
-* [Malven's Flexbox Cheatsheet](https://flexbox.malven.co/)
-* [Malven's Grid Cheatsheet](https://grid.malven.co/)
-* [Img Shields](https://shields.io)
-* [GitHub Pages](https://pages.github.com)
-* [Font Awesome](https://fontawesome.com)
-* [React Icons](https://react-icons.github.io/react-icons/search)
+# Additional References
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 <!-- MARKDOWN LINKS & IMAGES -->
-<!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
 [smn_overview]: https://github.com/FSLobao/RF.Fusion/tree/main/docs/images/general_diagram.svg
 
