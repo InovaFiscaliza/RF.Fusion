@@ -52,13 +52,13 @@ if [ ! -e "$DUE_BACKUP" ]; then
     logger "Sentinela Warning: $DUE_BACKUP not available. Starting new backup"
 fi
 
-# store a timestamp for the start time with presision of one second, truncating information to one second.
+# store a timestamp for the start time with precision of one second, truncating information to one second.
 timestamp=$(date '+%Y%m%d%H%M.%S')
 
 # find files in the local repository that are newer than the last backup cookie saving the result. Use nice command to reduce priority and avoid system lock
 nice -n 15 find "$LOCAL_REPO" -type f -newer "$LAST_BACKUP_FLAG" -printf "%h\0/%f\0\n" >"$TEMP_CHANGED"
 
-# merge listed files with existing list of files due for backup
+# merge listed files with existing list of files due for backup, removing duplicates
 nice -n 15 sort "$DUE_BACKUP" "$TEMP_CHANGED" | uniq
 
 # remove temp file
