@@ -82,7 +82,7 @@ Additional setup of the environment defined in `settings.json` may be required.
 
 This section presents a simplified view of the roadmap and knwon issues.
 
-For more details, see the [open issues](https://github.com/FSLobao/RF.Fuse/issues) 
+For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/issues) 
 
 * [x] Clean link data
 * [x] Clean rfeye node data

@@ -13,7 +13,7 @@
 <details>
   <summary>Table of Contents</summary>
   <ol>
-    <li><a href="#about-RF.Fuse">About RF.Fuse</a></li>
+    <li><a href="#about-RF.Fusion">About RF.Fusion</a></li>
     <li><a href="#background">Background</a></li>
       <ul>
         <li><a href="#monitoring-unit">Monitoring Unit</a></li>
@@ -36,9 +36,9 @@
 </details>
 
 <!-- ABOUT THE PROJECT -->
-# About RF.Fuse
+# About RF.Fusion
 
-RF.Fuse is an integration framework to manage hardware and data across an Spectrum Monitoring Network.
+RF.Fusion is an integration framework to manage hardware and data across an Spectrum Monitoring Network.
 
 Although conceived with such network in mind, most of the modules could be easily adapted to suit other needs associated with data collection from any distributed automated sensor network, providing a base for projects such as those related to smart cities and environment monitoring.
 
@@ -63,7 +63,7 @@ Each monitoring unit integrates a series of functional components as follows
 - **Environment Control:** may be composed of several elements that are accessory to the measurement, such as temperature control, security detectors, cameras, UPS and power supply management, etc.
 - **Router, Firewall and Network Interfaces:** may be composed of several elements that interconnect elements within the station and from it to the outside world. Common solutions provide up to 3 interfaces including an ethernet cable, an integrated 4G or 5G modem to connect to to the mobile WAN network and a VPN connection, that allows for a secure communication with the server core
 
-Monitoring units used with RF.Fuse include [CRFS RFeye Node 20-6](https://www.crfs.com/product/receivers/rfeye-node-20-6/); [Celplam CWRMU](https://www.celplan.com/products/test-measurement/cellwirelesssm/); [Rohde&Schwarz UMS300](https://www.rohde-schwarz.com/es/productos/sector-aeroespacial-defensa-seguridad/aplicacion-en-el-exterior/rs-ums300-compact-monitoring-and-location-system_63493-56146.html) and further units integrates by the use of appColeta using VISA/SCPI to access data from spectrum analysers and monitoring receivers from various manufacturers.
+Monitoring units used with RF.Fusion include [CRFS RFeye Node 20-6](https://www.crfs.com/product/receivers/rfeye-node-20-6/); [Celplam CWRMU](https://www.celplan.com/products/test-measurement/cellwirelesssm/); [Rohde&Schwarz UMS300](https://www.rohde-schwarz.com/es/productos/sector-aeroespacial-defensa-seguridad/aplicacion-en-el-exterior/rs-ums300-compact-monitoring-and-location-system_63493-56146.html) and further units integrates by the use of appColeta using VISA/SCPI to access data from spectrum analysers and monitoring receivers from various manufacturers.
 
 ## Network Server Core
 
@@ -75,7 +75,7 @@ Composed by a series of functional components as follows
 - **Data Storage:** Network storage attached to the server core. Provide a shared file space to receive data from the monitoring units, share with users through the publication service and data analytics services.
 - **Data Analytics:** Rum services related to the data analysis, either autonomous processing and with user interfaces.
 
-# RF.Fuse Bricks and Blocks
+# RF.Fusion Bricks and Blocks
 
 ## OpenVPN Integration
 
@@ -270,5 +270,5 @@ Use this space to list resources you find helpful and would like to give credit 
 
 <!-- MARKDOWN LINKS & IMAGES -->
 <!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
-[smn_overview]: https://github.com/FSLobao/RF.Fuse/tree/main/docs/images/general_diagram.svg
+[smn_overview]: https://github.com/FSLobao/RF.Fusion/tree/main/docs/images/general_diagram.svg
 

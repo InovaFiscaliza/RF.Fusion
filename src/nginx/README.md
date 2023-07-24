@@ -11,7 +11,7 @@
 
 # About NGINX Source
 
-NGINX is the component of RF.Fuse that provides a web interface to publish data via HTTP.
+NGINX is the component of RF.Fusion that provides a web interface to publish data via HTTP.
 
 Configuration is minimal in order to reduce risk of attacks to the service.
 
@@ -21,7 +21,7 @@ This source folder provide HTML pages and nginx.conf used after the standard NGI
 
 This section presents a simplified view of the roadmap and knwon issues.
 
-For more details, see the [open issues](https://github.com/FSLobao/RF.Fuse/issues) 
+For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/issues) 
 
 * [x] NGINX
   * [x] index.html

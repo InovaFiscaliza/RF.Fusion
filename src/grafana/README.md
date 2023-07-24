@@ -13,7 +13,7 @@
 
 # About Grafana Source
 
-Grafana is the component of RF.Fuse to provides realtime data analytics and simple action control to acknowledge equipment and network malfunctions
+Grafana is the component of RF.Fusion to provides realtime data analytics and simple action control to acknowledge equipment and network malfunctions
 
 This repository is preliminary and will be forked from the work by Juliana Garçoni dos Santos.
 
@@ -21,7 +21,7 @@ This repository is preliminary and will be forked from the work by Juliana Garç
 
 This section presents a simplified view of the roadmap and knwon issues.
 
-For more details, see the [open issues](https://github.com/FSLobao/RF.Fuse/issues) 
+For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/issues) 
 
 * [x] Review, document and upload grafana code
 

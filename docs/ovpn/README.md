@@ -13,7 +13,7 @@
 <details>
   <summary>Table of Contents</summary>
   <ol>
-    <li><a href="#about-RF.Fuse">About RF.Fuse</a></li>
+    <li><a href="#about-RF.Fusion">About RF.Fusion</a></li>
     <li><a href="#background">Background</a></li>
       <ul>
         <li><a href="#monitoring-unit">Monitoring Unit</a></li>
@@ -794,7 +794,7 @@ Further reading material can be found at:
 
 <!-- MARKDOWN LINKS & IMAGES -->
 <!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
-[smn_overview]: https://github.com/FSLobao/RF.Fuse/tree/main/docs/images/general_diagram.svg
+[smn_overview]: https://github.com/FSLobao/RF.Fusion/tree/main/docs/images/general_diagram.svg
 
 # SystemCTL Cheats
 

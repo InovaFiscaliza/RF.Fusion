@@ -79,7 +79,7 @@ In the event that more sophisticated processing is required, the use of environm
 
 This section presents a simplified view of the roadmap and knwon issues.
 
-For more details, see the [open issues](https://github.com/FSLobao/RF.Fuse/issues)
+For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/issues)
 
 * [ ] Rfeye node
   * [x] Station availability status (ICMP)

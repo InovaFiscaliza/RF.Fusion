@@ -59,7 +59,7 @@ Please refer to the [OpenVPN Documentation](../../docs/ovpn/README.md) within th
 
 This section presents a simplified view of the roadmap and knwon issues.
 
-For more details, see the [open issues](https://github.com/FSLobao/RF.Fuse/issues) 
+For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/issues) 
 
 * [x] Server setup
 * [x] OpenVPN Install
