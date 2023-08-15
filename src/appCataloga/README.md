@@ -1,8 +1,9 @@
 <details>
   <summary>Table of Contents</summary>
   <ol>
-    <li><a href="#about-zabbix-source">About Zabbix Source</a></li>
-    <li><a href="#repository-layout">Repository Layout</a></li>
+    <li><a href="#about-appcataloga">About AppCataloga</a></li>
+    <li><a href="#algorithm-overview">Algorithm Overview</a></li>
+    <li><a href="#repository-layout">Repository layout</a></li>
     <li><a href="#setup">Setup</a></li>
     <li><a href="#external_checks">External Checks</a></li>
     <li><a href="#roadmap">Roadmap</a></li>
@@ -12,13 +13,11 @@
   </ol>
 </details>
 
-# About Agents
+# About appCatalaga
 
-Agents perform file indexing in the remote monitoring stations, preparing then for copy into the repository.
+appCataloga is a python script that performs file backup and cataloging from remote hosts to a central repository.
 
-Two agent versions were created, for linux and windows systems
-
-Windows version include metadata extraction that is not present in the linux version due to differences in the capabilities of the target equipment.
+In the context of the RF.Fusion framework, it interfaces with Zabbix scripts that timely post the requests and with files created by agents running on the remote servers.
 
 # Algorithm Overview
 
@@ -39,7 +38,7 @@ Server process reports to
 
 # Repository layout
 
-This section of the repository includes the following vase folders:
+This section of the repository includes the following folders:
 
 * `automation` folder reference to legacy automation scripts cloned from a private project by Guilherme Braga <<https://github.com/gui1080>>
 * `templates` present XML definitions of used measurement templates

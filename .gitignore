@@ -90,3 +90,6 @@ _build/
 
 # python-dotenv
 .env
+
+# credential files
+.reposfi
