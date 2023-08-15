@@ -218,15 +218,16 @@ class WatchDog:
 
 def _main():
 #TODO: Test if database is fresh and insert null value for location algorithm. If database is not fresh, check is null location exists and remove it.
+    # start logging service
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
-
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(logging.DEBUG)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     handler.setFormatter(formatter)
     root.addHandler(handler)
 
+    # run the watchdog
     WatchDog(k.FOLDER_TO_WATCH).run()
 
 if __name__ == '__main__':
