@@ -1,8 +1,8 @@
 --CREATE DATABASE
 --This script creates the MariaDB Database used to store the metadata to index the files and populate essential tables with the required information
-CREATE DATABASE RFLOOK;
+CREATE DATABASE RFDATA;
 
-USE RFLOOK;
+USE RFDATA;
 
 -- MEASUREMENT EQUIPMENT DIMENSION
 
@@ -20,7 +20,7 @@ CREATE TABLE DIM_MEDICAO_ESPECTRO_EQUIPAMENTO (
         PRIMARY KEY (ID_EQUIPAMENTO)
     );
 
-LOAD DATA LOCAL INFILE '/home/lobao.lx/rflook/equipmentType.csv'
+LOAD DATA LOCAL INFILE '/home/lobao.lx/RFDATA/equipmentType.csv'
     INTO TABLE DIM_EQUIPAMENTO_TIPO
     FIELDS TERMINATED BY ','
     LINES TERMINATED BY '\n' 
@@ -54,7 +54,7 @@ GO
 
     -- INSERT DATA FROM REFERENCE FILES
     BULK INSERT DIM_LOCALIZACAO_UF
-        FROM '\home\lobao.lx\rflook\IBGE-BR_UF_2020_BULKLOAD.csv'
+        FROM '\home\lobao.lx\RFDATA\IBGE-BR_UF_2020_BULKLOAD.csv'
         WITH
         (
             CODEPAGE = '65001',     -- UTF8 Codepage
@@ -65,7 +65,7 @@ GO
 GO
 
     BULK INSERT DIM_LOCALIZACAO_MUNICIPIO
-        FROM '\home\lobao.lx\rflook\IBGE-BR_Municipios_2020_BULKLOAD.csv'
+        FROM '\home\lobao.lx\RFDATA\IBGE-BR_Municipios_2020_BULKLOAD.csv'
         WITH
         (
             CODEPAGE = '65001',     -- UTF8 Codepage
@@ -136,7 +136,7 @@ GO
     );
 
     BULK INSERT DIM_ARQUIVO_TIPO
-        FROM '\home\lobao.lx\rflook\fileType.csv'
+        FROM '\home\lobao.lx\RFDATA\fileType.csv'
         WITH
         (
             CODEPAGE = '65001',     -- UTF8 Codepage
@@ -169,7 +169,7 @@ GO
 GO
 
     BULK INSERT DIM_MEDICAO_ESPECTRO_UNIDADE
-        FROM '\home\lobao.lx\rflook\measurementUnit.csv'
+        FROM '\home\lobao.lx\RFDATA\measurementUnit.csv'
         WITH
         (
             CODEPAGE = '65001',     -- UTF8 Codepage
