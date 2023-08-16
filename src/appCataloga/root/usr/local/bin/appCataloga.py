@@ -30,8 +30,18 @@ import sys
 from _thread import *
  
 #constants
-SERVER_IP = "172.168."
+SERVER_IP = "rhzbefipdin01.anatel.gov.br"
 SERVER_PORT = "5555"
+QUERY_TAG = "query"
+
+# initialize warning message variable
+warning_msg = ""
+
+#! TEST host_statistics initialization
+host_statistics = { "Total Files":1,
+                    "Files pending backup":1,
+                    "Last Backup":"today",
+                    "Days since last backup":0}
 
 # set connection
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -41,74 +51,48 @@ server.bind((SERVER_IP, SERVER_PORT))
  
 server.listen(500)
  
-list_of_clients = []
+host_list = []
  
-def clientthread(conn, addr):
- 
-    # sends a message to the client whose user object is conn
-    conn.send("Welcome to this chatroom!")
- 
-    while True:
-            try:
-                message = conn.recv(2048)
-                if message:
- 
-                    """prints the message and address of the
-                    user who just sent the message on the server
-                    terminal"""
-                    print ("<" + addr[0] + "> " + message)
- 
-                    # Calls broadcast function to send message to all
-                    message_to_send = "<" + addr[0] + "> " + message
-                    broadcast(message_to_send, conn)
- 
-                else:
-                    """message may have no content if the connection
-                    is broken, in this case we remove the connection"""
-                    remove(conn)
- 
-            except:
-                continue
- 
-"""Using the below function, we broadcast the message to all
-clients who's object is not the same as the one sending
-the message """
-def broadcast(message, connection):
-    for clients in list_of_clients:
-        if clients!=connection:
-            try:
-                clients.send(message)
-            except:
-                clients.close()
- 
-                # if the link is broken, we remove the client
-                remove(clients)
- 
-"""The following function simply removes the object
-from the list that was created at the beginning of
-the program"""
-def remove(connection):
-    if connection in list_of_clients:
-        list_of_clients.remove(connection)
- 
+def backup_thread(host=["conn","host_id","host_add","user","passwd"]):
+    #nothing
+    message = "" 
+
+def get_host_statistics():
+    #nothing
+    message = ""
+
 while True:
  
-    """Accepts a connection request and stores two parameters,
-    conn which is a socket object for that user, and addr
-    which contains the IP address of the client that just
-    connected"""
+    # receive connections
     conn, addr = server.accept()
  
-    """Maintains a list of clients for ease of broadcasting
-    a message to all available people in the chatroom"""
-    list_of_clients.append(conn)
- 
-    # prints the address of the user that just connected
-    print (addr[0] + " connected")
- 
-    # creates and individual thread for every user
-    # that connects
-    start_new_thread(clientthread,(conn,addr))    
- 
-conn.close()
+    # read initial message from host
+    bin_data = conn.recv(256)
+
+    # parse initial message
+    bytearray_data = bytearray(bin_data, encoding="utf-8")
+    
+    # get a list with 4 strings: ["query",<host_id>,<host_add>,<user>,<passwd>]
+    host = bytearray_data.decode().split(' ')
+    
+    # if first field corresponds to the expected tag, process host indicated
+    if host[1] == QUERY_TAG:
+
+        start_new_thread(backup_thread,host)
+        
+        host_statistics = get_host_statistics(host)
+        # answer positive
+        message = f'<json>{{"Total Files":{host_statistics["Total Files"]},
+                    "Files pending backup":{host_statistics["Files pending backup"]},
+                    "Last Backup":{host_statistics["Last Backup"]},
+                    "Days since last backup":{host_statistics["Days since last backup"},
+                    "Status":0,
+                    "Message":{warning_msg}}}</json>"
+    else:
+        # answer negative
+        message = '<json>{"Status":0,"Message":"Message corrupted or in unrecognized format"}</json>'
+
+    conn.send(message)
+    conn.close()
+
 server.close()

@@ -10,14 +10,15 @@ This script is unsecure and should only run through a secure encripted network c
         queryCataloga <host> <user> <pass>
     
     Parameters:
-        <host> single string with host IP or host name known to the available DNS
+        <host_id> single string with host unique id or key to be used to store reference data
+        <host_add> single string with host IP or host name known to the available DNS
         <user> single string with user id to be used to access the host
         <pass> single string with user password to be used to access the host
         
     Returns:
         (json) =  { 'Total Files': (int),
-                    'Files to backup': (int),
-                    'Last Backup data': (str)
+                    'Files pending backup': (int),
+                    'Last Backup': (str)
                     'Days since last backup': (int),
                     'Status': (int), 
                     'Message': (str)}
@@ -45,6 +46,8 @@ DEFAULT_USER = "user"
 DEFAULT_PASS = "pass"
 
 # initialize warnig variable
+warning = ""
+
 # Get command-line arguments
 try:
     e = sys.argv[4]
@@ -80,7 +83,6 @@ except IndexError:
 except ValueError:
     print('{"Status":0,"Error":"Invalid function call"}')
     exit()
-
 
 connection_request = bytes(f"query {host} {user} {passwd}", encoding="utf-8")
 
@@ -130,8 +132,6 @@ end_index = raw_data.rfind(END_TAG)
 
 # extract JSON data removing the last bracket to later splice with the tail json data from this script
 json_data = raw_data[start_index+len(START_TAG):end_index-1].decode('utf8')
-    
-json_data = f'{json_data},"Status":1,"Message":"{warning}"}}'
 
 try:
     json_dict = json.loads(json_data)
