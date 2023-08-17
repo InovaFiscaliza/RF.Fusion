@@ -70,7 +70,7 @@ uid=987(sentinela) gid=983(sentinela) groups=983(sentinela)
 
 Create a credential file for the user that has accces to the repository. It will be different from the user created if a network storage is used
 
-```shellCria o
+```shell
 printf "username=mnt.sfi.sensores.pd\npassword=<PASSWORD>\n" > /root/.reposfi
 chmod 600 /root/.reposfi
 ```
@@ -82,7 +82,6 @@ mkdir /mnt/reposfi
 
 mount -t cifs -o credentials=/root/.reposfi,uid=987,gid=983,file_mode=0664,dir_mode=0775 //reposfi/sfi$/SENSORES  /mnt/reposfi
 ```
-
 
 Templates can be loaded directly from Zabbix web interface.
 

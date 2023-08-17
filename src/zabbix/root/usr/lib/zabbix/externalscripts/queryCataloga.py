@@ -34,8 +34,8 @@ import sys
 import json
 
 # Constants
-UDP_IP = "localhost"
-UDP_PORT = 5555
+SERVER_IP = "localhost"
+SERVER_PORT = 5555
 CONNECTION_TIMEOUT = 1
 START_TAG = b"<json>"
 END_TAG = b"</json>"
@@ -97,7 +97,7 @@ except socket.error as e:
 
 # Send handshake
 try:
-    sock.sendto(connection_request, (UDP_IP, UDP_PORT))
+    sock.sendto(connection_request, (SERVER_IP, SERVER_PORT))
 except socket.error as e:
     print(f'{{"Status":0,"Error":"Handshake error: {e}"}}')
     sock.close()
