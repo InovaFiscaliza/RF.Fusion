@@ -72,8 +72,6 @@ Create a credential file for the user that has accces to the repository. It will
 
 ```shellCria o
 printf "username=mnt.sfi.sensores.pd\npassword=<PASSWORD>\n" > /root/.reposfi
-mnt.sfi.sensores.pd
-ZG1$#17jmCwQ5@LDBTy
 chmod 600 /root/.reposfi
 ```
 
@@ -83,8 +81,6 @@ Create a mount point folder and mount the volume using the credential file, UID 
 mkdir /mnt/reposfi
 
 mount -t cifs -o credentials=/root/.reposfi,uid=987,gid=983,file_mode=0664,dir_mode=0775 //reposfi/sfi$/SENSORES  /mnt/reposfi
-
-mount -t cifs -o username=mnt.sfi.sensores.pd,password=ZG1$#17jmCwQ5@LDBTy,uid=987,gid=983,file_mode=0664,dir_mode=0775 //reposfi/sfi$/SENSORES  /mnt/reposfi
 ```
 
 
