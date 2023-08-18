@@ -30,7 +30,7 @@ import signal
 from selectors import DefaultSelector, EVENT_READ
  
 #constants
-TCP_PORT = 5555
+SERVER_PORT = 5555
 TOTAL_CONNECTIONS = 50
 QUERY_TAG = "query"
 START_TAG = "<json>"
@@ -53,10 +53,28 @@ def handler(signum, frame):
     
 signal.signal(signal.SIGINT, handler)
 
-def backup_queue(host=["conn","host_id","host_add","user","passwd"]):
-    #nothing
+def backup_queue(host=[("ClientIP",0),"host_id","host_add","user","passwd"]):
     print(host)
-    return(json.dumps(HOST_STATISTICS))
+    # add host to db backup list
+    # get from db the backup summary status for the host_id
+    return HOST_STATISTICS
+
+"""
+- Loop infinito de gestão
+  - Consultar BD os parâmetros de limite e tempo de espera
+  - Consultar BD o quantitativo de backups pendentes
+  - Consultar BD o quantitativo de processos de catalogação pendentes
+  - Se processos de backup em execução < limite_bkp, disparar novo processo
+  - Se processos de catalogação em execução < limite_proc, disparar novo processo
+  - Aguardar tempo de espera
+  
+- processo de backup
+  - recebe host_add, user e pass na chamada
+  - realiza backup
+  - atualiza BD de sumarização para o host
+  - atualiza BD lista de catalogações pendentes
+
+"""
 
 def serve_client(client_socket):
     try:
@@ -68,9 +86,13 @@ def serve_client(client_socket):
             host = data.decode().split(" ")
             
             if host[0]==QUERY_TAG:
+                host[0]=client_socket.getpeername()
+                
                 host_statistics = backup_queue(host)
+                
+                stat_txt = json.dumps(host_statistics)[:-1]
 
-                response = f'{START_TAG}{host_statistics},"Status":1,"Message":"{warning_msg}"}}{END_TAG}'
+                response = f'{START_TAG}{stat_txt},"Status":1,"Message":"{warning_msg}"}}{END_TAG}'
 
             else:
                 print(f"Ignored data from from {client_socket.getpeername()[0]}. Received: {data.decode()}")
@@ -103,10 +125,10 @@ def serve_forever(server_socket):
 
 def main():
     
-    print("Server is listening on port 5555")
+    print(f"Server is listening on port {SERVER_PORT}")
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_address = ('', TCP_PORT)
+    server_address = ('', SERVER_PORT)
     server_socket.bind(server_address)
     server_socket.listen(TOTAL_CONNECTIONS)
 

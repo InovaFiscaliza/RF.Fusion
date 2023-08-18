@@ -29,6 +29,7 @@ This script is unsecure and should only run through a secure encripted network c
 """
 import socket
 import sys
+import json
 
 SERVER_ADD = "192.168.200.10"  # Change this to the server's hostname or IP address
 SERVER_PORT = 5555
@@ -43,13 +44,12 @@ DEFAULT_USER = "user"
 DEFAULT_PASSWD = "password"
 TIMEOUT_BUFFER = 1
 QUERY_TAG = "query"
-START_TAG = b"<json>"
-END_TAG = b"</json>"
+START_TAG = "<json>"
+END_TAG = "</json>"
 
-warning_msg = ""
+warning_msg = "none"
 
 def parse_call():
-    warning_msg = "none"
     # Get command-line arguments
     try:
         e = sys.argv[5]
@@ -108,14 +108,34 @@ def main():
     try:
         client_socket.sendall(req_to_server)
 
-        response = client_socket.recv(1024).decode()
-        print("Received:", response)
-
+        response = client_socket.recv(1024).decode("utf-8")
     except Exception as e:
         print("Error:", e)
 
     finally:
         client_socket.close()
+
+    # extract JSON data from bytestring
+    start_index = response.rfind(START_TAG)
+    end_index = response.rfind(END_TAG)
+
+    # extract JSON data removing the last bracket to later splice with the tail json data from this script
+    json_output = response[start_index+len(START_TAG):end_index]
+    
+    try:
+        dict_output = json.loads(json_output)
+        
+        if warning_msg != "none":
+            if dict_output["Status"]==1:
+                dict_output["Message"]=f'{dict_output["Message"]}. {warning_msg}'
+            elif dict_output["Status"]==0:
+                dict_output["Message"]=warning_msg
+            print(json.dumps(dict_output))
+        else:
+            print(json_output)
+                
+    except json.JSONDecodeError as e:
+        print('{"Status":0,"Message":"Malformed JSON data, check UDP generation from remote server and timeout settings"}')    
 
 if __name__ == "__main__":
     main()
