@@ -25,18 +25,25 @@ Listen to socket command to perform backup from a specific host and retuns the c
 
 # Python program to implement server side of chat room.
 import socket
+import json
 import signal
 from selectors import DefaultSelector, EVENT_READ
  
 #constants
 TCP_PORT = 5555
+TOTAL_CONNECTIONS = 50
 QUERY_TAG = "query"
+START_TAG = "<json>"
+END_TAG = "</json>"
 
 #! TEST host_statistics initialization
 HOST_STATISTICS = { "Total Files":1,
                     "Files pending backup":1,
                     "Last Backup":"today",
                     "Days since last backup":0}
+
+# initialize warning message variable
+warning_msg = ""
 
 interrupt_read, interrupt_write = socket.socketpair()
 
@@ -46,19 +53,34 @@ def handler(signum, frame):
     
 signal.signal(signal.SIGINT, handler)
 
-def scheddule_backup(host=["conn","host_id","host_add","user","passwd"]):
+def backup_queue(host=["conn","host_id","host_add","user","passwd"]):
     #nothing
     print(host)
-    return(HOST_STATISTICS)
+    return(json.dumps(HOST_STATISTICS))
 
 def serve_client(client_socket):
     try:
         while True:
-            data = client_socket.recv(1024)
+            data = client_socket.recv(128)
             if not data:
                 break
-            print("Received:", data.decode())
-            # You can add your processing logic here if needed
+            
+            host = data.decode().split(" ")
+            
+            if host[0]==QUERY_TAG:
+                host_statistics = backup_queue(host)
+
+                response = f'{START_TAG}{host_statistics},"Status":1,"Message":"{warning_msg}"}}{END_TAG}'
+
+            else:
+                print(f"Ignored data from from {client_socket.getpeername()[0]}. Received: {data.decode()}")
+                
+                response = f'{START_TAG}{{"Status":0,"Error":"host command not recognized"}}{END_TAG}'
+                
+            byte_response = bytes(response, encoding="utf-8")
+            
+            client_socket.sendall(byte_response)
+            
     except Exception as e:
         print("Error:", e)
     finally:
@@ -81,15 +103,12 @@ def serve_forever(server_socket):
 
 def main():
     
-    # initialize warning message variable
-    warning_msg = ""
-
     print("Server is listening on port 5555")
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_address = ('', TCP_PORT)
     server_socket.bind(server_address)
-    server_socket.listen(50)
+    server_socket.listen(TOTAL_CONNECTIONS)
 
     serve_forever(server_socket)
 
