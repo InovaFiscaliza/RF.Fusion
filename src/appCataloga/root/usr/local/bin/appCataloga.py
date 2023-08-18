@@ -26,14 +26,11 @@ Listen to socket command to perform backup from a specific host and retuns the c
 # Python program to implement server side of chat room.
 import socket
 import signal
+from selectors import DefaultSelector, EVENT_READ
  
 #constants
-SERVER_IP = "localhost"
-SERVER_PORT = 5555
+TCP_PORT = 5555
 QUERY_TAG = "query"
-
-# initialize warning message variable
-warning_msg = ""
 
 #! TEST host_statistics initialization
 HOST_STATISTICS = { "Total Files":1,
@@ -41,56 +38,63 @@ HOST_STATISTICS = { "Total Files":1,
                     "Last Backup":"today",
                     "Days since last backup":0}
 
-class GracefulKiller:
-  kill_now = False
-  def __init__(self):
-    signal.signal(signal.SIGINT, self.exit_gracefully)
-    signal.signal(signal.SIGTERM, self.exit_gracefully)
+interrupt_read, interrupt_write = socket.socketpair()
 
-  def exit_gracefully(self, *args):
-    self.kill_now = True
-
-killer = GracefulKiller()
+def handler(signum, frame):
+    print('Signal handler called with signal', signum)
+    interrupt_write.send(b'\0')
+    
+signal.signal(signal.SIGINT, handler)
 
 def scheddule_backup(host=["conn","host_id","host_add","user","passwd"]):
     #nothing
     print(host)
     return(HOST_STATISTICS)
 
-print("Starting server")
+def serve_client(client_socket):
+    try:
+        while True:
+            data = client_socket.recv(1024)
+            if not data:
+                break
+            print("Received:", data.decode())
+            # You can add your processing logic here if needed
+    except Exception as e:
+        print("Error:", e)
+    finally:
+        client_socket.close()
 
-# set connection
-server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-server.bind((SERVER_IP, SERVER_PORT))
-server.listen(500)
+def serve_forever(server_socket):
+    sel = DefaultSelector()
+    sel.register(interrupt_read, EVENT_READ)
+    sel.register(server_socket, EVENT_READ)
 
-while not killer.kill_now:
-    # receive connections
-    conn, addr = server.accept()
- 
-    # read initial message from host
-    bin_data = conn.recv(256)
+    while True:
+        for key, _ in sel.select():
+            if key.fileobj == interrupt_read:
+                interrupt_read.recv(1)
+                return
+            if key.fileobj == server_socket:
+                client_socket, client_address = server_socket.accept()
+                print("Connection established with:", client_address)
+                serve_client(client_socket)
 
-    # parse initial message
-    bytearray_data = bytearray(bin_data, encoding="utf-8")
+def main():
     
-    # get a list with 4 strings: ["query",<host_id>,<host_add>,<user>,<passwd>]
-    host = bytearray_data.decode().split(' ')
-    
-    # if first field corresponds to the expected tag, process host indicated
-    if host[1] == QUERY_TAG:
+    # initialize warning message variable
+    warning_msg = ""
 
-        host_statistics = scheddule_backup(host)
-        
-        # answer positive
-        message = f'<json>{{"Total Files":{host_statistics["Total Files"]},"Files pending backup":{host_statistics["Files pending backup"]},"Last Backup":{host_statistics["Last Backup"]},"Days since last backup":{host_statistics["Days since last backup"]},"Status":0,"Message":{warning_msg}}}</json>'
-    else:
-        # answer negative
-        message = '<json>{"Status":0,"Message":"Message corrupted or in unrecognized format"}</json>'
+    print("Server is listening on port 5555")
 
-    conn.send(message)
-    conn.close()
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_address = ('', TCP_PORT)
+    server_socket.bind(server_address)
+    server_socket.listen(50)
 
-server.close()
-print("Clean end")
+    serve_forever(server_socket)
+
+    print("Shutdown...")
+    server_socket.close()
+
+if __name__ == "__main__":
+    main()
