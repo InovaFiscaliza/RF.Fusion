@@ -28,6 +28,9 @@ import socket
 import json
 import signal
 from selectors import DefaultSelector, EVENT_READ
+
+# Import modules for file processing 
+import dbHandler as dbh
  
 #constants
 SERVER_PORT = 5555
@@ -48,12 +51,31 @@ warning_msg = ""
 interrupt_read, interrupt_write = socket.socketpair()
 
 def handler(signum, frame):
+    """Handle interrupt signal
+
+    Usage:
+        handler(signum, frame)
+    
+    Parameters:
+        <signum>: signal number
+        <frame>: current stack frame (None or a frame object
+        
+    Returns:
+        <void>
+    """
     print('Signal handler called with signal', signum)
     interrupt_write.send(b'\0')
-    
+
+# start signal handler    
 signal.signal(signal.SIGINT, handler)
 
 def backup_queue(host=[("ClientIP",0),"host_id","host_add","user","passwd"]):
+    """Add host to backup queue and return current status"""
+    
+    # create db object using databaseHandler class
+    db = dbh.databaseHandler()
+    
+    
     print(host)
     # add host to db backup list
     # get from db the backup summary status for the host_id

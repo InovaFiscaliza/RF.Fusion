@@ -49,6 +49,8 @@ This section of the repository includes the following folders:
 Install necessary tools
 
 ```shell
+dnf update
+
 dnf install keyutils
 dnf install cifs-utils
 ```
@@ -72,6 +74,7 @@ Create a credential file for the user that has accces to the repository. It will
 
 ```shell
 printf "username=mnt.sfi.sensores.pd\npassword=<PASSWORD>\n" > /root/.reposfi
+
 chmod 600 /root/.reposfi
 ```
 
@@ -83,24 +86,123 @@ mkdir /mnt/reposfi
 mount -t cifs -o credentials=/root/.reposfi,uid=987,gid=983,file_mode=0664,dir_mode=0775 //reposfi/sfi$/SENSORES  /mnt/reposfi
 ```
 
-Templates can be loaded directly from Zabbix web interface.
-
-Some of the templates will require external script that are provided under the root folder.
-
-External scripts should be stored in the defined folder and properties should be setup to reduce the associated security risks, e.g., for the queryDigitizer.py script one must run the following commands in the shell CLI and with SU privileges.
+Install MariaDB.
 
 ```shell
-chmod 700 queryDigitizer.py
-
-chown zabbix queryDigitizer.py
-
-chgrp zabbix queryDigitizer.py
+dnf module install mariadb
 ```
 
-Existing python script uses only standard libraries, thus, no special setup is required.
+Enable MariaDB in SystemCTL
 
-In the event that more sophisticated processing is required, the use of environments and additional setup may be required.
+```shell
+updatesystemctl enable --now mariadb
+```
 
+Secure MariaDB
+
+```shell
+mysql_secure_installation
+
+    NOTE: RUNNING ALL PARTS OF THIS SCRIPT IS RECOMMENDED FOR ALL MariaDB
+        SERVERS IN PRODUCTION USE!  PLEASE READ EACH STEP CAREFULLY!
+
+    In order to log into MariaDB to secure it, we'll need the current
+    password for the root user.  If you've just installed MariaDB, and
+    you haven't set the root password yet, the password will be blank,
+    so you should just press enter here.
+
+    Enter current password for root (enter for none): 
+    OK, successfully used password, moving on...
+
+    Setting the root password ensures that nobody can log into the MariaDB
+    root user without the proper authorisation.
+
+    Set root password? [Y/n] Y
+    New password: <root_pass>
+    Re-enter new password: <root_pass>
+    Password updated successfully!
+    Reloading privilege tables..
+    ... Success!
+
+
+    By default, a MariaDB installation has an anonymous user, allowing anyone
+    to log into MariaDB without having to have a user account created for
+    them.  This is intended only for testing, and to make the installation
+    go a bit smoother.  You should remove them before moving into a
+    production environment.
+
+    Remove anonymous users? [Y/n] n
+    ... skipping.
+
+    Normally, root should only be allowed to connect from 'localhost'.  This
+    ensures that someone cannot guess at the root password from the network.
+
+    Disallow root login remotely? [Y/n] Y
+    ... Success!
+
+    By default, MariaDB comes with a database named 'test' that anyone can
+    access.  This is also intended only for testing, and should be removed
+    before moving into a production environment.
+
+    Remove test database and access to it? [Y/n] Y
+    - Dropping test database...
+    ... Success!
+    - Removing privileges on test database...
+    ... Success!
+
+    Reloading the privilege tables will ensure that all changes made so far
+    will take effect immediately.
+
+    Reload privilege tables now? [Y/n] Y
+    ... Success!
+
+    Cleaning up...
+
+    All done!  If you've completed all of the above steps, your MariaDB
+    installation should now be secure.
+
+    Thanks for using MariaDB!
+```
+
+Create database and user for the application
+
+```shell
+mysql -u root -p
+
+    Enter password: 
+    Welcome to the MariaDB monitor.  Commands end with ; or \g.
+    Your MariaDB connection id is 20
+    Server version: 10.3.35-MariaDB MariaDB Server
+
+    Copyright (c) 2000, 2018, Oracle, MariaDB Corporation Ab and others.
+
+    Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+
+MariaDB [(none)]> CREATE DATABASE RFDATA;
+    Query OK, 1 row affected (0.442 sec)
+
+MariaDB [(none)]> CREATE USER 'appCataloga' IDENTIFIED BY '<app_pass>';
+    Query OK, 0 rows affected (0.391 sec)
+
+MariaDB [(none)]> GRANT ALL PRIVILEGES ON RFDATA.* TO 'appCataloga'@'%';
+    Query OK, 0 rows affected (0.000 sec)
+```
+
+Install gcc dependencies related to python scripts
+
+```shell
+dnf install gcc
+```
+
+To install python and the required associated libraries, it is suggested the use of [conda](https://docs.conda.io/) (or [mamba](https://mamba.readthedocs.io/en/latest/)) as environment manager and, as [conventional](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html), the environment is controlled by the `environment.yml` file.
+
+The `environment.yml` file is where you specify any packages available on the [Anaconda repository](https://anaconda.org) as well as from the Anaconda Cloud (including [conda-forge](https://conda-forge.org)) to install for your project. Ensure to include the pinned version of packages required by your project (including by Jupyter notebooks).
+
+To (re)create the environment on your installation of [conda](https://conda.io) via [anaconda](https://docs.anaconda.com/anaconda/install/), [miniconda](https://docs.conda.io/projects/continuumio-conda/en/latest/user-guide/install/) or preferably [miniforge](https://github.com/conda-forge/miniforge), you only need to pass the `environment.yml` file, which will install requirements and guarantee that whoever uses your code has the necessary packages (and correct versions).
+
+```
+conda env create -n appdata -f environment.yml
+```
 # External Checks
 
 | External Check | Description |
@@ -111,6 +213,12 @@ In the event that more sophisticated processing is required, the use of environm
 | `dnsIPswitch.py` | Change the zabbix active host direction from IP to DNS and vice versa in case there is an IP configured and the current configuration fail to respond within X retries |
 | `siteData.py` | Update group and tag information for the host based on configured sites and reverse geolocation data using OSM nominatin|
 
+# appCataloga
+
+appCataloga includes several python scripts that perform the following tasks:
+| Script module | Description |
+| --- | --- |
+| `appCataloga.py` | Main script that performs the following tasks: <ul><li>Reads the configuration file</li><li>Reads the index file</li><li>Reads the cookie file</li><li>Reads the list of files to be copied</li><li>Reads the list of files to be deleted</li><li>Reads the list of files to be updated</li><li>Reads the list of files to be renamed</li><li>Reads the list of files to be moved</li><li>Reads the list of files to be created</li><li>Reads the list
 # Roadmap
 
 This section presents a simplified view of the roadmap and knwon issues.
