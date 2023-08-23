@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python
 """
 Listen to socket command to perform backup from a specific host and retuns the current status for said host.
     
@@ -22,25 +22,21 @@ Listen to socket command to perform backup from a specific host and retuns the c
         All keys except "Message" are suppresed when Status=0
         Message describe the error or warning information
 """
+# Set system path to include modules from /etc/appCataloga
+import sys
+sys.path.append('/etc/appCataloga')
 
-# Python program to implement server side of chat room.
+# Import standard libraries.
 import socket
 import json
 import signal
 from selectors import DefaultSelector, EVENT_READ
 
 # Import modules for file processing 
+import config as k
 import dbHandler as dbh
-credentials = __import__('/etc/appCataloga/.credentials.py')
  
-#constants
-SERVER_PORT = 5555
-TOTAL_CONNECTIONS = 50
-QUERY_TAG = "query"
-START_TAG = "<json>"
-END_TAG = "</json>"
-
-#! TEST host_statistics initialization
+#! TEST ONLY host_statistics initialization
 HOST_STATISTICS = { "Total Files":1,
                     "Files pending backup":1,
                     "Last Backup":"today",
@@ -67,7 +63,7 @@ def handler(signum, frame):
     print('Signal handler called with signal', signum)
     interrupt_write.send(b'\0')
 
-# start signal handler    
+# start signal handler that control a graceful shutdown 
 signal.signal(signal.SIGINT, handler)
 
 def backup_queue(host=[("ClientIP",0),"host_id","host_add","user","passwd"]):
@@ -76,6 +72,8 @@ def backup_queue(host=[("ClientIP",0),"host_id","host_add","user","passwd"]):
     # create db object using databaseHandler class
     db = dbh.dbHandler()
     
+    # add host to db backup list
+    db.addHost(host)
     
     print(host)
     # add host to db backup list
@@ -108,19 +106,19 @@ def serve_client(client_socket):
             
             host = data.decode().split(" ")
             
-            if host[0]==QUERY_TAG:
+            if host[0]==k.QUERY_TAG:
                 host[0]=client_socket.getpeername()
                 
                 host_statistics = backup_queue(host)
                 
                 stat_txt = json.dumps(host_statistics)[:-1]
 
-                response = f'{START_TAG}{stat_txt},"Status":1,"Message":"{warning_msg}"}}{END_TAG}'
+                response = f'{k.START_TAG}{stat_txt},"Status":1,"Message":"{warning_msg}"}}{k.END_TAG}'
 
             else:
                 print(f"Ignored data from from {client_socket.getpeername()[0]}. Received: {data.decode()}")
                 
-                response = f'{START_TAG}{{"Status":0,"Error":"host command not recognized"}}{END_TAG}'
+                response = f'{k.START_TAG}{{"Status":0,"Error":"host command not recognized"}}{k.END_TAG}'
                 
             byte_response = bytes(response, encoding="utf-8")
             
@@ -148,12 +146,12 @@ def serve_forever(server_socket):
 
 def main():
     
-    print(f"Server is listening on port {SERVER_PORT}")
+    print(f"Server is listening on port {k.SERVER_PORT}")
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_address = ('', SERVER_PORT)
+    server_address = ('', k.SERVER_PORT)
     server_socket.bind(server_address)
-    server_socket.listen(TOTAL_CONNECTIONS)
+    server_socket.listen(k.TOTAL_CONNECTIONS)
 
     serve_forever(server_socket)
 
