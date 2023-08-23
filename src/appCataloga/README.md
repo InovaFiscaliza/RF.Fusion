@@ -186,6 +186,19 @@ MariaDB [(none)]> CREATE USER 'appCataloga' IDENTIFIED BY '<app_pass>';
 
 MariaDB [(none)]> GRANT ALL PRIVILEGES ON RFDATA.* TO 'appCataloga'@'%';
     Query OK, 0 rows affected (0.000 sec)
+
+MariaDB [(none)]> FLUSH PRIVILEGES
+```
+Run the script that creates the database and tables used by the application
+
+```shell
+MariaDB [(none)]> SOURCE /usr/local/bin/createDatabase.sql 
+```
+
+After the database is created you may remove the original csv files to free up space
+
+```shell
+rm -f /etc/appCataloga/*.csv
 ```
 
 Install gcc dependencies related to python scripts
@@ -194,31 +207,48 @@ Install gcc dependencies related to python scripts
 dnf install gcc
 ```
 
-To install python and the required associated libraries, it is suggested the use of [conda](https://docs.conda.io/) (or [mamba](https://mamba.readthedocs.io/en/latest/)) as environment manager and, as [conventional](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html), the environment is controlled by the `environment.yml` file.
+Search and Install ODBC driver for Python
 
-The `environment.yml` file is where you specify any packages available on the [Anaconda repository](https://anaconda.org) as well as from the Anaconda Cloud (including [conda-forge](https://conda-forge.org)) to install for your project. Ensure to include the pinned version of packages required by your project (including by Jupyter notebooks).
+```shell
+dnf search unixodbc
+
+dnf install unixODBC.x86_64
+```
+
+Install python and the required associated libraries.
+
+It is suggested the use of [conda](https://docs.conda.io/) (or [mamba](https://mamba.readthedocs.io/en/latest/)) as environment manager and, as [conventional](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html), the environment is controlled by the [`environment.yml`](./root/usr/local/bin/environment.yml) file.
+
+The [`environment.yml`](./root/usr/local/bin/environment.yml) file is where you specify any packages available on the [Anaconda repository](https://anaconda.org) as well as from the Anaconda Cloud (including [conda-forge](https://conda-forge.org)) to install for your project. 
 
 To (re)create the environment on your installation of [conda](https://conda.io) via [anaconda](https://docs.anaconda.com/anaconda/install/), [miniconda](https://docs.conda.io/projects/continuumio-conda/en/latest/user-guide/install/) or preferably [miniforge](https://github.com/conda-forge/miniforge), you only need to pass the `environment.yml` file, which will install requirements and guarantee that whoever uses your code has the necessary packages (and correct versions).
 
-```
+```shell
 conda env create -n appdata -f environment.yml
 ```
-# External Checks
 
-| External Check | Description |
-| --- | --- |
-| `queryDigitizer.py` | Perform VISA SCPI query of the CW RMU digitizer in order to acquire information about the receiver identification, environmental and location data. |
-| `queryLoggerUDP.py` | Perform UDP query of rfeye logger stream created according to the [rfeye logger example script](/test/logger/README.md) |
-| `rfeyeIPname.py` | Change host IP according to the host identification obtained via Mac Address. Uses the `http://<IP>/cgi-bin/ifconfig.cgi` to obtain the MAC in the format: `HWaddr 00:1e:89:00:MN:OP` where the last digits (`MN:OP`) corresponds to the equipment serial for the station `rfeye00MNOP`. If using fixed IP and hostname does not match the current host, change IP from the two hosts (identified and configured). If using DNS, generate alert for VPN key misplacement |
-| `dnsIPswitch.py` | Change the zabbix active host direction from IP to DNS and vice versa in case there is an IP configured and the current configuration fail to respond within X retries |
-| `siteData.py` | Update group and tag information for the host based on configured sites and reverse geolocation data using OSM nominatin|
+Activate systemctl service that will keep the application running
 
-# appCataloga
+
+<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+
+# Modules, Scripts and Files
+
 
 appCataloga includes several python scripts that perform the following tasks:
 | Script module | Description |
 | --- | --- |
 | `appCataloga.py` | Main script that performs the following tasks: <ul><li>Reads the configuration file</li><li>Reads the index file</li><li>Reads the cookie file</li><li>Reads the list of files to be copied</li><li>Reads the list of files to be deleted</li><li>Reads the list of files to be updated</li><li>Reads the list of files to be renamed</li><li>Reads the list of files to be moved</li><li>Reads the list of files to be created</li><li>Reads the list
+| `CreateDatabase_mysqk.sql` | Script that creates the database and tables used by the application in SQL compatible with MariaDB V10.3 |
+| `CreateDatabase_sqlserver.sql` | Script that creates the database and tables used by the application in SQL compatible with Microsoft SQL Server 2019 |
+| `CRFSbinHandler.py` | Script that handles the CRFS binary files |
+| `dbHandler.py` | Script that handles the database |
+| `root/etc/appCataloga/*.csv` | Set of files containing initial reference data to be loaded into the database |
+| `root/etc/appCataloga/.credentials.py` | File containing the credentials to access the database |
+| `root/root/.reposfi` | File containing the credentials to access the repository |
+
+<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+
 # Roadmap
 
 This section presents a simplified view of the roadmap and knwon issues.
@@ -227,66 +257,7 @@ For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/iss
 
 * [ ] Rfeye node
   * [x] Station availability status (ICMP)
-  * [ ] Station id
-  * [x] Network data
-  * [x] Processor and storage data
-  * [x] Environment data
-  * [x] GPS data
-  * [x] Autonomous monitoring status (logger/script)
-  * [ ] Remote operation status (rfeye site 9999)
-  * [x] Monitoring alert status (mask broken alert)
-* [ ] CW RMU
-  * [x] Station availability status (ICMP)
-  * [ ] Station id
-    * [x] digitizer serial number
-  * [x] Network data
-  * [ ] Processor and storage data
-  * [x] Environment data
-  * [x] GPS data
-  * [ ] Autonomous monitoring status (cwsm script)
-  * [x] Remote operation status (cst status)
-  * [ ] Monitoring alert status (mask broken alert)
-* [ ] UMS300
-  * [x] Station availability status (ICMP)
-  * [ ] Station id
-  * [ ] Network data
-  * [ ] Processor and storage data
-  * [ ] Environment data
-  * [ ] GPS data
-  * [ ] Autonomous monitoring status (argus script)
-  * [ ] Remote operation status (argus ports)
-  * [ ] Monitoring alert status (mask broken alert)
-* [ ] ERMx
-  * [x] Station availability status (ICMP)
-  * [ ] Station id
-  * [ ] Network data
-  * [ ] Processor and storage data
-  * [ ] Environment data
-    * [x] Volt Smartweb
-  * [ ] GPS data
-  * [ ] Autonomous monitoring status (appColeta script)
-  * [ ] Operation status (appColeta stream)
-  * [ ] Monitoring alert status (appColeta alert)
-* [ ] VPN Server (OpenVPN)
-  * [x] Server availability status (ICMP)
-  * [x] Server resources (CPU, Memory, Process load, Storage)
-  * [ ] Openvpn log
-* [ ] Monitor and Automation (Zabbix)
-  * [x] Server availability status (ICMP)
-  * [x] Server resources (CPU, Memory, Process load, Storage)
-  * [ ] Server
-* [ ] Publish (Landel)
-  * [ ] Server availability status (ICMP)
-  * [ ] Server resources (CPU, Memory, Process load, Storage)
-  * [ ] Data catalog processing status
-* [ ] Data Storage (RepoSFI)
-  * [ ] Storage availability status (ICMP)
-  * [ ] Available/used space in live area
-  * [ ] Available/used space in offload area
-  * [ ] File area transfer automation process status
-* [ ] Data Analytics (appWeb)
-  * [ ] Server resources (CPU, Memory, Process load, Storage)
-  * [ ] Matlab web server status
+
   
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 

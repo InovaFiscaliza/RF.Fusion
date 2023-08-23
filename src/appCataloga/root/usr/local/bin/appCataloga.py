@@ -31,6 +31,7 @@ from selectors import DefaultSelector, EVENT_READ
 
 # Import modules for file processing 
 import dbHandler as dbh
+credentials = __import__('/etc/appCataloga/.credentials.py')
  
 #constants
 SERVER_PORT = 5555
@@ -73,7 +74,7 @@ def backup_queue(host=[("ClientIP",0),"host_id","host_add","user","passwd"]):
     """Add host to backup queue and return current status"""
     
     # create db object using databaseHandler class
-    db = dbh.databaseHandler()
+    db = dbh.dbHandler()
     
     
     print(host)

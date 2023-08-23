@@ -66,7 +66,7 @@ For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/iss
   * [x] code agent
   * [ ] code upgrade.sh to create cron job
   * [ ] test crfs agent
-  [ ] Windows indexerd
+* [ ] Windows indexerd
   * [ ] code agent
   
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>

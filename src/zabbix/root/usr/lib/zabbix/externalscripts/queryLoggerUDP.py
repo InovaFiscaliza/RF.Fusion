@@ -114,8 +114,8 @@ except Exception as e:
     print('{"Status":0,"Message":"Error receiving and processing data"}')
 
 # extract JSON data from bytestring
-start_index = raw_data.rfind(START_TAG)
-end_index = raw_data.rfind(END_TAG)
+start_index = raw_data.lower().rfind(START_TAG)
+end_index = raw_data.lower().rfind(END_TAG)
 
 # extract JSON data removing the last bracket to later splice with the tail json data from this script
 json_data = raw_data[start_index+len(START_TAG):end_index-1].decode('utf8')

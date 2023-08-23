@@ -116,8 +116,8 @@ def main():
         client_socket.close()
 
     # extract JSON data from bytestring
-    start_index = response.rfind(START_TAG)
-    end_index = response.rfind(END_TAG)
+    start_index = response.lower().rfind(START_TAG)
+    end_index = response.lower().rfind(END_TAG)
 
     # extract JSON data removing the last bracket to later splice with the tail json data from this script
     json_output = response[start_index+len(START_TAG):end_index]

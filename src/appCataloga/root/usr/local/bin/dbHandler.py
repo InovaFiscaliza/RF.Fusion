@@ -8,11 +8,12 @@
 
 # Import libraries for:
 import pyodbc                           #  Database related operations
+import sys
 
 # Import file with constants used in this code that are relevant to the operation
 import constants as k
 
-class databaseHandler():
+class dbHandler():
 #TODO: Improve error handling for database errors
 
     def __init__(self):
@@ -30,12 +31,15 @@ class databaseHandler():
         # dbHandle = pyodbc.connect( driver=k.ODBC_DRIVER, server=k.SERVER_NAME, database=k.DATABASE_NAME, trusted_connection='yes')
         else:
         #connect to database using secret file with user authentication from secret.py import
-            import secret as secret
+            sys.path.append('/path/to/folder')
+            
+            credentials = __import__('/root/RF.Fusion/src/appCataloga/root/etc/appCataloga/.credentials.py')
+            
             self.dbConnection = pyodbc.connect( driver=k.ODBC_DRIVER,
                                                 server=k.SERVER_NAME,
                                                 database=k.DATABASE_NAME,
-                                                uid=secret.dbUserName,
-                                                pwd=secret.dbPassword)
+                                                uid=credentials.dbUserName,
+                                                pwd=credentials.dbPassword)
 
         self.cursor = self.dbConnection.cursor()
 
