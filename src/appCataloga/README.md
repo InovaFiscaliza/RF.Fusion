@@ -230,7 +230,6 @@ Activate systemctl service that will keep the application running
 
 # Modules, Scripts and Files
 
-
 appCataloga includes several python scripts that perform the following tasks:
 | Script module | Description |
 | --- | --- |
@@ -242,6 +241,44 @@ appCataloga includes several python scripts that perform the following tasks:
 | `root/etc/appCataloga/*.csv` | Set of files containing initial reference data to be loaded into the database |
 | `root/etc/appCataloga/.credentials.py` | File containing the credentials to access the database |
 | `root/root/.reposfi` | File containing the credentials to access the repository |
+
+<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+
+
+# Algorithm Overview
+
+For each monitoring station (host) registred in Zabbix, queryCataloga.py is called and uses socket to communicate with appCataloga.
+
+appCataloga receives the request from queryCataloga.py and includes the monitoring station (host) in the backup task queue.
+
+appCataloga respond to queryCataloga.py with the backup status for the monitoring station (host).
+
+For the backup server, also registred in Zabbix as a host, queryCataloga.py is called and uses socket to communicate with runBackup.py.
+
+runBackup receives the request from queryCataloga.py and check task queue for pending backup tasks. If there is a pending task, it is executed.
+
+runBackup respond to queryCataloga.py with the status of the backup queue.
+
+the backup task is executed according to the following steps:
+
+* Server access the host using ssh and check the halt flag cookie file (`HALT_FLAG`)
+* If halt flag is raised, wait a random time and try again.
+* If halt flag is is not lowered after a few tries, raises an error in the backup log and stop.
+* When the halt flag is lowered, raising it back and continue the backup process.
+* Download the index file ('DUE_BACKUP') and update database
+* Copy the measurement data files to the central repository
+* Update database with the status of the copied files
+* Update file processing queue to extract metadata from copied files and update the measurement database
+* Removed the index file in the remote host
+* Releases the agent by lowering the halt flag.
+
+the file processing task is executed according to the following steps:
+* Check the file processing queue for pending tasks
+* If there is a pending task, it is executed.
+* Extract metadata from the measurement data files
+* Update the measurement database with the extracted metadata
+* Update the file processing queue with the status of the processed files
+
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
