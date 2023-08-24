@@ -1,15 +1,16 @@
 #!/usr/bin/python3
 """
-Call for information and backup from an specific host by appCataloga service.
+Call for information from a remote appCataloga module using socket.
 
-Provide feedback to Zabbix about the host.
+Provide feedback to Zabbix about the host or appCataloga service
 
 This script is unsecure and should only run through a secure encripted network connection
     
     Usage:
-        queryCataloga <host> <user> <pass>
+        queryCataloga <query> <host_id> <host_add> <user> <pass>
     
     Parameters:
+        <query>
         <host_id> single string with host unique id or key to be used to store reference data
         <host_add> single string with host IP or host name known to the available DNS
         <user> single string with user id to be used to access the host
@@ -42,60 +43,95 @@ DEFAULT_HOST_ID = "rfeye002080"
 DEFAULT_HOST_ADD = "rfeye002080.anatel.gov.br"
 DEFAULT_USER = "user"
 DEFAULT_PASSWD = "password"
+DEFAULT_QUERY_TAG = "catalog"
+MAXIMUM_ARGUMENTS = 5
 TIMEOUT_BUFFER = 1
-QUERY_TAG = "query"
 START_TAG = "<json>"
 END_TAG = "</json>"
 
-warning_msg = "none"
+NO_WARNING_MSG = "none"
+
+class warning_msg:
+    def __init__(self) -> None:
+        self.warning_msg = NO_WARNING_MSG
+        
+    def compose_warning(self, new_warning):
+        if self.warning_msg == NO_WARNING_MSG:
+            self.warning_msg = (f'Warning: {new_warning}')
+        else:
+            self.warning_msg = (f'{self.warning_msg}, {new_warning}')   
+
+wm = warning_msg()
 
 def parse_call():
-    # Get command-line arguments
+    """ Get command-line arguments """
+    
     try:
-        e = sys.argv[5]
+        e = sys.argv[6]
+    
     except IndexError:
-        warning_msg = "Warning: Ignoring arguments"
+        ignored_arg = sys.argv.__len__() - MAXIMUM_ARGUMENTS    
+        wm.compose_warning("Ignoring {ignored_arg} argument(s) beyond the expected {MAXIMUM_ARGUMENTS} argument")
+        
     except ValueError:
         print('{"Status":0,"Error":"Invalid function call"}')
         exit()
 
     try:
-        host_id = sys.argv[1]
+        query_tag = sys.argv[1]
+        
+    except IndexError:
+        query_tag = DEFAULT_QUERY_TAG
+        wm.compose_warning("Using default query tag")
+        
+    except ValueError:
+        print('{"Status":0,"Error":"Invalid function call"}')
+        exit()
+
+    try:
+        host_id = sys.argv[2]
+        
     except IndexError:
         host_id = DEFAULT_HOST_ID
-        warning_msg = "Warning: Using default values"
+        wm.compose_warning("Using default host id")
+        
     except ValueError:
         print('{"Status":0,"Error":"Invalid function call"}')
         exit()
 
     try:
-        host_add = int(sys.argv[2])
+        host_add = int(sys.argv[3])
+        
     except IndexError:
         host_add = DEFAULT_HOST_ADD
-        warning_msg = "Warning: Using default values"
+        wm.compose_warning("Using default host address")
+        
     except ValueError:
         print('{"Status":0,"Error":"Invalid function call"}')
         exit()
 
     try:
-        user = int(sys.argv[3])
+        user = int(sys.argv[4])
+        
     except IndexError:
         user = DEFAULT_USER
-        warning_msg = "Warning: Using default values"
+        wm.compose_warning("Using default user")
+        
     except ValueError:
         print('{"Status":0,"Error":"Invalid function call"}')
         exit()
 
     try:
-        passwd = int(sys.argv[4])
+        passwd = int(sys.argv[5])
     except IndexError:
         passwd = DEFAULT_PASSWD
-        warning_msg = "Warning: Using default values"
+        wm.compose_warning("Using default password")
+        
     except ValueError:
         print('{"Status":0,"Error":"Invalid function call"}')
         exit()
 
-    req_to_server = bytes(f"query {host_id} {host_add} {user} {passwd}", encoding="utf-8")
+    req_to_server = bytes(f"{query_tag} {host_id} {host_add} {user} {passwd}", encoding="utf-8")
     
     return(req_to_server)
 

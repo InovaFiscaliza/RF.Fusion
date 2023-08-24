@@ -3,10 +3,11 @@
 Listen to socket command to perform backup from a specific host and retuns the current status for said host.
     
     Usage:
-        appCataloga
+        appCataloga 
     
-    Parameters:
-        <host> single string with host IP or host name known to the available DNS
+    Parameters: <via socket connection>
+        <hostid> single string with unique hostid
+        <host_add> single string with host IP or host name known to the available DNS
         <user> single string with user id to be used to access the host
         <pass> single string with user password to be used to access the host
         
@@ -66,18 +67,18 @@ def handler(signum, frame):
 # start signal handler that control a graceful shutdown 
 signal.signal(signal.SIGINT, handler)
 
-def backup_queue(conn="ClientIP",hostid="host_id",host_addr="host_addr",host_user="user",host_passwd="passwd"):
+def backup_queue(conn="ClientIP",hostid="1",host_addr="host_addr",host_user="user",host_passwd="passwd"):
     """Add host to backup queue and return current status
 
     Args:
         conn (str): _description_. Defaults to "ClientIP".
-        hostid (str): _description_. Defaults to "host_id".
+        hostid (str): _description_. Defaults to "1".
         host_addr (str): _description_. Defaults to "host_addr".
         host_user (str): _description_. Defaults to "user".
         host_passwd (str): _description_. Defaults to "passwd".
 
     Returns:
-        _type_: _description_
+        void
     """
     
     # create db object using databaseHandler class
@@ -86,26 +87,11 @@ def backup_queue(conn="ClientIP",hostid="host_id",host_addr="host_addr",host_use
     # add host to db task list for backup
     db.addHost(hostid,host_addr,host_user,host_passwd)
     
-    print(host)
+    host_stat = db.getHost(hostid)
+    
+    print(host_stat)
     # get from db the backup summary status for the host_id
-    return HOST_STATISTICS
-
-"""
-- Loop infinito de gestão
-  - Consultar BD os parâmetros de limite e tempo de espera
-  - Consultar BD o quantitativo de backups pendentes
-  - Consultar BD o quantitativo de processos de catalogação pendentes
-  - Se processos de backup em execução < limite_bkp, disparar novo processo
-  - Se processos de catalogação em execução < limite_proc, disparar novo processo
-  - Aguardar tempo de espera
-  
-- processo de backup
-  - recebe host_add, user e pass na chamada
-  - realiza backup
-  - atualiza BD de sumarização para o host
-  - atualiza BD lista de catalogações pendentes
-
-"""
+    return host_stat
 
 def serve_client(client_socket):
     try:
@@ -116,7 +102,7 @@ def serve_client(client_socket):
             
             host = data.decode().split(" ")
             
-            if host[0]==k.QUERY_TAG:
+            if host[0]==k.CATALOG_QUERY_TAG:
                 host[0]=client_socket.getpeername() # replace list first element with client IP address
                 
                 host_statistics = backup_queue(*host) # unpack list to pass as arguments to backup_queue

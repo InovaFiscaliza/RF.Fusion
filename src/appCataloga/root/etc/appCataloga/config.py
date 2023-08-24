@@ -7,7 +7,8 @@ VERBOSE = True
 # appCataloga socket service configuration
 SERVER_PORT = 5555
 TOTAL_CONNECTIONS = 50
-QUERY_TAG = "query"
+CATALOG_QUERY_TAG = "catalog"
+BACKUP_QUERY_TAG = "backup"
 START_TAG = "<json>"
 END_TAG = "</json>"
 
