@@ -66,17 +66,27 @@ def handler(signum, frame):
 # start signal handler that control a graceful shutdown 
 signal.signal(signal.SIGINT, handler)
 
-def backup_queue(host=[("ClientIP",0),"host_id","host_add","user","passwd"]):
-    """Add host to backup queue and return current status"""
+def backup_queue(conn="ClientIP",hostid="host_id",host_addr="host_addr",host_user="user",host_passwd="passwd"):
+    """Add host to backup queue and return current status
+
+    Args:
+        conn (str): _description_. Defaults to "ClientIP".
+        hostid (str): _description_. Defaults to "host_id".
+        host_addr (str): _description_. Defaults to "host_addr".
+        host_user (str): _description_. Defaults to "user".
+        host_passwd (str): _description_. Defaults to "passwd".
+
+    Returns:
+        _type_: _description_
+    """
     
     # create db object using databaseHandler class
-    db = dbh.dbHandler()
-    
-    # add host to db backup list
-    db.addHost(host)
+    db = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
+     
+    # add host to db task list for backup
+    db.addHost(hostid,host_addr,host_user,host_passwd)
     
     print(host)
-    # add host to db backup list
     # get from db the backup summary status for the host_id
     return HOST_STATISTICS
 
@@ -107,9 +117,9 @@ def serve_client(client_socket):
             host = data.decode().split(" ")
             
             if host[0]==k.QUERY_TAG:
-                host[0]=client_socket.getpeername()
+                host[0]=client_socket.getpeername() # replace list first element with client IP address
                 
-                host_statistics = backup_queue(host)
+                host_statistics = backup_queue(*host) # unpack list to pass as arguments to backup_queue
                 
                 stat_txt = json.dumps(host_statistics)[:-1]
 

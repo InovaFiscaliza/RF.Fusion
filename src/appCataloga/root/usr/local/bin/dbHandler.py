@@ -11,10 +11,11 @@ import config as k
 class dbHandler():
 #TODO: Improve error handling for database errors
 
-    def __init__(self):
+    def __init__(self, database=k.RF_DATABASE_NAME):
         self.db_connection = None
         self.cursor = None
         self.metadata = None
+        self.database = database
 
     def connect(self):
         """Try to connect to the database using the parameters in the config.py file
@@ -33,7 +34,7 @@ class dbHandler():
             'user': k.DB_USER_NAME,
             'password': k.DB_PASSWORD,
             'host': k.SERVER_NAME,
-            'database': k.DATABASE_NAME 
+            'database': self.database
         }
         
         self.db_connection = mysql.connector.connect(**config)
@@ -446,3 +447,64 @@ class dbHandler():
         self.disconnect()
 
         return(dbKeyFile)
+    
+    def addHost(self,conn="ClientIP",hostid="host_id",host_addr="host_addr",host_user="user",host_passwd="passwd"):
+        """This method checks if the host is already in the database and if not, adds it to the backup queue
+        
+        Args:
+            conn (str): _description_. Defaults to "ClientIP".
+            hostid (str): _description_. Defaults to "host_id".
+            host_addr (str): _description_. Defaults to "host_addr".
+            host_user (str): _description_. Defaults to "user".
+            host_passwd (str): _description_. Defaults to "passwd".
+
+        Returns:
+            _type_: _description_
+        """
+        
+        # compose query to check if hostid exists in the BKPDATA database
+        query = (f"SELECT ID_HOST "
+                    f"FROM HOST ")
+        
+        # update database
+        self.cursor.execute(query)
+        self.cursor.commit()
+        
+        # test if hostid exists in the database
+        if self.cursor.rowcount == 0:
+            # compose query to insert hostid in the BKPDATA database
+            query = (f"INSERT INTO HOST "
+                        f"(ID_HOST,"
+                        f"NU_PENDING_BACKUP,"
+                        f"VALUES "
+                        f"('{hostid}',"
+                        f"'{1}',")            
+            # update database
+            self.cursor.execute(query)
+            self.cursor.commit()
+        else:
+            # compose query to update hostid in the BKPDATA database
+            query = (f"UPDATE HOST "
+                        f"SET NU_PENDING_BACKUP = NU_PENDING_BACKUP + 1 "
+                        f"WHERE ID_HOST = '{hostid}'")
+            # update database
+            self.cursor.execute(query)
+            self.cursor.commit()
+            
+    # get host data from the database
+    def getHost(self,hostid="host_id"):
+        
+        # compose query to get host data from the BKPDATA database
+        query = (f"SELECT ID_HOST, "
+                    f"NU_PENDING_BACKUP, "
+                    f"NU_HOST_FILES, "
+                    f"NU_PENDING_BACKUP, "
+                    f"DT_LAST_BACKUP DATETIME "
+                    f"FROM HOST "
+                    f"WHERE ID_HOST = '{hostid}'")
+        
+        # get host data from the database
+        self.cursor.execute(query)
+        self.cursor.commit()
+        
+        return self.cursor.fetchone()

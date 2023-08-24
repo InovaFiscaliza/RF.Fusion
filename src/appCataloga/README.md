@@ -178,21 +178,17 @@ mysql -u root -p
 
     Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
 
-MariaDB [(none)]> CREATE DATABASE RFDATA;
-    Query OK, 1 row affected (0.442 sec)
+MariaDB [(none)]> SOURCE /usr/local/bin/createMeasureDB.sql
 
-MariaDB [(none)]> CREATE USER 'appCataloga' IDENTIFIED BY '<app_pass>';
-    Query OK, 0 rows affected (0.391 sec)
+MariaDB [(none)]> SOURCE /usr/local/bin/createProcessingDB.sql
 
-MariaDB [(none)]> GRANT ALL PRIVILEGES ON RFDATA.* TO 'appCataloga'@'%';
-    Query OK, 0 rows affected (0.000 sec)
+MariaDB [(none)]> CREATE USER 'appCataloga'@'localhost' IDENTIFIED BY '<app_pass>';
 
-MariaDB [(none)]> FLUSH PRIVILEGES
-```
-Run the script that creates the database and tables used by the application
+MariaDB [(none)]> GRANT ALL PRIVILEGES ON BKPDATA.* TO 'appCataloga'@'localhost';
 
-```shell
-MariaDB [(none)]> SOURCE /usr/local/bin/createDatabase.sql 
+MariaDB [(none)]> GRANT ALL PRIVILEGES ON RFDATA.* TO 'appCataloga'@'localhost';
+
+MariaDB [(none)]> FLUSH PRIVILEGES;
 ```
 
 After the database is created you may remove the original csv files to free up space

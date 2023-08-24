@@ -13,7 +13,8 @@ END_TAG = "</json>"
 
 # database configuration
 SERVER_NAME = r'localhost'
-DATABASE_NAME = 'RFDATA'
+RFM_DATABASE_NAME = 'RFDATA'
+BKP_DATABASE_NAME = 'BKPDATA'
 DB_USER_NAME = 'appCataloga' 
 DB_PASSWORD = '<app_pass>'
 
