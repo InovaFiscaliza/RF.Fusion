@@ -1,54 +1,71 @@
-#! /root/miniconda3/envs/rflook/bin/python
-
-# # File processor
-# This script perform the following tasks
-# - Use whatdog to monitor folder
-# -
-
+#!/usr/bin/env python
+""" This module manage all database operations for the appCataloga scripts """
 
 # Import libraries for:
-import pyodbc                           #  Database related operations
+import mysql.connector
 import sys
 
 # Import file with constants used in this code that are relevant to the operation
-import constants as k
+import config as k
 
 class dbHandler():
 #TODO: Improve error handling for database errors
 
     def __init__(self):
-        self.dbConnection = None
+        self.db_connection = None
         self.cursor = None
         self.metadata = None
 
     def connect(self):
-        #connect to database using windows authentication
-        if k.USE_WINDOWS_AUTHENTICATION:
-            self.dbConnection = pyodbc.connect( driver=k.ODBC_DRIVER,
-                                                server=k.SERVER_NAME,
-                                                database=k.DATABASE_NAME,
-                                                trusted_connection='yes')
-        # dbHandle = pyodbc.connect( driver=k.ODBC_DRIVER, server=k.SERVER_NAME, database=k.DATABASE_NAME, trusted_connection='yes')
-        else:
-        #connect to database using secret file with user authentication from secret.py import
-            sys.path.append('/path/to/folder')
-            
-            credentials = __import__('/root/RF.Fusion/src/appCataloga/root/etc/appCataloga/.credentials.py')
-            
-            self.dbConnection = pyodbc.connect( driver=k.ODBC_DRIVER,
-                                                server=k.SERVER_NAME,
-                                                database=k.DATABASE_NAME,
-                                                uid=credentials.dbUserName,
-                                                pwd=credentials.dbPassword)
+        """Try to connect to the database using the parameters in the config.py file
 
-        self.cursor = self.dbConnection.cursor()
+        Raises:
+            Exception: from pyodbc.connect
+            ValueError: from pyodbc.connect
+
+        Returns:
+            self.db_connection: update to the database connection
+            self.cursor: update to the database cursor
+        """
+                
+        #connect to database using parameters in the config.py file
+        config = {
+            'user': k.DB_USER_NAME,
+            'password': k.DB_PASSWORD,
+            'host': k.SERVER_NAME,
+            'database': k.DATABASE_NAME 
+        }
+        
+        self.db_connection = mysql.connector.connect(**config)
+        
+        self.cursor = self.db_connection.cursor()
 
     def disconnect(self):
+        """ Disconnect from the database for graceful exit
+
+        Raises:
+            Exception: from pyodbc.disconnect
+            ValueError: from pyodbc.disconnect
+
+        Returns:
+            self.db_connection: update to None
+            self.cursor: update to None
+        """
+
         self.cursor.close()
-        self.dbConnection.close()
+        self.db_connection.close()
 
     # method to search database and if value not found, insert
-    def dbMerge (self, table, idColumn, newDataList, whereConditionList):
+    def merge (self, table, idColumn, newDataList, whereConditionList):
+        """_summary_
+
+        Raises:
+            Exception: _description_
+            ValueError: _description_
+
+        Returns:
+            _type_: _description_
+        """
 
 # TODO: Study use of SQL Merge function. Since watchdog controls the threads, there is little risk of simultaneous insert/update for the same data. Additional complexity of merge and reduced compatibility is not justifiable. Additional limitation concerning the return of new or existing id.**--*
 
@@ -100,7 +117,16 @@ class dbHandler():
 
         return dbKey
 
-    def updateGeographicNames(self):
+    def update_geographic_names(self):
+        """_summary_
+
+        Raises:
+            Exception: _description_
+            ValueError: _description_
+
+        Returns:
+            _type_: _description_
+        """
 
 # TODO: Handle query errors
 
@@ -137,7 +163,7 @@ class dbHandler():
 
         return (dbKeyState, dbKeyCounty, dbKeyDistrict)
 
-    def updateSite(self):
+    def update_site(self):
 
         fileLatitude = self.metadata['Sum_Latitude'] / self.metadata['Count_GPS']
         fileLongitude = self.metadata['Sum_Longitude'] / self.metadata['Count_GPS']

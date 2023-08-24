@@ -1,4 +1,4 @@
-#! /root/miniconda3/envs/rflook/bin/python
+#!/usr/bin/env python
 
 # # File processor
 # This script perform the following tasks
