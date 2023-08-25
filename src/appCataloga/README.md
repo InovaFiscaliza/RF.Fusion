@@ -184,7 +184,7 @@ MariaDB [(none)]> SOURCE /usr/local/bin/createProcessingDB.sql
 
 MariaDB [(none)]> CREATE USER 'appCataloga'@'localhost' IDENTIFIED BY '<app_pass>';
 
-MariaDB [(none)]> GRANT ALL PRIVILEGES ON BKPDATA.* TO 'appCataloga'@'localhost';
+MariaDB [(none)]> GRANT ALL PRIVILEGES ON BPDATA.* TO 'appCataloga'@'localhost';
 
 MariaDB [(none)]> GRANT ALL PRIVILEGES ON RFDATA.* TO 'appCataloga'@'localhost';
 

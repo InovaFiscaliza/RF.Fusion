@@ -11,7 +11,7 @@ import config as k
 class dbHandler():
 #TODO: Improve error handling for database errors
 
-    def __init__(self, database=k.RF_DATABASE_NAME):
+    def __init__(self, database=k.RFM_DATABASE_NAME):
         self.db_connection = None
         self.cursor = None
         self.metadata = None
@@ -112,7 +112,7 @@ class dbHandler():
             self.cursor.execute("SELECT SCOPE_IDENTITY()")
             dbKey = int(self.cursor.fetchone()[0])
 
-            self.cursor.commit()
+            self.db_connection.commit()
 
             if k.VERBOSE: print(f'     New entry created in {table} with registry ID {dbKey}')
 
@@ -273,7 +273,7 @@ class dbHandler():
             self.cursor.execute("SELECT SCOPE_IDENTITY()")
             dbKeySite = int(self.cursor.fetchone()[0])
 
-        self.cursor.commit()
+        self.db_connection.commit()
 
         return(dbKeySite)
 
@@ -388,7 +388,7 @@ class dbHandler():
             self.cursor.execute("SELECT SCOPE_IDENTITY()")
             dbKeySiteSpectrum = int(self.cursor.fetchone()[0])
 
-            self.cursor.commit()
+            self.db_connection.commit()
 
             # compose a query to insert data in the bridge to the equipment table.
             query = (f"INSERT INTO PONTE_MEDICAO_ESPECTRO_EQUIPAMENTO"
@@ -399,7 +399,7 @@ class dbHandler():
                      f" {dbKeySiteSpectrum})")
 
             self.cursor.execute(query)
-            self.cursor.commit()
+            self.db_connection.commit()
 
 
     def updateDatabase(self, data):
@@ -448,7 +448,7 @@ class dbHandler():
 
         return(dbKeyFile)
     
-    def addHost(self,conn="ClientIP",hostid="host_id",host_addr="host_addr",host_user="user",host_passwd="passwd"):
+    def addHost(self,hostid="1",host_addr="host_addr",host_user="user",host_passwd="passwd"):
         """This method checks if the host is already in the database and if not, adds it to the backup queue
         
         Args:
@@ -461,50 +461,120 @@ class dbHandler():
         Returns:
             _type_: _description_
         """
+        # connect to the database
+        self.connect()
         
-        # compose query to check if hostid exists in the BKPDATA database
-        query = (f"SELECT ID_HOST "
-                    f"FROM HOST ")
+        # compose query to set host data in the BKPDATA database        
+        query = (f"INSERT INTO HOST "
+                    f"(ID_HOST, NU_PENDING_BACKUP) "
+                    f"VALUES "
+                    f"('{hostid}', '{1}') "
+                    f"ON DUPLICATE KEY UPDATE NU_PENDING_BACKUP = NU_PENDING_BACKUP + 1")
         
         # update database
         self.cursor.execute(query)
-        self.cursor.commit()
+        self.db_connection.commit()
         
-        # test if hostid exists in the database
-        if self.cursor.rowcount == 0:
-            # compose query to insert hostid in the BKPDATA database
-            query = (f"INSERT INTO HOST "
-                        f"(ID_HOST,"
-                        f"NU_PENDING_BACKUP,"
-                        f"VALUES "
-                        f"('{hostid}',"
-                        f"'{1}',")            
-            # update database
-            self.cursor.execute(query)
-            self.cursor.commit()
-        else:
-            # compose query to update hostid in the BKPDATA database
-            query = (f"UPDATE HOST "
-                        f"SET NU_PENDING_BACKUP = NU_PENDING_BACKUP + 1 "
-                        f"WHERE ID_HOST = '{hostid}'")
-            # update database
-            self.cursor.execute(query)
-            self.cursor.commit()
-            
+        # compose query to set the backup task in the BKPDATA database
+        query = (f"INSERT INTO BKP_TASK "
+                 f"(FK_HOST, DT_BKP_TASK, NO_HOST_ADDRESS,NO_HOST_USER,NO_HOST_PASSWORD) "
+                 f"VALUES "
+                 f"('{hostid}', NOW(), '{host_addr}', '{host_user}', '{host_passwd}')")
+
+        # update database
+        self.cursor.execute(query)
+        self.db_connection.commit()
+        self.disconnect()
+        
     # get host data from the database
-    def getHost(self,hostid="host_id"):
+    def getHost(self,hostid="host_id"):        
         
+        # connect to the database
+        self.connect()
+
         # compose query to get host data from the BKPDATA database
-        query = (f"SELECT ID_HOST, "
-                    f"NU_PENDING_BACKUP, "
-                    f"NU_HOST_FILES, "
-                    f"NU_PENDING_BACKUP, "
-                    f"DT_LAST_BACKUP DATETIME "
+        query = (f"SELECT "
+                        f"ID_HOST, "
+                        f"NU_HOST_FILES, "
+                        f"NU_PENDING_BACKUP, "
+                        f"DT_LAST_BACKUP, "
+                        f"NU_PENDING_PROCESSING, "
+                        f"DT_LAST_PROCESSING "
                     f"FROM HOST "
                     f"WHERE ID_HOST = '{hostid}'")
         
         # get host data from the database
         self.cursor.execute(query)
-        self.cursor.commit()
         
-        return self.cursor.fetchone()
+        output = self.cursor.fetchone()
+        
+        output = {'Host ID': output[0],
+                  'Total Files': output[1],
+                  'Files to backup': output[2],
+                  'Last Backup date': output[3],
+                  'Files to process': output[4],
+                  'Last Processing date': output[5],
+                  'Status': 1, 
+                  'Message': 'OK'}
+        
+        self.disconnect()
+        
+        return output
+    
+    # get host data from the database
+    def nextBackup(self):        
+        # connect to the database
+        self.connect()
+
+        self.cursor.execute(
+            """
+            SELECT ID_BKP_TASK, FK_HOST, NO_HOST_ADDRESS, NO_HOST_USER, NO_HOST_PASSWORD
+            FROM BKP_TASK
+            ORDER BY DT_BKP_TASK
+            LIMIT 1;
+            """
+        )
+        
+        output = self.cursor.fetchone()
+        self.disconnect()
+        
+        return output
+
+            task = get_oldest_backup_task(db_cursor)
+
+            if task:
+                task_id = task["ID_BKP_TASK"]
+                host_address = task["NO_HOST_ADDRESS"]
+                username = task["NO_HOST_USER"]
+                password = task["NO_HOST_PASSWORD"]
+                
+        # get host data from the database
+        self.cursor.execute(query)
+        
+        output = self.cursor.fetchone()
+        
+        output = {'Host ID': output[0],
+                  'Total Files': output[1],
+                  'Files to backup': output[2],
+                  'Last Backup date': output[3],
+                  'Files to process': output[4],
+                  'Last Processing date': output[5],
+                  'Status': 1, 
+                  'Message': 'OK'}
+        
+        self.disconnect()
+        
+        return output
+
+
+
+    # Function to remove a completed backup task from the database
+    def remove_backup_task(cursor, task_id):
+        cursor.execute(
+            """
+            DELETE FROM BKP_TASK
+            WHERE ID_BKP_TASK = %s;
+            """,
+            (task_id,)
+        )
+

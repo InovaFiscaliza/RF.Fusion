@@ -5,9 +5,6 @@ Shared functions for appCataloga scripts
 import sys
 sys.path.append('/etc/appCataloga')
 
-# Import standard libraries.
-
-
 class warning_msg:
     def __init__(self) -> None:
         self.warning_msg = "none"

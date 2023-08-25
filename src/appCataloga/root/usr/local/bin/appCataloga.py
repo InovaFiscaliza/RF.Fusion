@@ -105,15 +105,20 @@ def serve_client(client_socket):
             
             host = data.decode().split(" ")
             
-            if host[0]==k.CATALOG_QUERY_TAG:
+            if host[0]==k.BACKUP_QUERY_TAG:
                 host[0]=client_socket.getpeername() # replace list first element with client IP address
                 
                 host_statistics = backup_queue(*host) # unpack list to pass as arguments to backup_queue
                 
-                stat_txt = json.dumps(host_statistics)[:-1]
+                # add warning message to dictionary
+                host_statistics["Message"] = wm.warning_msg
+                
+                response = f'{k.START_TAG}{json.dumps(host_statistics)}{k.END_TAG}'
 
-                response = f'{k.START_TAG}{stat_txt},"Status":1,"Message":"{wm.warning_msg}"}}{k.END_TAG}'
-
+            elif host[0]==k.CATALOG_QUERY_TAG:
+                print(f"Received data from {client_socket.getpeername()[0]}. Received: {data.decode()}")
+                
+                response = f'{k.START_TAG}{{"Status":0,"Error":"catalog command not implemented"}}{k.END_TAG}'
             else:
                 print(f"Ignored data from from {client_socket.getpeername()[0]}. Received: {data.decode()}")
                 
