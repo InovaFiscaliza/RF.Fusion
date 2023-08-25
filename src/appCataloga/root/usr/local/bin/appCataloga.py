@@ -36,15 +36,18 @@ from selectors import DefaultSelector, EVENT_READ
 # Import modules for file processing 
 import config as k
 import dbHandler as dbh
- 
+import appCShared as csh
+
 #! TEST ONLY host_statistics initialization
 HOST_STATISTICS = { "Total Files":1,
-                    "Files pending backup":1,
+                    "Files pending backup":0,
+                    "Files pending processing":0,
                     "Last Backup":"today",
+                    "Last Processing":"today",
                     "Days since last backup":0}
 
 # initialize warning message variable
-warning_msg = ""
+wm = csh.warning_msg()
 
 interrupt_read, interrupt_write = socket.socketpair()
 
@@ -109,7 +112,7 @@ def serve_client(client_socket):
                 
                 stat_txt = json.dumps(host_statistics)[:-1]
 
-                response = f'{k.START_TAG}{stat_txt},"Status":1,"Message":"{warning_msg}"}}{k.END_TAG}'
+                response = f'{k.START_TAG}{stat_txt},"Status":1,"Message":"{wm.warning_msg}"}}{k.END_TAG}'
 
             else:
                 print(f"Ignored data from from {client_socket.getpeername()[0]}. Received: {data.decode()}")
