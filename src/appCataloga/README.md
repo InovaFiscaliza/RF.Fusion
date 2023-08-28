@@ -51,7 +51,6 @@ Install necessary tools
 ```shell
 dnf update
 
-dnf install keyutils
 dnf install cifs-utils
 ```
 
@@ -85,9 +84,6 @@ mkdir /mnt/reposfi
 
 mount -t cifs -o credentials=/root/.reposfi,uid=987,gid=983,file_mode=0664,dir_mode=0775 //reposfi/sfi$/SENSORES  /mnt/reposfi
 ```
-RF.Fusion (file://DELL_FABIO/RF.Fusion)
-mount -t cifs -o credentials=/root/.reposfi,uid=987,gid=983,file_mode=0664,dir_mode=0775 //reposfi/sfi$/SENSORES  /mnt/reposfi
-
 
 Install MariaDB.
 
