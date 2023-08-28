@@ -84,6 +84,14 @@ mkdir /mnt/reposfi
 
 mount -t cifs -o credentials=/root/.reposfi,uid=987,gid=983,file_mode=0664,dir_mode=0775 //reposfi/sfi$/SENSORES  /mnt/reposfi
 ```
+Once the mount is complete with success, one may make it permanent by adding the following line to `/etc/fstab`
+
+```shell
+//reposfi/sfi$/SENSORES  /mnt/reposfi  cifs  credentials=/root/.reposfi,uid=987,gid=983,file_mode=0664,dir_mode=0775  0  0
+
+systemctl daemon-reload
+```
+
 
 Install MariaDB.
 
