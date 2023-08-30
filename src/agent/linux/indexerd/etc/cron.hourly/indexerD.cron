@@ -1,15 +1,14 @@
 #!/bin/bash
 #run hourly the indexerd daemon
 
-logger "indexerD: starting indexerD cron job"
+logger "indexerD Info: starting indexerD cron job"
 
 [ -e /etc/node/indexerD.cfg ] && . /etc/node/syncd.cfg || {
-    logger "indexerD: Missing or not accessible configuration file"
+    logger "indexerD Error: Missing or not accessible configuration file"
     exit 0
 }
-/etc/node/syncd.cfg
 
 [ -e /usr/local/bin/indexerD.sh ] && . /usr/local/bin/indexerD.sh || {
-    logger "indexerD: Unable to run indexerD.sh"
+    logger "indexerD Error: Unable to run indexerD.sh"
     exit 0
 }

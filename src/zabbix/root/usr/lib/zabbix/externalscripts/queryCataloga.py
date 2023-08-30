@@ -35,14 +35,11 @@ import json
 SERVER_ADD = "192.168.200.30"  # Change this to the server's hostname or IP address
 SERVER_PORT = 5555
 
-user = "your_username"
-passwd = "your_password"
-
 # Constants
 DEFAULT_HOST_ID = "10"
-DEFAULT_HOST_ADD = "rfeye002080.anatel.gov.br"
-DEFAULT_USER = "rfeye_user"
-DEFAULT_PASSWD = "password"
+DEFAULT_HOST_ADD = "192.168.200.20"
+DEFAULT_USER = "root"  # user should have access to the host with rights to interact with the indexer daemon
+DEFAULT_PASSWD = "rootPass"
 DEFAULT_QUERY_TAG = "backup"
 MAXIMUM_ARGUMENTS = 5
 TIMEOUT_BUFFER = 1

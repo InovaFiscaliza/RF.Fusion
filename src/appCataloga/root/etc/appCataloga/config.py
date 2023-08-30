@@ -19,6 +19,13 @@ BKP_DATABASE_NAME = 'BPDATA'
 DB_USER_NAME = 'appCataloga' 
 DB_PASSWORD = '<app_pass>'
 
+# backup configuration
+MAX_THREADS = 10
+
+# daemon standard due for backup file
+DUE_BACKUP_FILE="/mnt/internal/.indexerD/files.changed"
+TARGET_FOLDER="/mnt/repo/tmp"
+
 # constants that control the script
 # * constants used for folder search
 # TODO: Change configuration parameters to load json or more standard config file

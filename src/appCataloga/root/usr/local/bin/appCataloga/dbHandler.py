@@ -521,7 +521,7 @@ class dbHandler():
         
         return output
     
-    # get host data from the database
+    # get next host in the list for data backup
     def nextBackup(self):        
         # connect to the database
         self.connect()
@@ -535,46 +535,35 @@ class dbHandler():
             """
         )
         
-        output = self.cursor.fetchone()
+        task = self.cursor.fetchone()
         self.disconnect()
         
-        return output
-
-            task = get_oldest_backup_task(db_cursor)
-
-            if task:
-                task_id = task["ID_BKP_TASK"]
-                host_address = task["NO_HOST_ADDRESS"]
-                username = task["NO_HOST_USER"]
-                password = task["NO_HOST_PASSWORD"]
-                
-        # get host data from the database
-        self.cursor.execute(query)
-        
-        output = self.cursor.fetchone()
-        
-        output = {'Host ID': output[0],
-                  'Total Files': output[1],
-                  'Files to backup': output[2],
-                  'Last Backup date': output[3],
-                  'Files to process': output[4],
-                  'Last Processing date': output[5],
-                  'Status': 1, 
-                  'Message': 'OK'}
-        
-        self.disconnect()
+        if len(task) > 0:
+            output = {"task_id": task[0],
+                    "host_id": task[1],
+                    "host": task[2],
+                    "user": task[3],
+                    "password": task[4]}
+        else:
+            output = False
         
         return output
-
-
 
     # Function to remove a completed backup task from the database
-    def remove_backup_task(cursor, task_id):
-        cursor.execute(
-            """
-            DELETE FROM BKP_TASK
-            WHERE ID_BKP_TASK = %s;
-            """,
-            (task_id,)
-        )
+    def remove_backup_task(self, task):
+        # connect to the database
+        self.connect()
+        
+        # compose and excecute query to delete the backup task from the BKPDATA database
+        query = (f"DELETE FROM BKP_TASK "
+                 f"WHERE ID_BKP_TASK = {task['task_id']};")
+        self.cursor.execute(query)
 
+        # update database statistics for the host
+        query = (f"UPDATE HOST "
+                 f"SET NU_PENDING_BACKUP = NU_PENDING_BACKUP - 1, "
+                 f"DT_LAST_BACKUP = NOW() "
+                 f"WHERE ID_HOST = '{task['host_id']}';")
+        self.cursor.execute(query)
+        
+        self.disconnect()
