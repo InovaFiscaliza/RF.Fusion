@@ -33,6 +33,7 @@ import rfFusionLib as rflib
 START_TAG = "<json>"
 END_TAG = "</json>"
 BUFFER_SIZE = 2048
+ENCODING = "ISO-8859-1"
 
 # Define default arguments
 # DEFAULT_HOST_ADD = "172.24.5.71" # MG
@@ -41,9 +42,9 @@ DEFAULT_PORT = 8910
 DEFAULT_KEY = "123456"  # user should have access to the host with rights to interact with the indexer daemon
 DEFAULT_CLIENT_NAME = "Zabbix"
 # DEFAULT_QUERY_TAG = "PositionList" 
-DEFAULT_QUERY_TAG = "Diagnostic"
-# DEFAULT_QUERY_TAG = "TaskList"
-DEFAULT_TIMEOUT = 2
+# DEFAULT_QUERY_TAG = "Diagnostic"
+DEFAULT_QUERY_TAG = "TaskList"
+DEFAULT_TIMEOUT = 5
 
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
 ARGUMENTS = {
@@ -92,7 +93,7 @@ def main():
     
     # compose the request to the server
     request_dict = {
-        "key" : arg.data["key"]["value"],
+        "Key" : arg.data["key"]["value"],
         "ClientName" : arg.data["ClientName"]["value"],
         "Request" : arg.data["query"]["value"]
         }
@@ -111,9 +112,15 @@ def main():
 
     try:
         client_socket.sendall(request)
-        response = client_socket.recv(BUFFER_SIZE).decode("utf-8")
+        response = client_socket.recv(BUFFER_SIZE)
         client_socket.close()
-        
+    except Exception as e:
+        print(f'{{"Status":0,"Message":"Error: {e}"}}')
+        client_socket.close()
+        exit()
+
+    try:
+        response = response.decode(ENCODING)
     except Exception as e:
         print(f'{{"Status":0,"Message":"Error: {e}"}}')
         client_socket.close()

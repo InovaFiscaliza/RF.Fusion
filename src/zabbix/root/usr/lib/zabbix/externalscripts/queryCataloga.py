@@ -39,6 +39,7 @@ SERVER_PORT = 5555
 START_TAG = "<json>"
 END_TAG = "</json>"
 BUFFER_SIZE = 1024
+ENCODING = "utf-8"
 
 # Define default arguments
 DEFAULT_HOST_ID = "10"
@@ -112,9 +113,15 @@ def main():
 
     try:
         client_socket.sendall(request)
-        response = client_socket.recv(BUFFER_SIZE).decode("utf-8")
+        response = client_socket.recv(BUFFER_SIZE)
         client_socket.close()
-        
+    except Exception as e:
+        print(f'{{"Status":0,"Message":"Error: {e}; Received: {response}"}}')
+        client_socket.close()
+        exit()
+
+    try:
+        response = response.decode(ENCODING)
     except Exception as e:
         print(f'{{"Status":0,"Message":"Error: {e}"}}')
         client_socket.close()
