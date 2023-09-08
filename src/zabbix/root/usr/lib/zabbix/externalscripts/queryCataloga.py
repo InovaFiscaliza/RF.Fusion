@@ -31,134 +31,94 @@ This script is unsecure and should only run through a secure encripted network c
 import socket
 import sys
 import json
+import rfFusionLib as rflib
 
+# scritp configuration constants
 SERVER_ADD = "192.168.200.30"  # Change this to the server's hostname or IP address
 SERVER_PORT = 5555
+START_TAG = "<json>"
+END_TAG = "</json>"
+BUFFER_SIZE = 1024
 
-# Constants
+# Define default arguments
 DEFAULT_HOST_ID = "10"
 DEFAULT_HOST_ADD = "192.168.200.20"
 DEFAULT_USER = "root"  # user should have access to the host with rights to interact with the indexer daemon
 DEFAULT_PASSWD = "rootPass"
 DEFAULT_QUERY_TAG = "backup"
-MAXIMUM_ARGUMENTS = 5
-TIMEOUT_BUFFER = 1
-START_TAG = "<json>"
-END_TAG = "</json>"
+DEFAULT_TIMEOUT = 2
 
-NO_WARNING_MSG = "none"
-
-
-class warning_msg:
-    def __init__(self) -> None:
-        self.warning_msg = NO_WARNING_MSG
-
-    def compose_warning(self, new_warning):
-        if self.warning_msg == NO_WARNING_MSG:
-            self.warning_msg = f"Warning: {new_warning}"
-        else:
-            self.warning_msg = f"{self.warning_msg}, {new_warning}"
-
-
-wm = warning_msg()
-
-
-def parse_call():
-    """Get command-line arguments"""
-
-    try:
-        e = sys.argv[6]
-
-    except IndexError:
-        ignored_arg = sys.argv.__len__() - MAXIMUM_ARGUMENTS
-        wm.compose_warning(
-            "Ignoring {ignored_arg} argument(s) beyond the expected {MAXIMUM_ARGUMENTS} argument"
-        )
-
-    except ValueError:
-        print('{"Status":0,"Error":"Invalid function call"}')
-        exit()
-
-    try:
-        query_tag = sys.argv[1]
-
-    except IndexError:
-        query_tag = DEFAULT_QUERY_TAG
-        wm.compose_warning("Using default query tag")
-
-    except ValueError:
-        print('{"Status":0,"Error":"Invalid function call"}')
-        exit()
-
-    try:
-        host_id = sys.argv[2]
-
-    except IndexError:
-        host_id = DEFAULT_HOST_ID
-        wm.compose_warning("Using default host id")
-
-    except ValueError:
-        print('{"Status":0,"Error":"Invalid function call"}')
-        exit()
-
-    try:
-        host_add = int(sys.argv[3])
-
-    except IndexError:
-        host_add = DEFAULT_HOST_ADD
-        wm.compose_warning("Using default host address")
-
-    except ValueError:
-        print('{"Status":0,"Error":"Invalid function call"}')
-        exit()
-
-    try:
-        user = int(sys.argv[4])
-
-    except IndexError:
-        user = DEFAULT_USER
-        wm.compose_warning("Using default user")
-
-    except ValueError:
-        print('{"Status":0,"Error":"Invalid function call"}')
-        exit()
-
-    try:
-        passwd = int(sys.argv[5])
-    except IndexError:
-        passwd = DEFAULT_PASSWD
-        wm.compose_warning("Using default password")
-
-    except ValueError:
-        print('{"Status":0,"Error":"Invalid function call"}')
-        exit()
-
-    req_to_server = bytes(
-        f"{query_tag} {host_id} {host_add} {user} {passwd}", encoding="utf-8"
-    )
-
-    return req_to_server
-
+# define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
+ARGUMENTS = {
+    "host_id": {
+        "set": False,
+        "value": DEFAULT_HOST_ID,
+        "warning": "Using default host id",
+    },
+    "host_add": {
+        "set": False,
+        "value": DEFAULT_HOST_ADD,
+        "warning": "Using default host address",
+    },
+    "user": {
+        "set": False,
+        "value": DEFAULT_USER,
+        "warning": "Using default user"},
+    "passwd": {
+        "set": False,
+        "value": DEFAULT_PASSWD,
+        "warning": "Using default password",
+    },
+    "query_tag": {
+        "set": False,
+        "value": DEFAULT_QUERY_TAG,
+        "warning": "Using default query tag",
+    },
+    "timeout": {
+        "set": False,
+        "value": DEFAULT_TIMEOUT,
+        "warning": "Using default timeout",
+    },
+}
 
 def main():
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # create a warning message object
+    wm = rflib.warning_msg()
 
+    # create an argument object
+    arg = rflib.argument(wm, ARGUMENTS)
+    
+    # parse the command line arguments
+    arg.parse(sys.argv)
+    
+    # compose the request to the server
+    requestS = (
+        f'{arg.data["query_tag"]["value"]} '
+        f'{arg.data["host_id"]["value"]} '
+        f'{arg.data["host_add"]["value"]} '
+        f'{arg.data["user"]["value"]} '
+        f'{arg.data["passwd"]["value"]}'
+    )
+
+    request = bytes(requestS, encoding="utf-8")
+    
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.settimeout(arg.data["timeout"]["value"])
+    
     try:
         client_socket.connect((SERVER_ADD, SERVER_PORT))
     except Exception as e:
         print(f'{{"Status":0,"Message":"Error: {e}"}}')
 
-    req_to_server = parse_call()
-
     try:
-        client_socket.sendall(req_to_server)
-
-        response = client_socket.recv(1024).decode("utf-8")
+        client_socket.sendall(request)
+        response = client_socket.recv(BUFFER_SIZE).decode("utf-8")
+        client_socket.close()
+        
     except Exception as e:
         print(f'{{"Status":0,"Message":"Error: {e}"}}')
-
-    finally:
         client_socket.close()
+        exit()
 
     # extract JSON data from bytestring
     start_index = response.lower().rfind(START_TAG)
@@ -170,20 +130,13 @@ def main():
     try:
         dict_output = json.loads(json_output)
 
-        if warning_msg != "none":
-            if dict_output["Status"] == 1:
-                dict_output["Message"] = f'{dict_output["Message"]}. {wm.warning_msg}'
-            elif dict_output["Status"] == 0:
-                dict_output["Message"] = wm.warning_msg
-            print(json.dumps(dict_output))
-        else:
-            print(json_output)
+        dict_output["Status"] = 1
+        dict_output["Message"] = wm.warning_msg
+
+        print(json.dumps(dict_output))
 
     except json.JSONDecodeError as e:
-        print(
-            '{"Status":0,"Message":"Malformed JSON data, check UDP generation from remote server and timeout settings"}'
-        )
-
+        print(f'{"Status":0,"Message":"Error: Malformed JSON received. Dumped: {response}"}')
 
 if __name__ == "__main__":
     main()
