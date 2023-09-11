@@ -37,10 +37,14 @@ class argument:
         for i in range(1, len(sys_arg)):
             arg_in = sys_arg[i].split("=")
             if arg_in[0] in self.data.keys():
-                self.data[arg[0]]["value"] = arg[1]
-                self.data[arg[0]]["set"] = True
+                # Get the data type from sef.data value
+                data_type = type(self.data[arg_in[0]]["value"])
+                
+                # Set the argument value and set the "set" flag to True
+                self.data[arg_in[0]]["value"] = data_type(arg_in[1])
+                self.data[arg_in[0]]["set"] = True
             else:
-                self.wm.compose_warning(f"Argument '{arg[0]}' not recognized, ignoring it")
+                self.wm.compose_warning(f"Argument '{arg_in[0]}' not recognized, ignoring it")
             
         # loop through the arguments list and compose a warning message for each argument that was not set
         for arg in self.data.keys():
