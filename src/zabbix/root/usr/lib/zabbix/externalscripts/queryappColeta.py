@@ -27,12 +27,14 @@ Use socket to get data from appColeta TCP stream
 import socket
 import sys
 import json
+import time
+
 import rfFusionLib as rflib
 
 # scritp configuration constants
 START_TAG = "<json>"
 END_TAG = "</json>"
-BUFFER_SIZE = 2048
+BUFFER_SIZE = 16384
 ENCODING = "ISO-8859-1"
 
 # Define default arguments
@@ -80,6 +82,17 @@ ARGUMENTS = {
         }
     }
 
+def count_peaks(dict_input):
+    """Include summary in the JSON data received from appColeta"""
+    # count the number of peaks in each band
+    for band in dict_input["Answer"]["taskList"]["Band"]:
+        try:
+            band["nPeaks"] = len(band["Mask"]["Peaks"])
+        except:
+            band["nPeaks"] = 0
+    
+    return dict_input
+
 def main():
     
     # create a warning message object
@@ -104,45 +117,73 @@ def main():
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client_socket.settimeout(arg.data["timeout"]["value"])
     
+    # connect to the server
     try:
         client_socket.connect((arg.data["host"]["value"], int(arg.data["port"]["value"])))
     except Exception as e:
         print(f'{{"Status":0,"Message":"Error: {e}"}}')
         exit()
 
+    # send the request to the server
     try:
         client_socket.sendall(request)
-        response = client_socket.recv(BUFFER_SIZE)
-        client_socket.close()
     except Exception as e:
-        print(f'{{"Status":0,"Message":"Error: {e}"}}')
+        print(f'{{"Status":0,"Message":"Error during request: {e}"}}')
         client_socket.close()
         exit()
 
+    # receive data from the server
+    start_receiving_message_time = time.time()
+    decoded_response = ""
+    receiving_message = True
     try:
-        response = response.decode(ENCODING)
+        while receiving_message:
+            response = client_socket.recv(BUFFER_SIZE)
+            # decode the bytestring
+            try:
+                # merge the response with the tail of the previous response
+                decoded_response = decoded_response + response.decode(ENCODING)
+                
+            except Exception as e:
+                print(f'{{"Status":0,"Message":"Error decoding binary data: {e}"}}')
+                client_socket.close()
+                exit()
+
+            # find the end tags in the response
+            end_index = decoded_response.lower().rfind(END_TAG)
+            
+            # if end_index is different from -1 and timeout has not been reached, then the message is complete
+            if (end_index !=-1):
+                receiving_message = False
+                client_socket.close()
+            
+            if (time.time() - start_receiving_message_time > arg.data["timeout"]["value"]):
+                print(f'{"Status":0,"Message":"Error: Incomplete JSON received. Dumped: {response}"}')
+                client_socket.close()
+                exit()
+
     except Exception as e:
-        print(f'{{"Status":0,"Message":"Error: {e}"}}')
+        print(f'{{"Status":0,"Message":"Error while receiving data: {e}"}}')
         client_socket.close()
         exit()
 
-    # extract JSON data from bytestring
-    start_index = response.lower().rfind(START_TAG)
-    end_index = response.lower().rfind(END_TAG)
-
+    # find the start and end tags in the response. May capture spurious messages from the server before the JSON data starts
+    start_index = decoded_response.lower().rfind(START_TAG)
+    
     # extract JSON data removing the last bracket to later splice with the tail json data from this script
-    json_output = response[start_index + len(START_TAG) : end_index]
+    json_data_rcv = decoded_response[start_index + len(START_TAG) : end_index]
 
     try:
-        dict_output = json.loads(json_output)
+        dict_output = json.loads(json_data_rcv)
         
         dict_output["Status"] = 1
         dict_output["Message"] = wm.warning_msg
-        
-        print(json.dumps(dict_output))
-
-    except json.JSONDecodeError as e:
+    except:
         print(f'{"Status":0,"Message":"Error: Malformed JSON received. Dumped: {response}"}')
 
+    dict_output = count_peaks(dict_output)
+    
+    print(json.dumps(dict_output))
+    
 if __name__ == "__main__":
     main()
