@@ -81,7 +81,7 @@ ARGUMENTS = {
         }
     }
 
-def count_peaks(dict_input):
+def summarize(dict_input):
     """Include summary in the JSON data received from appColeta"""
     # count the number of peaks in each band
     for band in dict_input["Answer"]["taskList"]["Band"]:
@@ -89,7 +89,12 @@ def count_peaks(dict_input):
             band["nPeaks"] = len(band["Mask"]["Peaks"])
         except:
             band["nPeaks"] = 0
-    
+        
+        try:
+            band["name"] = f"{int(band['FreqStart']/1e6)}-{int(band['FreqStop']/1e6)}MHz"
+        except:
+            band["name"] = "unknown"
+                
     return dict_input
 
 def main():
@@ -140,9 +145,9 @@ def main():
         dict_output["Status"] = 1
         dict_output["Message"] = wm.warning_msg
     except:
-        print(f'{"Status":0,"Message":"Error: Malformed JSON received. Dumped: {response}"}')
+        print(f'{"Status":0,"Message":"Error: Malformed JSON received. Dumped: {json_data_rcv}"}')
 
-    dict_output = count_peaks(dict_output)
+    dict_output = summarize(dict_output)
     
     print(json.dumps(dict_output))
     
