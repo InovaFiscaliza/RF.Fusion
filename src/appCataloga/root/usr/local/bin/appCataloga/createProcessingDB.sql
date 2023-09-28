@@ -21,12 +21,13 @@ CREATE TABLE BKP_TASK (
     FK_HOST INT COMMENT 'Foreign key to host table',
     DT_BKP_TASK DATETIME COMMENT 'Date and time of the backup task was requested',
     NO_HOST_ADDRESS VARCHAR(50) COMMENT 'IP address or hostname',
+    NO_HOST_PORT INT COMMENT 'Port to access the host',
     NO_HOST_USER VARCHAR(50) COMMENT 'Username to access the host',
     NO_HOST_PASSWORD VARCHAR(50) COMMENT 'Password to access the host',
     CONSTRAINT FK_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
 );
 
--- LIST OF FILES FOR BACKUP
+-- LIST OF FILES FOR PROCESSING
 CREATE TABLE FILE_LIST (
     ID_FILE_LIST BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT 'Primary Key to file list table',
     FK_HOST INT COMMENT 'Foreign key to host table',

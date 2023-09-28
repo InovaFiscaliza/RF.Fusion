@@ -21,9 +21,11 @@ DB_PASSWORD = '<app_pass>'
 
 # backup configuration
 MAX_THREADS = 10
+FIVE_MINUTES = 300
 
 # daemon standard due for backup file
-DUE_BACKUP_FILE="/mnt/internal/.indexerD/files.changed"
+DAEMON_CFG_FILE="/etc/node/indexerD.cfg"
+#DUE_BACKUP_FILE="/mnt/internal/.indexerD/files.changed"
 TARGET_FOLDER="/mnt/repo/tmp"
 
 # constants that control the script
@@ -136,6 +138,7 @@ STATE_CODES = {'Rondônia':'RO',
                'Goiás':'GO',
                'Distrito Federal':'DF'}
 
+# Nomintim service parameters normalization
 REQUIRED_ADDRESS_FIELD = {'State':['state'],
                           'County':['city','town'],
                           'District':['suburb']}

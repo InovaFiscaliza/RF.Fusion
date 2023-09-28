@@ -38,7 +38,7 @@ import config as k
 import dbHandler as dbh
 import appCShared as csh
 
-#! TEST ONLY host_statistics initialization
+#! TEST ONLY host_statistics initialization remove for production
 HOST_STATISTICS = { "Total Files":1,
                     "Files pending backup":0,
                     "Files pending processing":0,
@@ -52,7 +52,7 @@ wm = csh.warning_msg()
 interrupt_read, interrupt_write = socket.socketpair()
 
 def handler(signum, frame):
-    """Handle interrupt signal
+    """Handle interrupt signal from keyboard
 
     Usage:
         handler(signum, frame)

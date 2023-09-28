@@ -528,7 +528,7 @@ class dbHandler():
 
         self.cursor.execute(
             """
-            SELECT ID_BKP_TASK, FK_HOST, NO_HOST_ADDRESS, NO_HOST_USER, NO_HOST_PASSWORD
+            SELECT ID_BKP_TASK, FK_HOST, NO_HOST_ADDRESS, NO_HOST_PORT, NO_HOST_USER, NO_HOST_PASSWORD
             FROM BKP_TASK
             ORDER BY DT_BKP_TASK
             LIMIT 1;
@@ -542,8 +542,9 @@ class dbHandler():
             output = {"task_id": task[0],
                     "host_id": task[1],
                     "host": task[2],
-                    "user": task[3],
-                    "password": task[4]}
+                    "port": task[3],
+                    "user": task[4],
+                    "password": task[5]}
         else:
             output = False
         
