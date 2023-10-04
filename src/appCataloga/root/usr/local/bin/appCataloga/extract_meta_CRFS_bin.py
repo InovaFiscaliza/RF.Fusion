@@ -4,6 +4,9 @@
 # This script perform the following tasks
 # - Use whatdog to monitor folder
 # -
+# Set system path to include modules from /etc/appCataloga
+import sys
+sys.path.append('/etc/appCataloga')
 
 from rfpye.main import extract_bin_data
 
@@ -19,7 +22,8 @@ from geopy.exc import GeocoderTimedOut
 import os                               #  file processing
 
 # Import file with constants used in this code that are relevant to the operation
-import constants as k
+import config as k
+import db_handler as dbh
 
 # Class used to process bin files based on PFPye 
 class BinFileHandler:
@@ -107,3 +111,90 @@ class BinFileHandler:
         df.to_csv(path_or_buf=exportFilename, index=False)
         
         if k.VERBOSE: print(f"     Output metadata as CSV to {exportFilename}")
+        
+        
+def main():
+    
+    FAILED_TASK = { 'host_id': running_task['host_id'],
+                    'nu_pending_processing': 0, 
+                    'nu_processing_error': 1}
+
+    # Connect to the database
+    # create db object using databaseHandler class
+    db = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
+
+    # Get one backup task to start
+    task = db.nextBackup()
+
+    # create a list to hold the future objects
+    tasks = []
+
+    # Use ThreadPoolExecutor to limit the number of concurrent threads
+    with concurrent.futures.ThreadPoolExecutor(k.MAX_THREADS) as executor:
+        
+        while True:
+            
+            print(f"Starting backup for {task['host']}.")
+            
+            # test if len(tasks) < k.MAX_THREADS
+            # if true, add task to tasks list
+            # else, wait for a task to finish and remove it from the list
+            if len(tasks) < k.MAX_THREADS:
+                # add task to tasks list
+                task["map_itarator"] = executor.map(host_backup, task)
+                
+                tasks.append(task)
+                
+            else:
+                # loop through tasks list and remove completed tasks
+                for running_task in tasks:
+                    # test if the runnning_task is completed
+                    if running_task["map_itarator"].done():
+
+                        try:
+                            # get the result from the map_itarator
+                            task_status = running_task["map_itarator"].result()
+                            
+                            # remove task from tasks list
+                            tasks.remove(running_task)
+                            
+                            # If running task was successful (result not empty or False)
+                            if task_status:
+                                
+                                # remove task from database
+                                db.remove_backup_task(task)
+                                                                
+                                print(f"Completed backup from {task['host']}")
+                            else:
+                                task_status = FAILED_TASK
+
+                                print(f"Error in backup from {task['host']}. Will try again later.")
+
+                        # except error in running_task
+                        except running_task["map_itarator"].exception() as e:
+                            # if the running task has an error, set task_status to False
+                            task_status = FAILED_TASK
+                            print(f"Error in backup from {task['host']}. Will try again later. {str(e)}")
+                        
+                        # any other exception
+                        except Exception as e:
+                            # if the running task has an error, set task_status to False
+                            task_status = FAILED_TASK
+                            print(f"Error in backup from {task['host']}. Will try again later. {str(e)}")
+                        finally:
+                            # update backup summary status for the host_id
+                            db.update_host_backup_status(task_status)
+            
+            # Get the next backup task
+            task = db.nextBackup()
+            
+            while not task:
+                print("No backup task. Waiting for 5 minutes.")
+                # wait for 5 minutes
+                time.sleep(k.FIVE_MINUTES)
+                
+                # try again to get a task
+                task = db.nextBackup()
+
+if __name__ == "__main__":
+    main()

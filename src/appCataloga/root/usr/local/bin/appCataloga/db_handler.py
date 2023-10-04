@@ -550,6 +550,32 @@ class dbHandler():
         
         return output
 
+    # Function to update the backup status information in the database
+    def update_backup_status(self, task_status):
+        # connect to the database
+        self.connect()
+
+        # compose and excecute query to get the number of files previously processed from the host, as stored in the database
+        query = (f'SELECT NU_HOST_FILES, NU_BACKUP_ERROR '
+                    f'FROM HOST '
+                    f'WHERE ID_HOST = {task_status["host_id"]};')
+        self.cursor.execute(query)
+        output = self.cursor.fetchone()
+        nu_host_files = output[0]
+        nu_backup_error = output[1]
+        
+        # compose and excecute query to update the backup status in the BKPDATA database
+        query = (f'UPDATE HOST SET '
+                    f'NU_HOST_FILES = {nu_host_files + task_status["nu_host_files"]}, '
+                    f'NU_PENDING_BACKUP = {task_status["pending_backup"]}, '
+                    f'DT_LAST_BACKUP = NOW(), '
+                    f'NU_BACKUP_ERROR = {nu_backup_error + task_status["nu_backup_error"]} '
+                    f'WHERE ID_HOST = {task_status["host_id"]};')
+        self.cursor.execute(query)
+        self.db_connection.commit()
+        
+        self.disconnect()
+
     # Function to remove a completed backup task from the database
     def remove_backup_task(self, task):
         # connect to the database
@@ -558,6 +584,69 @@ class dbHandler():
         # compose and excecute query to delete the backup task from the BKPDATA database
         query = (f"DELETE FROM BKP_TASK "
                  f"WHERE ID_BKP_TASK = {task['task_id']};")
+        self.cursor.execute(query)
+
+        # update database statistics for the host
+        query = (f"UPDATE HOST "
+                 f"SET NU_PENDING_BACKUP = NU_PENDING_BACKUP - 1, "
+                 f"DT_LAST_BACKUP = NOW() "
+                 f"WHERE ID_HOST = '{task['host_id']}';")
+        self.cursor.execute(query)
+        
+        self.disconnect()
+
+    # get next host in the list for data backup
+    def nextProcessing(self):        
+        # connect to the database
+        self.connect()
+
+        self.cursor.execute(
+            """
+            SELECT ID_PRC_TASK, FK_HOST, NO_HOST_ADDRESS, NO_HOST_PORT, NO_HOST_USER, NO_HOST_PASSWORD
+            FROM PRC_TASK
+            ORDER BY DT_PRC_TASK
+            LIMIT 1;
+            """
+        )
+        
+        task = self.cursor.fetchone()
+        self.disconnect()
+        
+        if len(task) > 0:
+            output = {"task_id": task[0],
+                    "host_id": task[1],
+                    "host": task[2],
+                    "port": task[3],
+                    "user": task[4],
+                    "password": task[5]}
+        else:
+            output = False
+        
+        return output
+
+    # Function to update the processing status information in the database
+    def update_processing_status(self, task_status):
+        # connect to the database
+        self.connect()
+
+        # compose and excecute query to update the backup status in the BKPDATA database
+        query = (f'UPDATE HOST SET '
+                    f'NU_PENDING_PROCESSING = {task_status["pending_processing"]}, '
+                    f'DT_LAST_PROCESSING = NOW(), '
+                    f'WHERE ID_HOST = {task_status["host_id"]};')
+        self.cursor.execute(query)
+        self.db_connection.commit()
+        
+        self.disconnect()
+
+    # Function to remove a completed backup task from the database
+    def remove_processing_task(self, task):
+        # connect to the database
+        self.connect()
+        
+        # compose and excecute query to delete the backup task from the BKPDATA database
+        query = (f"DELETE FROM PRC_TASK "
+                 f"WHERE ID_PRC_TASK = {task['task_id']};")
         self.cursor.execute(query)
 
         # update database statistics for the host

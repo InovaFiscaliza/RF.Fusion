@@ -32,11 +32,13 @@ import socket
 import json
 import signal
 from selectors import DefaultSelector, EVENT_READ
+import concurrent.futures
 
 # Import modules for file processing 
 import config as k
-import dbHandler as dbh
-import appCShared as csh
+import db_handler as dbh
+import shared as csh
+import run_backup
 
 #! TEST ONLY host_statistics initialization remove for production
 HOST_STATISTICS = { "Total Files":1,
@@ -138,16 +140,35 @@ def serve_forever(server_socket):
     sel.register(interrupt_read, EVENT_READ)
     sel.register(server_socket, EVENT_READ)
 
-    while True:
-        for key, _ in sel.select():
-            if key.fileobj == interrupt_read:
-                interrupt_read.recv(1)
-                return
-            if key.fileobj == server_socket:
-                client_socket, client_address = server_socket.accept()
-                print("Connection established with:", client_address)
-                serve_client(client_socket)
+    running_backup = False
+    # Use ThreadPoolExecutor to limit the number of concurrent threads
+    with concurrent.futures.ThreadPoolExecutor(k.MAX_THREADS) as executor:
+        while True:
+            # Wait for events
+            for key, _ in sel.select():
+                if key.fileobj == interrupt_read:
+                    interrupt_read.recv(1)
+                    return
+                if key.fileobj == server_socket:
+                    client_socket, client_address = server_socket.accept()
+                    print("Connection established with:", client_address)
+                    serve_client(client_socket)
 
+            # Whenever there is an event, check if the backup process is running and if not, start it.
+            if not running_backup:
+                # start the run_backup script in a separate thread if it is not running
+                backup_process = executor.map(run_backup)
+                print("Backup process started")
+
+            if backup_process.done():
+                running_backup = False
+                try:
+                    print(f"Backup process ended with: {backup_process.result()}.")
+                # except error in running_task
+                except backup_process.exception() as e:
+                    # if the running task has an error, set task_status to False
+                    print(f"Exception in backup process: {e}.")
+            
 def main():
     
     print(f"Server is listening on port {k.SERVER_PORT}")
