@@ -8,8 +8,8 @@
 import sys
 sys.path.append('/etc/appCataloga')
 
-from rfpye.main import extract_bin_data
-
+from fastcore.xtras import Path
+from rfpye.utils import get_files
 
 # Import libraries for file processing
 import pandas as pd

@@ -90,9 +90,9 @@ def backup_queue(conn="ClientIP",hostid="1",host_addr="host_addr",host_user="use
     db = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
      
     # add host to db task list for backup
-    db.addHost(hostid,host_addr,host_user,host_passwd)
+    db.add_backup_task(hostid,host_addr,host_user,host_passwd)
     
-    host_stat = db.getHost(hostid)
+    host_stat = db.get_host_task_status(hostid)
     
     print(host_stat)
     # get from db the backup summary status for the host_id

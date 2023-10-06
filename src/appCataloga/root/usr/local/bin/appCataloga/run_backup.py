@@ -100,6 +100,7 @@ def host_backup(task):
         nu_host_files = len(due_backup_list)
         
         done_backup_list = []
+        done_backup_list_remote = []
         target_folder = f"k.TARGET_FOLDER/{task['host']}"
         # loop through the list of files to backup
         for remote_file in due_backup_list:
@@ -112,8 +113,9 @@ def host_backup(task):
                 # Remove the file name from the due_backup_list
                 due_backup_list.remove(remote_file)
                 
-                # Add the file name to the done_backup_list
-                done_backup_list.append(remote_file)
+                # Add the file name to the done_backup remote and local lists
+                done_backup_list.append({"remote":remote_file,"local":local_file})
+                done_backup_list_remote.append(remote_file)
                 
                 print(f"File '{os.path.basename(remote_file)}' copied to '{local_file}'")
             except Exception as e:
@@ -121,13 +123,13 @@ def host_backup(task):
 
         # Test if there is a BACKUP_DONE file in the remote host
         if not sftp.exists(daemon_cfg['BACKUP_DONE']):
-            # Create a BACKUP_DONE file in the remote host with the list of files in done_backup_list
+            # Create a BACKUP_DONE file in the remote host with the list of files in done_backup_list_remote
             backup_done_file = sftp.open(daemon_cfg['BACKUP_DONE'], 'w')
         else:
-            # Append the list of files in done_backup_list to the BACKUP_DONE file in the remote host
+            # Append the list of files in done_backup_list_remote to the BACKUP_DONE file in the remote host
             backup_done_file = sftp.open(daemon_cfg['BACKUP_DONE'], 'a')
-        
-        backup_done_file.write('\n'.join(done_backup_list))
+               
+        backup_done_file.write('\n'.join(done_backup_list_remote))
         backup_done_file.close()
             
         # Overwrite the DUE_BACKUP file in the remote host with the list of files in due_backup_list
@@ -141,7 +143,8 @@ def host_backup(task):
         output = { 'host_id': task['host_id'],
                    'nu_host_files': nu_host_files, 
                    'nu_pending_backup': len(due_backup_list), 
-                   'nu_backup_error': len(due_backup_list)/nu_host_files}
+                   'nu_backup_error': len(due_backup_list)/nu_host_files,
+                   'done_backup_list':done_backup_list}
 
     except paramiko.AuthenticationException:
         print("Authentication failed. Please check your credentials.")
@@ -170,7 +173,7 @@ def main():
     db = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
 
     # Get one backup task to start
-    task = db.nextBackup()
+    task = db.next_backup_task()
 
     # create a list to hold the future objects
     tasks = []
@@ -207,9 +210,13 @@ def main():
                             # If running task was successful (result not empty or False)
                             if task_status:
                                 
-                                # remove task from database
+                                # remove task from database. If there are pending backup, it will be consider in the next cycle.
                                 db.remove_backup_task(task)
                                                                 
+                                # add the list of files to the processing task list
+                                db.add_processing(hostid=task_status['host_id'],
+                                                  done_backup_list=task_status['done_backup_list'])
+                                
                                 print(f"Completed backup from {task['host']}")
                             else:
                                 task_status = FAILED_TASK
@@ -232,7 +239,7 @@ def main():
                             db.update_host_backup_status(task_status)
             
             # Get the next backup task
-            task = db.nextBackup()
+            task = db.next_backup_task()
             
             while not task:
                 print("No backup task. Waiting for 5 minutes.")
@@ -240,7 +247,7 @@ def main():
                 time.sleep(k.FIVE_MINUTES)
                 
                 # try again to get a task
-                task = db.nextBackup()
+                task = db.next_backup_task()
 
 if __name__ == "__main__":
     main()

@@ -4,6 +4,8 @@
 # Import libraries for:
 import mysql.connector
 import sys
+import os
+import time
 
 # Import file with constants used in this code that are relevant to the operation
 import config as k
@@ -12,6 +14,12 @@ class dbHandler():
 #TODO: Improve error handling for database errors
 
     def __init__(self, database=k.RFM_DATABASE_NAME):
+        """Initialize a new instance of the DBHandler class.
+
+        Args:
+            db_file (str): The path to the SQLite database file.
+        """
+        
         self.db_connection = None
         self.cursor = None
         self.metadata = None
@@ -448,15 +456,15 @@ class dbHandler():
 
         return(dbKeyFile)
     
-    def addHost(self,hostid="1",host_addr="host_addr",host_user="user",host_passwd="passwd"):
+    # Method add a new host to the backup queue
+    def add_backup_task(self,hostid="1",host_addr="host_addr",host_user="user",host_passwd="passwd"):
         """This method checks if the host is already in the database and if not, adds it to the backup queue
         
         Args:
-            conn (str): _description_. Defaults to "ClientIP".
-            hostid (str): _description_. Defaults to "host_id".
-            host_addr (str): _description_. Defaults to "host_addr".
-            host_user (str): _description_. Defaults to "user".
-            host_passwd (str): _description_. Defaults to "passwd".
+            hostid (str): Zabbix host id primary key. Defaults to "host_id".
+            host_addr (str): Remote host IP/DNS address. Defaults to "host_addr".
+            host_user (str): Remote host access user. Defaults to "user".
+            host_passwd (str): Remote host access passworf. Defaults to "passwd".
 
         Returns:
             _type_: _description_
@@ -464,7 +472,7 @@ class dbHandler():
         # connect to the database
         self.connect()
         
-        # compose query to set host data in the BKPDATA database        
+        # compose query to set host data in the BPDATA database        
         query = (f"INSERT INTO HOST "
                     f"(ID_HOST, NU_PENDING_BACKUP) "
                     f"VALUES "
@@ -475,7 +483,7 @@ class dbHandler():
         self.cursor.execute(query)
         self.db_connection.commit()
         
-        # compose query to set the backup task in the BKPDATA database
+        # compose query to set the backup task in the BPDATA database
         query = (f"INSERT INTO BKP_TASK "
                  f"(FK_HOST, DT_BKP_TASK, NO_HOST_ADDRESS,NO_HOST_USER,NO_HOST_PASSWORD) "
                  f"VALUES "
@@ -486,58 +494,28 @@ class dbHandler():
         self.db_connection.commit()
         self.disconnect()
         
-    # get host data from the database
-    def getHost(self,hostid="host_id"):        
-        
-        # connect to the database
-        self.connect()
-
-        # compose query to get host data from the BKPDATA database
-        query = (f"SELECT "
-                        f"ID_HOST, "
-                        f"NU_HOST_FILES, "
-                        f"NU_PENDING_BACKUP, "
-                        f"DT_LAST_BACKUP, "
-                        f"NU_PENDING_PROCESSING, "
-                        f"DT_LAST_PROCESSING "
-                    f"FROM HOST "
-                    f"WHERE ID_HOST = '{hostid}'")
-        
-        # get host data from the database
-        self.cursor.execute(query)
-        
-        output = self.cursor.fetchone()
-        
-        output = {'Host ID': output[0],
-                  'Total Files': output[1],
-                  'Files to backup': output[2],
-                  'Last Backup date': output[3],
-                  'Files to process': output[4],
-                  'Last Processing date': output[5],
-                  'Status': 1, 
-                  'Message': 'OK'}
-        
-        self.disconnect()
-        
-        return output
-    
     # get next host in the list for data backup
-    def nextBackup(self):        
+    def next_backup_task(self):
+        """This method gets the next host in the list for data backup
+
+        Returns:
+            dict: Dictionary with the pending task information: task_id, host_id, host, port, user, password
+        """        
+        
         # connect to the database
         self.connect()
 
-        self.cursor.execute(
-            """
-            SELECT ID_BKP_TASK, FK_HOST, NO_HOST_ADDRESS, NO_HOST_PORT, NO_HOST_USER, NO_HOST_PASSWORD
-            FROM BKP_TASK
-            ORDER BY DT_BKP_TASK
-            LIMIT 1;
-            """
-        )
+        # build query to get the next backup task
+        query = (   "SELECT ID_BKP_TASK, FK_HOST, NO_HOST_ADDRESS, NO_HOST_PORT, NO_HOST_USER, NO_HOST_PASSWORD"
+                    "FROM BKP_TASK"
+                    "ORDER BY DT_BKP_TASK"
+                    "LIMIT 1")
+        
+        self.cursor.execute(query)
         
         task = self.cursor.fetchone()
         self.disconnect()
-        
+
         if len(task) > 0:
             output = {"task_id": task[0],
                     "host_id": task[1],
@@ -550,7 +528,7 @@ class dbHandler():
         
         return output
 
-    # Function to update the backup status information in the database
+    # Method to update the backup status information in the database
     def update_backup_status(self, task_status):
         # connect to the database
         self.connect()
@@ -576,7 +554,7 @@ class dbHandler():
         
         self.disconnect()
 
-    # Function to remove a completed backup task from the database
+    # Method to remove a completed backup task from the database
     def remove_backup_task(self, task):
         # connect to the database
         self.connect()
@@ -595,19 +573,49 @@ class dbHandler():
         
         self.disconnect()
 
-    # get next host in the list for data backup
-    def nextProcessing(self):        
+    # Method to add a new processing task to the database
+    def add_processing_task(self,hostid="1",done_backup_list=[]):
+        """This method adds tasks to the processing queue
+        
+        Args:
+            hostid (int): Zabbix host id primary key. Defaults to "1".
+            done_backup_list (list): List of files that were recently copied, in the format:[{"remote":remote_file_name,"local":local_file_name}]. Defaults to [].
+
+        Returns:
+            _type_: _description_
+        """
+        # connect to the database
+        self.connect()
+        
+        # convert done_backup_list list of dicionaries into a list of tuples
+        for item in done_backup_list:
+            item = (hostid,
+                    os.path.dirname(item["remote"]), os.path.basename(item["remote"]),
+                    os.path.dirname(item["local"]), os.path.basename(item["local"]))
+                    
+        # compose query to set the process task in the database
+        query = (f"INSERT INTO BKP_TASK "
+                 f"(FK_HOST, NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME, DT_PRC_TASK) "
+                 f"VALUES "
+                 f"(%s, %s, %s, %s, %s, NOW())")
+
+        # update database
+        self.cursor.executemany(query,done_backup_list)
+        self.db_connection.commit()
+        self.disconnect()
+
+    # Method to get next host in the list for processing
+    def next_processing_task(self):        
         # connect to the database
         self.connect()
 
-        self.cursor.execute(
-            """
-            SELECT ID_PRC_TASK, FK_HOST, NO_HOST_ADDRESS, NO_HOST_PORT, NO_HOST_USER, NO_HOST_PASSWORD
-            FROM PRC_TASK
-            ORDER BY DT_PRC_TASK
-            LIMIT 1;
-            """
-        )
+        # build query to get the next backup task
+        query = (   "SELECT ID_BKP_TASK, FK_HOST, NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME"
+                    "FROM PRC_TASK"
+                    "ORDER BY DT_PRC_TASK"
+                    "LIMIT 1")
+        
+        self.cursor.execute(query)
         
         task = self.cursor.fetchone()
         self.disconnect()
@@ -615,31 +623,40 @@ class dbHandler():
         if len(task) > 0:
             output = {"task_id": task[0],
                     "host_id": task[1],
-                    "host": task[2],
-                    "port": task[3],
-                    "user": task[4],
-                    "password": task[5]}
+                    "host path": task[2],
+                    "host file": task[3],
+                    "server path": task[4],
+                    "server file": task[5]}
         else:
             output = False
         
         return output
 
-    # Function to update the processing status information in the database
-    def update_processing_status(self, task_status):
+    # Method to update the processing status information in the database
+    def update_processing_status(self, host_id, pending_processing):
         # connect to the database
         self.connect()
+        
+        # compose query to get the number of pending processing files from the host, as stored in the database
+        query = (f'SELECT NU_PENDING_PROCESSING '
+                    f'FROM HOST '
+                    f'WHERE ID_HOST = {host_id};')
+        self.cursor.execute(query)
+        output = self.cursor.fetchone()
+        pending_processing = output[0] + pending_processing
 
         # compose and excecute query to update the backup status in the BKPDATA database
         query = (f'UPDATE HOST SET '
-                    f'NU_PENDING_PROCESSING = {task_status["pending_processing"]}, '
+                    f'NU_PENDING_PROCESSING = {pending_processing}, '
                     f'DT_LAST_PROCESSING = NOW(), '
-                    f'WHERE ID_HOST = {task_status["host_id"]};')
+                    f'WHERE ID_HOST = {host_id};')
+        
         self.cursor.execute(query)
         self.db_connection.commit()
         
         self.disconnect()
 
-    # Function to remove a completed backup task from the database
+    # Method to remove a completed backup task from the database
     def remove_processing_task(self, task):
         # connect to the database
         self.connect()
@@ -657,3 +674,39 @@ class dbHandler():
         self.cursor.execute(query)
         
         self.disconnect()
+
+    # get host status data from the database
+    def get_host_task_status(self,hostid="host_id"):        
+        
+        # connect to the database
+        self.connect()
+
+        # compose query to get host data from the BKPDATA database
+        query = (f"SELECT "
+                    f"ID_HOST, "
+                    f"NU_HOST_FILES, "
+                    f"NU_PENDING_BACKUP, "
+                    f"DT_LAST_BACKUP, "
+                    f"NU_PENDING_PROCESSING, "
+                    f"DT_LAST_PROCESSING "
+                    f"FROM HOST "
+                    f"WHERE ID_HOST = '{hostid}'")
+        
+        # get host data from the database
+        self.cursor.execute(query)
+        
+        output = self.cursor.fetchone()
+        
+        output = {'Host ID': output[0],
+                  'Total Files': output[1],
+                  'Files to backup': output[2],
+                  'Last Backup date': output[3],
+                  'Files to process': output[4],
+                  'Last Processing date': output[5],
+                  'Status': 1, 
+                  'Message': 'OK'}
+        
+        self.disconnect()
+        
+        return output
+    
