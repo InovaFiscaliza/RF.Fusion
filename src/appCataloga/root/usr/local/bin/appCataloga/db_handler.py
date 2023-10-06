@@ -637,18 +637,10 @@ class dbHandler():
         # connect to the database
         self.connect()
         
-        # compose query to get the number of pending processing files from the host, as stored in the database
-        query = (f'SELECT NU_PENDING_PROCESSING '
-                    f'FROM HOST '
-                    f'WHERE ID_HOST = {host_id};')
-        self.cursor.execute(query)
-        output = self.cursor.fetchone()
-        pending_processing = output[0] + pending_processing
-
-        # compose and excecute query to update the backup status in the BKPDATA database
+        # compose and excecute query to update the processing status by adding pending_processing variable to existing value in the database
         query = (f'UPDATE HOST SET '
-                    f'NU_PENDING_PROCESSING = {pending_processing}, '
-                    f'DT_LAST_PROCESSING = NOW(), '
+                    f'NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {pending_processing}, '
+                    f'DT_LAST_PROCESSING = NOW() '
                     f'WHERE ID_HOST = {host_id};')
         
         self.cursor.execute(query)
@@ -657,20 +649,20 @@ class dbHandler():
         self.disconnect()
 
     # Method to remove a completed backup task from the database
-    def remove_processing_task(self, task):
+    def remove_processing_task(self, host_id, task_id):
         # connect to the database
         self.connect()
         
         # compose and excecute query to delete the backup task from the BKPDATA database
         query = (f"DELETE FROM PRC_TASK "
-                 f"WHERE ID_PRC_TASK = {task['task_id']};")
+                 f"WHERE ID_PRC_TASK = {task_id};")
         self.cursor.execute(query)
 
         # update database statistics for the host
         query = (f"UPDATE HOST "
-                 f"SET NU_PENDING_BACKUP = NU_PENDING_BACKUP - 1, "
-                 f"DT_LAST_BACKUP = NOW() "
-                 f"WHERE ID_HOST = '{task['host_id']}';")
+                 f"SET NU_PENDING_PROCESSING = NU_PENDING_PROCESSING - 1, "
+                 f"DT_LAST_PROCESSING = NOW() "
+                 f"WHERE ID_HOST = '{host_id}';")
         self.cursor.execute(query)
         
         self.disconnect()

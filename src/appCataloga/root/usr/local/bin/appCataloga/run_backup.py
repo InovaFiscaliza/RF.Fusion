@@ -168,41 +168,38 @@ def main():
                     'nu_pending_backup': 0, 
                     'nu_backup_error': 1}
 
-    # Connect to the database
-    # create db object using databaseHandler class
+    # create db object using databaseHandler class for the backup and processing database
     db = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
 
-    # Get one backup task to start
-    task = db.next_backup_task()
-
-    # create a list to hold the future objects
+    # create a list to hold the handles to the backup processes
     tasks = []
 
     # Use ThreadPoolExecutor to limit the number of concurrent threads
     with concurrent.futures.ThreadPoolExecutor(k.MAX_THREADS) as executor:
         
         while True:
+            # Get one backup task
+            task = db.next_processing_task()
             
-            print(f"Starting backup for {task['host']}.")
-            
-            # test if len(tasks) < k.MAX_THREADS
-            # if true, add task to tasks list
-            # else, wait for a task to finish and remove it from the list
-            if len(tasks) < k.MAX_THREADS:
+            # if there is a task, add it to the executor and task list
+            if task:
+                print(f"Adding backup task for {task['host']}.")
+                
                 # add task to tasks list
-                task["map_itarator"] = executor.map(host_backup, task)
-                
+                task["thread_handle"] = executor.map(host_backup, task)
+            
                 tasks.append(task)
-                
-            else:
+
+            # if there are tasks running
+            if len(tasks) > 0:
                 # loop through tasks list and remove completed tasks
                 for running_task in tasks:
                     # test if the runnning_task is completed
-                    if running_task["map_itarator"].done():
-
+                    if running_task["thread_handle"].done():
+    
                         try:
-                            # get the result from the map_itarator
-                            task_status = running_task["map_itarator"].result()
+                            # get the result from the thread_handle
+                            task_status = running_task["thread_handle"].result()
                             
                             # remove task from tasks list
                             tasks.remove(running_task)
@@ -224,7 +221,7 @@ def main():
                                 print(f"Error in backup from {task['host']}. Will try again later.")
 
                         # except error in running_task
-                        except running_task["map_itarator"].exception() as e:
+                        except running_task["thread_handle"].exception() as e:
                             # if the running task has an error, set task_status to False
                             task_status = FAILED_TASK
                             print(f"Error in backup from {task['host']}. Will try again later. {str(e)}")
@@ -237,17 +234,10 @@ def main():
                         finally:
                             # update backup summary status for the host_id
                             db.update_host_backup_status(task_status)
-            
-            # Get the next backup task
-            task = db.next_backup_task()
-            
-            while not task:
+            else:
                 print("No backup task. Waiting for 5 minutes.")
                 # wait for 5 minutes
                 time.sleep(k.FIVE_MINUTES)
-                
-                # try again to get a task
-                task = db.next_backup_task()
 
 if __name__ == "__main__":
     main()

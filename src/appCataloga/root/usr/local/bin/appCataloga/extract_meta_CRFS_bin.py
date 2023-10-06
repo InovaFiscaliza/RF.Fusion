@@ -18,7 +18,7 @@ import time
 from geopy.geocoders import Nominatim   #  Processing of geographic data
 from geopy.exc import GeocoderTimedOut
 
-
+import concurrent.futures
 import os                               #  file processing
 
 # Import file with constants used in this code that are relevant to the operation
@@ -112,19 +112,22 @@ class BinFileHandler:
         
         if k.VERBOSE: print(f"     Output metadata as CSV to {exportFilename}")
         
-        
+
+# function that performs the file processing
+def file_processing(task):
+    
+
 def main():
     
     FAILED_TASK = { 'host_id': running_task['host_id'],
                     'nu_pending_processing': 0, 
                     'nu_processing_error': 1}
 
-    # Connect to the database
-    # create db object using databaseHandler class
-    db = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
+    # create db_task object using databaseHandler class for the backup and processing database
+    db_task = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
 
-    # Get one backup task to start
-    task = db.nextBackup()
+    # create db_sm object using databaseHandler class for the RFM database
+    db_sm = dbh.dbHandler(database=k.RFM_DATABASE_NAME)
 
     # create a list to hold the future objects
     tasks = []
@@ -133,27 +136,27 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(k.MAX_THREADS) as executor:
         
         while True:
+            # Get one backup task
+            task = db_task.next_processing_task()
             
-            print(f"Starting backup for {task['host']}.")
-            
-            # test if len(tasks) < k.MAX_THREADS
-            # if true, add task to tasks list
-            # else, wait for a task to finish and remove it from the list
-            if len(tasks) < k.MAX_THREADS:
-                # add task to tasks list
-                task["map_itarator"] = executor.map(host_backup, task)
+            # if there is a task, add it to the executor
+            if task:
+                print(f"Adding backup task for {task['host']}.")
                 
+                task["thread_handle"] = executor.map(file_processing, task)
+            
                 tasks.append(task)
-                
-            else:
+
+            # if there are tasks running
+            if len(tasks) > 0:
                 # loop through tasks list and remove completed tasks
                 for running_task in tasks:
                     # test if the runnning_task is completed
-                    if running_task["map_itarator"].done():
+                    if running_task["thread_handle"].done():
 
                         try:
-                            # get the result from the map_itarator
-                            task_status = running_task["map_itarator"].result()
+                            # get the result from the thread_handle
+                            task_status = running_task["thread_handle"].result()
                             
                             # remove task from tasks list
                             tasks.remove(running_task)
@@ -162,16 +165,16 @@ def main():
                             if task_status:
                                 
                                 # remove task from database
-                                db.remove_backup_task(task)
+                                db_task.remove_processing_task(task)
                                                                 
-                                print(f"Completed backup from {task['host']}")
+                                print(f"Completed processing of file {task['host']}")
                             else:
                                 task_status = FAILED_TASK
 
                                 print(f"Error in backup from {task['host']}. Will try again later.")
 
                         # except error in running_task
-                        except running_task["map_itarator"].exception() as e:
+                        except running_task["thread_handle"].exception() as e:
                             # if the running task has an error, set task_status to False
                             task_status = FAILED_TASK
                             print(f"Error in backup from {task['host']}. Will try again later. {str(e)}")
@@ -183,18 +186,11 @@ def main():
                             print(f"Error in backup from {task['host']}. Will try again later. {str(e)}")
                         finally:
                             # update backup summary status for the host_id
-                            db.update_host_backup_status(task_status)
-            
-            # Get the next backup task
-            task = db.nextBackup()
-            
-            while not task:
-                print("No backup task. Waiting for 5 minutes.")
+                            db_task.update_host_processing_status(task_status)
+            else:
+                print("No processing task. Waiting for 5 minutes.")
                 # wait for 5 minutes
                 time.sleep(k.FIVE_MINUTES)
-                
-                # try again to get a task
-                task = db.nextBackup()
-
+                    
 if __name__ == "__main__":
     main()
