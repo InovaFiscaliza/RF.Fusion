@@ -30,8 +30,7 @@ class BinFileHandler:
 
     def __init__(self, fileFullPath):
 
-        # store reference infortion to the file        
-        filename = os.path.basename(fileFullPath)
+        # store reference infortion to the file
 
         # use rfpye to extract metadata from the file
         rfpyeDict = extract_bin_data(path = fileFullPath)

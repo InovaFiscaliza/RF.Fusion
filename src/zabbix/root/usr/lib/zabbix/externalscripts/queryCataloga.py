@@ -28,9 +28,15 @@ This script is unsecure and should only run through a secure encripted network c
         All keys except "Message" are suppresed when Status=0
         Message describe the error or warning information
 """
+
 import socket
 import sys
 import json
+
+sys.path.append(
+    "C:/Users/Fabio/AppData/Local/Temp/scp31195/root/RF.Fusion/src/zabbix/root/usr/lib/zabbix/externalscripts"
+)
+
 import rfFusionLib as rflib
 
 # scritp configuration constants
@@ -61,10 +67,7 @@ ARGUMENTS = {
         "value": DEFAULT_HOST_ADD,
         "warning": "Using default host address",
     },
-    "user": {
-        "set": False,
-        "value": DEFAULT_USER,
-        "warning": "Using default user"},
+    "user": {"set": False, "value": DEFAULT_USER, "warning": "Using default user"},
     "passwd": {
         "set": False,
         "value": DEFAULT_PASSWD,
@@ -82,16 +85,17 @@ ARGUMENTS = {
     },
 }
 
+
 def main():
     # create a warning message object
     wm = rflib.warning_msg()
 
     # create an argument object
     arg = rflib.argument(wm, ARGUMENTS)
-    
+
     # parse the command line arguments
     arg.parse(sys.argv)
-    
+
     # compose the request to the server
     requestS = (
         f'{arg.data["query_tag"]["value"]} '
@@ -102,28 +106,34 @@ def main():
     )
 
     request = bytes(requestS, encoding="utf-8")
-    
+
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client_socket.settimeout(arg.data["timeout"]["value"])
-    
-    try:
-        client_socket.connect((SERVER_ADD, SERVER_PORT))
-    except Exception as e:
-        print(f'{{"Status":0,"Message":"Error: {e}"}}')
 
     try:
+        client_socket.connect((SERVER_ADD, SERVER_PORT))
         client_socket.sendall(request)
+    except Exception as e:
+        print(
+            f'{{"Status":0,"Message":"Error: {e}; Could establish socket connection"}}'
+        )
+        client_socket.close()
+        exit()
+
+    try:
         response = client_socket.recv(BUFFER_SIZE)
         client_socket.close()
     except Exception as e:
-        print(f'{{"Status":0,"Message":"Error: {e}; Received: {response}"}}')
+        print(f'{{"Status":0,"Message":"Error: {e}; Error receiving data"}}')
         client_socket.close()
         exit()
 
     try:
         response = response.decode(ENCODING)
     except Exception as e:
-        print(f'{{"Status":0,"Message":"Error: {e}"}}')
+        print(
+            f'{{"Status":0,"Message":"Error: {e}. Error decoding data with {ENCODING}: {response}"}}'
+        )
         client_socket.close()
         exit()
 
@@ -143,7 +153,10 @@ def main():
         print(json.dumps(dict_output))
 
     except json.JSONDecodeError as e:
-        print(f'{"Status":0,"Message":"Error: Malformed JSON received. Dumped: {response}"}')
+        print(
+            f'{"Status":0,"Message":"Error: Malformed JSON received. Dumped: {response}"}'
+        )
+
 
 if __name__ == "__main__":
     main()
