@@ -32,13 +32,15 @@ import socket
 import json
 import signal
 from selectors import DefaultSelector, EVENT_READ
-import concurrent.futures
+import time
+
+from concurrent.futures import ProcessPoolExecutor
 
 # Import modules for file processing 
 import config as k
 import db_handler as dbh
 import shared as csh
-import run_backup
+import run_backup as run_backup
 
 #! TEST ONLY host_statistics initialization remove for production
 HOST_STATISTICS = { "Total Files":1,
@@ -72,15 +74,21 @@ def handler(signum, frame):
 # start signal handler that control a graceful shutdown 
 signal.signal(signal.SIGINT, handler)
 
-def backup_queue(conn="ClientIP",hostid="1",host_addr="host_addr",host_user="user",host_passwd="passwd"):
+def backup_queue(conn="SocketClient",
+                 hostid="1",
+                 host_addr="host_addr",
+                 host_port="2800",
+                 host_user="user",
+                 host_passwd="passwd"):
     """Add host to backup queue and return current status
 
     Args:
-        conn (str): _description_. Defaults to "ClientIP".
-        hostid (str): _description_. Defaults to "1".
-        host_addr (str): _description_. Defaults to "host_addr".
-        host_user (str): _description_. Defaults to "user".
-        host_passwd (str): _description_. Defaults to "passwd".
+        conn (str): Socket connection object. Defaults to "ClientIP".
+        hostid (str): Target host id. Used as PK in the database host table. Defaults to "1".
+        host_addr (str): IP address or DNS to the host to be contacted. Defaults to "host_addr".
+        host_port (str): SSH port to be used to connect to the host. Defaults to 2800.
+        host_user (str): Host user for the SSH connection. Defaults to "user".
+        host_passwd (str): Host password for the SSH connection. Defaults to "passwd".
 
     Returns:
         void
@@ -90,22 +98,36 @@ def backup_queue(conn="ClientIP",hostid="1",host_addr="host_addr",host_user="use
     db = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
      
     # add host to db task list for backup
-    db.add_backup_task(hostid,host_addr,host_user,host_passwd)
+    db.add_backup_task(hostid,host_addr,host_port,host_user,host_passwd)
     
     host_stat = db.get_host_task_status(hostid)
     
-    print(host_stat)
     # get from db the backup summary status for the host_id
     return host_stat
 
 def serve_client(client_socket):
-    try:
-        while True:
+    
+    receiving_data = True
+    
+    while receiving_data:
+        
+        try:
             data = client_socket.recv(128)
-            if not data:
-                break
+        except Exception as e:
+            print("Error receiving data:", e)
+            data = None
+
+        # in case of error or no data received
+        if not data:
+            receiving_data = False
             
-            host = data.decode().split(" ")
+        else:
+            
+            try:
+                host = data.decode().split(" ")
+            except Exception as e:
+                print("Error decoding data:", e)
+                host = [None]
             
             if host[0]==k.BACKUP_QUERY_TAG:
                 host[0]=client_socket.getpeername() # replace list first element with client IP address
@@ -116,59 +138,93 @@ def serve_client(client_socket):
                 host_statistics["Message"] = wm.warning_msg
                 
                 response = f'{k.START_TAG}{json.dumps(host_statistics)}{k.END_TAG}'
+                
+                receiving_data = False
 
             elif host[0]==k.CATALOG_QUERY_TAG:
                 print(f"Received data from {client_socket.getpeername()[0]}. Received: {data.decode()}")
                 
                 response = f'{k.START_TAG}{{"Status":0,"Error":"catalog command not implemented"}}{k.END_TAG}'
+                
+                receiving_data = False
+                
             else:
                 print(f"Ignored data from from {client_socket.getpeername()[0]}. Received: {data.decode()}")
                 
                 response = f'{k.START_TAG}{{"Status":0,"Error":"host command not recognized"}}{k.END_TAG}'
                 
-            byte_response = bytes(response, encoding="utf-8")
-            
-            client_socket.sendall(byte_response)
-            
-    except Exception as e:
-        print("Error:", e)
-    finally:
+                receiving_data = False
+                    
+        byte_response = bytes(response, encoding="utf-8")
+                
+        client_socket.sendall(byte_response)
+        
         client_socket.close()
 
 def serve_forever(server_socket):
+    
+    SINGLE_NON_BLOCKING_PROCESS = 1
+    
     sel = DefaultSelector()
     sel.register(interrupt_read, EVENT_READ)
     sel.register(server_socket, EVENT_READ)
 
     running_backup = False
-    # Use ThreadPoolExecutor to limit the number of concurrent threads
-    with concurrent.futures.ThreadPoolExecutor(k.MAX_THREADS) as executor:
-        while True:
-            # Wait for events
+    serving_forever = True
+
+    # Use ProcessPoolExecutor to limit the number of concurrent processes
+    with ProcessPoolExecutor(SINGLE_NON_BLOCKING_PROCESS) as executor:
+        while serving_forever and not running_backup:
+            
+            # Wait for events using selector.select() method
             for key, _ in sel.select():
+                # if the interrupt_read (^C), shutdown the server
                 if key.fileobj == interrupt_read:
                     interrupt_read.recv(1)
+                    if serving_forever:
+                        serving_forever = False
+                        if running_backup:
+                            print("Server will shut down... Waiting for running backup to finish.")
+                        else:
+                            print("Shutting down....")
+                            
+                    else:
+                        print("Shutting down but waiting for backup to finish... please wait.")
                     return
+                # if client tries to connect, accept the connection and serve the client
                 if key.fileobj == server_socket:
                     client_socket, client_address = server_socket.accept()
-                    print("Connection established with:", client_address)
-                    serve_client(client_socket)
+                    if serving_forever:
+                        print(f"Connection established with: {client_address}")
+                        serve_client(client_socket)
+                    else:
+                        print("Connection attempt rejected. Server is shutting down.")
+                        response = f'{k.START_TAG}{{"Status":0,"Error":"Server shutting down"}}{k.END_TAG}'
+                        byte_response = bytes(response, encoding="utf-8")
+                        client_socket.sendall(byte_response)        
+                        client_socket.close()
 
             # Whenever there is an event, check if the backup process is running and if not, start it.
             if not running_backup:
-                # start the run_backup script in a separate thread if it is not running
-                backup_process = executor.map(run_backup)
+                # start the run_backup script in a separate process if it is not running
+                backup_process = executor.submit(run_backup.control)
                 print("Backup process started")
+                running_backup = True
 
             if backup_process.done():
                 running_backup = False
                 try:
                     print(f"Backup process ended with: {backup_process.result()}.")
                 # except error in running_task
-                except backup_process.exception() as e:
+                except:
                     # if the running task has an error, set task_status to False
-                    print(f"Exception in backup process: {e}.")
+                    print(f"Exception in backup process: {', '.join(backup_process._exception.args)}.")
+                    
+                    # sleep one second to avoid system hang in case of error
+                    time.sleep(1)
             
+                if not serving_forever:
+                    print("Shutting down....")
 def main():
     
     print(f"Server is listening on port {k.SERVER_PORT}")
@@ -180,7 +236,6 @@ def main():
 
     serve_forever(server_socket)
 
-    print("Shutdown...")
     server_socket.close()
 
 if __name__ == "__main__":

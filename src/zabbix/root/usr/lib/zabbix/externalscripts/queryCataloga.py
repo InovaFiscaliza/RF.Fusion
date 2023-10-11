@@ -50,6 +50,7 @@ ENCODING = "utf-8"
 # Define default arguments
 DEFAULT_HOST_ID = "10"
 DEFAULT_HOST_ADD = "192.168.200.20"
+DEFAULT_HOST_PORT = 22
 DEFAULT_USER = "root"  # user should have access to the host with rights to interact with the indexer daemon
 DEFAULT_PASSWD = "rootPass"
 DEFAULT_QUERY_TAG = "backup"
@@ -67,7 +68,15 @@ ARGUMENTS = {
         "value": DEFAULT_HOST_ADD,
         "warning": "Using default host address",
     },
-    "user": {"set": False, "value": DEFAULT_USER, "warning": "Using default user"},
+    "host_port": {
+        "set": False,
+        "value": DEFAULT_HOST_PORT,
+        "warning": "Using default host port",
+    },    
+    "user": {
+        "set": False,
+        "value": DEFAULT_USER,
+        "warning": "Using default user"},
     "passwd": {
         "set": False,
         "value": DEFAULT_PASSWD,
@@ -101,6 +110,7 @@ def main():
         f'{arg.data["query_tag"]["value"]} '
         f'{arg.data["host_id"]["value"]} '
         f'{arg.data["host_add"]["value"]} '
+        f'{arg.data["host_port"]["value"]} '
         f'{arg.data["user"]["value"]} '
         f'{arg.data["passwd"]["value"]}'
     )

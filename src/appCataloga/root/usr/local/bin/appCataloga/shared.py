@@ -26,9 +26,6 @@ class warning_msg:
         else:
             self.warning_msg = (f'{self.warning_msg}, {new_warning}')   
 
-# Class to parse shell like configuration file into dictionary
-import configparser
-
 def parse_cfg(cfg_data=""):
     """Parse shell like configuration file into dictionary
 
@@ -38,14 +35,19 @@ def parse_cfg(cfg_data=""):
         Defaults to "".
 
     Returns:
-        _dict_: shell variables returned as pairs of key and value
+        dict: shell variables returned as pairs of key and value
     """    
-    config = configparser.ConfigParser()
-    config.read_srting(cfg_data)
+    
+    config_str=cfg_data.decode(encoding='utf-8')
+    
+    config_list=config_str.splitlines()
+    
+    config_dict = {}
+    for line in config_list:
+        try:
+            key, value = line.split("=")
+            config_dict[key] = value
+        except:
+            pass
 
-    properties_dict = {}
-    for section in config.sections():
-        for key, value in config.items(section):
-            properties_dict[key] = value
-
-    return properties_dict
+    return config_dict

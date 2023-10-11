@@ -31,12 +31,12 @@ import config as k
 import db_handler as dbh
 import shared as sh
 
-import concurrent.futures
+from concurrent.futures import ProcessPoolExecutor
 import paramiko
 import os
 import time
 
-def host_backup(task):
+def _host_backup(task):
     """Get list of files to backup from remote host and copy them to central repository mapped to local folder, updating lists of files in the remote host and in the reference database.
 
     Args:
@@ -51,11 +51,10 @@ def host_backup(task):
         _Bol_: True: Backup completed successfully
                False: Backup failed
     """
-    
-    # Create an SSH client
-    ssh_client = paramiko.SSHClient()
-
     try:
+        # Create an SSH client
+        ssh_client = paramiko.SSHClient()
+        
         # Automatically add the server's host key (this is insecure)
         ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
@@ -73,10 +72,22 @@ def host_backup(task):
         # Parse the configuration file
         daemon_cfg = sh.parse_cfg(daemon_cfg_str)
         
+        
         loop_count = 0
+
+        def _check_halt_flag(sftp, daemon_cfg, task):
+            try: 
+                sftp.lstat(daemon_cfg['HALT_FLAG'])
+                return True
+            except IOError:
+                return False
+            except Exception as e:
+                message = f"Error checking HALT_FLAG file in remote host {task['host']}. {str(e)}"
+                raise Exception(message)
+
         # Check if exist the HALT_FLAG file in the remote host
-        # If exists wait and retry each 5 minutes for 30 minutes
-        while not sftp.exists(daemon_cfg['HALT_FLAG']):
+        # If exists wait and retry each 5 minutes for 30 minutes        
+        while _check_halt_flag(sftp, daemon_cfg, task):
             # If HALT_FLAG exists, wait for 5 minutes and test again
             time.sleep(k.FIVE_MINUTES)
             
@@ -161,9 +172,9 @@ def host_backup(task):
         ssh_client.close()
         return output
 
-def main():
+def control():
     
-    FAILED_TASK = { 'host_id': running_task['host_id'],
+    failed_task = { 'host_id': 0,
                     'nu_host_files': 0, 
                     'nu_pending_backup': 0, 
                     'nu_backup_error': 1}
@@ -175,18 +186,20 @@ def main():
     tasks = []
 
     # Use ThreadPoolExecutor to limit the number of concurrent threads
-    with concurrent.futures.ThreadPoolExecutor(k.MAX_THREADS) as executor:
+    with ProcessPoolExecutor(k.MAX_PROCESS) as executor:
         
         while True:
             # Get one backup task
-            task = db.next_processing_task()
+            task = db.next_backup_task()
             
             # if there is a task, add it to the executor and task list
             if task:
                 print(f"Adding backup task for {task['host']}.")
                 
                 # add task to tasks list
-                task["thread_handle"] = executor.map(host_backup, task)
+                _host_backup(task)
+                task["process_handle"] = executor.submit(_host_backup, task)
+                
             
                 tasks.append(task)
 
@@ -195,11 +208,11 @@ def main():
                 # loop through tasks list and remove completed tasks
                 for running_task in tasks:
                     # test if the runnning_task is completed
-                    if running_task["thread_handle"].done():
+                    if running_task["process_handle"].done():
     
                         try:
-                            # get the result from the thread_handle
-                            task_status = running_task["thread_handle"].result()
+                            # get the result from the process_handle
+                            task_status = running_task["process_handle"].result()
                             
                             # remove task from tasks list
                             tasks.remove(running_task)
@@ -216,28 +229,32 @@ def main():
                                 
                                 print(f"Completed backup from {task['host']}")
                             else:
-                                task_status = FAILED_TASK
+                                failed_task['host_id'] = task_status['host_id']
+                                task_status = failed_task
 
                                 print(f"Error in backup from {task['host']}. Will try again later.")
 
                         # except error in running_task
-                        except running_task["thread_handle"].exception() as e:
+                        except running_task["process_handle"].exception() as e:
                             # if the running task has an error, set task_status to False
-                            task_status = FAILED_TASK
+                            failed_task['host_id'] = task_status['host_id']
+                            task_status = failed_task
                             print(f"Error in backup from {task['host']}. Will try again later. {str(e)}")
                         
                         # any other exception
                         except Exception as e:
                             # if the running task has an error, set task_status to False
-                            task_status = FAILED_TASK
+                            failed_task['host_id'] = task_status['host_id']
+                            task_status = failed_task
                             print(f"Error in backup from {task['host']}. Will try again later. {str(e)}")
                         finally:
                             # update backup summary status for the host_id
                             db.update_host_backup_status(task_status)
+                
+                # wait for some task to finish or be posted
+                time.sleep(k.BKP_TASK_EXECUTION_WAIT_TIME)
+                
             else:
                 print("No backup task. Waiting for 5 minutes.")
-                # wait for 5 minutes
-                time.sleep(k.FIVE_MINUTES)
-
-if __name__ == "__main__":
-    main()
+                # wait for a task to be posted
+                time.sleep(k.BKP_TASK_REQUEST_WAIT_TIME)

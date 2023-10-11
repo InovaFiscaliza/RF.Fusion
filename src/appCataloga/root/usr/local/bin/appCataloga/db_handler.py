@@ -457,14 +457,20 @@ class dbHandler():
         return(dbKeyFile)
     
     # Method add a new host to the backup queue
-    def add_backup_task(self,hostid="1",host_addr="host_addr",host_user="user",host_passwd="passwd"):
+    def add_backup_task(self,
+                        hostid="1",
+                        host_addr="host_addr",
+                        host_port="2800",
+                        host_user="user",
+                        host_passwd="passwd"):
         """This method checks if the host is already in the database and if not, adds it to the backup queue
         
         Args:
             hostid (str): Zabbix host id primary key. Defaults to "host_id".
             host_addr (str): Remote host IP/DNS address. Defaults to "host_addr".
+            host_port (str): Remote host SSH access port. Defaults to "2800".
             host_user (str): Remote host access user. Defaults to "user".
-            host_passwd (str): Remote host access passworf. Defaults to "passwd".
+            host_passwd (str): Remote host access password. Defaults to "passwd".
 
         Returns:
             _type_: _description_
@@ -477,7 +483,7 @@ class dbHandler():
                     f"(ID_HOST, NU_PENDING_BACKUP) "
                     f"VALUES "
                     f"('{hostid}', '{1}') "
-                    f"ON DUPLICATE KEY UPDATE NU_PENDING_BACKUP = NU_PENDING_BACKUP + 1")
+                    f"ON DUPLICATE KEY UPDATE NU_PENDING_BACKUP = NU_PENDING_BACKUP + 1;")
         
         # update database
         self.cursor.execute(query)
@@ -485,9 +491,9 @@ class dbHandler():
         
         # compose query to set the backup task in the BPDATA database
         query = (f"INSERT INTO BKP_TASK "
-                 f"(FK_HOST, DT_BKP_TASK, NO_HOST_ADDRESS,NO_HOST_USER,NO_HOST_PASSWORD) "
+                 f"(FK_HOST, DT_BKP_TASK, NO_HOST_ADDRESS,NO_HOST_PORT,NO_HOST_USER,NO_HOST_PASSWORD) "
                  f"VALUES "
-                 f"('{hostid}', NOW(), '{host_addr}', '{host_user}', '{host_passwd}')")
+                 f"('{hostid}', NOW(), '{host_addr}', '{host_port}', '{host_user}', '{host_passwd}');")
 
         # update database
         self.cursor.execute(query)
@@ -506,10 +512,10 @@ class dbHandler():
         self.connect()
 
         # build query to get the next backup task
-        query = (   "SELECT ID_BKP_TASK, FK_HOST, NO_HOST_ADDRESS, NO_HOST_PORT, NO_HOST_USER, NO_HOST_PASSWORD"
-                    "FROM BKP_TASK"
-                    "ORDER BY DT_BKP_TASK"
-                    "LIMIT 1")
+        query = (   "SELECT ID_BKP_TASK, FK_HOST, NO_HOST_ADDRESS, NO_HOST_PORT, NO_HOST_USER, NO_HOST_PASSWORD "
+                    "FROM BKP_TASK "
+                    "ORDER BY DT_BKP_TASK "
+                    "LIMIT 1;")
         
         self.cursor.execute(query)
         
@@ -534,21 +540,21 @@ class dbHandler():
         self.connect()
 
         # compose and excecute query to get the number of files previously processed from the host, as stored in the database
-        query = (f'SELECT NU_HOST_FILES, NU_BACKUP_ERROR '
-                    f'FROM HOST '
-                    f'WHERE ID_HOST = {task_status["host_id"]};')
+        query = (f"SELECT NU_HOST_FILES, NU_BACKUP_ERROR "
+                    f"FROM HOST "
+                    f"WHERE ID_HOST = {task_status['host_id']};")
         self.cursor.execute(query)
         output = self.cursor.fetchone()
         nu_host_files = output[0]
         nu_backup_error = output[1]
         
         # compose and excecute query to update the backup status in the BKPDATA database
-        query = (f'UPDATE HOST SET '
-                    f'NU_HOST_FILES = {nu_host_files + task_status["nu_host_files"]}, '
-                    f'NU_PENDING_BACKUP = {task_status["pending_backup"]}, '
-                    f'DT_LAST_BACKUP = NOW(), '
-                    f'NU_BACKUP_ERROR = {nu_backup_error + task_status["nu_backup_error"]} '
-                    f'WHERE ID_HOST = {task_status["host_id"]};')
+        query = (f"UPDATE HOST SET "
+                    f"NU_HOST_FILES = {nu_host_files + task_status['nu_host_files']}, "
+                    f"NU_PENDING_BACKUP = {task_status['pending_backup']}, "
+                    f"DT_LAST_BACKUP = NOW(), "
+                    f"NU_BACKUP_ERROR = {nu_backup_error + task_status['nu_backup_error']} "
+                    f"WHERE ID_HOST = {task_status['host_id']};")
         self.cursor.execute(query)
         self.db_connection.commit()
         
@@ -595,9 +601,9 @@ class dbHandler():
                     
         # compose query to set the process task in the database
         query = (f"INSERT INTO BKP_TASK "
-                 f"(FK_HOST, NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME, DT_PRC_TASK) "
-                 f"VALUES "
-                 f"(%s, %s, %s, %s, %s, NOW())")
+                    f"(FK_HOST, NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME, DT_PRC_TASK) "
+                    f"VALUES "
+                    f"(%s, %s, %s, %s, %s, NOW());")
 
         # update database
         self.cursor.executemany(query,done_backup_list)
@@ -610,10 +616,10 @@ class dbHandler():
         self.connect()
 
         # build query to get the next backup task
-        query = (   "SELECT ID_BKP_TASK, FK_HOST, NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME"
-                    "FROM PRC_TASK"
-                    "ORDER BY DT_PRC_TASK"
-                    "LIMIT 1")
+        query = (   "SELECT ID_PRC_TASK, FK_HOST, NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME "
+                    "FROM PRC_TASK "
+                    "ORDER BY DT_PRC_TASK "
+                    "LIMIT 1;")
         
         self.cursor.execute(query)
         
@@ -638,10 +644,10 @@ class dbHandler():
         self.connect()
         
         # compose and excecute query to update the processing status by adding pending_processing variable to existing value in the database
-        query = (f'UPDATE HOST SET '
-                    f'NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {pending_processing}, '
-                    f'DT_LAST_PROCESSING = NOW() '
-                    f'WHERE ID_HOST = {host_id};')
+        query = (f"UPDATE HOST SET "
+                    f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {pending_processing}, "
+                    f"DT_LAST_PROCESSING = NOW() "
+                    f"WHERE ID_HOST = {host_id};")
         
         self.cursor.execute(query)
         self.db_connection.commit()
@@ -660,9 +666,9 @@ class dbHandler():
 
         # update database statistics for the host
         query = (f"UPDATE HOST "
-                 f"SET NU_PENDING_PROCESSING = NU_PENDING_PROCESSING - 1, "
-                 f"DT_LAST_PROCESSING = NOW() "
-                 f"WHERE ID_HOST = '{host_id}';")
+                    f"SET NU_PENDING_PROCESSING = NU_PENDING_PROCESSING - 1, "
+                    f"DT_LAST_PROCESSING = NOW() "
+                    f"WHERE ID_HOST = '{host_id}';")
         self.cursor.execute(query)
         
         self.disconnect()
@@ -682,7 +688,7 @@ class dbHandler():
                     f"NU_PENDING_PROCESSING, "
                     f"DT_LAST_PROCESSING "
                     f"FROM HOST "
-                    f"WHERE ID_HOST = '{hostid}'")
+                    f"WHERE ID_HOST = '{hostid}';")
         
         # get host data from the database
         self.cursor.execute(query)

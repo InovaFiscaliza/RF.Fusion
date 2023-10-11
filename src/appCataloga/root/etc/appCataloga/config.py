@@ -20,8 +20,9 @@ DB_USER_NAME = 'appCataloga'
 DB_PASSWORD = '<app_pass>'
 
 # backup configuration
-MAX_THREADS = 10
-FIVE_MINUTES = 300
+MAX_PROCESS = 10
+BKP_TASK_EXECUTION_WAIT_TIME = 10
+BKP_TASK_REQUEST_WAIT_TIME = 300
 
 # daemon standard due for backup file
 DAEMON_CFG_FILE="/etc/node/indexerD.cfg"
@@ -94,7 +95,7 @@ MEGA = 1000000.0
 # Default values for CRFS Bin File Translation/Processing
 DEFAULT_VBW = 0.0
 DEFAULT_DETECTOR = 'RMS'
-DEFAULT_ATTENUATOR = 'Null'
+DEFAULT_ATTENUATOR = 'N ull'
 DEFAULT_AMPLIFIER = 'Null'
 RBW_STEP_FACTOR = 2.0
 MEASUREMENT_UNIT = {0:'dBm',
