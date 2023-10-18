@@ -75,9 +75,9 @@ def _host_backup(task):
         
         loop_count = 0
 
-        def _check_halt_flag(sftp, daemon_cfg, task):
+        def _check_remote_file(sftp, file_name, task):
             try: 
-                sftp.lstat(daemon_cfg['HALT_FLAG'])
+                sftp.lstat(file_name)
                 return True
             except IOError:
                 return False
@@ -87,7 +87,7 @@ def _host_backup(task):
 
         # Check if exist the HALT_FLAG file in the remote host
         # If exists wait and retry each 5 minutes for 30 minutes        
-        while _check_halt_flag(sftp, daemon_cfg, task):
+        while _check_remote_file(sftp, daemon_cfg['HALT_FLAG'], task):
             # If HALT_FLAG exists, wait for 5 minutes and test again
             time.sleep(k.FIVE_MINUTES)
             
@@ -101,7 +101,7 @@ def _host_backup(task):
         sftp.open(daemon_cfg['HALT_FLAG'], 'w').close()
         
         # Get the list of files to backup from DUE_BACKUP file
-        due_backup_file = sftp.open(k.DUE_BACKUP_FILE, 'r')
+        due_backup_file = sftp.open(daemon_cfg['DUE_BACKUP'], 'r')
         due_backup_str = due_backup_file.read()
         due_backup_file.close()
         
@@ -133,7 +133,7 @@ def _host_backup(task):
                 print(f"Error copying {remote_file} from host {task['host']}.{str(e)}")
 
         # Test if there is a BACKUP_DONE file in the remote host
-        if not sftp.exists(daemon_cfg['BACKUP_DONE']):
+        if not _check_remote_file(daemon_cfg['BACKUP_DONE']):
             # Create a BACKUP_DONE file in the remote host with the list of files in done_backup_list_remote
             backup_done_file = sftp.open(daemon_cfg['BACKUP_DONE'], 'w')
         else:
@@ -144,7 +144,7 @@ def _host_backup(task):
         backup_done_file.close()
             
         # Overwrite the DUE_BACKUP file in the remote host with the list of files in due_backup_list
-        due_backup_file = sftp.open(k.DUE_BACKUP_FILE, 'w')
+        due_backup_file = sftp.open(daemon_cfg['DUE_BACKUP'], 'w')
         due_backup_file.write('\n'.join(due_backup_list))
         due_backup_file.close()
             
