@@ -26,7 +26,6 @@ BKP_TASK_REQUEST_WAIT_TIME = 300
 
 # daemon standard due for backup file
 DAEMON_CFG_FILE="/etc/node/indexerD.cfg"
-#DUE_BACKUP_FILE="/mnt/internal/.indexerD/files.changed"
 TARGET_FOLDER="/mnt/repo/tmp"
 
 # constants that control the script
