@@ -72,7 +72,6 @@ def _host_backup(task):
         # Parse the configuration file
         daemon_cfg = sh.parse_cfg(daemon_cfg_str)
         
-        
         loop_count = 0
 
         def _check_remote_file(sftp, file_name, task):
@@ -137,9 +136,18 @@ def _host_backup(task):
             for remote_file in due_backup_list:
                 
                 # refresh the HALT_FLAG timeout control
-#TODO: CREATE FUNCTION TO CHECK TIMEOUT AND REFRESH IT IF NECESSARY                
+                time_since_start = time.time()-halt_flag_time
+                time_limit = daemon_cfg['HALT_TIMEOUT']*k.SECONDS_IN_MINUTE*k.ALLOTED_TIME_WINDOW
+                if time_since_start > time_limit:
+                    try:
+                        halt_flag_file_handle = sftp.open(daemon_cfg['HALT_FLAG'], 'w')
+                        halt_flag_file_handle.write(f'running backup for {time_since_start} seconds\n')
+                        halt_flag_file_handle.close()
+                    except:
+                        print(f"Error reseting halt_flag for host {task['host']}.{str(e)}")
+                        pass
                 
-                # Create target file name by adding the remote file name to the target folder
+                # Compose target file name by adding the remote file name to the target folder
                 local_file = os.path.join(target_folder, os.path.basename(remote_file))
                                     
                 try:
@@ -158,7 +166,7 @@ def _host_backup(task):
                     pass
 
             # Test if there is a BACKUP_DONE file in the remote host
-            if not _check_remote_file(daemon_cfg['BACKUP_DONE']):
+            if not _check_remote_file(sftp, daemon_cfg['BACKUP_DONE'], task):
                 # Create a BACKUP_DONE file in the remote host with the list of files in done_backup_list_remote
                 backup_done_file = sftp.open(daemon_cfg['BACKUP_DONE'], 'w')
             else:
@@ -240,7 +248,7 @@ def control():
                         try:
                             # get the result from the process_handle
                             task_status = running_task["process_handle"].result()
-                            
+                            #TODO: Test error in the result. Test why the result is not a dict
                             # remove task from tasks list
                             tasks.remove(running_task)
                             
@@ -278,10 +286,11 @@ def control():
                             # update backup summary status for the host_id
                             db.update_host_backup_status(task_status)
                 
+                print(f"Wainting for {len(tasks)} backup tasks to finish. Next check in {k.BKP_TASK_EXECUTION_WAIT_TIME} seconds.")
                 # wait for some task to finish or be posted
                 time.sleep(k.BKP_TASK_EXECUTION_WAIT_TIME)
                 
             else:
-                print("No backup task. Waiting for 5 minutes.")
+                print("No backup task. Waiting for {k.BKP_TASK_REQUEST_WAIT_TIME/k.SECONDS_IN_MINUTE} minutes.")
                 # wait for a task to be posted
                 time.sleep(k.BKP_TASK_REQUEST_WAIT_TIME)

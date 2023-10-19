@@ -50,20 +50,32 @@ def parse_cfg(cfg_data="", root_level=True, line_number=0):
     while line_number<len(config_list):
         line = config_list[line_number]
         line_number += 1
+        # handle standard lines with variable value assignation
         try:
             key, value = line.split("=")
-            config_dict[key] = value
+            try:
+                # try to convert value to float
+                config_dict[key] = float(value)
+            except:
+                # if not possible, keep value as string
+                config_dict[key] = value
         except:
-            if line[0]=="[" and line[-1]=="]":
-                key = line[1:-1]
-                if root_level:
-                    config_dict[key], line_number = parse_cfg(cfg_data=cfg_data, root_level=False, line_number=line_number)
+            # handle section lines    
+            try:
+                if line[0]=="[" and line[-1]=="]":
+                    key = line[1:-1]
+                    if root_level:
+                        config_dict[key], line_number = parse_cfg(cfg_data=cfg_data, root_level=False, line_number=line_number)
+                    else:
+                        return (config_dict, line_number-1)
                 else:
-                    return (config_dict, line_number-1)
-            else:
-                # ignore lines that do not follow the pattern of assinging a value to a key or a section
+                    # ignore lines that do not assign values or define sections
+                    pass
+            except:
+                # ignore empty lines
                 pass
-
+    
+    # return according to the call level
     if root_level:
         return config_dict
     else:
