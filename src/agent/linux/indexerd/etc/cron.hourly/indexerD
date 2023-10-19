@@ -3,11 +3,13 @@
 
 logger "indexerD Info: starting indexerD cron job"
 
+# test if the configuration file exists and run it
 [ -e /etc/node/indexerD.cfg ] && . /etc/node/syncd.cfg || {
     logger "indexerD Error: Missing or not accessible configuration file"
     exit 0
 }
 
+# test if the indexerD.sh script exists and run it
 [ -e /usr/local/bin/indexerD.sh ] && . /usr/local/bin/indexerD.sh || {
     logger "indexerD Error: Unable to run indexerD.sh"
     exit 0

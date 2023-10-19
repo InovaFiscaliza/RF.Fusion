@@ -96,32 +96,52 @@ def _host_backup(task):
             if loop_count > 6:
                 output = False
                 raise Exception("Timeout waiting for HALT_FLAG file")
+
+        # store current time for HALT_FLAG timeout control
+        halt_flag_time = time.time()
         
         # Create a HALT_FLAG file in the remote host
         sftp.open(daemon_cfg['HALT_FLAG'], 'w').close()
-        
+                
         try:
             # Get the list of files to backup from DUE_BACKUP file
             due_backup_file = sftp.open(daemon_cfg['DUE_BACKUP'], 'r')
             due_backup_str = due_backup_file.read()
             due_backup_file.close()
+            
+            # Clean the string and split the into a list of files
+            due_backup_str = due_backup_str.decode(encoding='utf-8')
+            due_backup_str = ''.join(due_backup_str.split('\x00'))
+            due_backup_list = due_backup_str.splitlines()
+            nu_host_files = len(due_backup_list)
+            
+            # initializa backup control variables
+            nu_backup_error = 0
+            done_backup_list = []
+            done_backup_list_remote = []
+            
         except Exception as e:
             print(f"Error reading {daemon_cfg['DUE_BACKUP']} in remote host {task['host']}. {str(e)}")
+            nu_backup_error = 1
+            nu_host_files = 0        
 
-        # Split the file list into a list of files
-        due_backup_list = due_backup_str.splitlines()        
-        nu_host_files = len(due_backup_list)
-        
-        done_backup_list = []
-        done_backup_list_remote = []
-                
+        # Test if there are files to backup                
         if nu_host_files > 0:        
-            target_folder = f"k.TARGET_FOLDER/{task['host']}"
+            target_folder = f"{k.TARGET_FOLDER}/{task['host']}"
+            
+            # make sure that the target folder do exist
+            if not os.path.exists(target_folder):
+                os.makedirs(target_folder)
+
             # loop through the list of files to backup
             for remote_file in due_backup_list:
+                
+                # refresh the HALT_FLAG timeout control
+#TODO: CREATE FUNCTION TO CHECK TIMEOUT AND REFRESH IT IF NECESSARY                
+                
                 # Create target file name by adding the remote file name to the target folder
                 local_file = os.path.join(target_folder, os.path.basename(remote_file))
-                
+                                    
                 try:
                     sftp.get(remote_file, local_file)
 
@@ -135,6 +155,7 @@ def _host_backup(task):
                     print(f"File '{os.path.basename(remote_file)}' copied to '{local_file}'")
                 except Exception as e:
                     print(f"Error copying {remote_file} from host {task['host']}.{str(e)}")
+                    pass
 
             # Test if there is a BACKUP_DONE file in the remote host
             if not _check_remote_file(daemon_cfg['BACKUP_DONE']):
@@ -153,8 +174,6 @@ def _host_backup(task):
             due_backup_file.close()
             
             nu_backup_error = len(due_backup_list)/nu_host_files
-        else:
-            nu_backup_error = 0
         
         # Remove the HALT_FLAG file from the remote host
         sftp.remove(daemon_cfg['HALT_FLAG'])

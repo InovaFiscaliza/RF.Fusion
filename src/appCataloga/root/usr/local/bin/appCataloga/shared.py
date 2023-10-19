@@ -54,14 +54,17 @@ def parse_cfg(cfg_data="", root_level=True, line_number=0):
             key, value = line.split("=")
             config_dict[key] = value
         except:
-            try:
-                key=line.split["["][1].split["]"][0]
+            if line[0]=="[" and line[-1]=="]":
+                key = line[1:-1]
                 if root_level:
-                    config_dict[key], line_number = parse_cfg(cfg_data=config_list, root_level=False, line_number=line_number)
+                    config_dict[key], line_number = parse_cfg(cfg_data=cfg_data, root_level=False, line_number=line_number)
                 else:
-                    return (config_dict, line_number)
-            except:
-                # ignore lines that do not follow the pattern
+                    return (config_dict, line_number-1)
+            else:
+                # ignore lines that do not follow the pattern of assinging a value to a key or a section
                 pass
 
-    return config_dict
+    if root_level:
+        return config_dict
+    else:
+        return (config_dict, line_number)

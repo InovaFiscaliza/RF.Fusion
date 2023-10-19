@@ -14,11 +14,23 @@ if [ ! -d "$INDEXERD_FOLDER" ]; then
     }
 fi
 
-# test if halt cookie exist and exit if so. If it does not exist, try to created it. If fail, log error and exit.
+# test if halt cookie exist
 if [ -e "$HALT_FLAG" ]; then
-    logger "indexerD Warning: $HALT_FLAG active"
-    exit 0
+    # if the halt cookie exist test if it is older then the time defined in the configuration file
+    if [ "$(find "$HALT_FLAG" -mmin +$HALT_TIMEOUT)" ]; then
+        # if halt cookie is older than the time_out, remove it.
+        rm -f "$HALT_FLAG" || {
+            # If fails, log error and exit
+            logger "indexerD Error: Could not remove $HALT_FLAG"
+            exit
+        }
+    else
+        # if the halt cookie exist and is newer than the time defined in the configuration file, log warning and exit
+        logger "indexerD Warning: $HALT_FLAG active"
+        exit 0    
+    fi
 else
+    # if the halt cookie does not exist, create it. If fails, log error and exit
     touch "$HALT_FLAG" || {
         logger "indexerD Error: Could not create $HALT_FLAG"
         exit
