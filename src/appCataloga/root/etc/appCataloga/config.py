@@ -25,6 +25,8 @@ BKP_TASK_EXECUTION_WAIT_TIME = 10
 BKP_TASK_REQUEST_WAIT_TIME = 300
 SECONDS_IN_MINUTE = 60
 ALLOTED_TIME_WINDOW = 0.8
+PYTHON_ENV = ['conda', 'activate', 'myenv']
+
 
 # daemon standard due for backup file
 DAEMON_CFG_FILE="/etc/node/indexerD.cfg"
