@@ -80,3 +80,31 @@ def parse_cfg(cfg_data="", root_level=True, line_number=0):
         return config_dict
     else:
         return (config_dict, line_number)
+
+class argument:
+    """Class to parse and store command-line arguments"""
+    
+    def __init__(self, wm_input=warning_msg(), arg_input={}) -> None:
+        self.wm = wm_input
+        self.data = arg_input
+        
+    def parse(self, sys_arg=[]):
+        """Get command-line arguments and parse into a request to the server"""
+        
+        # loop through the arguments list and set the value of the argument if it is present in the command line
+        for i in range(1, len(sys_arg)):
+            arg_in = sys_arg[i].split("=")
+            if arg_in[0] in self.data.keys():
+                # Get the data type from sef.data value
+                data_type = type(self.data[arg_in[0]]["value"])
+                
+                # Set the argument value and set the "set" flag to True
+                self.data[arg_in[0]]["value"] = data_type(arg_in[1])
+                self.data[arg_in[0]]["set"] = True
+            else:
+                self.wm.compose_warning(f"Argument '{arg_in[0]}' not recognized, ignoring it")
+            
+        # loop through the arguments list and compose a warning message for each argument that was not set
+        for arg in self.data.keys():
+            if not self.data[arg]["set"]:
+                self.wm.compose_warning(self.data[arg]["warning"])

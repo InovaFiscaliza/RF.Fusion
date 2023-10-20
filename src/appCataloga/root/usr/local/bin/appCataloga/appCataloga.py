@@ -34,13 +34,13 @@ import signal
 from selectors import DefaultSelector, EVENT_READ
 import time
 
-from concurrent.futures import ProcessPoolExecutor
+import subprocess
 
 # Import modules for file processing 
 import config as k
 import db_handler as dbh
 import shared as csh
-import run_backup as run_backup
+import appCataloga.root.usr.local.bin.appCataloga.backup_control as backup_control
 
 #! TEST ONLY host_statistics initialization remove for production
 HOST_STATISTICS = { "Total Files":1,
@@ -173,58 +173,58 @@ def serve_forever(server_socket):
     serving_forever = True
 
     # Use ProcessPoolExecutor to limit the number of concurrent processes
-    with ProcessPoolExecutor(SINGLE_NON_BLOCKING_PROCESS) as executor:
-        while serving_forever and not running_backup:
+    while serving_forever and not running_backup:
+        
+        # Wait for events using selector.select() method
+        for key, _ in sel.select():
+            # if the interrupt_read (^C), shutdown the server
+            if key.fileobj == interrupt_read:
+                interrupt_read.recv(1)
+                if serving_forever:
+                    serving_forever = False
+                    if running_backup:
+                        print("Server will shut down... Waiting for running backup to finish.")
+                    else:
+                        print("Shutting down....")
+                        
+                else:
+                    print("Shutting down but waiting for backup to finish... please wait.")
+
+            # if client tries to connect, accept the connection and serve the client
+            if key.fileobj == server_socket:
+                client_socket, client_address = server_socket.accept()
+                if serving_forever:
+                    print(f"Connection established with: {client_address}")
+                    serve_client(client_socket)
+                else:
+                    print("Connection attempt rejected. Server is shutting down.")
+                    response = f'{k.START_TAG}{{"Status":0,"Error":"Server shutting down"}}{k.END_TAG}'
+                    byte_response = bytes(response, encoding="utf-8")
+                    client_socket.sendall(byte_response)        
+                    client_socket.close()
+
+        # Whenever there is an event, check if the backup process is running and if not, start it.
+        if not running_backup:
+            # start the run_backup script in a separate process if it is not running
+            backup_process = subprocess.Popen(["run_backup"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             
-            # Wait for events using selector.select() method
-            for key, _ in sel.select():
-                # if the interrupt_read (^C), shutdown the server
-                if key.fileobj == interrupt_read:
-                    interrupt_read.recv(1)
-                    if serving_forever:
-                        serving_forever = False
-                        if running_backup:
-                            print("Server will shut down... Waiting for running backup to finish.")
-                        else:
-                            print("Shutting down....")
-                            
-                    else:
-                        print("Shutting down but waiting for backup to finish... please wait.")
-                    return
-                # if client tries to connect, accept the connection and serve the client
-                if key.fileobj == server_socket:
-                    client_socket, client_address = server_socket.accept()
-                    if serving_forever:
-                        print(f"Connection established with: {client_address}")
-                        serve_client(client_socket)
-                    else:
-                        print("Connection attempt rejected. Server is shutting down.")
-                        response = f'{k.START_TAG}{{"Status":0,"Error":"Server shutting down"}}{k.END_TAG}'
-                        byte_response = bytes(response, encoding="utf-8")
-                        client_socket.sendall(byte_response)        
-                        client_socket.close()
+            print("Backup process started")
+            running_backup = True
 
-            # Whenever there is an event, check if the backup process is running and if not, start it.
-            if not running_backup:
-                # start the run_backup script in a separate process if it is not running
-                backup_process = executor.submit(run_backup.control)
-                print("Backup process started")
-                running_backup = True
+        elif backup_process.poll() is not None:
+            backup_output, backup_errors = backup_process.communicate()
+            running_backup = False
+            
+            if backup_output:
+                print(f"Backup process ended with: {backup_output}.")
 
-            if backup_process.done():
+            if backup_errors:
                 running_backup = False
-                try:
-                    print(f"Backup process ended with: {backup_process.result()}.")
-                # except error in running_task
-                except:
-                    # if the running task has an error, set task_status to False
-                    print(f"Exception in backup process: {', '.join(backup_process._exception.args)}.")
-                    
-                    # sleep one second to avoid system hang in case of error
-                    time.sleep(1)
+                print(f"Backup process error: {backup_errors}.")
+
+        # sleep one second to avoid system hang in case of error
+        time.sleep(1)
             
-                if not serving_forever:
-                    print("Shutting down....")
 def main():
     
     print(f"Server is listening on port {k.SERVER_PORT}")
@@ -235,7 +235,8 @@ def main():
     server_socket.listen(k.TOTAL_CONNECTIONS)
 
     serve_forever(server_socket)
-
+    
+    print("Shutting down....")
     server_socket.close()
 
 if __name__ == "__main__":
