@@ -35,64 +35,56 @@ import os
 import time
 
 
-# scritp configuration constants
-START_TAG = "<json>"
-END_TAG = "</json>"
-BUFFER_SIZE = 16384
-ENCODING = "ISO-8859-1"
-
 # Define default arguments
 # DEFAULT_HOST_ADD = "172.24.5.71" # MG
-DEFAULT_HOST_ADD = "172.24.5.33" # ES
-DEFAULT_PORT = 8910
-DEFAULT_KEY = "123456"  # user should have access to the host with rights to interact with the indexer daemon
-DEFAULT_CLIENT_NAME = "Zabbix"
-# DEFAULT_QUERY_TAG = "PositionList" 
-# DEFAULT_QUERY_TAG = "Diagnostic"
-DEFAULT_QUERY_TAG = "TaskList"
-DEFAULT_TIMEOUT = 5
+DEFAULT_TASK_ID = 1
+DEFAULT_HOST_ID = 1
+DEFAULT_HOST_ADD = "192.168.200.200"
+DEFAULT_PORT = 220
+DEFAULT_USER = "root0"
+DEFAULT_PASS = "rootPass0"  # user should have access to the host with rights to interact with the indexer daemon
 
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
 ARGUMENTS = {
     "task_id": {
         "set": False,
-        "value": "1",
-        "warning": "Using default host address"
+        "value": DEFAULT_TASK_ID,
+        "warning": "Using default task id"
         },
     "host_id": {
         "set": False,
-        "value": 1,
-        "warning": "Using default host address"
+        "value": DEFAULT_HOST_ID,
+        "warning": "Using default host id"
         },    
     "host": {
         "set": False,
-        "value": "192.168.200.20",
-        "warning": "Using default port"
+        "value": DEFAULT_HOST_ADD,
+        "warning": "Using default host address"
         },
     "port": {
         "set": False,
-        "value": 2828,
-        "warning": "Using default key"
+        "value": DEFAULT_PORT,
+        "warning": "Using default port"
         },
     "user": {
         "set": False,
-        "value": "user",
-        "warning": "Using default ClientName"
+        "value": DEFAULT_USER,
+        "warning": "Using default user name"
         },
-    "password": {
+    "pass": {
         "set": False,
-        "value": "pass",
-        "warning": "Using default query tag"
+        "value": DEFAULT_PASS,
+        "warning": "Using default user password"
         }
     }
 
 def main():
     
     # create a warning message object
-    wm = sh.warning_msg()
+    log = sh.log()
 
     # create an argument object
-    task = sh.argument(wm, ARGUMENTS)
+    task = sh.argument(log, ARGUMENTS)
     
     # parse the command line arguments
     task.parse(sys.argv)
@@ -108,7 +100,7 @@ def main():
         ssh_client.connect(hostname=task.data["host"]["value"],
                            port=task.data["port"]["value"],
                            username=task.data["user"]["value"],
-                           password=task.data["password"]["value"])
+                           password=task.data["pass"]["value"])
 
         # SFTP (Secure FTP) connection
         sftp = ssh_client.open_sftp()
@@ -143,7 +135,8 @@ def main():
             
             if loop_count > 6:
                 output = False
-                raise Exception("Timeout waiting for HALT_FLAG file")
+                message = "Timeout waiting for HALT_FLAG file"
+                raise Exception(message)
 
         # store current time for HALT_FLAG timeout control
         halt_flag_time = time.time()
@@ -169,11 +162,10 @@ def main():
             done_backup_list_remote = []
             
         except Exception as e:
-            print(f"Error reading {daemon_cfg['DUE_BACKUP']} in remote host {task.data['host']['value']}. {str(e)}")
-            nu_backup_error = 1
-            nu_host_files = 0        
+            message = f"Error reading {daemon_cfg['DUE_BACKUP']} in remote host {task.data['host']['value']}. {str(e)}"
+            raise Exception(message)
 
-        # Test if there are files to backup. Must be done before the loop to avoid the creation of the target folder within it         
+        # Test if there are files to backup. Done before the loop to avoid unecessary creation of the target folder
         if nu_host_files > 0:        
             target_folder = f"{k.TARGET_FOLDER}/{task.data['host']['value']}"
             
@@ -197,7 +189,7 @@ def main():
                         halt_flag_file_handle.write(f'running backup for {time_since_start} seconds\n')
                         halt_flag_file_handle.close()
                     except:
-                        print(f"Error reseting halt_flag for host {task.data['host']['value']}.{str(e)}")
+                        log.warning(f"Error reseting halt_flag for host {task.data['host']['value']}.{str(e)}")
                         pass
                 
                 # Compose target file name by adding the remote file name to the target folder
@@ -213,9 +205,9 @@ def main():
                     done_backup_list.append({"remote":remote_file,"local":local_file})
                     done_backup_list_remote.append(remote_file)
                     
-                    print(f"File '{os.path.basename(remote_file)}' copied to '{local_file}'")
+                    log.entry(f"File '{os.path.basename(remote_file)}' copied to '{local_file}'")
                 except Exception as e:
-                    print(f"Error copying '{remote_file}' from host {task.data['host']['value']}.{str(e)}")
+                    log.warning(f"Error copying '{remote_file}' from host {task.data['host']['value']}.{str(e)}")
                     # skip to the next item for backup
                     bkp_list_index += 1
                     pass
@@ -245,12 +237,14 @@ def main():
         sftp.close()
         ssh_client.close()
         
-        output = { 'host_id': task['host_id'],
+        output = { 'host_id': task.data["host_id"]["value"],
                    'nu_host_files': nu_host_files, 
                    'nu_pending_backup': len(due_backup_list), 
                    'nu_backup_error': nu_backup_error,
                    'done_backup_list':done_backup_list}
 
+        return output
+    
     except paramiko.AuthenticationException:
         message = f"Authentication failed. Please check your credentials."
         raise (message)
@@ -262,9 +256,6 @@ def main():
     except Exception as e:
         message = f"Unmapped error occurred: {str(e)}"
         raise (message)
-
-    print(output)    
-    return True
     
 if __name__ == "__main__":
     main()

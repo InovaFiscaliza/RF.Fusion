@@ -5,12 +5,14 @@ Shared functions for appCataloga scripts
 import sys
 sys.path.append('/etc/appCataloga')
 
+import time
+
 import config as k
 
 # Class to compose warning messages
-NO_WARNING_MSG = "none"
+NO_MSG = "none"
 
-class warning_msg:
+class log:
     """Class to compose warning messages
 
     Returns:
@@ -18,14 +20,45 @@ class warning_msg:
     """
     
     def __init__(self) -> None:
-        self.warning_msg = NO_WARNING_MSG
+        self.log_msg = []
+        self.warning_msg = []
+        self.error_msg = []
+        self.verbose = {"log":k.VERBOSE,
+                        "warning":k.VERBOSE,
+                        "error":k.VERBOSE}
         
-    def compose_warning(self, new_warning):
-        if self.warning_msg == NO_WARNING_MSG:
-            self.warning_msg = (f'Warning: {new_warning}')
-        else:
-            self.warning_msg = (f'{self.warning_msg}, {new_warning}')   
+    def entry(self, new_entry):
+        self.log_msg.append((time.time(),new_entry))
+        
+        if self.verbose["log"]:
+            print(new_entry)
 
+    def warning(self, new_entry):
+        self.warning_msg.append((time.time(),new_entry))
+        
+        if self.verbose["warning"]:
+            print(new_entry) 
+            
+    def error(self, new_entry):
+        self.error_msg.append((time.time(),new_entry))
+        
+        if self.verbose["error"]:
+            print(new_entry)
+
+    def dump_log(self):
+        message = ', '.join([str(elem[1]) for elem in self.log_msg])
+        
+        return message
+
+    def dump_warning(self):
+        message = ', '.join([str(elem[1]) for elem in self.warning_msg])
+        
+        return message
+        
+    def dump_error(self):
+        message = ', '.join([str(elem[1]) for elem in self.error_msg])
+        return message
+    
 def parse_cfg(cfg_data="", root_level=True, line_number=0):
     """Parse shell like configuration file into dictionary
 
@@ -84,8 +117,8 @@ def parse_cfg(cfg_data="", root_level=True, line_number=0):
 class argument:
     """Class to parse and store command-line arguments"""
     
-    def __init__(self, wm_input=warning_msg(), arg_input={}) -> None:
-        self.wm = wm_input
+    def __init__(self, log_input=log(), arg_input={}) -> None:
+        self.log = log_input
         self.data = arg_input
         
     def parse(self, sys_arg=[]):
@@ -102,9 +135,9 @@ class argument:
                 self.data[arg_in[0]]["value"] = data_type(arg_in[1])
                 self.data[arg_in[0]]["set"] = True
             else:
-                self.wm.compose_warning(f"Argument '{arg_in[0]}' not recognized, ignoring it")
+                self.log.warning(f"Argument '{arg_in[0]}' not recognized, ignoring it")
             
         # loop through the arguments list and compose a warning message for each argument that was not set
         for arg in self.data.keys():
             if not self.data[arg]["set"]:
-                self.wm.compose_warning(self.data[arg]["warning"])
+                self.log.warning(self.data[arg]["warning"])
