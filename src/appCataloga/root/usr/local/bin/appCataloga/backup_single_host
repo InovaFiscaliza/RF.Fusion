@@ -39,7 +39,7 @@ import time
 # DEFAULT_HOST_ADD = "172.24.5.71" # MG
 DEFAULT_TASK_ID = 1
 DEFAULT_HOST_ID = 1
-DEFAULT_HOST_ADD = "192.168.200.200"
+DEFAULT_HOST_ADD = "192.168.10.33"
 DEFAULT_PORT = 220
 DEFAULT_USER = "root0"
 DEFAULT_PASS = "rootPass0"  # user should have access to the host with rights to interact with the indexer daemon

@@ -1,6 +1,32 @@
 #!/bin/bash
-# configure cron to execute the indexer script hourly, register log if error
-ln -s /usr/local/bin/indexerD.sh /etc/cron.hourly/indexerD || {
-    log "Upgrade Error: Could create symbolic link to indexerD.cfg in cron.hourly. Terminating"
-    exit
+# test if the configuration file exists
+[ -e /etc/node/indexerD.cfg ] || {
+    message="indexerD install error: Missing or not accessible configuration file"
+    logger "$message"
+    echo "$message"
+    exit 0
+}
+
+# test if the indexerD.sh script is executable
+[ -x /etc/node/indexerD.sh ] || {
+    message="indexerD install error: Main script file is not executable"
+    logger "$message"
+    echo "$message"
+    exit 0
+}
+
+# test if cron job script is executable
+[ -x /etc/cron.hourly/indexerD ] || {
+    message="indexerD install error: Cron job script is not executable"
+    logger "$message"
+    echo "$message"
+    exit 0
+}
+
+# check if cron service is running
+service cron status > /dev/null 2>&1 || {
+    message="indexerD install error: Cron service is not running"
+    logger "$message"
+    echo "$message"
+    exit 0
 }
