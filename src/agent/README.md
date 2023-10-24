@@ -54,13 +54,21 @@ This section of the repository includes the following vase folders:
 
 # Setup
 
-On CRFS nodes, the instalation can be run using the standard update feature.
-
-To create the instalation package, run the following commands at the local RF.Fusion/src/agent/linux folder:
+On CRFS nodes, the instalation can be run using the standard update feature or running the following command:
 
 ```sh
-dpkg-deb --build indexerd
+dpkg-deb -i indexerD
 ```
+
+To build the instalation package from source, initially make sure that the CHMOD is properly set for the execution scritps after download.
+
+Once set, run the following commands at the local RF.Fusion/src/agent/linux folder:
+
+```sh
+dpkg-deb --build indexerD
+```
+
+
 
 # Roadmap
 

@@ -8,7 +8,7 @@
 }
 
 # test if the indexerD.sh script is executable
-[ -x /etc/node/indexerD.sh ] || {
+[ -x /usr/local/bin/indexerD.sh ] || {
     message="indexerD install error: Main script file is not executable"
     logger "$message"
     echo "$message"

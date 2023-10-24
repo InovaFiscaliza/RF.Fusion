@@ -1,6 +1,5 @@
 Package: indexerD
 Version: 1.0
-Architecture: armv5tel
+Architecture: all
 Maintainer: anatel.gov.br <8a298574.anatel.gov.br@amer.teams.ms>
 Description: Perform houly catalogging of new files in preparation for centralized backup pooling scripts.
-
