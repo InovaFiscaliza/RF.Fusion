@@ -75,38 +75,44 @@ def main():
                                                       stderr=subprocess.PIPE,
                                                       text=True)
             
+            task["birth_time"] = time.time()
+            
             tasks.append(task)
 
         # if there are tasks running
         if len(tasks) > 0:
             # loop through tasks list and remove completed tasks
             for running_task in tasks:
-                # test if the runnning_task is completed
-                if running_task["process_handle"].done():
-
-                    try:
-                        # get the result from the process_handle
-                        task_status = running_task["process_handle"].result()
-                        
-                        # remove task from tasks list
+                # Get output from the running task, wainting 5 seconds for timeout
+                try:
+                    task_output, task_error =  = running_task["process_handle"].communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # in case of timeout, check if the task is running for more than the alotted time
+                    if time.time() - running_task["birth_time"] > k.BKP_TASK_EXECUTION_TIMEOUT:
+                        running_task["process_handle"].kill()
                         tasks.remove(running_task)
-                        
-                        # If running task was successful (result not empty or False)
-                        if task_status:
-                            
-                            # remove task from database. If there are pending backup, it will be consider in the next cycle.
-                            db.remove_backup_task(task)
-                                                            
-                            # add the list of files to the processing task list
-                            db.add_processing(hostid=task_status['host_id'],
-                                                done_backup_list=task_status['done_backup_list'])
-                            
-                            print(f"Completed backup from {task['host']}")
-                        else:
-                            failed_task['host_id'] = task_status['host_id']
-                            task_status = failed_task
+                        db.remove_backup_task(task)
+                        print(f"Backup task canceled due to timeout {task['host']}")
+                    pass
+                
+                if task_output:
 
-                            print(f"Error in backup from {task['host']}. Will try again later.")
+                    # remove task from tasks list
+                    tasks.remove(running_task)
+                        
+                    # remove task from database. If there are pending backup, it will be consider in the next cycle.
+                    db.remove_backup_task(task)
+
+                    # add the list of files to the processing task list
+                    db.add_processing(hostid=task_status['host_id'],
+                                        done_backup_list=task_status['done_backup_list'])
+                            
+                    print(f"Completed backup from {task['host']}")
+                elif task_error:
+                    failed_task['host_id'] = task_status['host_id']
+                    task_status = failed_task
+
+                    print(f"Error in backup from {task['host']}. Will try again later.")
 
                     # except error in running_task
                     except running_task["process_handle"].exception() as e:
