@@ -74,7 +74,7 @@ nice -n 15 find "$LOCAL_REPO" -type f -newer "$LAST_BACKUP_FLAG" -printf "%h\0/%
 nice -n 15 sort -o "$DUE_BACKUP" -u "$TEMP_CHANGED" "$DUE_BACKUP"
 
 # print the number of files in TEMP_CHANGED and DUE_BACKUP
-logger "indexerD Info: $(wc -l <"$TEMP_CHANGED") files changed since last backup"
+logger "indexerD Info: $(wc -l <"$TEMP_CHANGED") files changed since last check"
 logger "indexerD Info: $(wc -l <"$DUE_BACKUP") files due for backup"
 
 # remove temp file
