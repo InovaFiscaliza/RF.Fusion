@@ -52,15 +52,28 @@ def main():
     while True:
         # Get one backup task
         task = db.next_backup_task()
-        
+
+        """	
+            task={  "task_id": str,
+                    "host_id": str,
+                    "host_add": str,
+                    "port": str,
+                    "user": str,
+                    "password": str}"""        
         # if there is a task, add it to the executor and task list
         if task:
             print(f"Adding backup task for {task['host']}.")
 
-#! FIX CALL TO BACKUP SINGLE HOST
             # add task to tasks list
-            _host_backup(task)
-            task["process_handle"] = backup_process = subprocess.Popen(["_host_backup", "task"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            task["process_handle"] = subprocess.Popen([ "backup_single_host.py",
+                                                            f"host_id={task['host_id']}",
+                                                            f"host_add={task['host']}",
+                                                            f"port={task['port']}",
+                                                            f"user={task['user']}",
+                                                            f"password={task['password']}"],
+                                                      stdout=subprocess.PIPE,
+                                                      stderr=subprocess.PIPE,
+                                                      text=True)
             
             tasks.append(task)
 

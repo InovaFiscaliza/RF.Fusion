@@ -525,7 +525,7 @@ class dbHandler():
         if len(task) > 0:
             output = {"task_id": task[0],
                     "host_id": task[1],
-                    "host": task[2],
+                    "host_add": task[2],
                     "port": task[3],
                     "user": task[4],
                     "password": task[5]}

@@ -1,22 +1,29 @@
 #!/usr/bin/python3
 """Get list of files to backup from remote host and copy them to central repository mapped to local folder, updating lists of files in the remote host and in the reference database.
 
-    Args:
-        task (_dict_): {"task_id": str,
-                        "host_id": int,
-                        "host": str,
-                        "port": int,
-                        "user": str,
-                        "password": str}
+    Args: Arguments passed from the command line should present in the format: "key=value"
+    
+    Where the possible keys are:
+    
+        "host_id": int, Host id in the reference database
+        "host_add": str, Host address or DNS valid name
+        "port": int, SSH port
+        "user": str, SSH user name
+        "password": str, SSH user password
 
     Returns:
-        _Bol_: True: Backup completed successfully
-               False: Backup failed
+        JSON object with the following keys:
+            'host_id': task.data["host_id"]["value"],
+            'nu_host_files': nu_host_files, 
+            'nu_pending_backup': len(due_backup_list), 
+            'nu_backup_error': nu_backup_error,
+            'done_backup_list':done_backup_list}
+            
+    Raises:
+        Exception: If any error occurs, the exception is raised with a message describing the error.
 """
 
-import socket
 import sys
-import json
 
 # Set system path to include modules from /etc/appCataloga
 import sys
@@ -28,35 +35,27 @@ import config as k
 import db_handler as dbh
 import shared as sh
 
-
-import subprocess
 import paramiko
 import os
 import time
-
+import json
 
 # Define default arguments
-# DEFAULT_HOST_ADD = "172.24.5.71" # MG
-DEFAULT_TASK_ID = 1
 DEFAULT_HOST_ID = 1
 DEFAULT_HOST_ADD = "192.168.10.33"
+# DEFAULT_HOST_ADD = "172.24.5.71" # MG
 DEFAULT_PORT = 220
-DEFAULT_USER = "root0"
-DEFAULT_PASS = "rootPass0"  # user should have access to the host with rights to interact with the indexer daemon
+DEFAULT_USER = "sshUser"
+DEFAULT_PASS = "sshuserpass"  # user should have access to the host with rights to interact with the indexer daemon
 
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
 ARGUMENTS = {
-    "task_id": {
-        "set": False,
-        "value": DEFAULT_TASK_ID,
-        "warning": "Using default task id"
-        },
     "host_id": {
         "set": False,
         "value": DEFAULT_HOST_ID,
         "warning": "Using default host id"
         },    
-    "host": {
+    "host_add": {
         "set": False,
         "value": DEFAULT_HOST_ADD,
         "warning": "Using default host address"
@@ -97,7 +96,7 @@ def main():
         ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         # Connect to the remote host
-        ssh_client.connect(hostname=task.data["host"]["value"],
+        ssh_client.connect(hostname=task.data["host_add"]["value"],
                            port=task.data["port"]["value"],
                            username=task.data["user"]["value"],
                            password=task.data["pass"]["value"])
@@ -243,7 +242,7 @@ def main():
                    'nu_backup_error': nu_backup_error,
                    'done_backup_list':done_backup_list}
 
-        return output
+        return json.dumps(output)
     
     except paramiko.AuthenticationException:
         message = f"Authentication failed. Please check your credentials."
