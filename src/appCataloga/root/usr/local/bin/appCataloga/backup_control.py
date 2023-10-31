@@ -32,6 +32,8 @@ import db_handler as dbh
 import shared as sh
 
 import subprocess
+import json
+
 import paramiko
 import os
 import time
@@ -76,6 +78,7 @@ def main():
                                                       text=True)
             
             task["birth_time"] = time.time()
+            task["nu_backup_error"] = 0
             
             tasks.append(task)
 
@@ -85,9 +88,9 @@ def main():
             for running_task in tasks:
                 # Get output from the running task, wainting 5 seconds for timeout
                 try:
-                    task_output, task_error =  = running_task["process_handle"].communicate(timeout=5)
+                    task_output, task_error = running_task["process_handle"].communicate(timeout=5)
                 except subprocess.TimeoutExpired:
-                    # in case of timeout, check if the task is running for more than the alotted time
+                    # in case of timeout, check if the task is running for more than the alotted time and remove it if it is the case, otherwise, pass
                     if time.time() - running_task["birth_time"] > k.BKP_TASK_EXECUTION_TIMEOUT:
                         running_task["process_handle"].kill()
                         tasks.remove(running_task)
@@ -95,41 +98,52 @@ def main():
                         print(f"Backup task canceled due to timeout {task['host']}")
                     pass
                 
+                # if there is output from the task, process it
                 if task_output:
-
-                    # remove task from tasks list
-                    tasks.remove(running_task)
+                    try:
+                        task_dict_output = json.loads(task_output)
                         
-                    # remove task from database. If there are pending backup, it will be consider in the next cycle.
-                    db.remove_backup_task(task)
-
-                    # add the list of files to the processing task list
-                    db.add_processing(hostid=task_status['host_id'],
-                                        done_backup_list=task_status['done_backup_list'])
+                        # remove task from tasks list
+                        tasks.remove(running_task)
                             
-                    print(f"Completed backup from {task['host']}")
-                elif task_error:
-                    failed_task['host_id'] = task_status['host_id']
-                    task_status = failed_task
+                        # remove task from database. If there are pending backup, it will be consider in the next cycle.
+                        db.remove_backup_task(running_task)
 
-                    print(f"Error in backup from {task['host']}. Will try again later.")
-
-                    # except error in running_task
-                    except running_task["process_handle"].exception() as e:
-                        # if the running task has an error, set task_status to False
-                        failed_task['host_id'] = task_status['host_id']
-                        task_status = failed_task
-                        print(f"Error in backup from {task['host']}. Will try again later. {str(e)}")
-                    
-                    # any other exception
-                    except Exception as e:
-                        # if the running task has an error, set task_status to False
-                        failed_task['host_id'] = task_status['host_id']
-                        task_status = failed_task
-                        print(f"Error in backup from {task['host']}. Will try again later. {str(e)}")
-                    finally:
+                        # add the list of files to the processing task list
+                        db.add_processing(hostid=task_dict_output['host_id'],
+                                            done_backup_list=task_dict_output['done_backup_list'])
+            
+                        # update backup summary status for the host_id in case of previous errors
+                        task_dict_output['nu_backup_error'] = task_dict_output['nu_backup_error'] + running_task['nu_backup_error']
+                        
                         # update backup summary status for the host_id
-                        db.update_host_backup_status(task_status)
+                        db.update_backup_status(task_dict_output)
+                        
+                        print(f"Completed backup from {running_task['host']}")
+                        
+                    except json.JSONDecodeError as e:
+                        print(f'{"Status":0,"Message":"Error: Malformed JSON received. Dumped: {task_output}"}')
+                    
+                elif task_error:
+                    running_task["nu_backup_error"] = running_task["nu_backup_error"] + 1
+
+                    print(f"Error in backup from {task['host']}. Will try again later. Error: {task_error}")
+                    
+                    # if birth time is more than 5 minutes, remove task from tasks list
+                    if time.time() - running_task["birth_time"] > k.BKP_TASK_EXECUTION_TIMEOUT:
+                        
+                        # remove task from tasks list
+                        tasks.remove(running_task)
+                            
+                        # remove task from database. If there are pending backup, it will be consider in the next cycle.
+                        db.remove_backup_task(running_task)
+
+                        failed_task['nu_backup_error'] = running_task["nu_backup_error"] + 1
+
+                        # update backup summary status for the host_id
+                        db.update_backup_status(failed_task)
+                        
+                        print(f"Backup task canceled due to timeout {task['host']}")
             
             print(f"Wainting for {len(tasks)} backup tasks to finish. Next check in {k.BKP_TASK_EXECUTION_WAIT_TIME} seconds.")
             # wait for some task to finish or be posted

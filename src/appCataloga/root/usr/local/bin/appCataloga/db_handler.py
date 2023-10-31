@@ -551,7 +551,7 @@ class dbHandler():
         # compose and excecute query to update the backup status in the BKPDATA database
         query = (f"UPDATE HOST SET "
                     f"NU_HOST_FILES = {nu_host_files + task_status['nu_host_files']}, "
-                    f"NU_PENDING_BACKUP = {task_status['pending_backup']}, "
+                    f"NU_PENDING_BACKUP = {task_status['nu_pending_backup']}, "
                     f"DT_LAST_BACKUP = NOW(), "
                     f"NU_BACKUP_ERROR = {nu_backup_error + task_status['nu_backup_error']} "
                     f"WHERE ID_HOST = {task_status['host_id']};")
