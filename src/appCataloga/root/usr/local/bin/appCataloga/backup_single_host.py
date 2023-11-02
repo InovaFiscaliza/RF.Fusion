@@ -116,14 +116,17 @@ def main():
         time_limit = daemon_cfg['HALT_TIMEOUT']*k.SECONDS_IN_MINUTE*k.ALLOTED_TIME_WINDOW
 
         def _check_remote_file(sftp, file_name, task):
-            try: 
-                sftp.lstat(file_name)
-                return True
-            except FileNotFoundError:
+            if len(file_name) == 0:
                 return False
-            except Exception as e:
-                message = f"Error checking {file_name} in remote host {task.data['host_add']['value']}. {str(e)}"
-                raise Exception(message)
+            else:
+                try: 
+                    sftp.lstat(file_name)
+                    return True
+                except FileNotFoundError:
+                    return False
+                except Exception as e:
+                    log.error(f"Error checking {file_name} in remote host {task.data['host_add']['value']}. {str(e)}")
+                    raise
 
         loop_count = 0
         # Check if exist the HALT_FLAG file in the remote host
@@ -136,8 +139,8 @@ def main():
             
             if loop_count > 6:
                 output = False
-                message = "Timeout waiting for HALT_FLAG file"
-                raise Exception(message)
+                log.error("Timeout waiting for HALT_FLAG file")
+                raise
 
         # store current time for HALT_FLAG timeout control
         halt_flag_time = time.time()
@@ -156,15 +159,19 @@ def main():
             due_backup_str = ''.join(due_backup_str.split('\x00'))
             due_backup_list = due_backup_str.splitlines()
             nu_host_files = len(due_backup_list)
-            
-            # initializa backup control variables
-            nu_backup_error = 0
-            done_backup_list = []
-            done_backup_list_remote = []
-            
+                        
+        except FileNotFoundError:
+            nu_host_files = 0
+            due_backup_list = []
+            pass
         except Exception as e:
-            message = f"Error reading {daemon_cfg['DUE_BACKUP']} in remote host {task.data['host_add']['value']}. {str(e)}"
-            raise Exception(message)
+            log.error(f"Error reading {daemon_cfg['DUE_BACKUP']} in remote host {task.data['host_add']['value']}. {str(e)}")
+            raise
+
+        # initializa backup control variables
+        nu_backup_error = 0
+        done_backup_list = []
+        done_backup_list_remote = []
 
         # Test if there are files to backup. Done before the loop to avoid unecessary creation of the target folder
         if nu_host_files > 0:
@@ -181,9 +188,8 @@ def main():
                 # get the first element in the due_backup_list
                 remote_file = due_backup_list[bkp_list_index]
                 
-                # test if remote_file exists in the remote host before attempting to copy
+                # test if remote_file exists before attempting to copy
                 if _check_remote_file(sftp, remote_file, task):
-                
                     # refresh the HALT_FLAG timeout control
                     time_since_start = time.time()-halt_flag_time
                     
@@ -193,7 +199,7 @@ def main():
                             halt_flag_file_handle.write(f'running backup for {time_since_start} seconds\n')
                             halt_flag_file_handle.close()
                         except:
-                            log.warning(f"Error reseting halt_flag for host {task.data['host_add']['value']}.{str(e)}")
+                            log.warning(f"Could not reset halt_flag for host {task.data['host_add']['value']}.{str(e)}")
                             pass
                     
                     # Compose target file name by adding the remote file name to the target folder
@@ -215,6 +221,9 @@ def main():
                         # skip to the next item for backup
                         bkp_list_index += 1
                         pass
+                else:
+                    # If file does not exixt, remove the element from the due_backup_list if the backup was successfull
+                    due_backup_list.pop(bkp_list_index)
 
             # Test if there is a BACKUP_DONE file in the remote host
             if not _check_remote_file(sftp, daemon_cfg['BACKUP_DONE'], task):
@@ -224,13 +233,17 @@ def main():
                 # Append the list of files in done_backup_list_remote to the BACKUP_DONE file in the remote host
                 backup_done_file = sftp.open(daemon_cfg['BACKUP_DONE'], 'a')
                 
-            backup_done_file.write('\n'.join(done_backup_list_remote))
+            backup_done_file.write('\n'.join(done_backup_list_remote) + f'\n')
             backup_done_file.close()
                 
             # Overwrite the DUE_BACKUP file in the remote host with the list of files in due_backup_list
-            due_backup_file = sftp.open(daemon_cfg['DUE_BACKUP'], 'w')
-            due_backup_file.write('\n'.join(due_backup_list) + f'\n')
-            due_backup_file.close()
+            if len(due_backup_list)>0:
+                due_backup_file = sftp.open(daemon_cfg['DUE_BACKUP'], 'w')
+                due_backup_file.write('\n'.join(due_backup_list) + f'\n')
+                due_backup_file.close()
+            else:
+                # Remove the DUE_BACKUP file in the remote host if there are no more files to backup
+                sftp.remove(daemon_cfg['DUE_BACKUP'])
             
             nu_backup_error = len(due_backup_list)/nu_host_files
         
@@ -247,19 +260,19 @@ def main():
                    'nu_backup_error': nu_backup_error,
                    'done_backup_list':done_backup_list}
 
-        return json.dumps(output)
+        print(json.dumps(output))
     
     except paramiko.AuthenticationException as e:
-        message = f"Authentication failed. Please check your credentials. {str(e)}"
-        raise ValueError(message)
+        log.error(f"Authentication failed. Please check your credentials. {str(e)}")
+        raise ValueError(log.dump_error())
         
     except paramiko.SSHException as e:
-        message = f"SSH error: {str(e)}"
-        raise ValueError(message)
+        log.error(f"SSH error: {str(e)}")
+        raise ValueError(log.dump_error())
         
     except Exception as e:
-        message = f"Unmapped error occurred: {str(e)}"
-        raise ValueError(message)
+        log.error(f"Unmapped error occurred: {str(e)}")
+        raise ValueError(log.dump_error())
     
 if __name__ == "__main__":
     main()
