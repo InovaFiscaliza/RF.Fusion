@@ -44,7 +44,7 @@ import json
 DEFAULT_HOST_ID = 1
 DEFAULT_HOST_ADD = "192.168.10.33"
 # DEFAULT_HOST_ADD = "172.24.5.71" # MG
-DEFAULT_PORT = 220
+DEFAULT_PORT = 22
 DEFAULT_USER = "sshUser"
 DEFAULT_PASS = "sshuserpass"  # user should have access to the host with rights to interact with the indexer daemon
 
@@ -122,7 +122,7 @@ def main():
             except FileNotFoundError:
                 return False
             except Exception as e:
-                message = f"Error checking {file_name} in remote host {task.data['host']['value']}. {str(e)}"
+                message = f"Error checking {file_name} in remote host {task.data['host_add']['value']}. {str(e)}"
                 raise Exception(message)
 
         loop_count = 0
@@ -163,12 +163,12 @@ def main():
             done_backup_list_remote = []
             
         except Exception as e:
-            message = f"Error reading {daemon_cfg['DUE_BACKUP']} in remote host {task.data['host']['value']}. {str(e)}"
+            message = f"Error reading {daemon_cfg['DUE_BACKUP']} in remote host {task.data['host_add']['value']}. {str(e)}"
             raise Exception(message)
 
         # Test if there are files to backup. Done before the loop to avoid unecessary creation of the target folder
-        if nu_host_files > 0:        
-            target_folder = f"{k.TARGET_FOLDER}/{task.data['host']['value']}"
+        if nu_host_files > 0:
+            target_folder = f"{k.TARGET_FOLDER}/{task.data['host_add']['value']}"
             
             # make sure that the target folder do exist
             if not os.path.exists(target_folder):
@@ -181,37 +181,40 @@ def main():
                 # get the first element in the due_backup_list
                 remote_file = due_backup_list[bkp_list_index]
                 
-                # refresh the HALT_FLAG timeout control
-                time_since_start = time.time()-halt_flag_time
+                # test if remote_file exists in the remote host before attempting to copy
+                if _check_remote_file(sftp, remote_file, task):
                 
-                if time_since_start > time_limit:
+                    # refresh the HALT_FLAG timeout control
+                    time_since_start = time.time()-halt_flag_time
+                    
+                    if time_since_start > time_limit:
+                        try:
+                            halt_flag_file_handle = sftp.open(daemon_cfg['HALT_FLAG'], 'w')
+                            halt_flag_file_handle.write(f'running backup for {time_since_start} seconds\n')
+                            halt_flag_file_handle.close()
+                        except:
+                            log.warning(f"Error reseting halt_flag for host {task.data['host_add']['value']}.{str(e)}")
+                            pass
+                    
+                    # Compose target file name by adding the remote file name to the target folder
+                    local_file = os.path.join(target_folder, os.path.basename(remote_file))
+                                        
                     try:
-                        halt_flag_file_handle = sftp.open(daemon_cfg['HALT_FLAG'], 'w')
-                        halt_flag_file_handle.write(f'running backup for {time_since_start} seconds\n')
-                        halt_flag_file_handle.close()
-                    except:
-                        log.warning(f"Error reseting halt_flag for host {task.data['host']['value']}.{str(e)}")
-                        pass
-                
-                # Compose target file name by adding the remote file name to the target folder
-                local_file = os.path.join(target_folder, os.path.basename(remote_file))
-                                    
-                try:
-                    sftp.get(remote_file, local_file)
+                        sftp.get(remote_file, local_file)
 
-                    # Remove the element from the due_backup_list if the backup was successfull
-                    due_backup_list.pop(bkp_list_index)
-                    
-                    # Add the file name to the done_backup remote and local lists
-                    done_backup_list.append({"remote":remote_file,"local":local_file})
-                    done_backup_list_remote.append(remote_file)
-                    
-                    log.entry(f"File '{os.path.basename(remote_file)}' copied to '{local_file}'")
-                except Exception as e:
-                    log.warning(f"Error copying '{remote_file}' from host {task.data['host']['value']}.{str(e)}")
-                    # skip to the next item for backup
-                    bkp_list_index += 1
-                    pass
+                        # Remove the element from the due_backup_list if the backup was successfull
+                        due_backup_list.pop(bkp_list_index)
+                        
+                        # Add the file name to the done_backup remote and local lists
+                        done_backup_list.append({"remote":remote_file,"local":local_file})
+                        done_backup_list_remote.append(remote_file)
+                        
+                        log.entry(f"File '{os.path.basename(remote_file)}' copied to '{local_file}'")
+                    except Exception as e:
+                        log.warning(f"Error copying '{remote_file}' from host {task.data['host_add']['value']}.{str(e)}")
+                        # skip to the next item for backup
+                        bkp_list_index += 1
+                        pass
 
             # Test if there is a BACKUP_DONE file in the remote host
             if not _check_remote_file(sftp, daemon_cfg['BACKUP_DONE'], task):
@@ -246,17 +249,17 @@ def main():
 
         return json.dumps(output)
     
-    except paramiko.AuthenticationException:
-        message = f"Authentication failed. Please check your credentials."
-        raise (message)
+    except paramiko.AuthenticationException as e:
+        message = f"Authentication failed. Please check your credentials. {str(e)}"
+        raise ValueError(message)
         
     except paramiko.SSHException as e:
         message = f"SSH error: {str(e)}"
-        raise (message)
+        raise ValueError(message)
         
     except Exception as e:
         message = f"Unmapped error occurred: {str(e)}"
-        raise (message)
+        raise ValueError(message)
     
 if __name__ == "__main__":
     main()

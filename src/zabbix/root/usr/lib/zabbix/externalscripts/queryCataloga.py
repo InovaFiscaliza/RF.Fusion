@@ -49,10 +49,11 @@ ENCODING = "utf-8"
 
 # Define default arguments
 DEFAULT_HOST_ID = "10"
-DEFAULT_HOST_ADD = "192.168.200.20"
+#DEFAULT_HOST_ADD = "192.168.200.20"
+DEFAULT_HOST_ADD = "192.168.10.33"
 DEFAULT_HOST_PORT = 22
-DEFAULT_USER = "root"  # user should have access to the host with rights to interact with the indexer daemon
-DEFAULT_PASSWD = "rootPass"
+DEFAULT_USER = "sshUser"  # user should have access to the host with rights to interact with the indexer daemon
+DEFAULT_PASSWD = "sshuserpass"
 DEFAULT_QUERY_TAG = "backup"
 DEFAULT_TIMEOUT = 2
 

@@ -20,6 +20,8 @@ DB_USER_NAME = 'appCataloga'
 DB_PASSWORD = '<app_pass>'
 
 # backup configuration
+BACKUP_CONTROL_MODULE = "/root/RF.Fusion/src/appCataloga/root/usr/local/bin/appCataloga/backup_control.py"
+BACKUP_SINGLE_HOST_MODULE = "/root/RF.Fusion/src/appCataloga/root/usr/local/bin/appCataloga/backup_single_host.py"
 MAX_PROCESS = 10
 BKP_TASK_EXECUTION_WAIT_TIME = 10
 BKP_TASK_REQUEST_WAIT_TIME = 300

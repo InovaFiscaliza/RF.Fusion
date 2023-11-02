@@ -34,8 +34,6 @@ import shared as sh
 import subprocess
 import json
 
-import paramiko
-import os
 import time
 
 def main():
@@ -64,18 +62,24 @@ def main():
                     "password": str}"""        
         # if there is a task, add it to the executor and task list
         if task:
-            print(f"Adding backup task for {task['host']}.")
+            print(f"Adding backup task for {task['host_add']}.")
 
+            command = ( f'bash -c '
+                        f'"source ~/miniconda3/etc/profile.d/conda.sh; '
+                        f'conda activate appdata; '
+                        f'python3 {k.BACKUP_SINGLE_HOST_MODULE} '
+                        f'host_id={task["host_id"]} '
+                        f'host_add={task["host_add"]} '
+                        f'port={task["port"]} '
+                        f'user={task["user"]} '
+                        f'pass={task["password"]}"')
+            
             # add task to tasks list
-            task["process_handle"] = subprocess.Popen([ "backup_single_host.py",
-                                                            f"host_id={task['host_id']}",
-                                                            f"host_add={task['host']}",
-                                                            f"port={task['port']}",
-                                                            f"user={task['user']}",
-                                                            f"password={task['password']}"],
+            task["process_handle"] = subprocess.Popen([command],
                                                       stdout=subprocess.PIPE,
                                                       stderr=subprocess.PIPE,
-                                                      text=True)
+                                                      text=True,
+                                                      shell=True)
             
             task["birth_time"] = time.time()
             task["nu_backup_error"] = 0
@@ -90,12 +94,14 @@ def main():
                 try:
                     task_output, task_error = running_task["process_handle"].communicate(timeout=5)
                 except subprocess.TimeoutExpired:
+                    task_output = False
+                    task_error = False
                     # in case of timeout, check if the task is running for more than the alotted time and remove it if it is the case, otherwise, pass
                     if time.time() - running_task["birth_time"] > k.BKP_TASK_EXECUTION_TIMEOUT:
                         running_task["process_handle"].kill()
                         tasks.remove(running_task)
                         db.remove_backup_task(task)
-                        print(f"Backup task canceled due to timeout {task['host']}")
+                        print(f"Backup task canceled due to timeout {task['host_add']}")
                     pass
                 
                 # if there is output from the task, process it
@@ -119,7 +125,7 @@ def main():
                         # update backup summary status for the host_id
                         db.update_backup_status(task_dict_output)
                         
-                        print(f"Completed backup from {running_task['host']}")
+                        print(f"Completed backup from {running_task['host_add']}")
                         
                     except json.JSONDecodeError as e:
                         print(f'{"Status":0,"Message":"Error: Malformed JSON received. Dumped: {task_output}"}')
@@ -127,7 +133,7 @@ def main():
                 elif task_error:
                     running_task["nu_backup_error"] = running_task["nu_backup_error"] + 1
 
-                    print(f"Error in backup from {task['host']}. Will try again later. Error: {task_error}")
+                    print(f"Error in backup from {task['host_add']}. Will try again later. Error: {task_error}")
                     
                     # if birth time is more than 5 minutes, remove task from tasks list
                     if time.time() - running_task["birth_time"] > k.BKP_TASK_EXECUTION_TIMEOUT:
@@ -143,7 +149,7 @@ def main():
                         # update backup summary status for the host_id
                         db.update_backup_status(failed_task)
                         
-                        print(f"Backup task canceled due to timeout {task['host']}")
+                        print(f"Backup task canceled due to timeout {task['host_add']}")
             
             print(f"Wainting for {len(tasks)} backup tasks to finish. Next check in {k.BKP_TASK_EXECUTION_WAIT_TIME} seconds.")
             # wait for some task to finish or be posted

@@ -39,8 +39,6 @@ import subprocess
 # Import modules for file processing 
 import config as k
 import db_handler as dbh
-import shared as csh
-import appCataloga.root.usr.local.bin.appCataloga.backup_control as backup_control
 
 #! TEST ONLY host_statistics initialization remove for production
 HOST_STATISTICS = { "Total Files":1,
@@ -49,9 +47,6 @@ HOST_STATISTICS = { "Total Files":1,
                     "Last Backup":"today",
                     "Last Processing":"today",
                     "Days since last backup":0}
-
-# initialize warning message variable
-wm = csh.warning_msg()
 
 interrupt_read, interrupt_write = socket.socketpair()
 
@@ -133,10 +128,7 @@ def serve_client(client_socket):
                 host[0]=client_socket.getpeername() # replace list first element with client IP address
                 
                 host_statistics = backup_queue(*host) # unpack list to pass as arguments to backup_queue
-                
-                # add warning message to dictionary
-                host_statistics["Message"] = wm.warning_msg
-                
+                                
                 response = f'{k.START_TAG}{json.dumps(host_statistics)}{k.END_TAG}'
                 
                 receiving_data = False
@@ -163,8 +155,6 @@ def serve_client(client_socket):
 
 def serve_forever(server_socket):
     
-    SINGLE_NON_BLOCKING_PROCESS = 1
-    
     sel = DefaultSelector()
     sel.register(interrupt_read, EVENT_READ)
     sel.register(server_socket, EVENT_READ)
@@ -173,7 +163,7 @@ def serve_forever(server_socket):
     serving_forever = True
 
     # Use ProcessPoolExecutor to limit the number of concurrent processes
-    while serving_forever and not running_backup:
+    while serving_forever or not running_backup:
         
         # Wait for events using selector.select() method
         for key, _ in sel.select():
@@ -206,7 +196,11 @@ def serve_forever(server_socket):
         # Whenever there is an event, check if the backup process is running and if not, start it.
         if not running_backup:
             # start the run_backup script in a separate process if it is not running
-            backup_process = subprocess.Popen(["run_backup"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            command = ( f'bash -c '
+                        f'"conda activate appdata; '
+                        f'python3 {k.BACKUP_CONTROL_MODULE}"')
+
+            backup_process = subprocess.Popen([command], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             
             print("Backup process started")
             running_backup = True
