@@ -199,7 +199,7 @@ def main():
                             halt_flag_file_handle.write(f'running backup for {time_since_start} seconds\n')
                             halt_flag_file_handle.close()
                         except:
-                            log.warning(f"Could not reset halt_flag for host {task.data['host_add']['value']}.{str(e)}")
+                            log.warning(f"Could not rese t halt_flag for host {task.data['host_add']['value']}.{str(e)}")
                             pass
                     
                     # Compose target file name by adding the remote file name to the target folder
