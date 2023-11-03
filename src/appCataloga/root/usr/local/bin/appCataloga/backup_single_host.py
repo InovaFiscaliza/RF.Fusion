@@ -81,6 +81,11 @@ def main():
     
     # create a warning message object
     log = sh.log()
+    
+    # overwrite the default messages. Change the value to True to enable the message for debugging
+    log.verbose['log'] = False
+    log.verbose['warning'] = False
+    log.verbose['error'] = False
 
     # create an argument object
     task = sh.argument(log, ARGUMENTS)
