@@ -38,7 +38,12 @@ import time
 
 def main():
     
-    failed_task = { 'host_id': 0,
+    DECREMENT_BACKUP_TASK = {   'host_id': 0,
+                                'nu_host_files': 0, 
+                                'nu_pending_backup': -1, 
+                                'nu_backup_error': 0}
+
+    FAILED_TASK = { 'host_id': 0,
                     'nu_host_files': 0, 
                     'nu_pending_backup': 0, 
                     'nu_backup_error': 1}
@@ -50,7 +55,7 @@ def main():
     tasks = []
  
     while True:
-        # Get one backup task
+        # Get one backup task from the queue in the database
         task = db.next_backup_task()
 
         """	
@@ -62,29 +67,37 @@ def main():
                     "password": str}"""        
         # if there is a task, add it to the executor and task list
         if task:
-            print(f"Adding backup task for {task['host_add']}.")
+            
+            # check if there is a task already running for the same host and remove it if it is the case
+            new_task = True
+            for running_task in tasks:
+                if running_task["host_id"] == task["host_id"]:
+                    db.remove_backup_task(task)
+                    new_task = False
+            
+            if new_task:
+                print(f"Adding backup task for {task['host_add']}.")
 
-            command = ( f'bash -c '
-                        f'"source ~/miniconda3/etc/profile.d/conda.sh; '
-                        f'conda activate appdata; '
-                        f'python3 {k.BACKUP_SINGLE_HOST_MODULE} '
-                        f'host_id={task["host_id"]} '
-                        f'host_add={task["host_add"]} '
-                        f'port={task["port"]} '
-                        f'user={task["user"]} '
-                        f'pass={task["password"]}"')
-            
-            # add task to tasks list
-            task["process_handle"] = subprocess.Popen([command],
-                                                      stdout=subprocess.PIPE,
-                                                      stderr=subprocess.PIPE,
-                                                      text=True,
-                                                      shell=True)
-            
-            task["birth_time"] = time.time()
-            task["nu_backup_error"] = 0
-            
-            tasks.append(task)
+                command = ( f'bash -c '
+                            f'"source ~/miniconda3/etc/profile.d/conda.sh; '
+                            f'conda activate appdata; '
+                            f'python3 {k.BACKUP_SINGLE_HOST_MODULE} '
+                            f'host_id={task["host_id"]} '
+                            f'host_add={task["host_add"]} '
+                            f'port={task["port"]} '
+                            f'user={task["user"]} '
+                            f'pass={task["password"]}"')
+                
+                # add task to tasks list
+                task["process_handle"] = subprocess.Popen([command],
+                                                        stdout=subprocess.PIPE,
+                                                        stderr=subprocess.PIPE,
+                                                        text=True,
+                                                        shell=True)
+                
+                task["birth_time"] = time.time()
+                task["nu_backup_error"] = 0
+                tasks.append(task)
 
         # if there are tasks running
         if len(tasks) > 0:
@@ -144,10 +157,10 @@ def main():
                         # remove task from database. If there are pending backup, it will be consider in the next cycle.
                         db.remove_backup_task(running_task)
 
-                        failed_task['nu_backup_error'] = running_task["nu_backup_error"] + 1
+                        FAILED_TASK['nu_backup_error'] = running_task["nu_backup_error"] + 1
 
                         # update backup summary status for the host_id
-                        db.update_backup_status(failed_task)
+                        db.update_backup_status(FAILED_TASK)
                         
                         print(f"Backup task canceled due to timeout {task['host_add']}")
             
