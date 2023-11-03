@@ -116,7 +116,7 @@ def main():
                         db.remove_backup_task(running_task)
 
                         # add the list of files to the processing task list
-                        db.add_processing(hostid=task_dict_output['host_id'],
+                        db.add_processing_task(hostid=task_dict_output['host_id'],
                                             done_backup_list=task_dict_output['done_backup_list'])
             
                         # update backup summary status for the host_id in case of previous errors
