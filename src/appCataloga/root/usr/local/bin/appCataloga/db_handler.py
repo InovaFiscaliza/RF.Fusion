@@ -456,6 +456,36 @@ class dbHandler():
 
         return(dbKeyFile)
     
+    # Internal method to add host to the database
+    def _add_host(self, hostid="1"):
+        """This method adds a new host to the database if it does not exist.
+            Initialization of host statistics is essential to avoid errors and simplify later database queries and updates.
+        
+        Args:
+            hostid (str): Zabbix host id primary key. Defaults to "host_id".
+
+        Returns:
+            none: none
+        """
+        # connect to the database
+        self.connect()
+        
+        # compose query to create a new host entry in the BPDATA database, setting all values to zero. If host already in the database, do nothing
+        query = (f"INSERT IGNORE INTO HOST "
+                    f"(ID_HOST, NU_HOST_FILES, "
+                    f"NU_PENDING_BACKUP, NU_BACKUP_ERROR, "
+                    f"NU_PENDING_PROCESSING, NU_PROCESSING_ERROR) "
+                    f"VALUES "
+                    f"('{hostid}', '0', "
+                    f"'0', '0', "
+                    f"'0', '0');")
+        
+        # update database
+        self.cursor.execute(query)
+        self.db_connection.commit()
+        
+        self.disconnect()
+    
     # Method add a new host to the backup queue
     def add_backup_task(self,
                         hostid="1",
@@ -475,15 +505,17 @@ class dbHandler():
         Returns:
             _type_: _description_
         """
+        
+        # create a new host entry in the database if it does not exist
+        self._add_host(hostid)
+
         # connect to the database
         self.connect()
         
-        # compose query to set host data in the BPDATA database        
-        query = (f"INSERT INTO HOST "
-                    f"(ID_HOST, NU_PENDING_BACKUP) "
-                    f"VALUES "
-                    f"('{hostid}', '{1}') "
-                    f"ON DUPLICATE KEY UPDATE NU_PENDING_BACKUP = NU_PENDING_BACKUP + 1;")
+        # compose query to add 1 to PENDING_BACKUP in the HOST table in BPDATA database for the given host_id
+        query = (f"UPDATE HOST "
+                    f"SET NU_PENDING_BACKUP = NU_PENDING_BACKUP + 1 "
+                    f"WHERE ID_HOST = '{hostid}';")
         
         # update database
         self.cursor.execute(query)
@@ -536,25 +568,28 @@ class dbHandler():
 
     # Method to update the backup status information in the database
     def update_backup_status(self, task_status):
+        """This method updates the backup status information in the database	
+        
+        Args:
+            task_status (dict): {   "host_id": host_id,
+                                    "nu_host_files": nu_host_files,
+                                    "nu_pending_backup": nu_pending_backup,
+                                    "nu_backup_error": nu_backup_error}
+        Returns:
+            none: none
+        """
+                
         # connect to the database
         self.connect()
-
-        # compose and excecute query to get the number of files previously processed from the host, as stored in the database
-        query = (f"SELECT NU_HOST_FILES, NU_BACKUP_ERROR "
-                    f"FROM HOST "
-                    f"WHERE ID_HOST = {task_status['host_id']};")
-        self.cursor.execute(query)
-        output = self.cursor.fetchone()
-        nu_host_files = output[0]
-        nu_backup_error = output[1]
         
         # compose and excecute query to update the backup status in the BKPDATA database
         query = (f"UPDATE HOST SET "
-                    f"NU_HOST_FILES = {nu_host_files + task_status['nu_host_files']}, "
-                    f"NU_PENDING_BACKUP = {task_status['nu_pending_backup']}, "
+                    f"NU_HOST_FILES = NU_HOST_FILES + {task_status['nu_host_files']}, "
+                    f"NU_PENDING_BACKUP = NU_PENDING_BACKUP + {task_status['nu_pending_backup']}, "
                     f"DT_LAST_BACKUP = NOW(), "
-                    f"NU_BACKUP_ERROR = {nu_backup_error + task_status['nu_backup_error']} "
+                    f"NU_BACKUP_ERROR = NU_BACKUP_ERROR + {task_status['nu_backup_error']} "
                     f"WHERE ID_HOST = {task_status['host_id']};")
+        
         self.cursor.execute(query)
         self.db_connection.commit()
         
