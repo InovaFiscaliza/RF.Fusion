@@ -47,12 +47,12 @@ if [ -e "$TEMP_CHANGED" ]; then
 fi
 
 # check if there is no cookie for the last time the script was successful and, in that case, create one setting reference date to Unix epoch
-if [ ! -e "$LAST_BACKUP_FLAG" ]; then
-    touch --date "1970-01-01" "$LAST_BACKUP_FLAG" || {
-        logger "indexerD Error: Could not create $LAST_BACKUP_FLAG"
+if [ ! -e "$LAST_FILE_SEARCH_FLAG" ]; then
+    touch --date "1970-01-01" "$LAST_FILE_SEARCH_FLAG" || {
+        logger "indexerD Error: Could not create $LAST_FILE_SEARCH_FLAG"
         exit
     }
-    logger "indexerD Warning: $LAST_BACKUP_FLAG not available. Starting backup from Unix Epoch"
+    logger "indexerD Warning: $LAST_FILE_SEARCH_FLAG not available. Starting backup from Unix Epoch"
 fi
 
 # check if there is a pending list of files to be backup
@@ -68,7 +68,7 @@ fi
 timestamp=$(date '+%Y%m%d%H%M.%S')
 
 # find files in the local repository that are newer than the last backup cookie saving the result. Use nice command to reduce priority and avoid system lock
-nice -n 15 find "$LOCAL_REPO" -type f -newer "$LAST_BACKUP_FLAG" -printf "%h\0/%f\0\n" >"$TEMP_CHANGED"
+nice -n 15 find "$LOCAL_REPO" -type f -newer "$LAST_FILE_SEARCH_FLAG" -printf "%h\0/%f\0\n" >"$TEMP_CHANGED"
 
 # create a sorted list of files, without duplicates, merging $TEMP_CHANGED and $DUE_BACKUP files
 nice -n 15 sort -o "$DUE_BACKUP" -u "$TEMP_CHANGED" "$DUE_BACKUP"
@@ -85,7 +85,7 @@ rm -f "$TEMP_CHANGED" || {
 }
 
 # update cookies timestamps with time previous to the file list. This will ensure that files that may have been created or modified during the indexing process are considered
-touch -t "$timestamp" "$LAST_BACKUP_FLAG"
+touch -t "$timestamp" "$LAST_FILE_SEARCH_FLAG"
 
 # remove the cookie flag that may halt a concurrent process
 rm -f "$HALT_FLAG" || {
