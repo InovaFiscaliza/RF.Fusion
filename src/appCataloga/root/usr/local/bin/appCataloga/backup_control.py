@@ -68,7 +68,7 @@ def main():
         # if there is a task, add it to the executor and task list
         if task:
             
-            # check if there is a task already running for the same host and remove it if it is the case
+            # check if there is a task already running for the same host and remove it if it is the case, avoiding the creation of multiple tasks for the same host
             new_task = True
             for running_task in tasks:
                 if running_task["host_id"] == task["host_id"]:
@@ -98,6 +98,9 @@ def main():
                 task["birth_time"] = time.time()
                 task["nu_backup_error"] = 0
                 tasks.append(task)
+                
+                # remove task from database
+                db.remove_backup_task(task)
 
         # if there are tasks running
         if len(tasks) > 0:
@@ -113,7 +116,6 @@ def main():
                     if time.time() - running_task["birth_time"] > k.BKP_TASK_EXECUTION_TIMEOUT:
                         running_task["process_handle"].kill()
                         tasks.remove(running_task)
-                        db.remove_backup_task(task)
                         print(f"Backup task canceled due to timeout {task['host_add']}")
                     pass
                 
@@ -125,9 +127,6 @@ def main():
                         # remove task from tasks list
                         tasks.remove(running_task)
                             
-                        # remove task from database. If there are pending backup, it will be consider in the next cycle.
-                        db.remove_backup_task(running_task)
-
                         # add the list of files to the processing task list
                         db.add_processing_task(hostid=task_dict_output['host_id'],
                                             done_backup_list=task_dict_output['done_backup_list'])
