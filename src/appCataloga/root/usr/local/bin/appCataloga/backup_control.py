@@ -127,7 +127,7 @@ def main():
                         # remove task from tasks list
                         tasks.remove(running_task)
                             
-                        # add the list of files to the processing task list
+                        # add the list of files to the processing task list TODO: if len(task_dict_output['done_backup_list']) > 0:
                         db.add_processing_task(hostid=task_dict_output['host_id'],
                                             done_backup_list=task_dict_output['done_backup_list'])
             
