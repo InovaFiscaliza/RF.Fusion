@@ -629,6 +629,7 @@ class dbHandler():
                  f"DT_LAST_BACKUP = NOW() "
                  f"WHERE ID_HOST = '{task['host_id']}';")
         self.cursor.execute(query)
+        self.db_connection.commit()
         
         self.disconnect()
 
@@ -723,6 +724,7 @@ class dbHandler():
                     f"DT_LAST_PROCESSING = NOW() "
                     f"WHERE ID_HOST = '{host_id}';")
         self.cursor.execute(query)
+        self.db_connection.commit()
         
         self.disconnect()
 
