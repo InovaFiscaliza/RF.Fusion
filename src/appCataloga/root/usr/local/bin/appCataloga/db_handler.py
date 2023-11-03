@@ -582,12 +582,30 @@ class dbHandler():
         # connect to the database
         self.connect()
         
+        if task_status['nu_host_files'] > 0:
+            host_files_operation = "+"
+        else:
+            host_files_operation = "-"
+            task_status['nu_host_files'] = -task_status['nu_host_files']
+
+        if task_status['nu_pending_backup'] > 0:
+            pending_backup_operation = "+"
+        else:
+            pending_backup_operation = "-"
+            task_status['nu_pending_backup'] = -task_status['nu_pending_backup']
+
+        if task_status['nu_backup_error'] > 0:
+            backup_error_operation = "+"
+        else:
+            backup_error_operation = "-"
+            task_status['nu_backup_error'] = -task_status['nu_backup_error']
+
         # compose and excecute query to update the backup status in the BKPDATA database
         query = (f"UPDATE HOST SET "
-                    f"NU_HOST_FILES = NU_HOST_FILES + {task_status['nu_host_files']}, "
-                    f"NU_PENDING_BACKUP = NU_PENDING_BACKUP + {task_status['nu_pending_backup']}, "
+                    f"NU_HOST_FILES = NU_HOST_FILES {host_files_operation} {task_status['nu_host_files']}, "
+                    f"NU_PENDING_BACKUP = NU_PENDING_BACKUP {pending_backup_operation} {task_status['nu_pending_backup']}, "
                     f"DT_LAST_BACKUP = NOW(), "
-                    f"NU_BACKUP_ERROR = NU_BACKUP_ERROR + {task_status['nu_backup_error']} "
+                    f"NU_BACKUP_ERROR = NU_BACKUP_ERROR {backup_error_operation} {task_status['nu_backup_error']} "
                     f"WHERE ID_HOST = {task_status['host_id']};")
         
         self.cursor.execute(query)
