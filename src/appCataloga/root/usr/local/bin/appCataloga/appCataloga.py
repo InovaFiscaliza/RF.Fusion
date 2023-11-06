@@ -197,10 +197,15 @@ def serve_forever(server_socket):
         if not running_backup:
             # start the run_backup script in a separate process if it is not running
             command = ( f'bash -c '
-                        f'"conda activate appdata; '
-                        f'python3 {k.BACKUP_CONTROL_MODULE}"')
+                        f'"source ~/miniconda3/etc/profile.d/conda.sh; '
+                        f'conda activate appdata; '
+                        f'python3 {k.BACKUP_CONTROL_MODULE}"')                
 
-            backup_process = subprocess.Popen([command], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            backup_process = subprocess.Popen([command],
+                                              stdout=subprocess.PIPE,
+                                              stderr=subprocess.PIPE,
+                                              text=True,
+                                              shell=True)
             
             print("Backup process started")
             running_backup = True
