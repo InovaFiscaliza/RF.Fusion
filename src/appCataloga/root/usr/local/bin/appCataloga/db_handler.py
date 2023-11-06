@@ -554,14 +554,14 @@ class dbHandler():
         task = self.cursor.fetchone()
         self.disconnect()
 
-        if len(task) > 0:
-            output = {"task_id": task[0],
-                    "host_id": task[1],
-                    "host_add": task[2],
-                    "port": task[3],
-                    "user": task[4],
-                    "password": task[5]}
-        else:
+        try:
+            output = {  "task_id": task[0],
+                        "host_id": task[1],
+                        "host_add": task[2],
+                        "port": task[3],
+                        "user": task[4],
+                        "password": task[5]}
+        except:
             output = False
         
         return output
