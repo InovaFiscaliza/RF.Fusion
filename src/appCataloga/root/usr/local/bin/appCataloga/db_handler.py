@@ -750,15 +750,20 @@ class dbHandler():
         
         output = self.cursor.fetchone()
         
-        output = {'Host ID': output[0],
+        # get the output in a dictionary format, converting datetime objects to epoch time
+        try:
+            output = {'Host ID': output[0],
                   'Total Files': output[1],
                   'Files to backup': output[2],
-                  'Last Backup date': output[3],
+                  'Last Backup date': output[3].timestap(),
                   'Files to process': output[4],
-                  'Last Processing date': output[5],
+                  'Last Processing date': output[5].timestap(),
                   'Status': 1, 
                   'Message': 'OK'}
-        
+        except:
+            output = {'Status': 0, 
+                  'Message': 'Error: Host not found in database'}
+            
         self.disconnect()
         
         return output
