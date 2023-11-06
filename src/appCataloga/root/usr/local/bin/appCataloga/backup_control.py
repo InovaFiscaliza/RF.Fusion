@@ -168,7 +168,7 @@ def main():
             time.sleep(k.BKP_TASK_EXECUTION_WAIT_TIME)
             
         else:
-            print("No backup task. Waiting for {k.BKP_TASK_REQUEST_WAIT_TIME/k.SECONDS_IN_MINUTE} minutes.")
+            print(f"No backup task. Waiting for {k.BKP_TASK_REQUEST_WAIT_TIME/k.SECONDS_IN_MINUTE} minutes.")
             # wait for a task to be posted
             time.sleep(k.BKP_TASK_REQUEST_WAIT_TIME)
 
