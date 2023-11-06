@@ -644,25 +644,27 @@ class dbHandler():
         Returns:
             _type_: _description_
         """
-        # connect to the database
-        self.connect()
         
-        # convert done_backup_list list of dicionaries into a list of tuples
-        for item in done_backup_list:
-            item = (hostid,
-                    os.path.dirname(item["remote"]), os.path.basename(item["remote"]),
-                    os.path.dirname(item["local"]), os.path.basename(item["local"]))
-                    
-        # compose query to set the process task in the database
-        query = (f"INSERT INTO BKP_TASK "
-                    f"(FK_HOST, NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME, DT_PRC_TASK) "
-                    f"VALUES "
-                    f"(%s, %s, %s, %s, %s, NOW());")
+        if len(done_backup_list) > 0:
+            # connect to the database
+            self.connect()
+        
+            # convert done_backup_list list of dicionaries into a list of tuples
+            for item in done_backup_list:
+                item = (hostid,
+                        os.path.dirname(item["remote"]), os.path.basename(item["remote"]),
+                        os.path.dirname(item["local"]), os.path.basename(item["local"]))
+                        
+            # compose query to set the process task in the database using executemany method
+            query = (f"INSERT INTO PRC_TASK "
+                        f"(FK_HOST, NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME, DT_PRC_TASK) "
+                        f"VALUES "
+                        f"(%s, %s, %s, %s, %s, NOW());")
 
-        # update database
-        self.cursor.executemany(query,done_backup_list)
-        self.db_connection.commit()
-        self.disconnect()
+            # update database
+            self.cursor.executemany(query,done_backup_list)
+            self.db_connection.commit()
+            self.disconnect()
 
     # Method to get next host in the list for processing
     def next_processing_task(self):        
