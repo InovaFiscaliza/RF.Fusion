@@ -38,6 +38,16 @@ import time
 
 def main():
     
+    # create a warning message object
+    log = sh.log()
+    
+    # overwrite the default messages. Change the value to True to enable the message for debugging
+    TEST_VERBOSITY = False
+    log.verbose['log'] = TEST_VERBOSITY
+    log.verbose['warning'] = TEST_VERBOSITY
+    log.verbose['error'] = TEST_VERBOSITY
+
+    
     DECREMENT_BACKUP_TASK = {   'host_id': 0,
                                 'nu_host_files': 0, 
                                 'nu_pending_backup': -1, 
@@ -79,7 +89,7 @@ def main():
             
             # if it really is a new task and the total number of tasks running didn't top the capacity alloted
             if new_task and (task_counter < k.BKP_MAX_PROCESS):
-                print(f"Adding backup task for {task['host_add']}.")
+                log.entry(f"Adding backup task for {task['host_add']}.")
 
                 command = ( f'bash -c '
                             f'"source ~/miniconda3/etc/profile.d/conda.sh; '
@@ -120,7 +130,7 @@ def main():
                     if time.time() - running_task["birth_time"] > k.BKP_TASK_EXECUTION_TIMEOUT:
                         running_task["process_handle"].kill()
                         tasks.remove(running_task)
-                        print(f"Backup task canceled due to timeout {task['host_add']}")
+                        log.warning(f"Backup task canceled due to timeout {task['host_add']}")
                     pass
                 
                 # if there is output from the task, process it
@@ -141,38 +151,42 @@ def main():
                         # update backup summary status for the host_id
                         db.update_backup_status(task_dict_output)
                         
-                        print(f"Completed backup from {running_task['host_add']}")
+                        log.entry(f"Completed backup from {running_task['host_add']}")
                         
                     except json.JSONDecodeError as e:
-                        print(f'{"Status":0,"Message":"Error: Malformed JSON received. Dumped: {task_output}"}')
+                        log.error(f"Malformed JSON received. Dumped\n***Output: {task_output}\n***Error: {e}")
                     
                 elif task_error:
                     running_task["nu_backup_error"] += 1
 
-                    print(f"Error in backup from {task['host_add']}. Will try again later. Error: {task_error}")
+                    log.entry(f"Error in backup from {task['host_add']}. Will try again later. Error: {task_error}")
                     
-                    # if birth time is more than 5 minutes, remove task from tasks list
-                    if time.time() - running_task["birth_time"] > k.BKP_TASK_EXECUTION_TIMEOUT:
+                # if birth time is more than alowed time, remove task from tasks list
+                execution_time = time.time() - running_task["birth_time"]
+                if  execution_time > k.BKP_TASK_EXECUTION_TIMEOUT:
+                    
+                    # kill the process
+                    running_task["process_handle"].kill()
+                    
+                    # remove task from tasks list
+                    tasks.remove(running_task)
                         
-                        # remove task from tasks list
-                        tasks.remove(running_task)
-                            
-                        # remove task from database. If there are pending backup, it will be consider in the next cycle.
-                        db.remove_backup_task(running_task)
+                    # remove task from database. If there are pending backup, it will be consider in the next cycle.
+                    db.remove_backup_task(running_task)
 
-                        FAILED_TASK['nu_backup_error'] = running_task["nu_backup_error"] + 1
+                    FAILED_TASK["nu_backup_error"] = running_task["nu_backup_error"] + 1
 
-                        # update backup summary status for the host_id
-                        db.update_backup_status(FAILED_TASK)
-                        
-                        print(f"Backup task canceled due to timeout {task['host_add']}")
+                    # update backup summary status for the host_id
+                    db.update_backup_status(FAILED_TASK)
+                    
+                    log.warning(f"Backup task killed due to timeout for host {task['host_add']} after {execution_time/60} minutes.")
             
-            print(f"Wainting for {len(tasks)} backup tasks to finish. Next check in {k.BKP_TASK_EXECUTION_WAIT_TIME} seconds.")
+            log.entry(f"Wainting for {len(tasks)} backup tasks to finish. Next check in {k.BKP_TASK_EXECUTION_WAIT_TIME} seconds.")
             # wait for some task to finish or be posted
             time.sleep(k.BKP_TASK_EXECUTION_WAIT_TIME)
             
         else:
-            print(f"No backup task. Waiting for {k.BKP_TASK_REQUEST_WAIT_TIME/k.SECONDS_IN_MINUTE} minutes.")
+            log.entry(f"No backup task. Waiting for {k.BKP_TASK_REQUEST_WAIT_TIME/k.SECONDS_IN_MINUTE} minutes.")
             # wait for a task to be posted
             time.sleep(k.BKP_TASK_REQUEST_WAIT_TIME)
 
