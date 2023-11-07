@@ -19,31 +19,60 @@ class log:
         void: Variable warning_msg is updated with the new warning message
     """
     
-    def __init__(self) -> None:
+    def __init__(self,verbose=k.LOG_VERBOSE,target=k.LOG_TARGET) -> None:
+        
         self.log_msg = []
         self.warning_msg = []
         self.error_msg = []
-        self.verbose = {"log":k.VERBOSE,
-                        "warning":k.VERBOSE,
-                        "error":k.VERBOSE}
+        
+        if verbose.isinstance(dict):
+            self.verbose = verbose
+            
+        elif verbose.isinstance(bool):
+            self.verbose = {"log":verbose,
+                            "warning":verbose,
+                            "error":verbose}
+        else:
+            self.verbose = {"log":False,
+                            "warning":False,
+                            "error":False}
+            self.warning(f"Invalid verbose value '{verbose}'. Using default 'False'")
+        
+        if target == "file":
+            self.log_file = open(k.LOG_FILE, "a")
+            self.target_file = True
+        elif target == "screen":
+            self.target_file = False
+        else:
+            self.target_file = False
+            self.warning(f"Invalid target value '{target}'. Using default 'screen'")
         
     def entry(self, new_entry):
         self.log_msg.append((time.time(),new_entry))
         
         if self.verbose["log"]:
-            print(new_entry)
+            if self.target_file:
+                self.log_file.write(new_entry)
+            else:
+                print(new_entry)
 
     def warning(self, new_entry):
         self.warning_msg.append((time.time(),new_entry))
         
         if self.verbose["warning"]:
-            print(new_entry) 
+            if self.target_file:
+                self.log_file.write(new_entry)
+            else:            
+                print(new_entry) 
             
     def error(self, new_entry):
         self.error_msg.append((time.time(),new_entry))
         
         if self.verbose["error"]:
-            print(new_entry)
+            if self.target_file:
+                self.log_file.write(new_entry)
+            else:
+                print(new_entry)
 
     def dump_log(self):
         message = ', '.join([str(elem[1]) for elem in self.log_msg])
