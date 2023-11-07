@@ -514,34 +514,49 @@ class dbHandler():
                 
             try:
                 output['Total Files'] = int(output[1])
+            except IndexError:
+                raise Exception(f"Error retrieving 'Total Files' for host {hostid} from database")
             except:
                 output['Total Files'] = "N/A"
+                pass
 
             try:
                 output['Files to backup'] = int(output[2])
+            except IndexError:
+                raise Exception(f"Error retrieving 'Files to backup' for host {hostid} from database")                
             except:
                 output['Files to backup'] = "N/A"
+                pass
             
             try:
                 output['Last Backup date'] = output[3].timestamp()
+            except IndexError:
+                raise Exception(f"Error retrieving 'Last Backup date' for host {hostid} from database")
             except:
                 output['Last Backup date'] = "N/A"
+                pass
                 
             try:
                 output['Files to process'] = int(output[4])
+            except IndexError:
+                raise Exception(f"Error retrieving 'Files to process' for host {hostid} from database")
             except:
                 output['Files to process'] = "N/A"
+                pass
                 
             try:
                 output['Last Processing date'] = output[5].timestamp()
+                pass
+            except IndexError:
+                raise Exception(f"Error retrieving 'Last Processing date' for host {hostid} from database")
             except:
                 output['Last Processing date'] = "N/A"
             
             output['Status'] = 1
             output['Message'] = ""
-        except:
-            output = {  'Status': 0, 
-                        'Message': 'Error: Host not found in database'}
+        except Exception as e:
+            output = {  "Status": 0, 
+                        "Message": f"Error: {e}"}
 
         self.disconnect()
         
