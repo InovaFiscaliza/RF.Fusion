@@ -80,7 +80,7 @@ ARGUMENTS = {
 def main():
     
     # create a warning message object
-    log = sh.log()
+    log = sh.log(verbose=True, target='file')
     
     # overwrite the default messages. Change the value to True to enable the message for debugging
     TEST_VERBOSITY = False
