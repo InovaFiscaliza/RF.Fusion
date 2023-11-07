@@ -2,7 +2,12 @@
 """	Constants used in the appCataloga scripts """
 
 # output processing information
-VERBOSE = True
+_verbose = True
+LOG_VERBOSE = {"log":_verbose,
+           "warning":_verbose,
+           "error":_verbose}
+
+LOG_TARGET = 'file' # 'file' or 'screen'
 
 # appCataloga socket service configuration
 SERVER_PORT = 5555
