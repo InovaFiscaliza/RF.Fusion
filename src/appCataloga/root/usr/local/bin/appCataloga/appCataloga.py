@@ -173,12 +173,12 @@ def serve_forever(server_socket):
                 if serving_forever:
                     serving_forever = False
                     if running_backup:
-                        print("Server will shut down... Waiting for running backup to finish.")
+                        print("Server will shut down... Waiting for running tasks to finish.")
                     else:
                         print("Shutting down....")
                         
                 else:
-                    print("Shutting down but waiting for backup to finish... please wait.")
+                    print("Shutting down but waiting for tasks to finish... please wait.")
 
             # if client tries to connect, accept the connection and serve the client
             if key.fileobj == server_socket:

@@ -4,8 +4,9 @@ Shared functions for appCataloga scripts
 """
 import sys
 sys.path.append('/etc/appCataloga')
+import os
 
-import time
+from datetime import datetime
 
 import config as k
 
@@ -31,12 +32,30 @@ class log:
         void: Variable warning_msg is updated with the new warning message
     """
     
-    def __init__(self,verbose=k.LOG_VERBOSE,target=k.LOG_TARGET) -> None:
+    def __init__(self,verbose=k.LOG_VERBOSE,
+                 target_screen=False, 
+                 target_file=False, 
+                 log_file_name = k.LOG_FILE):
+        
+        """Initialize log object
+
+        Args:
+            verbose (bool, optional): Set verbose level for debug, warning and error. Defaults to LOG_VERBOSE in config file.
+            target_screen (bool, optional): Set the output target to screen. Defaults to False.
+            target_file (bool, optional): Set the output target to file. Defaults to False.
+            log_file_name (str, optional): Set the output file name. Defaults to LOG_FILE in config file.
+        """        
+        
+        self.target_screen = target_screen
+        self.target_file = target_file
+        self.log_file_name = log_file_name
         
         self.log_msg = []
         self.warning_msg = []
         self.error_msg = []
         
+        self.pid =  os.getpid()
+                
         if isinstance(verbose,dict):
             self.verbose = verbose
             
@@ -46,65 +65,74 @@ class log:
                             "error":verbose}
         else:
             self.verbose = {"log":False,
-                            "warning":False,
-                            "error":False}
+                            "wng":False,
+                            "err":False}
             self.warning(f"Invalid verbose value '{verbose}'. Using default 'False'")
         
-        if target == "file":
+        if target_file:
             try:
-                self.log_file = open(k.LOG_FILE, "a")
+                now = datetime.now()
+                date_time = now.strftime("%Y/%m/%d %H:%M:%S")
+                message = f"{date_time}: p.{self.pid}: Log started\n"
+                
+                self.log_file = open(log_file_name, "a")
+                self.log_file.write(message)
+                self.log_file.close()
                 self.target_file = True
             except:
                 self.target_file = False
-                self.warning(f"LOG_FILE not defined in config.py. Using 'screen'")
-        elif target == "screen":
-            self.target_file = False
-        elif target.isinstance(str):
-            try:
-                self.log_file = open(target, "a")
-                self.target_file = True
-            except:
-                self.target_file = False
-                self.warning(f"Invalid target value '{target}'. Using default 'screen'")
-        else:
-            self.target_file = False
-            self.warning(f"Invalid target value '{target}'. Using default 'screen'")
+                self.warning(f"Invalid log_file_name value '{log_file_name}'. Disabling file logging")
         
     def entry(self, new_entry):
-        log_time = time.time()
-        self.log_msg.append((log_time,new_entry))
+        
+        now = datetime.now()
+        self.log_msg.append((now,self.pid,new_entry))
         
         if self.verbose["log"]:
+            date_time = now.strftime("%Y/%m/%d %H:%M:%S")
             if self.target_file:
-                new_entry = f"{log_time}: {new_entry}\n"
-                self.log_file.write(new_entry)
-            else:
-                new_entry = f"{font.OKGREEN}{log_time}:{font.ENDC} {new_entry}\n"
-                print(new_entry)
+                message = f"{date_time} | p.{self.pid} | {new_entry}\n"
+                self.log_file = open(self.log_file_name, "a")
+                self.log_file.write(message)
+                self.log_file.close()
+        
+            if self.target_screen:
+                message = f"{font.OKGREEN}{date_time} | p.{self.pid} | {font.ENDC}{new_entry}"
+                print(message)
 
     def warning(self, new_entry):
-        log_time = time.time()
-        self.warning_msg.append((log_time,new_entry))
         
-        if self.verbose["warning"]:
-            if self.target_file:
-                new_entry = f"{log_time}: {new_entry}\n"
-                self.log_file.write(new_entry)
-            else:
-                new_entry = f"{font.WARNING}{log_time}:{font.ENDC} {new_entry}\n"
-                print(new_entry) 
-            
-    def error(self, new_entry):
-        log_time = time.time()
-        self.error_msg.append((log_time,new_entry))
+        now = datetime.now()
+        self.warning_msg.append((now,self.pid,new_entry))
         
-        if self.verbose["error"]:
+        if self.verbose["wng"]:
+            date_time = now.strftime("%Y/%m/%d %H:%M:%S")
             if self.target_file:
-                new_entry = f"{log_time}: {new_entry}\n"
-                self.log_file.write(new_entry)
-            else:
-                new_entry = f"{font.FAIL}{log_time}:{font.ENDC} {new_entry}\n"
+                message = f"{date_time} | p.{self.pid} | {new_entry}\n"
+                self.log_file = open(self.log_file_name, "a")
+                self.log_file.write(message)
+                self.log_file.close()
+        
+            if self.target_screen:
+                message = f"{font.WARNING}{date_time} | p.{self.pid} | {font.ENDC}{new_entry}"
                 print(new_entry)
+                            
+    def error(self, new_entry):
+        
+        now = datetime.now()
+        self.error_msg.append((now,self.pid,new_entry))
+        
+        if self.verbose["err"]:
+            date_time = now.strftime("%Y/%m/%d %H:%M:%S")
+            if self.target_file:
+                message = f"{date_time} | p.{self.pid} | {new_entry}\n"
+                self.log_file = open(self.log_file_name, "a")
+                self.log_file.write(message)
+                self.log_file.close()
+        
+            if self.target_screen:
+                message = f"{font.FAIL}{date_time} | p.{self.pid} | {font.ENDC}{new_entry}"
+                print(message)
 
     def dump_log(self):
         message = ', '.join([str(elem[1]) for elem in self.log_msg])
