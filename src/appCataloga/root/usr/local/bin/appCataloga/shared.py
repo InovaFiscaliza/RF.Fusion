@@ -9,6 +9,18 @@ import time
 
 import config as k
 
+
+class font:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    
 # Class to compose warning messages
 NO_MSG = "none"
 
@@ -25,10 +37,10 @@ class log:
         self.warning_msg = []
         self.error_msg = []
         
-        if verbose.isinstance(dict):
+        if isinstance(verbose,dict):
             self.verbose = verbose
             
-        elif verbose.isinstance(bool):
+        elif isinstance(verbose,bool):
             self.verbose = {"log":verbose,
                             "warning":verbose,
                             "error":verbose}
@@ -39,39 +51,59 @@ class log:
             self.warning(f"Invalid verbose value '{verbose}'. Using default 'False'")
         
         if target == "file":
-            self.log_file = open(k.LOG_FILE, "a")
-            self.target_file = True
+            try:
+                self.log_file = open(k.LOG_FILE, "a")
+                self.target_file = True
+            except:
+                self.target_file = False
+                self.warning(f"LOG_FILE not defined in config.py. Using 'screen'")
         elif target == "screen":
             self.target_file = False
+        elif target.isinstance(str):
+            try:
+                self.log_file = open(target, "a")
+                self.target_file = True
+            except:
+                self.target_file = False
+                self.warning(f"Invalid target value '{target}'. Using default 'screen'")
         else:
             self.target_file = False
             self.warning(f"Invalid target value '{target}'. Using default 'screen'")
         
     def entry(self, new_entry):
-        self.log_msg.append((time.time(),new_entry))
+        log_time = time.time()
+        self.log_msg.append((log_time,new_entry))
         
         if self.verbose["log"]:
             if self.target_file:
+                new_entry = f"{log_time}: {new_entry}\n"
                 self.log_file.write(new_entry)
             else:
+                new_entry = f"{font.OKGREEN}{log_time}:{font.ENDC} {new_entry}\n"
                 print(new_entry)
 
     def warning(self, new_entry):
-        self.warning_msg.append((time.time(),new_entry))
+        log_time = time.time()
+        self.warning_msg.append((log_time,new_entry))
         
         if self.verbose["warning"]:
             if self.target_file:
+                new_entry = f"{log_time}: {new_entry}\n"
                 self.log_file.write(new_entry)
-            else:            
+            else:
+                new_entry = f"{font.WARNING}{log_time}:{font.ENDC} {new_entry}\n"
                 print(new_entry) 
             
     def error(self, new_entry):
-        self.error_msg.append((time.time(),new_entry))
+        log_time = time.time()
+        self.error_msg.append((log_time,new_entry))
         
         if self.verbose["error"]:
             if self.target_file:
+                new_entry = f"{log_time}: {new_entry}\n"
                 self.log_file.write(new_entry)
             else:
+                new_entry = f"{font.FAIL}{log_time}:{font.ENDC} {new_entry}\n"
                 print(new_entry)
 
     def dump_log(self):
