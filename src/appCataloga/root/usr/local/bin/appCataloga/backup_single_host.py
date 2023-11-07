@@ -83,9 +83,10 @@ def main():
     log = sh.log()
     
     # overwrite the default messages. Change the value to True to enable the message for debugging
-    log.verbose['log'] = False
-    log.verbose['warning'] = False
-    log.verbose['error'] = False
+    TEST_VERBOSITY = False
+    log.verbose['log'] = TEST_VERBOSITY
+    log.verbose['warning'] = TEST_VERBOSITY
+    log.verbose['error'] = TEST_VERBOSITY
 
     # create an argument object
     task = sh.argument(log, ARGUMENTS)
