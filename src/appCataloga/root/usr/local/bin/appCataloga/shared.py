@@ -73,7 +73,7 @@ class log:
             try:
                 now = datetime.now()
                 date_time = now.strftime("%Y/%m/%d %H:%M:%S")
-                message = f"{date_time}: p.{self.pid}: Log started\n"
+                message = f"{date_time} | p.{self.pid} | Log started\n"
                 
                 self.log_file = open(log_file_name, "a")
                 self.log_file.write(message)
