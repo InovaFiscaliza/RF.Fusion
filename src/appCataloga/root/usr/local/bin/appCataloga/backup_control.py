@@ -53,6 +53,7 @@ def main():
 
     # create a list to hold the handles to the backup processes
     tasks = []
+    task_counter = 0
  
     while True:
         # Get one backup task from the queue in the database
@@ -65,7 +66,8 @@ def main():
                     "port": str,
                     "user": str,
                     "password": str}"""        
-        # if there is a task, add it to the executor and task list
+        
+        # if there is a task in the database
         if task:
             
             # check if there is a task already running for the same host and remove it if it is the case, avoiding the creation of multiple tasks for the same host
@@ -75,7 +77,8 @@ def main():
                     db.remove_backup_task(task)
                     new_task = False
             
-            if new_task:
+            # if it really is a new task and the total number of tasks running didn't top the capacity alloted
+            if new_task and (task_counter < k.BKP_MAX_PROCESS):
                 print(f"Adding backup task for {task['host_add']}.")
 
                 command = ( f'bash -c '
@@ -97,8 +100,9 @@ def main():
                 
                 task["birth_time"] = time.time()
                 task["nu_backup_error"] = 0
-                tasks.append(task)
-                
+                tasks.append(task)                
+                task_counter += 1 
+                          
                 # remove task from database
                 db.remove_backup_task(task)
 
@@ -143,7 +147,7 @@ def main():
                         print(f'{"Status":0,"Message":"Error: Malformed JSON received. Dumped: {task_output}"}')
                     
                 elif task_error:
-                    running_task["nu_backup_error"] = running_task["nu_backup_error"] + 1
+                    running_task["nu_backup_error"] += 1
 
                     print(f"Error in backup from {task['host_add']}. Will try again later. Error: {task_error}")
                     
