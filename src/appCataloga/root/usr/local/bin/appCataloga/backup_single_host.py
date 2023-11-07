@@ -119,7 +119,7 @@ def main():
         daemon_cfg = sh.parse_cfg(daemon_cfg_str)
 
         # Set the time limit for HALT_FLAG timeout control according to the HALT_TIMEOUT parameter in the remote host
-        time_limit = daemon_cfg['HALT_TIMEOUT']*k.SECONDS_IN_MINUTE*k.ALLOTED_TIME_WINDOW
+        time_limit = daemon_cfg['HALT_TIMEOUT']*k.SECONDS_IN_MINUTE*k.BKP_HOST_ALLOTED_TIME_FRACTION
 
         def _check_remote_file(sftp, file_name, task):
             if len(file_name) == 0:
