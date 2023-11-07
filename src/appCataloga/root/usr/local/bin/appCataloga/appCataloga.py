@@ -202,7 +202,7 @@ def serve_forever(server_socket):
                         f'python3 {k.BACKUP_CONTROL_MODULE}"')                
 
             backup_process = subprocess.Popen([command],
-                                              stdout=subprocess.PIPE,
+                                              stdout=subprocess.DEVNULL,
                                               stderr=subprocess.PIPE,
                                               text=True,
                                               shell=True)
