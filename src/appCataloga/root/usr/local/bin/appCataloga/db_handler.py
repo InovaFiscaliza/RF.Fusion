@@ -650,8 +650,8 @@ class dbHandler():
             self.connect()
         
             # convert done_backup_list list of dicionaries into a list of tuples
-            for item in done_backup_list:
-                item = (hostid,
+            for idx, item in enumerate(done_backup_list):
+                done_backup_list[idx] = (hostid,
                         os.path.dirname(item["remote"]), os.path.basename(item["remote"]),
                         os.path.dirname(item["local"]), os.path.basename(item["local"]))
                         
