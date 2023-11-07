@@ -485,6 +485,67 @@ class dbHandler():
         self.db_connection.commit()
         
         self.disconnect()
+
+    # get host status data from the database
+    def get_host_task_status(self,hostid="host_id"):        
+        
+        # connect to the database
+        self.connect()
+
+        # compose query to get host data from the BKPDATA database
+        query = (f"SELECT "
+                    f"ID_HOST, "
+                    f"NU_HOST_FILES, "
+                    f"NU_PENDING_BACKUP, "
+                    f"DT_LAST_BACKUP, "
+                    f"NU_PENDING_PROCESSING, "
+                    f"DT_LAST_PROCESSING "
+                    f"FROM HOST "
+                    f"WHERE ID_HOST = '{hostid}';")
+        
+        # get host data from the database
+        self.cursor.execute(query)
+        
+        output = self.cursor.fetchone()
+        
+        # get the output in a dictionary format, converting datetime objects to epoch time
+        try:
+            output = {'Host ID': int(output[0])}
+                
+            try:
+                output['Total Files'] = int(output[1])
+            except:
+                output['Total Files'] = "N/A"
+
+            try:
+                output['Files to backup'] = int(output[2])
+            except:
+                output['Files to backup'] = "N/A"
+            
+            try:
+                output['Last Backup date'] = output[3].timestamp()
+            except:
+                output['Last Backup date'] = "N/A"
+                
+            try:
+                output['Files to process'] = int(output[4])
+            except:
+                output['Files to process'] = "N/A"
+                
+            try:
+                output['Last Processing date'] = output[5].timestamp()
+            except:
+                output['Last Processing date'] = "N/A"
+            
+            output['Status'] = 1
+            output['Message'] = ""
+        except:
+            output = {  'Status': 0, 
+                        'Message': 'Error: Host not found in database'}
+
+        self.disconnect()
+        
+        return output
     
     # Method add a new host to the backup queue
     def add_backup_task(self,
@@ -728,45 +789,4 @@ class dbHandler():
         self.cursor.execute(query)
         self.db_connection.commit()
         
-        self.disconnect()
-
-    # get host status data from the database
-    def get_host_task_status(self,hostid="host_id"):        
-        
-        # connect to the database
-        self.connect()
-
-        # compose query to get host data from the BKPDATA database
-        query = (f"SELECT "
-                    f"ID_HOST, "
-                    f"NU_HOST_FILES, "
-                    f"NU_PENDING_BACKUP, "
-                    f"DT_LAST_BACKUP, "
-                    f"NU_PENDING_PROCESSING, "
-                    f"DT_LAST_PROCESSING "
-                    f"FROM HOST "
-                    f"WHERE ID_HOST = '{hostid}';")
-        
-        # get host data from the database
-        self.cursor.execute(query)
-        
-        output = self.cursor.fetchone()
-        
-        # get the output in a dictionary format, converting datetime objects to epoch time
-        try:
-            output = {'Host ID': output[0],
-                  'Total Files': output[1],
-                  'Files to backup': output[2],
-                  'Last Backup date': output[3].timestap(),
-                  'Files to process': output[4],
-                  'Last Processing date': output[5].timestap(),
-                  'Status': 1, 
-                  'Message': 'OK'}
-        except:
-            output = {'Status': 0, 
-                  'Message': 'Error: Host not found in database'}
-            
-        self.disconnect()
-        
-        return output
-    
+        self.disconnect()    
