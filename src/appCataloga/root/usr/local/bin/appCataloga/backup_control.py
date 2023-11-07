@@ -39,21 +39,9 @@ import time
 def main():
     
     # create a warning message object
-    log = sh.log()
+    log = sh.log(verbose=True, target='file')
     
-    # overwrite the default messages. Change the value to True to enable the message for debugging
-    TEST_VERBOSITY = False
-    log.verbose['log'] = TEST_VERBOSITY
-    log.verbose['warning'] = TEST_VERBOSITY
-    log.verbose['error'] = TEST_VERBOSITY
-
-    
-    DECREMENT_BACKUP_TASK = {   'host_id': 0,
-                                'nu_host_files': 0, 
-                                'nu_pending_backup': -1, 
-                                'nu_backup_error': 0}
-
-    FAILED_TASK = { 'host_id': 0,
+    failed_task = { 'host_id': 0,
                     'nu_host_files': 0, 
                     'nu_pending_backup': 0, 
                     'nu_backup_error': 1}
@@ -173,10 +161,10 @@ def main():
                     # remove task from database. If there are pending backup, it will be consider in the next cycle.
                     db.remove_backup_task(running_task)
 
-                    FAILED_TASK["nu_backup_error"] = running_task["nu_backup_error"] + 1
+                    failed_task["nu_backup_error"] = running_task["nu_backup_error"] + 1
 
                     # update backup summary status for the host_id
-                    db.update_backup_status(FAILED_TASK)
+                    db.update_backup_status(failed_task)
                     
                     log.warning(f"Backup task killed due to timeout for host {task['host_add']} after {execution_time/60} minutes.")
             
