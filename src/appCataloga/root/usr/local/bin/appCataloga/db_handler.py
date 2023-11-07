@@ -506,57 +506,56 @@ class dbHandler():
         # get host data from the database
         self.cursor.execute(query)
         
-        output = self.cursor.fetchone()
+        db_output = self.cursor.fetchone()
         
         # get the output in a dictionary format, converting datetime objects to epoch time
         try:
-            output = {'Host ID': int(output[0])}
+            output = {'Host ID': int(db_output[0])}
                 
             try:
-                output['Total Files'] = int(output[1])
-            except IndexError:
+                output['Total Files'] = int(db_output[1])
+            except (IndexError, ValueError) as e:
                 raise Exception(f"Error retrieving 'Total Files' for host {hostid} from database")
-            except:
-                output['Total Files'] = "N/A"
+            except (AttributeError, TypeError):
                 pass
 
             try:
-                output['Files to backup'] = int(output[2])
-            except IndexError:
+                output['Files to backup'] = int(db_output[2])
+            except (IndexError, ValueError):
                 raise Exception(f"Error retrieving 'Files to backup' for host {hostid} from database")                
-            except:
+            except (AttributeError, TypeError):
                 output['Files to backup'] = "N/A"
                 pass
             
             try:
-                output['Last Backup date'] = output[3].timestamp()
-            except IndexError:
+                output['Last Backup date'] = db_output[3].timestamp()
+            except (IndexError, ValueError):
                 raise Exception(f"Error retrieving 'Last Backup date' for host {hostid} from database")
-            except:
+            except (AttributeError, TypeError):
                 output['Last Backup date'] = "N/A"
                 pass
                 
             try:
-                output['Files to process'] = int(output[4])
-            except IndexError:
+                output['Files to process'] = int(db_output[4])
+            except (IndexError, ValueError):
                 raise Exception(f"Error retrieving 'Files to process' for host {hostid} from database")
-            except:
+            except (AttributeError, TypeError):
                 output['Files to process'] = "N/A"
                 pass
                 
             try:
-                output['Last Processing date'] = output[5].timestamp()
+                output['Last Processing date'] = db_output[5].timestamp()
                 pass
-            except IndexError:
+            except (IndexError, ValueError):
                 raise Exception(f"Error retrieving 'Last Processing date' for host {hostid} from database")
-            except:
+            except (AttributeError, TypeError):
                 output['Last Processing date'] = "N/A"
             
             output['Status'] = 1
             output['Message'] = ""
         except Exception as e:
             output = {  "Status": 0, 
-                        "Message": f"Error: {e}"}
+                        "Message": f"Error retrieving data for host {hostid}: {e}"}
 
         self.disconnect()
         
