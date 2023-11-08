@@ -164,7 +164,9 @@ def serve_forever(server_socket):
     running_processing = False
     serving_forever = True
 
-#TODO: change independent running process to a list of processes and use a loop to check if they are running
+# TODO: change independent running process to a list of processes and use a loop to check if they are running
+# TODO: Include methods to send terminating signals to the running processes
+
     # Use ProcessPoolExecutor to limit the number of concurrent processes
     while serving_forever or not running_backup or not running_processing:
         
@@ -246,11 +248,11 @@ def serve_forever(server_socket):
             running_processing = False
             
             if processing_output:
-                print(f"Backup process ended with: {processing_output}.")
+                print(f"File processing ended with: {processing_output}.")
 
             if processing_errors:
                 running_processing = False
-                print(f"Backup process error: {processing_errors}.")
+                print(f"File processing error: {processing_errors}.")
 
         # sleep one second to avoid system hang in case of error
         time.sleep(1)
