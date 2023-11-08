@@ -630,12 +630,12 @@ class dbHandler():
         self.disconnect()
 
         try:
-            output = {  "task_id": task[0],
-                        "host_id": task[1],
-                        "host_add": task[2],
-                        "port": task[3],
-                        "user": task[4],
-                        "password": task[5]}
+            output = {  "task_id": int(task[0]),
+                        "host_id": int(task[1]),
+                        "host_add": str(task[2]),
+                        "port": int(task[3]),
+                        "user": str(task[4]),
+                        "password": str(task[5])}
         except:
             output = False
         
@@ -747,7 +747,9 @@ class dbHandler():
         self.connect()
 
         # build query to get the next backup task
-        query = (   "SELECT ID_PRC_TASK, FK_HOST, NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME "
+        query = (   "SELECT ID_PRC_TASK, FK_HOST, "
+                            "NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, "
+                            "NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME "
                     "FROM PRC_TASK "
                     "ORDER BY DT_PRC_TASK "
                     "LIMIT 1;")
@@ -757,14 +759,14 @@ class dbHandler():
         task = self.cursor.fetchone()
         self.disconnect()
         
-        if len(task) > 0:
-            output = {"task_id": task[0],
-                    "host_id": task[1],
-                    "host path": task[2],
-                    "host file": task[3],
-                    "server path": task[4],
-                    "server file": task[5]}
-        else:
+        try:
+            output = {"task_id": int(task[0]),
+                    "host_id": int(task[1]),
+                    "host path": str(task[2]),
+                    "host file": str(task[3]),
+                    "server path": str(task[4]),
+                    "server file": str(task[5])}
+        except:
             output = False
         
         return output
