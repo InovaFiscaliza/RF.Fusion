@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """
-Access the backup list from BKPDATA database and starts the backup process threads.
+Access the backup list from BKPDATA database and starts the independent backup process.
     
     Usage:
-        runBkpThreads
+        backup_control
             
     Returns:
         (json) =  { 'Total Files': (int),
