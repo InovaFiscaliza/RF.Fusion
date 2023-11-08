@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """
 Listen to socket command to perform backup from a specific host and retuns the current status for said host.
+Keep the backup process running in a separate process and restart it if it fails.
     
     Usage:
         appCataloga 
@@ -160,10 +161,12 @@ def serve_forever(server_socket):
     sel.register(server_socket, EVENT_READ)
 
     running_backup = False
+    running_processing = False
     serving_forever = True
 
+#TODO: change independent running process to a list of processes and use a loop to check if they are running
     # Use ProcessPoolExecutor to limit the number of concurrent processes
-    while serving_forever or not running_backup:
+    while serving_forever or not running_backup or not running_processing:
         
         # Wait for events using selector.select() method
         for key, _ in sel.select():
@@ -195,7 +198,7 @@ def serve_forever(server_socket):
 
         # Whenever there is an event, check if the backup process is running and if not, start it.
         if not running_backup:
-            # start the run_backup script in a separate process if it is not running
+            # start the backup control module as an independent process
             command = ( f'bash -c '
                         f'"source ~/miniconda3/etc/profile.d/conda.sh; '
                         f'conda activate appdata; '
@@ -220,6 +223,34 @@ def serve_forever(server_socket):
             if backup_errors:
                 running_backup = False
                 print(f"Backup process error: {backup_errors}.")
+
+        # Whenever there is an event, check if file processing is running and if not, start it.
+        if not running_processing:
+            # start the file processing control module as an independent process
+            command = ( f'bash -c '
+                        f'"source ~/miniconda3/etc/profile.d/conda.sh; '
+                        f'conda activate appdata; '
+                        f'python3 {k.PROCESSING_CONTROL_MODULE}"')                
+
+            processing_task = subprocess.Popen([command],
+                                              stdout=subprocess.DEVNULL,
+                                              stderr=subprocess.PIPE,
+                                              text=True,
+                                              shell=True)
+            
+            print("File processing started")
+            running_processing = True
+
+        elif processing_task.poll() is not None:
+            processing_output, processing_errors = processing_task.communicate()
+            running_processing = False
+            
+            if processing_output:
+                print(f"Backup process ended with: {processing_output}.")
+
+            if processing_errors:
+                running_processing = False
+                print(f"Backup process error: {processing_errors}.")
 
         # sleep one second to avoid system hang in case of error
         time.sleep(1)

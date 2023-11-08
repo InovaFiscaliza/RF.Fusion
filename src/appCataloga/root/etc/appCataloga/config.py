@@ -30,6 +30,10 @@ BKP_TASK_REQUEST_WAIT_TIME = 300
 BKP_TASK_EXECUTION_TIMEOUT = 3600
 BKP_HOST_ALLOTED_TIME_FRACTION = 0.8
 
+# file processing module configuration
+PROCESSING_CONTROL_MODULE = "/root/RF.Fusion/src/appCataloga/root/usr/local/bin/appCataloga/processing_control.py"
+
+
 # general configuration
 SECONDS_IN_MINUTE = 60
 PYTHON_ENV = ['conda', 'activate', 'myenv']
