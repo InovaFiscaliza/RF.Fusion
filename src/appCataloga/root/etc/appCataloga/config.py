@@ -32,7 +32,7 @@ BKP_HOST_ALLOTED_TIME_FRACTION = 0.8
 
 # file processing module configuration
 PROCESSING_CONTROL_MODULE = "/root/RF.Fusion/src/appCataloga/root/usr/local/bin/appCataloga/processing_control.py"
-
+MAX_NOMINATIN_ATTEMPTS = 10
 
 # general configuration
 SECONDS_IN_MINUTE = 60
