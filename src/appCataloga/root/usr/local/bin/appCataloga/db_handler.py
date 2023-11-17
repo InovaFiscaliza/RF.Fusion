@@ -64,7 +64,60 @@ class dbHandler():
         self.cursor.close()
         self.db_connection.close()
 
-    def get_geographic_codes(self, data=None):
+    # method to search database and if value not found, insert
+    def dbMerge (self, table, idColumn, newDataList, whereConditionList):
+
+# TODO: Study use of SQL Merge function. Since watchdog controls the threads, there is little risk of simultaneous insert/update for the same data. Additional complexity of merge and reduced compatibility is not justifiable. Additional limitation concerning the return of new or existing id.**--*
+
+        #create query to search database for existing  entry
+        query = (f"SELECT {idColumn} "
+                 f"FROM {table} "
+                 f"WHERE ")
+
+        for whereCondition in whereConditionList:
+            query = query + f"{whereCondition} AND "
+
+        query = query[:-5] + f";"
+
+        self.cursor.execute(query)
+        
+        try:
+            #try to retrieve an existing key to the existing district entry    
+            dbKey = int(self.cursor.fetchone()[0])
+
+            if k.VERBOSE: print(f'     Using data in {table} with registry ID {dbKey}')
+        except:
+
+            # create a query to input the data
+            queryColumns = f" ("
+            queryValues = f" VALUES ("
+
+            for data in newDataList:
+                queryColumns = queryColumns + f"{data[0]}, "
+                if isinstance(data[1],str):
+                    queryValues = queryValues + f"'{data[1]}', "
+                else:
+                    queryValues = queryValues + f"{data[1]}, "
+
+            queryColumns = queryColumns[:-2] + f")"
+            queryValues = queryValues[:-2] + f");"
+
+            # if there is no key to retrieve, get the 
+            query = f"INSERT INTO {table}" + queryColumns + queryValues
+
+            self.cursor.execute(query)
+
+            # get the key to the newly created entry
+            self.cursor.execute("SELECT SCOPE_IDENTITY()")
+            dbKey = int(self.cursor.fetchone()[0])
+
+            self.cursor.commit()
+
+            if k.VERBOSE: print(f'     New entry created in {table} with registry ID {dbKey}')
+
+        return dbKey
+
+    def _get_geographic_codes(self, data=None):
         """_summary_
 
         Raises:
@@ -82,10 +135,10 @@ class dbHandler():
             data = self.data
         
         # search database for existing state entry and get the existing key
-        query = (f"SELECT ID_UF_IBGE "
-                f"FROM DIM_LOCALIZACAO_UF "
+        query = (f"SELECT ID_STATE_CODE "
+                f"FROM DIM_SITE_STATE "
                 f"WHERE"
-                f" NO_UF LIKE '{data['State']}';")
+                f" NA_STATE LIKE '{data['State']}';")
 
         self.cursor.execute(query)
         
@@ -94,31 +147,125 @@ class dbHandler():
         except:
             raise ValueError(f"Error retrieving state name {data['State']}")
 
-        # search database for existing County entry within the identified State and get the existing key
+        # search database for existing county name entry within the identified State and get the existing key
         # Prepare multi word name to be processed in the full text search by replacing spaces with "AND"
         county = self.data['County'].replace(' ',' AND ')
-        query = (f"SELECT ID_MUNICIPIO_IBGE "
-                f"FROM DIM_LOCALIZACAO_MUNICIPIO "
+        query = (f"SELECT ID_COUNTY_CODE "
+                f"FROM DIM_SITE_COUNTY "
                 f"WHERE"
-                f" CONTAINS(NO_MUNICIPIO,'{county}')"
-                f" AND ID_UF_IBGE = {dbKeyState};")
+                f" MATCH(NA_COUNTY) AGAINST('{county})')"
+                f" AND FK_STATE_CODE = {dbKeyState};")
 
         self.cursor.execute(query)
-        dbKeyCounty = int(self.cursor.fetchone()[0])
+        try:
+            dbKeyCounty = int(self.cursor.fetchone()[0])
+        except:
+            raise ValueError(f"Error retrieving county name {data['County']}")
 
         #search database for the district name, inserting new value if non existant
-        dbKeyDistrict = self.dbMerge(table = "DIM_LOCALIZACAO_DISTRITO",
-                                    idColumn = "ID_DISTRITO",
-                                    newDataList = [("NO_DISTRITO", self.data['District']),
-                                                    ("ID_MUNICIPIO_IBGE",dbKeyCounty)],
-                                    whereConditionList = [f"NO_DISTRITO LIKE '{self.data['District']}'",
-                                                            f"ID_MUNICIPIO_IBGE = {dbKeyCounty}"])
+        district = self.data['District'].replace(' ',' AND ')
+        query = (f"SELECT ID_DISTRICT "
+                f"FROM DIM_SITE_DISTRICT "
+                f"WHERE"
+                f" MATCH(NA_DISTRICT) AGAINST('{district}')"
+                f" AND FK_COUNTY_CODE = {dbKeyCounty};")
+        
+        self.cursor.execute(query)
+        try:
+            dbKeyDistrict = int(self.cursor.fetchone()[0])
+        except:
+            query = (f"INSERT INTO DIM_SITE_DISTRICT"
+                    f" (FK_COUNTY_CODE,"
+                    f" NA_DISTRICT) "
+                    f"VALUES"
+                    f" ({dbKeyCounty},"
+                    f" '{self.data['District']}');")
+            
+            self.cursor.execute(query)
+            self.db_connection.commit()
+            
+            dbKeyDistrict = int(self.cursor.lastrowid)
 
         return (dbKeyState, dbKeyCounty, dbKeyDistrict)
 
-    def create_site(self, data):
+    def get_site_id(self, data=None):
+        """Get site information from the database
+
+        Args:
+            data (dict, optional): Site information with required coordinates. Defaults to self.data.
+
+        Raises:
+            Exception: Error retrieving location coordinates from database
+            ValueError: _description_
+
+        Returns:
+            If there is a matching site in the database, returns the site ID. If there is no matching site, returns False.
+        """
+
+        # if data is not provided, use the data from the object
+        if data is None:
+            data = self.data
+            
+        # get data from the point in the database that is nearest to the measurement location indicated in the file
+        query = (f"SELECT"
+                f" [ID_SITE],"
+                f" ST_X(GEO_POINT) as LONGITUDE,"
+                f" ST_Y(GEO_POINT) as LATITUDE "
+                f"FROM DIM_SPECTRUN_SITE"
+                f" ORDER BY ST_Distance_Sphere(GEO_POINT, ST_GeomFromText('POINT({data['Longitude']} {data['Latitude']})', 4326))"
+                f" LIMIT 1;")
         
-        (dbKeysState, dbKeysCounty, dbKeysDistrict) = self.get_geographic_codes()
+        try:
+            # Try to get the nearest match
+            self.cursor.execute(query)
+
+            nearest_site = self.cursor.fetchone()
+            
+            nearest_site_longitude = float(nearest_site[1])
+            nearest_site_latitude = float(nearest_site[2])
+
+            #Check if the database point is within the the expected deviation of the measured location coordinates 
+            near_in_longitude = ( abs(data['Longitude']-nearest_site_longitude) < k.MAXIMUM_GNSS_DEVIATION )
+            near_in_latitude = ( abs(data['Latitude']-nearest_site_latitude) < k.MAXIMUM_GNSS_DEVIATION )
+            location_exist_in_db = ( near_in_latitude and near_in_longitude )
+        except:
+            # Confirm If number of rows returned is zero, error is due to the fact that there is no entry in the database
+            if self.cursor.rowcount == 0:
+                # set flag to create new location
+                location_exist_in_db = False
+            else:
+                # some other error occurred
+                raise Exception("Error retrieving location coordinates from database")
+        
+        if location_exist_in_db:
+            return nearest_site[0]
+        else:
+            return False
+            
+
+    def create_site(self, data=none) -> int:
+        """Create a new site in the database
+
+        Args:
+            data (_dict_, optional): New site info. Defaults to object self.data.
+
+        Returns:
+            int: New site ID
+        """
+
+        if data is None:
+            data = self.data
+
+        (dbKeysState, dbKeysCounty, dbKeysDistrict) = self._get_geographic_codes()
+        
+                                    'id_site':0,
+                            'fk_site_district':0,
+                            'fk_county_code':0,
+                            'fk_state_code':0,
+                            'na_site':"",
+                            'geolocation':(0,0),
+                            'nu_altutude':0,
+                            'nu_gnss_measurements':0},
         
         fileAltitude = self.data['Sum_Altitude']/self.data['Count_GPS']
         # construct query to create new location in the database
