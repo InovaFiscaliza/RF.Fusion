@@ -7,6 +7,8 @@ import sys
 import os
 import time
 
+import numpy as np
+
 # Import file with constants used in this code that are relevant to the operation
 import config as k
 
@@ -221,6 +223,7 @@ class dbHandler():
 
             nearest_site = self.cursor.fetchone()
             
+            nearest_site_id = int(nearest_site[0])
             nearest_site_longitude = float(nearest_site[1])
             nearest_site_latitude = float(nearest_site[2])
 
@@ -238,10 +241,86 @@ class dbHandler():
                 raise Exception("Error retrieving location coordinates from database")
         
         if location_exist_in_db:
-            return nearest_site[0]
+            return nearest_site_id
         else:
             return False
             
+    def update_site(self,   site = int,
+                            longitude_raw = [float],
+                            latitude_raw = [float],
+                            altitude_raw = [float]) -> None:
+        """Update site coordinates in the database for existing site
+
+        Args:
+            site (int): The site database id.
+            longitude_raw ([float]): List of measured longitude in degrees.
+            latitude_raw ([float]): List of measured latitude in degrees.
+            altitude_raw ([float]): List of measured altitude in meters.
+
+        Returns:
+            none: none
+        """
+        
+        # get data from the point in the database that is nearest to the measurement location indicated in the file
+        query = (f"SELECT"
+             f" ST_X(GEO_POINT) as LONGITUDE,"
+             f" ST_Y(GEO_POINT) as LATITUDE,"
+             f" [NU_ALTITUDE],"
+             f" [NU_GNSS_MEASUREMENTS],"
+             f"FROM DIM_SPECTRUN_SITE "
+             f"WHERE"
+             f" ID_SITE = {site};")
+
+        try:
+            # Try to get the nearest match
+            self.cursor.execute(query)
+
+            nearest_site = self.cursor.fetchone()
+        except:
+            raise Exception(f"Error retrieving site {self.data['Site_ID']} from database")            
+
+        try:
+            db_site_longitude = float(nearest_site[0])
+            db_site_latitude = float(nearest_site[1])
+            db_site_altitude = float(nearest_site[2])
+            db_site_nu_gnss_measurements = int(nearest_site[3])
+        except:
+            raise Exception(f"Invalid data returned for site {self.data['Site_ID']} from database")
+
+        # if number of measurements in the database greater than the maximum required number of measurements.
+        if db_site_nu_gnss_measurements < k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS:
+
+            #add point coordinates in the file to the estimator already in the database
+            longitudeSum = np.sum(longitude_raw) + ( db_site_longitude * db_site_nu_gnss_measurements ) 
+            latitudeSum = np.sum(latitude_raw) + ( db_site_latitude * db_site_nu_gnss_measurements )
+            altitudeSum = np.sum(altitude_raw) + ( float(nearest_site[3]) * float(nearest_site[4]) )
+            nu_gnss_measurements = db_site_nu_gnss_measurements + len(longitude_raw)
+            longitude = longitudeSum / nu_gnss_measurements
+            latitude = latitudeSum / nu_gnss_measurements
+            altitude = altitudeSum / nu_gnss_measurements
+
+            # construct query update point location in the database
+            query = (   f"UPDATE DIM_SPECTRUN_SITE "
+                        f" SET GEO_POINT = ST_GeomFromText('POINT({longitude} {latitude})'),"
+                        f" NU_ALTITUDE = {altitude},"
+                        f" NU_GNSS_MEASUREMENTS = {nu_gnss_measurements} "
+                        f"WHERE ID_SITE = {site};")
+            
+            if k.VERBOSE: print(f'Updated location at Latitude: {latitude}, Longitude: {longitude}, Altitude: {altitude}')
+
+            try:
+                self.cursor.execute(query)
+            
+                self.db_connection.commit()
+            
+                self.disconnect()
+            except:
+                raise Exception(f"Error updating site {self.data['Site_ID']} from database")
+
+        else:
+            # Do not update, avoiding unnecessary processing and variable numeric overflow
+            if k.VERBOSE: print(f'Location at latitude: {latitude}, Longitude: {longitude} reached the maximum number of measurements. No update performed.')
+
 
     def create_site(self, data=none) -> int:
         """Create a new site in the database
@@ -294,85 +373,6 @@ class dbHandler():
         self.db_connection.commit()
         
         return(dbKeySite)
-    
-    def update_site(self, data):
-
-# TODO: Use new median feature
-        latitude = data['latitude']
-        longitude = data['longitude']
-
-        # get data from the point in the database that is nearest to the measurement location indicated in the file
-        query = (f"SELECT"
-             f" [ID_SITE],"
-             f" ST_X(GEO_POINT) as LONGITUDE,"
-             f" ST_Y(GEO_POINT) as LATITUDE,"
-             f" [NU_ALTITUDE],"
-             f" [NU_GNSS_MEASUREMENTS],"
-             f" [FK_SITE_DISTRICT],"
-             f" [FK_COUNTY_CODE],"
-             f" [ID_STATE_CODE] "
-             f"FROM DIM_SPECTRUN_SITE"
-             f" ORDER BY ST_Distance_Sphere(GEO_POINT, ST_GeomFromText('POINT({longitude} {latitude})', 4326))"
-             f" LIMIT 1;")
-
-        try:
-            # Try to get the nearest match
-            self.cursor.execute(query)
-
-            nearest_site = self.cursor.fetchone()
-            
-            nearest_site_longitude = float(nearest_site[1])
-            nearest_site_latitude = float(nearest_site[2])
-
-            #Check if the database point is within the the expected deviation of the measured location coordinates 
-            near_in_longitude = ( abs(longitude-nearest_site_longitude) < k.MAXIMUM_GNSS_DEVIATION )
-            near_in_latitude = ( abs(latitude-nearest_site_latitude) < k.MAXIMUM_GNSS_DEVIATION )
-            location_exist_in_db = ( near_in_latitude and near_in_longitude)
-
-        except:
-                # Confirm If number of rows returned is zero, error is due to the fact that there is no entry in the database
-                if self.cursor.rowcount == 0:
-                    # set flag to create new location
-                    location_exist_in_db = False
-                else:
-                # some other error occurred
-                    raise Exception("Error retrieving location coordinates from database")
-
-        if location_exist_in_db:
-            # if number of measurements in the database greater than the maximum required number of measurements.
-            if float(nearest_site[4]) > k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS:
-                # Do not update, avoiding unnecessary processing and variable numeric overflow
-                if k.VERBOSE: print(f'     Location at latitude: {latitude}, Longitude: {longitude} reached the maximum number of measurements. No update performed.')
-            
-            else:
-                #add point coordinates in the file to the estimator already in the database
-                longitudeSum = self.data['Sum_Longitude'] + ( near_in_longitude * float(nearest_site[4]) ) 
-                latitudeSum = self.data['Sum_Latitude'] + ( near_in_latitude * float(nearest_site[4]) )
-                altitudeSum = self.data['Sum_Altitude'] + ( float(nearest_site[3]) * float(nearest_site[4]) )
-                numberOfMeasurements = self.data['Count_GPS'] + float(nearest_site[4])
-                longitude = longitudeSum / numberOfMeasurements
-                latitude = latitudeSum / numberOfMeasurements
-                altitude = altitudeSum / numberOfMeasurements
-
-                # construct query update point location in the database
-                query = (f"DECLARE @g geography = 'POINT({longitude} {latitude} {altitude})'; "
-                         f"UPDATE DIM_SPECTRUN_SITE "
-                         f"SET GEO_POINT = @g,"
-                         f" NU_GNSS_MEASUREMENTS = {numberOfMeasurements} "
-                         f"WHERE ID_SITE = {nearest_site[0]};")
-
-                if k.VERBOSE: print(f'     Updated location at Latitude: {latitude}, Longitude: {longitude}, Altitude: {altitude}')
-
-            dbKeySite = int(nearest_site[0])
-
-            self.cursor.execute(query)
-            
-            output = dbKeySite
-
-        else:
-            output = False
-
-        return(output)
 
     def updateEquipment(self):
 

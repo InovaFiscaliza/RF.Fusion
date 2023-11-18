@@ -231,12 +231,11 @@ def main():
     # create db object using databaseHandler class for the backup and processing database
     db_bkp = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
     db_rfm = dbh.dbHandler(database=k.RFM_DATABASE_NAME)
-bin
 
     while True:
         # Get one backup task from the queue in the database
         task = {"task_id": 0,
-                "host_id": 0),
+                "host_id": 0,
                 "host path": "none",
                 "host file": "none",
                 "server path": "none",
@@ -257,28 +256,31 @@ bin
                 # TODO: handle error
                 log.error(f"Error parsing file {filename}")
 
-            data={'Longitude':bin_data["gps"].longitude,
-                  'Latitude':bin_data["gps"].latitude}
+            data={'longitude':bin_data["gps"].longitude,
+                  'latitude':bin_data["gps"].latitude}
             
             site = db_rfm.get_site_id(data)
             
             if site:
                 data['id_site'] = site
-                db_rfm.update_site(site)
+                db_rfm.update_site(site = site,
+                                   longitude_raw = bin_data["gps"]._longitude,
+                                   latitude_raw = bin_data["gps"]._latitude,
+                                   altitude_raw = bin_data["gps"]._altitude)
             else:
                 data = do_revese_geocode(data)
                 site = db_rfm.insert_site(data)
                 data['id_site'] = site
             
-            data['id_file'] = db_rfm.set_file(task)
-            data['id_procedure'] = db_rfm.set_procedure(bin_data["method"])
+            data['id_file'] = db_rfm.store_file(task)
+            data['id_procedure'] = db_rfm.store_procedure(bin_data["method"])
             
             for spectrum in bin_data["spectrum"]:
  
                 # TODO: Implement the following code to update the database with the spectrum information               
-                data['id_detector_type'] = db_rfm.set_detector_type(k.DEFAULT_DETECTOR)
-                data['id_trace_type'] = db_rfm.set_trace_time(spectrum.processing)
-                data['id_measure_unit'] = db_rfm.set_measure_unit(task)
+                data['id_detector_type'] = db_rfm.store_detector_type(k.DEFAULT_DETECTOR)
+                data['id_trace_type'] = db_rfm.store_trace_time(spectrum.processing)
+                data['id_measure_unit'] = db_rfm.store_measure_unit(task)
 
                 data['na_description'] = spectrum.description
                 data['nu_freq_start'] = spectrum.start_mega
@@ -293,10 +295,12 @@ bin
                 data['nu_att_gain'] = k.DEFAULT_ATTENUATOR,
                 
                 # TODO: Implement the following code to update the database with the spectrum information               
-                db_rfm.set_fact_spectrun(data)
+                db_rfm.store_fact_spectrun(data)
 
             # TODO: Implement the following code to update the database with the spectrum information               
-            fileMove(task,data)
+            # test if task['server path'] includes the "tmp" directory and move the file to the "data" directory
+            if task['server path'].find(k.TMP_DIR) >= 0:
+                file_move(task,data)
                     
                     log.warning(f"Backup task killed due to timeout for host {task['host_add']} after {execution_time/60} minutes.")
             
