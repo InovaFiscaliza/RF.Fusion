@@ -183,51 +183,11 @@ def do_revese_geocode(data = {"latitude":0,"longitude":0}, attempt=1, max_attemp
             message = f"Field {nominatimField} not found in: {location.raw['address']}"
             log.warning(message)
 
-    return data,log
-
-class BinProcessing:
-
-
-
-    def computeFinaltime(self, row):
-        return row['Timestamp'][-1]
-
-    def exportMetadata(self,exportFilename):
-
-        # convert multiple thread dictionary into dataframe adjusting columns to correspond to the desired CSV format
-        df = pd.DataFrame(self.metadata['Fluxos'])
-        df = df.transpose()
-
-        # compute the measurement final time to each data thread
-        df['Final_Time'] = df.apply (lambda row: self.computeFinaltime(row), axis=1)
-
-        # drop detailed  
-        df.drop(columns=['Timestamp'], inplace=True)
-
-        # add data that is common to all data threads
-        df['Script_Version'] = self.metadata['Script_Version']
-        df['Equipment_ID'] = self.metadata['Equipment_ID']
-        df['Latitude'] = self.metadata['Sum_Latitude'] / self.metadata['Count_GPS']
-        df['Longitude'] = self.metadata['Sum_Longitude'] / self.metadata['Count_GPS']
-        df['Altitude'] = self.metadata['Altitude']
-        df['Count_GPS'] =  self.metadata['Count_GPS']
-        df['State'] = self.metadata['State']
-        df['State_Code'] = self.metadata['State_Code']
-        df['County'] = self.metadata['County']
-        df['District'] = self.metadata['District']
-        df['File_Name'] = self.metadata['File_Name']
-        df['URL'] = self.metadata['URL']
-
-        #reorder dataframe according to reference list
-        df = df[k.CSV_COLUMN_ORDER]
-#TODO: handle write errors
-        #export dataframe
-        df.to_csv(path_or_buf=exportFilename, index=False)
-        
-        if k.VERBOSE: print(f"     Output metadata as CSV to {exportFilename}")
+    return data
 
 # function that performs the file processing
-def file_processing(task):
+def file_move(task):
+    # TODO: move file from tmp to data directory
     print("nada")
 
 def main():
@@ -263,6 +223,7 @@ def main():
                 # TODO: handle error
                 log.error(f"Error parsing file {filename}")
 
+            # start arranging the site data
             data={'longitude':bin_data["gps"].longitude,
                   'latitude':bin_data["gps"].latitude}
             
@@ -275,16 +236,19 @@ def main():
                                    latitude_raw = bin_data["gps"]._latitude,
                                    altitude_raw = bin_data["gps"]._altitude)
             else:
-                data,log = do_revese_geocode(data=data,log=log)
+                data = do_revese_geocode(data=data,log=log)
                 site = db_rfm.insert_site(data)
                 data['id_site'] = site
             
-            data['id_file'] = db_rfm.store_file(task)
-            data['id_procedure'] = db_rfm.store_procedure(bin_data["method"])
+            # update data dictionary with data associated with the entire file scope
+            data['id_file'] = db_rfm.insert_file(task)
+            data['id_procedure'] = db_rfm.insert_procedure(bin_data["method"])
             
+            equipment = db_rfm.insert_equipment(bin_data["hostname"])
+            
+            data['id_spectrum'] = []
             for spectrum in bin_data["spectrum"]:
  
-                # TODO: Implement the following code to update the database with the spectrum information               
                 data['id_detector_type'] = db_rfm.store_detector_type(k.DEFAULT_DETECTOR)
                 data['id_trace_type'] = db_rfm.store_trace_time(spectrum.processing)
                 data['id_measure_unit'] = db_rfm.store_measure_unit(task)
@@ -301,8 +265,9 @@ def main():
                 data['nu_vbw'] = k.DEFAULT_VBW,
                 data['nu_att_gain'] = k.DEFAULT_ATTENUATOR,
                 
-                # TODO: Implement the following code to update the database with the spectrum information               
-                db_rfm.store_fact_spectrun(data)
+                spectrun_id = db_rfm.store_fact_spectrun(data)
+                
+                db_rfm.store_bridge_spectrun_equipment(spectrun_id,equipment)
 
             # TODO: Implement the following code to update the database with the spectrum information               
             # test if task['server path'] includes the "tmp" directory and move the file to the "data" directory

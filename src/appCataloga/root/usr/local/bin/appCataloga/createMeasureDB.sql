@@ -22,44 +22,45 @@ CREATE TABLE DIM_SPECTRUN_EQUIPMENT (
 
 -- MEASUREMENT LOCATION DIMENSION
 CREATE TABLE DIM_SITE_STATE (
-    ID_STATE_CODE INT NOT NULL COMMENT 'Primary Key to file STATE dimension table',
+    ID_STATE INT NOT NULL COMMENT 'Primary Key to file STATE dimension table',
     NA_STATE VARCHAR(50) CHARACTER SET utf8 COLLATE utf8_general_ci COMMENT 'Location State full name', -- use COLLATE utf8_general_ci to allow for case insensitive search for non-english characters
     LC_STATE VARCHAR(2) COMMENT 'Location State short form in two letters',
-    PRIMARY KEY (ID_STATE_CODE),
+    PRIMARY KEY (ID_STATE),
     FULLTEXT(NA_STATE) -- add FULLTEXT index to NA_STATE column
 );
 
 CREATE TABLE DIM_SITE_COUNTY (
-    ID_COUNTY_CODE INT NOT NULL COMMENT 'Primary Key to file type dimension table',
-    FK_STATE_CODE INT COMMENT 'Foreign key to location state table',
+    ID_COUNTY INT NOT NULL COMMENT 'Primary Key to file type dimension table',
+    FK_STATE INT COMMENT 'Foreign key to location state table',
     NA_COUNTY VARCHAR(60) CHARACTER SET utf8 COLLATE utf8_general_ci COMMENT 'Location County full name ', -- use COLLATE utf8_general_ci to allow for case insensitive search for non-english characters
-    PRIMARY KEY (ID_COUNTY_CODE),
-    CONSTRAINT FK_COUNTY_STATE FOREIGN KEY (FK_STATE_CODE) REFERENCES DIM_SITE_STATE (ID_STATE_CODE),
+    PRIMARY KEY (ID_COUNTY),
+    CONSTRAINT FK_COUNTY_STATE FOREIGN KEY (FK_STATE) REFERENCES DIM_SITE_STATE (ID_STATE),
     FULLTEXT(NA_COUNTY) -- add FULLTEXT index to NA_COUNTY column
 );
 
 CREATE TABLE DIM_SITE_DISTRICT (
     ID_DISTRICT INT NOT NULL AUTO_INCREMENT COMMENT 'Primary Key to file type dimension table',
-    FK_COUNTY_CODE INT COMMENT 'Foreign key to location municipality table',
+    FK_COUNTY INT COMMENT 'Foreign key to location municipality table',
     NA_DISTRICT VARCHAR(50) CHARACTER SET utf8 COLLATE utf8_general_ci COMMENT 'Location County full name ', -- use COLLATE utf8_general_ci to allow for case insensitive search for non-english characters
     PRIMARY KEY (ID_DISTRICT),
-    CONSTRAINT FK_DISTRICT_COUNTY FOREIGN KEY (FK_COUNTY_CODE) REFERENCES DIM_SITE_COUNTY (ID_COUNTY_CODE),
+    CONSTRAINT FK_DISTRICT_COUNTY FOREIGN KEY (FK_COUNTY) REFERENCES DIM_SITE_COUNTY (ID_COUNTY),
     FULLTEXT(NA_DISTRICT) -- add FULLTEXT index to NA_DISTRICT column
 );
 
 CREATE TABLE DIM_SPECTRUN_SITE (
     ID_SITE INT NOT NULL AUTO_INCREMENT COMMENT 'Primary Key to site location dimension table',
-    FK_SITE_DISTRICT INT COMMENT 'Foreign key to District table Not related to County to handle case where there is no District', 
-    FK_COUNTY_CODE INT COMMENT 'Foreign key to County table. Not related to State to handle case where there is no County', 
-    FK_STATE_CODE INT COMMENT 'Foreign key to UF table', 
+    FK_DISTRICT INT COMMENT 'Foreign key to District table Not related to County to handle case where there is no District', 
+    FK_COUNTY INT COMMENT 'Foreign key to County table. Not related to State to handle case where there is no County', 
+    FK_STATE INT COMMENT 'Foreign key to UF table', 
     NA_SITE VARCHAR(100) COMMENT 'Location description. Future use for easier referencing to location common name',
-    GEOLOCATION POINT NOT NULL COMMENT 'Location tupple (longitude, latitude)',
+    GEOLOCATION POINT NOT NULL COMMENT 'Location tuple (longitude, latitude)',
     NU_ALTITUDE DECIMAL(10,3) COMMENT 'Altitude in meters',
     NU_GNSS_MEASUREMENTS BIGINT COMMENT 'Number of GNSS measurements used for the definition of the site location ',
+    GEOGRAPHIC_PATH BLOB COMMENT 'Geographic path data stored as .mat or parquet file',
     PRIMARY KEY (ID_SITE),
-    CONSTRAINT FK_SITE_DISTRICT FOREIGN KEY (FK_SITE_DISTRICT) REFERENCES DIM_SITE_DISTRICT (ID_DISTRICT),
-    CONSTRAINT FK_SITE_COUNTY FOREIGN KEY (FK_COUNTY_CODE) REFERENCES DIM_SITE_COUNTY (ID_COUNTY_CODE),
-    CONSTRAINT FK_SITE_STATE FOREIGN KEY (FK_STATE_CODE) REFERENCES DIM_SITE_STATE (ID_STATE_CODE),
+    CONSTRAINT FK_SITE_DISTRICT FOREIGN KEY (FK_DISTRICT) REFERENCES DIM_SITE_DISTRICT (ID_DISTRICT),
+    CONSTRAINT FK_SITE_COUNTY FOREIGN KEY (FK_COUNTY) REFERENCES DIM_SITE_COUNTY (ID_COUNTY),
+    CONSTRAINT FK_SITE_STATE FOREIGN KEY (FK_STATE) REFERENCES DIM_SITE_STATE (ID_STATE),
     SPATIAL INDEX SP_INDEX (GEOLOCATION)
 );
 
@@ -74,8 +75,8 @@ CREATE TABLE DIM_SPECTRUN_FILE (
     ID_FILE INT NOT NULL AUTO_INCREMENT COMMENT 'Primary Key to file dimension table',
     ID_TYPE_FILE INT COMMENT 'Foreign key to file type table', 
     NA_FILE VARCHAR(100) COMMENT 'Unique identifier to the filename',
-    NA_DIR_E_FILE VARCHAR(3000) COMMENT 'Unique identifier to the file path',
-    NA_URL VARCHAR(3000) COMMENT 'Unique identifier to the file path',
+    NA_PATH VARCHAR(3000) COMMENT 'Unique identifier to the file path',
+    NA_VOLUME VARCHAR(3000) COMMENT 'Unique identifier to the file storage volume',
     PRIMARY KEY (ID_FILE)
 );
 
@@ -114,7 +115,6 @@ CREATE TABLE DIM_MEASUREMENT_PROCEDURE (
 -- MEASUREMENT DATA FACT
 CREATE TABLE FACT_SPECTRUN (
     ID_FACT_SPECTRUN INT NOT NULL AUTO_INCREMENT COMMENT 'Primary Key to the fact table of spectrum measurement data.',
-    FK_FILE INT COMMENT 'Foreign key to file dimension table',
     FK_SITE INT COMMENT 'Foreign key to location dimension table',
     FK_DETECTOR_TYPE INT COMMENT 'Foreign key to location dimension table',
     FK_TRACE_TYPE INT COMMENT 'Foreign key to location dimension table',
@@ -131,7 +131,6 @@ CREATE TABLE FACT_SPECTRUN (
     NU_RBW DECIMAL(12,1) NULL COMMENT 'RBW in Hz', -- ! NEED CONFIRMATION 
     NU_VBW DECIMAL(12,1) NULL COMMENT 'VBW in Hz', -- ! NEED CONFIRMATION 
     NU_ATT_GAIN DECIMAL(4,1) NULL COMMENT 'Applied attenuation or gain set in negative or positive dB', -- ! NEED CONFIRMATION IF OVERLAPS WITH GAIN. USED DEVICES
-    CONSTRAINT FK_FILE_CONSTRAINT FOREIGN KEY (FK_FILE) REFERENCES DIM_SPECTRUN_FILE (ID_FILE),
     CONSTRAINT FK_SITE_CONSTRAINT FOREIGN KEY (FK_SITE) REFERENCES DIM_SPECTRUN_SITE (ID_SITE),
     CONSTRAINT FK_DETECTOR_TYPE_CONSTRAINT FOREIGN KEY (FK_DETECTOR_TYPE) REFERENCES DIM_SPECTRUN_DETECTOR (ID_DETECTOR_TYPE),
     CONSTRAINT FK_TRACE_TYPE_CONSTRAINT FOREIGN KEY (FK_TRACE_TYPE) REFERENCES DIM_SPECTRUN_TRACE (ID_TRACE_TYPE),
@@ -160,6 +159,16 @@ CREATE TABLE BRIDGE_SPECTRUN_EMITTER (
     PRIMARY KEY (ID_BRIDGE_EMITTER)
 );
 
+-- BRIDGE TABLES TO ALLOW FOR N-N RELATIONSHIPS TO THE FACT TABLE
+CREATE TABLE BRIDGE_SPECTRUN_FILE (
+    ID_BRIDGE_FILE INT NOT NULL AUTO_INCREMENT COMMENT 'Primary Key to bridge table to file dimension table. Allows n-n file-measurement associations', 
+    FK_FILE INT COMMENT 'Foreign key to file table', 
+    FK_SPECTRUN INT COMMENT 'Foreign key to spectrum measurement table', 
+    CONSTRAINT FK_FILE_SPEC_CONSTRAINT FOREIGN KEY (FK_FILE) REFERENCES DIM_SPECTRUN_FILE (ID_FILE), 
+    CONSTRAINT FK_SPECTRUN_FILE_CONSTRAINT FOREIGN KEY (FK_SPECTRUN) REFERENCES FACT_SPECTRUN (ID_FACT_SPECTRUN), 
+    PRIMARY KEY (ID_BRIDGE_FILE)
+);
+
 -- Data Uploads
 
 -- Upload Data to DIM_EQUIPMENT_TYPE
@@ -176,7 +185,7 @@ INTO TABLE DIM_SITE_STATE
 FIELDS TERMINATED BY ','
 LINES TERMINATED BY '\n' 
 IGNORE 1 LINES
-(ID_STATE_CODE, NA_STATE, LC_STATE);
+(ID_STATE, NA_STATE, LC_STATE);
 
 -- Upload Data to DIM_SITE_COUNTY
 LOAD DATA INFILE '/etc/appCataloga/IBGE-BR_Municipios_2020_BULKLOAD.csv'
@@ -184,7 +193,7 @@ INTO TABLE DIM_SITE_COUNTY
 FIELDS TERMINATED BY ','
 LINES TERMINATED BY '\n' 
 IGNORE 1 LINES
-(ID_COUNTY_CODE, FK_STATE_CODE, NA_COUNTY);
+(ID_COUNTY, FK_STATE, NA_COUNTY);
 
 -- Upload Data to DIM_SPECTRUN_UNIDADE
 LOAD DATA INFILE '/etc/appCataloga/measurementUnit.csv'
