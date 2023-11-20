@@ -353,7 +353,7 @@ class dbHandler():
 
         return db_site_id
 
-    # method to insert file in the database
+    # method to insert file entry in the database if it does not exist, otherwise return the existing key
     def insert_file(self, data={    "file_name":"file name",
                                     "file_path":"file path",
                                     "file_volume":"file volume"}) -> int:
@@ -372,36 +372,85 @@ class dbHandler():
         """
 
         self._connect()
-
-        # construct query to create new file in the database
-        query =(f"INSERT INTO DIM_SPECTRUN_FILE"
-                f" (NA_FILE,"
-                f" NA_PATH,"
-                f" NA_VOLUME) "
-                f"SELECT '{data['file_name']}', '{data['file_path']}', '{data['file_volume']}' FROM DUAL "
+        
+        query = (f"SELECT ID_FILE "
+                f"FROM DIM_SPECTRUN_FILE "
                 f"WHERE"
-                f" NOT EXISTS ("
-                    f"SELECT * FROM DIM_SPECTRUN_FILE"
-                    f" WHERE"
-                        f" NO_FILE = '{data['file_name']}'"
-                        f" AND NO_DIR_E_FILE = '{data['file_path']}'"
-                        f" AND NO_URL = '{data['file_volume']}');")
+                f" NA_FILE = '{data['file_name']}' AND"
+                f" NA_PATH = '{data['file_path']}' AND"
+                f" NA_VOLUME = '{data['file_volume']}';")
+        
+        self.cursor.execute(query)
 
         try:
-            self.cursor.execute(query)
-            self.cursor.commit()
-        
-            db_file_id = int(self.cursor.lastrowid)
+            file_id = int(self.cursor.fetchone()[0])
+        except:            
+            query =(f"INSERT INTO DIM_SPECTRUN_FILE"
+                    f" (NA_FILE,"
+                    f" NA_PATH,"
+                    f" NA_VOLUME) "
+                    f"VALUES"
+                    f" ('{data['file_name']}',"	
+                    f" '{data['file_path']}',"
+                    f" '{data['file_volume']}')")
 
-            self._disconnect()
-        except:
-            raise Exception(f"Error creating new file entry {data['file_name']} in database")
+            try:
+                self.cursor.execute(query)
+                self.cursor.commit()
             
-        return db_file_id
+                file_id = int(self.cursor.lastrowid)
+            except:
+                self._disconnect()
+                raise Exception(f"Error creating new file entry {data['file_name']} in database")
+        
+        self._disconnect()
+        
+        return file_id
     
-    # method to insert or or multiple equipment in the database
-    
+    # method to insert procedure entry in the database if it does not exist, otherwise return the existing key
+    def insert_procedure(self, procedure_name: str) -> int:
+        """Create a new procedure entry in the database if it does not exist, otherwise return the existing key
 
+        Args:
+            procedure_name (str): Procedure name
+
+        Raises:
+            Exception: Error inserting procedure in the database
+
+        Returns:
+            int: DB key to the new procedure
+        """
+
+        self._connect()
+        
+        query = (f"SELECT ID_PROCEDURE "
+                f"FROM DIM_SPECTRUN_PROCEDURE "
+                f"WHERE"
+                f" NA_PROCEDURE = '{procedure_name}';")
+        
+        self.cursor.execute(query)
+
+        try:
+            procedure_id = int(self.cursor.fetchone()[0])
+        except:            
+            query =(f"INSERT INTO DIM_SPECTRUN_PROCEDURE"
+                    f" (NA_PROCEDURE) "
+                    f"VALUES"
+                    f" ('{procedure_name}')")
+
+            try:
+                self.cursor.execute(query)
+                self.cursor.commit()
+            
+                procedure_id = int(self.cursor.lastrowid)
+            except:
+                self._disconnect()
+                raise Exception(f"Error creating new procedure entry {data['procedure_name']} in database")
+        
+        self._disconnect()
+        
+        return procedure_id
+    
     # method to search database and if value not found, insert
     def db_flex_insert_update (self, table, idColumn, newDataList, where_conditionList):
 
@@ -461,36 +510,26 @@ class dbHandler():
                 data['id_measure_unit'] = db_rfm.store_measure_unit(task)
 
 
-    def store_equipment_type(self, data=):
+    def insert_equipment(self, equipment_name, equipment_type):
 
 # TODO: Include antenna
 
         self._connect()
         
-        dbKeyEquipment = self.dbMerge(table = "DIM_MEDICAO_ESPECTRO_EQUIPAMENTO",
-                                      idColumn = "ID_EQUIPAMENTO",
-                                      newDataList = [("NO_EQUIPAMENTO", self.data['Equipment_ID']),
-                                                          ("ID_TIPO_EQUIPAMENTO",k.DB_CRFS_BIN_EQUIPMENT_TYPE)],
-                                      where_conditionList = [f"NO_EQUIPAMENTO LIKE '{self.data['Equipment_ID']}'"])
-
-        equipment_name = 'Nome do Equipamento'
-        equipment_data = 'Dados do Equipamento'
-
         query = (f"INSERT INTO EQUIPMENT"
                  f" (name, data) "
-                 f"SELECT '{equipment_name}', '{equipment_data}' "
-                 f"WHERE NOT EXISTS (SELECT 1 FROM EQUIPMENT WHERE LOWER(name) = LOWER('{equipment_name}'));")
+                 f"SELECT '{equipment_name}', '{equipment_type}' "
+                 f"WHERE NOT EXISTS (SELECT 1 FROM EQUIPMENT WHERE LOWER(name) = LOWER('{equipment_type}'));")
             
         try:
             self.cursor.execute(query)
             self.db_connection.commit()
-        
+            equipment_id = int(self.cursor.lastrowid)
             self._disconnect()
         except:
             raise Exception(f"Error updating site {self.data['Site_ID']} from database")
     
-        
-        return(id_equipment)
+        return(equipment_id)
 
     def updateFile(self):
         
@@ -503,17 +542,6 @@ class dbHandler():
                                  where_conditionList = [f"NO_ARQUIVO LIKE '{self.data['File_Name']}'"])
         
         return(dbKeyFile)
-
-    def updateProcedure(self):
-        
-        # get key to the trace procedure and insert if needed
-        dbKeyProcedure = self.dbMerge(table = "DIM_MEDICAO_PROCEDIMENTO",
-                                        idColumn = "ID_PROCEDIMENTO",
-                                        newDataList = [("NO_PROCEDIMENTO", self.data['Script_Version'])],
-                                        where_conditionList = [f"NO_PROCEDIMENTO LIKE '{self.data['Script_Version']}'"])
-
-        
-        return(dbKeyProcedure)
 
     # used only to insert new data to the database.
     def insertSpectrum(self, dbKeyFile, dbKeySite, dbKeyProcedure, dbKeyEquipment,):
@@ -652,12 +680,12 @@ class dbHandler():
         return(dbKeyFile)
     
     # Internal method to add host to the database
-    def _add_host(self, hostid="1"):
+    def _add_host(self, hostid:str, host_uid:str) -> None:
         """This method adds a new host to the database if it does not exist.
             Initialization of host statistics is essential to avoid errors and simplify later database queries and updates.
         
         Args:
-            hostid (str): Zabbix host id primary key. Defaults to "host_id".
+            hostid (str): Zabbix host id primary key.
 
         Returns:
             none: none
@@ -667,11 +695,13 @@ class dbHandler():
         
         # compose query to create a new host entry in the BPDATA database, setting all values to zero. If host already in the database, do nothing
         query = (f"INSERT IGNORE INTO HOST "
-                    f"(ID_HOST, NU_HOST_FILES, "
+                    f"(ID_HOST, NA_HOST_UID, "
+                    f"NU_HOST_FILES, "
                     f"NU_PENDING_BACKUP, NU_BACKUP_ERROR, "
                     f"NU_PENDING_PROCESSING, NU_PROCESSING_ERROR) "
                     f"VALUES "
-                    f"('{hostid}', '0', "
+                    f"('{hostid}', '{host_uid},"
+                    f"'0', "
                     f"'0', '0', "
                     f"'0', '0');")
         
@@ -758,26 +788,27 @@ class dbHandler():
     
     # Method add a new host to the backup queue
     def add_backup_task(self,
-                        hostid="1",
-                        host_addr="host_addr",
-                        host_port="2800",
-                        host_user="user",
-                        host_passwd="passwd"):
+                        hostid:str,
+                        host_uid:str,
+                        host_addr:str,
+                        host_port:str,
+                        host_user:str,
+                        host_passwd:str) -> None:
         """This method checks if the host is already in the database and if not, adds it to the backup queue
         
         Args:
-            hostid (str): Zabbix host id primary key. Defaults to "host_id".
-            host_addr (str): Remote host IP/DNS address. Defaults to "host_addr".
-            host_port (str): Remote host SSH access port. Defaults to "2800".
-            host_user (str): Remote host access user. Defaults to "user".
-            host_passwd (str): Remote host access password. Defaults to "passwd".
+            hostid (str): Zabbix host id primary key. 
+            host_addr (str): Remote host IP/DNS address.
+            host_port (str): Remote host SSH access port.
+            host_user (str): Remote host access user.
+            host_passwd (str): Remote host access password.
 
         Returns:
-            _type_: _description_
+            None
         """
         
         # create a new host entry in the database if it does not exist
-        self._add_host(hostid)
+        self._add_host(hostid,host_uid)
 
         # connect to the database
         self._connect()

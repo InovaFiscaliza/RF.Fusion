@@ -238,12 +238,20 @@ def main():
             else:
                 data = do_revese_geocode(data=data,log=log)
                 site = db_rfm.insert_site(data)
-                data['id_site'] = site
             
+            data['id_site'] = site
+
+
+
+                    "host_id": int(task[1]),
+                    "host path": str(task[2]),
+                    "host file": str(task[3]),
+                    "server path": str(task[4]),
+                    "server file": str(task[5])}
+                                
             # update data dictionary with data associated with the entire file scope
-            data['id_file'] = db_rfm.insert_file(task)
+            data['id_file'] = db_rfm.insert_file(file=task['host file'],path=task['host path'],volume=task['host_id'])
             data['id_procedure'] = db_rfm.insert_procedure(bin_data["method"])
-            
             equipment = db_rfm.insert_equipment(bin_data["hostname"])
             
             data['id_spectrum'] = []

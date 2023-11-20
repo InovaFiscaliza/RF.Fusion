@@ -8,6 +8,7 @@ USE BPDATA;
 -- HOST STATISTICS
 CREATE TABLE HOST (
     ID_HOST INT NOT NULL PRIMARY KEY COMMENT 'Primary Key to host table, from zabbix host id',
+    NA_HOST_UID VARCHAR(50) COMMENT 'Host unique identifier',
     NU_HOST_FILES BIGINT COMMENT 'Historic total number of files listed for backup in the host',
     NU_PENDING_BACKUP INT COMMENT 'Number of files pending backup',
     DT_LAST_BACKUP DATETIME COMMENT 'Date and time of the last backup',
