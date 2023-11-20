@@ -145,42 +145,49 @@ sample = {'filename': 'rfeye002073_230331_T142000.bin',
           'spectrum': [
               Spectrum(type=67, thread_id=290, description='PMEF 2022 (Faixa 10 de 10).', start_mega=3290, stop_mega=3799, dtype='dBm', ndata=13056, bw=73828, processing='peak', antuid=0), Spectrum(type=67, thread_id=310, description='PMEC 2022 (Faixa 2 de 10).', start_mega=105, stop_mega=140, dtype='dBm', ndata=3584, bw=18457, processing='peak', antuid=0), Spectrum(type=67, thread_id=320, description='PMEC 2022 (Faixa 3 de 10).', start_mega=155, stop_mega=165, dtype='dBm', ndata=1024, bw=18457, processing='peak', antuid=0), Spectrum(type=67, thread_id=340, description='PMEC 2022 (Faixa 5 de 10).', start_mega=405, stop_mega=410, dtype='dBm', ndata=512, bw=18457, processing='peak', antuid=0), Spectrum(type=67, thread_id=100, description='PRD 2022 (Faixa 1 de 4).', start_mega=50, stop_mega=90, dtype='dBμV/m', ndata=1024, bw=73828, processing='peak', antuid=0), Spectrum(type=67, thread_id=110, description='PRD 2022 (Faixa 2 de 4).', start_mega=70, stop_mega=110, dtype='dBμV/m', ndata=2048, bw=36914, processing='peak', antuid=0), Spectrum(type=67, thread_id=120, description='PRD 2022 (Faixa 3 de 4).', start_mega=170, stop_mega=220, dtype='dBμV/m', ndata=1280, bw=73828, processing='peak', antuid=0), Spectrum(type=67, thread_id=130, description='PRD 2022 (Faixa 4 de 4).', start_mega=470, stop_mega=700, dtype='dBμV/m', ndata=5888, bw=73828, processing='peak', antuid=0), Spectrum(type=67, thread_id=300, description='PMEC 2022 (Faixa 1 de 10).', start_mega=70, stop_mega=80, dtype='dBm', ndata=1024, bw=18457, processing='peak', antuid=0), Spectrum(type=67, thread_id=330, description='PMEC 2022 (Faixa 4 de 10).', start_mega=325, stop_mega=340, dtype='dBm', ndata=1536, bw=18457, processing='peak', antuid=0), Spectrum(type=67, thread_id=350, description='PMEC 2022 (Faixa 6 de 10).', start_mega=960, stop_mega=1429, dtype='dBm', ndata=12032, bw=73828, processing='peak', antuid=0), Spectrum(type=67, thread_id=360, description='PMEC 2022 (Faixa 7 de 10).', start_mega=1530, stop_mega=1649, dtype='dBm', ndata=3072, bw=73828, processing='peak', antuid=0), Spectrum(type=67, thread_id=370, description='PMEC 2022 (Faixa 8 de 10).', start_mega=2690, stop_mega=2899, dtype='dBm', ndata=5376, bw=73828, processing='peak', antuid=0), Spectrum(type=67, thread_id=380, description='PMEC 2022 (Faixa 9 de 10).', start_mega=5000, stop_mega=5160, dtype='dBm', ndata=4096, bw=73828, processing='peak', antuid=0), Spectrum(type=67, thread_id=390, description='PMEC 2022 (Faixa 10 de 10).', start_mega=5339, stop_mega=5459, dtype='dBm', ndata=3328, bw=73828, processing='peak', antuid=0)]}
 
+
+# recursive function to perform several tries in geocoding before final time out.
+def do_revese_geocode(data = {"latitude":0,"longitude":0}, attempt=1, max_attempts=10, log=sh.log()):
+
+    # find location data references using the open free service of Nominatim - https://nominatim.org/ 
+    point = (data['latitude'],data['longitude'])
+    
+    geocodingService = Nominatim(user_agent=k.NOMINATIM_USER, timeout = 5)
+
+    # try using service with extended timeout and increasing up to 15 seconds and delays of 2 seconds between consecutive attempts
+    attempt = 1
+    while attempt <= k.MAX_NOMINATIN_ATTEMPTS:
+        try:
+            location = geocodingService.reverse(point, timeout = 5+attempt, language="pt")
+        except GeocoderTimedOut:
+            if attempt <= max_attempts:
+                time.sleep(2)
+                location = do_revese_geocode(data, attempt=attempt+1,log=log)
+            else:
+                message = f"GeocoderTimedOut: {point}"
+                log.error(message)
+                raise Exception(message)
+
+    # populate location data with information from the geocoding result.
+    # Loop through all required fields as defined in the constat, and get data from dictionary using associated nominatim semantic translations
+    for field_name, nominatim_semantic_lst in k.REQUIRED_ADDRESS_FIELD.items():
+        data[field_name] = None
+        unfilled_field = True
+        for nominatimField in nominatim_semantic_lst:
+            try:
+                data[field_name] = location.raw['address'][nominatimField]
+                unfilled_field = False
+            except:
+                pass
+        if unfilled_field:
+            message = f"Field {nominatimField} not found in: {location.raw['address']}"
+            log.warning(message)
+
+    return data,log
+
 class BinProcessing:
 
 
-    # recursive function to perform several tries in geocoding before final time out.
-    def doReveseGeocode(self, attempt=1, max_attempts=10):
-
-        # try to find the location data in the database
-        
-        
-        # find location data references using the open free service of Nominatim - https://nominatim.org/ 
-        point = (self.metadata['Latitude'],self.metadata['Longitude'])
-        geocodingService = Nominatim(user_agent=k.NOMINATIM_USER, timeout = 5)
-
-        # try using service with extended timeout and increasing up to 15 seconds and delays of 2 seconds between consecutive attempts
-        attempt = 1
-        while attempt <= k.MAX_NOMINATIN_ATTEMPTS:
-            try:
-                location = geocodingService.reverse(point, timeout = 5+attempt, language="pt")
-            except GeocoderTimedOut:
-                if attempt <= max_attempts:
-                    time.sleep(2)
-                    location = self.doReveseGeocode(point, attempt=attempt+1)
-                raise
-
-        # populate location data with information from the geocoding result.
-        # Loop through all required fields as defined in the constat, and get data from dictionary using associated nominatim semantic translations
-        for fieldName, nominatimSemanticList in k.REQUIRED_ADDRESS_FIELD.items():
-            self.metadata[fieldName] = None
-            for nominatimField in nominatimSemanticList:
-                try:
-                    self.metadata[fieldName] = location.raw['address'][nominatimField]  
-                except:
-                    pass
-
-        # get the state code for the state name retrived from the geocoding service
-        self.metadata['State_Code'] = k.STATE_CODES[self.metadata['State']]
 
     def computeFinaltime(self, row):
         return row['Timestamp'][-1]
@@ -268,7 +275,7 @@ def main():
                                    latitude_raw = bin_data["gps"]._latitude,
                                    altitude_raw = bin_data["gps"]._altitude)
             else:
-                data = do_revese_geocode(data)
+                data,log = do_revese_geocode(data=data,log=log)
                 site = db_rfm.insert_site(data)
                 data['id_site'] = site
             
@@ -300,7 +307,7 @@ def main():
             # TODO: Implement the following code to update the database with the spectrum information               
             # test if task['server path'] includes the "tmp" directory and move the file to the "data" directory
             if task['server path'].find(k.TMP_DIR) >= 0:
-                file_move(task,data)
+                data = file_move(task,data)
                     
                     log.warning(f"Backup task killed due to timeout for host {task['host_add']} after {execution_time/60} minutes.")
             
