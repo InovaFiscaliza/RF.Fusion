@@ -266,6 +266,7 @@ class dbHandler():
         try:
             db_county_id = int(self.cursor.fetchone()[0])
         except:
+            self._disconnect()
             raise ValueError(f"Error retrieving county name {data['County']}")
 
         #search database for the district name, inserting new value if non existant
@@ -349,10 +350,51 @@ class dbHandler():
 
             self._disconnect()
         except:
-            raise Exception(f"Error creating new site {data['Site_ID']} in database")
+            raise Exception(f"Error creating new site using query: {query}")
             
 
         return db_site_id
+
+    def build_path(self, site_id:int) -> str:
+        """Build the path to the site folder in the database in the format "LC State Code/county_id/site_id"
+
+        Args:
+            site_id (int): DB key to the site
+
+        Raises:
+            Exception: Error retrieving site path from database
+
+        Returns:
+            str: Path to the site folder in the database
+        """
+
+        self._connect()
+
+        query = (f"SELECT"
+            f" DIM_SITE_STATE.LC_STATE,"
+            f" DIM_SPECTRUN_SITE.FK_COUNTY,"
+            f" DIM_SPECTRUN_SITE.ID_SITE "
+            f"FROM DIM_SPECTRUN_SITE"
+            f" JOIN DIM_SITE_STATE ON DIM_SPECTRUN_SITE.FK_STATE = DIM_SITE_STATE.ID_STATE"
+            f" WHERE"
+            f" DIM_SPECTRUN_SITE.ID_SITE = {site_id};")
+        
+        try:
+            self.cursor.execute(query)
+        except:
+            self._disconnect()
+            raise Exception(f"Error retrieving site information using query: {query}")
+
+        try:
+            site_path = self.cursor.fetchone()
+            new_path = f"{site_path[0]}/{site_path[1]}/{site_path[2]}"
+        except:
+            self._disconnect()
+            raise Exception(f"Error building path from site information from query: {query}")
+
+        self._disconnect()
+
+        return new_path
 
     # method to insert file entry in the database if it does not exist, otherwise return the existing key
     def insert_file(self, data={    "file_name":"file name",
@@ -381,7 +423,11 @@ class dbHandler():
                 f" NA_PATH = '{data['file_path']}' AND"
                 f" NA_VOLUME = '{data['file_volume']}';")
         
-        self.cursor.execute(query)
+        try:
+            self.cursor.execute(query)
+            self._disconnect()
+        except:
+            raise Exception("Error retrieving file using query: {query}")
 
         try:
             file_id = int(self.cursor.fetchone()[0])
@@ -402,7 +448,7 @@ class dbHandler():
                 file_id = int(self.cursor.lastrowid)
             except:
                 self._disconnect()
-                raise Exception(f"Error creating new file entry {data['file_name']} in database")
+                raise Exception(f"Error creating new file entry using query: {query}")
         
         self._disconnect()
         
@@ -429,7 +475,11 @@ class dbHandler():
                 f"WHERE"
                 f" NA_PROCEDURE = '{procedure_name}';")
         
-        self.cursor.execute(query)
+        try:
+            self.cursor.execute(query)
+        except:
+            self._disconnect()
+            raise Exception("Error retrieving procedure using query: {query}")
 
         try:
             procedure_id = int(self.cursor.fetchone()[0])
@@ -446,7 +496,7 @@ class dbHandler():
                 procedure_id = int(self.cursor.lastrowid)
             except:
                 self._disconnect()
-                raise Exception(f"Error creating new procedure entry {data['procedure_name']} in database")
+                raise Exception(f"Error creating new procedure entry using query: {query}")
         
         self._disconnect()
         
@@ -469,6 +519,7 @@ class dbHandler():
             
             equipment_types = self.cursor.fetchall()
         except:
+            self._disconnect()
             raise Exception("Error retrieving equipment types from database")
         
         self._disconnect()
@@ -480,297 +531,384 @@ class dbHandler():
                 equipment_type_id = int(equipment_type[0])
                 equipment_types_dict[equipment_type_uid] = equipment_type_id
         except:
-            raise Exception("Error parsing equipment data retrieved from database")
+            raise Exception("Error parsing equipment types retrieved from database")
         
         return equipment_types_dict
 
-def insert_equipment(self, equipment_name) -> int:
-    """Create a new equipment entry in the database if it does not exist, otherwise return the existing key
+    def insert_equipment(self, equipment_name) -> int:
+        """Create a new equipment entry in the database if it does not exist, otherwise return the existing key
 
-    Args:
-        equipment_name (str/[str]): String of list of strings containing the equipment name(s)
+        Args:
+            equipment_name (str/[str]): String of list of strings containing the equipment name(s)
 
-    Raises:
-        Exception: Invalid input. Expected a string or a list of strings.
-        Exception: Error retrieving equipment type for _equipment_name_ from database
-        Exception: Error retrieving equipment data for _equipment_name_ from database
-        Exception: Error creating new equipment entry for _equipment_name_ in database
+        Raises:
+            Exception: Invalid input. Expected a string or a list of strings.
+            Exception: Error retrieving equipment type for _equipment_name_ from database
+            Exception: Error retrieving equipment data for _equipment_name_ from database
+            Exception: Error creating new equipment entry for _equipment_name_ in database
 
-    Returns:
-        int: list of db keys to the new or existing equipment entries
-    """
-    
-    if isinstance(equipment_name, str):
-        equipment_names = [equipment_name]
-    elif isinstance(equipment_name, list):
-        equipment_names = equipment_name
-    else:
-        raise Exception("Invalid input. Expected a string or a list of strings.")
-    
-    equipment_types = self._get_equipment_types()
-    
-    equipment_ids = []
-    
-    self._connect()
-    for name in equipment_names:
-        name_lower_case = name.lower()
-        equipment_type_id = False
+        Returns:
+            int: list of db keys to the new or existing equipment entries
+        """
         
-        for type_uid, type_id in equipment_types.items():
-            if name_lower_case.find(type_uid) != -1:
-                equipment_type_id = type_id
-                break
+        if isinstance(equipment_name, str):
+            equipment_names = [equipment_name]
+        elif isinstance(equipment_name, list):
+            equipment_names = equipment_name
+        else:
+            raise Exception("Invalid input. Expected a string or a list of strings.")
         
-        if not equipment_type_id:
-            raise Exception(f"Error retrieving equipment type for {name} from database")
-        
-        query = (f"SELECT ID_EQUIPMENT "
-                f"FROM DIM_SPECTRUN_EQUIPMENT "
-                f"WHERE"
-                f" NA_EQUIPMENT LIKE '{name_lower_case}';")
-        
-        try:
-            self.cursor.execute(query)
-        except:
-            self._disconnect()
-            raise Exception(f"Error retrieving equipment data for {name} from database")
-
-        try:
-            equipment_id = int(self.cursor.fetchone()[0])
-        except:
-            query =(f"INSERT INTO DIM_SPECTRUN_EQUIPMENT"
-                    f" (NA_EQUIPMENT,"
-                    f" FK_EQUIPMENT_TYPE) "
-                    f"VALUES"
-                    f" ('{name}',"
-                    f" {equipment_type_id})")
-
-            try:
-                self.cursor.execute(query)
-                self.cursor.commit()
-            
-                equipment_id = int(self.cursor.lastrowid)
-            except:
-                self._disconnect()
-                raise Exception(f"Error creating new equipment entry for {name} in database")
-        
-        equipment_ids.append(equipment_id)
-        
-    self._disconnect()
-    
-    return equipment_ids
-
-
-
         equipment_types = self._get_equipment_types()
         
-        # iterate over the dictionary to match the equipment type based on the equipment name
-        name_lower_case = equipment_name.lower()
-        equipment_type_id = False
-        for type_uid, type_id in equipment_types.items():
-            if name_lower_case.find(type_uid) != -1:
-                equipment_type_id = type_id
-                break
+        equipment_ids = []
         
-        if not equipment_type_id:
-            raise Exception(f"Error retrieving equipment type for {equipment_name} from database")
+        self._connect()
+        for name in equipment_names:
+            name_lower_case = name.lower()
+            equipment_type_id = False
+            
+            for type_uid, type_id in equipment_types.items():
+                if name_lower_case.find(type_uid) != -1:
+                    equipment_type_id = type_id
+                    break
+            
+            if not equipment_type_id:
+                raise Exception(f"Error retrieving equipment type for {name}")
+            
+            query = (f"SELECT ID_EQUIPMENT "
+                    f"FROM DIM_SPECTRUN_EQUIPMENT "
+                    f"WHERE"
+                    f" NA_EQUIPMENT LIKE '{name_lower_case}';")
+            
+            try:
+                self.cursor.execute(query)
+            except:
+                self._disconnect()
+                raise Exception(f"Error retrieving equipment data using query: {query}")
+
+            try:
+                equipment_id = int(self.cursor.fetchone()[0])
+            except:
+                query =(f"INSERT INTO DIM_SPECTRUN_EQUIPMENT"
+                        f" (NA_EQUIPMENT,"
+                        f" FK_EQUIPMENT_TYPE) "
+                        f"VALUES"
+                        f" ('{name}',"
+                        f" {equipment_type_id})")
+
+                try:
+                    self.cursor.execute(query)
+                    self.cursor.commit()
+                
+                    equipment_id = int(self.cursor.lastrowid)
+                except:
+                    self._disconnect()
+                    raise Exception(f"Error creating new equipment using query: {query}")
+            
+            equipment_ids.append(equipment_id)
+            
+        self._disconnect()
+        
+        return equipment_ids
+
+    def insert_detector_type(self, detector:str) -> int:
+        """Insert detector type in the database if it does not exist, otherwise return the existing key
+
+        Args:
+            detector (str): Detector name
+
+        Raises:
+            Exception: Error retrieving detector type from database
+            Exception: Error creating new detector entry in database
+        
+        Returns:
+            int: DB key to the new detector type
+        """
         
         self._connect()
         
-        query = (f"SELECT ID_EQUIPMENT "
-                f"FROM DIM_SPECTRUN_EQUIPMENT "
-                f"WHERE"
-                f" NA_EQUIPMENT LIKE '{name_lower_case}';")
+        query = (f"SELECT ID_DETECTOR "
+                    f"FROM DIM_SPECTRUN_DETECTOR "
+                    f"WHERE"
+                    f" NA_DETECTOR = '{detector}';")
         
-        self.cursor.execute(query)
+        try:
+            self.cursor.execute(query)
+        except:
+            self._disconnect()
+            raise Exception("Error retrieving detector type using query: {query}")
 
         try:
-            procedure_id = int(self.cursor.fetchone()[0])
+            detector_id = int(self.cursor.fetchone()[0])
         except:            
-            query =(f"INSERT INTO DIM_SPECTRUN_EQUIPMENT"
-                    f" (NA_EQUIPMENT,"
-                    f" FK_EQUIPMENT_TYPE) "
+            query =(f"INSERT INTO DIM_SPECTRUN_DETECTOR"
+                    f" (NA_DETECTOR) "
                     f"VALUES"
-                    f" ('{equipment_name}',"
-                    f" {equipment_type_id})")
+                    f" ('{detector}')")
 
             try:
                 self.cursor.execute(query)
                 self.cursor.commit()
             
-                procedure_id = int(self.cursor.lastrowid)
+                detector_id = int(self.cursor.lastrowid)
             except:
                 self._disconnect()
-                raise Exception(f"Error creating new procedure equipment entry for {data['procedure_name']} in database")
+                raise Exception(f"Error creating new detector entry using query: {query}")
         
         self._disconnect()
         
-        return procedure_id
+        return detector_id
 
-        
-        query = (f"INSERT INTO EQUIPMENT"
-                 f" (name, data) "
-                 f"SELECT '{equipment_name}', '{equipment_type}' "
-                 f"WHERE NOT EXISTS (SELECT 1 FROM EQUIPMENT WHERE LOWER(name) = LOWER('{equipment_type}'));")
+    
+    def insert_trace_type(self, trace_name) -> int:
+        """Insert trace type in the database if it does not exist, otherwise return the existing key
+
+        Args:
+            processing: The processing time of the trace
+
+        Raises:
+            Exception: Error retrieving trace type from database
+            Exception: Error creating new trace type entry in database
             
+        Returns:
+            int: DB key to the new trace time
+        """
+        self._connect()
+        
+        query = (f"SELECT ID_TRACE_TYPE "
+                 f"FROM DIM_SPECTRUN_TRACE_TYPE "
+                 f"WHERE"
+                 f" NA_TRACE_TYPE = {trace_name};")
+        
         try:
             self.cursor.execute(query)
-            self.db_connection.commit()
-            equipment_id = int(self.cursor.lastrowid)
-            self._disconnect()
         except:
-            raise Exception(f"Error updating site {self.data['Site_ID']} from database")
-    
-        return(equipment_id)
+            self._disconnect()
+            raise Exception(f"Error retrieving trace type using query: {query}")
 
-    def updateFile(self):
-        
-        dbKeyFile = self.dbMerge(table = "DIM_MEDICAO_ESPECTRO_ARQUIVO",
-                                 idColumn = "ID_ARQUIVO",
-                                 newDataList = [("NO_ARQUIVO", self.data['File_Name']),
-                                                ("NO_DIR_E_ARQUIVO", self.data['fileFullPath']),
-                                                ("NO_URL", self.data['URL']),
-                                                ("ID_TIPO_ARQUIVO",k.DB_CRFS_BIN_FILE_FILE)],
-                                 where_conditionList = [f"NO_ARQUIVO LIKE '{self.data['File_Name']}'"])
-        
-        return(dbKeyFile)
-
-    # used only to insert new data to the database.
-    def insertSpectrum(self, dbKeyFile, dbKeySite, dbKeyProcedure, dbKeyEquipment,):
-    
-        for _,spectrumData in self.data['Fluxos'].items():
-
-            # get key to the detector
-            query = (f"SELECT ID_TIPO_DETECTOR "
-                f"FROM DIM_MEDICAO_ESPECTRO_DETECTOR "
-                f"WHERE"
-                f" NO_TIPO_DETECTOR LIKE '{k.DEFAULT_DETECTOR}';")
-
-            self.cursor.execute(query)
-            dbKeyDetector = int(self.cursor.fetchone()[0])
-
-            # get key to the trace type and insert if needed
-            dbKeyTrace = self.dbMerge(table = "DIM_MEDICAO_ESPECTRO_TRACO",
-                                      idColumn = "ID_TIPO_TRACO",
-                                      newDataList = [("NO_TIPO_TRACO", spectrumData['Trace_Type'])],
-                                      where_conditionList = [f"NO_TIPO_TRACO LIKE '{spectrumData['Trace_Type']}'"])
-
-            # compose a query to get the measurement unit
-            query = (f"SELECT ID_UNIDADE_MEDIDA "
-                     f"FROM DIM_MEDICAO_ESPECTRO_UNIDADE "
-                     f"WHERE"
-                     f" NO_UNIDADE_MEDIDA LIKE N'{spectrumData['Level_Units']}';")
+        try:
+            trace_type_id = int(self.cursor.fetchone()[0])
+        except:            
+            query = (f"INSERT INTO DIM_SPECTRUN_TRACE_TYPE"
+                     f" (NA_TRACE_TYPE) "
+                     f"VALUES"
+                     f" ({trace_name})")
 
             try:
                 self.cursor.execute(query)
-                dbKeyMeasurementUnit = int(self.cursor.fetchone()[0])
+                self.cursor.commit()
+            
+                trace_type_id = int(self.cursor.lastrowid)
             except:
-                raise ValueError(f"Error retrieving measurement unit in file {self.data.OriginalFileName} {spectrumData['startFrequency']}")
-
-            # compose a query to insert the data. This funcion is called only if file 
-            query = (f"INSERT INTO FATO_MEDICAO_ESPECTRO"
-                     f" (ID_ARQUIVO,"
-                     f" ID_SITE,"
-                     f" ID_TIPO_DETECTOR,"
-                     f" ID_TIPO_TRACO,"
-                     f" ID_UNIDADE_MEDIDA,"
-                     f" ID_PROCEDIMENTO,"
-                     f" NO_DESCRIPTION,"
-                     f" NU_FREQUENCIA_INICIAL,"
-                     f" NU_FREQUENCIA_FINAL,"
-                     f" DT_TEMPO_INICIAL,"
-                     f" DT_TEMPO_FINAL,"
-                     f" NU_DURACAO_AMOSTRA,"
-                     f" NU_NUMERO_TRACOS,"
-                     f" NU_TAMANHO_VETOR,"
-                     f" NU_RBW,"
-                     f" NU_VBW,"
-                     f" NU_ATENUACAO_GANHO) "
-                     f"VALUES"
-                     f" ({dbKeyFile},"
-                     f" {dbKeySite},"
-                     f" {dbKeyDetector},"
-                     f" {dbKeyTrace},"
-                     f" {dbKeyMeasurementUnit},"
-                     f" {dbKeyProcedure},"
-                     f" '{spectrumData['Description']}',"
-                     f" {spectrumData['Start_Frequency']},"
-                     f" {spectrumData['Stop_Frequency']},"
-                     f" '{spectrumData['Initial_Time']}',"
-                     f" '{spectrumData['Timestamp'].max()}',"
-                     f" {spectrumData['Sample_Duration']},"
-                     f" {spectrumData['Num_Traces']},"
-                     f" {spectrumData['Vector_Length']},"
-                     f" {spectrumData['RBW']},"
-                     f" {k.DEFAULT_VBW},"
-                     f" {k.DEFAULT_ATTENUATOR});")
-
-            self.cursor.execute(query)
-
-            # get the key to the newly created entry
-            self.cursor.execute("SELECT SCOPE_IDENTITY()")
-            dbKeySiteSpectrum = int(self.cursor.fetchone()[0])
-
-            self.db_connection.commit()
-
-            # compose a query to insert data in the bridge to the equipment table.
-            query = (f"INSERT INTO PONTE_MEDICAO_ESPECTRO_EQUIPAMENTO"
-                     f" (ID_EQUIPAMENTO,"
-                     f" ID_MEDICAO_ESPECTRO)"
-                     f"VALUES"
-                     f" ({dbKeyEquipment},"
-                     f" {dbKeySiteSpectrum})")
-
-            self.cursor.execute(query)
-            self.db_connection.commit()
-
-
-    def updateDatabase(self, data):
+                self._disconnect()
+                raise Exception(f"Error creating new trace time entry using query: {query}")
         
-        self._connect()
-
-        self.data = data.metadata
-
-        dbKeySite = self.updateSite()
-
-        dbKeyEquipment = self.updateEquipment()
-
-        dbKeyFile = self.updateFile()
-
-        dbKeyProcedure = self.updateProcedure()
-        
-        self.insertSpectrum(dbKeyFile, dbKeySite, dbKeyProcedure, dbKeyEquipment)
-
         self._disconnect()
-
-    def dbFileSearch(self, fileName):
         
-        self._connect()
-        
-        # search database for existing entry with the same filename
-        query = (f"SELECT ID_ARQUIVO "
-                 f"FROM DIM_MEDICAO_ESPECTRO_ARQUIVO "
-                 f"WHERE"
-                 f" NO_ARQUIVO LIKE '{fileName}';")
-
-        self.cursor.execute(query)
-
-        # if no record is found, which should be rule, return flag
-        if self.cursor.rowcount == 0:
-            # set output as a flag that to indicate that there is no data
-            dbKeyFile = False
-        else:
-            # set the output to indicate the entry ID
-            dbKeyFile = int(self.cursor.fetchone()[0])
-
-        if dbKeyFile:
-            print("dfd")
-
-        # disconnect in case no update should be performed
-        self._disconnect()
-
-        return(dbKeyFile)
+        return trace_type_id
     
+    def insert_measure_unit(self, unit_name:str) -> int:
+        """Insert measure unit in the database if it does not exist, otherwise return the existing key
+
+        Args:
+            unit_name (str): The name of the measure unit
+
+        Raises::
+            Exception: Error retrieving measure unit from database
+            Exception: Error creating new measure unit entry in database
+            
+        Returns:
+            int: DB key to the new measure unit
+        """
+        self._connect()
+        
+        query = (f"SELECT ID_MEASURE_UNIT "
+                 f"FROM DIM_SPECTRUN_MEASURE_UNIT "
+                 f"WHERE"
+                 f" NA_MEASURE_UNIT = '{unit_name}';")
+        
+        try:
+            self.cursor.execute(query)
+        except:
+            self._disconnect()
+            raise Exception(f"Error retrieving measure unit using query: {query}")
+
+        try:
+            measure_unit_id = int(self.cursor.fetchone()[0])
+        except:            
+            query = (f"INSERT INTO DIM_SPECTRUN_MEASURE_UNIT"
+                     f" (NA_MEASURE_UNIT) "
+                     f"VALUES"
+                     f" ('{unit_name}')")
+
+            try:
+                self.cursor.execute(query)
+                self.cursor.commit()
+            
+                measure_unit_id = int(self.cursor.lastrowid)
+            except:
+                self._disconnect()
+                raise Exception(f"Error creating new measure unit entry using query: {query}")
+        
+        self._disconnect()
+        
+        return measure_unit_id
+    
+    def insert_spectrun(self, data: dict) -> int:
+        """Insert a spectrun entry in the database if it does not exist, otherwise return the existing key. Equality creteria is based on the following fields: same site, time and frequency scope and same resolution in both dimensions
+
+        Args:
+            data (dict): Dictionary containing a summary of the measurement spectrun data
+
+        Raises:
+            Exception: Error retrieving spectrun from database
+            Exception: Error creating new spectrun entry in database
+        
+        Returns:
+            int: DB key to the new spectrun entry
+        """
+        self._connect()
+
+        # build query to locate a site that mathces data['id_site'] and data['nu_freq_start'] and data['nu_freq_end'] and data['dt_time_start'] and data['dt_time_end'] and data['nu_trace_count'] and data['nu_trace_length']
+        query = (f"SELECT ID_SPECTRUN "
+                    f"FROM FACT_SPECTRUN "
+                    f"WHERE"
+                    f" FK_SITE = {data['id_site']} AND"
+                    f" FK_TRACE_TYPE = {data['id_trace_type']} AND"
+                    f" NU_FREQ_START = {data['nu_freq_start']} AND"
+                    f" NU_FREQ_END = {data['nu_freq_end']} AND"
+                    f" DT_TIME_START = {data['dt_time_start']} AND"
+                    f" DT_TIME_END = {data['dt_time_end']} AND"
+                    f" NU_TRACE_COUNT = {data['nu_trace_count']} AND"
+                    f" NU_TRACE_LENGTH = {data['nu_trace_length']};")
+        
+        try:
+            self.cursor.execute(query)
+        except:
+            self._disconnect()
+            raise Exception(f"Error retrieving spectrun using query: {query}")
+        
+        try:
+            spectrun_id = int(self.cursor.fetchone()[0])
+        except:
+            query = (f"INSERT INTO FACT_SPECTRUN"
+                        f" (FK_SITE,"
+                        f" FK_PROCEDURE,"
+                        f" FK_DETECTOR_TYPE,"
+                        f" FK_TRACE_TYPE,"
+                        f" FK_MEASURE_UNIT,"
+                        f" NA_DESCRIPTION,"
+                        f" NU_FREQ_START,"
+                        f" NU_FREQ_END,"
+                        f" DT_TIME_START,"
+                        f" DT_TIME_END,"
+                        f" NU_SAMPLE_DURATION,"
+                        f" NU_TRACE_COUNT,"
+                        f" NU_TRACE_LENGTH,"
+                        f" NU_RBW,"
+                        f" NU_VBW,"
+                        f" NU_ATT_GAIN) "
+                        f"VALUES"
+                        f" ({data['id_site']},"
+                        f" {data['id_procedure']},"
+                        f" {data['id_detector_type']},"
+                        f" {data['id_trace_type']},"
+                        f" {data['id_measure_unit']},"
+                        f" '{data['na_description']}',"
+                        f" {data['nu_freq_start']},"
+                        f" {data['nu_freq_end']},"
+                        f" {data['dt_time_start']},"
+                        f" {data['dt_time_end']},"
+                        f" {data['nu_sample_duration']},"
+                        f" {data['nu_trace_count']},"
+                        f" {data['nu_trace_length']},"
+                        f" {data['nu_rbw']},"
+                        f" {data['nu_vbw']},"
+                        f" {data['nu_att_gain']})")
+        
+            try:
+                self.cursor.execute(query)
+                self.cursor.commit()
+            
+                spectrun_id = int(self.cursor.lastrowid)
+            except:
+                self._disconnect()
+                raise Exception(f"Error creating new spectrun entry using query: {query}")
+
+        self._disconnect()
+
+        return spectrun_id
+    
+    def insert_bridge_spectrun_equipment(self, spectrun_id:list, equipment_id:list) -> None:
+        """Insert entries connecting spectrun measurements and equipment in the database in a N:N relationship
+
+        Args:
+            spectrun_id (list): List of spectrum entries in the database to be associated with the equipments in the list
+            equipment_id (list): List of equipment entries in the database to be associated with the spectrum measurements
+            
+        Raises:
+            Exception: Error creating new spectrun equipment relationship in database
+            
+        Returns:
+            none: none
+        """
+
+        self._connect()
+
+        for spectrun in spectrun_id:
+            for equipment in equipment_id:
+                query = (f"INSERT IGNORE INTO FACT_SPECTRUN_EQUIPMENT"
+                            f" (FK_SPECTRUN,"
+                            f" FK_EQUIPMENT) "
+                            f"VALUES"
+                            f" ({spectrun},"
+                            f" {equipment})")
+
+                try:
+                    self.cursor.execute(query)
+                    self.cursor.commit()
+                except:
+                    self._disconnect()
+                    raise Exception(f"Error creating new spectrun equipment entry using query: {query}")
+                
+        self._disconnect()
+    
+    def insert_bridge_spectrun_file(self,
+                                    spectrun_id:list,
+                                    file_id:list) -> None:
+        """Insert entries connecting spectrun measurements and file in the database in a N:N relationship
+
+        Args:
+            spectrun_id (list): List of spectrum entries in the database to be associated with the equipments in the list
+            file_id (list): List of file entries in the database to be associated with the spectrum measurements
+            
+        Raises:
+            Exception: Error creating new spectrun file relationship in database
+            
+        Returns:
+            none: none
+        """
+        
+        self._connect()
+        
+        for spectrun in spectrun_id:
+            for file in file_id:
+                query = (f"INSERT IGNORE INTO FACT_SPECTRUN_FILE"
+                            f" (FK_SPECTRUN,"
+                            f" FK_FILE) "
+                            f"VALUES"
+                            f" ({spectrun},"
+                            f" {file})")
+
+                try:
+                    self.cursor.execute(query)
+                    self.cursor.commit()
+                except:
+                    self._disconnect()
+                    raise Exception(f"Error creating new spectrun file entry using query: {query}")
+                
+        self._disconnect()
+        
     # Internal method to add host to the database
     def _add_host(self, hostid:str, host_uid:str) -> None:
         """This method adds a new host to the database if it does not exist.
