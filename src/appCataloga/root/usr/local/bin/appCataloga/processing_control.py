@@ -239,22 +239,16 @@ def main():
                 data = do_revese_geocode(data=data,log=log)
                 site = db_rfm.insert_site(data)
             
-            data['id_site'] = site
-
-
-
-                    "host_id": int(task[1]),
-                    "host path": str(task[2]),
-                    "host file": str(task[3]),
-                    "server path": str(task[4]),
-                    "server file": str(task[5])}
-                                
             # update data dictionary with data associated with the entire file scope
-            data['id_file'] = db_rfm.insert_file(file=task['host file'],path=task['host path'],volume=task['host_id'])
+            file_id = db_rfm.insert_file(file=task['host file'],path=task['host path'],volume=task['host_uid'])
             data['id_procedure'] = db_rfm.insert_procedure(bin_data["method"])
-            equipment = db_rfm.insert_equipment(bin_data["hostname"])
             
-            data['id_spectrum'] = []
+            # TODO: Include antenna for rfeye stations
+            
+            equipment_id = []
+            receiver = bin_data["hostname"]
+            equipment_id.append(db_rfm.insert_equipment(receiver))
+            
             for spectrum in bin_data["spectrum"]:
  
                 data['id_detector_type'] = db_rfm.store_detector_type(k.DEFAULT_DETECTOR)
@@ -275,7 +269,11 @@ def main():
                 
                 spectrun_id = db_rfm.store_fact_spectrun(data)
                 
-                db_rfm.store_bridge_spectrun_equipment(spectrun_id,equipment)
+                antenna = f"{receiver}_ant[{spectrum.antuid}]"
+                equipment_id.append(db_rfm.insert_equipment(antenna))
+                
+                db_rfm.store_bridge_spectrun_equipment(spectrun_id,equipment_id)
+                db_rfm.store_bridge_spectrun_file(spectrun_id,file_id)
 
             # TODO: Implement the following code to update the database with the spectrum information               
             # test if task['server path'] includes the "tmp" directory and move the file to the "data" directory
