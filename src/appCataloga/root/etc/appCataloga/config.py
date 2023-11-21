@@ -42,6 +42,18 @@ PYTHON_ENV = ['conda', 'activate', 'myenv']
 DAEMON_CFG_FILE="/etc/node/indexerD.cfg"
 TARGET_FOLDER="/mnt/repo/tmp"
 
+# Geographic site definition
+MAXIMUM_GNSS_DEVIATION = 0.0005
+MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS = 1000
+
+#Nomintim Geocoding parameters
+NOMINATIM_USER = '9272749a.anatel.gov.br@amer.teams.ms'
+
+# Nomintim service parameters normalization
+REQUIRED_ADDRESS_FIELD = {'state':['state'],
+                          'county':['city','town'],
+                          'district':['suburb']}
+
 # constants that control the script
 # * constants used for folder search
 # TODO: Change configuration parameters to load json or more standard config file
@@ -91,15 +103,6 @@ CSV_COLUMN_ORDER = ['Description',
                     'File_Name',
                     'URL']
 
-#TIME_TO_FINISH_FILE_TRANSFER = timedelta(seconds=60)
-QUEUE_CHECK_PERIOD = 5
-
-#Geocoding parameters
-NOMINATIM_USER = '9272749a.anatel.gov.br@amer.teams.ms'
-
-#Number of seconds to control file watcher delays
-PERIOD_FOR_STOP_CHECK = 1
-PERIOD_FOR_OLD_FILES_CHECK = 300
 
 # Standard IS multipliers
 KILO = 1000.0
@@ -120,9 +123,6 @@ DB_CRFS_BIN_EQUIPMENT_TYPE = 1
 DB_CRFS_BIN_FILE_FILE = 1
 
 #TODO: Set correct value for dBm unit 
-
-MAXIMUM_GNSS_DEVIATION = 0.0005
-MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS = 1000
 
 #Dict to convert state names to codes based on nomintim service
 STATE_CODES = {'Rondônia':'RO',
@@ -153,7 +153,10 @@ STATE_CODES = {'Rondônia':'RO',
                'Goiás':'GO',
                'Distrito Federal':'DF'}
 
-# Nomintim service parameters normalization
-REQUIRED_ADDRESS_FIELD = {'State':['state'],
-                          'County':['city','town'],
-                          'District':['suburb']}
+#TIME_TO_FINISH_FILE_TRANSFER = timedelta(seconds=60)
+QUEUE_CHECK_PERIOD = 5
+
+#Number of seconds to control file watcher delays
+PERIOD_FOR_STOP_CHECK = 1
+PERIOD_FOR_OLD_FILES_CHECK = 300
+
