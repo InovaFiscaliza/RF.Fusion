@@ -62,7 +62,7 @@ def handler(signum, frame):
         <frame>: current stack frame (None or a frame object
         
     Returns:
-        <void>
+        None
     """
     print('Signal handler called with signal', signum)
     interrupt_write.send(b'\0')
@@ -70,35 +70,39 @@ def handler(signum, frame):
 # start signal handler that control a graceful shutdown 
 signal.signal(signal.SIGINT, handler)
 
-def backup_queue(conn="SocketClient",
-                 hostid="1",
-                 host_addr="host_addr",
-                 host_port="2800",
-                 host_user="user",
-                 host_passwd="passwd"):
-    """Add host to backup queue and return current status
+def backup_queue(   conn:str,
+                    hostid:str,
+                    host_uid:str,
+                    host_addr:str,
+                    host_port:str,
+                    host_user:str,
+                    host_passwd:str):
+    """Add host to backup queue in the database and return current status
 
     Args:
         conn (str): Socket connection object. Defaults to "ClientIP".
-        hostid (str): Target host id. Used as PK in the database host table. Defaults to "1".
-        host_addr (str): IP address or DNS to the host to be contacted. Defaults to "host_addr".
-        host_port (str): SSH port to be used to connect to the host. Defaults to 2800.
-        host_user (str): Host user for the SSH connection. Defaults to "user".
-        host_passwd (str): Host password for the SSH connection. Defaults to "passwd".
+        hostid (str): Target host id. Used as PK in the database host table.
+        host_uid (str): Unique physical identifier to the host.
+        host_addr (str): IP address or DNS to the host to be contacted.
+        host_port (str): SSH port to be used to connect to the host.
+        host_user (str): Host user for the SSH connection.
+        host_passwd (str): Host password for the SSH connection.
 
     Returns:
-        void
+        dict: Dictionary with the current status for the hostid
     """
     
-    # create db object using databaseHandler class
     db = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
      
-    # add host to db task list for backup
-    db.add_backup_task(hostid,host_addr,host_port,host_user,host_passwd)
+    db.add_backup_task(hostid=hostid,
+                       host_uid=host_uid,
+                       host_addr=host_addr,
+                       host_port=host_port,
+                       host_user=host_user,
+                       host_passwd=host_passwd)
     
     host_stat = db.get_host_task_status(hostid)
     
-    # get from db the backup summary status for the host_id
     return host_stat
 
 def serve_client(client_socket):
