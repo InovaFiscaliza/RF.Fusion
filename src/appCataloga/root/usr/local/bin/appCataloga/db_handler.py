@@ -14,7 +14,8 @@ import config as k
 import shared as sh
 
 class dbHandler():
-#TODO: Improve error handling for database errors
+    """Class associated with the database operations for the appCataloga scripts
+    """
 
     def __init__(self, database=k.RFM_DATABASE_NAME, log=sh.log()):
         """Initialize a new instance of the DBHandler class.
@@ -450,71 +451,162 @@ class dbHandler():
         self._disconnect()
         
         return procedure_id
-    
-    # method to search database and if value not found, insert
-    def db_flex_insert_update (self, table, idColumn, newDataList, where_conditionList):
 
-# TODO: Study use of SQL Merge function. Since watchdog controls the threads, there is little risk of simultaneous insert/update for the same data. Additional complexity of merge and reduced compatibility is not justifiable. Additional limitation concerning the return of new or existing id.**--*
+    def _get_equipment_types(self) -> dict:
+        """Load all equipment types from the database and create a dictionary with equipmenty_type_uid as key and equipment_type_id as value
 
-        #create query to search database for existing  entry
-        query = (f"SELECT {idColumn} "
-                 f"FROM {table} "
-                 f"WHERE ")
-
-        for where_condition in where_conditionList:
-            query = query + f"{where_condition} AND "
-
-        # remove last " AND " and add ";" to end the query
-        query = query[:-5] + f";"
-
-        self.cursor.execute(query)
+        Returns:
+            dict: {equipment_type_uid:equipment_type_id}
+        """
+        
+        self._connect()
+        
+        query = (f"SELECT ID_EQUIPMENT_TYPE, NA_EQUIPMENT_TYPE "
+                f"FROM DIM_SPECTRUN_EQUIPMENT_TYPE;")
         
         try:
-            #try to retrieve an existing key to the existing district entry    
-            dbKey = int(self.cursor.fetchone()[0])
-
-            if k.VERBOSE: print(f'     Using data in {table} with registry ID {dbKey}')
-        except:
-
-            # create a query to input the data
-            queryColumns = f" ("
-            queryValues = f" VALUES ("
-
-            for data in newDataList:
-                queryColumns = queryColumns + f"{data[0]}, "
-                if isinstance(data[1],str):
-                    queryValues = queryValues + f"'{data[1]}', "
-                else:
-                    queryValues = queryValues + f"{data[1]}, "
-
-            queryColumns = queryColumns[:-2] + f")"
-            queryValues = queryValues[:-2] + f");"
-
-            # if there is no key to retrieve, get the 
-            query = f"INSERT INTO {table}" + queryColumns + queryValues
-
             self.cursor.execute(query)
+            
+            equipment_types = self.cursor.fetchall()
+        except:
+            raise Exception("Error retrieving equipment types from database")
+        
+        self._disconnect()
+        
+        equipment_types_dict = {}
+        try:
+            for equipment_type in equipment_types:
+                equipment_type_uid = str(equipment_type[1])
+                equipment_type_id = int(equipment_type[0])
+                equipment_types_dict[equipment_type_uid] = equipment_type_id
+        except:
+            raise Exception("Error parsing equipment data retrieved from database")
+        
+        return equipment_types_dict
 
-            # get the key to the newly created entry
-            self.cursor.execute("SELECT SCOPE_IDENTITY()")
-            dbKey = int(self.cursor.fetchone()[0])
+def insert_equipment(self, equipment_name) -> int:
+    """Create a new equipment entry in the database if it does not exist, otherwise return the existing key
 
-            self.cursor.commit()
+    Args:
+        equipment_name (str/[str]): String of list of strings containing the equipment name(s)
 
-            if k.VERBOSE: print(f'     New entry created in {table} with registry ID {dbKey}')
+    Raises:
+        Exception: Invalid input. Expected a string or a list of strings.
+        Exception: Error retrieving equipment type for _equipment_name_ from database
+        Exception: Error retrieving equipment data for _equipment_name_ from database
+        Exception: Error creating new equipment entry for _equipment_name_ in database
 
-        return dbKey
+    Returns:
+        int: list of db keys to the new or existing equipment entries
+    """
+    
+    if isinstance(equipment_name, str):
+        equipment_names = [equipment_name]
+    elif isinstance(equipment_name, list):
+        equipment_names = equipment_name
+    else:
+        raise Exception("Invalid input. Expected a string or a list of strings.")
+    
+    equipment_types = self._get_equipment_types()
+    
+    equipment_ids = []
+    
+    self._connect()
+    for name in equipment_names:
+        name_lower_case = name.lower()
+        equipment_type_id = False
+        
+        for type_uid, type_id in equipment_types.items():
+            if name_lower_case.find(type_uid) != -1:
+                equipment_type_id = type_id
+                break
+        
+        if not equipment_type_id:
+            raise Exception(f"Error retrieving equipment type for {name} from database")
+        
+        query = (f"SELECT ID_EQUIPMENT "
+                f"FROM DIM_SPECTRUN_EQUIPMENT "
+                f"WHERE"
+                f" NA_EQUIPMENT LIKE '{name_lower_case}';")
+        
+        try:
+            self.cursor.execute(query)
+        except:
+            self._disconnect()
+            raise Exception(f"Error retrieving equipment data for {name} from database")
 
-                data['id_detector_type'] = db_rfm.store_detector_type(k.DEFAULT_DETECTOR)
-                data['id_trace_type'] = db_rfm.store_trace_time(spectrum.processing)
-                data['id_measure_unit'] = db_rfm.store_measure_unit(task)
+        try:
+            equipment_id = int(self.cursor.fetchone()[0])
+        except:
+            query =(f"INSERT INTO DIM_SPECTRUN_EQUIPMENT"
+                    f" (NA_EQUIPMENT,"
+                    f" FK_EQUIPMENT_TYPE) "
+                    f"VALUES"
+                    f" ('{name}',"
+                    f" {equipment_type_id})")
+
+            try:
+                self.cursor.execute(query)
+                self.cursor.commit()
+            
+                equipment_id = int(self.cursor.lastrowid)
+            except:
+                self._disconnect()
+                raise Exception(f"Error creating new equipment entry for {name} in database")
+        
+        equipment_ids.append(equipment_id)
+        
+    self._disconnect()
+    
+    return equipment_ids
 
 
-    def insert_equipment(self, equipment_name, equipment_type):
 
-# TODO: Include antenna
-
+        equipment_types = self._get_equipment_types()
+        
+        # iterate over the dictionary to match the equipment type based on the equipment name
+        name_lower_case = equipment_name.lower()
+        equipment_type_id = False
+        for type_uid, type_id in equipment_types.items():
+            if name_lower_case.find(type_uid) != -1:
+                equipment_type_id = type_id
+                break
+        
+        if not equipment_type_id:
+            raise Exception(f"Error retrieving equipment type for {equipment_name} from database")
+        
         self._connect()
+        
+        query = (f"SELECT ID_EQUIPMENT "
+                f"FROM DIM_SPECTRUN_EQUIPMENT "
+                f"WHERE"
+                f" NA_EQUIPMENT LIKE '{name_lower_case}';")
+        
+        self.cursor.execute(query)
+
+        try:
+            procedure_id = int(self.cursor.fetchone()[0])
+        except:            
+            query =(f"INSERT INTO DIM_SPECTRUN_EQUIPMENT"
+                    f" (NA_EQUIPMENT,"
+                    f" FK_EQUIPMENT_TYPE) "
+                    f"VALUES"
+                    f" ('{equipment_name}',"
+                    f" {equipment_type_id})")
+
+            try:
+                self.cursor.execute(query)
+                self.cursor.commit()
+            
+                procedure_id = int(self.cursor.lastrowid)
+            except:
+                self._disconnect()
+                raise Exception(f"Error creating new procedure equipment entry for {data['procedure_name']} in database")
+        
+        self._disconnect()
+        
+        return procedure_id
+
         
         query = (f"INSERT INTO EQUIPMENT"
                  f" (name, data) "
@@ -972,28 +1064,32 @@ class dbHandler():
         # connect to the database
         self._connect()
 
-        # build query to get the next backup task
-        query = (   "SELECT ID_PRC_TASK, FK_HOST, "
-                            "NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, "
-                            "NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME "
+        # build query to get the next backup task with host_uid
+        query = (   "SELECT PRC_TASK.ID_PRC_TASK, "
+                            "PRC_TASK.FK_HOST, HOST.HOST_UID, "
+                            "PRC_TASK.NO_HOST_FILE_PATH, PRC_TASK.NO_HOST_FILE_NAME, "
+                            "PRC_TASK.NO_SERVER_FILE_PATH, PRC_TASK.NO_SERVER_FILE_NAME, "
                     "FROM PRC_TASK "
-                    "ORDER BY DT_PRC_TASK "
+                    "JOIN HOST ON PRC_TASK.FK_HOST = HOST.ID_HOST "
+                    "ORDER BY PRC_TASK.DT_PRC_TASK "
                     "LIMIT 1;")
         
         self.cursor.execute(query)
         
         task = self.cursor.fetchone()
-        self._disconnect()
         
         try:
             output = {"task_id": int(task[0]),
                     "host_id": int(task[1]),
-                    "host path": str(task[2]),
-                    "host file": str(task[3]),
-                    "server path": str(task[4]),
-                    "server file": str(task[5])}
+                    "host_uid": str(task[2]),
+                    "host path": str(task[3]),
+                    "host file": str(task[4]),
+                    "server path": str(task[5]),
+                    "server file": str(task[6])}
         except:
             output = False
+        
+        self._disconnect()
         
         return output
 
@@ -1032,3 +1128,58 @@ class dbHandler():
         self.db_connection.commit()
         
         self._disconnect()    
+
+
+    # method to search database and if value not found, insert
+    def db_flex_insert_update (self, table, idColumn, newDataList, where_conditionList):
+
+# TODO: Study use of SQL Merge function. Since watchdog controls the threads, there is little risk of simultaneous insert/update for the same data. Additional complexity of merge and reduced compatibility is not justifiable. Additional limitation concerning the return of new or existing id.**--*
+
+        #create query to search database for existing  entry
+        query = (f"SELECT {idColumn} "
+                 f"FROM {table} "
+                 f"WHERE ")
+
+        for where_condition in where_conditionList:
+            query = query + f"{where_condition} AND "
+
+        # remove last " AND " and add ";" to end the query
+        query = query[:-5] + f";"
+
+        self.cursor.execute(query)
+        
+        try:
+            #try to retrieve an existing key to the existing district entry    
+            dbKey = int(self.cursor.fetchone()[0])
+
+            if k.VERBOSE: print(f'     Using data in {table} with registry ID {dbKey}')
+        except:
+
+            # create a query to input the data
+            queryColumns = f" ("
+            queryValues = f" VALUES ("
+
+            for data in newDataList:
+                queryColumns = queryColumns + f"{data[0]}, "
+                if isinstance(data[1],str):
+                    queryValues = queryValues + f"'{data[1]}', "
+                else:
+                    queryValues = queryValues + f"{data[1]}, "
+
+            queryColumns = queryColumns[:-2] + f")"
+            queryValues = queryValues[:-2] + f");"
+
+            # if there is no key to retrieve, get the 
+            query = f"INSERT INTO {table}" + queryColumns + queryValues
+
+            self.cursor.execute(query)
+
+            # get the key to the newly created entry
+            self.cursor.execute("SELECT SCOPE_IDENTITY()")
+            dbKey = int(self.cursor.fetchone()[0])
+
+            self.cursor.commit()
+
+            if k.VERBOSE: print(f'     New entry created in {table} with registry ID {dbKey}')
+
+        return dbKey
