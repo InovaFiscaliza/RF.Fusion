@@ -52,7 +52,7 @@ class dbHandler():
         
         self.db_connection = mysql.connector.connect(**config)
         
-        self.cursor = self.db_connection.cursor()
+        self.cursor = self.db_connection.cursor(buffered=True)
 
     def _disconnect(self):
         """ Disconnect from the database for graceful exit
@@ -70,57 +70,53 @@ class dbHandler():
         self.db_connection.close()
 
     def get_site_id(self,
-                    data=None):
-        """Get site information from the database
+                    data:dict) -> (int, bool):
+        """Get site database id based on the coordinates in the data dictionary and limiting distances in the config.py file
 
         Args:
-            data (dict, optional): Site information with required coordinates. Defaults to self.data.
+            data (dict): {"latitude":float, "longitude":float} Site information with required coordinates. 
 
         Raises:
             Exception: Error retrieving location coordinates from database
-            ValueError: _description_
 
         Returns:
-            If there is a matching site in the database, returns the site ID. If there is no matching site, returns False.
+            int: DB key to the site
         """
 
-        # if data is not provided, use the data from the object
-        if data is None:
-            data = self.data
-        
         self._connect()
-            
-        # get data from the point in the database that is nearest to the measurement location indicated in the file
+
+        # Get data from the point in the database that is nearest to the measurement location indicated in the file
         query = (f"SELECT"
-                f" [ID_SITE],"
+                f" ID_SITE,"
                 f" ST_X(GEO_POINT) as LONGITUDE,"
                 f" ST_Y(GEO_POINT) as LATITUDE "
                 f"FROM DIM_SPECTRUN_SITE"
-                f" ORDER BY ST_Distance_Sphere(GEO_POINT, ST_GeomFromText('POINT({data['Longitude']} {data['Latitude']})', 4326))"
+                f" ORDER BY ST_Distance_Sphere(GEO_POINT, ST_GeomFromText('POINT({data['longitude']} {data['latitude']})', 4326))"
                 f" LIMIT 1;")
-        
+
         try:
-            # Try to get the nearest match
             self.cursor.execute(query)
 
             nearest_site = self.cursor.fetchone()
-            
+        except:
+            self._disconnect()
+            raise Exception("Error retrieving location coordinates from database")
+
+
+        try:
             nearest_site_id = int(nearest_site[0])
             nearest_site_longitude = float(nearest_site[1])
             nearest_site_latitude = float(nearest_site[2])
 
-            #Check if the database point is within the the expected deviation of the measured location coordinates 
-            near_in_longitude = ( abs(data['Longitude']-nearest_site_longitude) < k.MAXIMUM_GNSS_DEVIATION )
-            near_in_latitude = ( abs(data['Latitude']-nearest_site_latitude) < k.MAXIMUM_GNSS_DEVIATION )
-            location_exist_in_db = ( near_in_latitude and near_in_longitude )
-        except:
-            # Confirm If number of rows returned is zero, error is due to the fact that there is no entry in the database
-            if self.cursor.rowcount == 0:
-                # set flag to create new location
-                location_exist_in_db = False
-            else:
-                # some other error occurred
-                raise Exception("Error retrieving location coordinates from database")
+            # Check if the database point is within the expected deviation of the measured location coordinates
+            near_in_longitude = (abs(data['longitude'] - nearest_site_longitude) < k.MAXIMUM_GNSS_DEVIATION)
+            near_in_latitude = (abs(data['latitude'] - nearest_site_latitude) < k.MAXIMUM_GNSS_DEVIATION)
+            location_exist_in_db = (near_in_latitude and near_in_longitude)
+        except (IndexError, TypeError, ValueError):
+            location_exist_in_db = False
+        except Exception as e:
+            self._disconnect()
+            raise Exception(f"Error retrieving location coordinates from database: {e}")
 
         self._disconnect()
 
@@ -133,7 +129,8 @@ class dbHandler():
                     site = int,
                     longitude_raw = [float],
                     latitude_raw = [float],
-                    altitude_raw = [float]) -> None:
+                    altitude_raw = [float],
+                    log=sh.log()) -> None:
         """Update site coordinates in the database for existing site
 
         Args:
@@ -141,7 +138,8 @@ class dbHandler():
             longitude_raw ([float]): List of measured longitude in degrees.
             latitude_raw ([float]): List of measured latitude in degrees.
             altitude_raw ([float]): List of measured altitude in meters.
-
+            log (log): Logging object
+            
         Returns:
             none: none
         """
@@ -152,8 +150,8 @@ class dbHandler():
         query = (f"SELECT"
              f" ST_X(GEO_POINT) as LONGITUDE,"
              f" ST_Y(GEO_POINT) as LATITUDE,"
-             f" [NU_ALTITUDE],"
-             f" [NU_GNSS_MEASUREMENTS],"
+             f" NU_ALTITUDE,"
+             f" NU_GNSS_MEASUREMENTS "
              f"FROM DIM_SPECTRUN_SITE "
              f"WHERE"
              f" ID_SITE = {site};")
@@ -164,6 +162,7 @@ class dbHandler():
 
             nearest_site = self.cursor.fetchone()
         except:
+            self._disconnect()
             raise Exception(f"Error retrieving site {self.data['Site_ID']} from database")            
 
         try:
@@ -172,15 +171,16 @@ class dbHandler():
             db_site_altitude = float(nearest_site[2])
             db_site_nu_gnss_measurements = int(nearest_site[3])
         except:
+            self._disconnect()
             raise Exception(f"Invalid data returned for site {self.data['Site_ID']} from database")
 
         # if number of measurements in the database greater than the maximum required number of measurements.
         if db_site_nu_gnss_measurements < k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS:
 
             #add point coordinates in the file to the estimator already in the database
-            longitudeSum = np.sum(longitude_raw) + ( db_site_longitude * db_site_nu_gnss_measurements ) 
-            latitudeSum = np.sum(latitude_raw) + ( db_site_latitude * db_site_nu_gnss_measurements )
-            altitudeSum = np.sum(altitude_raw) + ( db_site_altitude * db_site_nu_gnss_measurements )
+            longitudeSum = longitude_raw.sum() + ( db_site_longitude * db_site_nu_gnss_measurements ) 
+            latitudeSum = latitude_raw.sum() + ( db_site_latitude * db_site_nu_gnss_measurements )
+            altitudeSum = altitude_raw.sum() + ( db_site_altitude * db_site_nu_gnss_measurements )
             nu_gnss_measurements = db_site_nu_gnss_measurements + len(longitude_raw)
             longitude = longitudeSum / nu_gnss_measurements
             latitude = latitudeSum / nu_gnss_measurements
@@ -192,55 +192,42 @@ class dbHandler():
                         f" NU_ALTITUDE = {altitude},"
                         f" NU_GNSS_MEASUREMENTS = {nu_gnss_measurements} "
                         f"WHERE ID_SITE = {site};")
-            
-            if k.VERBOSE: print(f'Updated location at Latitude: {latitude}, Longitude: {longitude}, Altitude: {altitude}')
 
             try:
                 self.cursor.execute(query)
                 self.db_connection.commit()
             
                 self._disconnect()
+                
+                log.entry(f'Updated location at latitude: {latitude}, longitude: {longitude}')    
             except:
+                self._disconnect()
                 raise Exception(f"Error updating site {self.data['Site_ID']} from database")
 
         else:
             # Do not update, avoiding unnecessary processing and variable numeric overflow
-            if k.VERBOSE: print(f'Location at latitude: {latitude}, Longitude: {longitude} reached the maximum number of measurements. No update performed.')
-
-        self._disconnect()
+            log.entry(f'Location at latitude: {latitude}, longitude: {longitude} reached the maximum number of measurements. No update performed.')
 
 
     def _get_geographic_codes(  self,  
-                                data = {"state":"state name",
-                                        "county":"city,town name",
-                                        "district":"suburb name"}) -> (0,0,0):
+                                data: dict) -> (int,int,int):
         """Get DB keys for state, county and district based on the data in the object
 
         Args:
             data (dict): {"state":"state name", "county":"city,town name", "district":"suburb name"}
 
         Raises:
-            ValueError: Fail to retrive state name from database
-            ValueError: Fail to retrive county name from database
-            ValueError: _description_
-            Exception: _description_
-            Exception: _description_
-            Exception: _description_
-            Exception: _description_
-            Exception: _description_
+            Exception: Fail to retrive state name from database
+            Exception: Fail to retrive county name from database
 
         Returns:
             (int,int,int): Tuple with the DB keys for state, county and district
         """
 
         self._connect()
-
-        # if data is not provided, use the data from the object
-        if data is None:
-            data = self.data
         
         # search database for existing state entry and get the existing key
-        query = (   f"SELECT ID_STATE_CODE "
+        query = (   f"SELECT ID_STATE "
                     f"FROM DIM_SITE_STATE "
                     f"WHERE"
                     f" NA_STATE LIKE '{data['state']}';")
@@ -250,16 +237,16 @@ class dbHandler():
         try:
             db_state_ide = int(self.cursor.fetchone()[0])
         except:
-            raise ValueError(f"Error retrieving state name {data['state']}")
+            raise Exception(f"Error retrieving state name {data['state']}")
 
         # search database for existing county name entry within the identified State and get the existing key
         # Prepare multi word name to be processed in the full text search by replacing spaces with "AND"
-        county = self.data['county'].replace(' ',' AND ')
-        query = (   f"SELECT ID_COUNTY_CODE "
+        county = data['county'].replace(' ',' AND ')
+        query = (   f"SELECT ID_COUNTY "
                     f"FROM DIM_SITE_COUNTY "
                     f"WHERE"
                     f" MATCH(NA_COUNTY) AGAINST('{county})')"
-                    f" AND FK_STATE_CODE = {db_state_ide};")
+                    f" AND FK_STATE = {db_state_ide};")
 
         self.cursor.execute(query)
         
@@ -267,15 +254,15 @@ class dbHandler():
             db_county_id = int(self.cursor.fetchone()[0])
         except:
             self._disconnect()
-            raise ValueError(f"Error retrieving county name {data['County']}")
+            raise Exception(f"Error retrieving county name {data['County']}")
 
         #search database for the district name, inserting new value if non existant
-        district = self.data['district'].replace(' ',' AND ')
+        district = data['district'].replace(' ',' AND ')
         query = (f"SELECT ID_DISTRICT "
                 f"FROM DIM_SITE_DISTRICT "
                 f"WHERE"
                 f" MATCH(NA_DISTRICT) AGAINST('{district}')"
-                f" AND FK_COUNTY_CODE = {db_county_id};")
+                f" AND FK_COUNTY = {db_county_id};")
         
         self.cursor.execute(query)
         
@@ -283,11 +270,11 @@ class dbHandler():
             db_district_id = int(self.cursor.fetchone()[0])
         except:
             query = (f"INSERT INTO DIM_SITE_DISTRICT"
-                    f" (FK_COUNTY_CODE,"
+                    f" (FK_COUNTY,"
                     f" NA_DISTRICT) "
                     f"VALUES"
                     f" ({db_county_id},"
-                    f" '{self.data['District']}');")
+                    f" '{data['district']}');")
             
             self.cursor.execute(query)
             self.db_connection.commit()
@@ -322,14 +309,14 @@ class dbHandler():
             int: DB key to the new site
         """
 
-        self._connect()
-
         (db_state_id, db_county_id, db_district_id) = self._get_geographic_codes(data=data)
+
+        self._connect()
         
         # construct query to create new sie in the database
-        query = query = (   f"INSERT INTO DIM_SPECTRUN_SITE"
+        query = (   f"INSERT INTO DIM_SPECTRUN_SITE"
                             f" (GEO_POINT,"
-                            f" ALTITUDE,"
+                            f" NU_ALTITUDE,"
                             f" NU_GNSS_MEASUREMENTS,"
                             f" FK_STATE,"
                             f" FK_COUNTY,"
@@ -344,7 +331,7 @@ class dbHandler():
 
         try:
             self.cursor.execute(query)
-            self.cursor.commit()
+            self.db_connection.commit()
         
             db_site_id = int(self.cursor.lastrowid)
 
@@ -397,16 +384,16 @@ class dbHandler():
         return new_path
 
     # method to insert file entry in the database if it does not exist, otherwise return the existing key
-    def insert_file(self, data={    "file_name":"file name",
-                                    "file_path":"file path",
-                                    "file_volume":"file volume"}) -> int:
+    def insert_file(self,
+                    filename:str,
+                    path:str,
+                    volume:str) -> int:
         """Create a new file entry in the database if it does not exist, otherwise return the existing key
 
         Args:
-            data (dict): {  "file_name":"file name UID",
-                            "file_path":"file path UID",
-                            "file_volume":"file volume UID"}
-
+            filename (str): File name
+            path (str): File path
+            volume (str): File volume
         Raises:
             Exception: Error inserting file in the database
 
@@ -419,14 +406,14 @@ class dbHandler():
         query = (f"SELECT ID_FILE "
                 f"FROM DIM_SPECTRUN_FILE "
                 f"WHERE"
-                f" NA_FILE = '{data['file_name']}' AND"
-                f" NA_PATH = '{data['file_path']}' AND"
-                f" NA_VOLUME = '{data['file_volume']}';")
+                f" NA_FILE = '{filename}' AND"
+                f" NA_PATH = '{path}' AND"
+                f" NA_VOLUME = '{volume}';")
         
         try:
             self.cursor.execute(query)
-            self._disconnect()
         except:
+            self._disconnect()
             raise Exception("Error retrieving file using query: {query}")
 
         try:
@@ -437,13 +424,12 @@ class dbHandler():
                     f" NA_PATH,"
                     f" NA_VOLUME) "
                     f"VALUES"
-                    f" ('{data['file_name']}',"	
-                    f" '{data['file_path']}',"
-                    f" '{data['file_volume']}')")
-
+                    f" ('{filename}',"
+                    f" '{path}',"
+                    f" '{volume}')")
             try:
                 self.cursor.execute(query)
-                self.cursor.commit()
+                self.db_connection.commit()
             
                 file_id = int(self.cursor.lastrowid)
             except:
@@ -491,7 +477,7 @@ class dbHandler():
 
             try:
                 self.cursor.execute(query)
-                self.cursor.commit()
+                self.db_connection.commit()
             
                 procedure_id = int(self.cursor.lastrowid)
             except:
@@ -511,8 +497,10 @@ class dbHandler():
         
         self._connect()
         
-        query = (f"SELECT ID_EQUIPMENT_TYPE, NA_EQUIPMENT_TYPE "
-                f"FROM DIM_SPECTRUN_EQUIPMENT_TYPE;")
+        query = (f"SELECT"
+                 f" ID_EQUIPMENT_TYPE,"
+                 f" NA_EQUIPMENT_TYPE_UID "
+                f"FROM DIM_EQUIPMENT_TYPE;")
         
         try:
             self.cursor.execute(query)
@@ -527,8 +515,8 @@ class dbHandler():
         equipment_types_dict = {}
         try:
             for equipment_type in equipment_types:
-                equipment_type_uid = str(equipment_type[1])
                 equipment_type_id = int(equipment_type[0])
+                equipment_type_uid = str(equipment_type[1])
                 equipment_types_dict[equipment_type_uid] = equipment_type_id
         except:
             raise Exception("Error parsing equipment types retrieved from database")
@@ -598,7 +586,7 @@ class dbHandler():
 
                 try:
                     self.cursor.execute(query)
-                    self.cursor.commit()
+                    self.db_connection.commit()
                 
                     equipment_id = int(self.cursor.lastrowid)
                 except:
@@ -648,7 +636,7 @@ class dbHandler():
 
             try:
                 self.cursor.execute(query)
-                self.cursor.commit()
+                self.db_connection.commit()
             
                 detector_id = int(self.cursor.lastrowid)
             except:
@@ -696,7 +684,7 @@ class dbHandler():
 
             try:
                 self.cursor.execute(query)
-                self.cursor.commit()
+                self.db_connection.commit()
             
                 trace_type_id = int(self.cursor.lastrowid)
             except:
@@ -743,7 +731,7 @@ class dbHandler():
 
             try:
                 self.cursor.execute(query)
-                self.cursor.commit()
+                self.db_connection.commit()
             
                 measure_unit_id = int(self.cursor.lastrowid)
             except:
@@ -828,7 +816,7 @@ class dbHandler():
         
             try:
                 self.cursor.execute(query)
-                self.cursor.commit()
+                self.db_connection.commit()
             
                 spectrun_id = int(self.cursor.lastrowid)
             except:
@@ -866,7 +854,7 @@ class dbHandler():
 
                 try:
                     self.cursor.execute(query)
-                    self.cursor.commit()
+                    self.db_connection.commit()
                 except:
                     self._disconnect()
                     raise Exception(f"Error creating new spectrun equipment entry using query: {query}")
@@ -902,7 +890,7 @@ class dbHandler():
 
                 try:
                     self.cursor.execute(query)
-                    self.cursor.commit()
+                    self.db_connection.commit()
                 except:
                     self._disconnect()
                     raise Exception(f"Error creating new spectrun file entry using query: {query}")
@@ -1204,9 +1192,9 @@ class dbHandler():
 
         # build query to get the next backup task with host_uid
         query = (   "SELECT PRC_TASK.ID_PRC_TASK, "
-                            "PRC_TASK.FK_HOST, HOST.HOST_UID, "
+                            "PRC_TASK.FK_HOST, HOST.NA_HOST_UID, "
                             "PRC_TASK.NO_HOST_FILE_PATH, PRC_TASK.NO_HOST_FILE_NAME, "
-                            "PRC_TASK.NO_SERVER_FILE_PATH, PRC_TASK.NO_SERVER_FILE_NAME, "
+                            "PRC_TASK.NO_SERVER_FILE_PATH, PRC_TASK.NO_SERVER_FILE_NAME "
                     "FROM PRC_TASK "
                     "JOIN HOST ON PRC_TASK.FK_HOST = HOST.ID_HOST "
                     "ORDER BY PRC_TASK.DT_PRC_TASK "
@@ -1316,7 +1304,7 @@ class dbHandler():
             self.cursor.execute("SELECT SCOPE_IDENTITY()")
             dbKey = int(self.cursor.fetchone()[0])
 
-            self.cursor.commit()
+            self.db_connection.commit()
 
             if k.VERBOSE: print(f'     New entry created in {table} with registry ID {dbKey}')
 

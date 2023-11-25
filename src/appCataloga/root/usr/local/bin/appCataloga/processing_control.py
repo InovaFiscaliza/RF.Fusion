@@ -46,29 +46,64 @@ import shutil
 import shutil
 
 # recursive function to perform several tries in geocoding before final time out.
-def do_revese_geocode(data = {"latitude":0,"longitude":0}, attempt=1, max_attempts=10, log=sh.log()):
+def do_revese_geocode(data:dict,
+                      attempt=1,
+                      max_attempts=10,
+                      log=sh.log()) -> dict:
+    """Perform reverse geocoding using Nominatim service with timeout and attempts
 
-    # find location data references using the open free service of Nominatim - https://nominatim.org/ 
+    Args:
+        data (dict): {"latitude":0,"longitude":0}
+        attempt (int, optional): Number of attempts. Defaults to 1.
+        max_attempts (int, optional): _description_. Defaults to 10.
+        log (obj): Log object.
+
+    Raises:
+        Exception: Geocoder Timed Out
+        Exception: Error in geocoding
+
+    Returns:
+        location: nominatim location object
+    """
     point = (data['latitude'],data['longitude'])
     
     geocodingService = Nominatim(user_agent=k.NOMINATIM_USER, timeout = 5)
 
-    # try using service with extended timeout and increasing up to 15 seconds and delays of 2 seconds between consecutive attempts
     attempt = 1
-    while attempt <= k.MAX_NOMINATIN_ATTEMPTS:
+    not_geocoded = True
+    while not_geocoded:
         try:
             location = geocodingService.reverse(point, timeout = 5+attempt, language="pt")
+            not_geocoded = False
         except GeocoderTimedOut:
             if attempt <= max_attempts:
                 time.sleep(2)
                 location = do_revese_geocode(data, attempt=attempt+1,log=log)
+                not_geocoded = False
             else:
-                message = f"GeocoderTimedOut: {point}"
+                message = f"Geocoder timed out: {point}"
                 log.error(message)
                 raise Exception(message)
+        except Exception as e:
+            message = f"Error in geocoding: {e}"
+            log.error(message)
+            raise Exception(message)
 
-    # populate location data with information from the geocoding result.
-    # Loop through all required fields as defined in the constat, and get data from dictionary using associated nominatim semantic translations
+    return location
+
+def map_location_to_data(location:dict,
+                         data:dict,
+                         log:sh.log()) -> dict:
+    """Map location data to data dictionary
+
+    Args:
+        location (dict): location data dictionary
+        data (dict): data dictionary
+        log (obj): Log object.
+
+    Returns:
+        dict: data dictionary
+    """
     for field_name, nominatim_semantic_lst in k.REQUIRED_ADDRESS_FIELD.items():
         data[field_name] = None
         unfilled_field = True
@@ -88,8 +123,8 @@ def do_revese_geocode(data = {"latitude":0,"longitude":0}, attempt=1, max_attemp
 
 def file_move(  filename: str,
                 path: str,
-                volume=None,
-                new_path: str) -> dict:
+                new_path: str,
+                volume=None) -> dict:
     """Move file to new path
 
     Args:
@@ -102,7 +137,7 @@ def file_move(  filename: str,
         dict: Dict with target {'file':str,'path':str,'volume':str}
     """
 
-    if volume is None:
+    if not volume:
         volume = k.DEFAULT_VOLUME
         
     # Construct the source file path
@@ -116,16 +151,6 @@ def file_move(  filename: str,
 
     # Return the target file information
     return {'file': filename, 'path': new_path, 'volume': volume}
-
-def main():
-    # Call the file_move function
-    result = file_move('example.txt', '/path/to/source', 'Volume1', '/path/to/target')
-
-    # Print the result
-    print(result)
-
-if __name__ == "__main__":
-    main()
 
 def main():
 
@@ -157,7 +182,7 @@ def main():
             if task:
                 # check if there is a task already running for the same host and remove it if it is the case, avoiding the creation of multiple tasks for the same host
                 # get metadata from bin file
-                filename = f"{task['server path']}\{task['server file']}"
+                filename = f"{task['server path']}/{task['server file']}"
                 
                 # store reference infortion to the file        
                 try:
@@ -166,8 +191,10 @@ def main():
                     log.error(f"Error parsing file {filename}")
 
                 # start arranging the site data
-                data={'longitude':bin_data["gps"].longitude,
-                    'latitude':bin_data["gps"].latitude}
+                data = {    "longitude":bin_data["gps"].longitude,
+                            "latitude":bin_data["gps"].latitude,
+                            "altitude":bin_data["gps"].altitude,
+                            "nu_gnss_measurements":len(bin_data["gps"]._longitude)}
                 
                 site = db_rfm.get_site_id(data)
                 
@@ -178,11 +205,12 @@ def main():
                                     latitude_raw = bin_data["gps"]._latitude,
                                     altitude_raw = bin_data["gps"]._altitude)
                 else:
-                    data = do_revese_geocode(data=data,log=log)
+                    location = do_revese_geocode(data=data,log=log)
+                    data = map_location_to_data(location=location,data=data,log=log)
                     site = db_rfm.insert_site(data)
                 
                 # update data dictionary with data associated with the entire file scope
-                file_id = db_rfm.insert_file(file=task['host file'],path=task['host path'],volume=task['host_uid'])
+                file_id = db_rfm.insert_file(filename=task['host file'],path=task['host path'],volume=task['host_uid'])
                 data['id_procedure'] = db_rfm.insert_procedure(bin_data["method"])
                 
                 equipment_id = []

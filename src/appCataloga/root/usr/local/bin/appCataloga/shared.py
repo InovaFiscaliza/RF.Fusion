@@ -65,8 +65,8 @@ class log:
                             "error":verbose}
         else:
             self.verbose = {"log":False,
-                            "wng":False,
-                            "err":False}
+                            "warning":False,
+                            "error":False}
             self.warning(f"Invalid verbose value '{verbose}'. Using default 'False'")
         
         if target_file:
@@ -105,7 +105,7 @@ class log:
         now = datetime.now()
         self.warning_msg.append((now,self.pid,new_entry))
         
-        if self.verbose["wng"]:
+        if self.verbose["warning"]:
             date_time = now.strftime("%Y/%m/%d %H:%M:%S")
             if self.target_file:
                 message = f"{date_time} | p.{self.pid} | {new_entry}\n"
@@ -122,7 +122,7 @@ class log:
         now = datetime.now()
         self.error_msg.append((now,self.pid,new_entry))
         
-        if self.verbose["err"]:
+        if self.verbose["error"]:
             date_time = now.strftime("%Y/%m/%d %H:%M:%S")
             if self.target_file:
                 message = f"{date_time} | p.{self.pid} | {new_entry}\n"
