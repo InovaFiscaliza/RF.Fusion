@@ -90,7 +90,7 @@ class dbHandler():
                 f" ID_SITE,"
                 f" ST_X(GEO_POINT) as LONGITUDE,"
                 f" ST_Y(GEO_POINT) as LATITUDE "
-                f"FROM DIM_SPECTRUN_SITE"
+                f"FROM DIM_SPECTRUM_SITE"
                 f" ORDER BY ST_Distance_Sphere(GEO_POINT, ST_GeomFromText('POINT({data['longitude']} {data['latitude']})', 4326))"
                 f" LIMIT 1;")
 
@@ -152,7 +152,7 @@ class dbHandler():
              f" ST_Y(GEO_POINT) as LATITUDE,"
              f" NU_ALTITUDE,"
              f" NU_GNSS_MEASUREMENTS "
-             f"FROM DIM_SPECTRUN_SITE "
+             f"FROM DIM_SPECTRUM_SITE "
              f"WHERE"
              f" ID_SITE = {site};")
 
@@ -187,7 +187,7 @@ class dbHandler():
             altitude = altitudeSum / nu_gnss_measurements
 
             # construct query update point location in the database
-            query = (   f"UPDATE DIM_SPECTRUN_SITE "
+            query = (   f"UPDATE DIM_SPECTRUM_SITE "
                         f" SET GEO_POINT = ST_GeomFromText('POINT({longitude} {latitude})'),"
                         f" NU_ALTITUDE = {altitude},"
                         f" NU_GNSS_MEASUREMENTS = {nu_gnss_measurements} "
@@ -314,7 +314,7 @@ class dbHandler():
         self._connect()
         
         # construct query to create new sie in the database
-        query = (   f"INSERT INTO DIM_SPECTRUN_SITE"
+        query = (   f"INSERT INTO DIM_SPECTRUM_SITE"
                             f" (GEO_POINT,"
                             f" NU_ALTITUDE,"
                             f" NU_GNSS_MEASUREMENTS,"
@@ -359,12 +359,12 @@ class dbHandler():
 
         query = (f"SELECT"
             f" DIM_SITE_STATE.LC_STATE,"
-            f" DIM_SPECTRUN_SITE.FK_COUNTY,"
-            f" DIM_SPECTRUN_SITE.ID_SITE "
-            f"FROM DIM_SPECTRUN_SITE"
-            f" JOIN DIM_SITE_STATE ON DIM_SPECTRUN_SITE.FK_STATE = DIM_SITE_STATE.ID_STATE"
+            f" DIM_SPECTRUM_SITE.FK_COUNTY,"
+            f" DIM_SPECTRUM_SITE.ID_SITE "
+            f"FROM DIM_SPECTRUM_SITE"
+            f" JOIN DIM_SITE_STATE ON DIM_SPECTRUM_SITE.FK_STATE = DIM_SITE_STATE.ID_STATE"
             f" WHERE"
-            f" DIM_SPECTRUN_SITE.ID_SITE = {site_id};")
+            f" DIM_SPECTRUM_SITE.ID_SITE = {site_id};")
         
         try:
             self.cursor.execute(query)
@@ -404,7 +404,7 @@ class dbHandler():
         self._connect()
         
         query = (f"SELECT ID_FILE "
-                f"FROM DIM_SPECTRUN_FILE "
+                f"FROM DIM_SPECTRUM_FILE "
                 f"WHERE"
                 f" NA_FILE = '{filename}' AND"
                 f" NA_PATH = '{path}' AND"
@@ -419,7 +419,7 @@ class dbHandler():
         try:
             file_id = int(self.cursor.fetchone()[0])
         except:            
-            query =(f"INSERT INTO DIM_SPECTRUN_FILE"
+            query =(f"INSERT INTO DIM_SPECTRUM_FILE"
                     f" (NA_FILE,"
                     f" NA_PATH,"
                     f" NA_VOLUME) "
@@ -457,7 +457,7 @@ class dbHandler():
         self._connect()
         
         query = (f"SELECT ID_PROCEDURE "
-                f"FROM DIM_SPECTRUN_PROCEDURE "
+                f"FROM DIM_SPECTRUM_PROCEDURE "
                 f"WHERE"
                 f" NA_PROCEDURE = '{procedure_name}';")
         
@@ -470,7 +470,7 @@ class dbHandler():
         try:
             procedure_id = int(self.cursor.fetchone()[0])
         except:            
-            query =(f"INSERT INTO DIM_SPECTRUN_PROCEDURE"
+            query =(f"INSERT INTO DIM_SPECTRUM_PROCEDURE"
                     f" (NA_PROCEDURE) "
                     f"VALUES"
                     f" ('{procedure_name}')")
@@ -564,7 +564,7 @@ class dbHandler():
                 raise Exception(f"Error retrieving equipment type for {name}")
             
             query = (f"SELECT ID_EQUIPMENT "
-                    f"FROM DIM_SPECTRUN_EQUIPMENT "
+                    f"FROM DIM_SPECTRUM_EQUIPMENT "
                     f"WHERE"
                     f" NA_EQUIPMENT LIKE '{name_lower_case}';")
             
@@ -577,7 +577,7 @@ class dbHandler():
             try:
                 equipment_id = int(self.cursor.fetchone()[0])
             except:
-                query =(f"INSERT INTO DIM_SPECTRUN_EQUIPMENT"
+                query =(f"INSERT INTO DIM_SPECTRUM_EQUIPMENT"
                         f" (NA_EQUIPMENT,"
                         f" FK_EQUIPMENT_TYPE) "
                         f"VALUES"
@@ -616,7 +616,7 @@ class dbHandler():
         self._connect()
         
         query = (f"SELECT ID_DETECTOR "
-                    f"FROM DIM_SPECTRUN_DETECTOR "
+                    f"FROM DIM_SPECTRUM_DETECTOR "
                     f"WHERE"
                     f" NA_DETECTOR = '{detector}';")
         
@@ -629,7 +629,7 @@ class dbHandler():
         try:
             detector_id = int(self.cursor.fetchone()[0])
         except:            
-            query =(f"INSERT INTO DIM_SPECTRUN_DETECTOR"
+            query =(f"INSERT INTO DIM_SPECTRUM_DETECTOR"
                     f" (NA_DETECTOR) "
                     f"VALUES"
                     f" ('{detector}')")
@@ -664,9 +664,9 @@ class dbHandler():
         self._connect()
         
         query = (f"SELECT ID_TRACE_TYPE "
-                 f"FROM DIM_SPECTRUN_TRACE_TYPE "
+                 f"FROM DIM_SPECTRUM_TRACE_TYPE "
                  f"WHERE"
-                 f" NA_TRACE_TYPE = {trace_name};")
+                 f" NA_TRACE_TYPE = '{trace_name}';")
         
         try:
             self.cursor.execute(query)
@@ -677,10 +677,10 @@ class dbHandler():
         try:
             trace_type_id = int(self.cursor.fetchone()[0])
         except:            
-            query = (f"INSERT INTO DIM_SPECTRUN_TRACE_TYPE"
+            query = (f"INSERT INTO DIM_SPECTRUM_TRACE_TYPE"
                      f" (NA_TRACE_TYPE) "
                      f"VALUES"
-                     f" ({trace_name})")
+                     f" ('{trace_name}')")
 
             try:
                 self.cursor.execute(query)
@@ -711,7 +711,7 @@ class dbHandler():
         self._connect()
         
         query = (f"SELECT ID_MEASURE_UNIT "
-                 f"FROM DIM_SPECTRUN_MEASURE_UNIT "
+                 f"FROM DIM_SPECTRUM_UNIT "
                  f"WHERE"
                  f" NA_MEASURE_UNIT = '{unit_name}';")
         
@@ -724,7 +724,7 @@ class dbHandler():
         try:
             measure_unit_id = int(self.cursor.fetchone()[0])
         except:            
-            query = (f"INSERT INTO DIM_SPECTRUN_MEASURE_UNIT"
+            query = (f"INSERT INTO DIM_SPECTRUM_UNIT"
                      f" (NA_MEASURE_UNIT) "
                      f"VALUES"
                      f" ('{unit_name}')")
@@ -742,31 +742,31 @@ class dbHandler():
         
         return measure_unit_id
     
-    def insert_spectrun(self, data: dict) -> int:
-        """Insert a spectrun entry in the database if it does not exist, otherwise return the existing key. Equality creteria is based on the following fields: same site, time and frequency scope and same resolution in both dimensions
+    def insert_spectrum(self, data: dict) -> int:
+        """Insert a spectrum entry in the database if it does not exist, otherwise return the existing key. Equality creteria is based on the following fields: same site, time and frequency scope and same resolution in both dimensions
 
         Args:
-            data (dict): Dictionary containing a summary of the measurement spectrun data
+            data (dict): Dictionary containing a summary of the measurement spectrum data
 
         Raises:
-            Exception: Error retrieving spectrun from database
-            Exception: Error creating new spectrun entry in database
+            Exception: Error retrieving spectrum from database
+            Exception: Error creating new spectrum entry in database
         
         Returns:
-            int: DB key to the new spectrun entry
+            int: DB key to the new spectrum entry
         """
         self._connect()
 
         # build query to locate a site that mathces data['id_site'] and data['nu_freq_start'] and data['nu_freq_end'] and data['dt_time_start'] and data['dt_time_end'] and data['nu_trace_count'] and data['nu_trace_length']
-        query = (f"SELECT ID_SPECTRUN "
-                    f"FROM FACT_SPECTRUN "
+        query = (f"SELECT ID_SPECTRUM "
+                    f"FROM FACT_SPECTRUM "
                     f"WHERE"
                     f" FK_SITE = {data['id_site']} AND"
                     f" FK_TRACE_TYPE = {data['id_trace_type']} AND"
                     f" NU_FREQ_START = {data['nu_freq_start']} AND"
                     f" NU_FREQ_END = {data['nu_freq_end']} AND"
-                    f" DT_TIME_START = {data['dt_time_start']} AND"
-                    f" DT_TIME_END = {data['dt_time_end']} AND"
+                    f" DT_TIME_START = '{data['dt_time_start']}' AND"
+                    f" DT_TIME_END = '{data['dt_time_end']}' AND"
                     f" NU_TRACE_COUNT = {data['nu_trace_count']} AND"
                     f" NU_TRACE_LENGTH = {data['nu_trace_length']};")
         
@@ -774,15 +774,15 @@ class dbHandler():
             self.cursor.execute(query)
         except:
             self._disconnect()
-            raise Exception(f"Error retrieving spectrun using query: {query}")
+            raise Exception(f"Error retrieving spectrum using query: {query}")
         
         try:
-            spectrun_id = int(self.cursor.fetchone()[0])
+            spectrum_id = int(self.cursor.fetchone()[0])
         except:
-            query = (f"INSERT INTO FACT_SPECTRUN"
+            query = (f"INSERT INTO FACT_SPECTRUM"
                         f" (FK_SITE,"
                         f" FK_PROCEDURE,"
-                        f" FK_DETECTOR_TYPE,"
+                        f" FK_DETECTOR,"
                         f" FK_TRACE_TYPE,"
                         f" FK_MEASURE_UNIT,"
                         f" NA_DESCRIPTION,"
@@ -794,7 +794,6 @@ class dbHandler():
                         f" NU_TRACE_COUNT,"
                         f" NU_TRACE_LENGTH,"
                         f" NU_RBW,"
-                        f" NU_VBW,"
                         f" NU_ATT_GAIN) "
                         f"VALUES"
                         f" ({data['id_site']},"
@@ -805,37 +804,36 @@ class dbHandler():
                         f" '{data['na_description']}',"
                         f" {data['nu_freq_start']},"
                         f" {data['nu_freq_end']},"
-                        f" {data['dt_time_start']},"
-                        f" {data['dt_time_end']},"
+                        f" '{data['dt_time_start']}',"
+                        f" '{data['dt_time_end']}',"
                         f" {data['nu_sample_duration']},"
                         f" {data['nu_trace_count']},"
                         f" {data['nu_trace_length']},"
                         f" {data['nu_rbw']},"
-                        f" {data['nu_vbw']},"
                         f" {data['nu_att_gain']})")
         
             try:
                 self.cursor.execute(query)
                 self.db_connection.commit()
             
-                spectrun_id = int(self.cursor.lastrowid)
+                spectrum_id = int(self.cursor.lastrowid)
             except:
                 self._disconnect()
-                raise Exception(f"Error creating new spectrun entry using query: {query}")
+                raise Exception(f"Error creating new spectrum entry using query: {query}")
 
         self._disconnect()
 
-        return spectrun_id
+        return spectrum_id
     
-    def insert_bridge_spectrun_equipment(self, spectrun_id:list, equipment_id:list) -> None:
-        """Insert entries connecting spectrun measurements and equipment in the database in a N:N relationship
+    def insert_bridge_spectrum_equipment(self, spectrum_id:list, equipment_id:list) -> None:
+        """Insert entries connecting spectrum measurements and equipment in the database in a N:N relationship
 
         Args:
-            spectrun_id (list): List of spectrum entries in the database to be associated with the equipments in the list
+            spectrum_id (list): List of spectrum entries in the database to be associated with the equipments in the list
             equipment_id (list): List of equipment entries in the database to be associated with the spectrum measurements
             
         Raises:
-            Exception: Error creating new spectrun equipment relationship in database
+            Exception: Error creating new spectrum equipment relationship in database
             
         Returns:
             none: none
@@ -843,13 +841,14 @@ class dbHandler():
 
         self._connect()
 
-        for spectrun in spectrun_id:
+        # TODO FIX THIS TO WORK WITH THE DICTIONARY
+        for spectrum in spectrum_id:
             for equipment in equipment_id:
-                query = (f"INSERT IGNORE INTO FACT_SPECTRUN_EQUIPMENT"
-                            f" (FK_SPECTRUN,"
+                query = (f"INSERT IGNORE INTO FACT_SPECTRUM_EQUIPMENT"
+                            f" (FK_SPECTRUM,"
                             f" FK_EQUIPMENT) "
                             f"VALUES"
-                            f" ({spectrun},"
+                            f" ({spectrum[0]},"
                             f" {equipment})")
 
                 try:
@@ -857,21 +856,21 @@ class dbHandler():
                     self.db_connection.commit()
                 except:
                     self._disconnect()
-                    raise Exception(f"Error creating new spectrun equipment entry using query: {query}")
+                    raise Exception(f"Error creating new spectrum equipment entry using query: {query}")
                 
         self._disconnect()
     
-    def insert_bridge_spectrun_file(self,
-                                    spectrun_id:list,
+    def insert_bridge_spectrum_file(self,
+                                    spectrum_id:list,
                                     file_id:list) -> None:
-        """Insert entries connecting spectrun measurements and file in the database in a N:N relationship
+        """Insert entries connecting spectrum measurements and file in the database in a N:N relationship
 
         Args:
-            spectrun_id (list): List of spectrum entries in the database to be associated with the equipments in the list
+            spectrum_id (list): List of spectrum entries in the database to be associated with the equipments in the list
             file_id (list): List of file entries in the database to be associated with the spectrum measurements
             
         Raises:
-            Exception: Error creating new spectrun file relationship in database
+            Exception: Error creating new spectrum file relationship in database
             
         Returns:
             none: none
@@ -879,13 +878,13 @@ class dbHandler():
         
         self._connect()
         
-        for spectrun in spectrun_id:
+        for spectrum in spectrum_id:
             for file in file_id:
-                query = (f"INSERT IGNORE INTO FACT_SPECTRUN_FILE"
-                            f" (FK_SPECTRUN,"
+                query = (f"INSERT IGNORE INTO FACT_SPECTRUM_FILE"
+                            f" (FK_SPECTRUM,"
                             f" FK_FILE) "
                             f"VALUES"
-                            f" ({spectrun},"
+                            f" ({spectrum},"
                             f" {file})")
 
                 try:
@@ -893,7 +892,7 @@ class dbHandler():
                     self.db_connection.commit()
                 except:
                     self._disconnect()
-                    raise Exception(f"Error creating new spectrun file entry using query: {query}")
+                    raise Exception(f"Error creating new spectrum file entry using query: {query}")
                 
         self._disconnect()
         
