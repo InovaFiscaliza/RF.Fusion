@@ -175,7 +175,7 @@ def main():
 
         # Test if there are files to backup. Done before the loop to avoid unecessary creation of the target folder
         if nu_host_files > 0:
-            target_folder = f"{k.TARGET_FOLDER}/{task.data['host_add']['value']}"
+            target_folder = f"{k.TARGET_TMP_FOLDER}/{task.data['host_add']['value']}"
             
             # make sure that the target folder do exist
             if not os.path.exists(target_folder):

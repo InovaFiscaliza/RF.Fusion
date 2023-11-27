@@ -23,27 +23,21 @@ Access the processing list from BKPDATA database and perform the processing task
 import sys
 sys.path.append('/etc/appCataloga')
 
-from fastcore.xtras import Path
-from rfpye.utils import get_files
 from rfpye.parser import parse_bin
 
 from rich import print
 
 # Import libraries for file processing
-import pandas as pd
 import time
 
 from geopy.geocoders import Nominatim   #  Processing of geographic data
 from geopy.exc import GeocoderTimedOut
 
-import concurrent.futures
-
 # Import modules for file processing 
 import config as k
 import db_handler as dbh
 import shared as sh
-import shutil
-import shutil
+import os
 
 # recursive function to perform several tries in geocoding before final time out.
 def do_revese_geocode(data:dict,
@@ -104,6 +98,7 @@ def map_location_to_data(location:dict,
     Returns:
         dict: data dictionary
     """
+    # TODO: Insert site name
     for field_name, nominatim_semantic_lst in k.REQUIRED_ADDRESS_FIELD.items():
         data[field_name] = None
         unfilled_field = True
@@ -133,24 +128,30 @@ def file_move(  filename: str,
         volume (str): source volume name (default: k.DEFAULT_VOLUME)
         new_path (str): target file path
 
+    Raises:
+        Exception: Error moving file
+        
     Returns:
         dict: Dict with target {'file':str,'path':str,'volume':str}
     """
 
     if not volume:
-        volume = k.DEFAULT_VOLUME
+        volume = k.DEFAULT_VOLUME_NAME
         
     # Construct the source file path
     source_file = f"{path}/{filename}"
 
     # Construct the target file path
-    target_file = f"{new_path}/{filename}"
-
+    target_file = f"{k.DEFAULT_VOLUME_MOUNT}/{new_path}/{filename}"
+    
     # Move the file to the new path
-    shutil.move(source_file, target_file)
-
+    try:
+        os.renames(source_file, target_file)
+    except Exception as e:
+        raise Exception(f"Error moving file {source_file} to {target_file}: {e}")
+    
     # Return the target file information
-    return {'file': filename, 'path': new_path, 'volume': volume}
+    return {'filename': filename, 'path': new_path, 'volume': volume}
 
 def main():
 
@@ -190,6 +191,7 @@ def main():
                 except:
                     log.error(f"Error parsing file {filename}")
 
+                # TODO: check site type processing the raw gps data and set the data dictionary used by get_site_id method
                 # start arranging the site data
                 data = {    "longitude":bin_data["gps"].longitude,
                             "latitude":bin_data["gps"].latitude,
@@ -210,7 +212,10 @@ def main():
                     site = db_rfm.insert_site(data)
                 
                 # update data dictionary with data associated with the entire file scope
-                file_id = db_rfm.insert_file(filename=task['host file'],path=task['host path'],volume=task['host_uid'])
+                file_id = db_rfm.insert_file(filename=task['host file'],
+                                             path=task['host path'],
+                                             volume=task['host_uid'])
+                
                 data['id_procedure'] = db_rfm.insert_procedure(bin_data["method"])
                 
                 # ! WORK ONLY FOR RFEYE######  TODO: change this to a more generic solution
@@ -233,16 +238,19 @@ def main():
                     data['id_detector_type'] = db_rfm.insert_detector_type(k.DEFAULT_DETECTOR)
                     data['id_trace_type'] = db_rfm.insert_trace_type(spectrum.processing)
                     data['id_measure_unit'] = db_rfm.insert_measure_unit(spectrum.dtype)
-
-                    data['na_description'] = bin_data["description"]
+                    data['na_description'] = spectrum.description
                     data['nu_freq_start'] = spectrum.start_mega
                     data['nu_freq_end'] = spectrum.stop_mega
                     data['dt_time_start'] = spectrum.start_dateidx.strftime("%Y-%m-%d %H:%M:%S")
                     data['dt_time_end'] = spectrum.stop_dateidx.strftime("%Y-%m-%d %H:%M:%S")
                     data['nu_sample_duration'] = k.DEFAULT_SAMPLE_DURATION
-                    data['nu_trace_count'] = len(bin_data["spectrum"][0].timestamp)
+                    data['nu_trace_count'] = len(spectrum.timestamp)
                     data['nu_trace_length'] = spectrum.ndata
-                    data['nu_rbw'] = (data['nu_freq_end'] - data['nu_freq_start'])/data['nu_trace_length']
+                    try:
+                        data['nu_rbw'] = spectrum.bw
+                    except:
+                        data['nu_rbw'] = (data['nu_freq_end'] - data['nu_freq_start'])/data['nu_trace_length']
+                        
                     data['nu_att_gain'] = k.DEFAULT_ATTENUATION_GAIN
                     
                     equipment = [equipment_ids[-1],equipment_ids[spectrum.antuid]]
@@ -253,22 +261,19 @@ def main():
                 db_rfm.insert_bridge_spectrum_equipment(spectrum_lst)
 
                 # test if task['server path'] includes the "tmp" directory and move the file to the "data" directory
-                if task['server path'].find(k.TMP_DIR) >= 0:
+                if task['server path'].find(k.TARGET_TMP_FOLDER) >= 0:
                     new_path = db_rfm.build_path(site_id=data['id_site'])
-                    new_path = f"{data['dt_time_end'].year}\{new_path}"
+                    new_path = f"{spectrum.stop_dateidx.year}/{new_path}"
                     
-                    try:
-                        file_data = file_move(  file=task['server file'],
-                                                path=task['server path'],
-                                                new_path=new_path)
-                        new_file_id = db_rfm.insert_file(*file_data)
-                        db_rfm.store_bridge_spectrum_file(  spectrum_lst,
-                                                            [file_id,new_file_id])
-                    except:
-                        log.error(f"Error moving file {task['server path']}\{task['server file']} to {file_data['volume']}\{file_data['path']}\{file_data['file']}")
-                        pass
+                    file_data = file_move(  filename=task['server file'],
+                                            path=task['server path'],
+                                            new_path=new_path)
+                    new_file_id = db_rfm.insert_file(**file_data)
+                    db_rfm.insert_bridge_spectrum_file(  spectrum_lst,
+                                                        [file_id,new_file_id])
                 
-                db_bkp.remove_processing_task(task['task_id'])
+                db_bkp.remove_processing_task(task_id=task['task_id'],
+                                              host_id=task['host_id'])
                 
                                                 
             else:

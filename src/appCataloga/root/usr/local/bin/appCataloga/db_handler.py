@@ -237,26 +237,29 @@ class dbHandler():
         self.cursor.execute(query)
         
         try:
-            db_state_ide = int(self.cursor.fetchone()[0])
+            db_state_id = int(self.cursor.fetchone()[0])
         except:
             raise Exception(f"Error retrieving state name {data['state']}")
 
         # search database for existing county name entry within the identified State and get the existing key
-        # Prepare multi word name to be processed in the full text search by replacing spaces with "AND"
-        county = data['county'].replace(' ',' AND ')
-        query = (   f"SELECT ID_COUNTY "
-                    f"FROM DIM_SITE_COUNTY "
-                    f"WHERE"
-                    f" MATCH(NA_COUNTY) AGAINST('{county})')"
-                    f" AND FK_STATE = {db_state_ide};")
+        # If state_id is 53, handle the special case of DC, with no counties
+        if db_state_id == 53:
+            db_county_id = 5300108
+        else:
+            county = data['county'].replace(' ',' AND ')
+            query = (   f"SELECT ID_COUNTY "
+                        f"FROM DIM_SITE_COUNTY "
+                        f"WHERE"
+                        f" MATCH(NA_COUNTY) AGAINST('{county})')"
+                        f" AND FK_STATE = {db_state_id};")
 
-        self.cursor.execute(query)
-        
-        try:
-            db_county_id = int(self.cursor.fetchone()[0])
-        except:
-            self._disconnect()
-            raise Exception(f"Error retrieving county name {data['County']}")
+            self.cursor.execute(query)
+            
+            try:
+                db_county_id = int(self.cursor.fetchone()[0])
+            except:
+                self._disconnect()
+                raise Exception(f"Error retrieving county name {data['County']}")
 
         #search database for the district name, inserting new value if non existant
         district = data['district'].replace(' ',' AND ')
@@ -285,7 +288,7 @@ class dbHandler():
 
         self._disconnect()
 
-        return (db_state_ide, db_county_id, db_district_id)
+        return (db_state_id, db_county_id, db_district_id)
 
     def insert_site(self,
                     data={  "latitude":0,
@@ -311,6 +314,7 @@ class dbHandler():
             int: DB key to the new site
         """
 
+        # TODO: Insert site name and sit type
         (db_state_id, db_county_id, db_district_id) = self._get_geographic_codes(data=data)
 
         self._connect()
@@ -844,23 +848,22 @@ class dbHandler():
 
         self._connect()
 
-        query = ""
         for entry in spectrum_lst:
             for equipment in entry["equipment"]:
-                query += (f"INSERT IGNORE INTO BRIDGE_SPECTRUM_EQUIPMENT"
+                query = (f"INSERT IGNORE INTO BRIDGE_SPECTRUM_EQUIPMENT"
                           f" (FK_SPECTRUM,"
                           f" FK_EQUIPMENT) "
                           f"VALUES"
                           f" ({entry['spectrum']},"
                           f" {equipment}); ")
 
-        try:
-            self.cursor.execute(query)
-            self.db_connection.commit()
-        except:
-            self._disconnect()
-            raise Exception(f"Error creating new spectrum equipment entry using query: {query}")
-                
+                try:
+                    self.cursor.execute(query)
+                except:
+                    self._disconnect()
+                    raise Exception(f"Error creating new spectrum equipment entry using query: {query}")
+        
+        self.db_connection.commit()
         self._disconnect()
     
     def insert_bridge_spectrum_file(self,
@@ -881,23 +884,23 @@ class dbHandler():
         
         self._connect()
         
-        query = ""
         for entry in spectrum_lst:
             for file_id in file_lst:
-                query.join(f"INSERT IGNORE INTO BRIDGE_SPECTRUM_FILE"
+                query = (f"INSERT IGNORE INTO BRIDGE_SPECTRUM_FILE"
                             f" (FK_SPECTRUM,"
                             f" FK_FILE) "
                             f"VALUES"
                             f" ({entry['spectrum']},"
-                            f" {file_id}); ")
+                            f" {file_id});")
 
-        try:
-            self.cursor.execute(query)
-            self.db_connection.commit()
-        except:
-            self._disconnect()
-            raise Exception(f"Error creating new spectrum file entry using query: {query}")
+                try:
+                    self.cursor.execute(query)
+                except:
+                    self._disconnect()
+                    raise Exception(f"Error creating new spectrum file entry using query: {query}")
                 
+        self.db_connection.commit()
+        
         self._disconnect()
         
     # Internal method to add host to the database
@@ -921,10 +924,10 @@ class dbHandler():
                     f"NU_PENDING_BACKUP, NU_BACKUP_ERROR, "
                     f"NU_PENDING_PROCESSING, NU_PROCESSING_ERROR) "
                     f"VALUES "
-                    f"('{hostid}', '{host_uid},"
-                    f"'0', "
-                    f"'0', '0', "
-                    f"'0', '0');")
+                    f"('{hostid}', '{host_uid}', "
+                    f"0, "
+                    f"0, 0, "
+                    f"0, 0);")
         
         # update database
         self.cursor.execute(query)
@@ -1239,7 +1242,16 @@ class dbHandler():
         self._disconnect()
 
     # Method to remove a completed backup task from the database
-    def remove_processing_task(self, host_id, task_id):
+    def remove_processing_task(self,
+                               host_id:int,
+                               task_id:int) -> None:
+        """ Remove a completed processing task from the database
+
+        Args:
+            host_id (int): Host database primary key
+            task_id (int): Task database prumary key
+        """
+        
         # connect to the database
         self._connect()
         
@@ -1258,57 +1270,3 @@ class dbHandler():
         
         self._disconnect()    
 
-
-    # method to search database and if value not found, insert
-    def db_flex_insert_update (self, table, idColumn, newDataList, where_conditionList):
-
-# TODO: Study use of SQL Merge function. Since watchdog controls the threads, there is little risk of simultaneous insert/update for the same data. Additional complexity of merge and reduced compatibility is not justifiable. Additional limitation concerning the return of new or existing id.**--*
-
-        #create query to search database for existing  entry
-        query = (f"SELECT {idColumn} "
-                 f"FROM {table} "
-                 f"WHERE ")
-
-        for where_condition in where_conditionList:
-            query = query + f"{where_condition} AND "
-
-        # remove last " AND " and add ";" to end the query
-        query = query[:-5] + f";"
-
-        self.cursor.execute(query)
-        
-        try:
-            #try to retrieve an existing key to the existing district entry    
-            dbKey = int(self.cursor.fetchone()[0])
-
-            if k.VERBOSE: print(f'     Using data in {table} with registry ID {dbKey}')
-        except:
-
-            # create a query to input the data
-            queryColumns = f" ("
-            queryValues = f" VALUES ("
-
-            for data in newDataList:
-                queryColumns = queryColumns + f"{data[0]}, "
-                if isinstance(data[1],str):
-                    queryValues = queryValues + f"'{data[1]}', "
-                else:
-                    queryValues = queryValues + f"{data[1]}, "
-
-            queryColumns = queryColumns[:-2] + f")"
-            queryValues = queryValues[:-2] + f");"
-
-            # if there is no key to retrieve, get the 
-            query = f"INSERT INTO {table}" + queryColumns + queryValues
-
-            self.cursor.execute(query)
-
-            # get the key to the newly created entry
-            self.cursor.execute("SELECT SCOPE_IDENTITY()")
-            dbKey = int(self.cursor.fetchone()[0])
-
-            self.db_connection.commit()
-
-            if k.VERBOSE: print(f'     New entry created in {table} with registry ID {dbKey}')
-
-        return dbKey

@@ -130,12 +130,18 @@ def serve_client(client_socket):
                 host = [None]
             
             if host[0]==k.BACKUP_QUERY_TAG:
-                host[0]=client_socket.getpeername() # replace list first element with client IP address
-                
-                host_statistics = backup_queue(*host) # unpack list to pass as arguments to backup_queue
-                                
-                response = f'{k.START_TAG}{json.dumps(host_statistics)}{k.END_TAG}'
-                
+                try:
+                    host[0]=client_socket.getpeername() # replace list first element with client IP address
+                    
+                    host_statistics = backup_queue(*host) # unpack list to pass as arguments to backup_queue
+                                    
+                    response = f'{k.START_TAG}{json.dumps(host_statistics)}{k.END_TAG}'
+                    
+                except Exception as e:
+                    print(f"Error backup request: {e}")
+                    response = f'{k.START_TAG}{{"Status":0,"Error":"Could not create a backup task from the data provided."}}{k.END_TAG}'
+                    pass
+                    
                 receiving_data = False
 
             elif host[0]==k.CATALOG_QUERY_TAG:

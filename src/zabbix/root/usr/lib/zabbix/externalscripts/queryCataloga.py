@@ -49,7 +49,7 @@ ENCODING = "utf-8"
 
 # Define default arguments
 DEFAULT_HOST_ID = "10"
-DEFAULT_HOST_ID = "zabbix host name"
+DEFAULT_HOST_ID = "zabbix_host_name"
 #DEFAULT_HOST_ADD = "192.168.200.20"
 DEFAULT_HOST_ADD = "192.168.10.33"
 DEFAULT_HOST_PORT = 22
@@ -116,7 +116,7 @@ def main():
     requestS = (
         f'{arg.data["query_tag"]["value"]} '
         f'{arg.data["host_id"]["value"]} '
-        f'{arg.data["host_uid"]["value"]}'
+        f'{arg.data["host_uid"]["value"]} '
         f'{arg.data["host_add"]["value"]} '
         f'{arg.data["host_port"]["value"]} '
         f'{arg.data["user"]["value"]} '
