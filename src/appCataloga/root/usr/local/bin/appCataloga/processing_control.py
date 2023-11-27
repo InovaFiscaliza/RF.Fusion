@@ -213,6 +213,8 @@ def main():
                 file_id = db_rfm.insert_file(filename=task['host file'],path=task['host path'],volume=task['host_uid'])
                 data['id_procedure'] = db_rfm.insert_procedure(bin_data["method"])
                 
+                # ! WORK ONLY FOR RFEYE######  TODO: change this to a more generic solution
+                # Create a list of the equipment that may be present in the file
                 equipment_id = []
                 receiver = bin_data["hostname"]
                 equipment_lst = [   f"acc_ant[0]_{receiver[5:]}",
@@ -221,10 +223,11 @@ def main():
                                     f"acc_ant[3]_{receiver[5:]}",
                                     receiver]
                 
-                equipment_id.append(db_rfm.insert_equipment(equipment_lst))
+                # insert the equipment in the database and get the ids
+                equipment_ids = db_rfm.insert_equipment(equipment_lst)
                 #TODO get only the receiver in this list
                 
-                spectrum_antenna_lst = []
+                spectrum_lst = []
                 for spectrum in bin_data["spectrum"]:
 
                     data['id_detector_type'] = db_rfm.insert_detector_type(k.DEFAULT_DETECTOR)
@@ -234,22 +237,20 @@ def main():
                     data['na_description'] = bin_data["description"]
                     data['nu_freq_start'] = spectrum.start_mega
                     data['nu_freq_end'] = spectrum.stop_mega
-                    data['dt_time_start'] = spectrum.start_dateidx
-                    data['dt_time_end'] = spectrum.stop_dateidx
+                    data['dt_time_start'] = spectrum.start_dateidx.strftime("%Y-%m-%d %H:%M:%S")
+                    data['dt_time_end'] = spectrum.stop_dateidx.strftime("%Y-%m-%d %H:%M:%S")
                     data['nu_sample_duration'] = k.DEFAULT_SAMPLE_DURATION
                     data['nu_trace_count'] = len(bin_data["spectrum"][0].timestamp)
                     data['nu_trace_length'] = spectrum.ndata
                     data['nu_rbw'] = (data['nu_freq_end'] - data['nu_freq_start'])/data['nu_trace_length']
                     data['nu_att_gain'] = k.DEFAULT_ATTENUATION_GAIN
                     
-                    equipment = [equipment_id[-1],equipment_id[spectrum.antuid]]
-                    spectrum_antenna_lst.append({"spectrum":db_rfm.insert_spectrum(data),
-                                                 "equipment":equipment})
+                    equipment = [equipment_ids[-1],equipment_ids[spectrum.antuid]]
+                    spectrum_lst.append({   "spectrum":db_rfm.insert_spectrum(data),
+                                            "equipment":equipment})
                 
                 
-                db_rfm.insert_bridge_spectrum_equipment(spectrum_antenna_lst,equipment_id)
-                db_rfm.insert_bridge_spectrum_file(spectrum_antenna_lst,file_id)
-
+                db_rfm.insert_bridge_spectrum_equipment(spectrum_lst)
 
                 # test if task['server path'] includes the "tmp" directory and move the file to the "data" directory
                 if task['server path'].find(k.TMP_DIR) >= 0:
@@ -260,8 +261,9 @@ def main():
                         file_data = file_move(  file=task['server file'],
                                                 path=task['server path'],
                                                 new_path=new_path)
-                        file_id = db_rfm.insert_file(*file_data)
-                        db_rfm.store_bridge_spectrum_file(spectrum_antenna_lst,file_id)
+                        new_file_id = db_rfm.insert_file(*file_data)
+                        db_rfm.store_bridge_spectrum_file(  spectrum_lst,
+                                                            [file_id,new_file_id])
                     except:
                         log.error(f"Error moving file {task['server path']}\{task['server file']} to {file_data['volume']}\{file_data['path']}\{file_data['file']}")
                         pass
@@ -274,7 +276,7 @@ def main():
                 # wait for a task to be posted
                 time.sleep(k.BKP_TASK_REQUEST_WAIT_TIME)
         except Exception as e:
-            log.error("Error processing task: {e}")
+            log.error(f"Error processing task: {e}")
             pass
         except KeyboardInterrupt:
             log.entry("Keyboard interrupt. Exiting.")

@@ -3,11 +3,13 @@
 
 # Import libraries for:
 import mysql.connector
-import sys
 import os
-import time
 
+import sys
+import time
 import numpy as np
+
+from typing import List, Union
 
 # Import file with constants used in this code that are relevant to the operation
 import config as k
@@ -206,7 +208,7 @@ class dbHandler():
 
         else:
             # Do not update, avoiding unnecessary processing and variable numeric overflow
-            log.entry(f'Location at latitude: {latitude}, longitude: {longitude} reached the maximum number of measurements. No update performed.')
+            log.entry(f'Site {site} at latitude: {db_site_latitude}, longitude: {db_site_longitude} reached the maximum number of measurements. No update performed.')
 
 
     def _get_geographic_codes(  self,  
@@ -523,11 +525,11 @@ class dbHandler():
         
         return equipment_types_dict
 
-    def insert_equipment(self, equipment_name) -> int:
+    def insert_equipment(self, equipment:Union[str, List[str]]) -> list:
         """Create a new equipment entry in the database if it does not exist, otherwise return the existing key
 
         Args:
-            equipment_name (str/[str]): String of list of strings containing the equipment name(s)
+            equipment (str/[str]): String of list of strings containing the equipment name(s)
 
         Raises:
             Exception: Invalid input. Expected a string or a list of strings.
@@ -539,10 +541,10 @@ class dbHandler():
             int: list of db keys to the new or existing equipment entries
         """
         
-        if isinstance(equipment_name, str):
-            equipment_names = [equipment_name]
-        elif isinstance(equipment_name, list):
-            equipment_names = equipment_name
+        if isinstance(equipment, str):
+            equipment_names = [equipment]
+        elif isinstance(equipment, list):
+            equipment_names = equipment
         else:
             raise Exception("Invalid input. Expected a string or a list of strings.")
         
@@ -566,7 +568,7 @@ class dbHandler():
             query = (f"SELECT ID_EQUIPMENT "
                     f"FROM DIM_SPECTRUM_EQUIPMENT "
                     f"WHERE"
-                    f" NA_EQUIPMENT LIKE '{name_lower_case}';")
+                    f" LOWER(NA_EQUIPMENT) LIKE '{name_lower_case}';")
             
             try:
                 self.cursor.execute(query)
@@ -825,12 +827,13 @@ class dbHandler():
 
         return spectrum_id
     
-    def insert_bridge_spectrum_equipment(self, spectrum_id:list, equipment_id:list) -> None:
+    def insert_bridge_spectrum_equipment(self, spectrum_lst:list) -> None:
         """Insert entries connecting spectrum measurements and equipment in the database in a N:N relationship
 
         Args:
-            spectrum_id (list): List of spectrum entries in the database to be associated with the equipments in the list
-            equipment_id (list): List of equipment entries in the database to be associated with the spectrum measurements
+            spectrum_lst (list): Of dictionaries with the following structure:
+                [{"spectrum": (int) List of spectrum_id entries in the database to be associated with the equipments in the list
+                 "equipment": (list): List of equipment_id entries in the database to be associated with the spectrum measurements}]
             
         Raises:
             Exception: Error creating new spectrum equipment relationship in database
@@ -841,28 +844,28 @@ class dbHandler():
 
         self._connect()
 
-        # TODO FIX THIS TO WORK WITH THE DICTIONARY
-        for spectrum in spectrum_id:
-            for equipment in equipment_id:
-                query = (f"INSERT IGNORE INTO FACT_SPECTRUM_EQUIPMENT"
-                            f" (FK_SPECTRUM,"
-                            f" FK_EQUIPMENT) "
-                            f"VALUES"
-                            f" ({spectrum[0]},"
-                            f" {equipment})")
+        query = ""
+        for entry in spectrum_lst:
+            for equipment in entry["equipment"]:
+                query += (f"INSERT IGNORE INTO BRIDGE_SPECTRUM_EQUIPMENT"
+                          f" (FK_SPECTRUM,"
+                          f" FK_EQUIPMENT) "
+                          f"VALUES"
+                          f" ({entry['spectrum']},"
+                          f" {equipment}); ")
 
-                try:
-                    self.cursor.execute(query)
-                    self.db_connection.commit()
-                except:
-                    self._disconnect()
-                    raise Exception(f"Error creating new spectrum equipment entry using query: {query}")
+        try:
+            self.cursor.execute(query)
+            self.db_connection.commit()
+        except:
+            self._disconnect()
+            raise Exception(f"Error creating new spectrum equipment entry using query: {query}")
                 
         self._disconnect()
     
     def insert_bridge_spectrum_file(self,
-                                    spectrum_id:list,
-                                    file_id:list) -> None:
+                                    spectrum_lst:list,
+                                    file_lst:list) -> None:
         """Insert entries connecting spectrum measurements and file in the database in a N:N relationship
 
         Args:
@@ -878,21 +881,22 @@ class dbHandler():
         
         self._connect()
         
-        for spectrum in spectrum_id:
-            for file in file_id:
-                query = (f"INSERT IGNORE INTO FACT_SPECTRUM_FILE"
+        query = ""
+        for entry in spectrum_lst:
+            for file_id in file_lst:
+                query.join(f"INSERT IGNORE INTO BRIDGE_SPECTRUM_FILE"
                             f" (FK_SPECTRUM,"
                             f" FK_FILE) "
                             f"VALUES"
-                            f" ({spectrum},"
-                            f" {file})")
+                            f" ({entry['spectrum']},"
+                            f" {file_id}); ")
 
-                try:
-                    self.cursor.execute(query)
-                    self.db_connection.commit()
-                except:
-                    self._disconnect()
-                    raise Exception(f"Error creating new spectrum file entry using query: {query}")
+        try:
+            self.cursor.execute(query)
+            self.db_connection.commit()
+        except:
+            self._disconnect()
+            raise Exception(f"Error creating new spectrum file entry using query: {query}")
                 
         self._disconnect()
         

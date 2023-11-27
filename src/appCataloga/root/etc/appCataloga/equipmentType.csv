@@ -1,12 +1,13 @@
 ID_TIPO_EQUIPAMENTO,NO_TIPO_EQUIPAMENTO,NA_EQUIPMENT_TYPE_UID
 1,CRFS / RFEye Node 20-6,rfeye
-2,Rohde&Schwarz / ETM EB500,etm
-3,TCI / MIAer 4046,miaer
-4,Rohde&Schwarz / FSL6,fsl6
-5,Rohde&Schwarz / FSVR,fsvr
-6,Rohde&Schwarz / FSW,fsw
-7,Anritsu / MS2720T,ms2720t
-8,Tektronix / SA2500,sa2500
-9,Agilent / N9344C,n9344c
-10,Rohde&Schwarz / UMS300,ums300
-11,Celtec / CelWireless,cwrm
+2,CRFS / Antenna ACC,acc_ant
+3,Rohde&Schwarz / ETM EB500,etm
+4,TCI / MIAer 4046,miaer
+5,Rohde&Schwarz / FSL6,fsl6
+6,Rohde&Schwarz / FSVR,fsvr
+7,Rohde&Schwarz / FSW,fsw
+8,Anritsu / MS2720T,ms2720t
+9,Tektronix / SA2500,sa2500
+10,Agilent / N9344C,n9344c
+11,Rohde&Schwarz / UMS300,ums300
+12,Celtec / CelWireless,cwrm
