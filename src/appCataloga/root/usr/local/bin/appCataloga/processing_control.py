@@ -181,9 +181,12 @@ def main():
 
             # if there is a task in the database
             if task:
+                                
                 # check if there is a task already running for the same host and remove it if it is the case, avoiding the creation of multiple tasks for the same host
                 # get metadata from bin file
                 filename = f"{task['server path']}/{task['server file']}"
+                
+                log.entry(f"Starting processing of {filename}")
                 
                 # store reference infortion to the file        
                 try:

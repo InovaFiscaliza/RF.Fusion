@@ -1159,7 +1159,9 @@ class dbHandler():
         self._disconnect()
 
     # Method to add a new processing task to the database
-    def add_processing_task(self,hostid="1",done_backup_list=[]):
+    def add_processing_task(self,
+                            hostid:int,
+                            done_backup_list=list):
         """This method adds tasks to the processing queue
         
         Args:
@@ -1169,27 +1171,35 @@ class dbHandler():
         Returns:
             _type_: _description_
         """
+        # connect to the database
+        self._connect()
+    
+        # compose query to add 1 to PENDING_BACKUP in the HOST table in BPDATA database for the given host_id
+        nu_processing = len(done_backup_list)
+        query = (f"UPDATE HOST "
+                    f"SET NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {nu_processing} "
+                    f"WHERE ID_HOST = '{hostid}';")
         
-        if len(done_backup_list) > 0:
-            # connect to the database
-            self._connect()
-        
-            # convert done_backup_list list of dicionaries into a list of tuples
-            for idx, item in enumerate(done_backup_list):
-                done_backup_list[idx] = (hostid,
-                        os.path.dirname(item["remote"]), os.path.basename(item["remote"]),
-                        os.path.dirname(item["local"]), os.path.basename(item["local"]))
-                        
-            # compose query to set the process task in the database using executemany method
-            query = (f"INSERT INTO PRC_TASK "
-                        f"(FK_HOST, NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME, DT_PRC_TASK) "
-                        f"VALUES "
-                        f"(%s, %s, %s, %s, %s, NOW());")
+        # update database
+        self.cursor.execute(query)
+        self.db_connection.commit()
 
-            # update database
-            self.cursor.executemany(query,done_backup_list)
-            self.db_connection.commit()
-            self._disconnect()
+# convert done_backup_list list of dicionaries into a list of tuples
+        for idx, item in enumerate(done_backup_list):
+            done_backup_list[idx] = (hostid,
+                    os.path.dirname(item["remote"]), os.path.basename(item["remote"]),
+                    os.path.dirname(item["local"]), os.path.basename(item["local"]))
+                    
+        # compose query to set the process task in the database using executemany method
+        query = (f"INSERT INTO PRC_TASK "
+                    f"(FK_HOST, NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME, DT_PRC_TASK) "
+                    f"VALUES "
+                    f"(%s, %s, %s, %s, %s, NOW());")
+
+        # update database
+        self.cursor.executemany(query,done_backup_list)
+        self.db_connection.commit()
+        self._disconnect()
 
     # Method to get next host in the list for processing
     def next_processing_task(self):        
