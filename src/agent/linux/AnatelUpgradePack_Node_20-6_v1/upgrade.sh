@@ -7,31 +7,22 @@ VER=3.2.0-A1
 UPGRADE_DIR=/etc/node/upgrade
 
 log() {
-    DATE=$(date +'%b %d %X')
-    echo "$DATE $HOSTNAME upgrade: $1" >>$UPGRADE_DIR/upgrade."$VER".log
-    echo "$DATE $HOSTNAME upgrade: $1"
+    date=$(date +'%b %d %X')
+    echo "$date $HOSTNAME upgrade: $1" >>$UPGRADE_DIR/upgrade."$VER".log
+    echo "$date $HOSTNAME upgrade: $1"
 }
 
-# If we're not running this version DO NOT upgrade
-REQD_UPGRADE_VER="3.2.0"
+# define the required upgrade version using a regex
+REQ_VERSION="[3-9]\.[2-9]\.[0-9]"
 
 # Check /etc/upgrades.info file to see if the latest upgrade
-# matches $REQD_UPGRADE_VER
 if [ -e /etc/upgrades.info ]; then
-    LAST_UPGRADE=$(tail -1 /etc/upgrades.info)
-    CAN_DO_UPGRADE=0
-    for RVER in $REQD_UPGRADE_VER; do
-        if [ "$RVER" = "$LAST_UPGRADE" ]; then
-            CAN_DO_UPGRADE=1
-        fi
-    done
-
-    if [ $CAN_DO_UPGRADE -eq 0 ]; then
-        log "An appropriate software version to upgrade from ($REQD_UPGRADE_VER) was not found"
+    last_upgrade=$(tail -1 /etc/upgrades.info)
+    if ! [[ "$last_upgrade" =~ $REQ_VERSION ]]; then
+        log "An appropriate software version to upgrade from ($REQ_VERSION) was not found"
         log "The upgrade will not proceed. Terminating"
         exit 0
     fi
-else
     # no /etc/upgrades.info - exit here or we might break something
     log "Could not determine the current software version"
     log "The upgrade will not proceed. Terminating"
