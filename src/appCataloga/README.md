@@ -46,6 +46,19 @@ This section of the repository includes the following folders:
 
 # Setup
 
+Clone the source repositpory from github
+
+```shell
+git clone https://github.com/InovaFiscaliza/RF.Fusion.git
+```
+
+Move the necessary files to the appropriate folders
+
+```shell
+mv RF.Fusion/src/appCataloga/root/etc/appCataloga/* /etc/appCataloga/
+mv RF.Fusion/src/appCataloga/root/usr/local/bin/* /usr/local/bin/
+
+
 Install necessary tools
 
 ```shell
@@ -82,7 +95,7 @@ Create a mount point folder and mount the volume using the credential file, UID 
 ```shell
 mkdir /mnt/reposfi
 
-mount -t cifs -o credentials=/root/.reposfi,uid=987,gid=983,file_mode=0664,dir_mode=0775 //reposfi/sfi$/SENSORES  /mnt/reposfi
+mount -t cifs -o credentials=/root/.reposfi,uid=987,gid=983,file_mode=0666,dir_mode=0777 //reposfi/sfi$/SENSORES  /mnt/reposfi
 ```
 One may also yse the following command to mount the volume
 
@@ -90,11 +103,10 @@ One may also yse the following command to mount the volume
 mount -t cifs -o credentials=/root/.reposfi,noperm //reposfi/sfi$/SENSORES  /mnt/reposfi
 ```
 
-
 Once the mount is complete with success, one may make it permanent by adding the following line to `/etc/fstab`
 
 ```shell
-//reposfi/sfi$/SENSORES  /mnt/reposfi  cifs  credentials=/root/.reposfi,uid=987,gid=983,file_mode=0664,dir_mode=0775  0  0
+//reposfi/sfi$/SENSORES  /mnt/reposfi  cifs  credentials=/root/.reposfi,uid=987,gid=983,file_mode=0666,dir_mode=0777  0  0
 
 systemctl daemon-reload
 ```
@@ -191,10 +203,10 @@ mysql -u root -p
     Copyright (c) 2000, 2018, Oracle, MariaDB Corporation Ab and others.
 
     Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+vd0RpwMLA
+MariaDB [(none)]> SOURCE /usr/local/bin/appCataloga/createMeasureDB.sql
 
-MariaDB [(none)]> SOURCE /usr/local/bin/createMeasureDB.sql
-
-MariaDB [(none)]> SOURCE /usr/local/bin/createProcessingDB.sql
+MariaDB [(none)]> SOURCE /usr/local/bin/appCataloga/createProcessingDB.sql
 
 MariaDB [(none)]> CREATE USER 'appCataloga'@'localhost' IDENTIFIED BY '<app_pass>';
 
@@ -203,6 +215,8 @@ MariaDB [(none)]> GRANT ALL PRIVILEGES ON BPDATA.* TO 'appCataloga'@'localhost';
 MariaDB [(none)]> GRANT ALL PRIVILEGES ON RFDATA.* TO 'appCataloga'@'localhost';
 
 MariaDB [(none)]> FLUSH PRIVILEGES;
+
+MariaDB [(none)]> exit
 ```
 
 After the database is created you may remove the original csv files to free up space
@@ -234,8 +248,10 @@ The [`environment.yml`](./root/usr/local/bin/environment.yml) file is where you 
 To (re)create the environment on your installation of [conda](https://conda.io) via [anaconda](https://docs.anaconda.com/anaconda/install/), [miniconda](https://docs.conda.io/projects/continuumio-conda/en/latest/user-guide/install/) or preferably [miniforge](https://github.com/conda-forge/miniforge), you only need to pass the `environment.yml` file, which will install requirements and guarantee that whoever uses your code has the necessary packages (and correct versions).
 
 ```shell
-conda env create -n appdata -f environment.yml
+conda env create -f environment.yml
 ```
+
+After 
 
 Activate systemctl service that will keep the application running
 
