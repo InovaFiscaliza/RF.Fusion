@@ -35,16 +35,29 @@ class argument:
         
         # loop through the arguments list and set the value of the argument if it is present in the command line
         for i in range(1, len(sys_arg)):
-            arg_in = sys_arg[i].split("=")
-            if arg_in[0] in self.data.keys():
+            arg_part = sys_arg[i].split("=")
+            try:
+                arg = arg_part[0]
+                value = arg_part[1]
+            except IndexError:
+                HELP=['/h','-h','-help','/help','\help','--help']
+                if any(sys_arg[i] in e for e in HELP):
+                    self.wm.compose_warning(self.data("help"))
+                else:
+                    self.wm.compose_warning(f"Argument '{sys_arg[i]}' not recognized, ignoring it")
+                    
+            if arg in self.data.keys():
                 # Get the data type from sef.data value
-                data_type = type(self.data[arg_in[0]]["value"])
+                data_type = type(self.data[arg]["value"])
                 
                 # Set the argument value and set the "set" flag to True
-                self.data[arg_in[0]]["value"] = data_type(arg_in[1])
-                self.data[arg_in[0]]["set"] = True
+                try:
+                    self.data[arg]["value"] = data_type(value)
+                    self.data[arg]["set"] = True
+                except ValueError:
+                    self.wm.compose_warning(f"Invalid value for argument '{arg}', ignoring it")
             else:
-                self.wm.compose_warning(f"Argument '{arg_in[0]}' not recognized, ignoring it")
+                self.wm.compose_warning(f"Argument '{arg}' not recognized, ignoring it")
             
         # loop through the arguments list and compose a warning message for each argument that was not set
         for arg in self.data.keys():
