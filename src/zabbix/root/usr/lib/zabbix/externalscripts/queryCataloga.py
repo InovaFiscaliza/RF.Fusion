@@ -63,41 +63,42 @@ ARGUMENTS = {
     "host_id": {
         "set": False,
         "value": DEFAULT_HOST_ID,
-        "warning": "Using default host id",
-    },
+        "message": "Using default host id",
+
+        "types": ["warning", "default"],    },
     "host_uid": {
         "set": False,
         "value": DEFAULT_HOST_ID,
-        "warning": "Using default host uid",
+        "message": "Using default host uid",
     },
     "host_add": {
         "set": False,
         "value": DEFAULT_HOST_ADD,
-        "warning": "Using default host address",
+        "message": "Using default host address",
     },
     "host_port": {
         "set": False,
         "value": DEFAULT_HOST_PORT,
-        "warning": "Using default host port",
+        "message": "Using default host port",
     },    
     "user": {
         "set": False,
         "value": DEFAULT_USER,
-        "warning": "Using default user"},
+        "message": "Using default user"},
     "passwd": {
         "set": False,
         "value": DEFAULT_PASSWD,
-        "warning": "Using default password",
+        "message": "Using default password",
     },
     "query_tag": {
         "set": False,
         "value": DEFAULT_QUERY_TAG,
-        "warning": "Using default query tag",
+        "message": "Using default query tag",
     },
     "timeout": {
         "set": False,
         "value": DEFAULT_TIMEOUT,
-        "warning": "Using default timeout",
+        "message": "Using default timeout",
     },
 }
 
