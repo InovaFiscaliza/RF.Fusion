@@ -38,46 +38,46 @@ ENCODING = "ISO-8859-1"
 
 # Define default arguments
 # DEFAULT_HOST_ADD = "172.24.5.71" # MG
-DEFAULT_HOST_ADD = "172.24.5.33" # ES
+DEFAULT_HOST_ADD = "172.24.5.71" # ES
 DEFAULT_PORT = 8910
 DEFAULT_KEY = "123456"  # user should have access to the host with rights to interact with the indexer daemon
 DEFAULT_CLIENT_NAME = "Zabbix"
 # DEFAULT_QUERY_TAG = "PositionList" 
 # DEFAULT_QUERY_TAG = "Diagnostic"
 DEFAULT_QUERY_TAG = "TaskList"
-DEFAULT_TIMEOUT = 5
+DEFAULT_TIMEOUT = 10
 
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
 ARGUMENTS = {
     "host": {
         "set": False,
         "value": DEFAULT_HOST_ADD,
-        "warning": "Using default host address"
+        "message": "Using default host address"
         },
     "port": {
         "set": False,
         "value": DEFAULT_PORT,
-        "warning": "Using default port"
+        "message": "Using default port"
         },
     "key": {
         "set": False,
         "value": DEFAULT_KEY,
-        "warning": "Using default key"
+        "message": "Using default key"
         },
     "ClientName": {
         "set": False,
         "value": DEFAULT_CLIENT_NAME,
-        "warning": "Using default ClientName"
+        "message": "Using default ClientName"
         },
     "query": {
         "set": False,
         "value": DEFAULT_QUERY_TAG,
-        "warning": "Using default query tag"
+        "message": "Using default query tag"
         },
     "timeout": {
         "set": False,
         "value": DEFAULT_TIMEOUT,
-        "warning": "Using default timeout"
+        "message": "Using default timeout"
         },
     "help" : {
         "set": True,
@@ -103,9 +103,8 @@ def summarize_diagnostic(dict_input):
     return dict_input
 
 def summarize_task(dict_input):
-    """Include summary in the JSON data received from appColeta"""
-    # count the number of peaks in each band
-    for band in dict_input["Answer"]["taskList"]:
+    
+    def _summarize_band(band:dict) -> None:
         try:
             band["nPeaks"] = len(band["Mask"]["Peaks"])
         except:
@@ -115,6 +114,15 @@ def summarize_task(dict_input):
             band["name"] = f"{int(band['FreqStart']/1e6)}-{int(band['FreqStop']/1e6)}MHz"
         except:
             band["name"] = "unknown"
+    
+    """Include summary in the JSON data received from appColeta"""
+    # count the number of peaks in each band
+    for task in dict_input["Answer"]["taskList"]:
+        try:
+            _summarize_band(task["Band"])
+        except TypeError:
+            for band in task["Band"]:
+                _summarize_band(band)
                 
     return dict_input
 
@@ -168,8 +176,11 @@ def main():
     except:
         print(f'{"Status":0,"Message":"Error: Malformed JSON received. Dumped: {json_data_rcv}"}')
 
-    dict_output = summarize(dict_output)
-    
+    if arg.data["query"]["value"] == "Diagnostic":
+        dict_output = summarize_diagnostic(dict_output)
+    elif arg.data["query"]["value"] == "TaskList":
+        dict_output = summarize_task(dict_output)
+        
     print(json.dumps(dict_output))
     
 if __name__ == "__main__":
