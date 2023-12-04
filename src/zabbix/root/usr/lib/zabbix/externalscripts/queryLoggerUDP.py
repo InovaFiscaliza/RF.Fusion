@@ -3,7 +3,7 @@
 Use socket to get data from rfeye logger udp stream and count the number of occurrences of words PMEC and PMRD
     
     Usage:
-        queryLogger <host> <port> <timeout>
+        queryLogger host_dd=<host> port=<port> timeout=<timeout>
     
     Parameters:
         <host> single string with host IP or host name known to the available DNS
@@ -35,6 +35,14 @@ TIMEOUT_BUFFER = 1
 BUFFER_SIZE = 65536
 ENCODING = "utf-8"
 
+# Test command line arguments
+# happy ending - "args" : ["host_add=172.24.1.13", "port=5555", "timeout=1"] 
+# help - "args" : ["/h"]
+# type error - "args" : ["port=spam", "timeout=spam"]
+# missing value - error - "args" : ["host_add="]
+# wrong port - "args" : ["host_add=172.24.1.13", "port=80", "timeout=1"] 
+# wrong address - "args" : ["host_add=172.0.0.1", "port=80", "timeout=1"] 
+
 # Define default arguments
 # DEFAULT_HOST = "rfeye002080.anatel.gov.br"
 DEFAULT_HOST = "172.24.1.13"
@@ -43,21 +51,26 @@ DEFAULT_CONNECTION_TIMEOUT = 1
 
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
 ARGUMENTS = {
-    "host": {
+    "host_add": {
         "set": False,
         "value": DEFAULT_HOST,
-        "warning": "Using default host address"
+        "message": "Using default host address"
         },
     "port": {
         "set": False,
         "value": DEFAULT_PORT,
-        "warning": "Using default port"
+        "message": "Using default port"
         },
     "timeout": {
         "set": False,
         "value": DEFAULT_CONNECTION_TIMEOUT,
-        "warning": "Using default timeout"
+        "message": "Using default timeout"
         },
+    "help" : {
+        "set": True,
+        "value": None,
+        "message": "** USAGE: queryLogger host_add=<host> port=<port> timeout=<timeout>. See code inline notes for more details **"
+        }
     }
 
 def main():
@@ -84,7 +97,7 @@ def main():
 
     # Send handshake
     try:
-        sock.sendto(connection_request, (arg.data['host']['value'], arg.data['port']['value']))
+        sock.sendto(connection_request, (arg.data['host_add']['value'], arg.data['port']['value']))
     except socket.error as e:
         print(f'{{"Status":0,"Error":"Handshake error: {e}"}}')
         sock.close()

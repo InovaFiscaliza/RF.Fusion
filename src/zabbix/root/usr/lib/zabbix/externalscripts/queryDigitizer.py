@@ -5,7 +5,7 @@ Use socket to get data from remote ThinkRF digitizer
     Simplified netcat SL command: echo -e "*IDN?\n:STATUS:TEMPERATURE?\n:GNSS:POSITION?\n*OPC\n" | nc -C CWSM211008.anatel.gov.br 37001 > teste.txt
     
     Usage:
-        queryDigityzer <host>
+        queryDigitizer host_add=<host> port=<port> timeout=<timeout>
     
     Parameters:
         <host> single string with host IP or host name known to the available DNS
@@ -31,64 +31,111 @@ import socket
 import sys
 import json
 
+import rfFusionLib as rflib
+
 # Use standard CWSM port to access digitizer and get host from argument 1
-PORT = 37001
+DEFAULT_HOST = "172.24.4.95"
+DEFAULT_PORT = 37001
+DEFAULT_CONNECTION_TIMEOUT = 2
+
 BUFFSIZE = 1024
+TIMEOUT_BUFFER = 1
 
+ARGUMENTS = {
+    "host_add": {
+        "set": False,
+        "value": DEFAULT_HOST,
+        "message": "Using default host address"
+        },
+    "port": {
+        "set": False,
+        "value": DEFAULT_PORT,
+        "message": "Using default port"
+        },
+    "timeout": {
+        "set": False,
+        "value": DEFAULT_CONNECTION_TIMEOUT,
+        "message": "Using default timeout"
+        },
+    "help" : {
+        "set": True,
+        "value": None,
+        "message": "** USAGE: queryDigitizer host_add=<host> port=<port> timeout=<timeout>. See code inline notes for more details **"
+        }
+    }
 
-MESSAGE="    USAGE: queryDigityzer <host IP ou name>\n  See code for more details\n"
-try:
-    host = sys.argv[1]
-except:
-    print("Error in syntax.")
-    print(MESSAGE)
-    exit()
+def main():
+    # create a warning message object
+    wm = rflib.warning_msg()
 
-HELP=['/h','-h','-help','/help','\help','--help']
-if any(host in e for e in HELP):
-    print("Use socket to get data from remote ThinkRF digitizer\n")
-    print("Simplified netcat SL command:\n    echo -e \"*IDN?\\n:STATUS:TEMPERATURE?\\n:GNSS:POSITION?\\n*OPC\\n\" | nc -C CWSM211008.anatel.gov.br 37001 > teste.txt\n")
-    print(MESSAGE)
-    exit()
+    # create an argument object
+    arg = rflib.argument(wm, ARGUMENTS)
     
-try: 
-    # Open connection
-    s = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM)
-    s.connect((host, PORT))
+    # parse the command line arguments
+    arg.parse(sys.argv)
+        
+    host = arg.data["host_add"]["value"]
+        
+    # Create connection
+    try:
+        sock = socket.socket(socket.AF_INET, # Internet
+                            socket.SOCK_STREAM) # TCP
+        sock.settimeout(arg.data['timeout']['value']+TIMEOUT_BUFFER)  # Set a timeout of 5 seconds for receiving data    
+    except socket.error as e:
+        print(f'{{"Status":0,"Error":"Socket error: {e}"}}')
+        exit()
+    
+    # Connect to host
+    try:
+        sock.connect((arg.data['host_add']['value'], arg.data['port']['value']))
+    except socket.error as e:
+        print(f'{{"Status":0,"Error":"Could not connecto to {arg.data["host_add"]["value"]} using {arg.data["port"]["value"]}: {e}"}}')
+        sock.close()
+        exit()
 
-    # Get Id and Version; Temperature and Position
-    s.sendall(b'*IDN?\r\n')
-    device = s.recv(BUFFSIZE)
+    try:
+        # Get Id and Version; Temperature and Position
+        sock.sendall(b'*IDN?\r\n')
+        device = sock.recv(BUFFSIZE)
 
-    s.sendall(b':STATUS:TEMPERATURE?\r\n')
-    temperature = s.recv(BUFFSIZE)
+        sock.sendall(b':STATUS:TEMPERATURE?\r\n')
+        temperature = sock.recv(BUFFSIZE)
 
-    s.sendall(b':GNSS:POSITION?\r\n')
-    position = s.recv(BUFFSIZE)
+        sock.sendall(b':GNSS:POSITION?\r\n')
+        position = sock.recv(BUFFSIZE)
 
-    # Close connection
-    s.sendall(b'*OPC\r\n')
+        # Close connection
+        sock.sendall(b'*OPC\r\n')
+        
+        sock.close()
+    except socket.error as e:
+        print(f'{{"Status":0,"Error":"Socket error from {arg.data["host_add"]["value"]} using {arg.data["port"]["value"]}: {e}"}}')
+        exit()
 
-    s.close()
+    try:
+        # Parse answer into dictionary
+        texts = device.decode('ascii').strip().split(",")
+        values = list(map(float,f"{temperature.decode('ascii')},{position.decode('ascii')}".strip().split(",")))
+        outputDict = {'Device': {
+                        'Manufacturer': texts[0],
+                        'Model': texts[1],
+                        'Serial': texts[2],
+                        'Firmware': texts[3]},
+                    'Temperature': {
+                        'RF': values[0],
+                        'Mixer':values[1],
+                        'Digital':values[2]},
+                    'GNSS': {
+                        'Latitude':values[3],
+                        'Longitude':values[4],
+                        'Altitude':values[5]},
+                    'Status': 1,
+                    'Message': wm.warning_msg}
 
-    # Parse answer into dictionary
-    texts = device.decode('ascii').strip().split(",")
-    values = list(map(float,f"{temperature.decode('ascii')},{position.decode('ascii')}".strip().split(",")))
-    outputDict = {'Device': {
-                      'Manufacturer': texts[0],
-                      'Model': texts[1],
-                      'Serial': texts[2],
-                      'Firmware': texts[3]},
-                  'Temperature': {
-                      'RF': values[0],
-                      'Mixer':values[1],
-                      'Digital':values[2]},
-                  'GNSS': {
-                      'Latitude':values[3],
-                      'Longitude':values[4],
-                      'Altitude':values[5]},
-                  'Status': 1}
+        print(json.dumps(outputDict))
+    except Exception as e:
+        print(f'{{"Status":0,"Message":"Error parsing data from {arg.data["host_add"]["value"]} using {arg.data["port"]["value"]}: {e}"}}')
+        exit()
 
-    print(json.dumps(outputDict))
-except:
-    print("{\"Status\":0}")
+if __name__ == "__main__":
+    main()

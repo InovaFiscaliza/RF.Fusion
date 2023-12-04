@@ -78,13 +78,34 @@ ARGUMENTS = {
         "set": False,
         "value": DEFAULT_TIMEOUT,
         "warning": "Using default timeout"
+        },
+    "help" : {
+        "set": True,
+        "value": None,
+        "message": "** USAGE: queryappColeta queryappColeta host=<host> port=<port> key=<key> ClientName=<ClientName> query=<query> timeout=<timeout>. See code inline notes for more details **"
         }
     }
 
-def summarize(dict_input):
+def summarize_diagnostic(dict_input):
     """Include summary in the JSON data received from appColeta"""
     # count the number of peaks in each band
-    for band in dict_input["Answer"]["taskList"]["Band"]:
+    for band in dict_input["Answer"]["taskList"]:
+        try:
+            band["nPeaks"] = len(band["Mask"]["Peaks"])
+        except:
+            band["nPeaks"] = 0
+        
+        try:
+            band["name"] = f"{int(band['FreqStart']/1e6)}-{int(band['FreqStop']/1e6)}MHz"
+        except:
+            band["name"] = "unknown"
+                
+    return dict_input
+
+def summarize_task(dict_input):
+    """Include summary in the JSON data received from appColeta"""
+    # count the number of peaks in each band
+    for band in dict_input["Answer"]["taskList"]:
         try:
             band["nPeaks"] = len(band["Mask"]["Peaks"])
         except:
