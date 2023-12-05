@@ -26,6 +26,7 @@ Keep the backup process running in a separate process and restart it if it fails
 """
 # Set system path to include modules from /etc/appCataloga
 import sys
+# sys.path.append('Y:\\RF.Fusion\\src\\appCataloga\\root\\etc\\appCataloga\\')
 sys.path.append('/etc/appCataloga')
 
 # Import standard libraries.
