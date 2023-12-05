@@ -32,29 +32,22 @@ import sys
 import json
 
 import rfFusionLib as rflib
-
-# Use standard CWSM port to access digitizer and get host from argument 1
-DEFAULT_HOST = "172.24.4.95"
-DEFAULT_PORT = 37001
-DEFAULT_CONNECTION_TIMEOUT = 2
-
-BUFFSIZE = 1024
-TIMEOUT_BUFFER = 1
+import defaultConfig as k
 
 ARGUMENTS = {
     "host_add": {
         "set": False,
-        "value": DEFAULT_HOST,
+        "value": k.DIGI_DEFAULT_HOST,
         "message": "Using default host address"
         },
     "port": {
         "set": False,
-        "value": DEFAULT_PORT,
+        "value": k.DIGI_DEFAULT_PORT,
         "message": "Using default port"
         },
     "timeout": {
         "set": False,
-        "value": DEFAULT_CONNECTION_TIMEOUT,
+        "value": k.DIGI_DEFAULT_TIMEOUT,
         "message": "Using default timeout"
         },
     "help" : {
@@ -80,7 +73,7 @@ def main():
     try:
         sock = socket.socket(socket.AF_INET, # Internet
                             socket.SOCK_STREAM) # TCP
-        sock.settimeout(arg.data['timeout']['value']+TIMEOUT_BUFFER)  # Set a timeout of 5 seconds for receiving data    
+        sock.settimeout(arg.data['timeout']['value']+k.TIMEOUT_BUFFER)  # Set a timeout of 5 seconds for receiving data    
     except socket.error as e:
         print(f'{{"Status":0,"Error":"Socket error: {e}"}}')
         exit()
@@ -96,13 +89,13 @@ def main():
     try:
         # Get Id and Version; Temperature and Position
         sock.sendall(b'*IDN?\r\n')
-        device = sock.recv(BUFFSIZE)
+        device = sock.recv(k.SMALL_BUFFER_SIZE)
 
         sock.sendall(b':STATUS:TEMPERATURE?\r\n')
-        temperature = sock.recv(BUFFSIZE)
+        temperature = sock.recv(k.SMALL_BUFFER_SIZE)
 
         sock.sendall(b':GNSS:POSITION?\r\n')
-        position = sock.recv(BUFFSIZE)
+        position = sock.recv(k.SMALL_BUFFER_SIZE)
 
         # Close connection
         sock.sendall(b'*OPC\r\n')

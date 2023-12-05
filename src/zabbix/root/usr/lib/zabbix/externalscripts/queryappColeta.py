@@ -29,54 +29,38 @@ import sys
 import json
 
 import rfFusionLib as rflib
-
-# scritp configuration constants
-START_TAG = "<json>"
-END_TAG = "</json>"
-BUFFER_SIZE = 16384
-ENCODING = "ISO-8859-1"
-
-# Define default arguments
-# DEFAULT_HOST_ADD = "172.24.5.71" # MG
-DEFAULT_HOST_ADD = "172.24.5.71" # ES
-DEFAULT_PORT = 8910
-DEFAULT_KEY = "123456"  # user should have access to the host with rights to interact with the indexer daemon
-DEFAULT_CLIENT_NAME = "Zabbix"
-# DEFAULT_QUERY_TAG = "PositionList" 
-# DEFAULT_QUERY_TAG = "Diagnostic"
-DEFAULT_QUERY_TAG = "TaskList"
-DEFAULT_TIMEOUT = 10
+import defaultConfig as k
 
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
 ARGUMENTS = {
     "host": {
         "set": False,
-        "value": DEFAULT_HOST_ADD,
+        "value": k.ACOL_DEFAULT_HOST_ADD,
         "message": "Using default host address"
         },
     "port": {
         "set": False,
-        "value": DEFAULT_PORT,
+        "value": k.ACOL_DEFAULT_PORT,
         "message": "Using default port"
         },
     "key": {
         "set": False,
-        "value": DEFAULT_KEY,
+        "value": k.ACOL_DEFAULT_KEY,
         "message": "Using default key"
         },
     "ClientName": {
         "set": False,
-        "value": DEFAULT_CLIENT_NAME,
+        "value": k.ACOL_DEFAULT_CLIENT_NAME,
         "message": "Using default ClientName"
         },
     "query": {
         "set": False,
-        "value": DEFAULT_QUERY_TAG,
+        "value": k.ACOL_DEFAULT_QUERY_TAG,
         "message": "Using default query tag"
         },
     "timeout": {
         "set": False,
-        "value": DEFAULT_TIMEOUT,
+        "value": k.ACOL_DEFAULT_TIMEOUT,
         "message": "Using default timeout"
         },
     "help" : {
@@ -87,6 +71,7 @@ ARGUMENTS = {
     }
 
 def summarize_diagnostic(dict_input):
+    # TODO: implement this function according to the new appColeta diagnostic format
     """Include summary in the JSON data received from appColeta"""
     # count the number of peaks in each band
     for band in dict_input["Answer"]["taskList"]:
@@ -166,7 +151,7 @@ def main():
         exit()
 
     # receive the response from the server
-    json_data_rcv = rflib.receive_message(client_socket, ENCODING, BUFFER_SIZE, START_TAG, END_TAG, arg.data["timeout"]["value"])
+    json_data_rcv = rflib.receive_message(client_socket, k.ISO_ENCODING, k.MID_BUFFER_SIZE, k.START_TAG, k.END_TAG, arg.data["timeout"]["value"])
 
     try:
         dict_output = json.loads(json_data_rcv)

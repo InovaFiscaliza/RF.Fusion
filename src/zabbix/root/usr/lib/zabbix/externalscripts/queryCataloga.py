@@ -7,7 +7,7 @@ Provide feedback to Zabbix about the host or appCataloga service
 This script is unsecure and should only run through a secure encripted network connection
     
     Usage:
-        queryCataloga <query> <host_id> <host_add> <user> <pass>
+        queryCataloga host_id=<host_id> host_uid=<host_uid> host_add=<host_add> host_port=<host_port> user=<user> passwd=<passwd> query_tag=<query_tag> timeout=<timeout>
     
     Parameters:
         <query>
@@ -38,70 +38,56 @@ sys.path.append(
 )
 
 import rfFusionLib as rflib
-
-# scritp configuration constants
-SERVER_ADD = "192.168.200.30"  # Change this to the server's hostname or IP address
-SERVER_PORT = 5555
-START_TAG = "<json>"
-END_TAG = "</json>"
-BUFFER_SIZE = 1024
-ENCODING = "utf-8"
-
-# Define default arguments
-DEFAULT_HOST_ID = "10"
-DEFAULT_HOST_ID = "zabbix_host_name"
-#DEFAULT_HOST_ADD = "192.168.200.20"
-DEFAULT_HOST_ADD = "192.168.10.33"
-DEFAULT_HOST_PORT = 22
-DEFAULT_USER = "sshUser"  # user should have access to the host with rights to interact with the indexer daemon
-DEFAULT_PASSWD = "sshuserpass"
-DEFAULT_QUERY_TAG = "backup"
-DEFAULT_TIMEOUT = 2
+import defaultConfig as k
 
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
 ARGUMENTS = {
     "host_id": {
         "set": False,
-        "value": DEFAULT_HOST_ID,
+        "value": k.ACAT_DEFAULT_HOST_ID,
         "message": "Using default host id",
 
         "types": ["warning", "default"],    },
     "host_uid": {
         "set": False,
-        "value": DEFAULT_HOST_ID,
+        "value": k.ACAT_DEFAULT_HOST_ID,
         "message": "Using default host uid",
     },
     "host_add": {
         "set": False,
-        "value": DEFAULT_HOST_ADD,
+        "value": k.ACAT_DEFAULT_HOST_ADD,
         "message": "Using default host address",
     },
     "host_port": {
         "set": False,
-        "value": DEFAULT_HOST_PORT,
+        "value": k.ACAT_DEFAULT_HOST_PORT,
         "message": "Using default host port",
     },    
     "user": {
         "set": False,
-        "value": DEFAULT_USER,
+        "value": k.ACAT_DEFAULT_USER,
         "message": "Using default user"},
     "passwd": {
         "set": False,
-        "value": DEFAULT_PASSWD,
+        "value": k.ACAT_DEFAULT_PASSWD,
         "message": "Using default password",
     },
     "query_tag": {
         "set": False,
-        "value": DEFAULT_QUERY_TAG,
+        "value": k.ACAT_DEFAULT_QUERY_TAG,
         "message": "Using default query tag",
     },
     "timeout": {
         "set": False,
-        "value": DEFAULT_TIMEOUT,
+        "value": k.ACAT_DEFAULT_TIMEOUT,
         "message": "Using default timeout",
     },
+    "help": {
+        "set": True,
+        "value": None,
+        "message": "** Use queryCataloga host_id=<host_id> host_uid=<host_uid> host_add=<host_add> host_port=<host_port> user=<user> passwd=<passwd> query_tag=<query_tag> timeout=<timeout>. See code for details **"
+    },
 }
-
 
 def main():
     # create a warning message object
@@ -130,7 +116,7 @@ def main():
     client_socket.settimeout(arg.data["timeout"]["value"])
 
     try:
-        client_socket.connect((SERVER_ADD, SERVER_PORT))
+        client_socket.connect((k.ACAT_SERVER_ADD, k.ACAT_SERVER_PORT))
         client_socket.sendall(request)
     except Exception as e:
         print(
@@ -140,7 +126,7 @@ def main():
         exit()
 
     try:
-        response = client_socket.recv(BUFFER_SIZE)
+        response = client_socket.recv(k.SMALL_BUFFER_SIZE)
         client_socket.close()
     except Exception as e:
         print(f'{{"Status":0,"Message":"Error: {e}; Error receiving data"}}')
@@ -148,20 +134,20 @@ def main():
         exit()
 
     try:
-        response = response.decode(ENCODING)
+        response = response.decode(k.UTF_ENCODING)
     except Exception as e:
         print(
-            f'{{"Status":0,"Message":"Error: {e}. Error decoding data with {ENCODING}: {response}"}}'
+            f'{{"Status":0,"Message":"Error: {e}. Error decoding data with {k.UTF_ENCODING}: {response}"}}'
         )
         client_socket.close()
         exit()
 
     # extract JSON data from bytestring
-    start_index = response.lower().rfind(START_TAG)
-    end_index = response.lower().rfind(END_TAG)
+    start_index = response.lower().rfind(k.START_TAG)
+    end_index = response.lower().rfind(k.END_TAG)
 
     # extract JSON data removing the last bracket to later splice with the tail json data from this script
-    json_output = response[start_index + len(START_TAG) : end_index]
+    json_output = response[start_index + len(k.START_TAG) : end_index]
 
     try:
         dict_output = json.loads(json_output)

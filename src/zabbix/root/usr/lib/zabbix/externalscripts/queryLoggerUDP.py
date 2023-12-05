@@ -27,43 +27,23 @@ import sys
 import json
 
 import rfFusionLib as rflib
-
-# scritp configuration constants
-START_TAG = b"<json>"
-END_TAG = b"</json>"
-TIMEOUT_BUFFER = 1
-BUFFER_SIZE = 65536
-ENCODING = "utf-8"
-
-# Test command line arguments
-# happy ending - "args" : ["host_add=172.24.1.13", "port=5555", "timeout=1"] 
-# help - "args" : ["/h"]
-# type error - "args" : ["port=spam", "timeout=spam"]
-# missing value - error - "args" : ["host_add="]
-# wrong port - "args" : ["host_add=172.24.1.13", "port=80", "timeout=1"] 
-# wrong address - "args" : ["host_add=172.0.0.1", "port=80", "timeout=1"] 
-
-# Define default arguments
-# DEFAULT_HOST = "rfeye002080.anatel.gov.br"
-DEFAULT_HOST = "172.24.1.13"
-DEFAULT_PORT = 5555
-DEFAULT_CONNECTION_TIMEOUT = 1
+import defaultConfig as k
 
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
 ARGUMENTS = {
     "host_add": {
         "set": False,
-        "value": DEFAULT_HOST,
+        "value": k.LOGU_DEFAULT_HOST,
         "message": "Using default host address"
         },
     "port": {
         "set": False,
-        "value": DEFAULT_PORT,
+        "value": k.LOGU_DEFAULT_PORT,
         "message": "Using default port"
         },
     "timeout": {
         "set": False,
-        "value": DEFAULT_CONNECTION_TIMEOUT,
+        "value": k.LOGU_DEFAULT_TIMEOUT,
         "message": "Using default timeout"
         },
     "help" : {
@@ -90,7 +70,7 @@ def main():
     try:
         sock = socket.socket(socket.AF_INET, # Internet
                             socket.SOCK_DGRAM) # UDP
-        sock.settimeout(arg.data['timeout']['value']+TIMEOUT_BUFFER)  # Set a timeout of 5 seconds for receiving data    
+        sock.settimeout(arg.data['timeout']['value']+k.TIMEOUT_BUFFER)  # Set a timeout of 5 seconds for receiving data    
     except socket.error as e:
         print(f'{{"Status":0,"Error":"Socket error: {e}"}}')
         exit()
@@ -112,7 +92,7 @@ def main():
         while time.time() < t_end:
             # Get data from UDP
             try:
-                dataFromUDP, addr = sock.recvfrom(BUFFER_SIZE)  # Buffer size is 65536 bytes
+                dataFromUDP, addr = sock.recvfrom(k.LARGE_BUFFER_SIZE)  # Buffer size is 65536 bytes
             except socket.timeout:
                 print('{"Status":0,"Error":"Timeout without data received"}')
                 exit()
@@ -127,13 +107,13 @@ def main():
         print('{"Status":0,"Message":"Error receiving and processing data"}')
 
     # extract JSON data from bytestring
-    start_index = raw_data.lower().rfind(START_TAG)
-    end_index = raw_data.lower().rfind(END_TAG)
+    start_index = raw_data.lower().rfind(k.START_TAG)
+    end_index = raw_data.lower().rfind(k.END_TAG)
 
     # extract JSON data removing the last bracket to later splice with the tail json data from this script
-    json_output = raw_data[start_index+len(START_TAG):end_index]
+    json_output = raw_data[start_index+len(k.START_TAG):end_index]
     
-    json_output = json_output.decode(ENCODING)
+    json_output = json_output.decode(k.UTF_ENCODING)
 
     try:
         dict_output = json.loads(json_output)
