@@ -151,7 +151,12 @@ def main():
         exit()
 
     # receive the response from the server
-    json_data_rcv = rflib.receive_message(client_socket, k.ISO_ENCODING, k.MID_BUFFER_SIZE, k.START_TAG, k.END_TAG, arg.data["timeout"]["value"])
+    json_data_rcv = rflib.receive_message(  client_socket=client_socket,
+                                            encoding=k.ISO_ENCODING,
+                                            buffer_size=k.MID_BUFFER_SIZE,
+                                            start_tag=k.START_TAG.decode(k.ISO_ENCODING),
+                                            end_tag=k.END_TAG.decode(k.ISO_ENCODING),
+                                            timeout=arg.data["timeout"]["value"])
 
     try:
         dict_output = json.loads(json_data_rcv)
