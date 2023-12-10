@@ -70,11 +70,11 @@ ARGUMENTS = {
         }
     }
 
-def summarize_diagnostic(dict_input):
+def summarize_diagnostic(appCol_dict):
     # TODO: implement this function according to the new appColeta diagnostic format
     """Include summary in the JSON data received from appColeta"""
     # count the number of peaks in each band
-    for band in dict_input["Answer"]["taskList"]:
+    for band in appCol_dict["Answer"]["taskList"]:
         try:
             band["nPeaks"] = len(band["Mask"]["Peaks"])
         except:
@@ -85,31 +85,53 @@ def summarize_diagnostic(dict_input):
         except:
             band["name"] = "unknown"
                 
-    return dict_input
+    return appCol_dict
 
-def summarize_task(dict_input):
-    
-    def _summarize_band(band:dict) -> None:
+def summarize_task(appCol_dict:dict) -> dict:
+    """Count the number of peaks in each band and define a friendly name.
+
+    Args:
+        appCol_dict (dict): JSON data received from appColeta
+
+    Returns:
+        dict: _description_
+    """
+
+    def _summarize_band(band:dict) -> dict:
+        
+        # count the number of peaks in each band if the band has a mask and associated peaks
         try:
             band["nPeaks"] = len(band["Mask"]["Peaks"])
         except:
             band["nPeaks"] = 0
         
+        # define a friendly name for the band if it has a valid frequency range
         try:
             band["name"] = f"{int(band['FreqStart']/1e6)}-{int(band['FreqStop']/1e6)}MHz"
         except:
             band["name"] = "unknown"
-    
-    """Include summary in the JSON data received from appColeta"""
-    # count the number of peaks in each band
-    for task in dict_input["Answer"]["taskList"]:
+
+    def _summarize_task(task:dict) -> dict:
+        
         try:
-            _summarize_band(task["Band"])
+            # try to summarize a single band and convert it to a list
+            task["Band"] = [_summarize_band(task["Band"])]
         except TypeError:
+            # if it is already a list, summarize each band
             for band in task["Band"]:
                 _summarize_band(band)
-                
-    return dict_input
+    
+        return task
+    
+    try :
+        # try to summarize a single task and convert it to a list
+        appCol_dict["Answer"]["taskList"] = [_summarize_task(appCol_dict["Answer"]["taskList"])]
+    except TypeError:
+        # if it is already a list, summarize each task
+        for task in appCol_dict["Answer"]["taskList"]:
+            task = _summarize_task(task)
+        
+    return appCol_dict
 
 def main():
     
