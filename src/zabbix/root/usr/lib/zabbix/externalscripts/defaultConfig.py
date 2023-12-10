@@ -29,16 +29,16 @@ ACAT_DEFAULT_PASSWD = "sshuserpass"
 ACAT_DEFAULT_QUERY_TAG = "backup"
 ACAT_DEFAULT_TIMEOUT = 2
 
-# appColeta 
+# appColeta constants
 None
 
 # appColeta Default arguments
-ACOL_DEFAULT_HOST_ADD = "172.24.5.71" # Uberlândia
+# ACOL_DEFAULT_HOST_ADD = "172.24.5.71" # Uberlândia
 # ACOL_DEFAULT_HOST_ADD = "172.24.5.73" # Confins
-# ACOL_DEFAULT_HOST_ADD = "172.24.5.33" # Vitoria
+ACOL_DEFAULT_HOST_ADD = "172.24.5.33" # Vitoria
 
 ACOL_DEFAULT_PORT = 8910
-ACOL_DEFAULT_KEY = "123456"  # user should have access to the host with rights to interact with the indexer daemon
+ACOL_DEFAULT_KEY = "123456"  
 ACOL_DEFAULT_CLIENT_NAME = "Zabbix"
 # ACOL_DEFAULT_QUERY_TAG = "PositionList" 
 # ACOL_DEFAULT_QUERY_TAG = "Diagnostic"
