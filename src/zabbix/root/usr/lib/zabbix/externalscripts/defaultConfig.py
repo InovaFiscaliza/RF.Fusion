@@ -20,8 +20,8 @@ ACAT_SERVER_ADD = "192.168.200.30"  # Change this to the server's hostname or IP
 ACAT_SERVER_PORT = 5555
 
 # appCataloga default arguments
-ACAT_DEFAULT_HOST_ID = "10"
-ACAT_DEFAULT_HOST_ID = "zabbix_host_name"
+ACAT_DEFAULT_HOST_ID = "10367"
+ACAT_DEFAULT_HOST_UID = "RFEye002080"
 ACAT_DEFAULT_HOST_ADD = "192.168.10.33"
 ACAT_DEFAULT_HOST_PORT = 22
 ACAT_DEFAULT_USER = "sshUser"  # user should have access to the host with rights to interact with the indexer daemon
