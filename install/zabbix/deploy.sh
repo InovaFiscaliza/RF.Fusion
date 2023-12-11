@@ -30,7 +30,7 @@ get_files() {
             exit
         else
             dos2unix "$file"
-            chmod 750 "$file"
+            chmod 755 "$file"
         fi
     done
 }

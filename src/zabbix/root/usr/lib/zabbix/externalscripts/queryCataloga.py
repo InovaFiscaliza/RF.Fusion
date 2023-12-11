@@ -50,7 +50,7 @@ ARGUMENTS = {
         "types": ["warning", "default"],    },
     "host_uid": {
         "set": False,
-        "value": k.ACAT_DEFAULT_HOST_ID,
+        "value": k.ACAT_DEFAULT_HOST_UID,
         "message": "Using default host uid",
     },
     "host_add": {
