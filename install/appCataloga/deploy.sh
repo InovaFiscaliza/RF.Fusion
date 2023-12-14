@@ -4,18 +4,41 @@
 # Run as root this script as root
 
 # parse arguments "-i", "-u", "-r", or "-h"
+
+#! initial system requirement and argument tests
+
 # if no argument is passed, exit
+simple_help="Use -i to install, -u to update, -r to remove. Any additional argument will be ignored."
+
 if [ $# -eq 0 ]; then
-    echo "No arguments provided. Use -i to install, -u to update, -r to remove, or -h to for help"
+    echo "No arguments provided. $simple_help"
     exit
 fi
 
+case "$1" in
+-i | -u | -r | -h) ;;
+*)
+    echo "Invalid argument. $simple_help"
+    exit 1
+    ;;
+esac
+
+# test requirements
+if ! which dos2unix >/dev/null; then
+    echo "dos2unix is required to run this script. Please install it and try again."
+    exit
+fi
+
+#! Declare constants that control the script
+
 # define script control variables
-repository="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/appCataloga/src/root"
+repository="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/src/appCataloga/root/"
 
 # declare folders to be used
 dataFolder="etc/appCataloga"
-scriptFolder="usr/local/bin"
+scriptFolder="usr/local/bin/appCataloga"
+
+tmpFolder="/tmp/appCataloga"
 
 # declare an associative array with pairs of install required files to download and target folders
 declare -A installFiles=(
@@ -39,113 +62,158 @@ declare -A updateFiles=(
     ["db_handler.py"]=$scriptFolder
 )
 
-# define
-tmp_folder="/tmp/appCataloga"
-
+#! Varios functions to be used later
 print_help() {
     echo -e "\nThis script will download appCataloga files from a repository and install them in the required folders.\n"
     echo "Use -i to install, -u to update, -r to remove. Any additional argument will be ignored."
-    echo "    Initially, the required files will be downloaded from '$repository' to the '$tmp_folder' folder"
-    echo "    Afterwards, the files will be moved to the target folders at: /$dataFolder and /$scriptFolder"
     echo "    Install will create the target folders and include database reference data and sql scripts."
     echo "    Update will overwrite the python script files only. Database will not be affected and reference data not downloaded."
-    echo -e "\nExample: ./deploy.sh -i\n"
+    echo "    Remove will delete all files that may be downloaded, but will not affect the database."
+    echo -e "\nThe install and update procedure starts by downloading the required files from '$repository' to the '$tmpFolder' folder."
+    echo "    Afterwards, the files will be moved to the target folders at: /$dataFolder and /$scriptFolder and tmp folder will be removed."
+    echo "    Changes in these folders and files to be copied must be performed by editing the script."
+    echo -e "\nUsage example: ./deploy.sh -i\n"
     exit
 }
 
 create_tmp_folder() {
     # try to create a temp folder, if it fails, exit
-    if [ ! -d "$tmp_folder" ]; then
-        if ! mkdir $tmp_folder; then
-            echo "Error creating $tmp_folder"
+    if [ ! -d "$tmpFolder" ]; then
+        if ! mkdir $tmpFolder; then
+            echo "Error creating $tmpFolder"
             exit
         fi
     fi
 
-    if ! cd /$tmp_folder; then
-        echo "Error changing to $tmp_folder"
+    if ! cd /$tmpFolder; then
+        echo "Error changing to $tmpFolder"
         exit
     fi
 }
 
+download_file() {
+    # download file
+    wget -q --show-progress "$1"
+
+    # test if file has csv or sql extension, if so, define type as 644
+
+    # check if the file was downloaded, if not, exit
+    if [ ! -f "${1##*/}" ]; then
+        echo "Error downloading ${1##*/}"
+        # remove tmp folder and all content
+        rm -rf "$tmpFolder"
+        exit
+    else
+        dos2unix -q "${1##*/}"
+
+        case "${1##*.}" in
+        csv | sql)
+            chmod 644 "${1##*/}"
+            ;;
+        py | sh)
+            chmod 755 "${1##*/}"
+            ;;
+        esac
+    fi
+}
 # Funciton to download files from the repository
 get_files() {
 
-    if [ "$1" == "-i" ]; then
-        # install files
-        for file in "${!installFiles[@]}"; do
-            folder="${installFiles[$file]}"
-            wget "$repository/$folder/${file}"
-            # check if the file was downloaded, if not, exit
-            if [ ! -f "$file" ]; then
-                echo "Error downloading $file"
-                # remove tmp folder and all content
-                rm -rf "$tmp_folder"
-                exit
-            else
-                dos2unix "$file"
-                chmod 755 "$file"
-            fi
-        done
-        # install files that are in the update list
-        get_files "-u"
-    elif [ "$1" == "-u" ]; then
-        # update files
+    if [ "$1" == "-u" ]; then
+        # download files that are in the update list
         for file in "${!updateFiles[@]}"; do
             folder="${updateFiles[$file]}"
-            wget "$repository/$folder/${file}"
-            # check if the file was downloaded, if not, exit
-            if [ ! -f "$file" ]; then
-                echo "Error downloading $file"
-                # remove tmp folder and all content
-                rm -rf "$tmp_folder"
-                exit
-            else
-                dos2unix "$file"
-                chmod 755 "$file"
-            fi
+            full_file_name="$repository/$folder/${file}"
+            download_file "$full_file_name"
+        done
+
+    elif [ "$1" == "-i" ]; then
+        # download files that are in the update list
+        get_files "-u"
+
+        # download files in the install list
+        for file in "${!installFiles[@]}"; do
+            folder="${installFiles[$file]}"
+            full_file_name="$repository/$folder/${file}"
+            download_file "$full_file_name"
         done
     fi
 }
 
 # Function to move files from tmp to target folders
 move_files() {
-    # move files
-    for file in "${!installFiles[@]}"; do
-        folder="${installFiles[$file]}"
-        if ! mv -f "$file" "/$folder"; then
-            echo "Error moving $file to /$folder"
-            scritpError=true
-        fi
-    done
-    for file in "${!updateFiles[@]}"; do
-        folder="${updateFiles[$file]}"
-        if ! mv -f "$file" "/$folder"; then
-            echo "Error moving $file to /$folder"
-            scritpError=true
-        fi
-    done
+    scritpError=false
+
+    # move files from the update list to the target folders
+    if [ "$1" == "-u" ]; then
+        for file in "${!updateFiles[@]}"; do
+            folder="${updateFiles[$file]}"
+            if ! mv -f "$file" "/$folder"; then
+                echo "Error moving $file to /$folder"
+                scritpError=true
+            fi
+        done
+    # move files from the install list to the target folders
+    elif [ "$1" == "-i" ]; then
+        move_files "-u"
+
+        for file in "${!installFiles[@]}"; do
+            folder="${installFiles[$file]}"
+            if ! mv -f "$file" "/$folder"; then
+                echo "Error moving $file to /$folder"
+                scritpError=true
+            fi
+        done
+    fi
+
+    if [ "$scritpError" == true ]; then
+        echo "Error moving files. Check user and target folder permissions."
+
+        echo "Rolling back files moved to /$dataFolder and /$scriptFolder"
+        remove_files -v
+        exit
+    fi
+}
+
+# Function to remove tmp folder
+remove_tmp_folder() {
+    # remove tmp folder and all content
+    if ! rm -rf "$tmpFolder"; then
+        echo "Error removing $tmpFolder. Please remove it manually."
+        exit
+    fi
 }
 
 # Function to remove files and folders
 remove_files() {
-    # remove files
+    scritpError=false
+
     for file in "${!installFiles[@]}"; do
         folder="${installFiles[$file]}"
         if ! rm -f "/$folder/$file}"; then
-            echo "Error removing /$folder/$file}"
+            if [ "$1" == "-v" ]; then
+                echo "Error removing /$folder/$file}"
+            fi
             scritpError=true
         fi
     done
     for file in "${!updateFiles[@]}"; do
         folder="${updateFiles[$file]}"
         if ! rm -f "/$folder/$file}"; then
-            echo "Error removing /$folder/$file}"
+            if [ "$1" == "-v" ]; then
+                echo "Error removing /$folder/$file}"
+            fi
             scritpError=true
         fi
     done
 
-    # test if folders are empty, if so, remove them
+    if [ "$scritpError" == true ]; then
+        echo "Error removing files. Please remove them manually."
+        exit
+    fi
+
+    # test if folders are empty, if so, remove them.
+    # Splitting file removal and folder removal to avoid removing files created by other processes
     if [ -z "$(ls -A "/$dataFolder")" ]; then
         rm -rf "/${dataFolder:?}"
     else
@@ -160,28 +228,28 @@ remove_files() {
     fi
 
     if [ "$scritpError" == true ]; then
-        echo "Error removing files and folders. Please remove them manually."
+        echo "All files were removed but error removing folders. Please remove them manually as needed. "
+        exit
     fi
 }
 
-if [ "$1" == "-h" ]; then
+#! Main script
+case "$1" in
+-h)
     print_help
-elif [ "$1" != "-i" ] && [ "$1" != "-u" ]; then
+    ;;
+-i | -u)
     create_tmp_folder
+    get_files "$1"
+    move_files "$1"
+    remove_tmp_folder
+    ;;
+-r)
+    remove_files -v
+    ;;
+*)
+    echo "Invalid option: $1"
+    ;;
+esac
 
-elif [ "$1" == "-r" ]; then
-    remove_files
-else
-    echo "Invalid argument. Use -i, -u, -r, or -h"
-fi
-
-# try to download files from github. If it fails, the function will exit the script at this point
-get_files "$1"
-
-# try to move files to target folders, If it fails, the function will exit the script at this point
-move_files
-
-# remove tmp folder and all content
-rm -rf $tmp_folder
-
-172.16.17.11
+echo -e "\nSuccess. Please check documentation for further instructions.\n"
