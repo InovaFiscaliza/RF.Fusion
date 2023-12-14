@@ -46,33 +46,43 @@ This section of the repository includes the following folders:
 
 # Setup
 
-Clone the source repositpory from github
 
-```shell
-git clone https://github.com/InovaFiscaliza/RF.Fusion.git
-```
-
-Move the necessary files to the appropriate folders
-
-```shell
-mv RF.Fusion/src/appCataloga/root/etc/appCataloga/* /etc/appCataloga/
-mv RF.Fusion/src/appCataloga/root/usr/local/bin/* /usr/local/bin/
-
-
-Install necessary tools
+## Install necessary tools
 
 ```shell
 dnf update
 
-dnf install cifs-utils
+dnf install cifs-utils dos2unix gcc unixODBC.x86_64
 ```
 
-Create a system user that will access the repository and get its UID and GID numbers
+In case of failue to install or differente platform, you may search the dnf repository for the required packages in the correct version, using the following command
+
+```shell
+dnf search unixodbc
+```
+
+## Create a system user
+
+The system user will be used to access the repository and to run the application
 
 In the example below, the username is `sentinela`
 
 ```shell
 useradd -r -s /bin/false sentinela
+
+passwd sentinela
+
+    Changing password for user sentinela.
+    New password: <sentinela_pass>
+    Retype new password: <sentinela_pass>
+    passwd: all authentication tokens updated successfully.
+```
+
+Store the credentials in a secure location for later use
+
+Get the ID numbers for the user and group, to be used in the mount command
+
+```shell
 id sentinela
 ```
 
@@ -81,6 +91,8 @@ The UID and GID information will be presented as follows;
 ```shell
 uid=987(sentinela) gid=983(sentinela) groups=983(sentinela)
 ```
+
+## Mount the repository
 
 Create a credential file for the user that has accces to the repository. It will be different from the user created if a network storage is used
 
@@ -97,6 +109,7 @@ mkdir /mnt/reposfi
 
 mount -t cifs -o credentials=/root/.reposfi,uid=987,gid=983,file_mode=0666,dir_mode=0777 //reposfi/sfi$/SENSORES  /mnt/reposfi
 ```
+
 One may also yse the following command to mount the volume
 
 ```shell
@@ -111,8 +124,36 @@ Once the mount is complete with success, one may make it permanent by adding the
 systemctl daemon-reload
 ```
 
+## Install appCataloga
 
-Install MariaDB.
+### Install python scripts and reference data
+
+Get de deployment script to download and copy relevant files to the appropriate folders
+
+```shell
+mkdir /tmp/appCataloga
+
+cd /tmp/appCataloga
+
+wget https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh
+
+chmod +x deploy.sh
+```
+
+The deployment script have the following options:
+
+* `-h` to show the help message
+* `-i` to install the application
+* `-u` to update the application
+* `-r` to remove the application
+
+To install the application, run the following command
+
+```shell
+./deploy.sh -i
+```
+
+### Install MariaDB
 
 ```shell
 dnf module install mariadb
@@ -225,20 +266,6 @@ After the database is created you may remove the original csv files to free up s
 rm -f /etc/appCataloga/*.csv
 ```
 
-Install gcc dependencies related to python scripts
-
-```shell
-dnf install gcc
-```
-
-Search and Install ODBC driver for Python
-
-```shell
-dnf search unixodbc
-
-dnf install unixODBC.x86_64
-```
-
 Install python and the required associated libraries.
 
 It is suggested the use of [conda](https://docs.conda.io/) (or [mamba](https://mamba.readthedocs.io/en/latest/)) as environment manager and, as [conventional](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html), the environment is controlled by the [`environment.yml`](./root/usr/local/bin/environment.yml) file.
@@ -248,10 +275,8 @@ The [`environment.yml`](./root/usr/local/bin/environment.yml) file is where you 
 To (re)create the environment on your installation of [conda](https://conda.io) via [anaconda](https://docs.anaconda.com/anaconda/install/), [miniconda](https://docs.conda.io/projects/continuumio-conda/en/latest/user-guide/install/) or preferably [miniforge](https://github.com/conda-forge/miniforge), you only need to pass the `environment.yml` file, which will install requirements and guarantee that whoever uses your code has the necessary packages (and correct versions).
 
 ```shell
-conda env create -f environment.yml
+conda env create -f /etc/appCataloga/environment.yml
 ```
-
-After 
 
 Activate systemctl service that will keep the application running
 
