@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """	Constants used in the appCataloga scripts """
+import secret as s
 
 # output processing information
 LOG_VERBOSE = True
@@ -18,12 +19,12 @@ END_TAG = "</json>"
 SERVER_NAME = r'localhost'
 RFM_DATABASE_NAME = 'RFDATA'
 BKP_DATABASE_NAME = 'BPDATA'
-DB_USER_NAME = 'appCataloga' 
-DB_PASSWORD = '<app_pass>'
+DB_USER_NAME = s.DB_USER_NAME
+DB_PASSWORD = s.DB_PASSWORD
 
 # backup module configuration
-BACKUP_CONTROL_MODULE = "/root/RF.Fusion/src/appCataloga/root/usr/local/bin/appCataloga/backup_control.py"
-BACKUP_SINGLE_HOST_MODULE = "/root/RF.Fusion/src/appCataloga/root/usr/local/bin/appCataloga/backup_single_host.py"
+BACKUP_CONTROL_MODULE = "/usr/local/bin/appCataloga/backup_control.py"
+BACKUP_SINGLE_HOST_MODULE = "/usr/local/bin/appCataloga/backup_single_host.py"
 BKP_MAX_PROCESS = 10
 BKP_TASK_EXECUTION_WAIT_TIME = 10
 BKP_TASK_REQUEST_WAIT_TIME = 300
@@ -31,7 +32,7 @@ BKP_TASK_EXECUTION_TIMEOUT = 3600
 BKP_HOST_ALLOTED_TIME_FRACTION = 0.8
 
 # file processing module configuration
-PROCESSING_CONTROL_MODULE = "/root/RF.Fusion/src/appCataloga/root/usr/local/bin/appCataloga/processing_control.py"
+PROCESSING_CONTROL_MODULE = "/usr/local/bin/appCataloga/processing_control.py"
 MAX_NOMINATIN_ATTEMPTS = 10
 
 # general configuration
