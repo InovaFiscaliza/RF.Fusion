@@ -45,6 +45,7 @@ tmpFolder="/tmp/appCataloga"
 # declare an associative array with pairs of install required files to download and target folders
 declare -A installFiles=(
     ["config.py"]=$dataFolder
+    ["secret.py"]=$dataFolder
     ["equipmentType.csv"]=$dataFolder
     ["fileType.csv"]=$dataFolder
     ["IBGE-BR_Municipios_2020_BULKLOAD.csv"]=$dataFolder
@@ -63,12 +64,14 @@ declare -A updateFiles=(
     ["db_handler.py"]=$scriptFolder
     ["shared.py"]=$scriptFolder
     ["environment.yml"]=$scriptFolder
+    ["appCataloga.sh"]=$scriptFolder
+    ["appCataloga.service"]=$scriptFolder
 )
 
 #! Varios functions to be used later
 print_help() {
     echo -e "\nThis script will download appCataloga files from a repository and install them in the required folders.\n"
-    echo "Use -i to install, -u to update, -r to remove. Any additional argument will be ignored."
+    echo "$simple_help"
     echo "    Install will create the target folders and include database reference data and sql scripts."
     echo "    Update will overwrite the python script files only. Database will not be affected and reference data not downloaded."
     echo "    Remove will delete all files that may be downloaded, but will not affect the database."

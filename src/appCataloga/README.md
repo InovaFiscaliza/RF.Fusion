@@ -266,17 +266,118 @@ After the database is created you may remove the original csv files to free up s
 rm -f /etc/appCataloga/*.csv
 ```
 
-Install python and the required associated libraries.
-
-It is suggested the use of [conda](https://docs.conda.io/) (or [mamba](https://mamba.readthedocs.io/en/latest/)) as environment manager and, as [conventional](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html), the environment is controlled by the [`environment.yml`](./root/usr/local/bin/environment.yml) file.
-
-The [`environment.yml`](./root/usr/local/bin/environment.yml) file is where you specify any packages available on the [Anaconda repository](https://anaconda.org) as well as from the Anaconda Cloud (including [conda-forge](https://conda-forge.org)) to install for your project. 
-
-To (re)create the environment on your installation of [conda](https://conda.io) via [anaconda](https://docs.anaconda.com/anaconda/install/), [miniconda](https://docs.conda.io/projects/continuumio-conda/en/latest/user-guide/install/) or preferably [miniforge](https://github.com/conda-forge/miniforge), you only need to pass the `environment.yml` file, which will install requirements and guarantee that whoever uses your code has the necessary packages (and correct versions).
+Edit the file `/etc/appCataloga/config.py` to set the database credentials and other essential parameters as described below
 
 ```shell
-conda env create -f /etc/appCataloga/environment.yml
+nano /etc/appCataloga/config.py
+
+    #!/usr/bin/env python
+    ...
+    # Database configuration
+    SERVER_NAME = 'localhost'
+    ...
+    DB_USER_NAME = 'appCataloga'
+    DB_PASSWORD = '<app_pass>'
+    
+    # backup module configuration
+    BACKUP_CONTROL_MODULE = "/usr/local/bin/appCataloga/backup_control.py"
+    BACKUP_SINGLE_HOST_MODULE = "/usr/local/bin/appCataloga/backup_single_host.py"
+    ...
+    # file processing module configuration
+    PROCESSING_CONTROL_MODULE = "/usr/local/bin/appCataloga/processing_control.py"
+    ...
 ```
+
+Use 'CTRL+X' to exit and 'Y' to save the changes
+
+# Install python and the required associated libraries
+
+Install miniconda under the /usr/local/bin/appCataloga folder
+
+```shell
+cd /usr/local/bin/appCataloga
+
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+
+chmod +x Miniconda3-latest-Linux-x86_64.sh
+
+./Miniconda3-latest-Linux-x86_64.sh
+
+```
+
+The script will present the following output and prompt for the installation location.
+
+Use the following highlighted options:
+
+>Welcome to Miniconda3
+>
+>...
+>
+>In order to continue the installation process, please review the license agreement.
+>
+>Please, press ENTER to continue
+>
+> \>>> **`ENTER`**
+> 
+> ...
+> 
+>Do you accept the license terms? [yes|no]
+>
+>[no] >>> **`yes`**
+>
+>Miniconda3 will now be installed into this location: 
+>
+>/root/miniconda3
+>
+>\- Press ENTER to confirm the location
+>
+>\- Press CTRL-C to abort the installation
+>
+>\- Or specify a different location below
+>
+>[/root/miniconda3] >>> **`/usr/local/bin/appCataloga/miniconda3`**
+>
+>Preparing transaction: done
+> 
+>Executing transaction: done
+> 
+>installation finished.
+>
+>Do you wish to update your shell profile to automatically initialize conda?
+>...
+>
+> [no] >>> **`no`**
+> 
+> ...
+> 
+> Thank you for installing Miniconda3!
+
+remove Miniconda installation script
+
+```shell
+rm -f Miniconda3-latest-Linux-x86_64.sh
+```
+
+Activate conda
+
+```shell
+source /usr/local/bin/appCataloga/miniconda3/bin/activate
+```
+
+create the environment
+
+```shell
+conda env create -f /usr/local/bin/appCataloga/environment.yml
+```
+
+If you wanto to test any module, you may activate the environment and run the module directly using:
+
+```shell
+conda activate appdata
+
+.\<MODULE>.py
+```
+
 
 Activate systemctl service that will keep the application running
 

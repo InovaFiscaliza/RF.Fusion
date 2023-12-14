@@ -1,0 +1,16 @@
+[Unit]
+Description=appCataloga
+After=network.target mariadb.service
+RequiresMountsFor=/mnt/reposfi
+
+[Service]
+Type=simple
+User=sentinela
+WorkingDirectory=/usr/local/bin/appCataloga
+ExecStart=/usr/local/bin/appCataloga.sh start
+ExecStop=/usr/local/bin/appCataloga.sh stop
+ExecReload=/usr/local/bin/appCataloga.sh restart
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
