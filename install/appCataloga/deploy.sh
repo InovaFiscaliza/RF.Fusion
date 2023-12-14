@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# TODO: Add user and group properties
+
 # Download files from a repository and install
 # Run as root this script as root
 
@@ -56,10 +58,11 @@ declare -A installFiles=(
 declare -A updateFiles=(
     ["appCataloga.py"]=$scriptFolder
     ["backup_control.py"]=$scriptFolder
-    ["processing_control.py"]=$scriptFolder
-    ["shared.py"]=$scriptFolder
     ["backup_single_host.py"]=$scriptFolder
+    ["processing_control.py"]=$scriptFolder
     ["db_handler.py"]=$scriptFolder
+    ["shared.py"]=$scriptFolder
+    ["environment.yml"]=$scriptFolder
 )
 
 #! Varios functions to be used later
