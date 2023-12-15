@@ -5,8 +5,6 @@
 # Download files from a repository and install
 # Run as root this script as root
 
-# parse arguments "-i", "-u", "-r", or "-h"
-
 #! initial system requirement and argument tests
 
 # if no argument is passed, exit
@@ -18,7 +16,7 @@ if [ $# -eq 0 ]; then
 fi
 
 case "$1" in
--i | -u | -r | -h) ;;
+-i | -u | -r | -h | -l) ;;
 *)
     echo "Invalid argument. $simple_help"
     exit 1
@@ -35,6 +33,10 @@ fi
 
 # define script control variables
 repository="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/src/appCataloga/root/"
+
+git_local_repo="$HOME/RF.Fusion"
+git_install_folder="install/appCataloga"
+git_src_folder="src/appCataloga/root"
 
 # declare folders to be used
 dataFolder="etc/appCataloga"
@@ -78,6 +80,9 @@ print_help() {
     echo -e "\nThe install and update procedure starts by downloading the required files from '$repository' to the '$tmpFolder' folder."
     echo "    Afterwards, the files will be moved to the target folders at: /$dataFolder and /$scriptFolder and tmp folder will be removed."
     echo "    Changes in these folders and files to be copied must be performed by editing the script."
+    echo "If any error occurs during the process, the script will exit and no changes will be made."
+    echo -e "\n Special option -l will setup hardlinks from local git repository to the corresponding install locations, allowing for testing."
+    echo "    In this case, it is expected that the deploy.sh script is in folder defined by the git repository structure, e.g. under $git_local_repo/$git_install_folder"
     echo -e "\nUsage example: ./deploy.sh -i\n"
     exit
 }
@@ -239,6 +244,36 @@ remove_files() {
     fi
 }
 
+link_files() {
+    scritpError=false
+
+    for file in "${!installFiles[@]}"; do
+        source="$git_local_repo/$git_src_folder/${installFiles[$file]}/$file"
+        target="/${installFiles[$file]}/$file"
+        if ! ln -f "$source" "$target"; then
+            if [ "$1" == "-v" ]; then
+                echo "Error linking $source to $target"
+            fi
+            scritpError=true
+        fi
+    done
+    for file in "${!updateFiles[@]}"; do
+        source="$git_local_repo/$git_src_folder/${updateFiles[$file]}/$file"
+        target="/${updateFiles[$file]}/$file"
+        if ! ln -f "$source" "$target"; then
+            if [ "$1" == "-v" ]; then
+                echo "Error linking $source to $target"
+            fi
+            scritpError=true
+        fi
+    done
+
+    if [ "$scritpError" == true ]; then
+        echo "Error linking files. Please remove them manually."
+        exit
+    fi
+}
+
 #! Main script
 case "$1" in
 -h)
@@ -252,6 +287,9 @@ case "$1" in
     ;;
 -r)
     remove_files -v
+    ;;
+-l)
+    link_files -v
     ;;
 *)
     echo "Invalid option: $1"
