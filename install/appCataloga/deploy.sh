@@ -38,11 +38,11 @@ git_local_repo="$HOME/RF.Fusion"
 git_install_folder="install/appCataloga"
 git_src_folder="src/appCataloga/root"
 
+tmpFolder="/tmp/appCataloga"
+
 # declare folders to be used
 dataFolder="etc/appCataloga"
 scriptFolder="usr/local/bin/appCataloga"
-
-tmpFolder="/tmp/appCataloga"
 
 # declare an associative array with pairs of install required files to download and target folders
 declare -A installFiles=(
