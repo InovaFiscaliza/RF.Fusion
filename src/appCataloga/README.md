@@ -340,7 +340,7 @@ Use the following highlighted options:
 >Preparing transaction: done
 > 
 >Executing transaction: done
-> 
+> no
 >installation finished.
 >
 >Do you wish to update your shell profile to automatically initialize conda?
@@ -367,7 +367,7 @@ source /usr/local/bin/appCataloga/miniconda3/bin/activate
 create the environment
 
 ```shell
-conda env create -f /usr/local/bin/appCataloga/environment.yml
+(base) conda env create -f /usr/local/bin/appCataloga/environment.yml
 ```
 
 If you wanto to test any module, you may activate the environment and run the module directly using:
@@ -378,8 +378,17 @@ conda activate appdata
 .\<MODULE>.py
 ```
 
+To test appCataloga, run the following command
+
+```shell
+./appCataloga.sh
+```
 
 Activate systemctl service that will keep the application running
+
+```shell
+systemctl enable --now appCataloga.service
+```
 
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>

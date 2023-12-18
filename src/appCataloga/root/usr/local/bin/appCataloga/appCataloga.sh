@@ -10,9 +10,9 @@ start() {
     if [ -f $PID_FILE ]; then
         echo "The service is already running."
     else
-        source $CONDA_PATH
+        source "$CONDA_PATH"
         source activate $ENV_NAME
-        nohup python $APP_PATH &
+        nohup python $APP_PATH >/dev/null 2>&1 &
         echo $! >$PID_FILE
         echo "Service started."
     fi
@@ -20,7 +20,7 @@ start() {
 
 stop() {
     if [ -f $PID_FILE ]; then
-        kill $(cat $PID_FILE)
+        kill "$(cat "$PID_FILE")"
         rm $PID_FILE
         echo "Service stopped."
     else

@@ -1,4 +1,4 @@
-#!/usr/bin/python3.9
+#!/usr/bin/python
 """
 Define constats used by various modules in RF.Fusion project
 

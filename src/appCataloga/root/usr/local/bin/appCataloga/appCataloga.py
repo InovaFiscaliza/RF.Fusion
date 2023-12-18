@@ -40,6 +40,7 @@ import subprocess
 
 # Import modules for file processing 
 import config as k
+import shared as sh
 import db_handler as dbh
 
 #! TEST ONLY host_statistics initialization remove for production
@@ -50,10 +51,8 @@ HOST_STATISTICS = { "Total Files":1,
                     "Last Processing":"today",
                     "Days since last backup":0}
 
-interrupt_read, interrupt_write = socket.socketpair()
-
-def handler(signum, frame):
-    """Handle interrupt signal from keyboard
+def handler(signum, frame, interrupt_write, log):
+    """Handle interrupt signal from keyboard to the socket select
 
     Usage:
         handler(signum, frame)
@@ -65,11 +64,8 @@ def handler(signum, frame):
     Returns:
         None
     """
-    print('Signal handler called with signal', signum)
+    log.entry(f"Signal handler called with signal {signum}")
     interrupt_write.send(b'\0')
-
-# start signal handler that control a graceful shutdown 
-signal.signal(signal.SIGINT, handler)
 
 def backup_queue(   conn:str,
                     hostid:str,
@@ -106,7 +102,7 @@ def backup_queue(   conn:str,
     
     return host_stat
 
-def serve_client(client_socket):
+def serve_client(client_socket, log):
     
     receiving_data = True
     
@@ -115,7 +111,7 @@ def serve_client(client_socket):
         try:
             data = client_socket.recv(128)
         except Exception as e:
-            print("Error receiving data:", e)
+            log.entry(f"Error receiving data: {e}")
             data = None
 
         # in case of error or no data received
@@ -127,7 +123,7 @@ def serve_client(client_socket):
             try:
                 host = data.decode().split(" ")
             except Exception as e:
-                print("Error decoding data:", e)
+                log.entry(f"Error decoding data: {e}")
                 host = [None]
             
             if host[0]==k.BACKUP_QUERY_TAG:
@@ -139,38 +135,40 @@ def serve_client(client_socket):
                     response = f'{k.START_TAG}{json.dumps(host_statistics)}{k.END_TAG}'
                     
                 except Exception as e:
-                    print(f"Error backup request: {e}")
+                    log.entry(f"Error backup request: {e}")
                     response = f'{k.START_TAG}{{"Status":0,"Error":"Could not create a backup task from the data provided."}}{k.END_TAG}'
                     pass
                     
                 receiving_data = False
 
             elif host[0]==k.CATALOG_QUERY_TAG:
-                print(f"Received data from {client_socket.getpeername()[0]}. Received: {data.decode()}")
+                log.entry(f"Received data from {client_socket.getpeername()[0]}. Received: {data.decode()}")
                 
                 response = f'{k.START_TAG}{{"Status":0,"Error":"catalog command not implemented"}}{k.END_TAG}'
                 
                 receiving_data = False
                 
             else:
-                print(f"Ignored data from from {client_socket.getpeername()[0]}. Received: {data.decode()}")
+                log.entry(f"Ignored data from from {client_socket.getpeername()[0]}. Received: {data.decode()}")
                 
                 response = f'{k.START_TAG}{{"Status":0,"Error":"host command not recognized"}}{k.END_TAG}'
                 
                 receiving_data = False
-                    
+                
         byte_response = bytes(response, encoding="utf-8")
                 
         client_socket.sendall(byte_response)
         
+        log.entry(f"Response sent to {client_socket.getpeername()[0]}: {response}")
+        
         client_socket.close()
 
-def serve_forever(server_socket):
+def serve_forever(server_socket, interrupt_read, log):
     
     sel = DefaultSelector()
     sel.register(interrupt_read, EVENT_READ)
     sel.register(server_socket, EVENT_READ)
-
+    
     running_backup = False
     running_processing = False
     serving_forever = True
@@ -189,21 +187,22 @@ def serve_forever(server_socket):
                 if serving_forever:
                     serving_forever = False
                     if running_backup:
-                        print("Server will shut down... Waiting for running tasks to finish.")
+                        log.entry("Server will shut down... Waiting for running tasks to finish.")
                     else:
-                        print("Shutting down....")
+                        log.entry("Shutting down....")
+                        exit(0)
                         
                 else:
-                    print("Shutting down but waiting for tasks to finish... please wait.")
+                    log.entry("Shutting down but waiting for tasks to finish... please wait.")
 
             # if client tries to connect, accept the connection and serve the client
             if key.fileobj == server_socket:
                 client_socket, client_address = server_socket.accept()
                 if serving_forever:
-                    print(f"Connection established with: {client_address}")
-                    serve_client(client_socket)
+                    log.entry(f"Connection established with: {client_address}")
+                    serve_client(client_socket, log)
                 else:
-                    print("Connection attempt rejected. Server is shutting down.")
+                    log.entry("Connection attempt rejected. Server is shutting down.")
                     response = f'{k.START_TAG}{{"Status":0,"Error":"Server shutting down"}}{k.END_TAG}'
                     byte_response = bytes(response, encoding="utf-8")
                     client_socket.sendall(byte_response)        
@@ -223,7 +222,7 @@ def serve_forever(server_socket):
                                               text=True,
                                               shell=True)
             
-            print("Backup process started")
+            log.entry(f"Backup process started: {command}")
             running_backup = True
 
         elif backup_process.poll() is not None:
@@ -231,11 +230,11 @@ def serve_forever(server_socket):
             running_backup = False
             
             if backup_output:
-                print(f"Backup process ended with: {backup_output}.")
+                log.entry(f"Backup process ended with: {backup_output}.")
 
             if backup_errors:
                 running_backup = False
-                print(f"Backup process error: {backup_errors}.")
+                log.entry(f"Backup process error: {backup_errors}.")
 
         # Whenever there is an event, check if file processing is running and if not, start it.
         if not running_processing:
@@ -251,7 +250,7 @@ def serve_forever(server_socket):
                                               text=True,
                                               shell=True)
             
-            print("File processing started")
+            log.entry(f"File processing started: {command}")
             running_processing = True
 
         elif processing_task.poll() is not None:
@@ -259,27 +258,36 @@ def serve_forever(server_socket):
             running_processing = False
             
             if processing_output:
-                print(f"File processing ended with: {processing_output}.")
+                log.entry(f"File processing ended with: {processing_output}.")
 
             if processing_errors:
                 running_processing = False
-                print(f"File processing error: {processing_errors}.")
+                log.entry(f"File processing error: {processing_errors}.")
 
         # sleep one second to avoid system hang in case of error
         time.sleep(1)
             
 def main():
     
-    print(f"Server is listening on port {k.SERVER_PORT}")
+    interrupt_read, interrupt_write = socket.socketpair()
+
+    # start signal handler that control a graceful shutdown 
+    signal.signal(signal.SIGINT, lambda signum, frame: handler (signum=signum, frame=frame, interrupt_write=interrupt_write, log=log))
+    signal.signal(signal.SIGTERM, lambda signum, frame: handler (signum=signum, frame=frame, interrupt_write=interrupt_write, log=log))
+    
+    # create a warning message object
+    log = sh.log(verbose=True, target_screen=True, target_file=True)
+
+    log.entry(f"Server is listening on port {k.SERVER_PORT}")
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_address = ('', k.SERVER_PORT)
     server_socket.bind(server_address)
     server_socket.listen(k.TOTAL_CONNECTIONS)
 
-    serve_forever(server_socket)
+    serve_forever(server_socket=server_socket, interrupt_read=interrupt_read, log=log)
     
-    print("Shutting down....")
+    log.entry("Shutting down....")
     server_socket.close()
 
 if __name__ == "__main__":
