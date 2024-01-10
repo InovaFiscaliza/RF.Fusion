@@ -1,16 +1,30 @@
 <details>
-  <summary>Table of Contents</summary>
-  <ol>
-    <li><a href="#about-appcataloga">About AppCataloga</a></li>
-    <li><a href="#algorithm-overview">Algorithm Overview</a></li>
-    <li><a href="#repository-layout">Repository layout</a></li>
-    <li><a href="#setup">Setup</a></li>
-    <li><a href="#external_checks">External Checks</a></li>
-    <li><a href="#roadmap">Roadmap</a></li>
-    <li><a href="#contributing">Contributing</a></li>
-    <li><a href="#license">License</a></li>
-    <li><a href="#references">References</a></li>
-  </ol>
+    <summary>Table of Contents</summary>
+    <ol>
+        <li><a href="#about-appcatalaga">About AppCataloga</a></li>
+        <li><a href="#algorithm-overview">Algorithm Overview</a></li>
+            <ul>
+                <li><a href="#backup-task">Backup task</a></li>
+                <li><a href="#processing-task">Processing task</a></li>
+                <li><a href="#repository-layout">Repository layout</a></li>
+                <li><a href="#list-of-modules-scripts-and-files">List of Modules, Scripts and Files</a></li>
+            </ul>
+        <li><a href="#setup">Setup</a></li>
+            <ul>
+                <li><a href="#install-necessary-tools">Install necessary tools</a></li>
+                <li><a href="#create-a-system-user">Create a system user</a></li>
+                <li><a href="#mount-the-repository">Mount the repository</a></li>
+                <li><a href="#install-appcataloga">Install appCataloga</a></li>
+                    <ul>
+                        <li><a href="#install-python-scripts-and-reference-data">Install python scripts and reference data</a></li>
+                        <li><a href="#install-mariadb">Install MariaDB</a></li>
+                        <li><a href="#install-python-environment-and-the-required-libraries">Install python environment and the required libraries</a></li>
+                    </ul>
+            </ul>
+        <li><a href="#roadmap">Roadmap</a></li>
+        <li><a href="#contributing">Contributing</a></li>
+        <li><a href="#license">License</a></li>
+    </ol>
 </details>
 
 # About appCatalaga
@@ -21,31 +35,85 @@ In the context of the RF.Fusion framework, it interfaces with Zabbix scripts tha
 
 # Algorithm Overview
 
-Agent configuration uses file that provides the essential operational parameters (e.g. [indexerD.cfg](./linux/indexerd/etc/node/indexerD.cfg)), such as:
+For each monitoring station (host) registred in Zabbix, `queryCataloga.py` is called and uses socket to communicate with `appCataloga.py`.
 
-* Target folder were measurement data is locally stored prior to backup (e.g. `LOCAL_REPO`)
-* Working folder were cookies and temporary files are stored (e.g. `SENTINELA_FOLDER`)
-* Identification of temporary files and folder (e.g. `TEMP_CHANGED`)
-* Identification of the output file, listing the measurement data files to be copied by the server. (e.g. `DUE_BACKUP`)
-* Cookie file to signal that file indexing is being performed and no further action should be taken (e.g. `HALT_FLAG`)
-* Cookie file to signal the timestamp when the last index task was performed (e.g. `LAST_BACKUP_FLAG`)
+`appCataloga.py` receives the request from `queryCataloga.py` and includes the monitoring station (host) in the backup task queue table in the database.
 
-Local indexing takes place by listing all files placed within the target folder that were changed since the last indexing was performed.
+`appCataloga.py` imediatly respond to `queryCataloga.py` with the backup and processing status for the monitoring station (host), up to that moment, as registered in the database.
 
-Server halts the indexing process using the same cookie file. Download the index file and from there, the required measurement data files. The index file is removed at the end and new indexing recommences from a clean file when the server releases the agent.
+Following a request from `queryCataloga.py`, `appCataloga.py` run the `backup_control.py` and `processing_control.py` modules.
 
-Server process reports to 
+`backup_control.py` checks the backup queue for pending backup tasks. If there is a pending backup task, it is executed by the `backup_single_host.py` module.
 
-# Repository layout
+Several backup tasks may be executed in parallel with multiple `backup_single_host.py` process, up to a limit defined in the configuration file.
+
+`backup_single_host.py` get the list of files to be copied from the index file (`DUE_BACKUP`) and copy the measurement data files to the central repository. Used for linux systems runnng indexerD daemon.
+
+At the end of each backup task, `backup_single_host.py` returns summary information about the backup.
+
+`backup_control.py` get the output from `backup_single_host.py`, create an entry in the processing task queue in the database and update the backup status information for the host.
+
+`processing_control.py` checks the processing queue for pending processing tasks. If there is a pending processing task, it is executed and metadata associated with the measurement data files are extracted and stored in the database. 
+
+## Backup task
+
+Detailed description of the backup task:
+
+* Server access the host using ssh and check the halt flag cookie file (`HALT_FLAG`)
+* If halt flag is raised, wait a random time and try again.
+* If halt flag is is not lowered after a few tries, raises an error in the backup log and stop.
+* When the halt flag is lowered, raising it back and continue the backup process.
+* Download the index file ('DUE_BACKUP') and update database
+* Copy the measurement data files to the central repository
+* Update database with the status of the copied files
+* Update file processing queue to extract metadata from copied files and update the measurement database
+* Removed the index file in the remote host
+* Releases the agent by lowering the halt flag.
+
+## Processing task
+
+Detailed description of the processing task:
+
+* Check the file processing queue for pending tasks
+* If there is a pending task, it is executed.
+* Extract metadata from the measurement data files
+* Update the measurement database with the extracted metadata
+* Update the file processing queue with the status of the processed files
+
+## Repository layout
 
 This section of the repository includes the following folders:
 
-* `automation` folder reference to legacy automation scripts cloned from a private project by Guilherme Braga <<https://github.com/gui1080>>
-* `templates` present XML definitions of used measurement templates
-* `root` present the folder structure from the zabbix server with in-place external checks used by the described templates
+* `root` present the folder structure from the appCataloga server from the root folder, with files and folder described in greater detail below.
+* `old` present older versions and drafts used for reference. This folder will be removed before the first release.
+
+## List of Modules, Scripts and Files
+
+appCataloga includes several python scripts that perform the following tasks:
+| Script module | Description |
+| --- | --- |
+| /etc/appCataloga/equipmentType.csv | Initial reference data to create the measurement database |
+| /etc/appCataloga/fileType.csv | Initial reference data to create the measurement database |
+| /etc/appCataloga/measurementUnit.csv | Initial reference data to create the measurement database |
+| /etc/appCataloga/IBGE-BR_Municipios_2020_BULKLOAD.csv | Initial reference data to create the measurement database |
+| /etc/appCataloga/IBGE-BR_UF_2020_BULKLOAD.csv | Initial reference data to create the measurement database |
+| /usr/local/bin/appCataloga/createMeasureDB.sql | Script to create and populate the measurement database |
+| /usr/local/bin/appCataloga/createProcessingDB.sql | Script to create the backup and processing task management database |
+| /usr/local/bin/appCataloga/environment.yml | Python environment description needed to run all modules. To be used with CONDA |
+| /etc/appCataloga/config.py | Constants that define appCataloga behaviour |
+| /etc/appCataloga/secret.py | Database user and password information |
+| /usr/local/bin/appCataloga/appCataloga.service | Linux service managemente script |
+| /usr/local/bin/appCataloga/appCataloga.sh | Shellscript used to start the CONDA envoronment and call appCataloga.py |
+| /usr/local/bin/appCataloga/appCataloga.py | appCataloga main module and socket server. See previously described algorithm overview. |
+| /usr/local/bin/appCataloga/db_handler.py | Database related classes and functions |
+| /usr/local/bin/appCataloga/shared.py | General shared classes and functions |
+| /usr/local/bin/appCataloga/backup_control.py | Backup control module. See previously described algorithm overview. |
+| /usr/local/bin/appCataloga/backup_single_host.py | Backup data from a single linux host running indexerD daemon. See previously presented backup task description. |
+| /usr/local/bin/appCataloga/processing_control.py | Metadata extraction module. See previously presented processing task description. |
+
+<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 # Setup
-
 
 ## Install necessary tools
 
@@ -290,7 +358,7 @@ nano /etc/appCataloga/config.py
 
 Use 'CTRL+X' to exit and 'Y' to save the changes
 
-# Install python and the required associated libraries
+### Install python environment and the required libraries
 
 Install miniconda under the /usr/local/bin/appCataloga folder
 
@@ -370,7 +438,7 @@ create the environment
 (base) conda env create -f /usr/local/bin/appCataloga/environment.yml
 ```
 
-If you wanto to test any module, you may activate the environment and run the module directly using:
+If you want to test any module, you may activate the environment and run the module directly using:
 
 ```shell
 conda activate appdata
@@ -390,61 +458,6 @@ Activate systemctl service that will keep the application running
 systemctl enable --now appCataloga.service
 ```
 
-
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
-
-# Modules, Scripts and Files
-
-appCataloga includes several python scripts that perform the following tasks:
-| Script module | Description |
-| --- | --- |
-| `appCataloga.py` | Main script that performs the following tasks: <ul><li>Reads the configuration file</li><li>Reads the index file</li><li>Reads the cookie file</li><li>Reads the list of files to be copied</li><li>Reads the list of files to be deleted</li><li>Reads the list of files to be updated</li><li>Reads the list of files to be renamed</li><li>Reads the list of files to be moved</li><li>Reads the list of files to be created</li><li>Reads the list
-| `CreateDatabase_mysqk.sql` | Script that creates the database and tables used by the application in SQL compatible with MariaDB V10.3 |
-| `CreateDatabase_sqlserver.sql` | Script that creates the database and tables used by the application in SQL compatible with Microsoft SQL Server 2019 |
-| `CRFSbinHandler.py` | Script that handles the CRFS binary files |
-| `dbHandler.py` | Script that handles the database |
-| `root/etc/appCataloga/*.csv` | Set of files containing initial reference data to be loaded into the database |
-| `root/etc/appCataloga/.credentials.py` | File containing the credentials to access the database |
-| `root/root/.reposfi` | File containing the credentials to access the repository |
-
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
-
-
-# Algorithm Overview
-
-For each monitoring station (host) registred in Zabbix, queryCataloga.py is called and uses socket to communicate with appCataloga.
-
-appCataloga receives the request from queryCataloga.py and includes the monitoring station (host) in the backup task queue.
-
-appCataloga respond to queryCataloga.py with the backup status for the monitoring station (host).
-
-For the backup server, also registred in Zabbix as a host, queryCataloga.py is called and uses socket to communicate with runBackup.py.
-
-runBackup receives the request from queryCataloga.py and check task queue for pending backup tasks. If there is a pending task, it is executed.
-
-runBackup respond to queryCataloga.py with the status of the backup queue.
-
-the backup task is executed according to the following steps:
-
-* Server access the host using ssh and check the halt flag cookie file (`HALT_FLAG`)
-* If halt flag is raised, wait a random time and try again.
-* If halt flag is is not lowered after a few tries, raises an error in the backup log and stop.
-* When the halt flag is lowered, raising it back and continue the backup process.
-* Download the index file ('DUE_BACKUP') and update database
-* Copy the measurement data files to the central repository
-* Update database with the status of the copied files
-* Update file processing queue to extract metadata from copied files and update the measurement database
-* Removed the index file in the remote host
-* Releases the agent by lowering the halt flag.
-
-the file processing task is executed according to the following steps:
-* Check the file processing queue for pending tasks
-* If there is a pending task, it is executed.
-* Extract metadata from the measurement data files
-* Update the measurement database with the extracted metadata
-* Update the file processing queue with the status of the processed files
-
-
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 # Roadmap
@@ -460,7 +473,7 @@ For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/iss
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 <!-- CONTRIBUTING -->
-## Contributing
+# Contributing
 
 Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
 
@@ -469,7 +482,7 @@ If you have a suggestion that would make this better, please fork the repo and c
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
 <!-- LICENSE -->
-## License
+# License
 
 Distributed under the GNU General Public License (GPL), version 3. See [`LICENSE.txt`](../../LICENSE).
 
