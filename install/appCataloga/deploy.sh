@@ -59,6 +59,7 @@ declare -A installFiles=(
 
 # declare an associative array with pairs of update required files to download and target folders
 declare -A updateFiles=(
+    ["config.py"]=$dataFolder
     ["appCataloga.py"]=$scriptFolder
     ["backup_control.py"]=$scriptFolder
     ["backup_single_host.py"]=$scriptFolder
