@@ -46,7 +46,6 @@ scriptFolder="usr/local/bin/appCataloga"
 
 # declare an associative array with pairs of install required files to download and target folders
 declare -A installFiles=(
-    ["config.py"]=$dataFolder
     ["secret.py"]=$dataFolder
     ["equipmentType.csv"]=$dataFolder
     ["fileType.csv"]=$dataFolder
