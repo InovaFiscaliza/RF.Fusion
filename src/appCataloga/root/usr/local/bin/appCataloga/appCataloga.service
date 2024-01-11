@@ -5,12 +5,11 @@ RequiresMountsFor=/mnt/reposfi
 
 [Service]
 Type=simple
-User=sentinela
 WorkingDirectory=/usr/local/bin/appCataloga
 ExecStart=/usr/local/bin/appCataloga/appCataloga.sh start
 ExecStop=/usr/local/bin/appCataloga/appCataloga.sh stop
 ExecReload=/usr/local/bin/appCataloga/appCataloga.sh restart
-Restart=always
+Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target

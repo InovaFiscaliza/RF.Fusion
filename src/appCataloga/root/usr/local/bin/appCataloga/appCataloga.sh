@@ -15,6 +15,9 @@ start() {
         nohup python $APP_PATH >/dev/null 2>&1 &
         echo $! >$PID_FILE
         echo "Service started."
+        while [ -f $PID_FILE ]; do
+            sleep 2
+        done
     fi
 }
 
