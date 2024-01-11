@@ -143,8 +143,8 @@ def main():
         exit()
 
     # extract JSON data from bytestring
-    start_index = response.lower().rfind(k.START_TAG)
-    end_index = response.lower().rfind(k.END_TAG)
+    start_index = response.lower().rfind(k.START_TAG.decode())
+    end_index = response.lower().rfind(k.END_TAG.decode())
 
     # extract JSON data removing the last bracket to later splice with the tail json data from this script
     json_output = response[start_index + len(k.START_TAG) : end_index]
