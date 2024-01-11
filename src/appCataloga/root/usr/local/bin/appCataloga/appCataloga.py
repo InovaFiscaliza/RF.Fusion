@@ -67,6 +67,18 @@ def handler(signum, frame, interrupt_write, log):
     log.entry(f"Signal handler called with signal {signum}")
     interrupt_write.send(b'\0')
 
+# function that stop systemd service
+def stop_service():
+    command = ( f'bash -c '
+                f'systemctl stop appCataloga.service')                
+
+    processing_task = subprocess.Popen([command],
+                                        stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.PIPE,
+                                        text=True,
+                                        shell=True)
+
+
 def backup_queue(   conn:str,
                     hostid:str,
                     host_uid:str,
@@ -269,26 +281,37 @@ def serve_forever(server_socket, interrupt_read, log):
             
 def main():
     
-    interrupt_read, interrupt_write = socket.socketpair()
-
-    # start signal handler that control a graceful shutdown 
-    signal.signal(signal.SIGINT, lambda signum, frame: handler (signum=signum, frame=frame, interrupt_write=interrupt_write, log=log))
-    signal.signal(signal.SIGTERM, lambda signum, frame: handler (signum=signum, frame=frame, interrupt_write=interrupt_write, log=log))
+    try:                # create a warning message object
+        log = sh.log(verbose=True, target_screen=True, target_file=True)
+    except Exception as e:
+        print(f"Error creating log object: {e}")
+        stop_service()
+        exit(1)
     
-    # create a warning message object
-    log = sh.log(verbose=True, target_screen=True, target_file=True)
+    try:
+        interrupt_read, interrupt_write = socket.socketpair()
 
-    log.entry(f"Server is listening on port {k.SERVER_PORT}")
+        # start signal handler that control a graceful shutdown 
+        signal.signal(signal.SIGINT, lambda signum, frame: handler (signum=signum, frame=frame, interrupt_write=interrupt_write, log=log))
+        signal.signal(signal.SIGTERM, lambda signum, frame: handler (signum=signum, frame=frame, interrupt_write=interrupt_write, log=log))
+        
+        log.entry(f"Server is listening on port {k.SERVER_PORT}")
 
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_address = ('', k.SERVER_PORT)
-    server_socket.bind(server_address)
-    server_socket.listen(k.TOTAL_CONNECTIONS)
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_address = ('', k.SERVER_PORT)
+        server_socket.bind(server_address)
+        server_socket.listen(k.TOTAL_CONNECTIONS)
 
-    serve_forever(server_socket=server_socket, interrupt_read=interrupt_read, log=log)
+        serve_forever(server_socket=server_socket, interrupt_read=interrupt_read, log=log)
+        
+        log.entry("Shutting down....")
+        server_socket.close()
+        stop_service()
     
-    log.entry("Shutting down....")
-    server_socket.close()
+    except Exception as e:
+        log.entry(f"Error: {e}")
+        stop_service()
+        exit(1)
 
 if __name__ == "__main__":
     main()
