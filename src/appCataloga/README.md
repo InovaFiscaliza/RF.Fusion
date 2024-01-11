@@ -449,7 +449,19 @@ conda activate appdata
 To test appCataloga, run the following command
 
 ```shell
-./appCataloga.sh
+/usr/local/bin/appCataloga/appCataloga.sh start
+```
+
+All relevant information about the execution will be logged in the file `/var/log/appCataloga.log`.
+```shell
+# /usr/local/bin/appCataloga/appCataloga.sh stop
+
+# cat /var/log/appCataloga.log
+20AA/MM/11 hh:mm:ss | p.155869 | Log started
+20AA/MM/11 hh:mm:ss | p.155869 | Server is listening on port 5555
+20AA/MM/11 hh:mm:st | p.155869 | Signal handler called with signal 15
+20AA/MM/11 hh:mm:st | p.155869 | Shutting down....
+
 ```
 
 Activate systemctl service that will keep the application running
