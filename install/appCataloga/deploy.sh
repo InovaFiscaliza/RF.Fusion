@@ -1,7 +1,5 @@
 #!/bin/bash
 
-#TODO: #2 Add group and user properties securing secret.py
-
 # Download files from a repository and install
 # Run as root this script as root
 
@@ -43,7 +41,9 @@ tmpFolder="/tmp/appCataloga"
 # declare folders to be used
 dataFolder="etc/appCataloga"
 scriptFolder="usr/local/bin/appCataloga"
+systemdFolder="etc/systemd/system"
 
+#TODO: #2 Add group and user properties  individually, securing secret.py
 # declare an associative array with pairs of install required files to download and target folders
 declare -A installFiles=(
     ["secret.py"]=$dataFolder
@@ -67,7 +67,7 @@ declare -A updateFiles=(
     ["shared.py"]=$scriptFolder
     ["environment.yml"]=$scriptFolder
     ["appCataloga.sh"]=$scriptFolder
-    ["appCataloga.service"]=$scriptFolder
+    ["appCataloga.service"]=$systemdFolder
 )
 
 #! Varios functions to be used later
@@ -186,6 +186,10 @@ move_files() {
     fi
 }
 
+create_service_link() {
+    ln -s /usr/local/bin/appCataloga/appCataloga.service /etc/systemd/system/appCataloga.service
+}
+
 # Function to remove tmp folder
 remove_tmp_folder() {
     # remove tmp folder and all content
@@ -283,6 +287,7 @@ case "$1" in
     create_tmp_folder
     get_files "$1"
     move_files "$1"
+    create_service_link
     remove_tmp_folder
     ;;
 -r)
