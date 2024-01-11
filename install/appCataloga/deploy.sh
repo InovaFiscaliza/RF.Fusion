@@ -68,7 +68,7 @@ declare -A updateFiles=(
     ["shared.py"]=$scriptFolder
     ["environment.yml"]=$scriptFolder
     ["appCataloga.sh"]=$scriptFolder
-    ["appCataloga.service"]=$systemdFolder
+    ["appCataloga.service"]=$scriptFolder
 )
 
 #! Varios functions to be used later
