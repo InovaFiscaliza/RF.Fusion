@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# TODO: Add user and group properties
+#TODO: #2 Add group and user properties securing secret.py
 
 # Download files from a repository and install
 # Run as root this script as root

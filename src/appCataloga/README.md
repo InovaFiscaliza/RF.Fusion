@@ -337,7 +337,7 @@ rm -f /etc/appCataloga/*.csv
 Edit the file `/etc/appCataloga/config.py` to set the database credentials and other essential parameters as described below
 
 ```shell
-nano /etc/appCataloga/config.py
+nano /etc/appCataloga/secret.py
 
     #!/usr/bin/env python
     ...
