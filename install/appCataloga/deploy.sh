@@ -200,6 +200,14 @@ prepare_service() {
 
 # Function to remove tmp folder
 remove_tmp_folder() {
+    # query user input to remove tmp folder
+    read -p "Remove $tmpFolder? [y/N] " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Please remove $tmpFolder manually afterwards."
+        exit
+    fi
+
     # remove tmp folder and all content
     if ! rm -rf "$tmpFolder"; then
         echo "Error removing $tmpFolder. Please remove it manually."
