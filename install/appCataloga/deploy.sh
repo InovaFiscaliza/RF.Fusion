@@ -298,10 +298,10 @@ link_files() {
 }
 
 update_deploy() {
-    wget -q --show-progress $deploy_tool_repo -O deploy.sh
+    wget -q --show-progress $deploy_tool_repo -O ./deploy.sh
     dos2unix -q deploy.sh
     chmod 755 deploy.sh
-    echo "Deploy script updated."
+    echo -e "\nDeploy script updated."
 }
 
 #! Main script
