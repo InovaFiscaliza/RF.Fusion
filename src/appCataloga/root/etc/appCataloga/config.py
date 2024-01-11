@@ -43,9 +43,9 @@ PYTHON_ENV = ['conda', 'activate', 'myenv']
 DAEMON_CFG_FILE="/etc/node/indexerD.cfg"
 
 # Folder configuration
-TARGET_TMP_FOLDER="/mnt/repo/tmp"
+TARGET_TMP_FOLDER="/mnt/reposfi/tmp"
 DEFAULT_VOLUME_NAME="repoSFI"
-DEFAULT_VOLUME_MOUNT="/mnt/repo"
+DEFAULT_VOLUME_MOUNT="/mnt/reposfi"
 
 # Geographic site definition
 MAXIMUM_GNSS_DEVIATION = 0.0005
