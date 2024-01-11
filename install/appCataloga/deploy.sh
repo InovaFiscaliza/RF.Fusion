@@ -298,7 +298,7 @@ link_files() {
 }
 
 update_deploy() {
-    wget $deploy_tool_repo
+    wget $deploy_tool_repo -O deploy.sh
     chmod 755 deploy.sh
 }
 
