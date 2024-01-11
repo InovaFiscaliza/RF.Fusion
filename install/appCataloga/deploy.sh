@@ -111,7 +111,7 @@ download_file() {
 
     # check if the file was downloaded, if not, exit
     if [ ! -f "${1##*/}" ]; then
-        echo "Error downloading ${1##*/}"
+        echo "Error downloading ${1##*/} from $1"
         # remove tmp folder and all content
         rm -rf "$tmpFolder"
         exit
