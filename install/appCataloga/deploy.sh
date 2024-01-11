@@ -294,6 +294,11 @@ link_files() {
     fi
 }
 
+update_deploy() {
+    wget https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh
+    chmod 755 deploy.sh
+}
+
 #! Main script
 case "$1" in
 -h)
@@ -305,6 +310,9 @@ case "$1" in
     move_files "$1"
     prepare_service "$1"
     remove_tmp_folder
+    ;;
+-du)
+    update_deploy
     ;;
 -r)
     remove_files -v
