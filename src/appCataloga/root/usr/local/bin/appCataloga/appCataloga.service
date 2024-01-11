@@ -7,9 +7,9 @@ RequiresMountsFor=/mnt/reposfi
 Type=simple
 User=sentinela
 WorkingDirectory=/usr/local/bin/appCataloga
-ExecStart=/usr/local/bin/appCataloga.sh start
-ExecStop=/usr/local/bin/appCataloga.sh stop
-ExecReload=/usr/local/bin/appCataloga.sh restart
+ExecStart=/usr/local/bin/appCataloga/appCataloga.sh start
+ExecStop=/usr/local/bin/appCataloga/appCataloga.sh stop
+ExecReload=/usr/local/bin/appCataloga/appCataloga.sh restart
 Restart=always
 
 [Install]
