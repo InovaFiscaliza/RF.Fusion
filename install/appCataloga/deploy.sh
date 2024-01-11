@@ -186,8 +186,16 @@ move_files() {
     fi
 }
 
-create_service_link() {
-    ln -s /usr/local/bin/appCataloga/appCataloga.service /etc/systemd/system/appCataloga.service
+prepare_service() {
+    if [ "$1" == "-i" ]; then
+        if ! ln -s /usr/local/bin/appCataloga/appCataloga.service /etc/systemd/system/appCataloga.service; then
+            echo "Error creating soft link for /etc/systemd/system/appCataloga.service. Do it manually."
+        fi
+
+        if ! /sbin/restorecon -v /usr/local/bin/appCataloga/appCataloga.sh; then
+            echo "Error setting SE Linux. Do it manually."
+        fi
+    fi
 }
 
 # Function to remove tmp folder
@@ -287,7 +295,7 @@ case "$1" in
     create_tmp_folder
     get_files "$1"
     move_files "$1"
-    create_service_link
+    prepare_service "$1"
     remove_tmp_folder
     ;;
 -r)
