@@ -31,6 +31,7 @@ fi
 
 # define script control variables
 repository="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/src/appCataloga/root/"
+deploy_tool_repo="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh"
 
 git_local_repo="$HOME/RF.Fusion"
 git_install_folder="install/appCataloga"
@@ -295,7 +296,7 @@ link_files() {
 }
 
 update_deploy() {
-    wget https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh
+    wget $deploy_tool_repo
     chmod 755 deploy.sh
 }
 
