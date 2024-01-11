@@ -6,7 +6,7 @@
 #! initial system requirement and argument tests
 
 # if no argument is passed, exit
-simple_help="Use -i to install, -u to update, -r to remove. Any additional argument will be ignored."
+simple_help="Use -i to install, -u to update, -r to remove, -l to link files, -du to update this deployment tool. Any additional argument will be ignored."
 
 if [ $# -eq 0 ]; then
     echo "No arguments provided. $simple_help"
@@ -14,7 +14,7 @@ if [ $# -eq 0 ]; then
 fi
 
 case "$1" in
--i | -u | -r | -h | -l) ;;
+-i | -u | -r | -h | -l | -du) ;;
 *)
     echo "Invalid argument. $simple_help"
     exit 1
@@ -78,6 +78,8 @@ print_help() {
     echo "    Install will create the target folders and include database reference data and sql scripts."
     echo "    Update will overwrite the python script files only. Database will not be affected and reference data not downloaded."
     echo "    Remove will delete all files that may be downloaded, but will not affect the database."
+    echo "    Link will create hard links from local git repository to the corresponding install locations, allowing for testing."
+    echo "    Update deploy will update this deploy script."
     echo -e "\nThe install and update procedure starts by downloading the required files from '$repository' to the '$tmpFolder' folder."
     echo "    Afterwards, the files will be moved to the target folders at: /$dataFolder and /$scriptFolder and tmp folder will be removed."
     echo "    Changes in these folders and files to be copied must be performed by editing the script."
