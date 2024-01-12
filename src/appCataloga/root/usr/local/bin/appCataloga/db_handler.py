@@ -314,7 +314,7 @@ class dbHandler():
             int: DB key to the new site
         """
 
-        # TODO: Insert site name and sit type
+        # TODO: #7 Insert site name and site type
         (db_state_id, db_county_id, db_district_id) = self._get_geographic_codes(data=data)
 
         self._connect()

@@ -39,13 +39,12 @@ if [ -e $tarball ]; then
     exit 1
 fi
 
-# TODO: Check if keys are not revoked.
-# TODO:     Revoked keys may be identified by the serial in the revoked certificate folder as per server configuration.
-# TODO:     How associate serials with the key is a problem.
-# TODO:     Initial alternative is to use `grep -rnw '/etc/openvpn/easy-rsa/pki/revoked/certs_by_serial' -e '$client'
-# TODO:     to see if the corresponding PEM file is in the revoked folder.
-# TODO:     This may be resource consuming if there is a large number of revoked certificates
-
+# TODO: #12 Check if keys are not revoked.
+#      Revoked keys may be identified by the serial in the revoked certificate folder as per server configuration.
+#      How associate serials with the key is a problem.
+#      Initial alternative is to use `grep -rnw '/etc/openvpn/easy-rsa/pki/revoked/certs_by_serial' -e '$client'
+#      to see if the corresponding PEM file is in the revoked folder.
+#      This may be resource consuming if there is a large number of revoked certificates
 
 # If key does not exist for the given entity name
 if [ ! -f "/etc/openvpn/easy-rsa/pki/private/$client.key" ]; then
@@ -60,8 +59,8 @@ if [ ! -f "/etc/openvpn/easy-rsa/pki/private/$client.key" ]; then
     else
         echo ">> Keys file created..."
     fi
-else 
-# else, if key already exists, just issue warning
+else
+    # else, if key already exists, just issue warning
     echo "Warning: Entity name already in use. New tarball will be created using existing keys"
 fi
 
@@ -79,11 +78,11 @@ if ! [ -f "/etc/openvpn/easy-rsa/pki/issued/$client.crt" ]; then
         echo ">> CRT file created..."
     fi
 else
-# else, if CRT already exists, just issue warning
+    # else, if CRT already exists, just issue warning
     echo "Warning: Existing keys already signed. New tarball will be created using existing CRT."
 fi
 
-# create temporary folder to mount the tarball content. Created within the pki to avoid the 
+# create temporary folder to mount the tarball content. Created within the pki to avoid the
 tmpdir=/etc/openvpn/easy-rsa/pki/tmp/client-tar.$$
 mkdir $tmpdir
 
@@ -99,7 +98,7 @@ sed -i 's|<server_name>|'"$server_name"'|' $conf_file
 cp /etc/openvpn/easy-rsa/pki/ca.crt $tmpdir
 cp /etc/openvpn/easy-rsa/pki/private/$client.key $tmpdir
 cp /etc/openvpn/easy-rsa/pki/issued/$client.crt $tmpdir
-tar -C $tmpdir -czvf $tarball . > /dev/null
+tar -C $tmpdir -czvf $tarball . >/dev/null
 rm -rf $tmpdir
 
 if [ $? ]; then

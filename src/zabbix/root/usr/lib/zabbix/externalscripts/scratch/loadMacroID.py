@@ -58,9 +58,9 @@ def set_host_id(host):
     macro = [{'macro' : '{$hostid}', 'value' : host['hostid']}],
     
     #udate host macro value
-# TODO: See if it is possible to update the host macro value in the same call
-# TODO: Include counters for output
-# TODO: Make this work. Extracted with little edition from notebook
+# TODO: #14 See if it is possible to update the host macro value in the same call
+# TODO: #15 Include counters for output
+# TODO: #16 Make this work. Extracted with little edition from notebook
     try:
         zbx_dict = zapi.host.update(hostid=host['hostid'], )
     except Exception as e:
@@ -70,7 +70,7 @@ def set_host_id(host):
 none = df_full.apply(set_host_id, axis=1)
 
 # labda function to set the Zabbix interfaceid macro valueor later manual processing
-# TODO: build from the following example extracted with little edition from notebook
+# TODO: #17 build from the following example extracted with little edition from notebook
 def set_interface_id(host): 
     try:
         zbx_dict = zapi.hostinterface.update(interfaceid=host['interfaceid'], dns=host['DNS'])
@@ -82,5 +82,5 @@ def set_interface_id(host):
 none = df_full.apply(set_interface_id, axis=1)
 
 # produce output
-# TODO: Make this work, AI generated code
+# TODO: #18 Make this work, AI generated code
 print(f'{{"Host Checked":{len(df_full)},"Host Updated":{len(df_full)},"Interface Checked":{len(df_full)},"Interface Updated":{len(df_full)},"Status":1,"Message":"none"}}')

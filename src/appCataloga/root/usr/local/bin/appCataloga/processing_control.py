@@ -98,7 +98,7 @@ def map_location_to_data(location:dict,
     Returns:
         dict: data dictionary
     """
-    # TODO: Insert site name
+    # TODO: #8 Insert site name
     for field_name, nominatim_semantic_lst in k.REQUIRED_ADDRESS_FIELD.items():
         data[field_name] = None
         unfilled_field = True
@@ -194,7 +194,7 @@ def main():
                 except:
                     log.error(f"Error parsing file {filename}")
 
-                # TODO: check site type processing the raw gps data and set the data dictionary used by get_site_id method
+                # TODO: #9 check site type processing the raw gps data and set the data dictionary used by get_site_id method
                 # start arranging the site data
                 data = {    "longitude":bin_data["gps"].longitude,
                             "latitude":bin_data["gps"].latitude,
@@ -221,7 +221,7 @@ def main():
                 
                 data['id_procedure'] = db_rfm.insert_procedure(bin_data["method"])
                 
-                # ! WORK ONLY FOR RFEYE######  TODO: change this to a more generic solution
+                # ! WORK ONLY FOR RFEYE######  TODO: #10 refactor to a more generic solution that works for all equipment
                 # Create a list of the equipment that may be present in the file
                 equipment_id = []
                 receiver = bin_data["hostname"]
@@ -233,7 +233,7 @@ def main():
                 
                 # insert the equipment in the database and get the ids
                 equipment_ids = db_rfm.insert_equipment(equipment_lst)
-                #TODO get only the receiver in this list
+                #TODO #11 get only the receiver in this list
                 
                 spectrum_lst = []
                 for spectrum in bin_data["spectrum"]:

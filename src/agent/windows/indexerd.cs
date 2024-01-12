@@ -1,6 +1,6 @@
 // ! Base module copied from https://learn.microsoft.com/en-us/archive/msdn-magazine/2016/october/windows-service-create-a-customizable-filesystemwatcher-windows-service
-// TODO: Include file indexing process and methods to perform task equivalent to linux version
-// TODO: Check https://github.com/javiersanzsanchez/windows-filesystemwatcher
+// TODO: #5 Include file indexing process and methods to perform task equivalent to linux version
+// TODO: #6 Check https://github.com/javiersanzsanchez/windows-filesystemwatcher
 
 /// <summary>
 /// This class defines an individual type of file and its associated

@@ -187,8 +187,8 @@ def serve_forever(server_socket, interrupt_read, log):
     running_processing = False
     serving_forever = True
 
-    # TODO: change independent running process for backup and processing to a single list of processes and use a loop to check if they are running
-    # TODO: Include methods to send terminating signals to the running processes
+    # TODO: #3 change independent running process for backup and processing to a single list of processes and use a loop to check if they are running
+    # TODO: #4 Include methods to send terminating signals to the running processes
 
     # Use ProcessPoolExecutor to limit the number of concurrent processes
     while serving_forever or not running_backup or not running_processing:

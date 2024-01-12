@@ -71,7 +71,7 @@ ARGUMENTS = {
     }
 
 def summarize_diagnostic(appCol_dict):
-    # TODO: implement this function according to the new appColeta diagnostic format
+    # TODO: #19 implement this function according to the new appColeta diagnostic format
     """Include summary in the JSON data received from appColeta"""
     # count the number of peaks in each band
     for band in appCol_dict["Answer"]["taskList"]:
