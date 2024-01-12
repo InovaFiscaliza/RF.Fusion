@@ -1,5 +1,0 @@
-{
-  "api_token": "VER PAINEL PRODUCAO",
-  "url": "http://zabbixsfi.anatel.gov.br/api_jsonrpc.php",
-  "url_servidor": "http://localhost/api_jsonrpc.php"
-}
