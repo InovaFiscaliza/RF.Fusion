@@ -140,6 +140,8 @@ def serve_client(client_socket, log):
             
             if host[0]==k.BACKUP_QUERY_TAG:
                 try:
+                    log.entry(f"Backup request received data from {client_socket.getpeername()[0]}: {data.decode()}")
+                    
                     host[0]=client_socket.getpeername() # replace list first element with client IP address
                     
                     host_statistics = backup_queue(*host) # unpack list to pass as arguments to backup_queue
@@ -154,7 +156,7 @@ def serve_client(client_socket, log):
                 receiving_data = False
 
             elif host[0]==k.CATALOG_QUERY_TAG:
-                log.entry(f"Received data from {client_socket.getpeername()[0]}. Received: {data.decode()}")
+                log.entry(f"Catalog query received data from {client_socket.getpeername()[0]}: {data.decode()}")
                 
                 response = f'{k.START_TAG}{{"Status":0,"Error":"catalog command not implemented"}}{k.END_TAG}'
                 
