@@ -33,8 +33,8 @@ class log:
     """
     
     def __init__(self,verbose=k.LOG_VERBOSE,
-                 target_screen=False, 
-                 target_file=False, 
+                 target_screen=k.LOG_TARGET_SCREEN, 
+                 target_file=k.LOG_TARGET_FILE, 
                  log_file_name = k.LOG_FILE):
         
         """Initialize log object

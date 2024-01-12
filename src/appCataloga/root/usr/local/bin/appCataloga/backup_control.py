@@ -39,7 +39,7 @@ import time
 def main():
     
     # create a warning message object
-    log = sh.log(verbose=True, target_screen=True, target_file=True)
+    log = sh.log()
     
     failed_task = { 'host_id': 0,
                     'nu_host_files': 0, 

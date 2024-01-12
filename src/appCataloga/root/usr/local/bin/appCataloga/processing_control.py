@@ -156,7 +156,7 @@ def file_move(  filename: str,
 def main():
 
     # create a warning message object
-    log = sh.log(verbose=True, target_screen=True, target_file=True)
+    log = sh.log()
 
     try:
         # create db object using databaseHandler class for the backup and processing database

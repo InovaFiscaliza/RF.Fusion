@@ -4,7 +4,8 @@ import secret as s
 
 # output processing information
 LOG_VERBOSE = True
-LOG_TARGET = 'file' # 'file' or 'screen'
+LOG_TARGET_FILE = True
+LOG_TARGET_SCREEN = True
 LOG_FILE = '/var/log/appCataloga.log'
 
 # appCataloga socket service configuration

@@ -80,7 +80,7 @@ ARGUMENTS = {
 def main():
     
     # create a warning message object
-    log = sh.log(verbose=False)
+    log = sh.log()
     
     # create an argument object
     task = sh.argument(log, ARGUMENTS)
