@@ -7,15 +7,18 @@ Provide feedback to Zabbix about the host or appCataloga service
 This script is unsecure and should only run through a secure encripted network connection
     
     Usage:
-        queryCataloga host_id=<host_id> host_uid=<host_uid> host_add=<host_add> host_port=<host_port> user=<user> passwd=<passwd> query_tag=<query_tag> timeout=<timeout>
+        queryCataloga host_id=<host_id> host_uid=<host_uid> host_add=<host_add> host_port=<host_port> "user=<user>","passwd=<passwd>","query_tag=<query_tag>","timeout=<timeout>"
     
     Parameters:
-        <query>
-        <host_id> single string with host unique id or key to be used to store reference data
-        <host_add> single string with host IP or host name known to the available DNS
-        <user> single string with user id to be used to access the host
-        <passwd> single string with user password to be used to access the host
-        
+        <host_id> Zabbix numerical primary key as definned in the macro {HOST.ID}
+        <host_uid> host name used for physical equipment identification 
+        <host_add> host IP or host name known to the available DNS
+        <host_port> port number to be used to access the host
+        <user> user id to be used to access the host
+        <passwd> user password to be used to access the host
+        <query_tag> tag to be used to identify the query type to appCataloga
+        <timeout> timeout in seconds to wait for a response from the remote appCataloga module
+    
     Returns:
         (json) =  { 'Total Files': (int),
                     'Files pending backup': (int),
