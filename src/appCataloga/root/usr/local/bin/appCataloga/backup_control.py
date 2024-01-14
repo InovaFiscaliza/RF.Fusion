@@ -79,7 +79,7 @@ def main():
                 log.entry(f"Adding backup task for {task['host_add']}.")
 
                 command = ( f'bash -c '
-                            f'"source ~/miniconda3/etc/profile.d/conda.sh; '
+                            f'"source {k.MINICONDA_PATH}; '
                             f'conda activate appdata; '
                             f'python3 {k.BACKUP_SINGLE_HOST_MODULE} '
                             f'host_id={task["host_id"]} '

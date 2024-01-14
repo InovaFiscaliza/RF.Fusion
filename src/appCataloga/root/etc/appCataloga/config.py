@@ -38,7 +38,7 @@ MAX_NOMINATIN_ATTEMPTS = 10
 
 # general configuration
 SECONDS_IN_MINUTE = 60
-PYTHON_ENV = ['conda', 'activate', 'myenv']
+MINICONDA_PATH="~/miniconda3/etc/profile.d/conda.sh"
 
 # daemon standard due for backup file
 DAEMON_CFG_FILE="/etc/node/indexerD.cfg"

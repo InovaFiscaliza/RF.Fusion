@@ -227,7 +227,7 @@ def serve_forever(server_socket, interrupt_read, log):
         if not running_backup:
             # start the backup control module as an independent process
             command = ( f'bash -c '
-                        f'"source ~/miniconda3/etc/profile.d/conda.sh; '
+                        f'"source {k.MINICONDA_PATH}; '
                         f'conda activate appdata; '
                         f'python3 {k.BACKUP_CONTROL_MODULE}"')                
 
@@ -255,7 +255,7 @@ def serve_forever(server_socket, interrupt_read, log):
         if not running_processing:
             # start the file processing control module as an independent process
             command = ( f'bash -c '
-                        f'"source ~/miniconda3/etc/profile.d/conda.sh; '
+                        f'"source {k.MINICONDA_PATH}; '
                         f'conda activate appdata; '
                         f'python3 {k.PROCESSING_CONTROL_MODULE}"')                
 
