@@ -5,7 +5,7 @@ import secret as s
 # output processing information
 LOG_VERBOSE = True
 LOG_TARGET_FILE = True
-LOG_TARGET_SCREEN = True
+LOG_TARGET_SCREEN = False # Only for debugging of individual modules. Do not use in production
 LOG_FILE = '/var/log/appCataloga.log'
 
 # appCataloga socket service configuration
