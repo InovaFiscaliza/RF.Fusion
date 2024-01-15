@@ -215,6 +215,8 @@ def main():
                         done_backup_list.append({"remote":remote_file,"local":local_file})
                         done_backup_list_remote.append(remote_file)
                         
+                        # TODO: #20 Update host status and add processing task to the database for each file transferrred successfully instead of depending on the backup control.
+                        
                         log.entry(f"File '{os.path.basename(remote_file)}' copied to '{local_file}'")
                     except Exception as e:
                         log.warning(f"Error copying '{remote_file}' from host {task.data['host_add']['value']}.{str(e)}")
