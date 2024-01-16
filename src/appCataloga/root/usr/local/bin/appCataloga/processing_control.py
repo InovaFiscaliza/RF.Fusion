@@ -191,8 +191,8 @@ def main():
                 # store reference infortion to the file        
                 try:
                     bin_data = parse_bin(filename)
-                except:
-                    log.error(f"Error parsing file {filename}")
+                except Exception as e:
+                    raise Exception(f"Error parsing file {filename}: {e}")
 
                 # TODO: #9 check site type processing the raw gps data and set the data dictionary used by get_site_id method
                 # start arranging the site data
@@ -275,19 +275,23 @@ def main():
                     db_rfm.insert_bridge_spectrum_file(  spectrum_lst,
                                                         [file_id,new_file_id])
                 
-                db_bkp.remove_processing_task(task_id=task['task_id'],
+                db_bkp.processing_task_success(task_id=task['task_id'],
                                               host_id=task['host_id'])
+                log.entry(f"Processing of {filename} finished.")
                 
-                                                
             else:
                 log.entry(f"No processing task. Waiting for {k.BKP_TASK_REQUEST_WAIT_TIME/k.SECONDS_IN_MINUTE} minutes.")
                 # wait for a task to be posted
                 time.sleep(k.BKP_TASK_REQUEST_WAIT_TIME)
+                
         except Exception as e:
+            db_bkp.processing_task_error(   task_id=task['task_id'],
+                                            host_id=task['host_id'])                            
             log.error(f"Error processing task: {e}")
             pass
+        
         except KeyboardInterrupt:
-            log.entry("Keyboard interrupt. Exiting.")
+            log.entry("Interrupt received. Exiting.")
             break
         
 if __name__ == "__main__":

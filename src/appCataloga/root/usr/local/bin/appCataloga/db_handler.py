@@ -179,7 +179,7 @@ class dbHandler():
         # if number of measurements in the database greater than the maximum required number of measurements.
         if db_site_nu_gnss_measurements < k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS:
 
-            #add point coordinates in the file to the estimator already in the database
+            # add point coordinates in the file to the estimator already in the database
             longitudeSum = longitude_raw.sum() + ( db_site_longitude * db_site_nu_gnss_measurements ) 
             latitudeSum = latitude_raw.sum() + ( db_site_latitude * db_site_nu_gnss_measurements )
             altitudeSum = altitude_raw.sum() + ( db_site_altitude * db_site_nu_gnss_measurements )
@@ -1106,36 +1106,34 @@ class dbHandler():
                 
         # connect to the database
         self._connect()
-        
+
+        query_parts = []
         if task_status['nu_host_files'] > 0:
-            host_files_operation = "+"
+            query_parts.append(f"NU_HOST_FILES = NU_HOST_FILES + {task_status['nu_host_files']}")
+        elif task_status['nu_host_files'] < 0:
+            query_parts.append(f"NU_HOST_FILES = NU_HOST_FILES - {-task_status['nu_host_files']}")
         else:
-            host_files_operation = "-"
-            task_status['nu_host_files'] = -task_status['nu_host_files']
+            pass
 
         if task_status['nu_pending_backup'] > 0:
-            pending_backup_operation = "+"
+            query_parts.append(f"NU_PENDING_BACKUP = NU_PENDING_BACKUP + {task_status['nu_pending_backup']}")
+        elif task_status['nu_pending_backup'] < 0:
+            query_parts.append(f"NU_PENDING_BACKUP = NU_PENDING_BACKUP - {-task_status['nu_pending_backup']}")
         else:
-            pending_backup_operation = "-"
-            task_status['nu_pending_backup'] = -task_status['nu_pending_backup']
-
-        if task_status['nu_backup_error'] > 0:
-            backup_error_operation = "+"
-        else:
-            backup_error_operation = "-"
-            task_status['nu_backup_error'] = -task_status['nu_backup_error']
-
-        # compose and excecute query to update the backup status in the BKPDATA database
-        query = (f"UPDATE HOST SET "
-                    f"NU_HOST_FILES = NU_HOST_FILES {host_files_operation} {task_status['nu_host_files']}, "
-                    f"NU_PENDING_BACKUP = NU_PENDING_BACKUP {pending_backup_operation} {task_status['nu_pending_backup']}, "
-                    f"DT_LAST_BACKUP = NOW(), "
-                    f"NU_BACKUP_ERROR = NU_BACKUP_ERROR {backup_error_operation} {task_status['nu_backup_error']} "
-                    f"WHERE ID_HOST = {task_status['host_id']};")
+            pass
         
+        if task_status['nu_backup_error'] > 0:
+            query_parts.append(f"NU_BACKUP_ERROR = NU_BACKUP_ERROR + {task_status['nu_backup_error']}")
+        elif task_status['nu_backup_error'] < 0:
+            query_parts.append(f"NU_BACKUP_ERROR = NU_BACKUP_ERROR - {-task_status['nu_backup_error']}")
+        else:
+            pass
+        
+        query = f"UPDATE HOST SET " + f",".join(map(str, query_parts)) + f", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {task_status['host_id']};"
+            
         self.cursor.execute(query)
         self.db_connection.commit()
-        
+                
         self._disconnect()
 
     # Method to remove a completed backup task from the database
@@ -1206,13 +1204,14 @@ class dbHandler():
         # connect to the database
         self._connect()
 
-        # build query to get the next backup task with host_uid
+        # build query to get the next backup task with host_uid and BO_ERROR_FLAG different from 1
         query = (   "SELECT PRC_TASK.ID_PRC_TASK, "
                             "PRC_TASK.FK_HOST, HOST.NA_HOST_UID, "
                             "PRC_TASK.NO_HOST_FILE_PATH, PRC_TASK.NO_HOST_FILE_NAME, "
                             "PRC_TASK.NO_SERVER_FILE_PATH, PRC_TASK.NO_SERVER_FILE_NAME "
                     "FROM PRC_TASK "
                     "JOIN HOST ON PRC_TASK.FK_HOST = HOST.ID_HOST "
+                    "WHERE PRC_TASK.BO_ERROR_FLAG <> 1 "
                     "ORDER BY PRC_TASK.DT_PRC_TASK "
                     "LIMIT 1;")
         
@@ -1236,11 +1235,33 @@ class dbHandler():
         return output
 
     # Method to update the processing status information in the database
-    def update_processing_status(self, host_id, pending_processing):
+    def _update_processing_status(self, host_id, pending_processing, processing_error):
         # connect to the database
         self._connect()
         
         # compose and excecute query to update the processing status by adding pending_processing variable to existing value in the database
+        query_parts = []
+        
+        if pending_processing > 0:
+            query_parts.append(f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {pending_processing}")
+        elif pending_processing < 0:
+            query_parts.append(f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING - {-pending_processing}")
+        else:
+            pass
+        
+        if processing_error > 0:
+            query_parts.append(f"NU_PROCESSING_ERROR = NU_PROCESSING_ERROR + {processing_error}")
+        elif processing_error < 0:
+            query_parts.append(f"NU_PROCESSING_ERROR = NU_PROCESSING_ERROR - {-processing_error}")
+        else:
+            pass
+        
+        query = f"UPDATE HOST SET " + ",".join(map(str, query_parts)) + f", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {host_id};"
+
+        self.cursor.execute(query)
+        self.db_connection.commit()
+        
+        
         query = (f"UPDATE HOST SET "
                     f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {pending_processing}, "
                     f"DT_LAST_PROCESSING = NOW() "
@@ -1251,8 +1272,8 @@ class dbHandler():
         
         self._disconnect()
 
-    # Method to remove a completed backup task from the database
-    def remove_processing_task(self,
+    # Method to remove a completed processing task from the database
+    def _remove_processing_task(self,
                                host_id:int,
                                task_id:int) -> None:
         """ Remove a completed processing task from the database
@@ -1265,7 +1286,7 @@ class dbHandler():
         # connect to the database
         self._connect()
         
-        # compose and excecute query to delete the backup task from the BKPDATA database
+        # compose and excecute query to delete the processing task from the BPDATA database
         query = (f"DELETE FROM PRC_TASK "
                  f"WHERE ID_PRC_TASK = {task_id};")
         self.cursor.execute(query)
@@ -1280,3 +1301,48 @@ class dbHandler():
         
         self._disconnect()    
 
+    # Method to set processing task as completed with success
+    def processing_task_success(self,
+                                host_id:int,
+                                task_id:int) -> None:
+        """Set processing task as completed with success
+
+        Args:
+            host_id (int): Host database primary key
+            task_id (int): Task database prumary key
+        """
+        
+        self._update_processing_status( host_id=host_id,
+                                        pending_processing=-1,
+                                        processing_error=0)
+        
+        self._remove_processing_task(host_id=host_id,
+                                     task_id=task_id)
+
+    # Method to set processing task as completed with error
+    def processing_task_error(self,
+                              host_id:int,
+                              task_id:int) -> None:
+        """Set processing task as completed with error
+
+        Args:
+            host_id (int): Host database primary key
+            task_id (int): Task database prumary key
+        """
+                
+        self._update_processing_status( host_id=host_id,
+                                        pending_processing=-1,
+                                        processing_error=1)
+
+        # connect to the database
+        self._connect()
+        
+        # compose and excecute query to set BO_ERROR_FLAG to 1 in the BPDATA database
+        query = (f"UPDATE PRC_TASK "
+                    f"SET BO_ERROR_FLAG = 1 "
+                    f"WHERE ID_PRC_TASK = {task_id};")
+        
+        self.cursor.execute(query)
+        self.db_connection.commit()
+        
+        self._disconnect()    
