@@ -271,6 +271,7 @@ def main():
                     file_data = file_move(  filename=task['server file'],
                                             path=task['server path'],
                                             new_path=new_path)
+                    
                     new_file_id = db_rfm.insert_file(**file_data)
                     db_rfm.insert_bridge_spectrum_file(  spectrum_lst,
                                                         [file_id,new_file_id])
@@ -285,8 +286,15 @@ def main():
                 time.sleep(k.BKP_TASK_REQUEST_WAIT_TIME)
                 
         except Exception as e:
+            file_data = file_move(  filename=task['server file'],
+                                    path=task['server path'],
+                                    new_path=k.TRASH_FOLDER)
+            
+            task['server path'] = file_data['path']
+            
             db_bkp.processing_task_error(   task_id=task['task_id'],
-                                            host_id=task['host_id'])                            
+                                            host_id=task['host_id'],)
+            
             log.error(f"Error processing task: {e}")
             pass
         

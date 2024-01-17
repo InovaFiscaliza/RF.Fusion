@@ -38,13 +38,14 @@ MAX_NOMINATIN_ATTEMPTS = 10
 
 # general configuration
 SECONDS_IN_MINUTE = 60
-MINICONDA_PATH="~/miniconda3/etc/profile.d/conda.sh"
+MINICONDA_PATH="/usr/local/bin/appCataloga/miniconda3/etc/profile.d/conda.sh"
 
 # daemon standard due for backup file
 DAEMON_CFG_FILE="/etc/node/indexerD.cfg"
 
 # Folder configuration
 TARGET_TMP_FOLDER="/mnt/reposfi/tmp"
+TRASH_FOLDER="/mnt/reposfi/trash"
 DEFAULT_VOLUME_NAME="repoSFI"
 DEFAULT_VOLUME_MOUNT="/mnt/reposfi"
 

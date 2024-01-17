@@ -1200,7 +1200,19 @@ class dbHandler():
         self._disconnect()
 
     # Method to get next host in the list for processing
-    def next_processing_task(self):        
+    def next_processing_task(self) -> dict:
+        """This method gets the next host in the list for data processing
+
+        Returns:
+            dict: "task_id": int(task[0]),
+                  "host_id": int(task[1]),
+                  "host_uid": str(task[2]),
+                  "host path": str(task[3]),
+                  "host file": str(task[4]),
+                  "server path": str(task[5]),
+                  "server file": str(task[6])}
+        """
+        
         # connect to the database
         self._connect()
 
@@ -1271,17 +1283,21 @@ class dbHandler():
         self.db_connection.commit()
         
         self._disconnect()
-
-    # Method to remove a completed processing task from the database
-    def _remove_processing_task(self,
-                               host_id:int,
-                               task_id:int) -> None:
-        """ Remove a completed processing task from the database
+        
+    # Method to set processing task as completed with success
+    def processing_task_success(self,
+                                host_id:int,
+                                task_id:int) -> None:
+        """Set processing task as completed with success
 
         Args:
             host_id (int): Host database primary key
             task_id (int): Task database prumary key
         """
+        
+        self._update_processing_status( host_id=host_id,
+                                        pending_processing=-1,
+                                        processing_error=0)
         
         # connect to the database
         self._connect()
@@ -1301,46 +1317,29 @@ class dbHandler():
         
         self._disconnect()    
 
-    # Method to set processing task as completed with success
-    def processing_task_success(self,
-                                host_id:int,
-                                task_id:int) -> None:
-        """Set processing task as completed with success
-
-        Args:
-            host_id (int): Host database primary key
-            task_id (int): Task database prumary key
-        """
-        
-        self._update_processing_status( host_id=host_id,
-                                        pending_processing=-1,
-                                        processing_error=0)
-        
-        self._remove_processing_task(host_id=host_id,
-                                     task_id=task_id)
-
     # Method to set processing task as completed with error
     def processing_task_error(self,
-                              host_id:int,
-                              task_id:int) -> None:
+                              task:dict) -> None:
         """Set processing task as completed with error
 
         Args:
-            host_id (int): Host database primary key
-            task_id (int): Task database prumary key
+            task (dict): Dictionary including the following keys:
+                {"host_id": host_id,
+                 "task_id": task_id,
+                 "server path": server_path}
         """
                 
-        self._update_processing_status( host_id=host_id,
+        self._update_processing_status( host_id=task["host_id"],
                                         pending_processing=-1,
                                         processing_error=1)
-
         # connect to the database
         self._connect()
         
-        # compose and excecute query to set BO_ERROR_FLAG to 1 in the BPDATA database
+        # compose and excecute query to set BO_ERROR_FLAG to 1 and server path in the BPDATA database
         query = (f"UPDATE PRC_TASK "
-                    f"SET BO_ERROR_FLAG = 1 "
-                    f"WHERE ID_PRC_TASK = {task_id};")
+                    f"SET BO_ERROR_FLAG = 1, "
+                    f"NO_SERVER_FILE_PATH = '{task['server path']}' "
+                    f"WHERE ID_PRC_TASK = {task['task_id']};")
         
         self.cursor.execute(query)
         self.db_connection.commit()
