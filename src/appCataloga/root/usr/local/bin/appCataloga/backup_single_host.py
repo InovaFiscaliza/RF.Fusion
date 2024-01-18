@@ -78,6 +78,7 @@ ARGUMENTS = {
     }
 
 def main():
+    # TODO: #21 Include database update for backup task, including status and message fields to facilitate debugging
     
     # create a warning message object
     log = sh.log()
