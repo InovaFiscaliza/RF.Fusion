@@ -1312,6 +1312,7 @@ class dbHandler():
                 {"host_id": host_id,
                  "task_id": task_id,
                  "server path": server_path}
+                 "message": message}
         """
                 
         self._update_processing_status( host_id=task["host_id"],
@@ -1322,8 +1323,9 @@ class dbHandler():
         
         # compose and excecute query to set BO_ERROR_FLAG to 1 and server path in the BPDATA database
         query = (f"UPDATE PRC_TASK "
-                    f"SET BO_ERROR_FLAG = -1, "
-                    f"NA_SERVER_FILE_PATH = '{task['server path']}' "
+                    f"SET NU_STATUS = -1, "
+                    f"NA_SERVER_FILE_PATH = '{task['server path']}', "
+                    f"NA_ERROR_MESSAGE = {task['message']} "
                     f"WHERE ID_PRC_TASK = {task['task_id']};")
         
         self.cursor.execute(query)

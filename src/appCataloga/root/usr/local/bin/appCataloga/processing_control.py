@@ -156,7 +156,7 @@ def file_move(  filename: str,
 def main():
 
     # create a warning message object
-    log = sh.log()
+    log = sh.log(target_screen=True)
 
     try:
         # create db object using databaseHandler class for the backup and processing database
@@ -293,14 +293,18 @@ def main():
                 
                 task['server path'] = file_data['path']
                 
-                log.error(f"Error processing task: {e}")
+                message = f"Error processing task: {e}"
+                
+                log.error(message)
             except Exception as second_e:
-                log.error(f"Error moving file to trash: First: {e}; raised another exception: {second_e}")
+                message = f"Error moving file to trash: First: {e}; raised another exception: {second_e}"
+                log.error(message)
                 pass
         
             try:
-                db_bkp.processing_task_error(   task_id=task['task_id'],
-                                            host_id=task['host_id'],)
+                task['message'] = message
+                
+                db_bkp.processing_task_error(task=task)
             except Exception as second_e:
                 log.error(f"Error removing processing task: First: {e}; raised another exception: {second_e}")
                 
