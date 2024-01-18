@@ -1223,7 +1223,7 @@ class dbHandler():
                             "PRC_TASK.NA_SERVER_FILE_PATH, PRC_TASK.NA_SERVER_FILE_NAME "
                     "FROM PRC_TASK "
                     "JOIN HOST ON PRC_TASK.FK_HOST = HOST.ID_HOST "
-                    "WHERE PRC_TASK.BO_ERROR_FLAG <> 1 "
+                    "WHERE PRC_TASK.NU_STATUS = 0 "
                     "ORDER BY PRC_TASK.DT_PRC_TASK "
                     "LIMIT 1;")
         
@@ -1321,7 +1321,7 @@ class dbHandler():
         # connect to the database
         self._connect()
         
-        # compose and excecute query to set BO_ERROR_FLAG to 1 and server path in the BPDATA database
+        # compose and excecute query to set NU_STATUS to -1 (Error) and server path in the BPDATA database
         query = (f"UPDATE PRC_TASK "
                     f"SET NU_STATUS = -1, "
                     f"NA_SERVER_FILE_PATH = '{task['server path']}', "
