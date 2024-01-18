@@ -1048,7 +1048,7 @@ class dbHandler():
         
         # compose query to set the backup task in the BPDATA database
         query = (f"INSERT INTO BKP_TASK "
-                 f"(FK_HOST, DT_BKP_TASK, NO_HOST_ADDRESS,NO_HOST_PORT,NO_HOST_USER,NO_HOST_PASSWORD) "
+                 f"(FK_HOST, DT_BKP_TASK, NA_HOST_ADDRESS,NA_HOST_PORT,NA_HOST_USER,NA_HOST_PASSWORD) "
                  f"VALUES "
                  f"('{hostid}', NOW(), '{host_addr}', '{host_port}', '{host_user}', '{host_passwd}');")
 
@@ -1069,7 +1069,7 @@ class dbHandler():
         self._connect()
 
         # build query to get the next backup task
-        query = (   "SELECT ID_BKP_TASK, FK_HOST, NO_HOST_ADDRESS, NO_HOST_PORT, NO_HOST_USER, NO_HOST_PASSWORD "
+        query = (   "SELECT ID_BKP_TASK, FK_HOST, NA_HOST_ADDRESS, NA_HOST_PORT, NA_HOST_USER, NA_HOST_PASSWORD "
                     "FROM BKP_TASK "
                     "ORDER BY DT_BKP_TASK "
                     "LIMIT 1;")
@@ -1190,7 +1190,7 @@ class dbHandler():
                     
         # compose query to set the process task in the database using executemany method
         query = (f"INSERT INTO PRC_TASK "
-                    f"(FK_HOST, NO_HOST_FILE_PATH, NO_HOST_FILE_NAME, NO_SERVER_FILE_PATH, NO_SERVER_FILE_NAME, DT_PRC_TASK) "
+                    f"(FK_HOST, NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, DT_PRC_TASK) "
                     f"VALUES "
                     f"(%s, %s, %s, %s, %s, NOW());")
 
@@ -1219,8 +1219,8 @@ class dbHandler():
         # build query to get the next backup task with host_uid and BO_ERROR_FLAG different from 1
         query = (   "SELECT PRC_TASK.ID_PRC_TASK, "
                             "PRC_TASK.FK_HOST, HOST.NA_HOST_UID, "
-                            "PRC_TASK.NO_HOST_FILE_PATH, PRC_TASK.NO_HOST_FILE_NAME, "
-                            "PRC_TASK.NO_SERVER_FILE_PATH, PRC_TASK.NO_SERVER_FILE_NAME "
+                            "PRC_TASK.NA_HOST_FILE_PATH, PRC_TASK.NA_HOST_FILE_NAME, "
+                            "PRC_TASK.NA_SERVER_FILE_PATH, PRC_TASK.NA_SERVER_FILE_NAME "
                     "FROM PRC_TASK "
                     "JOIN HOST ON PRC_TASK.FK_HOST = HOST.ID_HOST "
                     "WHERE PRC_TASK.BO_ERROR_FLAG <> 1 "
@@ -1323,7 +1323,7 @@ class dbHandler():
         # compose and excecute query to set BO_ERROR_FLAG to 1 and server path in the BPDATA database
         query = (f"UPDATE PRC_TASK "
                     f"SET BO_ERROR_FLAG = -1, "
-                    f"NO_SERVER_FILE_PATH = '{task['server path']}' "
+                    f"NA_SERVER_FILE_PATH = '{task['server path']}' "
                     f"WHERE ID_PRC_TASK = {task['task_id']};")
         
         self.cursor.execute(query)

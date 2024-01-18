@@ -23,10 +23,10 @@ CREATE TABLE BKP_TASK (
     ID_BKP_TASK INT NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT 'Primary Key to backup task table',
     FK_HOST INT COMMENT 'Foreign key to host table',
     DT_BKP_TASK DATETIME COMMENT 'Date and time of the backup task was requested',
-    NO_HOST_ADDRESS VARCHAR(50) COMMENT 'IP address or hostname',
-    NO_HOST_PORT INT COMMENT 'Port to access the host',
-    NO_HOST_USER VARCHAR(50) COMMENT 'Username to access the host',
-    NO_HOST_PASSWORD VARCHAR(50) COMMENT 'Password to access the host',
+    NA_HOST_ADDRESS VARCHAR(50) COMMENT 'IP address or hostname',
+    NA_HOST_PORT INT COMMENT 'Port to access the host',
+    NA_HOST_USER VARCHAR(50) COMMENT 'Username to access the host',
+    NA_HOST_PASSWORD VARCHAR(50) COMMENT 'Password to access the host',
     NU_STATUS TINYINT DEFAULT 0 COMMENT 'Status flag: 0=Not executed; -1=Executed with error; 1=In progress; 2=Executed successfully',
     CONSTRAINT FK_BKP_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
 );
@@ -35,10 +35,10 @@ CREATE TABLE BKP_TASK (
 CREATE TABLE PRC_TASK (
     ID_PRC_TASK INT NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT 'Primary Key to processing task table',
     FK_HOST INT COMMENT 'Foreign key to host table',
-    NO_HOST_FILE_PATH VARCHAR(3000) COMMENT 'Path to the file in the host',
-    NO_HOST_FILE_NAME VARCHAR(100) COMMENT 'Name of the file in the host',
-    NO_SERVER_FILE_PATH VARCHAR(3000) COMMENT 'Path to the file in the server',
-    NO_SERVER_FILE_NAME VARCHAR(100) COMMENT 'Name of the file in the server',
+    NA_HOST_FILE_PATH VARCHAR(3000) COMMENT 'Path to the file in the host',
+    NA_HOST_FILE_NAME VARCHAR(100) COMMENT 'Name of the file in the host',
+    NA_SERVER_FILE_PATH VARCHAR(3000) COMMENT 'Path to the file in the server',
+    NA_SERVER_FILE_NAME VARCHAR(100) COMMENT 'Name of the file in the server',
     DT_PRC_TASK DATETIME COMMENT 'Date and time of the file processing',
     NU_STATUS TINYINT DEFAULT 0 COMMENT 'Status flag: 0=Not executed; -1=Executed with error',
     CONSTRAINT FK_PRC_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
