@@ -286,16 +286,27 @@ def main():
                 time.sleep(k.BKP_TASK_REQUEST_WAIT_TIME)
                 
         except Exception as e:
-            file_data = file_move(  filename=task['server file'],
+            try:
+                file_data = file_move(  filename=task['server file'],
                                     path=task['server path'],
                                     new_path=k.TRASH_FOLDER)
-            
-            task['server path'] = file_data['path']
-            
-            db_bkp.processing_task_error(   task_id=task['task_id'],
+                
+                task['server path'] = file_data['path']
+                
+                log.error(f"Error processing task: {e}")
+            except Exception as second_e:
+                log.error(f"Error moving file to trash: First: {e}; raised another exception: {second_e}")
+                pass
+        
+            try:
+                db_bkp.processing_task_error(   task_id=task['task_id'],
                                             host_id=task['host_id'],)
+            except Exception as second_e:
+                log.error(f"Error removing processing task: First: {e}; raised another exception: {second_e}")
+                
+                # use keyboard interrupt to exit the program and avoid infinite loop
+                raise KeyboardInterrupt
             
-            log.error(f"Error processing task: {e}")
             pass
         
         except KeyboardInterrupt:
