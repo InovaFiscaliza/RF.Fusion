@@ -1216,7 +1216,7 @@ class dbHandler():
         # connect to the database
         self._connect()
 
-        # build query to get the next backup task with host_uid and BO_ERROR_FLAG different from 1
+        # build query to get the next backup task with host_uid and NU_STATUS different = 0 (not processed)
         query = (   "SELECT PRC_TASK.ID_PRC_TASK, "
                             "PRC_TASK.FK_HOST, HOST.NA_HOST_UID, "
                             "PRC_TASK.NA_HOST_FILE_PATH, PRC_TASK.NA_HOST_FILE_NAME, "
