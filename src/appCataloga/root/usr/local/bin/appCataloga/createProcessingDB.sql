@@ -27,6 +27,7 @@ CREATE TABLE BKP_TASK (
     NO_HOST_PORT INT COMMENT 'Port to access the host',
     NO_HOST_USER VARCHAR(50) COMMENT 'Username to access the host',
     NO_HOST_PASSWORD VARCHAR(50) COMMENT 'Password to access the host',
+    NU_STATUS TINYINT DEFAULT 0 COMMENT 'Status flag: 0=Not executed; -1=Executed with error; 1=In progress; 2=Executed successfully',
     CONSTRAINT FK_BKP_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
 );
 
@@ -39,6 +40,6 @@ CREATE TABLE PRC_TASK (
     NO_SERVER_FILE_PATH VARCHAR(3000) COMMENT 'Path to the file in the server',
     NO_SERVER_FILE_NAME VARCHAR(100) COMMENT 'Name of the file in the server',
     DT_PRC_TASK DATETIME COMMENT 'Date and time of the file processing',
-    BO_ERROR_FLAG BOOLEAN COMMENT 'Flag to indicate if the file processing had an error',
+    NU_STATUS TINYINT DEFAULT 0 COMMENT 'Status flag: 0=Not executed; -1=Executed with error',
     CONSTRAINT FK_PRC_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
 );

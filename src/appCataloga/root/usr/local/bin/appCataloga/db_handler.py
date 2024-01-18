@@ -1232,13 +1232,13 @@ class dbHandler():
         task = self.cursor.fetchone()
         
         try:
-            output = {"task_id": int(task[0]),
-                    "host_id": int(task[1]),
-                    "host_uid": str(task[2]),
-                    "host path": str(task[3]),
-                    "host file": str(task[4]),
-                    "server path": str(task[5]),
-                    "server file": str(task[6])}
+            output = {  "task_id": int(task[0]),
+                        "host_id": int(task[1]),
+                        "host_uid": str(task[2]),
+                        "host path": str(task[3]),
+                        "host file": str(task[4]),
+                        "server path": str(task[5]),
+                        "server file": str(task[6])}
         except:
             output = False
         
@@ -1273,15 +1273,6 @@ class dbHandler():
         self.cursor.execute(query)
         self.db_connection.commit()
         
-        
-        query = (f"UPDATE HOST SET "
-                    f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {pending_processing}, "
-                    f"DT_LAST_PROCESSING = NOW() "
-                    f"WHERE ID_HOST = {host_id};")
-        
-        self.cursor.execute(query)
-        self.db_connection.commit()
-        
         self._disconnect()
         
     # Method to set processing task as completed with success
@@ -1307,12 +1298,6 @@ class dbHandler():
                  f"WHERE ID_PRC_TASK = {task_id};")
         self.cursor.execute(query)
 
-        # update database statistics for the host
-        query = (f"UPDATE HOST "
-                    f"SET NU_PENDING_PROCESSING = NU_PENDING_PROCESSING - 1, "
-                    f"DT_LAST_PROCESSING = NOW() "
-                    f"WHERE ID_HOST = '{host_id}';")
-        self.cursor.execute(query)
         self.db_connection.commit()
         
         self._disconnect()    
@@ -1337,7 +1322,7 @@ class dbHandler():
         
         # compose and excecute query to set BO_ERROR_FLAG to 1 and server path in the BPDATA database
         query = (f"UPDATE PRC_TASK "
-                    f"SET BO_ERROR_FLAG = 1, "
+                    f"SET BO_ERROR_FLAG = -1, "
                     f"NO_SERVER_FILE_PATH = '{task['server path']}' "
                     f"WHERE ID_PRC_TASK = {task['task_id']};")
         
