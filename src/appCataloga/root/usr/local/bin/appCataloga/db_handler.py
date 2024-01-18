@@ -5,10 +5,6 @@
 import mysql.connector
 import os
 
-import sys
-import time
-import numpy as np
-
 from typing import List, Union
 
 # Import file with constants used in this code that are relevant to the operation
@@ -1321,11 +1317,12 @@ class dbHandler():
         # connect to the database
         self._connect()
         
+        message = task["message"].replace("'","''")
         # compose and excecute query to set NU_STATUS to -1 (Error) and server path in the BPDATA database
         query = (f"UPDATE PRC_TASK "
                     f"SET NU_STATUS = -1, "
                     f"NA_SERVER_FILE_PATH = '{task['server path']}', "
-                    f"NA_ERROR_MESSAGE = {task['message']} "
+                    f"NA_MESSAGE = '{message}' "
                     f"WHERE ID_PRC_TASK = {task['task_id']};")
         
         self.cursor.execute(query)

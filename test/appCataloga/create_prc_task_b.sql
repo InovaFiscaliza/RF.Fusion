@@ -15,3 +15,9 @@ LOAD DATA INFILE '/etc/appCataloga/f2073b.csv'
 
 -- insert column in PRC_TASK TABLE
 ALTER TABLE PRC_TASK ADD COLUMN NA_MESSAGE TEXT COMMENT 'Error message and other information';
+
+-- reset ERRORS
+UPDATE PRC_TASK SET 
+    NU_STATUS = 0, 
+    NA_MESSAGE = ''
+    WHERE FK_HOST = 10364;

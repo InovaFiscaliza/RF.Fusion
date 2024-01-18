@@ -45,7 +45,7 @@ DAEMON_CFG_FILE="/etc/node/indexerD.cfg"
 
 # Folder configuration
 TARGET_TMP_FOLDER="/mnt/reposfi/tmp"
-TRASH_FOLDER="/mnt/reposfi/trash"
+TRASH_FOLDER="trash"
 DEFAULT_VOLUME_NAME="repoSFI"
 DEFAULT_VOLUME_MOUNT="/mnt/reposfi"
 

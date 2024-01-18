@@ -287,6 +287,7 @@ def main():
                 
         except Exception as e:
             try:
+                # TODO FIX path to trash
                 file_data = file_move(  filename=task['server file'],
                                     path=task['server path'],
                                     new_path=k.TRASH_FOLDER)
@@ -308,14 +309,15 @@ def main():
             except Exception as second_e:
                 log.error(f"Error removing processing task: First: {e}; raised another exception: {second_e}")
                 
-                # use keyboard interrupt to exit the program and avoid infinite loop
-                raise KeyboardInterrupt
+                # raise a fatal error excpetion to stop the program
+                raise Exception(f"Exception: {e}; raised another exception: {second_e}")
             
             pass
         
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, SystemExit) as e:
             log.entry("Interrupt received. Exiting.")
             break
+            
         
 if __name__ == "__main__":
     main()
