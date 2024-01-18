@@ -28,6 +28,7 @@ CREATE TABLE BKP_TASK (
     NA_HOST_USER VARCHAR(50) COMMENT 'Username to access the host',
     NA_HOST_PASSWORD VARCHAR(50) COMMENT 'Password to access the host',
     NU_STATUS TINYINT DEFAULT 0 COMMENT 'Status flag: 0=Not executed; -1=Executed with error; 1=In progress; 2=Executed successfully',
+    NA_MESSAGE TEXT COMMENT 'Error message and other information',
     CONSTRAINT FK_BKP_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
 );
 
@@ -41,5 +42,6 @@ CREATE TABLE PRC_TASK (
     NA_SERVER_FILE_NAME VARCHAR(100) COMMENT 'Name of the file in the server',
     DT_PRC_TASK DATETIME COMMENT 'Date and time of the file processing',
     NU_STATUS TINYINT DEFAULT 0 COMMENT 'Status flag: 0=Not executed; -1=Executed with error',
+    NA_MESSAGE TEXT COMMENT 'Error message and other information',
     CONSTRAINT FK_PRC_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
 );
