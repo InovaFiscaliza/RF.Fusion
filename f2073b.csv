@@ -1,4 +1,4 @@
-FK_HOST;NO_HOST_FILE_PATH;NO_HOST_FILE_NAME;NO_SERVER_FILE_PATH;NO_SERVER_FILE_NAME;DT_PRC_TASK
+﻿FK_HOST;NO_HOST_FILE_PATH;NO_HOST_FILE_NAME;NO_SERVER_FILE_PATH;NO_SERVER_FILE_NAME;DT_PRC_TASK
 10364;/root/ref;rfeye002073_230317_T111345.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_230317_T111345.bin;2024-01-13 00:00:00
 10364;/root/ref;rfeye002073_230319_T225800.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_230319_T225800.bin;2024-01-13 00:00:00
 10364;/root/ref;rfeye002073_230324_T025800.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_230324_T025800.bin;2024-01-13 00:00:00
@@ -6,7 +6,7 @@ FK_HOST;NO_HOST_FILE_PATH;NO_HOST_FILE_NAME;NO_SERVER_FILE_PATH;NO_SERVER_FILE_N
 10364;/root/ref;rfeye002073_230329_T022800.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_230329_T022800.bin;2024-01-13 00:00:00
 10364;/root/ref;rfeye002073_230331_T142000.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_230331_T142000.bin;2024-01-13 00:00:00
 10364;/root/ref;rfeye002073_230403_T020500.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_230403_T020500.bin;2024-01-13 00:00:00
-10364;/root/ref;rfeye002073_230405_T135000.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_230403_T020500.bin;2024-01-13 00:00:00
+10364;/root/ref;rfeye002073_230405_T135000.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_230405_T135000.bin;2024-01-13 00:00:00
 10364;/root/ref;rfeye002073_230408_T013500.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_230408_T013500.bin;2024-01-13 00:00:00
 10364;/root/ref;rfeye002073_230410_T095726.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_230410_T095726.bin;2024-01-13 00:00:00
 10364;/root/ref;rfeye002073_230413_T100000.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_230413_T100000.bin;2024-01-13 00:00:00
@@ -27,6 +27,6 @@ FK_HOST;NO_HOST_FILE_PATH;NO_HOST_FILE_NAME;NO_SERVER_FILE_PATH;NO_SERVER_FILE_N
 10364;/root/ref;rfeye002073_230601_T130000.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_230601_T130000.bin;2024-01-13 00:00:00
 10364;/root/ref;rfeye002073_231128_T162112.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_231128_T162112.bin;2024-01-13 00:00:00
 10364;/root/ref;rfeye002073_240112_T192500.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_240112_T192500.bin;2024-01-13 00:00:00
+10364;/root/ref;rfeye002073_691231_T210057.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_691231_T210057.bin;2024-01-13 00:00:00
 10364;/root/ref;rfeye002073_691231_T210047.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_691231_T210047.bin;2024-01-13 00:00:00
 10364;/root/ref;rfeye002073_691231_T210048.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_691231_T210048.bin;2024-01-13 00:00:00
-10364;/root/ref;rfeye002073_691231_T210057.bin;/mnt/reposfi/tmp/rfeye002073.anatel.gov.br/;rfeye002073_691231_T210057.bin;2024-01-13 00:00:00
