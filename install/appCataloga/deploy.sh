@@ -42,7 +42,7 @@ tmpFolder="/tmp/appCataloga"
 # declare folders to be used
 dataFolder="etc/appCataloga"
 scriptFolder="usr/local/bin/appCataloga"
-systemdFolder="etc/systemd/system"
+# systemdFolder="etc/systemd/system" To be used for future systemd service files
 
 #TODO: #2 Add group and user properties  individually, securing secret.py
 # declare an associative array with pairs of install required files to download and target folders
@@ -190,14 +190,12 @@ move_files() {
 }
 
 prepare_service() {
-    if [ "$1" == "-i" ]; then
-        if ! ln -s /usr/local/bin/appCataloga/appCataloga.service /etc/systemd/system/appCataloga.service; then
-            echo "Error creating soft link for /etc/systemd/system/appCataloga.service. Do it manually."
-        fi
+    if ! ln -s /usr/local/bin/appCataloga/appCataloga.service /etc/systemd/system/appCataloga.service; then
+        echo "Error creating soft link for /etc/systemd/system/appCataloga.service. Do it manually."
+    fi
 
-        if ! /sbin/restorecon -v /usr/local/bin/appCataloga/appCataloga.sh; then
-            echo "Error setting SE Linux. Do it manually."
-        fi
+    if ! /sbin/restorecon -v /usr/local/bin/appCataloga/appCataloga.sh; then
+        echo "Error setting SE Linux. Do it manually."
     fi
 }
 
@@ -313,7 +311,7 @@ case "$1" in
     create_tmp_folder
     get_files "$1"
     move_files "$1"
-    prepare_service "$1"
+    prepare_service
     remove_tmp_folder
     ;;
 -du)
