@@ -334,26 +334,15 @@ After the database is created you may remove the original csv files to free up s
 rm -f /etc/appCataloga/*.csv
 ```
 
-Edit the file `/etc/appCataloga/config.py` to set the database credentials and other essential parameters as described below
+Edit the file `/etc/appCataloga/secret.py` to set the database credentials and other essential parameters as described below
 
 ```shell
 nano /etc/appCataloga/secret.py
 
-    #!/usr/bin/env python
-    ...
-    # Database configuration
-    SERVER_NAME = 'localhost'
-    ...
-    DB_USER_NAME = 'appCataloga'
-    DB_PASSWORD = '<app_pass>'
-    
-    # backup module configuration
-    BACKUP_CONTROL_MODULE = "/usr/local/bin/appCataloga/backup_control.py"
-    BACKUP_SINGLE_HOST_MODULE = "/usr/local/bin/appCataloga/backup_single_host.py"
-    ...
-    # file processing module configuration
-    PROCESSING_CONTROL_MODULE = "/usr/local/bin/appCataloga/processing_control.py"
-    ...
+#!/usr/bin/env python
+"""	Secret used in the appCataloga scripts """
+DB_USER_NAME = 'appCataloga' 
+DB_PASSWORD = '<app_pass>'
 ```
 
 Use 'CTRL+X' to exit and 'Y' to save the changes
@@ -453,6 +442,7 @@ To test appCataloga, run the following command
 ```
 
 All relevant information about the execution will be logged in the file `/var/log/appCataloga.log`.
+
 ```shell
 # /usr/local/bin/appCataloga/appCataloga.sh stop
 
