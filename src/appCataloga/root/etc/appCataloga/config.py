@@ -44,10 +44,10 @@ MINICONDA_PATH="/usr/local/bin/appCataloga/miniconda3/etc/profile.d/conda.sh"
 DAEMON_CFG_FILE="/etc/node/indexerD.cfg"
 
 # Folder configuration
-TARGET_TMP_FOLDER="/mnt/reposfi/tmp"
+TMP_FOLDER="tmp"
 TRASH_FOLDER="trash"
-DEFAULT_VOLUME_NAME="repoSFI"
-DEFAULT_VOLUME_MOUNT="/mnt/reposfi"
+REPO_FOLDER="/mnt/reposfi"
+REPO_UID="repoSFI"
 
 # Geographic site definition
 MAXIMUM_GNSS_DEVIATION = 0.0005

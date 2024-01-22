@@ -136,13 +136,13 @@ def file_move(  filename: str,
     """
 
     if not volume:
-        volume = k.DEFAULT_VOLUME_NAME
+        volume = k.REPO_UID
         
     # Construct the source file path
     source_file = f"{path}/{filename}"
 
     # Construct the target file path
-    target_file = f"{k.DEFAULT_VOLUME_MOUNT}/{new_path}/{filename}"
+    target_file = f"{k.REPO_FOLDER}/{new_path}/{filename}"
     
     # Move the file to the new path
     try:
@@ -264,7 +264,7 @@ def main():
                 db_rfm.insert_bridge_spectrum_equipment(spectrum_lst)
 
                 # test if task['server path'] includes the "tmp" directory and move the file to the "data" directory
-                if task['server path'].find(k.TARGET_TMP_FOLDER) >= 0:
+                if task['server path'].find(f"{k.REPO_FOLDER}/{k.TMP_FOLDER}") >= 0:
                     new_path = db_rfm.build_path(site_id=data['id_site'])
                     new_path = f"{spectrum.stop_dateidx.year}/{new_path}"
                     
