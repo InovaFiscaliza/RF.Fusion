@@ -1,6 +1,22 @@
 #!/usr/bin/env python
-"""	Constants used in the appCataloga scripts """
-import secret as s
+"""	Constants used in the appCataloga scripts
+
+    Require additional /etc/appCataloga/.secret file with the following content:
+    
+            DB_USER_NAME = 'appCataloga' 
+            DB_PASSWORD = '<app_pass>'
+"""
+import importlib.util 
+
+SECRET_FILE = "/etc/appCataloga/.secret"
+
+secret_file = importlib.util.spec_from_file_location(
+                name="secret",  # note that ".test" is not a valid module name
+                location=SECRET_FILE,
+                loader=importlib.machinery.SourceFileLoader("secret", SECRET_FILE))
+
+secret = importlib.util.module_from_spec(secret_file)
+secret_file.loader.exec_module(secret)
 
 # output processing information
 LOG_VERBOSE = True
@@ -20,8 +36,8 @@ END_TAG = "</json>"
 SERVER_NAME = r'localhost'
 RFM_DATABASE_NAME = 'RFDATA'
 BKP_DATABASE_NAME = 'BPDATA'
-DB_USER_NAME = s.DB_USER_NAME
-DB_PASSWORD = s.DB_PASSWORD
+DB_USER_NAME = secret.DB_USER_NAME
+DB_PASSWORD = secret.DB_PASSWORD
 
 # backup module configuration
 BACKUP_CONTROL_MODULE = "/usr/local/bin/appCataloga/backup_control.py"
