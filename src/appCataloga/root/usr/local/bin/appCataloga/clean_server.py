@@ -52,27 +52,27 @@ def list_repo_files(folder:str) -> set:
     command = ["find", folder, "-type", "f"]
     result = subprocess.run(command, stdout=subprocess.PIPE, text=True)
     files = set(result.stdout.strip().split('\n'))
-    return {(Path(file).name, Path(file).parent) for file in files}
-
-def remove_entries_in_db(mysql_conn, files_to_remove):
-    # After user confirmation, remove entries in DIM_SPECTRUM_FILE
-    confirmation = input("Do you want to remove entries in DIM_SPECTRUM_FILE? (y/n): ")
-    if confirmation.lower() == 'y':
-        cursor = mysql_conn.cursor()
-        for file, path in files_to_remove:
-            query = f"DELETE FROM DIM_SPECTRUM_FILE WHERE NA_FILE = '{file}' AND NA_PATH = '{path}'"
-            cursor.execute(query)
-        mysql_conn.commit()
-        cursor.close()
+    return {(Path(filename).name, Path(filename).parent) for filename in files}
 
 def move_files_to_tmp_folder(files_to_move, tmp_folder):
-    # After user confirmation, move files to TMP_FOLDER
-    confirmation = input("Do you want to move files to TMP_FOLDER? (y/n): ")
-    if confirmation.lower() == 'y':
-        for file, path in files_to_move:
-            src_path = Path(path) / file
-            dst_path = Path(tmp_folder) / file
+    
+    user_input = input("Do you wish to confirm each entry before move operation? (y/n): ")
+    if user_input.lower() == 'y':
+        ask_berfore = True
+
+    for filename, path in files_to_move:
+
+        if ask_berfore:
+            user_input = input(f"Move {path}/{filename} to {tmp_folder}? (y/n): ")
+            if user_input.lower() != 'y':
+                continue
+
+        src_path = Path(path) / filename
+        dst_path = Path(tmp_folder) / filename
+        try:
             src_path.rename(dst_path)
+        except Exception as e:
+            print(f"Error moving {src_path} to {dst_path}: {e}")
 
 def compare_files_in_bpdata(tmp_folder, trash_folder):
     # Compare files in PRC_TASK table with files in TMP_FOLDER and TRASH_FOLDER
@@ -82,10 +82,6 @@ def compare_files_in_bpdata(tmp_folder, trash_folder):
     query = "SELECT NA_SERVER_FILE_NAME, NA_SERVER_FILE_PATH FROM PRC_TASK"
     cursor.execute(query)
     db_files = set((row[0], row[1]) for row in cursor.fetchall())
-
-    # Get files in TMP_FOLDER and TRASH_FOLDER
-    tmp_files = list_repo_files(tmp_folder)
-    trash_files = list_repo_files(trash_folder)
 
     # Identify files not in the database
     files_not_in_db = (tmp_files | trash_files) - db_files
@@ -121,24 +117,20 @@ def main():
         exit(1)
 
     try:
-        # create db object using databaseHandler class for the backup and processing database
         db_bkp = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
         db_rfm = dbh.dbHandler(database=k.RFM_DATABASE_NAME)
     except Exception as e:
         log.error("Error initializing database: {e}")
         raise
 
-    # List files in repository folders associated with RFDATA database
     repo_folder_files = list_repo_files(f"{k.REPO_FOLDER}/20*")
 
-    # List files in the RFDATA database
     db_files = db_rfm.list_rfdb_files()
                 
     # Compare sets
     files_not_in_rfdb = repo_folder_files - db_files
     files_not_in_repo = db_files - repo_folder_files
 
-    # Print the results
     print(f"{len(repo_folder_files)} files in the repository:")
     print(f"{len(db_files)} database entries related to repository files.\n")
     
@@ -147,26 +139,23 @@ def main():
         confirmation = input("Do you want to remove database entries that are missing the correspondent file? (y/n): ")
     
         if confirmation.lower() == 'y':
-            # Remove entries in DIM_SPECTRUM_FILE
             db_rfm.remove_rfdb_files(files_not_in_repo)
+    else:
+        print("No entry in the RFDATA database without correspondent file in the repository.")
 
     if len(files_not_in_rfdb) > 0:
-        print(f"{len(files_not_in_rfdb)} files not in the database but in the repository")
+        print(f"{len(files_not_in_rfdb)} files not in the RFDATA database but in the repository")
         confirmation = input("Do you want to move files to TMP_FOLDER for later reprocessing? (y/n): ")
 
         if confirmation.lower() == 'y':
-            # Move files to TMP_FOLDER
             move_files_to_tmp_folder(files_not_in_rfdb, k.TMP_FOLDER)
-
-    print(f"Files not in the repository but in the database: {len(files_not_in_repo)}\n")
-    # Move files to TMP_FOLDER
-    move_files_to_tmp_folder(files_not_in_rfdb, k.TMP_FOLDER)
+    else:
+        print("No file in the repository without correspondent entry in the RFDATA database.")
     
-    # Remove entries in DIM_SPECTRUM_FILE
-    db_rfm.remove_rfdb_files(files_not_in_repo)
-
-    # Move files to TMP_FOLDER
-    move_files_to_tmp_folder(files_not_in_db, k.TMP_FOLDER)
+    # ! STOPED HERE
+    # Get files in TMP_FOLDER and TRASH_FOLDER
+    tmp_files = list_repo_files(tmp_folder)
+    trash_files = list_repo_files(trash_folder)
 
     # Compare files in BPDATA database with files in TMP_FOLDER and TRASH_FOLDER
     files_info = compare_files_in_bpdata(k.TMP_FOLDER, k.TRASH_FOLDER)

@@ -1328,7 +1328,7 @@ class dbHandler():
         self.cursor.execute(query)
         self.db_connection.commit()
         
-        self._disconnect()    
+        self._disconnect()
 
     def list_rfdb_files(self) -> set:
         """List files in DIM_SPECTRUM_FILE table that are in k.REPO_UID
@@ -1360,31 +1360,39 @@ class dbHandler():
         
         return db_files
 
-    def remove_rfdb_files(self, files_not_in_repo:set) -> None:
+    def remove_rfdb_files(self, files_to_remove:set) -> None:
         """Remove files in DIM_SPECTRUM_FILE table that match files_not_in_repo set
 
         Args:
-            
+            files_not_in_repo (set): Set of tuples with file name and path of files not in the repository
 
         Returns:
             None
         """
-        
-        # Query to get files from DIM_SPECTRUM_FILE
-        query =(f"SELECT"
-                    f"NA_FILE, "
-                    f"NA_PATH "
-                f"FROM "
-                    f"DIM_SPECTRUM_FILE "
-                f"WHERE "
-                    f"NA_VOLUME = '{k.REPO_UID}'")
-        
+
         # connect to the database
         self._connect()
         
-        self.cursor.execute(query)
+        user_input = input("Do you wish to confirm each entry before deletion? (y/n): ")
+        if user_input.lower() == 'y':
+            ask_berfore = True
+
+        for filename, path in files_to_remove:
+
+            if ask_berfore:
+                user_input = input(f"Delete {path}/{filename}? (y/n): ")
+                if user_input.lower() != 'y':
+                    continue
+                
+            query =(f"DELETE FROM "
+                        f"DIM_SPECTRUM_FILE "
+                    f"WHERE "
+                        f"NA_FILE = '{filename}' AND "
+                        f"NA_PATH = '{path}'")
         
-        db_files = set((row[0], row[1]) for row in self.cursor.fetchall())
+            self.cursor.execute(query)
+        
+            self.db_connection.commit()
         
         self._disconnect()
         
