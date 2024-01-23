@@ -117,3 +117,6 @@ bin_data = {
         ]
     }
 
+appCataloga_answer = {"Status": 1,
+                      "Error": "Could not create a backup task from the data provided.",
+                      "Message": "none", "Request": ["/usr/lib/zabbix/externalscripts/queryCataloga.py", "query_tag=backup", "host_id=10364", "host_uid=RFEye002073", "host_add=rfeye002073.anatel.gov.br", "host_port=2828", "user=root", "passwd=anatel152", "timeout=2"]}

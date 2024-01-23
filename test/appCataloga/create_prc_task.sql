@@ -1,4 +1,14 @@
 
+-- Download files
+--      wget -q --show-progress https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/test/appCataloga/f2073.csv
+--      wget -q --show-progress https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/test/appCataloga/f2080.csv
+--      wget -q --show-progress https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/test/appCataloga/f2086.csv
+--      wget -q --show-progress https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/test/appCataloga/create_prc_task.sql
+--
+-- Run the script
+-- # mysql -u root -p
+-- MariaDB [] > SOURCE /tmp/appCataloga/create_prc_task.sql;
+
 USE BPDATA;
 
 UPDATE HOST SET NU_HOST_FILES = 157, NU_PENDING_BACKUP = 0, NU_BACKUP_ERROR = 0, NU_PENDING_PROCESSING = 157, NU_PROCESSING_ERROR = 0 WHERE ID_HOST = 10597;
