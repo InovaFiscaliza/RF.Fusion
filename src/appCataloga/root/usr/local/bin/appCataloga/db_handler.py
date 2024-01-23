@@ -1329,3 +1329,63 @@ class dbHandler():
         self.db_connection.commit()
         
         self._disconnect()    
+
+    def list_rfdb_files(self) -> set:
+        """List files in DIM_SPECTRUM_FILE table that are in k.REPO_UID
+
+        Args:
+            None
+
+        Returns:
+            set: Set of tuples with file name and path of files RFDATA database
+        """
+        
+        # Query to get files from DIM_SPECTRUM_FILE
+        query =(f"SELECT"
+                    f"NA_FILE, "
+                    f"NA_PATH "
+                f"FROM "
+                    f"DIM_SPECTRUM_FILE "
+                f"WHERE "
+                    f"NA_VOLUME = '{k.REPO_UID}'")
+        
+        # connect to the database
+        self._connect()
+        
+        self.cursor.execute(query)
+        
+        db_files = set((row[0], row[1]) for row in self.cursor.fetchall())
+        
+        self._disconnect()
+        
+        return db_files
+
+    def remove_rfdb_files(self, files_not_in_repo:set) -> None:
+        """Remove files in DIM_SPECTRUM_FILE table that match files_not_in_repo set
+
+        Args:
+            
+
+        Returns:
+            None
+        """
+        
+        # Query to get files from DIM_SPECTRUM_FILE
+        query =(f"SELECT"
+                    f"NA_FILE, "
+                    f"NA_PATH "
+                f"FROM "
+                    f"DIM_SPECTRUM_FILE "
+                f"WHERE "
+                    f"NA_VOLUME = '{k.REPO_UID}'")
+        
+        # connect to the database
+        self._connect()
+        
+        self.cursor.execute(query)
+        
+        db_files = set((row[0], row[1]) for row in self.cursor.fetchall())
+        
+        self._disconnect()
+        
+        return None
