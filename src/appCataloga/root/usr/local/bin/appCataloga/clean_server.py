@@ -46,7 +46,7 @@ def list_repo_files(folder:str) -> set:
         folder (str): Folder name to list files
 
     Returns:
-        set: Set of tuples with file name and path of files in the specified folder and subfolders
+        set: Set of tuples (filename, path) of files in the specified folder and subfolders
     """
     
     command = ["find", folder, "-type", "f"]
@@ -73,6 +73,44 @@ def move_files_to_tmp_folder(files_to_move, tmp_folder):
             src_path.rename(dst_path)
         except Exception as e:
             print(f"Error moving {src_path} to {dst_path}: {e}")
+
+def clean_rfdata_files(log:sh.log) -> None:
+    
+    try:
+        db_rfm = dbh.dbHandler(database=k.RFM_DATABASE_NAME, log=log)
+    except Exception as e:
+        log.error("Error initializing database: {e}")
+        raise
+
+    repo_folder_files = list_repo_files(f"{k.REPO_FOLDER}/20*")
+
+    db_files = db_rfm.list_rfdb_files()
+                
+    # Compare sets
+    files_not_in_rfdb = repo_folder_files - db_files
+    files_not_in_repo = db_files - repo_folder_files
+
+    log.entry(f"{len(repo_folder_files)} files in the repository:")
+    log.entry(f"{len(db_files)} database entries related to repository files.\n")
+    
+    if len(files_not_in_repo) > 0:
+        log.entry(f"{len(files_not_in_repo)} files not in the repository but in the database")
+        confirmation = input("Do you want to remove database entries that are missing the correspondent file? (y/n): ")
+    
+        if confirmation.lower() == 'y':
+            db_rfm.remove_rfdb_files(files_not_in_repo)
+    else:
+        log.entry("No entry in the RFDATA database without correspondent file in the repository.")
+
+    if len(files_not_in_rfdb) > 0:
+        log.entry(f"{len(files_not_in_rfdb)} files not in the RFDATA database but in the repository")
+        confirmation = input("Do you want to move files to TMP_FOLDER for later reprocessing? (y/n): ")
+
+        if confirmation.lower() == 'y':
+            move_files_to_tmp_folder(files_not_in_rfdb, k.TMP_FOLDER)
+    else:
+        log.entry("No file in the repository without correspondent entry in the RFDATA database.")
+
 
 def compare_files_in_bpdata(tmp_folder, trash_folder):
     # Compare files in PRC_TASK table with files in TMP_FOLDER and TRASH_FOLDER
@@ -109,59 +147,88 @@ def update_host_table(files_info):
         mysql_conn.commit()
         cursor.close()
 
+def clean_bpdata_files(log:sh.log) -> None:
+    
+    try:
+        db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
+    except Exception as e:
+        log.error("Error initializing database: {e}")
+        raise
+    
+    # Process TMP folder and database
+    repo_tmp_files = list_repo_files(f"{k.REPO_FOLDER}/{k.TMP_FOLDER}")
+    
+    db_tmp_files = db_bp.list_bpdb_files(status=k.BP_PENDING_TASK_STATUS)
+    
+    log.entry(f"{len(repo_tmp_files)} files in the repository TMP_FOLDER:")
+    log.entry(f"{len(db_tmp_files)} database entries related to repository TMP_FOLDER files.\n")
+
+    files_missing_in_tmp = db_tmp_files - repo_tmp_files
+        
+    if len(files_missing_in_tmp) > 0:
+        log.entry(f"{len(files_missing_in_tmp)} files missing in the TMP_FOLDER but in the database")
+        confirmation = input("Do you want to remove database entries that are missing the correspondent file? (y/n): ")
+    
+        if confirmation.lower() == 'y':
+            db_bp.remove_bpdb_files(files_missing_in_tmp)
+    else:
+        log.entry("No entry in the BPDATA database without correspondent file in the TMP_FOLDER.")
+
+    files_to_be_processed = repo_tmp_files - db_tmp_files
+    
+    if len(files_to_be_processed) > 0:
+        log.entry(f"{len(files_to_be_processed)} files in the TMP_FOLDER but not in the task list to be processed")
+        confirmation = input("Do you want to add file to be processed? (y/n): ")
+
+        if confirmation.lower() == 'y':
+            new_tasks = db_bp.add_task_from_file(files_to_be_processed)
+            for host_id, files_dict in new_tasks:
+                db_bp.add_processing_task(host_id=host_id, files_set=files_dict)
+    else:
+        log.entry("No file in the TMP_FOLDER to be processed.")
+
+    # ! STOPPED HERE
+    # Process trash folder and database
+    repo_trash_files = list_repo_files(f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}")
+    
+    db_trash_files = db_bp.list_bpdb_files(status=k.BP_ERROR_TASK_STATUS)
+    
+    # Compare sets
+    files_spilled_from_trash = repo_trash_files - db_trash_files
+    files_missing_in_trash = db_trash_files - repo_trash_files
+
+    log.entry(f"{len(repo_trash_files)} files in the repository TRASH_FOLDER:")
+    log.entry(f"{len(db_trash_files)} database entries related to repository TRASH_FOLDER files.\n")
+    
+    if len(files_missing_in_trash) > 0:
+        log.entry(f"{len(files_missing_in_trash)} files missing in the TRASH_FOLDER but in the database")
+        confirmation = input("Do you want to remove database entries that are missing the correspondent file? (y/n): ")
+    
+        if confirmation.lower() == 'y':
+            db_bp.remove_bpdb_files(files_missing_in_trash)
+    else:
+        log.entry("No entry in the BPDATA database without correspondent file in the TRASH_FOLDER.")
+
+        
+    if len(files_spilled_from_trash) > 0:
+        log.entry(f"{len(files_spilled_from_trash)} files spilled from TRASH_FOLDER")
+        confirmation = input("Do you want to update database entries to be processed? (y/n): ")
+    
+        if confirmation.lower() == 'y':
+            db_bp.update_bpdb_files(files_spilled_from_trash, status=k.BP_PENDING_TASK_STATUS)
+    else:
+        log.entry("No file in the TRASH_FOLDER to be processed.")
+
 def main():
     try:                # create a warning message object
-        log = sh.log()
+        log = sh.log(target_screen=True, target_file=False)
     except Exception as e:
         print(f"Error creating log object: {e}")
         exit(1)
 
-    try:
-        db_bkp = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
-        db_rfm = dbh.dbHandler(database=k.RFM_DATABASE_NAME)
-    except Exception as e:
-        log.error("Error initializing database: {e}")
-        raise
-
-    repo_folder_files = list_repo_files(f"{k.REPO_FOLDER}/20*")
-
-    db_files = db_rfm.list_rfdb_files()
-                
-    # Compare sets
-    files_not_in_rfdb = repo_folder_files - db_files
-    files_not_in_repo = db_files - repo_folder_files
-
-    print(f"{len(repo_folder_files)} files in the repository:")
-    print(f"{len(db_files)} database entries related to repository files.\n")
+    clean_rfdata_files(log)
     
-    if len(files_not_in_repo) > 0:
-        print(f"{len(files_not_in_repo)} files not in the repository but in the database")
-        confirmation = input("Do you want to remove database entries that are missing the correspondent file? (y/n): ")
-    
-        if confirmation.lower() == 'y':
-            db_rfm.remove_rfdb_files(files_not_in_repo)
-    else:
-        print("No entry in the RFDATA database without correspondent file in the repository.")
-
-    if len(files_not_in_rfdb) > 0:
-        print(f"{len(files_not_in_rfdb)} files not in the RFDATA database but in the repository")
-        confirmation = input("Do you want to move files to TMP_FOLDER for later reprocessing? (y/n): ")
-
-        if confirmation.lower() == 'y':
-            move_files_to_tmp_folder(files_not_in_rfdb, k.TMP_FOLDER)
-    else:
-        print("No file in the repository without correspondent entry in the RFDATA database.")
-    
-    # ! STOPED HERE
-    # Get files in TMP_FOLDER and TRASH_FOLDER
-    tmp_files = list_repo_files(tmp_folder)
-    trash_files = list_repo_files(trash_folder)
-
-    # Compare files in BPDATA database with files in TMP_FOLDER and TRASH_FOLDER
-    files_info = compare_files_in_bpdata(k.TMP_FOLDER, k.TRASH_FOLDER)
-
-    # Update HOST table in BPDATA
-    update_host_table(files_info)
-
+    clean_bpdata_files(log)
+        
 if __name__ == "__main__":
     main()

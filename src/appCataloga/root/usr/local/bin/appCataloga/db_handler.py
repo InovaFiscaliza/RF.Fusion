@@ -4,6 +4,7 @@
 # Import libraries for:
 import mysql.connector
 import os
+import re
 
 from typing import List, Union
 
@@ -1155,7 +1156,8 @@ class dbHandler():
     # Method to add a new processing task to the database
     def add_processing_task(self,
                             hostid:int,
-                            done_backup_list=list):
+                            files_list:list,
+                            files_set:set) -> None:
         """This method adds tasks to the processing queue
         
         Args:
@@ -1168,8 +1170,34 @@ class dbHandler():
         # connect to the database
         self._connect()
     
+        # convert list of dicionaries into a list of tuples
+        if files_list:
+            for idx, item in enumerate(files_list):
+                files_tuple_list[idx] = (hostid,
+                        os.path.dirname(item["remote"]), os.path.basename(item["remote"]),
+                        os.path.dirname(item["local"]), os.path.basename(item["local"]))
+
+            # compose query to set the process task in the database using executemany method
+            query = (f"INSERT INTO PRC_TASK ("
+                        f"FK_HOST, "
+                        f"NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
+                        f"NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, "
+                        f"DT_PRC_TASK) "
+                    f"VALUES ("
+                        f"%s, "
+                        f"%s, %s, "
+                        f"%s, %s, "
+                        f"NOW());")
+        elif files_set:
+        # convert a set of type (filename, path) into a list of tuples (hostid, path, filename)
+            files_tuple_list = [(hostid, os.path.dirname(item), os.path.basename(item)) for item in files_set]
+
+        # update database
+        self.cursor.executemany(query,files_tuple_list)
+        self.db_connection.commit()
+
         # compose query to add 1 to PENDING_BACKUP in the HOST table in BPDATA database for the given host_id
-        nu_processing = len(done_backup_list)
+        nu_processing = len(files_tuple_list)
         query = (f"UPDATE HOST "
                     f"SET NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {nu_processing} "
                     f"WHERE ID_HOST = '{hostid}';")
@@ -1177,22 +1205,7 @@ class dbHandler():
         # update database
         self.cursor.execute(query)
         self.db_connection.commit()
-
-# convert done_backup_list list of dicionaries into a list of tuples
-        for idx, item in enumerate(done_backup_list):
-            done_backup_list[idx] = (hostid,
-                    os.path.dirname(item["remote"]), os.path.basename(item["remote"]),
-                    os.path.dirname(item["local"]), os.path.basename(item["local"]))
                     
-        # compose query to set the process task in the database using executemany method
-        query = (f"INSERT INTO PRC_TASK "
-                    f"(FK_HOST, NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, DT_PRC_TASK) "
-                    f"VALUES "
-                    f"(%s, %s, %s, %s, %s, NOW());")
-
-        # update database
-        self.cursor.executemany(query,done_backup_list)
-        self.db_connection.commit()
         self._disconnect()
 
     # Method to get next host in the list for processing
@@ -1331,7 +1344,7 @@ class dbHandler():
         self._disconnect()
 
     def list_rfdb_files(self) -> set:
-        """List files in DIM_SPECTRUM_FILE table that are in k.REPO_UID
+        """List files in DIM_SPECTRUM_FILE table that are associated with k.REPO_UID
 
         Args:
             None
@@ -1360,7 +1373,7 @@ class dbHandler():
         
         return db_files
 
-    def remove_rfdb_files(self, files_to_remove:set) -> None:
+    def remove_rfdb_files(self, files_to_remove:set, log:sh.log) -> None:
         """Remove files in DIM_SPECTRUM_FILE table that match files_not_in_repo set
 
         Args:
@@ -1378,22 +1391,165 @@ class dbHandler():
             ask_berfore = True
 
         for filename, path in files_to_remove:
-
-            if ask_berfore:
-                user_input = input(f"Delete {path}/{filename}? (y/n): ")
-                if user_input.lower() != 'y':
-                    continue
+            try:
+                if ask_berfore:
+                    user_input = input(f"Delete {path}/{filename}? (y/n): ")
+                    if user_input.lower() != 'y':
+                        continue
+                    
+                query =(f"DELETE FROM "
+                            f"DIM_SPECTRUM_FILE "
+                        f"WHERE "
+                            f"NA_FILE = '{filename}' AND "
+                            f"NA_PATH = '{path}'")
                 
-            query =(f"DELETE FROM "
-                        f"DIM_SPECTRUM_FILE "
-                    f"WHERE "
-                        f"NA_FILE = '{filename}' AND "
-                        f"NA_PATH = '{path}'")
-        
-            self.cursor.execute(query)
-        
-            self.db_connection.commit()
+                self.cursor.execute(query)
+            
+                self.db_connection.commit()
+                
+                log.entry(f"Removed {path}/{filename} from database")
+            except Exception as e:
+                log.error(f"Error removing {path}/{filename} from database: {e}")
+                pass
         
         self._disconnect()
         
         return None
+
+    def list_bpdb_files(self, status:int) -> set:
+        """List files in PRC_TASK table that match a given status
+
+        Args:
+            status (int): Status flag: 0=Not executed; -1=Executed with error
+
+        Returns:
+            set: Set of tuples with file name and path of files in the database
+        """
+        
+        # Query to get files from DIM_SPECTRUM_FILE
+        query =(f"SELECT"
+                    f"NA_SERVER_FILE_NAME, "
+                    f"NA_SERVER_FILE_PATH "
+                f"FROM "
+                    f"PRC_TASK "
+                f"WHERE "
+                    f"NU_STATUS = {status}")
+        
+        # connect to the database
+        self._connect()
+        
+        self.cursor.execute(query)
+        
+        db_files = set((row[0], row[1]) for row in self.cursor.fetchall())
+        
+        self._disconnect()
+        
+        return db_files
+
+    def remove_bpdb_files(self, files_to_remove:set, log:sh.log) -> None:
+        """Remove files in PRC_TASK table from files_to_remove set
+
+        Args:
+            files_to_remove (set): Set of tuples with file name and path of files not in the repository, to be removed from the database
+
+        Returns:
+            None
+        """
+
+        # connect to the database
+        self._connect()
+        
+        user_input = input("Do you wish to confirm each entry before deletion? (y/n): ")
+        if user_input.lower() == 'y':
+            ask_berfore = True
+
+        for filename, path in files_to_remove:
+            try:
+                if ask_berfore:
+                    user_input = input(f"Delete {path}/{filename}? (y/n): ")
+                    if user_input.lower() != 'y':
+                        continue
+                    
+                query =(f"DELETE FROM "
+                            f"PRC_TASK "
+                        f"WHERE "
+                            f"NA_SERVER_FILE_NAME = '{filename}' AND "
+                            f"NA_SERVER_FILE_PATH = '{path}'")
+                
+                self.cursor.execute(query)
+            
+                self.db_connection.commit()
+                
+                log.entry(f"Removed {path}/{filename} from database")
+            except Exception as e:
+                log.error(f"Error removing {path}/{filename} from database: {e}")
+                pass
+        
+        self._disconnect()
+        
+        return None
+
+    def add_task_from_file(self, file_set:set) -> None:
+        """Create a new task entry based only information for files in file_set
+
+        Args:
+            file_set (set): Set of files to be processed
+            db_bp (dbh.dbHandler): Database handler object
+            
+        returns:
+            set: Set of tuples with host_id and dictionary with file name and path
+        """
+        
+        # Regular expression pattern to match "host_uid"
+        # TODO: #10: Improve host_uid extraction from filename using list of known host_uids and regex
+        # TODO: #25 Add host_uid extraction from file content for missing host_uids
+        pattern = re.compile(r"[rR][fF][eE]ye002\d{3}")
+
+        # Extract "host_uid" and create subsets for each UID
+        subsets = {}
+        for filename, path in file_set:
+            match = pattern.search(filename)
+            if not match:
+                host_uid = input(f"Host UID not found in {filename}. Please enter host UID: ")
+            else:
+                host_uid = match.group(0)
+                
+            try:
+                if host_uid not in subsets:
+                    subsets[host_uid] = set()
+                
+                subsets[host_uid].add((filename, path))
+            except Exception as e:
+                self.log.entry(f"Ignoring {path}/{filename}. No host_uid defined. Error: {e}")
+                pass
+
+        for host_uid, file_set in subsets.items():
+            # find host_id in the database based on host_uid
+            query =(f"SELECT ID_HOST "
+                    f"FROM HOST "
+                    f"WHERE NA_HOST_UID = '{host_uid}';")
+            
+            self._connect()
+            self.cursor.execute(query)
+            
+            try:
+                host_id = int(self.cursor.fetchone()[0])
+            except TypeError:
+                host_id = input(f"Host {host_uid} not found in database. Please enter host ID (Zabbix HOST_ID number) or press enter to skip this host: ")
+                    
+                try:
+                    host_id = int(host_id)
+                except ValueError:
+                    self.log.entry(f"Host {host_uid} not found in database and no valid HOST ID was informed. Skipping host.")
+                    continue
+
+                self._add_host(host_id, host_uid)
+                
+                self.log.entry(f"Host {host_uid} created in the database with ID {host_id}")
+
+            # TODO: #26 Harmonize file_list format with add_processing_task method
+            
+            self.add_processing_task(host_id=host_id,
+                                     file_set=file_set)
+            
+            self.log.entry(f"Added {len(file_set)} files from host {host_uid} to the processing queue")
