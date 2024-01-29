@@ -903,7 +903,8 @@ class dbHandler():
     # Internal method to add host to the database
     def _add_host(self, hostid:str, host_uid:str) -> None:
         """This method adds a new host to the database if it does not exist.
-            Initialization of host statistics is essential to avoid errors and simplify later database queries and updates.
+            If host already in the database, do nothing.
+            When creatining new host, initialize host statistics to zero.
         
         Args:
             hostid (str): Zabbix host id primary key.
@@ -1157,7 +1158,8 @@ class dbHandler():
     def add_processing_task(self,
                             hostid:int,
                             files_list:list,
-                            files_set:set) -> None:
+                            files_set:set,
+                            reset_processing_queue:bool) -> None:
         """This method adds tasks to the processing queue
         
         Args:
@@ -1198,9 +1200,14 @@ class dbHandler():
 
         # compose query to add 1 to PENDING_BACKUP in the HOST table in BPDATA database for the given host_id
         nu_processing = len(files_tuple_list)
-        query = (f"UPDATE HOST "
-                    f"SET NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {nu_processing} "
-                    f"WHERE ID_HOST = '{hostid}';")
+        if reset_processing_queue:
+            query = (f"UPDATE HOST "
+                        f"SET NU_PENDING_PROCESSING = {nu_processing} "
+                        f"WHERE ID_HOST = '{hostid}';")
+        else:
+            query = (f"UPDATE HOST "
+                        f"SET NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {nu_processing} "
+                        f"WHERE ID_HOST = '{hostid}';")
         
         # update database
         self.cursor.execute(query)
@@ -1490,7 +1497,7 @@ class dbHandler():
         return None
 
     def add_task_from_file(self, file_set:set) -> None:
-        """Create a new task entry based only information for files in file_set
+        """Create a new task entry based only in a set of file names and paths
 
         Args:
             file_set (set): Set of files to be processed
@@ -1505,7 +1512,7 @@ class dbHandler():
         # TODO: #25 Add host_uid extraction from file content for missing host_uids
         pattern = re.compile(r"[rR][fF][eE]ye002\d{3}")
 
-        # Extract "host_uid" and create subsets for each UID
+        # split the set into subsets based on the Host UID. Try to get host_uid with REGEX and ask user if not found
         subsets = {}
         for filename, path in file_set:
             match = pattern.search(filename)
@@ -1523,8 +1530,12 @@ class dbHandler():
                 self.log.entry(f"Ignoring {path}/{filename}. No host_uid defined. Error: {e}")
                 pass
 
+        # Loop through the subsets
+        # Get database host id from host_uid and ask user if not found
+        # Add host to the database if it does not exist but a valid host_id was informed
+        # Add processing task to the database
         for host_uid, file_set in subsets.items():
-            # find host_id in the database based on host_uid
+            
             query =(f"SELECT ID_HOST "
                     f"FROM HOST "
                     f"WHERE NA_HOST_UID = '{host_uid}';")
@@ -1550,6 +1561,7 @@ class dbHandler():
             # TODO: #26 Harmonize file_list format with add_processing_task method
             
             self.add_processing_task(host_id=host_id,
-                                     file_set=file_set)
+                                     file_set=file_set,
+                                     reset_processing_queue=True)
             
             self.log.entry(f"Added {len(file_set)} files from host {host_uid} to the processing queue")
