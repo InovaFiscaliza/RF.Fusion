@@ -23,9 +23,6 @@ Access the backup list from BKPDATA database and starts the independent backup p
 import sys
 sys.path.append('/etc/appCataloga')
 
-# Import standard libraries.
-from selectors import DefaultSelector, EVENT_READ
-
 # Import modules for file processing 
 import config as k
 import db_handler as dbh

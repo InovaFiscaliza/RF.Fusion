@@ -32,9 +32,6 @@ import config as k
 import shared as sh
 import db_handler as dbh
 
-import mysql.connector
-from mysql.connector import Error
-
 from pathlib import Path
 import subprocess
 
@@ -87,7 +84,7 @@ def refresh_repo_files(log:sh.log) -> None:
     try:
         db_rfm = dbh.dbHandler(database=k.RFM_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error("Error initializing database: {e}")
+        log.error(f"Error initializing database: {e}")
         raise
 
     repo_folder_files = list_repo_files(f"{k.REPO_FOLDER}/20*")
@@ -124,7 +121,7 @@ def refresh_tmp_files(log:sh.log) -> None:
     try:
         db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error("Error initializing database: {e}")
+        log.error(f"Error initializing database: {e}")
         raise
     
     # Process TMP folder and database
@@ -162,7 +159,7 @@ def refresh_trash_files(log:sh.log) -> None:
     try:
         db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error("Error initializing database: {e}")
+        log.error(f"Error initializing database: {e}")
         raise
 
     # Process trash folder and database

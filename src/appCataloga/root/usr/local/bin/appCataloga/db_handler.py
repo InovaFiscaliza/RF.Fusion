@@ -1425,16 +1425,37 @@ class dbHandler():
                 
                 # remove from string path the prefix k.REPO_FOLDER
                 path = path[len(k.REPO_FOLDER)+1:]
-                
-                query =(f"DELETE FROM "
+
+                # Find ID_FILE
+                query =(f"SELECT "
+                            f"ID_FILE "
+                        f"FROM "
                             f"DIM_SPECTRUM_FILE "
                         f"WHERE "
                             f"NA_FILE = '{filename}' AND "
                             f"NA_PATH = '{path}' AND "
                             f"NA_VOLUME = '{k.REPO_UID}'")
+
+                self.cursor.execute(query)
+
+                id_file = int(self.cursor.fetchone()[0])
+
+                # Exclua a linha correspondente na tabela BRIDGE_SPECTRUM_FILE
+                query =(f"DELETE FROM "
+                            f"BRIDGE_SPECTRUM_FILE "
+                        f"WHERE "
+                            f"FK_FILE = {id_file}")
                 
                 self.cursor.execute(query)
-            
+
+                # Exclua a linha correspondente na tabela DIM_SPECTRUM_FILE
+                query =("DELETE FROM "
+                            f"DIM_SPECTRUM_FILE "
+                        f"WHERE "
+                            f"ID_FILE = {id_file}")
+                
+                self.cursor.execute(query)
+                
                 self.db_connection.commit()
                 
                 self.log.entry(f"Removed {path}/{filename} from database")
