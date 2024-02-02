@@ -476,7 +476,7 @@ To restore the database, run the following command
 mysql -u root -p < \tmp\appCataloga\databases.sql
 ```
 
-To refresh the database entries and reference data, run the following command
+To refresh the database entries and reference measurement data, run the following command
 
 ```shell
 /usr/local/bin/appCataloga/tool_refresh_server.py

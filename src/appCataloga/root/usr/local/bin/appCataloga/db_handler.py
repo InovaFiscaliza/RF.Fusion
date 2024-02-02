@@ -1156,58 +1156,77 @@ class dbHandler():
 
     # Method to add a new processing task to the database
     def add_processing_task(self,
-                            hostid:int,
-                            files_list:list,
-                            files_set:set,
-                            reset_processing_queue:bool) -> None:
+                            host_id:int,
+                            files_list:list = None,
+                            files_set:set = None,
+                            reset_processing_queue:bool = False) -> None:
         """This method adds tasks to the processing queue
         
         Args:
-            hostid (int): Zabbix host id primary key. Defaults to "1".
-            done_backup_list (list): List of files that were recently copied, in the format:[{"remote":remote_file_name,"local":local_file_name}]. Defaults to [].
+            host_id (int): Zabbix host id primary key.
+            files_list (list, optional): List of files that were recently copied, in the format: [{"remote":remote_file_name,"local":local_file_name}]. Defaults to None.
+            files_set (set, optional): Set of files (filename, path). Defaults to None.
+            reset_processing_queue (bool): Flag to reset the processing queue. 
 
         Returns:
-            _type_: _description_
+            None
         """
         # connect to the database
         self._connect()
-    
-        # convert list of dicionaries into a list of tuples
+        
+        # check if files_list is provided
         if files_list:
-            for idx, item in enumerate(files_list):
-                files_tuple_list[idx] = (hostid,
-                        os.path.dirname(item["remote"]), os.path.basename(item["remote"]),
-                        os.path.dirname(item["local"]), os.path.basename(item["local"]))
+            # convert list of dictionaries into a list of tuples
+            files_tuple_list = [(host_id,
+                                 os.path.dirname(item["remote"]), os.path.basename(item["remote"]),
+                                 os.path.dirname(item["local"]), os.path.basename(item["local"]))
+                                for item in files_list]
 
             # compose query to set the process task in the database using executemany method
             query = (f"INSERT INTO PRC_TASK ("
-                        f"FK_HOST, "
-                        f"NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
-                        f"NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, "
-                        f"DT_PRC_TASK) "
-                    f"VALUES ("
-                        f"%s, "
-                        f"%s, %s, "
-                        f"%s, %s, "
-                        f"NOW());")
-        elif files_set:
-        # convert a set of type (filename, path) into a list of tuples (hostid, path, filename)
-            files_tuple_list = [(hostid, os.path.dirname(item), os.path.basename(item)) for item in files_set]
+                     f"FK_HOST, "
+                     f"NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
+                     f"NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, "
+                     f"DT_PRC_TASK) "
+                     f"VALUES ("
+                     f"%s, "
+                     f"%s, %s, "
+                     f"%s, %s, "
+                     f"NOW());")
+            
+            # update database
+            self.cursor.executemany(query, files_tuple_list)
+            self.db_connection.commit()
 
-        # update database
-        self.cursor.executemany(query,files_tuple_list)
-        self.db_connection.commit()
+        # check if files_set is provided
+        if files_set:
+            # convert a set of type (filename, path) into a list of tuples (hostid, path, filename)
+            files_tuple_list = [(host_id, filename, filepath) for (filename,filepath) in files_set]
 
-        # compose query to add 1 to PENDING_BACKUP in the HOST table in BPDATA database for the given host_id
-        nu_processing = len(files_tuple_list)
+            # compose query to set the process task in the database using executemany method
+            query = (f"INSERT INTO PRC_TASK ("
+                     f"FK_HOST, "
+                     f"NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
+                     f"DT_PRC_TASK) "
+                     f"VALUES ("
+                     f"%s, "
+                     f"%s, %s, "
+                     f"NOW());")
+            
+            # update database
+            self.cursor.executemany(query, files_tuple_list)
+            self.db_connection.commit()
+
+        # compose query to update PENDING_PROCESSING in the HOST table in BPDATA database for the given host_id
+        nu_processing = len(files_tuple_list) if files_tuple_list else 0
         if reset_processing_queue:
             query = (f"UPDATE HOST "
-                        f"SET NU_PENDING_PROCESSING = {nu_processing} "
-                        f"WHERE ID_HOST = '{hostid}';")
+                     f"SET NU_PENDING_PROCESSING = {nu_processing} "
+                     f"WHERE ID_HOST = '{host_id}';")
         else:
             query = (f"UPDATE HOST "
-                        f"SET NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {nu_processing} "
-                        f"WHERE ID_HOST = '{hostid}';")
+                     f"SET NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {nu_processing} "
+                     f"WHERE ID_HOST = '{host_id}';")
         
         # update database
         self.cursor.execute(query)
@@ -1361,7 +1380,7 @@ class dbHandler():
         """
         
         # Query to get files from DIM_SPECTRUM_FILE
-        query =(f"SELECT"
+        query =(f"SELECT "
                     f"NA_FILE, "
                     f"NA_PATH "
                 f"FROM "
@@ -1374,7 +1393,7 @@ class dbHandler():
         
         self.cursor.execute(query)
         
-        db_files = set((row[0], row[1]) for row in self.cursor.fetchall())
+        db_files = set((row[0], f"{k.REPO_FOLDER}/{row[1]}") for row in self.cursor.fetchall())
         
         self._disconnect()
         
@@ -1434,7 +1453,7 @@ class dbHandler():
         """
         
         # Query to get files from DIM_SPECTRUM_FILE
-        query =(f"SELECT"
+        query =(f"SELECT "
                     f"NA_SERVER_FILE_NAME, "
                     f"NA_SERVER_FILE_PATH "
                 f"FROM "
@@ -1447,7 +1466,7 @@ class dbHandler():
         
         self.cursor.execute(query)
         
-        db_files = set((row[0], row[1]) for row in self.cursor.fetchall())
+        db_files = set((row[0], f"{k.REPO_FOLDER}/{row[1]}") for row in self.cursor.fetchall())
         
         self._disconnect()
         
@@ -1517,7 +1536,7 @@ class dbHandler():
         for filename, path in file_set:
             match = pattern.search(filename)
             if not match:
-                host_uid = input(f"Host UID not found in {filename}. Please enter host UID: ")
+                host_uid = input(f"Host UID not found in '{filename}'. Please type host UID or press enter to skip: ") # TODO Include function to delete files in the subset with empty key
             else:
                 host_uid = match.group(0)
                 
@@ -1527,14 +1546,20 @@ class dbHandler():
                 
                 subsets[host_uid].add((filename, path))
             except Exception as e:
-                self.log.entry(f"Ignoring {path}/{filename}. No host_uid defined. Error: {e}")
+                self.log.entry(f"Ignoring '{path}/{filename}'. No host_uid defined. Error: {e}")
                 pass
 
+        # drop empty subset
+        try:
+            subsets.pop("")
+        except KeyError:
+            pass
+        
         # Loop through the subsets
         # Get database host id from host_uid and ask user if not found
         # Add host to the database if it does not exist but a valid host_id was informed
         # Add processing task to the database
-        for host_uid, file_set in subsets.items():
+        for host_uid, file_set in subsets.items():          
             
             query =(f"SELECT ID_HOST "
                     f"FROM HOST "
@@ -1546,22 +1571,24 @@ class dbHandler():
             try:
                 host_id = int(self.cursor.fetchone()[0])
             except TypeError:
-                host_id = input(f"Host {host_uid} not found in database. Please enter host ID (Zabbix HOST_ID number) or press enter to skip this host: ")
+                host_id = input(f"Host '{host_uid}' not found in database. Please enter host ID (Zabbix HOST_ID number) or press enter to skip this host: ")
                     
                 try:
                     host_id = int(host_id)
                 except ValueError:
-                    self.log.entry(f"Host {host_uid} not found in database and no valid HOST ID was informed. Skipping host.")
+                    self.log.entry(f"Host '{host_uid}' not found in database and no valid HOST ID was informed. Skipping host.")
                     continue
 
                 self._add_host(host_id, host_uid)
                 
-                self.log.entry(f"Host {host_uid} created in the database with ID {host_id}")
+                self.log.entry(f"Host '{host_uid}' created in the database with ID {host_id}")
 
             # TODO: #26 Harmonize file_list format with add_processing_task method
             
             self.add_processing_task(host_id=host_id,
-                                     file_set=file_set,
+                                     files_set=file_set,
                                      reset_processing_queue=True)
             
             self.log.entry(f"Added {len(file_set)} files from host {host_uid} to the processing queue")
+        
+        self._disconnect()

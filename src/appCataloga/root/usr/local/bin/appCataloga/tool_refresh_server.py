@@ -49,10 +49,13 @@ def list_repo_files(folder:str) -> set:
         set: Set of tuples (filename, path) of files in the specified folder and subfolders
     """
     
-    command = ["find", folder, "-type", "f"]
-    result = subprocess.run(command, stdout=subprocess.PIPE, text=True)
+    command = f"find {folder} -type f"
+    result = subprocess.run(command, capture_output=True, shell=True, text=True)
     files = set(result.stdout.strip().split('\n'))
-    return {(Path(filename).name, Path(filename).parent) for filename in files}
+    
+    files_set = {(Path(filename).name, str(Path(filename).parent)) for filename in files}
+    
+    return files_set
 
 def move_files_to_tmp_folder(files_to_move, tmp_folder):
     
@@ -96,7 +99,7 @@ def refresh_repo_files(log:sh.log) -> None:
     files_not_in_repo = db_files - repo_folder_files
 
     log.entry(f"{len(repo_folder_files)} files in the repository:")
-    log.entry(f"{len(db_files)} database entries related to repository files.\n")
+    log.entry(f"{len(db_files)} database entries related to repository files.")
     
     if len(files_not_in_repo) > 0:
         log.entry(f"{len(files_not_in_repo)} files not in the repository but in the database")
@@ -130,7 +133,7 @@ def refresh_tmp_files(log:sh.log) -> None:
     db_tmp_files = db_bp.list_bpdb_files(status=k.BP_PENDING_TASK_STATUS)
     
     log.entry(f"{len(repo_tmp_files)} files in the repository TMP_FOLDER:")
-    log.entry(f"{len(db_tmp_files)} database entries related to repository TMP_FOLDER files.\n")
+    log.entry(f"{len(db_tmp_files)} database entries related to repository TMP_FOLDER files.")
 
     files_missing_in_tmp = db_tmp_files - repo_tmp_files
         
@@ -172,7 +175,7 @@ def refresh_trash_files(log:sh.log) -> None:
     files_spilled_from_trash = repo_trash_files - db_trash_files
 
     log.entry(f"{len(repo_trash_files)} files in the repository TRASH_FOLDER:")
-    log.entry(f"{len(db_trash_files)} database entries related to repository TRASH_FOLDER files.\n")
+    log.entry(f"{len(db_trash_files)} database entries related to repository TRASH_FOLDER files.")
     
     if len(files_missing_in_trash) > 0:
         log.entry(f"{len(files_missing_in_trash)} files missing in the TRASH_FOLDER but in the database")
