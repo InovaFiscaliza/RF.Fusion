@@ -97,9 +97,9 @@ class dbHandler():
             self.cursor.execute(query)
 
             nearest_site = self.cursor.fetchone()
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception("Error retrieving location coordinates from database")
+            raise Exception("Error retrieving location coordinates from database") from e
 
 
         try:
@@ -160,18 +160,18 @@ class dbHandler():
             self.cursor.execute(query)
 
             nearest_site = self.cursor.fetchone()
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception(f"Error retrieving site {self.data['Site_ID']} from database")            
+            raise Exception(f"Error retrieving site {self.data['Site_ID']} from database") from e   
 
         try:
             db_site_longitude = float(nearest_site[0])
             db_site_latitude = float(nearest_site[1])
             db_site_altitude = float(nearest_site[2])
             db_site_nu_gnss_measurements = int(nearest_site[3])
-        except:
+        except (ValueError, IndexError) as e:
             self._disconnect()
-            raise Exception(f"Invalid data returned for site {self.data['Site_ID']} from database")
+            raise Exception(f"Invalid data returned for site {self.data['Site_ID']} from database") from e
 
         # if number of measurements in the database greater than the maximum required number of measurements.
         if db_site_nu_gnss_measurements < k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS:
@@ -199,9 +199,9 @@ class dbHandler():
                 self._disconnect()
                 
                 log.entry(f'Updated location at latitude: {latitude}, longitude: {longitude}')    
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error updating site {self.data['Site_ID']} from database")
+                raise Exception(f"Error updating site {self.data['Site_ID']} from database") from e
 
         else:
             # Do not update, avoiding unnecessary processing and variable numeric overflow
@@ -235,8 +235,8 @@ class dbHandler():
         
         try:
             db_state_id = int(self.cursor.fetchone()[0])
-        except:
-            raise Exception(f"Error retrieving state name {data['state']}")
+        except Exception as e:
+            raise Exception(f"Error retrieving state name {data['state']}") from e
 
         # search database for existing county name entry within the identified State and get the existing key
         # If state_id is 53, handle the special case of DC, with no counties
@@ -254,9 +254,9 @@ class dbHandler():
             
             try:
                 db_county_id = int(self.cursor.fetchone()[0])
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error retrieving county name {data['County']}")
+                raise Exception(f"Error retrieving county name {data['County']}") from e
 
         #search database for the district name, inserting new value if non existant
         district = data['district'].replace(' ',' AND ')
@@ -270,7 +270,7 @@ class dbHandler():
         
         try:
             db_district_id = int(self.cursor.fetchone()[0])
-        except:
+        except (TypeError, ValueError):
             query = (f"INSERT INTO DIM_SITE_DISTRICT"
                     f" (FK_COUNTY,"
                     f" NA_DISTRICT) "
@@ -339,8 +339,8 @@ class dbHandler():
             db_site_id = int(self.cursor.lastrowid)
 
             self._disconnect()
-        except:
-            raise Exception(f"Error creating new site using query: {query}")
+        except Exception as e:
+            raise Exception(f"Error creating new site using query: {query}") from e
             
 
         return db_site_id
@@ -371,16 +371,16 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception(f"Error retrieving site information using query: {query}")
+            raise Exception(f"Error retrieving site information using query: {query}") from e
 
         try:
             site_path = self.cursor.fetchone()
             new_path = f"{site_path[0]}/{site_path[1]}/{site_path[2]}"
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception(f"Error building path from site information from query: {query}")
+            raise Exception(f"Error building path from site information from query: {query}") from e
 
         self._disconnect()
 
@@ -415,13 +415,13 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception("Error retrieving file using query: {query}")
+            raise Exception("Error retrieving file using query: {query}") from e
 
         try:
             file_id = int(self.cursor.fetchone()[0])
-        except:            
+        except (TypeError, ValueError):
             query =(f"INSERT INTO DIM_SPECTRUM_FILE"
                     f" (NA_FILE,"
                     f" NA_PATH,"
@@ -435,9 +435,9 @@ class dbHandler():
                 self.db_connection.commit()
             
                 file_id = int(self.cursor.lastrowid)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error creating new file entry using query: {query}")
+                raise Exception(f"Error creating new file entry using query: {query}") from e
         
         self._disconnect()
         
@@ -466,13 +466,13 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception("Error retrieving procedure using query: {query}")
+            raise Exception("Error retrieving procedure using query: {query}") from e
 
         try:
             procedure_id = int(self.cursor.fetchone()[0])
-        except:            
+        except (TypeError, ValueError):
             query =(f"INSERT INTO DIM_SPECTRUM_PROCEDURE"
                     f" (NA_PROCEDURE) "
                     f"VALUES"
@@ -483,9 +483,9 @@ class dbHandler():
                 self.db_connection.commit()
             
                 procedure_id = int(self.cursor.lastrowid)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error creating new procedure entry using query: {query}")
+                raise Exception(f"Error creating new procedure entry using query: {query}") from e
         
         self._disconnect()
         
@@ -500,18 +500,18 @@ class dbHandler():
         
         self._connect()
         
-        query = (f"SELECT"
-                 f" ID_EQUIPMENT_TYPE,"
-                 f" NA_EQUIPMENT_TYPE_UID "
-                f"FROM DIM_EQUIPMENT_TYPE;")
+        query = ("SELECT"
+                 " ID_EQUIPMENT_TYPE,"
+                 " NA_EQUIPMENT_TYPE_UID "
+                 "FROM DIM_EQUIPMENT_TYPE;")
         
         try:
             self.cursor.execute(query)
             
             equipment_types = self.cursor.fetchall()
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception("Error retrieving equipment types from database")
+            raise Exception("Error retrieving equipment types from database") from e
         
         self._disconnect()
         
@@ -521,8 +521,8 @@ class dbHandler():
                 equipment_type_id = int(equipment_type[0])
                 equipment_type_uid = str(equipment_type[1])
                 equipment_types_dict[equipment_type_uid] = equipment_type_id
-        except:
-            raise Exception("Error parsing equipment types retrieved from database")
+        except Exception as e:
+            raise Exception("Error parsing equipment types retrieved from database") from e
         
         return equipment_types_dict
 
@@ -573,13 +573,13 @@ class dbHandler():
             
             try:
                 self.cursor.execute(query)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error retrieving equipment data using query: {query}")
+                raise Exception(f"Error retrieving equipment data using query: {query}") from e
 
             try:
                 equipment_id = int(self.cursor.fetchone()[0])
-            except:
+            except (TypeError, ValueError):
                 query =(f"INSERT INTO DIM_SPECTRUM_EQUIPMENT"
                         f" (NA_EQUIPMENT,"
                         f" FK_EQUIPMENT_TYPE) "
@@ -592,9 +592,9 @@ class dbHandler():
                     self.db_connection.commit()
                 
                     equipment_id = int(self.cursor.lastrowid)
-                except:
+                except Exception as e:
                     self._disconnect()
-                    raise Exception(f"Error creating new equipment using query: {query}")
+                    raise Exception(f"Error creating new equipment using query: {query}") from e
             
             equipment_ids.append(equipment_id)
             
@@ -625,13 +625,13 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception("Error retrieving detector type using query: {query}")
+            raise Exception("Error retrieving detector type using query: {query}") from e
 
         try:
             detector_id = int(self.cursor.fetchone()[0])
-        except:            
+        except (TypeError, ValueError):
             query =(f"INSERT INTO DIM_SPECTRUM_DETECTOR"
                     f" (NA_DETECTOR) "
                     f"VALUES"
@@ -642,9 +642,9 @@ class dbHandler():
                 self.db_connection.commit()
             
                 detector_id = int(self.cursor.lastrowid)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error creating new detector entry using query: {query}")
+                raise Exception(f"Error creating new detector entry using query: {query}") from e
         
         self._disconnect()
         
@@ -673,13 +673,13 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception(f"Error retrieving trace type using query: {query}")
+            raise Exception(f"Error retrieving trace type using query: {query}") from e
 
         try:
             trace_type_id = int(self.cursor.fetchone()[0])
-        except:            
+        except (TypeError, ValueError):
             query = (f"INSERT INTO DIM_SPECTRUM_TRACE_TYPE"
                      f" (NA_TRACE_TYPE) "
                      f"VALUES"
@@ -690,9 +690,9 @@ class dbHandler():
                 self.db_connection.commit()
             
                 trace_type_id = int(self.cursor.lastrowid)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error creating new trace time entry using query: {query}")
+                raise Exception(f"Error creating new trace time entry using query: {query}") from e
         
         self._disconnect()
         
@@ -720,13 +720,13 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception(f"Error retrieving measure unit using query: {query}")
+            raise Exception(f"Error retrieving measure unit using query: {query}") from e
 
         try:
             measure_unit_id = int(self.cursor.fetchone()[0])
-        except:            
+        except (TypeError, ValueError):
             query = (f"INSERT INTO DIM_SPECTRUM_UNIT"
                      f" (NA_MEASURE_UNIT) "
                      f"VALUES"
@@ -737,9 +737,9 @@ class dbHandler():
                 self.db_connection.commit()
             
                 measure_unit_id = int(self.cursor.lastrowid)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error creating new measure unit entry using query: {query}")
+                raise Exception(f"Error creating new measure unit entry using query: {query}") from e
         
         self._disconnect()
         
@@ -775,13 +775,13 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception(f"Error retrieving spectrum using query: {query}")
+            raise Exception(f"Error retrieving spectrum using query: {query}") from e
         
         try:
             spectrum_id = int(self.cursor.fetchone()[0])
-        except:
+        except (TypeError, ValueError):
             query = (f"INSERT INTO FACT_SPECTRUM"
                         f" (FK_SITE,"
                         f" FK_PROCEDURE,"
@@ -820,9 +820,9 @@ class dbHandler():
                 self.db_connection.commit()
             
                 spectrum_id = int(self.cursor.lastrowid)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error creating new spectrum entry using query: {query}")
+                raise Exception(f"Error creating new spectrum entry using query: {query}") from e
 
         self._disconnect()
 
@@ -856,9 +856,9 @@ class dbHandler():
 
                 try:
                     self.cursor.execute(query)
-                except:
+                except Exception as e:
                     self._disconnect()
-                    raise Exception(f"Error creating new spectrum equipment entry using query: {query}")
+                    raise Exception(f"Error creating new spectrum equipment entry using query: {query}") from e
         
         self.db_connection.commit()
         self._disconnect()
@@ -892,9 +892,9 @@ class dbHandler():
 
                 try:
                     self.cursor.execute(query)
-                except:
+                except Exception as e:
                     self._disconnect()
-                    raise Exception(f"Error creating new spectrum file entry using query: {query}")
+                    raise Exception(f"Error creating new spectrum file entry using query: {query}") from e
                 
         self.db_connection.commit()
         
@@ -962,14 +962,14 @@ class dbHandler():
             try:
                 output['Total Files'] = int(db_output[1])
             except (IndexError, ValueError) as e:
-                raise Exception(f"Error retrieving 'Total Files' for host {hostid} from database")
+                raise Exception(f"Error retrieving 'Total Files' for host {hostid} from database") from e
             except (AttributeError, TypeError):
                 pass
 
             try:
                 output['Files to backup'] = int(db_output[2])
             except (IndexError, ValueError):
-                raise Exception(f"Error retrieving 'Files to backup' for host {hostid} from database")                
+                raise Exception(f"Error retrieving 'Files to backup' for host {hostid} from database")            
             except (AttributeError, TypeError):
                 output['Files to backup'] = "N/A"
                 pass
@@ -1084,7 +1084,7 @@ class dbHandler():
                         "port": int(task[3]),
                         "user": str(task[4]),
                         "password": str(task[5])}
-        except:
+        except (TypeError, ValueError):
             output = False
         
         return output
@@ -1127,7 +1127,7 @@ class dbHandler():
         else:
             pass
         
-        query = f"UPDATE HOST SET " + f",".join(map(str, query_parts)) + f", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {task_status['host_id']};"
+        query = "UPDATE HOST SET " + ",".join(map(str, query_parts)) + ", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {task_status['host_id']};"
             
         self.cursor.execute(query)
         self.db_connection.commit()
@@ -1183,16 +1183,16 @@ class dbHandler():
                                 for item in files_list]
 
             # compose query to set the process task in the database using executemany method
-            query = (f"INSERT INTO PRC_TASK ("
-                     f"FK_HOST, "
-                     f"NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
-                     f"NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, "
-                     f"DT_PRC_TASK) "
-                     f"VALUES ("
-                     f"%s, "
-                     f"%s, %s, "
-                     f"%s, %s, "
-                     f"NOW());")
+            query =("INSERT INTO PRC_TASK ("
+                    "FK_HOST, "
+                    "NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
+                    "NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, "
+                    "DT_PRC_TASK) "
+                    "VALUES ("
+                    "%s, "
+                    "%s, %s, "
+                    "%s, %s, "
+                    "NOW());")
             
             # update database
             self.cursor.executemany(query, files_tuple_list)
@@ -1204,14 +1204,14 @@ class dbHandler():
             files_tuple_list = [(host_id, filename, filepath) for (filename,filepath) in files_set]
 
             # compose query to set the process task in the database using executemany method
-            query = (f"INSERT INTO PRC_TASK ("
-                     f"FK_HOST, "
-                     f"NA_SERVER_FILE_NAME, NA_SERVER_FILE_PATH, "
-                     f"DT_PRC_TASK) "
-                     f"VALUES ("
-                     f"%s, "
-                     f"%s, %s, "
-                     f"NOW());")
+            query =("INSERT INTO PRC_TASK ("
+                    "FK_HOST, "
+                    "NA_SERVER_FILE_NAME, NA_SERVER_FILE_PATH, "
+                    "DT_PRC_TASK) "
+                    "VALUES ("
+                    "%s, "
+                    "%s, %s, "
+                    "NOW());")
             
             # update database
             self.cursor.executemany(query, files_tuple_list)
@@ -1274,7 +1274,7 @@ class dbHandler():
                         "host file": str(task[4]),
                         "server path": str(task[5]),
                         "server file": str(task[6])}
-        except:
+        except (TypeError, ValueError):
             output = False
         
         self._disconnect()
@@ -1303,7 +1303,7 @@ class dbHandler():
         else:
             pass
         
-        query = f"UPDATE HOST SET " + ",".join(map(str, query_parts)) + f", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {host_id};"
+        query = "UPDATE HOST SET " + ",".join(map(str, query_parts)) + f", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {host_id};"
 
         self.cursor.execute(query)
         self.db_connection.commit()
