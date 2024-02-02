@@ -57,7 +57,7 @@ def list_repo_files(folder:str) -> set:
     
     return files_set
 
-def move_files_to_tmp_folder(files_to_move, tmp_folder):
+def move_file_set(files_to_move, target, log:sh.log):
     
     if len(files_to_move) > 1:
         user_input = input("Do you wish to confirm each entry before move operation? (y/n): ")
@@ -71,16 +71,16 @@ def move_files_to_tmp_folder(files_to_move, tmp_folder):
     for filename, path in files_to_move:
 
         if ask_berfore:
-            user_input = input(f"Move {path}/{filename} to {tmp_folder}? (y/n): ")
+            user_input = input(f"Move {path}/{filename} to {target}? (y/n): ")
             if user_input.lower() != 'y':
                 continue
 
         src_path = Path(path) / filename
-        dst_path = Path(tmp_folder) / filename
+        dst_path = Path(target) / filename
         try:
             src_path.rename(dst_path)
         except Exception as e:
-            print(f"Error moving {src_path} to {dst_path}: {e}")
+            log.error(f"Error moving {src_path} to {dst_path}: {e}")
 
 def refresh_repo_files(log:sh.log) -> None:
     
@@ -115,7 +115,7 @@ def refresh_repo_files(log:sh.log) -> None:
         confirmation = input("Do you want to move files to TMP_FOLDER for later reprocessing? (y/n): ")
 
         if confirmation.lower() == 'y':
-            move_files_to_tmp_folder(files_not_in_rfdb, k.TMP_FOLDER)
+            move_file_set(files_not_in_rfdb, f"{k.REPO_FOLDER}/{k.TMP_FOLDER}", log)
     else:
         log.entry("No file in the repository without correspondent entry in the RFDATA database.")
 
@@ -150,7 +150,7 @@ def refresh_tmp_files(log:sh.log) -> None:
     
     if len(files_to_be_processed) > 0:
         log.entry(f"{len(files_to_be_processed)} files in the TMP_FOLDER but not in the task list to be processed")
-        confirmation = input("Do you want to add file to be processed? (y/n): ")
+        confirmation = input(f"Do you want to add these {len(files_to_be_processed)} files into the processing queue? (y/n): ")
 
         if confirmation.lower() == 'y':
             db_bp.add_task_from_file(files_to_be_processed)
@@ -174,30 +174,33 @@ def refresh_trash_files(log:sh.log) -> None:
     files_missing_in_trash = db_trash_files - repo_trash_files
     files_spilled_from_trash = repo_trash_files - db_trash_files
 
-    log.entry(f"{len(repo_trash_files)} files in the repository TRASH_FOLDER:")
-    log.entry(f"{len(db_trash_files)} database entries related to repository TRASH_FOLDER files.")
+    log.entry(f"{len(repo_trash_files)} file(s) in the repository TRASH_FOLDER:")
+    log.entry(f"{len(db_trash_files)} database entry(ies) related to repository TRASH_FOLDER files.")
     
     if len(files_missing_in_trash) > 0:
-        log.entry(f"{len(files_missing_in_trash)} files missing in the TRASH_FOLDER but in the database")
+        log.entry(f"{len(files_missing_in_trash)} file(s) missing in the TRASH_FOLDER but in the database")
         confirmation = input("Do you want to remove database entries that are missing the correspondent file? (y/n): ")
     
         if confirmation.lower() == 'y':
-            db_bp.remove_bpdb_files(files_missing_in_trash)
+            db_bp.remove_bpdb_files(files_to_remove=files_missing_in_trash)
     else:
         log.entry("No entry in the BPDATA database without correspondent file in the TRASH_FOLDER.")
     
     if len(files_spilled_from_trash) > 0:
         
         class handle_trash:
-            def __init__(self, files:set) -> None:
+            def __init__(self, files:set, log:sh.log) -> None:
                 self.files = files
+                self.log = log
 
             def move(self) -> None:
                 
-                move_files_to_tmp_folder(self.files, k.TMP_FOLDER)
+                full_path = f"{k.REPO_FOLDER}/{k.TMP_FOLDER}"
+                
+                move_file_set(self.files, full_path, self.log)
                 
                 # change pathname to new path
-                self.files = {(filename, k.TMP_FOLDER) for filename, path in self.files}
+                self.files = {(filename, full_path) for filename, path in self.files}
                     
                 db_bp.add_task_from_file(self.files)
             
@@ -209,48 +212,61 @@ def refresh_trash_files(log:sh.log) -> None:
                     except Exception as e:
                         log.error(f"Error deleting {src_path}: {e}")
 
-        log.entry(f"{len(files_spilled_from_trash)} files in TRASH_FOLDER that are not in the database")
+        log.entry(f"{len(files_spilled_from_trash)} file(s) found in TRASH_FOLDER but not in the database")
         
         finish_cleaning = False
-        handle_trash = handle_trash(files_spilled_from_trash)
+        
+        handle_trash = handle_trash(files_spilled_from_trash, log)
         
         while not finish_cleaning:
             global_option = input("Do you want to re(P)rocess all, (D)elete all or (C)onfirm each entry? (p/d/c): ")
             match global_option.lower():
                 case 'p':
-                    confirmation = input("This will reprocess len(files_spilled_from_trash) files from TRASH_FOLDER, moving then to TMP_FOLDER. Are you sure? (y/n): ")
+                    confirmation = input(f"This will reprocess {len(files_spilled_from_trash)} file(s) from TRASH_FOLDER, moving then to TMP_FOLDER. Are you sure? (y/n): ")
                     if confirmation.lower() == 'y':
                         handle_trash.move()
                         finish_cleaning = True
                     
                 case 'd':
-                    confirmation = input("This delete len(files_spilled_from_trash) files from TRASH_FOLDER. Are you sure? (y/n): ")
+                    confirmation = input(f"This delete {len(files_spilled_from_trash)} file(s) from TRASH_FOLDER. Are you sure? (y/n): ")
                     if confirmation.lower() == 'y':
                         handle_trash.delete()
                         finish_cleaning = True
                         
                 case 'c':
-                    confirmation = input("Do you want to confirm operation for each file? (y/n): ")
-                    if confirmation.lower() == 'y':
-                        for filename, path in files_spilled_from_trash:
-                            handle_trash = handle_trash((filename, path))
-                            ask_again = True
-                            while ask_again:
-                                single_option = input(f"re(P)rocess {path}/{filename}, (D)elete or (S)kip it? (p/d/s): ")
+                    for filename, path in files_spilled_from_trash:
+                        handle_trash.files = {(filename, path)}
+                        ask_again = True
+                        task_summary = {"move":0,
+                                        "delete":0,
+                                        "skip":0}
+                        while ask_again:
+                            single_option = input(f"re(P)rocess, (D)elete or (S)kip file: '{path}/{filename}'? (p/d/s): ")
 
-                                match single_option.lower():
-                                    case 'p':
-                                        handle_trash.move()
-                                        ask_again = False
-                                    case 'd':
-                                        handle_trash.delete()
-                                        ask_again = False
-                                    case 's':
-                                        log.entry(f"Skipping {path}/{filename}.")
-                                        ask_again = False
-                                    case _:
-                                        log.entry(f"Invalid option {single_option}. Try again.")     
-                        finish_cleaning = True                               
+                            match single_option.lower():
+                                case 'p':
+                                    handle_trash.move()
+                                    task_summary["move"] += 1
+                                    files_spilled_from_trash.pop((filename, path))
+                                    ask_again = False
+                                case 'd':
+                                    handle_trash.delete()
+                                    task_summary["delete"] += 1
+                                    files_spilled_from_trash.pop((filename, path))
+                                    ask_again = False
+                                case 's':
+                                    log.entry(f"Skipping {path}/{filename}.")
+                                    task_summary["skip"] += 1
+                                    ask_again = False
+                                case _:
+                                    log.entry(f"Invalid option '{single_option}'. Try again.")
+                        
+                    log.entry(f"{task_summary['move']} file(s) moved, {task_summary['delete']} deleted, {task_summary['skip']} skipped.")
+                    
+                    confirmation = input("You may review again the skipped file(s). [F]inish trash processing or go [A]gain through the skipped files? (F/A): ")
+                    if confirmation.lower() != 'a':
+                        finish_cleaning = True
+
                 case _:
                     log.entry(f"Invalid option {confirmation}. Try again.")
     else:
@@ -263,11 +279,15 @@ def main():
         print(f"Error creating log object: {e}")
         exit(1)
 
+    log.entry("Starting server refresh.")
+    
     refresh_repo_files(log)
     
     refresh_tmp_files(log)
     
     refresh_trash_files(log)
+    
+    log.entry("Finish server DB and files refreshing. You may need to manually perform additional tasks. Check the log for details.")
         
 if __name__ == "__main__":
     main()

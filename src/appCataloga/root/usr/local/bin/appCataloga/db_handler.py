@@ -1206,7 +1206,7 @@ class dbHandler():
             # compose query to set the process task in the database using executemany method
             query = (f"INSERT INTO PRC_TASK ("
                      f"FK_HOST, "
-                     f"NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
+                     f"NA_SERVER_FILE_NAME, NA_SERVER_FILE_PATH, "
                      f"DT_PRC_TASK) "
                      f"VALUES ("
                      f"%s, "
@@ -1399,7 +1399,7 @@ class dbHandler():
         
         return db_files
 
-    def remove_rfdb_files(self, files_to_remove:set, log:sh.log) -> None:
+    def remove_rfdb_files(self, files_to_remove:set) -> None:
         """Remove files in DIM_SPECTRUM_FILE table that match files_not_in_repo set
 
         Args:
@@ -1422,20 +1422,24 @@ class dbHandler():
                     user_input = input(f"Delete {path}/{filename}? (y/n): ")
                     if user_input.lower() != 'y':
                         continue
-                    
+                
+                # remove from string path the prefix k.REPO_FOLDER
+                path = path[len(k.REPO_FOLDER)+1:]
+                
                 query =(f"DELETE FROM "
                             f"DIM_SPECTRUM_FILE "
                         f"WHERE "
                             f"NA_FILE = '{filename}' AND "
-                            f"NA_PATH = '{path}'")
+                            f"NA_PATH = '{path}' AND "
+                            f"NA_VOLUME = '{k.REPO_UID}'")
                 
                 self.cursor.execute(query)
             
                 self.db_connection.commit()
                 
-                log.entry(f"Removed {path}/{filename} from database")
+                self.log.entry(f"Removed {path}/{filename} from database")
             except Exception as e:
-                log.error(f"Error removing {path}/{filename} from database: {e}")
+                self.log.error(f"Error removing {path}/{filename} from database: {e}")
                 pass
         
         self._disconnect()
@@ -1466,13 +1470,13 @@ class dbHandler():
         
         self.cursor.execute(query)
         
-        db_files = set((row[0], f"{k.REPO_FOLDER}/{row[1]}") for row in self.cursor.fetchall())
+        db_files = set((row[0], row[1]) for row in self.cursor.fetchall())
         
         self._disconnect()
         
         return db_files
 
-    def remove_bpdb_files(self, files_to_remove:set, log:sh.log) -> None:
+    def remove_bpdb_files(self, files_to_remove:set) -> None:
         """Remove files in PRC_TASK table from files_to_remove set
 
         Args:
@@ -1506,9 +1510,9 @@ class dbHandler():
             
                 self.db_connection.commit()
                 
-                log.entry(f"Removed {path}/{filename} from database")
+                self.log.entry(f"Removed {path}/{filename} from database")
             except Exception as e:
-                log.error(f"Error removing {path}/{filename} from database: {e}")
+                self.log.error(f"Error removing {path}/{filename} from database: {e}")
                 pass
         
         self._disconnect()
