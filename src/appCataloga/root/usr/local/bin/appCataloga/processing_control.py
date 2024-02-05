@@ -160,7 +160,7 @@ def main():
 
     try:
         # create db object using databaseHandler class for the backup and processing database
-        db_bkp = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
+        db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
         db_rfm = dbh.dbHandler(database=k.RFM_DATABASE_NAME)
     except Exception as e:
         log.error("Error initializing database: {e}")
@@ -177,7 +177,7 @@ def main():
                     "server path": "none",
                     "server file": "none"}
                     
-            task = db_bkp.next_processing_task()
+            task = db_bp.next_processing_task()
 
             # if there is a task in the database
             if task:
@@ -186,7 +186,7 @@ def main():
                 # get metadata from bin file
                 filename = f"{task['server path']}/{task['server file']}"
                 
-                log.entry(f"Starting processing of {filename}")
+                log.entry(f"Start processing '{filename}'.")
                 
                 # store reference infortion to the file        
                 try:
@@ -223,7 +223,6 @@ def main():
                 
                 # ! WORK ONLY FOR RFEYE######  TODO: #10 refactor to a more generic solution that works for all equipment
                 # Create a list of the equipment that may be present in the file
-                equipment_id = []
                 receiver = bin_data["hostname"]
                 equipment_lst = [   f"acc_ant[0]_{receiver[5:]}",
                                     f"acc_ant[1]_{receiver[5:]}",
@@ -251,7 +250,7 @@ def main():
                     data['nu_trace_length'] = spectrum.ndata
                     try:
                         data['nu_rbw'] = spectrum.bw
-                    except:
+                    except AttributeError:
                         data['nu_rbw'] = (data['nu_freq_end'] - data['nu_freq_start'])/data['nu_trace_length']
                         
                     data['nu_att_gain'] = k.DEFAULT_ATTENUATION_GAIN
@@ -276,9 +275,12 @@ def main():
                     db_rfm.insert_bridge_spectrum_file(  spectrum_lst,
                                                         [file_id,new_file_id])
                 
-                db_bkp.processing_task_success(task_id=task['task_id'],
-                                              host_id=task['host_id'])
-                log.entry(f"Processing of {filename} finished.")
+                # TODO #28 : FIx this to extract the receiver ID only and not the entire list
+                db_bp.processing_task_success(task_id=task['task_id'],
+                                              host_id=task['host_id'],
+                                              equipment_ids=equipment_ids)
+                
+                log.entry(f"Finished processing '{filename}'.")
                 
             else:
                 log.entry(f"No processing task. Waiting for {k.BKP_TASK_REQUEST_WAIT_TIME/k.SECONDS_IN_MINUTE} minutes.")
@@ -305,7 +307,7 @@ def main():
             try:
                 task['message'] = message
                 
-                db_bkp.processing_task_error(task=task)
+                db_bp.processing_task_error(task=task)
             except Exception as second_e:
                 log.error(f"Error removing processing task: First: {e}; raised another exception: {second_e}")
                 

@@ -1110,21 +1110,21 @@ class dbHandler():
             query_parts.append(f"NU_HOST_FILES = NU_HOST_FILES + {task_status['nu_host_files']}")
         elif task_status['nu_host_files'] < 0:
             query_parts.append(f"NU_HOST_FILES = NU_HOST_FILES - {-task_status['nu_host_files']}")
-        else:
+        else: # if nu_host_files == 0
             pass
 
         if task_status['nu_pending_backup'] > 0:
             query_parts.append(f"NU_PENDING_BACKUP = NU_PENDING_BACKUP + {task_status['nu_pending_backup']}")
         elif task_status['nu_pending_backup'] < 0:
             query_parts.append(f"NU_PENDING_BACKUP = NU_PENDING_BACKUP - {-task_status['nu_pending_backup']}")
-        else:
+        else: # if nu_pending_backup == 0
             pass
         
         if task_status['nu_backup_error'] > 0:
             query_parts.append(f"NU_BACKUP_ERROR = NU_BACKUP_ERROR + {task_status['nu_backup_error']}")
         elif task_status['nu_backup_error'] < 0:
             query_parts.append(f"NU_BACKUP_ERROR = NU_BACKUP_ERROR - {-task_status['nu_backup_error']}")
-        else:
+        else: # if nu_backup_error == 0
             pass
         
         query = "UPDATE HOST SET " + ",".join(map(str, query_parts)) + ", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {task_status['host_id']};"
@@ -1149,6 +1149,104 @@ class dbHandler():
                  f"SET NU_PENDING_BACKUP = NU_PENDING_BACKUP - 1, "
                  f"DT_LAST_BACKUP = NOW() "
                  f"WHERE ID_HOST = '{task['host_id']}';")
+        self.cursor.execute(query)
+        self.db_connection.commit()
+        
+        self._disconnect()
+
+    # Method to get next host in the list for processing
+    def next_processing_task(self) -> dict:
+        """This method gets the next host in the list for data processing
+
+        Returns:
+            dict: "task_id": int(task[0]),
+                  "host_id": int(task[1]),
+                  "host_uid": str(task[2]),
+                  "host path": str(task[3]),
+                  "host file": str(task[4]),
+                  "server path": str(task[5]),
+                  "server file": str(task[6])}
+        """
+        
+        # connect to the database
+        self._connect()
+
+        # build query to get the next backup task with host_uid and NU_STATUS different = 0 (not processed)
+        query = (   "SELECT PRC_TASK.ID_PRC_TASK, "
+                            "PRC_TASK.FK_HOST, HOST.NA_HOST_UID, "
+                            "PRC_TASK.NA_HOST_FILE_PATH, PRC_TASK.NA_HOST_FILE_NAME, "
+                            "PRC_TASK.NA_SERVER_FILE_PATH, PRC_TASK.NA_SERVER_FILE_NAME "
+                    "FROM PRC_TASK "
+                    "JOIN HOST ON PRC_TASK.FK_HOST = HOST.ID_HOST "
+                    "WHERE PRC_TASK.NU_STATUS = 0 "
+                    "ORDER BY PRC_TASK.DT_PRC_TASK "
+                    "LIMIT 1;")
+        
+        self.cursor.execute(query)
+        
+        task = self.cursor.fetchone()
+        
+        try:
+            output = {  "task_id": int(task[0]),
+                        "host_id": int(task[1]),
+                        "host_uid": str(task[2]),
+                        "host path": str(task[3]),
+                        "host file": str(task[4]),
+                        "server path": str(task[5]),
+                        "server file": str(task[6])}
+        except (TypeError, ValueError):
+            output = False
+        
+        self._disconnect()
+        
+        return output
+
+    # Method to update the processing status information in the database
+    def _update_processing_status(  self,
+                                    host_id:int,
+                                    pending_processing:int,
+                                    processing_error:int,
+                                    reset_processing_queue:bool = False,
+                                    equipment_ids:int = None) -> None:
+        """This method updates the processing status information in the database	
+
+        Args:
+            host_id (int): Zabbix host id primary key.
+            pending_processing (int): Number of pending processing tasks to be added or removed from the database
+            processing_error (int): Number of processing errors to be added or removed from the database
+        """
+        
+        # connect to the database
+        self._connect()
+        
+        # compose and excecute query to update the processing status by adding pending_processing variable to existing value in the database
+        query_parts = []
+        
+        if reset_processing_queue:
+            query_parts.append(f"NU_PENDING_PROCESSING = {pending_processing}")
+            query_parts.append(f"NU_PROCESSING_ERROR = {processing_error}")
+        else:
+            if pending_processing > 0:
+                query_parts.append(f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {pending_processing}")
+            elif pending_processing < 0:
+                query_parts.append(f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING - {-pending_processing}")
+            else: # if pending_processing == 0
+                pass
+            
+            if processing_error > 0:
+                query_parts.append(f"NU_PROCESSING_ERROR = NU_PROCESSING_ERROR + {processing_error}")
+            elif processing_error < 0:
+                query_parts.append(f"NU_PROCESSING_ERROR = NU_PROCESSING_ERROR - {-processing_error}")
+            else: # if processing_error == 0
+                pass
+
+        query = "UPDATE HOST SET " + ", ".join(map(str, query_parts)) + ", DT_LAST_PROCESSING = NOW()"
+        
+        if equipment_ids:
+            query = query + f", FK_EQUIPMENT_RFDB = {equipment_ids} WHERE ID_HOST = {host_id};"
+        else:
+            query = query + f" WHERE ID_HOST = {host_id};"
+
         self.cursor.execute(query)
         self.db_connection.commit()
         
@@ -1216,99 +1314,32 @@ class dbHandler():
             # update database
             self.cursor.executemany(query, files_tuple_list)
             self.db_connection.commit()
-
-        # compose query to update PENDING_PROCESSING in the HOST table in BPDATA database for the given host_id
-        nu_processing = len(files_tuple_list) if files_tuple_list else 0
+        
         if reset_processing_queue:
-            query = (f"UPDATE HOST "
-                     f"SET NU_PENDING_PROCESSING = {nu_processing} "
-                     f"WHERE ID_HOST = '{host_id}';")
+            # compose query to find how many database entries are in the processing queue with status = -1 for the given host_id
+            query = (f"SELECT COUNT(*) "
+                        f"FROM PRC_TASK "
+                        f"WHERE FK_HOST = {host_id} AND "
+                        f"NU_STATUS = -1;")
+            
+            self.cursor.execute(query)
+            
+            # get the number of processing errors
+            try:
+                processing_error = int(self.cursor.fetchone()[0])
+            except (TypeError, ValueError):
+                processing_error = 0
         else:
-            query = (f"UPDATE HOST "
-                     f"SET NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {nu_processing} "
-                     f"WHERE ID_HOST = '{host_id}';")
-        
-        # update database
-        self.cursor.execute(query)
-        self.db_connection.commit()
-                    
-        self._disconnect()
-
-    # Method to get next host in the list for processing
-    def next_processing_task(self) -> dict:
-        """This method gets the next host in the list for data processing
-
-        Returns:
-            dict: "task_id": int(task[0]),
-                  "host_id": int(task[1]),
-                  "host_uid": str(task[2]),
-                  "host path": str(task[3]),
-                  "host file": str(task[4]),
-                  "server path": str(task[5]),
-                  "server file": str(task[6])}
-        """
-        
-        # connect to the database
-        self._connect()
-
-        # build query to get the next backup task with host_uid and NU_STATUS different = 0 (not processed)
-        query = (   "SELECT PRC_TASK.ID_PRC_TASK, "
-                            "PRC_TASK.FK_HOST, HOST.NA_HOST_UID, "
-                            "PRC_TASK.NA_HOST_FILE_PATH, PRC_TASK.NA_HOST_FILE_NAME, "
-                            "PRC_TASK.NA_SERVER_FILE_PATH, PRC_TASK.NA_SERVER_FILE_NAME "
-                    "FROM PRC_TASK "
-                    "JOIN HOST ON PRC_TASK.FK_HOST = HOST.ID_HOST "
-                    "WHERE PRC_TASK.NU_STATUS = 0 "
-                    "ORDER BY PRC_TASK.DT_PRC_TASK "
-                    "LIMIT 1;")
-        
-        self.cursor.execute(query)
-        
-        task = self.cursor.fetchone()
-        
-        try:
-            output = {  "task_id": int(task[0]),
-                        "host_id": int(task[1]),
-                        "host_uid": str(task[2]),
-                        "host path": str(task[3]),
-                        "host file": str(task[4]),
-                        "server path": str(task[5]),
-                        "server file": str(task[6])}
-        except (TypeError, ValueError):
-            output = False
-        
+            processing_error = 0
+            
         self._disconnect()
         
-        return output
-
-    # Method to update the processing status information in the database
-    def _update_processing_status(self, host_id, pending_processing, processing_error):
-        # connect to the database
-        self._connect()
-        
-        # compose and excecute query to update the processing status by adding pending_processing variable to existing value in the database
-        query_parts = []
-        
-        if pending_processing > 0:
-            query_parts.append(f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {pending_processing}")
-        elif pending_processing < 0:
-            query_parts.append(f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING - {-pending_processing}")
-        else:
-            pass
-        
-        if processing_error > 0:
-            query_parts.append(f"NU_PROCESSING_ERROR = NU_PROCESSING_ERROR + {processing_error}")
-        elif processing_error < 0:
-            query_parts.append(f"NU_PROCESSING_ERROR = NU_PROCESSING_ERROR - {-processing_error}")
-        else:
-            pass
-        
-        query = "UPDATE HOST SET " + ",".join(map(str, query_parts)) + f", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {host_id};"
-
-        self.cursor.execute(query)
-        self.db_connection.commit()
-        
-        self._disconnect()
+        # update PENDING_PROCESSING in the HOST table in BPDATA database for the given host_id
+        nu_processing = len(files_tuple_list) if files_tuple_list else 0
+        self._update_processing_status( host_id=host_id,
+                                        pending_processing=nu_processing,
+                                        processing_error=processing_error,
+                                        reset_processing_queue=reset_processing_queue)        
         
     # Method to set processing task as completed with success
     def processing_task_success(self,
@@ -1318,7 +1349,7 @@ class dbHandler():
 
         Args:
             host_id (int): Host database primary key
-            task_id (int): Task database prumary key
+            task_id (int): Task database primary key
         """
         
         self._update_processing_status( host_id=host_id,
@@ -1393,7 +1424,7 @@ class dbHandler():
         
         self.cursor.execute(query)
         
-        db_files = set((row[0], f"{k.REPO_FOLDER}/{row[1]}") for row in self.cursor.fetchall())
+        db_files = set((row[0], row[1]) for row in self.cursor.fetchall())
         
         self._disconnect()
         
@@ -1415,17 +1446,17 @@ class dbHandler():
         user_input = input("Do you wish to confirm each entry before deletion? (y/n): ")
         if user_input.lower() == 'y':
             ask_berfore = True
+        else:
+            ask_berfore = False
 
         for filename, path in files_to_remove:
             try:
                 if ask_berfore:
                     user_input = input(f"Delete {path}/{filename}? (y/n): ")
                     if user_input.lower() != 'y':
+                        files_to_remove.pop((filename, path))
                         continue
                 
-                # remove from string path the prefix k.REPO_FOLDER
-                path = path[len(k.REPO_FOLDER)+1:]
-
                 # Find ID_FILE
                 query =(f"SELECT "
                             f"ID_FILE "
@@ -1513,12 +1544,15 @@ class dbHandler():
         user_input = input("Do you wish to confirm each entry before deletion? (y/n): ")
         if user_input.lower() == 'y':
             ask_berfore = True
+        else:
+            ask_berfore = False
 
         for filename, path in files_to_remove:
             try:
                 if ask_berfore:
                     user_input = input(f"Delete {path}/{filename}? (y/n): ")
                     if user_input.lower() != 'y':
+                        files_to_remove.pop((filename, path))
                         continue
                     
                 query =(f"DELETE FROM "
@@ -1615,5 +1649,105 @@ class dbHandler():
                                      reset_processing_queue=True)
             
             self.log.entry(f"Added {len(file_set)} files from host {host_uid} to the processing queue")
+        
+        self._disconnect()
+    
+    def list_all_host_ids(self) -> list:
+        """List all host ids in the database
+
+        Args:
+            None
+
+        Returns:
+            list: List of host ids in the database
+        """
+        
+        # connect to the database
+        self._connect()
+        
+        # build query to get all host ids from the database
+        query = ("SELECT ID_HOST "
+                 "FROM HOST;")
+        
+        self.cursor.execute(query)
+        
+        host_ids = [int(row[0]) for row in self.cursor.fetchall()]
+        
+        self._disconnect()
+        
+        return host_ids
+    
+    def count_rfm_host_files(self,
+                         host_id:int,
+                         volume:str = None) -> int:
+    
+        # TODO #27 Fix equipment id reset in RFM database
+        # connect to the database
+        self._connect()
+        
+        if volume:
+            # build query to get the number of files in the database for the given host_id and volume
+            query =(f"SELECT COUNT(*) "
+                        f"FROM DIM_SPECTRUM_FILE "
+                    f"WHERE "
+                        f"FK_HOST = {host_id} AND "
+                        f"NA_VOLUME = '{volume}';")
+        else:
+            # build query to get the number of files in the database for the given host_id
+            query =(f"SELECT COUNT(*) "
+                        f"FROM DIM_SPECTRUM_FILE "
+                    f"WHERE "
+                        f"FK_HOST = {host_id};")
+            
+        self.cursor.execute(query)
+        
+        try:
+            volume_count = int(self.cursor.fetchone()[0])
+        except (TypeError, ValueError):
+            volume_count = 0
+        
+        self._disconnect()
+        
+        return volume_count
+    
+    def count_bp_host_files(self,
+                            host_id:int) -> int:
+    
+        # connect to the database
+        self._connect()
+        
+        # build query to get the number of files in the database for the given host_id, both to any value of NA_VOLUME and for an specific value defined in volume
+        query =(f"SELECT COUNT(*) "
+                    f"FROM PRC_TASK "
+                f"WHERE "
+                    f"FK_HOST = {host_id};")
+
+        self.cursor.execute(query)
+        
+        try:
+            total_count = int(self.cursor.fetchone()[0])
+        except (TypeError, ValueError):
+            total_count = 0
+
+        self._disconnect()
+        
+        return total_count
+    
+    def update_host_files(  self,
+                            host_id:int,
+                            total_files:int) -> None:
+        
+        # connect to the database
+        self._connect()
+        
+        # build query to update the number of files in the database for the given host_id
+        query =(f"UPDATE HOST "
+                    f"SET NU_HOST_FILES = {total_files} "
+                f"WHERE "
+                    f"ID_HOST = {host_id};")
+        
+        self.cursor.execute(query)
+        
+        self.db_connection.commit()
         
         self._disconnect()

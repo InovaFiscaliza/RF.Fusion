@@ -50,11 +50,25 @@ def list_repo_files(folder:str) -> set:
     result = subprocess.run(command, capture_output=True, shell=True, text=True)
     files = set(result.stdout.strip().split('\n'))
     
-    files_set = {(Path(filename).name, str(Path(filename).parent)) for filename in files}
+    files_set = set()
+    for full_filename in files:
+        if len(full_filename) < 1:
+            continue
+        filename = str(Path(full_filename).name)
+        full_path = str(Path(full_filename).parent)
+        relative_path = full_path[len(k.REPO_FOLDER)+1:]
+        files_set.add((filename, relative_path))
     
     return files_set
 
-def move_file_set(files_to_move, target, log:sh.log):
+def move_file_set(files_to_move:set, target:str, log:sh.log) -> None:
+    """Move files in a set to a target folder
+
+    Args:
+        files_to_move (set): Set of tuples (filename, path) of files to move
+        target (str): Target folder to move files
+        log (sh.log): Log object
+    """
     
     if len(files_to_move) > 1:
         user_input = input("Do you wish to confirm each entry before move operation? (y/n): ")
@@ -65,14 +79,24 @@ def move_file_set(files_to_move, target, log:sh.log):
     else:
         ask_berfore = False
 
+    # test if target folder exists and create if not
+    target_folder = Path(target)
+    if not target_folder.exists():
+        try:
+            target_folder.mkdir()
+        except Exception as e:
+            log.error(f"Error creating {target_folder}: {e}")
+            return
+    
     for filename, path in files_to_move:
 
         if ask_berfore:
             user_input = input(f"Move {path}/{filename} to {target}? (y/n): ")
             if user_input.lower() != 'y':
+                files_to_move.pop((filename, path))
                 continue
-
-        src_path = Path(path) / filename
+        
+        src_path = Path(f"{k.REPO_FOLDER}/{path}/{filename}")
         dst_path = Path(target) / filename
         try:
             src_path.rename(dst_path)
@@ -104,8 +128,8 @@ def refresh_repo_files(log:sh.log) -> None:
     
         if confirmation.lower() == 'y':
             db_rfm.remove_rfdb_files(files_not_in_repo)
-    else:
-        log.entry("No entry in the RFDATA database without correspondent file in the repository.")
+        else:
+            log.entry("No entry in the RFDATA database without correspondent file in the repository.")
 
     if len(files_not_in_rfdb) > 0:
         log.entry(f"{len(files_not_in_rfdb)} files not in the RFDATA database but in the repository")
@@ -155,7 +179,12 @@ def refresh_tmp_files(log:sh.log) -> None:
         log.entry("No file in the TMP_FOLDER to be processed.")
 
 def refresh_trash_files(log:sh.log) -> None:
-    
+    """ Refresh TRASH_FOLDER files and database entries
+
+    Args:
+        log (sh.log): Log object
+    """
+     
     try:
         db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
@@ -202,8 +231,8 @@ def refresh_trash_files(log:sh.log) -> None:
                 db_bp.add_task_from_file(self.files)
             
             def delete(self) -> None:
-                for filename, path in self.files:
-                    src_path = Path(path) / filename
+                for filename, filepath in self.files:
+                    src_path = Path(f"{k.REPO_FOLDER}/{filepath}/{filename}")
                     try:
                         src_path.unlink()
                     except Exception as e:
@@ -269,6 +298,30 @@ def refresh_trash_files(log:sh.log) -> None:
     else:
         log.entry("No file in the TRASH_FOLDER to be processed.")
 
+def refresh_total_files(log:sh.log) -> None:
+    
+    try:
+        db_rfm = dbh.dbHandler(database=k.RFM_DATABASE_NAME, log=log)
+    except Exception as e:
+        log.error(f"Error initializing database: {e}")
+        raise
+    
+    try:
+        db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
+    except Exception as e:
+        log.error(f"Error initializing database: {e}")
+        raise
+    
+    host_id_list = db_bp.list_all_host_ids()
+    
+    for host_id in host_id_list:
+        total_files = db_rfm.count_rfm_host_files(host_id)
+        prc_files = db_bp.count_bpdb_host_files(host_id)
+        
+        new_total = total_files + prc_files
+        
+        db_bp.update_host_files(host_id, new_total)
+
 def main():
     try:                # create a warning message object
         log = sh.log(target_screen=True, target_file=False)
@@ -283,6 +336,8 @@ def main():
     refresh_tmp_files(log)
     
     refresh_trash_files(log)
+
+    refresh_total_files(log)    
     
     log.entry("Finish server DB and files refreshing. You may need to manually perform additional tasks. Check the log for details.")
         
