@@ -239,7 +239,7 @@ def main():
                 
                 # insert the equipment in the database and/or get the ids if the equipment already exists
                 equipment_ids = db_rfm.insert_equipment(equipment_lst)
-                #TODO #11 get only the receiver in this list
+                
                 
                 spectrum_lst = []
                 for spectrum in bin_data["spectrum"]:
@@ -293,7 +293,6 @@ def main():
                 
         except Exception as e:
             try:
-                # TODO #30 Fix move issues with task partial path and volume
                 file_data = file_move(  filename=task['server file'],
                                         path=task['server path'],
                                         new_path=k.TRASH_FOLDER)

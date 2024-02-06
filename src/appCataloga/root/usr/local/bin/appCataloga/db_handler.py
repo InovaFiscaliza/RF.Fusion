@@ -1668,39 +1668,40 @@ class dbHandler():
         # connect to the database
         self._connect()
         
-        # build query to get all host ids from the database
-        query = ("SELECT ID_HOST "
-                 "FROM HOST;")
+        # build query to get ID_HOST and FK_EQUIPMENT_RFDB from HOST table
+        query = ("SELECT ID_HOST, FK_EQUIPMENT_RFDB, NA_HOST_UID "
+                    "FROM HOST;")
         
         self.cursor.execute(query)
         
-        host_ids = [int(row[0]) for row in self.cursor.fetchall()]
+        host_ids = [(int(row[0]), int(row[1]), row[2]) for row in self.cursor.fetchall()]
         
         self._disconnect()
         
         return host_ids
     
     def count_rfm_host_files(self,
-                         host_id:int,
+                         equipment_id:int,
                          volume:str = None) -> int:
     
         # TODO #27 Fix equipment id reset in RFM database
         # connect to the database
         self._connect()
         
+        # build query to get the number of files in the database, given an equipment_id and a volume. Make use of BRIDGE_SPECTRUM_EQUIPMENT to get the FK_SPECTRUM keys and from there, count the DIN_SPECTRUM_FILE entries with the given volume and FK_SPECTRUM using the BRIDGE_SPECTRUM_FILE table.
+        query = (f"SELECT COUNT(DISTINCT DIM_SPECTRUM_FILE.NA_FILE) "
+                    f"FROM BRIDGE_SPECTRUM_FILE "
+                    f"JOIN BRIDGE_SPECTRUM_EQUIPMENT "
+                        f"ON BRIDGE_SPECTRUM_FILE.FK_SPECTRUM = BRIDGE_SPECTRUM_EQUIPMENT.FK_SPECTRUM "
+                    f"JOIN DIM_SPECTRUM_FILE "
+                        f"ON BRIDGE_SPECTRUM_FILE.FK_FILE = DIM_SPECTRUM_FILE.ID_FILE "
+                f"WHERE "
+                    f"BRIDGE_SPECTRUM_EQUIPMENT.FK_EQUIPMENT = {equipment_id}")
+            
         if volume:
-            # build query to get the number of files in the database for the given host_id and volume
-            query =(f"SELECT COUNT(*) "
-                        f"FROM DIM_SPECTRUM_FILE "
-                    f"WHERE "
-                        f"FK_HOST = {host_id} AND "
-                        f"NA_VOLUME = '{volume}';")
+            query = query + f" AND DIM_SPECTRUM_FILE.NA_VOLUME = '{volume}';"
         else:
-            # build query to get the number of files in the database for the given host_id
-            query =(f"SELECT COUNT(*) "
-                        f"FROM DIM_SPECTRUM_FILE "
-                    f"WHERE "
-                        f"FK_HOST = {host_id};")
+            query = query + ";"
             
         self.cursor.execute(query)
         
@@ -1723,29 +1724,47 @@ class dbHandler():
         query =(f"SELECT COUNT(*) "
                     f"FROM PRC_TASK "
                 f"WHERE "
-                    f"FK_HOST = {host_id};")
+                    f"FK_HOST = {host_id} AND "
+                    f"NU_STATUS = 0;")
 
         self.cursor.execute(query)
         
         try:
-            total_count = int(self.cursor.fetchone()[0])
+            pending_processing = int(self.cursor.fetchone()[0])
         except (TypeError, ValueError):
-            total_count = 0
+            pending_processing = 0
+
+        query =(f"SELECT COUNT(*) "
+                    f"FROM PRC_TASK "
+                f"WHERE "
+                    f"FK_HOST = {host_id} AND "
+                    f"NU_STATUS = -1;")
+        
+        self.cursor.execute(query)
+        
+        try:
+            error_processing = int(self.cursor.fetchone()[0])
+        except (TypeError, ValueError):
+            error_processing = 0
 
         self._disconnect()
         
-        return total_count
+        return (pending_processing, error_processing)
     
-    def update_host_files(  self,
+    def update_host_status(  self,
                             host_id:int,
-                            total_files:int) -> None:
+                            total_files:int,
+                            pending_processing:int,
+                            error_processing:int) -> None:
         
         # connect to the database
         self._connect()
         
         # build query to update the number of files in the database for the given host_id
-        query =(f"UPDATE HOST "
-                    f"SET NU_HOST_FILES = {total_files} "
+        query =(f"UPDATE HOST SET "
+                    f"NU_HOST_FILES = {total_files}, "
+                    f"NU_PENDING_PROCESSING = {pending_processing}, "
+                    f"NU_PROCESSING_ERROR = {error_processing} "
                 f"WHERE "
                     f"ID_HOST = {host_id};")
         
