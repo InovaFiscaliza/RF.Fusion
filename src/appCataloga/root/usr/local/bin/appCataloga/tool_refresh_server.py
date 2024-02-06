@@ -315,12 +315,13 @@ def refresh_total_files(log:sh.log) -> None:
     host_id_list = db_bp.list_all_host_ids()
     
     for host_id in host_id_list:
-        total_files = db_rfm.count_rfm_host_files(host_id)
-        prc_files = db_bp.count_bpdb_host_files(host_id)
+        # total_files = db_rfm.count_rfm_host_files(host_id)
+        # prc_files = db_bp.count_bpdb_host_files(host_id)
         
-        new_total = total_files + prc_files
+        # new_total = total_files + prc_files
         
-        db_bp.update_host_files(host_id, new_total)
+        # db_bp.update_host_files(host_id, new_total)
+        log.entry(f"Host {host_id} status updated. (just kidding)")
 
 def main():
     try:                # create a warning message object
@@ -337,7 +338,9 @@ def main():
     
     refresh_trash_files(log)
 
-    refresh_total_files(log)    
+    refresh_total_files(log)
+    
+    # TODO: #31 Clen RFM DB from measurements, equipment, sites and other tables without files.
     
     log.entry("Finish server DB and files refreshing. You may need to manually perform additional tasks. Check the log for details.")
         

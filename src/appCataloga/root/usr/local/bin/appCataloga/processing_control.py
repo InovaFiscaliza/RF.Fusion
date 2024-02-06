@@ -137,6 +137,7 @@ def file_move(  filename: str,
 
     if not volume:
         route_path = f"{k.REPO_FOLDER}/"
+        volume = k.REPO_UID
     else:
         # assume that source path include the volume path
         # TODO: #29 Improve volume handling to include multiple volumes
@@ -188,6 +189,7 @@ def main():
                                 
                 # check if there is a task already running for the same host and remove it if it is the case, avoiding the creation of multiple tasks for the same host
                 # get metadata from bin file
+                
                 filename = f"{k.REPO_FOLDER}/{task['server path']}/{task['server file']}"
                 
                 log.entry(f"Start processing '{filename}'.")
@@ -227,7 +229,7 @@ def main():
                 
                 # ! WORK ONLY FOR RFEYE######  TODO: #10 refactor to a more generic solution that works for all equipment
                 # Create a list of the equipment that may be present in the file, the four antennas and the receiver
-                receiver = bin_data["hostname"]
+                receiver = bin_data["hostname"].lower()
                 rec_serial = receiver[5:]
                 equipment_lst = [   f"acc_ant[0]_{rec_serial}",
                                     f"acc_ant[1]_{rec_serial}",
@@ -268,22 +270,18 @@ def main():
                 
                 db_rfm.insert_bridge_spectrum_equipment(spectrum_lst)
 
-                # test if task['server path'] includes the "tmp" directory and move the file to the "data" directory
-                if task['server path'].find(f"{k.REPO_FOLDER}/{k.TMP_FOLDER}") >= 0:
-                    new_path = db_rfm.build_path(site_id=data['id_site'])
-                    new_path = f"{spectrum.stop_dateidx.year}/{new_path}"
-                    
-                    file_data = file_move(  filename=task['server file'],
-                                            path=task['server path'],
-                                            new_path=new_path)
-                    
-                    new_file_id = db_rfm.insert_file(**file_data)
-                    db_rfm.insert_bridge_spectrum_file(  spectrum_lst,
+                new_path = db_rfm.build_path(site_id=data['id_site'])
+                new_path = f"{spectrum.stop_dateidx.year}/{new_path}"
+                
+                file_data = file_move(  filename=task['server file'],
+                                        path=task['server path'],
+                                        new_path=new_path)
+                
+                new_file_id = db_rfm.insert_file(**file_data)
+                db_rfm.insert_bridge_spectrum_file(  spectrum_lst,
                                                         [file_id,new_file_id])
                 
-                # TODO #28 : FIx this to extract the receiver ID only and not the entire list
-                db_bp.processing_task_success(task_id=task['task_id'],
-                                              host_id=task['host_id'],
+                db_bp.processing_task_success(task=task,
                                               equipment_ids=equipment_ids)
                 
                 log.entry(f"Finished processing '{filename}'.")
@@ -297,8 +295,8 @@ def main():
             try:
                 # TODO #30 Fix move issues with task partial path and volume
                 file_data = file_move(  filename=task['server file'],
-                                    path=task['server path'],
-                                    new_path=k.TRASH_FOLDER)
+                                        path=task['server path'],
+                                        new_path=k.TRASH_FOLDER)
                 
                 task['server path'] = file_data['path']
                 

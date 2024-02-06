@@ -1207,7 +1207,7 @@ class dbHandler():
                                     pending_processing:int,
                                     processing_error:int,
                                     reset_processing_queue:bool = False,
-                                    equipment_ids:int = None) -> None:
+                                    equipment_id:int = None) -> None:
         """This method updates the processing status information in the database	
 
         Args:
@@ -1242,8 +1242,8 @@ class dbHandler():
 
         query = "UPDATE HOST SET " + ", ".join(map(str, query_parts)) + ", DT_LAST_PROCESSING = NOW()"
         
-        if equipment_ids:
-            query = query + f", FK_EQUIPMENT_RFDB = {equipment_ids} WHERE ID_HOST = {host_id};"
+        if equipment_id:
+            query = query + f", FK_EQUIPMENT_RFDB = {equipment_id} WHERE ID_HOST = {host_id};"
         else:
             query = query + f" WHERE ID_HOST = {host_id};"
 
@@ -1343,16 +1343,19 @@ class dbHandler():
         
     # Method to set processing task as completed with success
     def processing_task_success(self,
-                                host_id:int,
-                                task_id:int) -> None:
+                                task:dict,
+                                equipment_ids:dict) -> None:
         """Set processing task as completed with success
 
         Args:
-            host_id (int): Host database primary key
-            task_id (int): Task database primary key
+            task (dict): Dictionary including the following
+            equipment_ids (dict): Dictionary with the equipment ids associated with the processed files
         """
         
-        self._update_processing_status( host_id=host_id,
+        rfm_equipment_id = equipment_ids[task["host_uid"].lower()]
+        
+        self._update_processing_status( host_id=task['host_id'],
+                                        equipment_id = rfm_equipment_id,
                                         pending_processing=-1,
                                         processing_error=0)
         
@@ -1361,7 +1364,7 @@ class dbHandler():
         
         # compose and excecute query to delete the processing task from the BPDATA database
         query = (f"DELETE FROM PRC_TASK "
-                 f"WHERE ID_PRC_TASK = {task_id};")
+                 f"WHERE ID_PRC_TASK = {task['task_id']};")
         self.cursor.execute(query)
 
         self.db_connection.commit()
