@@ -25,8 +25,6 @@ sys.path.append('/etc/appCataloga')
 
 from rfpye.parser import parse_bin
 
-from rich import print
-
 # Import libraries for file processing
 import time
 
@@ -106,7 +104,7 @@ def map_location_to_data(location:dict,
             try:
                 data[field_name] = location.raw['address'][nominatimField]
                 unfilled_field = False
-            except:
+            except KeyError:
                 pass
         if unfilled_field:
             message = f"Field {nominatimField} not found in: {location.raw['address']}"
@@ -169,7 +167,7 @@ def main():
         db_rfm = dbh.dbHandler(database=k.RFM_DATABASE_NAME)
     except Exception as e:
         log.error("Error initializing database: {e}")
-        raise
+        raise Exception(f"Error initializing database: {e}")
 
     while True:
         try:
@@ -319,7 +317,7 @@ def main():
             
             pass
         
-        except (KeyboardInterrupt, SystemExit) as e:
+        except (KeyboardInterrupt, SystemExit):
             log.entry("Interrupt received. Exiting.")
             break
             
