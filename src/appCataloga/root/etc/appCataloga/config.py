@@ -6,7 +6,8 @@
             DB_USER_NAME = 'appCataloga' 
             DB_PASSWORD = '<app_pass>'
 """
-import importlib.util 
+import importlib.util
+import importlib.machinery
 
 SECRET_FILE = "/etc/appCataloga/.secret"
 
