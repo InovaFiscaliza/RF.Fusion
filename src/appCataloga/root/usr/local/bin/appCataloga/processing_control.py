@@ -125,7 +125,7 @@ def file_move(  filename: str,
     Args:
         file (str): source file name
         path (str): source file path
-        volume (str): source volume name (default: k.DEFAULT_VOLUME)
+        volume (str): source volume name (default: k.REPO_UID)
         new_path (str): target file path
 
     Raises:
@@ -136,10 +136,14 @@ def file_move(  filename: str,
     """
 
     if not volume:
-        volume = k.REPO_UID
-        
+        route_path = f"{k.REPO_FOLDER}/"
+    else:
+        # assume that source path include the volume path
+        # TODO: #29 Improve volume handling to include multiple volumes
+        route_path = ""
+         
     # Construct the source file path
-    source_file = f"{path}/{filename}"
+    source_file = f"{route_path}{path}/{filename}"
 
     # Construct the target file path
     target_file = f"{k.REPO_FOLDER}/{new_path}/{filename}"
@@ -184,7 +188,7 @@ def main():
                                 
                 # check if there is a task already running for the same host and remove it if it is the case, avoiding the creation of multiple tasks for the same host
                 # get metadata from bin file
-                filename = f"{task['server path']}/{task['server file']}"
+                filename = f"{k.REPO_FOLDER}/{task['server path']}/{task['server file']}"
                 
                 log.entry(f"Start processing '{filename}'.")
                 
@@ -222,15 +226,16 @@ def main():
                 data['id_procedure'] = db_rfm.insert_procedure(bin_data["method"])
                 
                 # ! WORK ONLY FOR RFEYE######  TODO: #10 refactor to a more generic solution that works for all equipment
-                # Create a list of the equipment that may be present in the file
+                # Create a list of the equipment that may be present in the file, the four antennas and the receiver
                 receiver = bin_data["hostname"]
-                equipment_lst = [   f"acc_ant[0]_{receiver[5:]}",
-                                    f"acc_ant[1]_{receiver[5:]}",
-                                    f"acc_ant[2]_{receiver[5:]}",
-                                    f"acc_ant[3]_{receiver[5:]}",
+                rec_serial = receiver[5:]
+                equipment_lst = [   f"acc_ant[0]_{rec_serial}",
+                                    f"acc_ant[1]_{rec_serial}",
+                                    f"acc_ant[2]_{rec_serial}",
+                                    f"acc_ant[3]_{rec_serial}",
                                     receiver]
                 
-                # insert the equipment in the database and get the ids
+                # insert the equipment in the database and/or get the ids if the equipment already exists
                 equipment_ids = db_rfm.insert_equipment(equipment_lst)
                 #TODO #11 get only the receiver in this list
                 
@@ -255,7 +260,8 @@ def main():
                         
                     data['nu_att_gain'] = k.DEFAULT_ATTENUATION_GAIN
                     
-                    equipment = [equipment_ids[-1],equipment_ids[spectrum.antuid]]
+                    # create a list of equipment associated with the spectrum measurement
+                    equipment = [equipment_ids[receiver],equipment_ids[f"acc_ant[{spectrum.antuid}]_{rec_serial}"]]
                     spectrum_lst.append({   "spectrum":db_rfm.insert_spectrum(data),
                                             "equipment":equipment})
                 
@@ -289,7 +295,7 @@ def main():
                 
         except Exception as e:
             try:
-                # TODO FIX path to trash
+                # TODO #30 Fix move issues with task partial path and volume
                 file_data = file_move(  filename=task['server file'],
                                     path=task['server path'],
                                     new_path=k.TRASH_FOLDER)

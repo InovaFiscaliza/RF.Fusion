@@ -526,7 +526,7 @@ class dbHandler():
         
         return equipment_types_dict
 
-    def insert_equipment(self, equipment:Union[str, List[str]]) -> list:
+    def insert_equipment(self, equipment:Union[str, List[str]]) -> dict:
         """Create a new equipment entry in the database if it does not exist, otherwise return the existing key
 
         Args:
@@ -539,7 +539,7 @@ class dbHandler():
             Exception: Error creating new equipment entry for _equipment_name_ in database
 
         Returns:
-            int: list of db keys to the new or existing equipment entries
+            dict: {equipment_name:equipment_id}
         """
         
         if isinstance(equipment, str):
@@ -551,7 +551,7 @@ class dbHandler():
         
         equipment_types = self._get_equipment_types()
         
-        equipment_ids = []
+        equipment_ids = {}
         
         self._connect()
         for name in equipment_names:
@@ -596,7 +596,7 @@ class dbHandler():
                     self._disconnect()
                     raise Exception(f"Error creating new equipment using query: {query}") from e
             
-            equipment_ids.append(equipment_id)
+            equipment_ids[name]=equipment_id
             
         self._disconnect()
         
