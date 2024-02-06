@@ -346,8 +346,6 @@ def main():
 
     refresh_total_files(log)
     
-    
-    
     log.entry("Finish server DB and files refreshing. You may need to manually perform additional tasks. Check the log for details.")
         
 if __name__ == "__main__":
