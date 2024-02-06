@@ -38,7 +38,7 @@ import time
 import json
 
 # Define default arguments
-DEFAULT_HOST_ID = 1
+DEFAULT_HOST_ID = 10364
 DEFAULT_HOST_ADD = "192.168.10.33"
 # DEFAULT_HOST_ADD = "172.24.5.71" # MG
 DEFAULT_PORT = 22
