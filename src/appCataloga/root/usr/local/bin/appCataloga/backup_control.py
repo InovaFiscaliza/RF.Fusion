@@ -96,7 +96,8 @@ def main():
                 task["nu_backup_error"] = 0
                 tasks.append(task)                
                 task_counter += 1 
-                          
+                
+                # TODO #33 Use status control to report running tasks instead of deleting them from the database before completion
                 # remove task from database
                 db.remove_backup_task(task)
 
@@ -143,7 +144,7 @@ def main():
                 elif task_error:
                     running_task["nu_backup_error"] += 1
 
-                    log.entry(f"Error in backup from {task['host_add']}. Will try again later. Error: {task_error}")
+                    log.entry(f"Error in backup from {tasks['host_add']}. Will try again later. Error: {task_error}")
                     
                 # if birth time is more than alowed time, remove task from tasks list
                 execution_time = time.time() - running_task["birth_time"]

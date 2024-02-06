@@ -935,7 +935,7 @@ class dbHandler():
 
     # get host status data from the database
     def get_host_task_status(self,hostid="host_id"):        
-        
+        # TODO #34 Improve task reporting by separating backup tasks from individual backup transactions
         # connect to the database
         self._connect()
 
@@ -1127,7 +1127,7 @@ class dbHandler():
         else: # if nu_backup_error == 0
             pass
         
-        query = "UPDATE HOST SET " + ",".join(map(str, query_parts)) + ", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {task_status['host_id']};"
+        query = "UPDATE HOST SET " + ",".join(map(str, query_parts)) + f", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {task_status['host_id']};"
             
         self.cursor.execute(query)
         self.db_connection.commit()

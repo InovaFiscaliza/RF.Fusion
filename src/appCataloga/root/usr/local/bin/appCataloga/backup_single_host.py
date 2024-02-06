@@ -74,6 +74,9 @@ ARGUMENTS = {
         }
     }
 
+class HaltFlagError(Exception):
+    pass
+
 def main():
     # TODO: #21 Include database update for backup task, including status and message fields to facilitate debugging
     
@@ -137,8 +140,9 @@ def main():
             
             if loop_count > 6:
                 output = False
-                log.error("Timeout waiting for HALT_FLAG file")
-                raise
+                message = f"HALT_FLAG file found in remote host {task.data['host_add']['value']}. Backup aborted."
+                log.error(message)
+                raise HaltFlagError(message)
 
         # store current time for HALT_FLAG timeout control
         halt_flag_time = time.time()
@@ -173,7 +177,7 @@ def main():
 
         # Test if there are files to backup. Done before the loop to avoid unecessary creation of the target folder
         if nu_host_files > 0:
-            target_folder = f"{k.REPO_FOLDER}/{k.TMP_FOLDER}/{task.data['host_add']['value']}"
+            target_folder = f"{k.TMP_FOLDER}/{task.data['host_add']['value']}"
             
             # make sure that the target folder do exist
             if not os.path.exists(target_folder):
@@ -270,6 +274,9 @@ def main():
         log.error(f"SSH error: {str(e)}")
         raise ValueError(log.dump_error())
         
+    except HaltFlagError:
+        raise ValueError(log.dump_error())
+    
     except Exception as e:
         log.error(f"Unmapped error occurred: {str(e)}")
         raise ValueError(log.dump_error())
