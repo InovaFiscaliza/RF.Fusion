@@ -23,9 +23,6 @@ Access the backup list from BKPDATA database and starts the independent backup p
 import sys
 sys.path.append('/etc/appCataloga')
 
-# Import standard libraries.
-from selectors import DefaultSelector, EVENT_READ
-
 # Import modules for file processing 
 import config as k
 import db_handler as dbh
@@ -129,8 +126,8 @@ def main():
                         tasks.remove(running_task)
                             
                         # add the list of files to the processing task list TODO: if len(task_dict_output['done_backup_list']) > 0:
-                        db.add_processing_task(hostid=task_dict_output['host_id'],
-                                            done_backup_list=task_dict_output['done_backup_list'])
+                        db.add_processing_task(host_id=task_dict_output['host_id'],
+                                            files_list=task_dict_output['done_backup_list'])
             
                         # update backup summary status for the host_id in case of previous errors
                         task_dict_output['nu_backup_error'] = task_dict_output['nu_backup_error'] + running_task['nu_backup_error']

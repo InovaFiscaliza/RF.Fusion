@@ -64,6 +64,8 @@ TMP_FOLDER="tmp"
 TRASH_FOLDER="trash"
 REPO_FOLDER="/mnt/reposfi"
 REPO_UID="repoSFI"
+BP_PENDING_TASK_STATUS = 0
+BP_ERROR_TASK_STATUS = -1
 
 # Geographic site definition
 MAXIMUM_GNSS_DEVIATION = 0.0005

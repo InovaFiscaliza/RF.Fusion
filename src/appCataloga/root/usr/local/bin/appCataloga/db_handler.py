@@ -4,6 +4,7 @@
 # Import libraries for:
 import mysql.connector
 import os
+import re
 
 from typing import List, Union
 
@@ -96,9 +97,9 @@ class dbHandler():
             self.cursor.execute(query)
 
             nearest_site = self.cursor.fetchone()
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception("Error retrieving location coordinates from database")
+            raise Exception("Error retrieving location coordinates from database") from e
 
 
         try:
@@ -159,18 +160,18 @@ class dbHandler():
             self.cursor.execute(query)
 
             nearest_site = self.cursor.fetchone()
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception(f"Error retrieving site {self.data['Site_ID']} from database")            
+            raise Exception(f"Error retrieving site {self.data['Site_ID']} from database") from e   
 
         try:
             db_site_longitude = float(nearest_site[0])
             db_site_latitude = float(nearest_site[1])
             db_site_altitude = float(nearest_site[2])
             db_site_nu_gnss_measurements = int(nearest_site[3])
-        except:
+        except (ValueError, IndexError) as e:
             self._disconnect()
-            raise Exception(f"Invalid data returned for site {self.data['Site_ID']} from database")
+            raise Exception(f"Invalid data returned for site {self.data['Site_ID']} from database") from e
 
         # if number of measurements in the database greater than the maximum required number of measurements.
         if db_site_nu_gnss_measurements < k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS:
@@ -198,9 +199,9 @@ class dbHandler():
                 self._disconnect()
                 
                 log.entry(f'Updated location at latitude: {latitude}, longitude: {longitude}')    
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error updating site {self.data['Site_ID']} from database")
+                raise Exception(f"Error updating site {self.data['Site_ID']} from database") from e
 
         else:
             # Do not update, avoiding unnecessary processing and variable numeric overflow
@@ -234,8 +235,8 @@ class dbHandler():
         
         try:
             db_state_id = int(self.cursor.fetchone()[0])
-        except:
-            raise Exception(f"Error retrieving state name {data['state']}")
+        except Exception as e:
+            raise Exception(f"Error retrieving state name {data['state']}") from e
 
         # search database for existing county name entry within the identified State and get the existing key
         # If state_id is 53, handle the special case of DC, with no counties
@@ -253,9 +254,9 @@ class dbHandler():
             
             try:
                 db_county_id = int(self.cursor.fetchone()[0])
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error retrieving county name {data['County']}")
+                raise Exception(f"Error retrieving county name {data['County']}") from e
 
         #search database for the district name, inserting new value if non existant
         district = data['district'].replace(' ',' AND ')
@@ -269,7 +270,7 @@ class dbHandler():
         
         try:
             db_district_id = int(self.cursor.fetchone()[0])
-        except:
+        except (TypeError, ValueError):
             query = (f"INSERT INTO DIM_SITE_DISTRICT"
                     f" (FK_COUNTY,"
                     f" NA_DISTRICT) "
@@ -338,8 +339,8 @@ class dbHandler():
             db_site_id = int(self.cursor.lastrowid)
 
             self._disconnect()
-        except:
-            raise Exception(f"Error creating new site using query: {query}")
+        except Exception as e:
+            raise Exception(f"Error creating new site using query: {query}") from e
             
 
         return db_site_id
@@ -370,16 +371,16 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception(f"Error retrieving site information using query: {query}")
+            raise Exception(f"Error retrieving site information using query: {query}") from e
 
         try:
             site_path = self.cursor.fetchone()
             new_path = f"{site_path[0]}/{site_path[1]}/{site_path[2]}"
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception(f"Error building path from site information from query: {query}")
+            raise Exception(f"Error building path from site information from query: {query}") from e
 
         self._disconnect()
 
@@ -414,13 +415,13 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception("Error retrieving file using query: {query}")
+            raise Exception("Error retrieving file using query: {query}") from e
 
         try:
             file_id = int(self.cursor.fetchone()[0])
-        except:            
+        except (TypeError, ValueError):
             query =(f"INSERT INTO DIM_SPECTRUM_FILE"
                     f" (NA_FILE,"
                     f" NA_PATH,"
@@ -434,9 +435,9 @@ class dbHandler():
                 self.db_connection.commit()
             
                 file_id = int(self.cursor.lastrowid)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error creating new file entry using query: {query}")
+                raise Exception(f"Error creating new file entry using query: {query}") from e
         
         self._disconnect()
         
@@ -465,13 +466,13 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception("Error retrieving procedure using query: {query}")
+            raise Exception("Error retrieving procedure using query: {query}") from e
 
         try:
             procedure_id = int(self.cursor.fetchone()[0])
-        except:            
+        except (TypeError, ValueError):
             query =(f"INSERT INTO DIM_SPECTRUM_PROCEDURE"
                     f" (NA_PROCEDURE) "
                     f"VALUES"
@@ -482,9 +483,9 @@ class dbHandler():
                 self.db_connection.commit()
             
                 procedure_id = int(self.cursor.lastrowid)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error creating new procedure entry using query: {query}")
+                raise Exception(f"Error creating new procedure entry using query: {query}") from e
         
         self._disconnect()
         
@@ -499,18 +500,18 @@ class dbHandler():
         
         self._connect()
         
-        query = (f"SELECT"
-                 f" ID_EQUIPMENT_TYPE,"
-                 f" NA_EQUIPMENT_TYPE_UID "
-                f"FROM DIM_EQUIPMENT_TYPE;")
+        query = ("SELECT"
+                 " ID_EQUIPMENT_TYPE,"
+                 " NA_EQUIPMENT_TYPE_UID "
+                 "FROM DIM_EQUIPMENT_TYPE;")
         
         try:
             self.cursor.execute(query)
             
             equipment_types = self.cursor.fetchall()
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception("Error retrieving equipment types from database")
+            raise Exception("Error retrieving equipment types from database") from e
         
         self._disconnect()
         
@@ -520,12 +521,12 @@ class dbHandler():
                 equipment_type_id = int(equipment_type[0])
                 equipment_type_uid = str(equipment_type[1])
                 equipment_types_dict[equipment_type_uid] = equipment_type_id
-        except:
-            raise Exception("Error parsing equipment types retrieved from database")
+        except Exception as e:
+            raise Exception("Error parsing equipment types retrieved from database") from e
         
         return equipment_types_dict
 
-    def insert_equipment(self, equipment:Union[str, List[str]]) -> list:
+    def insert_equipment(self, equipment:Union[str, List[str]]) -> dict:
         """Create a new equipment entry in the database if it does not exist, otherwise return the existing key
 
         Args:
@@ -538,7 +539,7 @@ class dbHandler():
             Exception: Error creating new equipment entry for _equipment_name_ in database
 
         Returns:
-            int: list of db keys to the new or existing equipment entries
+            dict: {equipment_name:equipment_id}
         """
         
         if isinstance(equipment, str):
@@ -550,7 +551,7 @@ class dbHandler():
         
         equipment_types = self._get_equipment_types()
         
-        equipment_ids = []
+        equipment_ids = {}
         
         self._connect()
         for name in equipment_names:
@@ -572,13 +573,13 @@ class dbHandler():
             
             try:
                 self.cursor.execute(query)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error retrieving equipment data using query: {query}")
+                raise Exception(f"Error retrieving equipment data using query: {query}") from e
 
             try:
                 equipment_id = int(self.cursor.fetchone()[0])
-            except:
+            except (TypeError, ValueError):
                 query =(f"INSERT INTO DIM_SPECTRUM_EQUIPMENT"
                         f" (NA_EQUIPMENT,"
                         f" FK_EQUIPMENT_TYPE) "
@@ -591,11 +592,11 @@ class dbHandler():
                     self.db_connection.commit()
                 
                     equipment_id = int(self.cursor.lastrowid)
-                except:
+                except Exception as e:
                     self._disconnect()
-                    raise Exception(f"Error creating new equipment using query: {query}")
+                    raise Exception(f"Error creating new equipment using query: {query}") from e
             
-            equipment_ids.append(equipment_id)
+            equipment_ids[name]=equipment_id
             
         self._disconnect()
         
@@ -624,13 +625,13 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception("Error retrieving detector type using query: {query}")
+            raise Exception("Error retrieving detector type using query: {query}") from e
 
         try:
             detector_id = int(self.cursor.fetchone()[0])
-        except:            
+        except (TypeError, ValueError):
             query =(f"INSERT INTO DIM_SPECTRUM_DETECTOR"
                     f" (NA_DETECTOR) "
                     f"VALUES"
@@ -641,9 +642,9 @@ class dbHandler():
                 self.db_connection.commit()
             
                 detector_id = int(self.cursor.lastrowid)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error creating new detector entry using query: {query}")
+                raise Exception(f"Error creating new detector entry using query: {query}") from e
         
         self._disconnect()
         
@@ -672,13 +673,13 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception(f"Error retrieving trace type using query: {query}")
+            raise Exception(f"Error retrieving trace type using query: {query}") from e
 
         try:
             trace_type_id = int(self.cursor.fetchone()[0])
-        except:            
+        except (TypeError, ValueError):
             query = (f"INSERT INTO DIM_SPECTRUM_TRACE_TYPE"
                      f" (NA_TRACE_TYPE) "
                      f"VALUES"
@@ -689,9 +690,9 @@ class dbHandler():
                 self.db_connection.commit()
             
                 trace_type_id = int(self.cursor.lastrowid)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error creating new trace time entry using query: {query}")
+                raise Exception(f"Error creating new trace time entry using query: {query}") from e
         
         self._disconnect()
         
@@ -719,13 +720,13 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception(f"Error retrieving measure unit using query: {query}")
+            raise Exception(f"Error retrieving measure unit using query: {query}") from e
 
         try:
             measure_unit_id = int(self.cursor.fetchone()[0])
-        except:            
+        except (TypeError, ValueError):
             query = (f"INSERT INTO DIM_SPECTRUM_UNIT"
                      f" (NA_MEASURE_UNIT) "
                      f"VALUES"
@@ -736,9 +737,9 @@ class dbHandler():
                 self.db_connection.commit()
             
                 measure_unit_id = int(self.cursor.lastrowid)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error creating new measure unit entry using query: {query}")
+                raise Exception(f"Error creating new measure unit entry using query: {query}") from e
         
         self._disconnect()
         
@@ -774,13 +775,13 @@ class dbHandler():
         
         try:
             self.cursor.execute(query)
-        except:
+        except Exception as e:
             self._disconnect()
-            raise Exception(f"Error retrieving spectrum using query: {query}")
+            raise Exception(f"Error retrieving spectrum using query: {query}") from e
         
         try:
             spectrum_id = int(self.cursor.fetchone()[0])
-        except:
+        except (TypeError, ValueError):
             query = (f"INSERT INTO FACT_SPECTRUM"
                         f" (FK_SITE,"
                         f" FK_PROCEDURE,"
@@ -819,9 +820,9 @@ class dbHandler():
                 self.db_connection.commit()
             
                 spectrum_id = int(self.cursor.lastrowid)
-            except:
+            except Exception as e:
                 self._disconnect()
-                raise Exception(f"Error creating new spectrum entry using query: {query}")
+                raise Exception(f"Error creating new spectrum entry using query: {query}") from e
 
         self._disconnect()
 
@@ -855,9 +856,9 @@ class dbHandler():
 
                 try:
                     self.cursor.execute(query)
-                except:
+                except Exception as e:
                     self._disconnect()
-                    raise Exception(f"Error creating new spectrum equipment entry using query: {query}")
+                    raise Exception(f"Error creating new spectrum equipment entry using query: {query}") from e
         
         self.db_connection.commit()
         self._disconnect()
@@ -891,9 +892,9 @@ class dbHandler():
 
                 try:
                     self.cursor.execute(query)
-                except:
+                except Exception as e:
                     self._disconnect()
-                    raise Exception(f"Error creating new spectrum file entry using query: {query}")
+                    raise Exception(f"Error creating new spectrum file entry using query: {query}") from e
                 
         self.db_connection.commit()
         
@@ -902,7 +903,8 @@ class dbHandler():
     # Internal method to add host to the database
     def _add_host(self, hostid:str, host_uid:str) -> None:
         """This method adds a new host to the database if it does not exist.
-            Initialization of host statistics is essential to avoid errors and simplify later database queries and updates.
+            If host already in the database, do nothing.
+            When creatining new host, initialize host statistics to zero.
         
         Args:
             hostid (str): Zabbix host id primary key.
@@ -960,14 +962,14 @@ class dbHandler():
             try:
                 output['Total Files'] = int(db_output[1])
             except (IndexError, ValueError) as e:
-                raise Exception(f"Error retrieving 'Total Files' for host {hostid} from database")
+                raise Exception(f"Error retrieving 'Total Files' for host {hostid} from database") from e
             except (AttributeError, TypeError):
                 pass
 
             try:
                 output['Files to backup'] = int(db_output[2])
             except (IndexError, ValueError):
-                raise Exception(f"Error retrieving 'Files to backup' for host {hostid} from database")                
+                raise Exception(f"Error retrieving 'Files to backup' for host {hostid} from database")            
             except (AttributeError, TypeError):
                 output['Files to backup'] = "N/A"
                 pass
@@ -1082,7 +1084,7 @@ class dbHandler():
                         "port": int(task[3]),
                         "user": str(task[4]),
                         "password": str(task[5])}
-        except:
+        except (TypeError, ValueError):
             output = False
         
         return output
@@ -1108,24 +1110,24 @@ class dbHandler():
             query_parts.append(f"NU_HOST_FILES = NU_HOST_FILES + {task_status['nu_host_files']}")
         elif task_status['nu_host_files'] < 0:
             query_parts.append(f"NU_HOST_FILES = NU_HOST_FILES - {-task_status['nu_host_files']}")
-        else:
+        else: # if nu_host_files == 0
             pass
 
         if task_status['nu_pending_backup'] > 0:
             query_parts.append(f"NU_PENDING_BACKUP = NU_PENDING_BACKUP + {task_status['nu_pending_backup']}")
         elif task_status['nu_pending_backup'] < 0:
             query_parts.append(f"NU_PENDING_BACKUP = NU_PENDING_BACKUP - {-task_status['nu_pending_backup']}")
-        else:
+        else: # if nu_pending_backup == 0
             pass
         
         if task_status['nu_backup_error'] > 0:
             query_parts.append(f"NU_BACKUP_ERROR = NU_BACKUP_ERROR + {task_status['nu_backup_error']}")
         elif task_status['nu_backup_error'] < 0:
             query_parts.append(f"NU_BACKUP_ERROR = NU_BACKUP_ERROR - {-task_status['nu_backup_error']}")
-        else:
+        else: # if nu_backup_error == 0
             pass
         
-        query = f"UPDATE HOST SET " + f",".join(map(str, query_parts)) + f", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {task_status['host_id']};"
+        query = "UPDATE HOST SET " + ",".join(map(str, query_parts)) + ", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {task_status['host_id']};"
             
         self.cursor.execute(query)
         self.db_connection.commit()
@@ -1150,49 +1152,6 @@ class dbHandler():
         self.cursor.execute(query)
         self.db_connection.commit()
         
-        self._disconnect()
-
-    # Method to add a new processing task to the database
-    def add_processing_task(self,
-                            hostid:int,
-                            done_backup_list=list):
-        """This method adds tasks to the processing queue
-        
-        Args:
-            hostid (int): Zabbix host id primary key. Defaults to "1".
-            done_backup_list (list): List of files that were recently copied, in the format:[{"remote":remote_file_name,"local":local_file_name}]. Defaults to [].
-
-        Returns:
-            _type_: _description_
-        """
-        # connect to the database
-        self._connect()
-    
-        # compose query to add 1 to PENDING_BACKUP in the HOST table in BPDATA database for the given host_id
-        nu_processing = len(done_backup_list)
-        query = (f"UPDATE HOST "
-                    f"SET NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {nu_processing} "
-                    f"WHERE ID_HOST = '{hostid}';")
-        
-        # update database
-        self.cursor.execute(query)
-        self.db_connection.commit()
-
-# convert done_backup_list list of dicionaries into a list of tuples
-        for idx, item in enumerate(done_backup_list):
-            done_backup_list[idx] = (hostid,
-                    os.path.dirname(item["remote"]), os.path.basename(item["remote"]),
-                    os.path.dirname(item["local"]), os.path.basename(item["local"]))
-                    
-        # compose query to set the process task in the database using executemany method
-        query = (f"INSERT INTO PRC_TASK "
-                    f"(FK_HOST, NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, DT_PRC_TASK) "
-                    f"VALUES "
-                    f"(%s, %s, %s, %s, %s, NOW());")
-
-        # update database
-        self.cursor.executemany(query,done_backup_list)
-        self.db_connection.commit()
         self._disconnect()
 
     # Method to get next host in the list for processing
@@ -1235,7 +1194,7 @@ class dbHandler():
                         "host file": str(task[4]),
                         "server path": str(task[5]),
                         "server file": str(task[6])}
-        except:
+        except (TypeError, ValueError):
             output = False
         
         self._disconnect()
@@ -1243,46 +1202,160 @@ class dbHandler():
         return output
 
     # Method to update the processing status information in the database
-    def _update_processing_status(self, host_id, pending_processing, processing_error):
+    def _update_processing_status(  self,
+                                    host_id:int,
+                                    pending_processing:int,
+                                    processing_error:int,
+                                    reset_processing_queue:bool = False,
+                                    equipment_id:int = None) -> None:
+        """This method updates the processing status information in the database	
+
+        Args:
+            host_id (int): Zabbix host id primary key.
+            pending_processing (int): Number of pending processing tasks to be added or removed from the database
+            processing_error (int): Number of processing errors to be added or removed from the database
+        """
+        
         # connect to the database
         self._connect()
         
         # compose and excecute query to update the processing status by adding pending_processing variable to existing value in the database
         query_parts = []
         
-        if pending_processing > 0:
-            query_parts.append(f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {pending_processing}")
-        elif pending_processing < 0:
-            query_parts.append(f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING - {-pending_processing}")
+        if reset_processing_queue:
+            query_parts.append(f"NU_PENDING_PROCESSING = {pending_processing}")
+            query_parts.append(f"NU_PROCESSING_ERROR = {processing_error}")
         else:
-            pass
+            if pending_processing > 0:
+                query_parts.append(f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {pending_processing}")
+            elif pending_processing < 0:
+                query_parts.append(f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING - {-pending_processing}")
+            else: # if pending_processing == 0
+                pass
+            
+            if processing_error > 0:
+                query_parts.append(f"NU_PROCESSING_ERROR = NU_PROCESSING_ERROR + {processing_error}")
+            elif processing_error < 0:
+                query_parts.append(f"NU_PROCESSING_ERROR = NU_PROCESSING_ERROR - {-processing_error}")
+            else: # if processing_error == 0
+                pass
+
+        query = "UPDATE HOST SET " + ", ".join(map(str, query_parts)) + ", DT_LAST_PROCESSING = NOW()"
         
-        if processing_error > 0:
-            query_parts.append(f"NU_PROCESSING_ERROR = NU_PROCESSING_ERROR + {processing_error}")
-        elif processing_error < 0:
-            query_parts.append(f"NU_PROCESSING_ERROR = NU_PROCESSING_ERROR - {-processing_error}")
+        if equipment_id:
+            query = query + f", FK_EQUIPMENT_RFDB = {equipment_id} WHERE ID_HOST = {host_id};"
         else:
-            pass
-        
-        query = f"UPDATE HOST SET " + ",".join(map(str, query_parts)) + f", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {host_id};"
+            query = query + f" WHERE ID_HOST = {host_id};"
 
         self.cursor.execute(query)
         self.db_connection.commit()
         
         self._disconnect()
+
+    # Method to add a new processing task to the database
+    def add_processing_task(self,
+                            host_id:int,
+                            files_list:list = None,
+                            files_set:set = None,
+                            reset_processing_queue:bool = False) -> None:
+        """This method adds tasks to the processing queue
+        
+        Args:
+            host_id (int): Zabbix host id primary key.
+            files_list (list, optional): List of files that were recently copied, in the format: [{"remote":remote_file_name,"local":local_file_name}]. Defaults to None.
+            files_set (set, optional): Set of files (filename, path). Defaults to None.
+            reset_processing_queue (bool): Flag to reset the processing queue. 
+
+        Returns:
+            None
+        """
+        # connect to the database
+        self._connect()
+        
+        # check if files_list is provided
+        if files_list:
+            # convert list of dictionaries into a list of tuples
+            files_tuple_list = [(host_id,
+                                 os.path.dirname(item["remote"]), os.path.basename(item["remote"]),
+                                 os.path.dirname(item["local"]), os.path.basename(item["local"]))
+                                for item in files_list]
+
+            # compose query to set the process task in the database using executemany method
+            query =("INSERT INTO PRC_TASK ("
+                    "FK_HOST, "
+                    "NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
+                    "NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, "
+                    "DT_PRC_TASK) "
+                    "VALUES ("
+                    "%s, "
+                    "%s, %s, "
+                    "%s, %s, "
+                    "NOW());")
+            
+            # update database
+            self.cursor.executemany(query, files_tuple_list)
+            self.db_connection.commit()
+
+        # check if files_set is provided
+        if files_set:
+            # convert a set of type (filename, path) into a list of tuples (hostid, path, filename)
+            files_tuple_list = [(host_id, filename, filepath) for (filename,filepath) in files_set]
+
+            # compose query to set the process task in the database using executemany method
+            query =("INSERT INTO PRC_TASK ("
+                    "FK_HOST, "
+                    "NA_SERVER_FILE_NAME, NA_SERVER_FILE_PATH, "
+                    "DT_PRC_TASK) "
+                    "VALUES ("
+                    "%s, "
+                    "%s, %s, "
+                    "NOW());")
+            
+            # update database
+            self.cursor.executemany(query, files_tuple_list)
+            self.db_connection.commit()
+        
+        if reset_processing_queue:
+            # compose query to find how many database entries are in the processing queue with status = -1 for the given host_id
+            query = (f"SELECT COUNT(*) "
+                        f"FROM PRC_TASK "
+                        f"WHERE FK_HOST = {host_id} AND "
+                        f"NU_STATUS = -1;")
+            
+            self.cursor.execute(query)
+            
+            # get the number of processing errors
+            try:
+                processing_error = int(self.cursor.fetchone()[0])
+            except (TypeError, ValueError):
+                processing_error = 0
+        else:
+            processing_error = 0
+            
+        self._disconnect()
+        
+        # update PENDING_PROCESSING in the HOST table in BPDATA database for the given host_id
+        nu_processing = len(files_tuple_list) if files_tuple_list else 0
+        self._update_processing_status( host_id=host_id,
+                                        pending_processing=nu_processing,
+                                        processing_error=processing_error,
+                                        reset_processing_queue=reset_processing_queue)        
         
     # Method to set processing task as completed with success
     def processing_task_success(self,
-                                host_id:int,
-                                task_id:int) -> None:
+                                task:dict,
+                                equipment_ids:dict) -> None:
         """Set processing task as completed with success
 
         Args:
-            host_id (int): Host database primary key
-            task_id (int): Task database prumary key
+            task (dict): Dictionary including the following
+            equipment_ids (dict): Dictionary with the equipment ids associated with the processed files
         """
         
-        self._update_processing_status( host_id=host_id,
+        rfm_equipment_id = equipment_ids[task["host_uid"].lower()]
+        
+        self._update_processing_status( host_id=task['host_id'],
+                                        equipment_id = rfm_equipment_id,
                                         pending_processing=-1,
                                         processing_error=0)
         
@@ -1291,7 +1364,7 @@ class dbHandler():
         
         # compose and excecute query to delete the processing task from the BPDATA database
         query = (f"DELETE FROM PRC_TASK "
-                 f"WHERE ID_PRC_TASK = {task_id};")
+                 f"WHERE ID_PRC_TASK = {task['task_id']};")
         self.cursor.execute(query)
 
         self.db_connection.commit()
@@ -1328,10 +1401,10 @@ class dbHandler():
         self.cursor.execute(query)
         self.db_connection.commit()
         
-        self._disconnect()    
+        self._disconnect()
 
     def list_rfdb_files(self) -> set:
-        """List files in DIM_SPECTRUM_FILE table that are in k.REPO_UID
+        """List files in DIM_SPECTRUM_FILE table that are associated with k.REPO_UID
 
         Args:
             None
@@ -1341,7 +1414,7 @@ class dbHandler():
         """
         
         # Query to get files from DIM_SPECTRUM_FILE
-        query =(f"SELECT"
+        query =(f"SELECT "
                     f"NA_FILE, "
                     f"NA_PATH "
                 f"FROM "
@@ -1360,24 +1433,92 @@ class dbHandler():
         
         return db_files
 
-    def remove_rfdb_files(self, files_not_in_repo:set) -> None:
+    def remove_rfdb_files(self, files_to_remove:set) -> None:
         """Remove files in DIM_SPECTRUM_FILE table that match files_not_in_repo set
 
         Args:
-            
+            files_not_in_repo (set): Set of tuples with file name and path of files not in the repository
 
         Returns:
             None
         """
+
+        # connect to the database
+        self._connect()
+        
+        user_input = input("Do you wish to confirm each entry before deletion? (y/n): ")
+        if user_input.lower() == 'y':
+            ask_berfore = True
+        else:
+            ask_berfore = False
+
+        for filename, path in files_to_remove:
+            try:
+                if ask_berfore:
+                    user_input = input(f"Delete {path}/{filename}? (y/n): ")
+                    if user_input.lower() != 'y':
+                        files_to_remove.pop((filename, path))
+                        continue
+                
+                # Find ID_FILE
+                query =(f"SELECT "
+                            f"ID_FILE "
+                        f"FROM "
+                            f"DIM_SPECTRUM_FILE "
+                        f"WHERE "
+                            f"NA_FILE = '{filename}' AND "
+                            f"NA_PATH = '{path}' AND "
+                            f"NA_VOLUME = '{k.REPO_UID}'")
+
+                self.cursor.execute(query)
+
+                id_file = int(self.cursor.fetchone()[0])
+
+                # Exclua a linha correspondente na tabela BRIDGE_SPECTRUM_FILE
+                query =(f"DELETE FROM "
+                            f"BRIDGE_SPECTRUM_FILE "
+                        f"WHERE "
+                            f"FK_FILE = {id_file}")
+                
+                self.cursor.execute(query)
+
+                # Exclua a linha correspondente na tabela DIM_SPECTRUM_FILE
+                query =("DELETE FROM "
+                            f"DIM_SPECTRUM_FILE "
+                        f"WHERE "
+                            f"ID_FILE = {id_file}")
+                
+                self.cursor.execute(query)
+                
+                self.db_connection.commit()
+                
+                self.log.entry(f"Removed {path}/{filename} from database")
+            except Exception as e:
+                self.log.error(f"Error removing {path}/{filename} from database: {e}")
+                pass
+        
+        self._disconnect()
+        
+        return None
+
+    def list_bpdb_files(self, status:int) -> set:
+        """List files in PRC_TASK table that match a given status
+
+        Args:
+            status (int): Status flag: 0=Not executed; -1=Executed with error
+
+        Returns:
+            set: Set of tuples with file name and path of files in the database
+        """
         
         # Query to get files from DIM_SPECTRUM_FILE
-        query =(f"SELECT"
-                    f"NA_FILE, "
-                    f"NA_PATH "
+        query =(f"SELECT "
+                    f"NA_SERVER_FILE_NAME, "
+                    f"NA_SERVER_FILE_PATH "
                 f"FROM "
-                    f"DIM_SPECTRUM_FILE "
+                    f"PRC_TASK "
                 f"WHERE "
-                    f"NA_VOLUME = '{k.REPO_UID}'")
+                    f"NU_STATUS = {status}")
         
         # connect to the database
         self._connect()
@@ -1388,4 +1529,247 @@ class dbHandler():
         
         self._disconnect()
         
+        return db_files
+
+    def remove_bpdb_files(self, files_to_remove:set) -> None:
+        """Remove files in PRC_TASK table from files_to_remove set
+
+        Args:
+            files_to_remove (set): Set of tuples with file name and path of files not in the repository, to be removed from the database
+
+        Returns:
+            None
+        """
+
+        # connect to the database
+        self._connect()
+        
+        user_input = input("Do you wish to confirm each entry before deletion? (y/n): ")
+        if user_input.lower() == 'y':
+            ask_berfore = True
+        else:
+            ask_berfore = False
+
+        for filename, path in files_to_remove:
+            try:
+                if ask_berfore:
+                    user_input = input(f"Delete {path}/{filename}? (y/n): ")
+                    if user_input.lower() != 'y':
+                        files_to_remove.pop((filename, path))
+                        continue
+                    
+                query =(f"DELETE FROM "
+                            f"PRC_TASK "
+                        f"WHERE "
+                            f"NA_SERVER_FILE_NAME = '{filename}' AND "
+                            f"NA_SERVER_FILE_PATH = '{path}'")
+                
+                self.cursor.execute(query)
+            
+                self.db_connection.commit()
+                
+                self.log.entry(f"Removed {path}/{filename} from database")
+            except Exception as e:
+                self.log.error(f"Error removing {path}/{filename} from database: {e}")
+                pass
+        
+        self._disconnect()
+        
         return None
+
+    def add_task_from_file(self, file_set:set) -> None:
+        """Create a new task entry based only in a set of file names and paths
+
+        Args:
+            file_set (set): Set of files to be processed
+            db_bp (dbh.dbHandler): Database handler object
+            
+        returns:
+            set: Set of tuples with host_id and dictionary with file name and path
+        """
+        
+        # Regular expression pattern to match "host_uid"
+        # TODO: #10: Improve host_uid extraction from filename using list of known host_uids and regex
+        # TODO: #25 Add host_uid extraction from file content for missing host_uids
+        pattern = re.compile(r"[rR][fF][eE]ye002\d{3}")
+
+        # split the set into subsets based on the Host UID. Try to get host_uid with REGEX and ask user if not found
+        subsets = {}
+        for filename, path in file_set:
+            match = pattern.search(filename)
+            if not match:
+                host_uid = input(f"Host UID not found in '{filename}'. Please type host UID or press enter to skip: ") # TODO Include function to delete files in the subset with empty key
+            else:
+                host_uid = match.group(0)
+                
+            try:
+                if host_uid not in subsets:
+                    subsets[host_uid] = set()
+                
+                subsets[host_uid].add((filename, path))
+            except Exception as e:
+                self.log.entry(f"Ignoring '{path}/{filename}'. No host_uid defined. Error: {e}")
+                pass
+
+        # drop empty subset
+        try:
+            subsets.pop("")
+        except KeyError:
+            pass
+        
+        # Loop through the subsets
+        # Get database host id from host_uid and ask user if not found
+        # Add host to the database if it does not exist but a valid host_id was informed
+        # Add processing task to the database
+        for host_uid, file_set in subsets.items():          
+            
+            query =(f"SELECT ID_HOST "
+                    f"FROM HOST "
+                    f"WHERE NA_HOST_UID = '{host_uid}';")
+            
+            self._connect()
+            self.cursor.execute(query)
+            
+            try:
+                host_id = int(self.cursor.fetchone()[0])
+            except TypeError:
+                host_id = input(f"Host '{host_uid}' not found in database. Please enter host ID (Zabbix HOST_ID number) or press enter to skip this host: ")
+                    
+                try:
+                    host_id = int(host_id)
+                except ValueError:
+                    self.log.entry(f"Host '{host_uid}' not found in database and no valid HOST ID was informed. Skipping host.")
+                    continue
+
+                self._add_host(host_id, host_uid)
+                
+                self.log.entry(f"Host '{host_uid}' created in the database with ID {host_id}")
+
+            # TODO: #26 Harmonize file_list format with add_processing_task method
+            
+            self.add_processing_task(host_id=host_id,
+                                     files_set=file_set,
+                                     reset_processing_queue=True)
+            
+            self.log.entry(f"Added {len(file_set)} files from host {host_uid} to the processing queue")
+        
+        self._disconnect()
+    
+    def list_all_host_ids(self) -> list:
+        """List all host ids in the database
+
+        Args:
+            None
+
+        Returns:
+            list: List of host ids in the database
+        """
+        
+        # connect to the database
+        self._connect()
+        
+        # build query to get ID_HOST and FK_EQUIPMENT_RFDB from HOST table
+        query = ("SELECT ID_HOST, FK_EQUIPMENT_RFDB, NA_HOST_UID "
+                    "FROM HOST;")
+        
+        self.cursor.execute(query)
+        
+        host_ids = [(int(row[0]), int(row[1]), row[2]) for row in self.cursor.fetchall()]
+        
+        self._disconnect()
+        
+        return host_ids
+    
+    def count_rfm_host_files(self,
+                         equipment_id:int,
+                         volume:str = None) -> int:
+    
+        # TODO #27 Fix equipment id reset in RFM database
+        # connect to the database
+        self._connect()
+        
+        # build query to get the number of files in the database, given an equipment_id and a volume. Make use of BRIDGE_SPECTRUM_EQUIPMENT to get the FK_SPECTRUM keys and from there, count the DIN_SPECTRUM_FILE entries with the given volume and FK_SPECTRUM using the BRIDGE_SPECTRUM_FILE table.
+        query = (f"SELECT COUNT(DISTINCT DIM_SPECTRUM_FILE.NA_FILE) "
+                    f"FROM BRIDGE_SPECTRUM_FILE "
+                    f"JOIN BRIDGE_SPECTRUM_EQUIPMENT "
+                        f"ON BRIDGE_SPECTRUM_FILE.FK_SPECTRUM = BRIDGE_SPECTRUM_EQUIPMENT.FK_SPECTRUM "
+                    f"JOIN DIM_SPECTRUM_FILE "
+                        f"ON BRIDGE_SPECTRUM_FILE.FK_FILE = DIM_SPECTRUM_FILE.ID_FILE "
+                f"WHERE "
+                    f"BRIDGE_SPECTRUM_EQUIPMENT.FK_EQUIPMENT = {equipment_id}")
+            
+        if volume:
+            query = query + f" AND DIM_SPECTRUM_FILE.NA_VOLUME = '{volume}';"
+        else:
+            query = query + ";"
+            
+        self.cursor.execute(query)
+        
+        try:
+            volume_count = int(self.cursor.fetchone()[0])
+        except (TypeError, ValueError):
+            volume_count = 0
+        
+        self._disconnect()
+        
+        return volume_count
+    
+    def count_bp_host_files(self,
+                            host_id:int) -> int:
+    
+        # connect to the database
+        self._connect()
+        
+        # build query to get the number of files in the database for the given host_id, both to any value of NA_VOLUME and for an specific value defined in volume
+        query =(f"SELECT COUNT(*) "
+                    f"FROM PRC_TASK "
+                f"WHERE "
+                    f"FK_HOST = {host_id} AND "
+                    f"NU_STATUS = 0;")
+
+        self.cursor.execute(query)
+        
+        try:
+            pending_processing = int(self.cursor.fetchone()[0])
+        except (TypeError, ValueError):
+            pending_processing = 0
+
+        query =(f"SELECT COUNT(*) "
+                    f"FROM PRC_TASK "
+                f"WHERE "
+                    f"FK_HOST = {host_id} AND "
+                    f"NU_STATUS = -1;")
+        
+        self.cursor.execute(query)
+        
+        try:
+            error_processing = int(self.cursor.fetchone()[0])
+        except (TypeError, ValueError):
+            error_processing = 0
+
+        self._disconnect()
+        
+        return (pending_processing, error_processing)
+    
+    def update_host_status(  self,
+                            host_id:int,
+                            total_files:int,
+                            pending_processing:int,
+                            error_processing:int) -> None:
+        
+        # connect to the database
+        self._connect()
+        
+        # build query to update the number of files in the database for the given host_id
+        query =(f"UPDATE HOST SET "
+                    f"NU_HOST_FILES = {total_files}, "
+                    f"NU_PENDING_PROCESSING = {pending_processing}, "
+                    f"NU_PROCESSING_ERROR = {error_processing} "
+                f"WHERE "
+                    f"ID_HOST = {host_id};")
+        
+        self.cursor.execute(query)
+        
+        self.db_connection.commit()
+        
+        self._disconnect()

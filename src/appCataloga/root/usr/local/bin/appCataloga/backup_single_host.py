@@ -23,8 +23,6 @@
         Exception: If any error occurs, the exception is raised with a message describing the error.
 """
 
-import sys
-
 # Set system path to include modules from /etc/appCataloga
 import sys
 sys.path.append('/etc/appCataloga')
@@ -32,7 +30,6 @@ sys.path.append('/etc/appCataloga')
 # Import standard libraries.
 # Import modules for file processing 
 import config as k
-import db_handler as dbh
 import shared as sh
 
 import paramiko
@@ -199,7 +196,7 @@ def main():
                             halt_flag_file_handle = sftp.open(daemon_cfg['HALT_FLAG'], 'w')
                             halt_flag_file_handle.write(f'running backup for {time_since_start} seconds\n')
                             halt_flag_file_handle.close()
-                        except:
+                        except Exception as e:
                             log.warning(f"Could not raise halt_flag for host {task.data['host_add']['value']}.{str(e)}")
                             pass
                     
@@ -236,13 +233,13 @@ def main():
                 # Append the list of files in done_backup_list_remote to the BACKUP_DONE file in the remote host
                 backup_done_file = sftp.open(daemon_cfg['BACKUP_DONE'], 'a')
                 
-            backup_done_file.write('\n'.join(done_backup_list_remote) + f'\n')
+            backup_done_file.write("\n".join(done_backup_list_remote) + "\n")
             backup_done_file.close()
                 
             # Overwrite the DUE_BACKUP file in the remote host with the list of files in due_backup_list
             if len(due_backup_list)>0:
                 due_backup_file = sftp.open(daemon_cfg['DUE_BACKUP'], 'w')
-                due_backup_file.write('\n'.join(due_backup_list) + f'\n')
+                due_backup_file.write("\n".join(due_backup_list) + "\n")
                 due_backup_file.close()
             else:
                 # Remove the DUE_BACKUP file in the remote host if there are no more files to backup

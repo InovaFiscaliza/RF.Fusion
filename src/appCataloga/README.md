@@ -462,6 +462,37 @@ systemctl enable --now appCataloga.service
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
+# Usage and Maintenance
+
+To backup the database, run the following command
+
+```shell
+mysqldump -u root -p --all-databases --result-file=\tmp\appCataloga\databases.sql
+```
+
+To restore the database, run the following command
+
+```shell
+mysql -u root -p < \tmp\appCataloga\databases.sql
+```
+
+To refresh the database entries and reference measurement data, run the following command
+
+```shell
+/usr/local/bin/appCataloga/tool_refresh_server.py
+```
+
+To refresh the database entries and reference data for a specific node, run the following commands
+
+```shell
+
+/usr/local/bin/appCataloga/tool_refresh_node.py <node_list>
+```
+
+where node_list is a comma separated file listing nodes to be checked.
+
+File should include the following columns: <node_id>,<node_UID>,<node_IP>,<remote_user>,<remote_password>
+
 # Roadmap
 
 This section presents a simplified view of the roadmap and knwon issues.
