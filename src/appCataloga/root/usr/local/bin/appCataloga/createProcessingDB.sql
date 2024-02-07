@@ -23,29 +23,29 @@ CREATE TABLE HOST (
 );
 
 -- HOST BACKUP TASK LIST
-CREATE TABLE BKP_TASK (
-    ID_BKP_TASK INT NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT 'Primary Key to backup task table',
+CREATE TABLE HOST_TASK (
+    ID_HOST_TASK INT NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT 'Primary Key to backup task table',
     FK_HOST INT COMMENT 'Foreign key to host table',
-    DT_BKP_TASK DATETIME COMMENT 'Date and time of the backup task was requested',
+    DT_HOST_TASK DATETIME COMMENT 'Date and time of the backup task was requested',
     NA_HOST_ADDRESS VARCHAR(50) COMMENT 'IP address or hostname',
     NA_HOST_PORT INT COMMENT 'Port to access the host',
     NA_HOST_USER VARCHAR(50) COMMENT 'Username to access the host',
     NA_HOST_PASSWORD VARCHAR(50) COMMENT 'Password to access the host',
     NU_STATUS TINYINT DEFAULT 0 COMMENT 'Status flag: 0=Not executed; -1=Executed with error; 1=In progress; 2=Executed successfully',
     NA_MESSAGE TEXT COMMENT 'Error message and other information',
-    CONSTRAINT FK_BKP_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
+    CONSTRAINT FK_HOST_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
 );
 
 -- LIST OF FILES FOR PROCESSING
-CREATE TABLE PRC_TASK (
-    ID_PRC_TASK INT NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT 'Primary Key to processing task table',
+CREATE TABLE FILE_TASK (
+    ID_FILE_TASK INT NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT 'Primary Key to processing task table',
     FK_HOST INT COMMENT 'Foreign key to host table',
     NA_HOST_FILE_PATH VARCHAR(3000) COMMENT 'Path to the file in the host',
     NA_HOST_FILE_NAME VARCHAR(100) COMMENT 'Name of the file in the host',
     NA_SERVER_FILE_PATH VARCHAR(3000) COMMENT 'Path to the file in the server',
     NA_SERVER_FILE_NAME VARCHAR(100) COMMENT 'Name of the file in the server',
-    DT_PRC_TASK DATETIME COMMENT 'Date and time of the file processing',
-    NU_STATUS TINYINT DEFAULT 0 COMMENT 'Status flag: 0=Not executed; -1=Executed with error',
+    DT_FILE_TASK DATETIME COMMENT 'Date and time of the file processing',
+    NU_STATUS TINYINT DEFAULT 0 COMMENT 'Status flag: 0=Not executed; -2=Processing error, -1=Backup error, 0=Nothing to do, 1=Pending Backup; 2=Pending Processing',
     NA_MESSAGE TEXT COMMENT 'Error message and other information',
-    CONSTRAINT FK_PRC_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
+    CONSTRAINT FK_FILE_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
 );

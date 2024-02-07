@@ -53,71 +53,129 @@ ARGUMENTS = {
 class HaltFlagError(Exception):
     pass
 
+class sftp_connection():
+    
+    def __init__(self, host_add:str, port:str, user:str, password:str, log:sh.log) -> None:
+        """Initialize the SSH client and SFTP connection to a remote host with log support."""
+        
+        try:
+            self.log = log
+            self.host_add = host_add
+            self.ssh_client = paramiko.SSHClient()
+            self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.ssh_client.connect(hostname=host_add, port=port, username=user, password=password)
+            self.sftp = self.ssh_client.open_sftp()
+        except Exception as e:
+            self.log.error(f"Error initializing SSH to '{host_add}'. {str(e)}")
+            raise
+                
+    def test(self, filename:str) -> bool:
+        """Test if a file exists in the remote host
+
+        Args:
+            file (str): File name to be tested
+
+        Returns:
+            bool: True if the file exists, False otherwise
+        """
+        
+        try:
+            self.sftp.lstat(filename)
+            return True
+        except FileNotFoundError:
+            return False
+        except Exception as e:
+            self.log.error(f"Error checking '{filename}' in '{self.host_add}'. {str(e)}")
+            raise
+    
+    def touch(self, filename:str) -> None:
+        """Create a file in the remote host
+
+        Args:
+            file (str): File name to be created
+        """
+        
+        try:
+            self.sftp.open(filename, 'w').close()
+        except Exception as e:
+            self.log.error(f"Error creating '{filename}' in '{self.host_add}'. {str(e)}")
+            raise
+        
+    def read(self, filename, mode):
+        try:
+            remote_file_handle = self.sftp.open(filename, mode)
+            file_content = remote_file_handle.read()
+            remote_file_handle.close()
+            return file_content
+        except FileNotFoundError:
+            self.log.error(f"File '{filename}' not found in '{self.host_add}'")
+            return ""
+        except Exception as e:
+            self.log.error(f"Error reading '{filename}' in '{self.host_add}'. {str(e)}")
+            raise
+    
+    def transfer(self, remote_file, local_file):
+        return self.sftp.get(remote_file, local_file)
+    
+    def remove(self, filename):
+        return self.sftp.remove(filename)
+    
+    def close(self):
+        self.sftp.close()
+        self.ssh_client.close()
+
 def main():
     # create a warning message object
     log = sh.log()
     
     # create an argument object
-    task = sh.argument(log, ARGUMENTS)
+    call_argument = sh.argument(log, ARGUMENTS)
     
     # parse the command line arguments
-    task.parse(sys.argv)
+    call_argument.parse(sys.argv)
+    task_id = call_argument.data["host_add"]["value"]
     
     try:
         # create db object using databaseHandler class for the backup and processing database
-        db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
+        db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error("Error initializing database: {e}")
+        log.error(f"Error initializing database: {e}")
         exit(1)
     
-    task = db_bp.next_backup_task(task.data["host_add"]["value"])
+    """	
+        task={  "task_id": str,
+                "host_id": str,
+                "host_add": str,
+                "port": str,
+                "user": str,
+                "password": str}"""  
+    
+    task = db_bp.next_host_task(task_id=task_id)
+
+    # Create a SSH client and SFTP connection to the remote host
+    sftp_conn = sftp_connection(   hostname=task["host_add"],
+                                port=task["port"],
+                                username=task["user"],
+                                password=task["passWORD"],
+                                log=log)
     
     try:
-        # Create an SSH client
-        ssh_client = paramiko.SSHClient()
         
-        # Automatically add the server's host key (this is insecure)
-        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-        # Connect to the remote host
-        ssh_client.connect(hostname=task.data["host_add"]["value"],
-                           port=task.data["port"]["value"],
-                           username=task.data["user"]["value"],
-                           password=task.data["pass"]["value"])
-
-        # SFTP (Secure FTP) connection
-        sftp = ssh_client.open_sftp()
-    
-        # Get the remote host configuration file
-        daemon_cfg_file = sftp.open(k.DAEMON_CFG_FILE, 'r')
-        daemon_cfg_str = daemon_cfg_file.read()
-        daemon_cfg_file.close()
+        # * Get the remote host configuration file
+        daemon_cfg_str = sftp_conn.read(k.DAEMON_CFG_FILE, 'r')
         
         # Parse the configuration file
         daemon_cfg = sh.parse_cfg(daemon_cfg_str)
 
         # Set the time limit for HALT_FLAG timeout control according to the HALT_TIMEOUT parameter in the remote host
         time_limit = daemon_cfg['HALT_TIMEOUT']*k.SECONDS_IN_MINUTE*k.BKP_HOST_ALLOTED_TIME_FRACTION
-
-        def _check_remote_file(sftp, file_name, task):
-            if len(file_name) == 0:
-                return False
-            else:
-                try: 
-                    sftp.lstat(file_name)
-                    return True
-                except FileNotFoundError:
-                    return False
-                except Exception as e:
-                    log.error(f"Error checking {file_name} in remote host {task.data['host_add']['value']}. {str(e)}")
-                    raise
-
+        
+        # * Check if exist the HALT_FLAG file in the remote host
         loop_count = 0
-        # Check if exist the HALT_FLAG file in the remote host
         # If exists wait and retry each 5 minutes for 30 minutes  
-        while _check_remote_file(sftp, daemon_cfg['HALT_FLAG'], task):
+        while sftp_conn.test(daemon_cfg['HALT_FLAG']):
             # If HALT_FLAG exists, wait for 5 minutes and test again
-            time.sleep(k.BKP_TASK_REQUEST_WAIT_TIME)
+            time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME)
             
             loop_count += 1
             
@@ -131,28 +189,28 @@ def main():
         halt_flag_time = time.time()
         
         # Create a HALT_FLAG file in the remote host
-        sftp.open(daemon_cfg['HALT_FLAG'], 'w').close()
+        sftp_conn.touch(daemon_cfg['HALT_FLAG'])
                         
-        try:
-            # Get the list of files to backup from DUE_BACKUP file
-            due_backup_file = sftp.open(daemon_cfg['DUE_BACKUP'], 'r')
-            due_backup_str = due_backup_file.read()
-            due_backup_file.close()
-            
+        # * Get the list of files to backup from DUE_BACKUP file
+        # due_backup_file = sftp.open(daemon_cfg['DUE_BACKUP'], 'r')
+        due_backup_str = sftp_conn.read(daemon_cfg['DUE_BACKUP'], 'r')
+        
+        if due_backup_str == "":
+            nu_host_files = 0
+            due_backup_list = []
+        else:
             # Clean the string and split the into a list of files
             due_backup_str = due_backup_str.decode(encoding='utf-8')
             due_backup_str = ''.join(due_backup_str.split('\x00'))
             due_backup_list = due_backup_str.splitlines()
             nu_host_files = len(due_backup_list)
-                        
-        except FileNotFoundError:
-            nu_host_files = 0
-            due_backup_list = []
-            pass
-        except Exception as e:
-            log.error(f"Error reading {daemon_cfg['DUE_BACKUP']} in remote host {task.data['host_add']['value']}. {str(e)}")
-            raise
 
+        # update database information
+        # ! FIX AT THIS POINT
+        db_bp.update_host_status(task_id=task_id, nu_host_files=nu_host_files, nu_pending_backup=nu_host_files)
+        db_bp.add_processing_task(host_id=task["host_id"], files_list=due_backup_list)
+        
+        # * Peform the backup
         # initializa backup control variables
         nu_backup_error = 0
         done_backup_list = []

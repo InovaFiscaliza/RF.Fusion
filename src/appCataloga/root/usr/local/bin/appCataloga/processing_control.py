@@ -285,9 +285,9 @@ def main():
                 log.entry(f"Finished processing '{filename}'.")
                 
             else:
-                log.entry(f"No processing task. Waiting for {k.BKP_TASK_REQUEST_WAIT_TIME/k.SECONDS_IN_MINUTE} minutes.")
+                log.entry(f"No processing task. Waiting for {k.HOST_TASK_REQUEST_WAIT_TIME/k.SECONDS_IN_MINUTE} minutes.")
                 # wait for a task to be posted
-                time.sleep(k.BKP_TASK_REQUEST_WAIT_TIME)
+                time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME)
                 
         except Exception as e:
             try:

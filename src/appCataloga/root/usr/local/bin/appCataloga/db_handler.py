@@ -934,7 +934,7 @@ class dbHandler():
         self._disconnect()
 
     # get host status data from the database
-    def get_host_task_status(self,hostid="host_id"):        
+    def get_host_status(self,hostid="host_id"):        
         # TODO #34 Improve task reporting by separating backup tasks from individual backup transactions
         # connect to the database
         self._connect()
@@ -1009,7 +1009,7 @@ class dbHandler():
         return output
     
     # Method add a new host to the backup queue
-    def add_backup_task(self,
+    def add_host_task(self,
                         hostid:str,
                         host_uid:str,
                         host_addr:str,
@@ -1045,8 +1045,8 @@ class dbHandler():
         self.db_connection.commit()
         
         # compose query to set the backup task in the BPDATA database
-        query = (f"INSERT INTO BKP_TASK "
-                 f"(FK_HOST, DT_BKP_TASK, NA_HOST_ADDRESS,NA_HOST_PORT,NA_HOST_USER,NA_HOST_PASSWORD) "
+        query = (f"INSERT INTO HOST_TASK "
+                 f"(FK_HOST, DT_HOST_TASK, NA_HOST_ADDRESS,NA_HOST_PORT,NA_HOST_USER,NA_HOST_PASSWORD) "
                  f"VALUES "
                  f"('{hostid}', NOW(), '{host_addr}', '{host_port}', '{host_user}', '{host_passwd}');")
 
@@ -1056,7 +1056,7 @@ class dbHandler():
         self._disconnect()
         
     # get next host in the list for data backup
-    def next_backup_task(self,
+    def next_host_task(self,
                          task_id:int=None) -> dict:
         """This method gets the next host in the list for data backup
         
@@ -1072,14 +1072,14 @@ class dbHandler():
 
         if not task_id:
             # build query to get the next backup task
-            query = (   "SELECT ID_BKP_TASK, FK_HOST, NA_HOST_ADDRESS, NA_HOST_PORT, NA_HOST_USER, NA_HOST_PASSWORD "
-                        "FROM BKP_TASK "
-                        "ORDER BY DT_BKP_TASK "
+            query = (   "SELECT ID_HOST_TASK, FK_HOST, NA_HOST_ADDRESS, NA_HOST_PORT, NA_HOST_USER, NA_HOST_PASSWORD "
+                        "FROM HOST_TASK "
+                        "ORDER BY DT_HOST_TASK "
                         "LIMIT 1;")
         else:
-            query = (   "SELECT ID_BKP_TASK, FK_HOST, NA_HOST_ADDRESS, NA_HOST_PORT, NA_HOST_USER, NA_HOST_PASSWORD "
-                        "FROM BKP_TASK "
-                        f"WHERE ID_BKP_TASK = {task_id};")
+            query = (   "SELECT ID_HOST_TASK, FK_HOST, NA_HOST_ADDRESS, NA_HOST_PORT, NA_HOST_USER, NA_HOST_PASSWORD "
+                        "FROM HOST_TASK "
+                        f"WHERE ID_HOST_TASK = {task_id};")
         
         self.cursor.execute(query)
         
@@ -1098,59 +1098,96 @@ class dbHandler():
         
         return output
 
-    # Method to update the backup status information in the database
-    def update_backup_status(self, task_status):
-        """This method updates the backup status information in the database	
-        
+    def update_host_status( self,
+                            host_id:int,
+                            equipment_id:int = None,
+                            reset:bool = False,
+                            host_files:int = None,
+                            pending_host_check:int = None,
+                            host_check_error:int = None,
+                            pending_backup:int = None,
+                            backup_error:int = None,
+                            pending_processing:int = None,
+                            processing_error:int = None) -> None:
+        """This method set/update summary information in the database
+
         Args:
-            task_status (dict): {   "host_id": host_id,
-                                    "nu_host_files": nu_host_files,
-                                    "nu_pending_backup": nu_pending_backup,
-                                    "nu_backup_error": nu_backup_error}
-        Returns:
-            none: none
+            host_id (int): Zabbix host id primary key.
+            equipment_id (int): Equipment id primary key. Default is None.
+            reset (bool): If set to True, reset all values to the given values. Default is False.
+            
+            All other parameters are optional and default to None. 
+            - host_files (int): Number of files in the host. 
+            - pending_host_check (int): Number of files pending backup.
+            - host_check_error (int): Number of files with backup error.
+            - pending_backup (int): Number of files pending backup.
+            - backup_error (int): Number of files with backup error.
+            - pending_processing (int): Number of files pending processing.
+            - processing_error (int): Number of files with processing error.
         """
-                
+        
         # connect to the database
         self._connect()
-
+        
+        # compose and excecute query to update the processing status by adding pending_processing variable to existing value in the database
         query_parts = []
-        if task_status['nu_host_files'] > 0:
-            query_parts.append(f"NU_HOST_FILES = NU_HOST_FILES + {task_status['nu_host_files']}")
-        elif task_status['nu_host_files'] < 0:
-            query_parts.append(f"NU_HOST_FILES = NU_HOST_FILES - {-task_status['nu_host_files']}")
-        else: # if nu_host_files == 0
-            pass
+        
+        update_data = { "NU_HOST_FILES": host_files,
+                        "NU_PENDING_HOST_CHECK": pending_host_check,
+                        "NU_HOST_CHECK_ERROR": host_check_error,
+                        "NU_PENDING_BACKUP": pending_backup,
+                        "NU_BACKUP_ERROR": backup_error,
+                        "NU_PENDING_PROCESSING": pending_processing,
+                        "NU_PROCESSING_ERROR": processing_error}
+        
+        for column, value in update_data.items():
+            if value > 0:
+                if reset:
+                    query_parts.append(f"{column} = {value}")
+                else:
+                    query_parts.append(f"{column} = {column} + {value}")
+            elif value < 0:
+                if reset:
+                    query_parts.append(f"{column} = {value}")
+                else:
+                    query_parts.append(f"{column} = {column} - {-value}")
+            elif value == 0:
+                if reset:
+                    query_parts.append(f"{column} = 0")
+                else:
+                    continue
+            else:
+                continue
 
-        if task_status['nu_pending_backup'] > 0:
-            query_parts.append(f"NU_PENDING_HOST_CHECK = NU_PENDING_HOST_CHECK + {task_status['nu_pending_backup']}")
-        elif task_status['nu_pending_backup'] < 0:
-            query_parts.append(f"NU_PENDING_HOST_CHECK = NU_PENDING_HOST_CHECK - {-task_status['nu_pending_backup']}")
-        else: # if nu_pending_backup == 0
-            pass
+        query = "UPDATE HOST SET " + ", ".join(map(str, query_parts))
         
-        if task_status['nu_backup_error'] > 0:
-            query_parts.append(f"NU_HOST_CHECK_ERROR = NU_HOST_CHECK_ERROR + {task_status['nu_backup_error']}")
-        elif task_status['nu_backup_error'] < 0:
-            query_parts.append(f"NU_HOST_CHECK_ERROR = NU_HOST_CHECK_ERROR - {-task_status['nu_backup_error']}")
-        else: # if nu_backup_error == 0
-            pass
+        if (pending_host_check is not None) or (host_check_error is not None):
+            query = query + ", DT_LAST_HOST_CHECK = NOW()"
         
-        query = "UPDATE HOST SET " + ",".join(map(str, query_parts)) + f", DT_LAST_PROCESSING = NOW() WHERE ID_HOST = {task_status['host_id']};"
-            
+        if (pending_backup is not None) or (backup_error is not None):
+            query = query + ", DT_LAST_BACKUP = NOW()"
+        
+        if (pending_processing is not None) or (processing_error is not None):
+            query = query + ", DT_LAST_PROCESSING = NOW()"
+
+        if equipment_id:
+            query = query + f", FK_EQUIPMENT_RFDB = {equipment_id} WHERE ID_HOST = {host_id};"
+        else:
+            query = query + f" WHERE ID_HOST = {host_id};"
+
         self.cursor.execute(query)
         self.db_connection.commit()
-                
+        
         self._disconnect()
 
     # Method to remove a completed backup task from the database
-    def remove_backup_task(self, task):
+    def remove_host_task(self, task):
         # connect to the database
         self._connect()
         
         # compose and excecute query to delete the backup task from the BKPDATA database
-        query = (f"DELETE FROM BKP_TASK "
-                 f"WHERE ID_BKP_TASK = {task['task_id']};")
+        query = (f"DELETE FROM HOST_TASK "
+                 f"WHERE ID_HOST_TASK = {task['task_id']};")
         self.cursor.execute(query)
 
         # update database statistics for the host
@@ -1181,14 +1218,14 @@ class dbHandler():
         self._connect()
 
         # build query to get the next backup task with host_uid and NU_STATUS different = 0 (not processed)
-        query = (   "SELECT PRC_TASK.ID_PRC_TASK, "
-                            "PRC_TASK.FK_HOST, HOST.NA_HOST_UID, "
-                            "PRC_TASK.NA_HOST_FILE_PATH, PRC_TASK.NA_HOST_FILE_NAME, "
-                            "PRC_TASK.NA_SERVER_FILE_PATH, PRC_TASK.NA_SERVER_FILE_NAME "
-                    "FROM PRC_TASK "
-                    "JOIN HOST ON PRC_TASK.FK_HOST = HOST.ID_HOST "
-                    "WHERE PRC_TASK.NU_STATUS = 2 "
-                    "ORDER BY PRC_TASK.DT_PRC_TASK "
+        query = (   "SELECT FILE_TASK.ID_FILE_TASK, "
+                            "FILE_TASK.FK_HOST, HOST.NA_HOST_UID, "
+                            "FILE_TASK.NA_HOST_FILE_PATH, FILE_TASK.NA_HOST_FILE_NAME, "
+                            "FILE_TASK.NA_SERVER_FILE_PATH, FILE_TASK.NA_SERVER_FILE_NAME "
+                    "FROM FILE_TASK "
+                    "JOIN HOST ON FILE_TASK.FK_HOST = HOST.ID_HOST "
+                    "WHERE FILE_TASK.NU_STATUS = 2 "
+                    "ORDER BY FILE_TASK.DT_FILE_TASK "
                     "LIMIT 1;")
         
         self.cursor.execute(query)
@@ -1209,57 +1246,6 @@ class dbHandler():
         self._disconnect()
         
         return output
-
-    # Method to update the processing status information in the database
-    def _update_processing_status(  self,
-                                    host_id:int,
-                                    pending_processing:int,
-                                    processing_error:int,
-                                    reset_processing_queue:bool = False,
-                                    equipment_id:int = None) -> None:
-        """This method updates the processing status information in the database	
-
-        Args:
-            host_id (int): Zabbix host id primary key.
-            pending_processing (int): Number of pending processing tasks to be added or removed from the database
-            processing_error (int): Number of processing errors to be added or removed from the database
-        """
-        
-        # connect to the database
-        self._connect()
-        
-        # compose and excecute query to update the processing status by adding pending_processing variable to existing value in the database
-        query_parts = []
-        
-        if reset_processing_queue:
-            query_parts.append(f"NU_PENDING_PROCESSING = {pending_processing}")
-            query_parts.append(f"NU_PROCESSING_ERROR = {processing_error}")
-        else:
-            if pending_processing > 0:
-                query_parts.append(f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING + {pending_processing}")
-            elif pending_processing < 0:
-                query_parts.append(f"NU_PENDING_PROCESSING = NU_PENDING_PROCESSING - {-pending_processing}")
-            else: # if pending_processing == 0
-                pass
-            
-            if processing_error > 0:
-                query_parts.append(f"NU_PROCESSING_ERROR = NU_PROCESSING_ERROR + {processing_error}")
-            elif processing_error < 0:
-                query_parts.append(f"NU_PROCESSING_ERROR = NU_PROCESSING_ERROR - {-processing_error}")
-            else: # if processing_error == 0
-                pass
-
-        query = "UPDATE HOST SET " + ", ".join(map(str, query_parts)) + ", DT_LAST_PROCESSING = NOW()"
-        
-        if equipment_id:
-            query = query + f", FK_EQUIPMENT_RFDB = {equipment_id} WHERE ID_HOST = {host_id};"
-        else:
-            query = query + f" WHERE ID_HOST = {host_id};"
-
-        self.cursor.execute(query)
-        self.db_connection.commit()
-        
-        self._disconnect()
 
     # Method to add a new processing task to the database
     def add_processing_task(self,
@@ -1290,11 +1276,11 @@ class dbHandler():
                                 for item in files_list]
 
             # compose query to set the process task in the database using executemany method
-            query =("INSERT INTO PRC_TASK ("
+            query =("INSERT INTO FILE_TASK ("
                     "FK_HOST, "
                     "NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
                     "NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, "
-                    "DT_PRC_TASK, "
+                    "DT_FILE_TASK, "
                     "NU_STATUS)"
                     "VALUES ("
                     "%s, "
@@ -1313,10 +1299,10 @@ class dbHandler():
             files_tuple_list = [(host_id, filename, filepath) for (filename,filepath) in files_set]
 
             # compose query to set the process task in the database using executemany method
-            query =("INSERT INTO PRC_TASK ("
+            query =("INSERT INTO FILE_TASK ("
                     "FK_HOST, "
                     "NA_SERVER_FILE_NAME, NA_SERVER_FILE_PATH, "
-                    "DT_PRC_TASK) "
+                    "DT_FILE_TASK) "
                     "VALUES ("
                     "%s, "
                     "%s, %s, "
@@ -1329,7 +1315,7 @@ class dbHandler():
         if reset_processing_queue:
             # compose query to find how many database entries are in the processing queue with status = -1 for the given host_id
             query = (f"SELECT COUNT(*) "
-                        f"FROM PRC_TASK "
+                        f"FROM FILE_TASK "
                         f"WHERE FK_HOST = {host_id} AND "
                         f"NU_STATUS = -2;")
             
@@ -1347,11 +1333,11 @@ class dbHandler():
         
         # update PENDING_PROCESSING in the HOST table in BPDATA database for the given host_id
         nu_processing = len(files_tuple_list) if files_tuple_list else 0
-        self._update_processing_status( host_id=host_id,
-                                        pending_processing=nu_processing,
-                                        processing_error=processing_error,
-                                        reset_processing_queue=reset_processing_queue)        
-        
+        self.update_host_status(    host_id=host_id,
+                                    pending_processing=nu_processing,
+                                    processing_error=processing_error,
+                                    reset=reset_processing_queue)        
+                
     # Method to set processing task as completed with success
     def processing_task_success(self,
                                 task:dict,
@@ -1365,17 +1351,17 @@ class dbHandler():
         
         rfm_equipment_id = equipment_ids[task["host_uid"].lower()]
         
-        self._update_processing_status( host_id=task['host_id'],
-                                        equipment_id = rfm_equipment_id,
-                                        pending_processing=-1,
-                                        processing_error=0)
+        self.update_host_status(    host_id=task['host_id'],
+                                    equipment_id = rfm_equipment_id,
+                                    pending_processing=-1,
+                                    processing_error=0)
         
         # connect to the database
         self._connect()
         
         # compose and excecute query to delete the processing task from the BPDATA database
-        query = (f"DELETE FROM PRC_TASK "
-                 f"WHERE ID_PRC_TASK = {task['task_id']};")
+        query = (f"DELETE FROM FILE_TASK "
+                 f"WHERE ID_FILE_TASK = {task['task_id']};")
         self.cursor.execute(query)
 
         self.db_connection.commit()
@@ -1395,19 +1381,19 @@ class dbHandler():
                  "message": message}
         """
                 
-        self._update_processing_status( host_id=task["host_id"],
-                                        pending_processing=-1,
-                                        processing_error=1)
+        self.update_host_status(    host_id=task["host_id"],
+                                    pending_processing=-1,
+                                    processing_error=1)
         # connect to the database
         self._connect()
         
         message = task["message"].replace("'","''")
         # compose and excecute query to set NU_STATUS to -1 (Error) and server path in the BPDATA database
-        query = (f"UPDATE PRC_TASK "
+        query = (f"UPDATE FILE_TASK "
                     f"SET NU_STATUS = -2, "
                     f"NA_SERVER_FILE_PATH = '{task['server path']}', "
                     f"NA_MESSAGE = '{message}' "
-                    f"WHERE ID_PRC_TASK = {task['task_id']};")
+                    f"WHERE ID_FILE_TASK = {task['task_id']};")
         
         self.cursor.execute(query)
         self.db_connection.commit()
@@ -1513,7 +1499,7 @@ class dbHandler():
         return None
 
     def list_bpdb_files(self, status:int) -> set:
-        """List files in PRC_TASK table that match a given status
+        """List files in FILE_TASK table that match a given status
 
         Args:
             status (int): Status flag: 0=Not executed; -1=Executed with error
@@ -1527,7 +1513,7 @@ class dbHandler():
                     f"NA_SERVER_FILE_NAME, "
                     f"NA_SERVER_FILE_PATH "
                 f"FROM "
-                    f"PRC_TASK "
+                    f"FILE_TASK "
                 f"WHERE "
                     f"NU_STATUS = {status}")
         
@@ -1543,7 +1529,7 @@ class dbHandler():
         return db_files
 
     def remove_bpdb_files(self, files_to_remove:set) -> None:
-        """Remove files in PRC_TASK table from files_to_remove set
+        """Remove files in FILE_TASK table from files_to_remove set
 
         Args:
             files_to_remove (set): Set of tuples with file name and path of files not in the repository, to be removed from the database
@@ -1570,7 +1556,7 @@ class dbHandler():
                         continue
                     
                 query =(f"DELETE FROM "
-                            f"PRC_TASK "
+                            f"FILE_TASK "
                         f"WHERE "
                             f"NA_SERVER_FILE_NAME = '{filename}' AND "
                             f"NA_SERVER_FILE_PATH = '{path}'")
@@ -1733,7 +1719,7 @@ class dbHandler():
         
         # build query to get the number of files in the database for the given host_id, both to any value of NA_VOLUME and for an specific value defined in volume
         query =(f"SELECT COUNT(*) "
-                    f"FROM PRC_TASK "
+                    f"FROM FILE_TASK "
                 f"WHERE "
                     f"FK_HOST = {host_id} AND "
                     f"NU_STATUS = 0;")
@@ -1746,7 +1732,7 @@ class dbHandler():
             pending_processing = 0
 
         query =(f"SELECT COUNT(*) "
-                    f"FROM PRC_TASK "
+                    f"FROM FILE_TASK "
                 f"WHERE "
                     f"FK_HOST = {host_id} AND "
                     f"NU_STATUS = -2;")
