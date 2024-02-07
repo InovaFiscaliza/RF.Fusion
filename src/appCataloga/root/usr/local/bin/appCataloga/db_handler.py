@@ -919,7 +919,7 @@ class dbHandler():
         query = (f"INSERT IGNORE INTO HOST "
                     f"(ID_HOST, NA_HOST_UID, "
                     f"NU_HOST_FILES, "
-                    f"NU_PENDING_BACKUP, NU_BACKUP_ERROR, "
+                    f"NU_PENDING_HOST_CHECK, NU_HOST_CHECK_ERROR, "
                     f"NU_PENDING_PROCESSING, NU_PROCESSING_ERROR) "
                     f"VALUES "
                     f"('{hostid}', '{host_uid}', "
@@ -943,8 +943,8 @@ class dbHandler():
         query = (f"SELECT "
                     f"ID_HOST, "
                     f"NU_HOST_FILES, "
-                    f"NU_PENDING_BACKUP, "
-                    f"DT_LAST_BACKUP, "
+                    f"NU_PENDING_HOST_CHECK, "
+                    f"DT_LAST_HOST_CHECK, "
                     f"NU_PENDING_PROCESSING, "
                     f"DT_LAST_PROCESSING "
                     f"FROM HOST "
@@ -1037,7 +1037,7 @@ class dbHandler():
         
         # compose query to add 1 to PENDING_BACKUP in the HOST table in BPDATA database for the given host_id
         query = (f"UPDATE HOST "
-                    f"SET NU_PENDING_BACKUP = NU_PENDING_BACKUP + 1 "
+                    f"SET NU_PENDING_HOST_CHECK = NU_PENDING_HOST_CHECK + 1 "
                     f"WHERE ID_HOST = '{hostid}';")
         
         # update database
@@ -1114,16 +1114,16 @@ class dbHandler():
             pass
 
         if task_status['nu_pending_backup'] > 0:
-            query_parts.append(f"NU_PENDING_BACKUP = NU_PENDING_BACKUP + {task_status['nu_pending_backup']}")
+            query_parts.append(f"NU_PENDING_HOST_CHECK = NU_PENDING_HOST_CHECK + {task_status['nu_pending_backup']}")
         elif task_status['nu_pending_backup'] < 0:
-            query_parts.append(f"NU_PENDING_BACKUP = NU_PENDING_BACKUP - {-task_status['nu_pending_backup']}")
+            query_parts.append(f"NU_PENDING_HOST_CHECK = NU_PENDING_HOST_CHECK - {-task_status['nu_pending_backup']}")
         else: # if nu_pending_backup == 0
             pass
         
         if task_status['nu_backup_error'] > 0:
-            query_parts.append(f"NU_BACKUP_ERROR = NU_BACKUP_ERROR + {task_status['nu_backup_error']}")
+            query_parts.append(f"NU_HOST_CHECK_ERROR = NU_HOST_CHECK_ERROR + {task_status['nu_backup_error']}")
         elif task_status['nu_backup_error'] < 0:
-            query_parts.append(f"NU_BACKUP_ERROR = NU_BACKUP_ERROR - {-task_status['nu_backup_error']}")
+            query_parts.append(f"NU_HOST_CHECK_ERROR = NU_HOST_CHECK_ERROR - {-task_status['nu_backup_error']}")
         else: # if nu_backup_error == 0
             pass
         
@@ -1146,8 +1146,8 @@ class dbHandler():
 
         # update database statistics for the host
         query = (f"UPDATE HOST "
-                 f"SET NU_PENDING_BACKUP = NU_PENDING_BACKUP - 1, "
-                 f"DT_LAST_BACKUP = NOW() "
+                 f"SET NU_PENDING_HOST_CHECK = NU_PENDING_HOST_CHECK - 1, "
+                 f"DT_LAST_HOST_CHECK = NOW() "
                  f"WHERE ID_HOST = '{task['host_id']}';")
         self.cursor.execute(query)
         self.db_connection.commit()
