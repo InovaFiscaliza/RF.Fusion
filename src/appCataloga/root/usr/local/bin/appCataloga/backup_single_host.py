@@ -207,8 +207,10 @@ def main():
 
         # update database information
         # ! FIX AT THIS POINT
-        db_bp.update_host_status(task_id=task_id, nu_host_files=nu_host_files, nu_pending_backup=nu_host_files)
-        db_bp.add_processing_task(host_id=task["host_id"], files_list=due_backup_list)
+        db_bp.update_host_status(host_id
+            
+            task_id=task_id, nu_host_files=nu_host_files, nu_pending_backup=nu_host_files)
+        db_bp.add_file_task(host_id=task["host_id"], files_list=due_backup_list)
         
         # * Peform the backup
         # initializa backup control variables
