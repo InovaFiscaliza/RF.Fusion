@@ -1056,8 +1056,12 @@ class dbHandler():
         self._disconnect()
         
     # get next host in the list for data backup
-    def next_backup_task(self):
+    def next_backup_task(self,
+                         task_id:int=None) -> dict:
         """This method gets the next host in the list for data backup
+        
+        Args:
+            task_id (int): Optional. If set, get the specific task with the given ID
 
         Returns:
             dict: Dictionary with the pending task information: task_id, host_id, host, port, user, password
@@ -1066,11 +1070,16 @@ class dbHandler():
         # connect to the database
         self._connect()
 
-        # build query to get the next backup task
-        query = (   "SELECT ID_BKP_TASK, FK_HOST, NA_HOST_ADDRESS, NA_HOST_PORT, NA_HOST_USER, NA_HOST_PASSWORD "
-                    "FROM BKP_TASK "
-                    "ORDER BY DT_BKP_TASK "
-                    "LIMIT 1;")
+        if not task_id:
+            # build query to get the next backup task
+            query = (   "SELECT ID_BKP_TASK, FK_HOST, NA_HOST_ADDRESS, NA_HOST_PORT, NA_HOST_USER, NA_HOST_PASSWORD "
+                        "FROM BKP_TASK "
+                        "ORDER BY DT_BKP_TASK "
+                        "LIMIT 1;")
+        else:
+            query = (   "SELECT ID_BKP_TASK, FK_HOST, NA_HOST_ADDRESS, NA_HOST_PORT, NA_HOST_USER, NA_HOST_PASSWORD "
+                        "FROM BKP_TASK "
+                        f"WHERE ID_BKP_TASK = {task_id};")
         
         self.cursor.execute(query)
         
@@ -1178,7 +1187,7 @@ class dbHandler():
                             "PRC_TASK.NA_SERVER_FILE_PATH, PRC_TASK.NA_SERVER_FILE_NAME "
                     "FROM PRC_TASK "
                     "JOIN HOST ON PRC_TASK.FK_HOST = HOST.ID_HOST "
-                    "WHERE PRC_TASK.NU_STATUS = 0 "
+                    "WHERE PRC_TASK.NU_STATUS = 2 "
                     "ORDER BY PRC_TASK.DT_PRC_TASK "
                     "LIMIT 1;")
         
@@ -1285,12 +1294,14 @@ class dbHandler():
                     "FK_HOST, "
                     "NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
                     "NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, "
-                    "DT_PRC_TASK) "
+                    "DT_PRC_TASK, "
+                    "NU_STATUS)"
                     "VALUES ("
                     "%s, "
                     "%s, %s, "
                     "%s, %s, "
-                    "NOW());")
+                    "NOW(),"
+                    "2);")
             
             # update database
             self.cursor.executemany(query, files_tuple_list)
@@ -1320,7 +1331,7 @@ class dbHandler():
             query = (f"SELECT COUNT(*) "
                         f"FROM PRC_TASK "
                         f"WHERE FK_HOST = {host_id} AND "
-                        f"NU_STATUS = -1;")
+                        f"NU_STATUS = -2;")
             
             self.cursor.execute(query)
             
@@ -1393,7 +1404,7 @@ class dbHandler():
         message = task["message"].replace("'","''")
         # compose and excecute query to set NU_STATUS to -1 (Error) and server path in the BPDATA database
         query = (f"UPDATE PRC_TASK "
-                    f"SET NU_STATUS = -1, "
+                    f"SET NU_STATUS = -2, "
                     f"NA_SERVER_FILE_PATH = '{task['server path']}', "
                     f"NA_MESSAGE = '{message}' "
                     f"WHERE ID_PRC_TASK = {task['task_id']};")
@@ -1738,7 +1749,7 @@ class dbHandler():
                     f"FROM PRC_TASK "
                 f"WHERE "
                     f"FK_HOST = {host_id} AND "
-                    f"NU_STATUS = -1;")
+                    f"NU_STATUS = -2;")
         
         self.cursor.execute(query)
         

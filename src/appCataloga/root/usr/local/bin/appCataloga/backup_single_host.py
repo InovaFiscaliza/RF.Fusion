@@ -31,6 +31,7 @@ sys.path.append('/etc/appCataloga')
 # Import modules for file processing 
 import config as k
 import shared as sh
+import db_handler as dbh
 
 import paramiko
 import os
@@ -38,39 +39,14 @@ import time
 import json
 
 # Define default arguments
-DEFAULT_HOST_ID = 10364
-DEFAULT_HOST_ADD = "192.168.10.33"
-# DEFAULT_HOST_ADD = "172.24.5.71" # MG
-DEFAULT_PORT = 22
-DEFAULT_USER = "sshUser"
-DEFAULT_PASS = "sshuserpass"  # user should have access to the host with rights to interact with the indexer daemon
+DEFAULT_TASK_ID = 1
 
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
 ARGUMENTS = {
-    "host_id": {
+    "task_id": {
         "set": False,
-        "value": DEFAULT_HOST_ID,
-        "warning": "Using default host id"
-        },    
-    "host_add": {
-        "set": False,
-        "value": DEFAULT_HOST_ADD,
-        "warning": "Using default host address"
-        },
-    "port": {
-        "set": False,
-        "value": DEFAULT_PORT,
-        "warning": "Using default port"
-        },
-    "user": {
-        "set": False,
-        "value": DEFAULT_USER,
-        "warning": "Using default user name"
-        },
-    "pass": {
-        "set": False,
-        "value": DEFAULT_PASS,
-        "warning": "Using default user password"
+        "value": DEFAULT_TASK_ID,
+        "warning": "Using default task id"
         }
     }
 
@@ -78,8 +54,6 @@ class HaltFlagError(Exception):
     pass
 
 def main():
-    # TODO: #21 Include database update for backup task, including status and message fields to facilitate debugging
-    
     # create a warning message object
     log = sh.log()
     
@@ -88,7 +62,16 @@ def main():
     
     # parse the command line arguments
     task.parse(sys.argv)
-
+    
+    try:
+        # create db object using databaseHandler class for the backup and processing database
+        db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
+    except Exception as e:
+        log.error("Error initializing database: {e}")
+        exit(1)
+    
+    task = db_bp.next_backup_task(task.data["host_add"]["value"])
+    
     try:
         # Create an SSH client
         ssh_client = paramiko.SSHClient()
@@ -217,8 +200,6 @@ def main():
                         done_backup_list.append({"remote":remote_file,"local":local_file})
                         done_backup_list_remote.append(remote_file)
                         
-                        # TODO: #20 Update host status and add processing task to the database for each file transferrred successfully instead of depending on the backup control.
-                        
                         log.entry(f"File '{os.path.basename(remote_file)}' copied to '{local_file}'")
                     except Exception as e:
                         log.warning(f"Error copying '{remote_file}' from host {task.data['host_add']['value']}.{str(e)}")
@@ -275,7 +256,7 @@ def main():
         raise ValueError(log.dump_error())
         
     except HaltFlagError:
-        raise ValueError(log.dump_error())
+        pass
     
     except Exception as e:
         log.error(f"Unmapped error occurred: {str(e)}")

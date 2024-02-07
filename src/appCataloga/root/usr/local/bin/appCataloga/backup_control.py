@@ -75,15 +75,12 @@ def main():
             if new_task and (task_counter < k.BKP_MAX_PROCESS):
                 log.entry(f"Adding backup task for {task['host_add']}.")
 
+                # TODO: #35 Remove credentials from module call to improve security
                 command = ( f'bash -c '
                             f'"source {k.MINICONDA_PATH}; '
                             f'conda activate appdata; '
                             f'python3 {k.BACKUP_SINGLE_HOST_MODULE} '
-                            f'host_id={task["host_id"]} '
-                            f'host_add={task["host_add"]} '
-                            f'port={task["port"]} '
-                            f'user={task["user"]} '
-                            f'pass={task["password"]}"')
+                            f'task_id={task["task_id"]} ')
                 
                 # add task to tasks list
                 task["process_handle"] = subprocess.Popen([command],
