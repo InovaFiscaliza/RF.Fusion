@@ -1,23 +1,10 @@
 #!/usr/bin/python3
-"""Get list of files to backup from remote host and copy them to central repository mapped to local folder, updating lists of files in the remote host and in the reference database.
-
-    Args: Arguments passed from the command line should present in the format: "key=value"
+"""Access the control database and get files associated with a host to be backed up to the central repository.
     
-    Where the possible keys are:
+    Args: None
     
-        "host_id": int, Host id in the reference database
-        "host_add": str, Host address or DNS valid name
-        "port": int, SSH port
-        "user": str, SSH user name
-        "password": str, SSH user password
-
     Returns:
-        JSON object with the following keys:
-            'host_id': task.data["host_id"]["value"],
-            'nu_host_files': nu_host_files, 
-            'nu_pending_backup': len(due_backup_list), 
-            'nu_backup_error': nu_backup_error,
-            'done_backup_list':done_backup_list}
+        stdout: As log messages, if target_screen in log is set to True.
             
     Raises:
         Exception: If any error occurs, the exception is raised with a message describing the error.
@@ -38,17 +25,6 @@ import os
 import time
 import json
 
-# Define default arguments
-DEFAULT_TASK_ID = 1
-
-# define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
-ARGUMENTS = {
-    "task_id": {
-        "set": False,
-        "value": DEFAULT_TASK_ID,
-        "warning": "Using default task id"
-        }
-    }
 
 class HaltFlagError(Exception):
     pass
@@ -128,13 +104,6 @@ def main():
     # create a warning message object
     log = sh.log()
     
-    # create an argument object
-    call_argument = sh.argument(log, ARGUMENTS)
-    
-    # parse the command line arguments
-    call_argument.parse(sys.argv)
-    task_id = call_argument.data["host_add"]["value"]
-    
     try:
         # create db object using databaseHandler class for the backup and processing database
         db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
@@ -150,7 +119,7 @@ def main():
                 "user": str,
                 "password": str}"""  
     
-    task = db_bp.next_host_task(task_id=task_id)
+    task = db_bp.next_file_task(type=db_bp.BACKUP)
 
     # Create a SSH client and SFTP connection to the remote host
     sftp_conn = sftp_connection(   hostname=task["host_add"],
@@ -166,24 +135,25 @@ def main():
         
         # Parse the configuration file
         daemon_cfg = sh.parse_cfg(daemon_cfg_str)
-
-        # Set the time limit for HALT_FLAG timeout control according to the HALT_TIMEOUT parameter in the remote host
-        time_limit = daemon_cfg['HALT_TIMEOUT']*k.SECONDS_IN_MINUTE*k.BKP_HOST_ALLOTED_TIME_FRACTION
         
         # * Check if exist the HALT_FLAG file in the remote host
+        # * Wait for HALT_FLAG release
         loop_count = 0
         # If exists wait and retry each 5 minutes for 30 minutes  
         while sftp_conn.test(daemon_cfg['HALT_FLAG']):
             # If HALT_FLAG exists, wait for 5 minutes and test again
-            time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME)
+            time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME/k.HALT_FLAG_CHECK_CYCLES)
             
             loop_count += 1
             
-            if loop_count > 6:
+            if loop_count > k.HALT_FLAG_CHECK_CYCLES:
                 output = False
                 message = f"HALT_FLAG file found in remote host {task.data['host_add']['value']}. Backup aborted."
                 log.error(message)
                 raise HaltFlagError(message)
+
+        # Set the time limit for HALT_FLAG timeout control according to the HALT_TIMEOUT parameter in the remote host
+        time_limit = daemon_cfg['HALT_TIMEOUT']*k.SECONDS_IN_MINUTE*k.BKP_HOST_ALLOTED_TIME_FRACTION
 
         # store current time for HALT_FLAG timeout control
         halt_flag_time = time.time()
@@ -198,19 +168,20 @@ def main():
         if due_backup_str == "":
             nu_host_files = 0
             due_backup_list = []
+            exit
         else:
             # Clean the string and split the into a list of files
             due_backup_str = due_backup_str.decode(encoding='utf-8')
             due_backup_str = ''.join(due_backup_str.split('\x00'))
             due_backup_list = due_backup_str.splitlines()
             nu_host_files = len(due_backup_list)
-
-        # update database information
-        # ! FIX AT THIS POINT
-        db_bp.update_host_status(host_id
             
-            task_id=task_id, nu_host_files=nu_host_files, nu_pending_backup=nu_host_files)
+            
+
+        # update database information with files due for backup
         db_bp.add_file_task(host_id=task["host_id"], files_list=due_backup_list)
+        
+        # ! PArado aqui
         
         # * Peform the backup
         # initializa backup control variables

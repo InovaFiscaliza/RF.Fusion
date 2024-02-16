@@ -45,7 +45,8 @@ BACKUP_CONTROL_MODULE = "/usr/local/bin/appCataloga/backup_control.py"
 BACKUP_SINGLE_HOST_MODULE = "/usr/local/bin/appCataloga/backup_single_host.py"
 BKP_MAX_PROCESS = 10
 HOST_TASK_EXECUTION_WAIT_TIME = 10
-HOST_TASK_REQUEST_WAIT_TIME = 300
+HOST_TASK_REQUEST_WAIT_TIME = 1800 # seconds to wait for the HALT_FLAG release before aborting the task
+HALT_FLAG_CHECK_CYCLES = 6 # number of times to check the host while waiting for the HALT_FLAG release
 HOST_TASK_EXECUTION_TIMEOUT = 3600
 BKP_HOST_ALLOTED_TIME_FRACTION = 0.8
 

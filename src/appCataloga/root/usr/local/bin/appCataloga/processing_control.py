@@ -180,7 +180,7 @@ def main():
                     "server path": "none",
                     "server file": "none"}
                     
-            task = db_bp.next_processing_task()
+            task = db_bp.next_file_task(type=db_bp.PROCESS)
 
             # if there is a task in the database
             if task:
@@ -279,7 +279,7 @@ def main():
                 db_rfm.insert_bridge_spectrum_file(  spectrum_lst,
                                                         [file_id,new_file_id])
                 
-                db_bp.processing_task_success(task=task,
+                db_bp.file_task_success(task=task,
                                               equipment_ids=equipment_ids)
                 
                 log.entry(f"Finished processing '{filename}'.")
@@ -308,7 +308,7 @@ def main():
             try:
                 task['message'] = message
                 
-                db_bp.processing_task_error(task=task)
+                db_bp.file_task_error(task=task)
             except Exception as second_e:
                 log.error(f"Error removing processing task: First: {e}; raised another exception: {second_e}")
                 

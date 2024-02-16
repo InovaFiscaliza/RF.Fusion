@@ -10,7 +10,6 @@ from datetime import datetime
 
 import config as k
 
-
 class font:
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
@@ -178,7 +177,7 @@ def parse_cfg(cfg_data="", root_level=True, line_number=0):
             try:
                 # try to convert value to float
                 config_dict[key] = float(value)
-            except:
+            except 
                 # if not possible, keep value as string
                 config_dict[key] = value
         except:

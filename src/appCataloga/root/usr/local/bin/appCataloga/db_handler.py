@@ -29,6 +29,10 @@ class dbHandler():
         self.data = None
         self.log = log
 
+        # constants
+        self.BACKUP = 1
+        self.PROCESS = 2
+
     def _connect(self):
         """Try to connect to the database using the parameters in the config.py file
 
@@ -1010,7 +1014,8 @@ class dbHandler():
     
     # Method add a new host to the backup queue
     def add_host_task(self,
-                        hostid:str,
+                        task_type:int,
+                        host_id:str,
                         host_uid:str,
                         host_addr:str,
                         host_port:str,
@@ -1030,15 +1035,19 @@ class dbHandler():
         """
         
         # create a new host entry in the database if it does not exist
-        self._add_host(hostid,host_uid)
+        self._add_host(host_id,host_uid)
 
         # connect to the database
         self._connect()
         
         # compose query to add 1 to PENDING_BACKUP in the HOST table in BPDATA database for the given host_id
-        query = (f"UPDATE HOST "
-                    f"SET NU_PENDING_HOST_CHECK = NU_PENDING_HOST_CHECK + 1 "
-                    f"WHERE ID_HOST = '{hostid}';")
+        query = (f"UPDATE HOST SET "
+                    f"NA_HOST_ADDRESS = '{host_addr}', "
+                    f"NA_HOST_PORT = '{host_port}', "
+                    f"NA_HOST_USER = '{host_user}', "
+                    f"NA_HOST_PASSWORD = '{host_passwd}', "
+                    f"NU_PENDING_HOST_CHECK = NU_PENDING_HOST_CHECK + 1 "
+                f"WHERE ID_HOST = '{host_id}';")
         
         # update database
         self.cursor.execute(query)
@@ -1046,9 +1055,9 @@ class dbHandler():
         
         # compose query to set the backup task in the BPDATA database
         query = (f"INSERT INTO HOST_TASK "
-                 f"(FK_HOST, DT_HOST_TASK, NA_HOST_ADDRESS,NA_HOST_PORT,NA_HOST_USER,NA_HOST_PASSWORD) "
+                 f"(FK_HOST, TASK_TYPE, DT_HOST_TASK) "
                  f"VALUES "
-                 f"('{hostid}', NOW(), '{host_addr}', '{host_port}', '{host_user}', '{host_passwd}');")
+                 f"('{host_id}', '{task_type}', NOW();")
 
         # update database
         self.cursor.execute(query)
@@ -1181,27 +1190,48 @@ class dbHandler():
         self._disconnect()
 
     # Method to remove a completed backup task from the database
-    def remove_host_task(self, task):
+    def remove_host_task(self,
+                         task_id:int) -> None:
+        """
+
+        Args:
+            task (dict): _description_
+        """
+                      
         # connect to the database
         self._connect()
         
+        # compose query to get the host_id from the BKPDATA database
+        query = (f"SELECT FK_HOST "
+                    f"FROM HOST_TASK "
+                    f"WHERE ID_HOST_TASK = {task_id};")
+        
+        self.cursor.execute(query)
+        
+        try:
+            host_id = int(self.cursor.fetchone()[0])
+        except (TypeError, ValueError):
+            self._disconnect()
+            raise Exception(f"Error retrieving host_id for task_id {task_id} from database")
+        
         # compose and excecute query to delete the backup task from the BKPDATA database
         query = (f"DELETE FROM HOST_TASK "
-                 f"WHERE ID_HOST_TASK = {task['task_id']};")
+                 f"WHERE ID_HOST_TASK = {task_id};")
+        
         self.cursor.execute(query)
 
         # update database statistics for the host
         query = (f"UPDATE HOST "
-                 f"SET NU_PENDING_HOST_CHECK = NU_PENDING_HOST_CHECK - 1, "
-                 f"DT_LAST_HOST_CHECK = NOW() "
-                 f"WHERE ID_HOST = '{task['host_id']}';")
+                    f"SET NU_PENDING_HOST_CHECK = NU_PENDING_HOST_CHECK - 1, "
+                    f"DT_LAST_HOST_CHECK = NOW() "
+                 f"WHERE ID_HOST = '{host_id}';")
         self.cursor.execute(query)
         self.db_connection.commit()
         
         self._disconnect()
 
     # Method to get next host in the list for processing
-    def next_processing_task(self) -> dict:
+    def next_file_task(self, type:int) -> dict:
         """This method gets the next host in the list for data processing
 
         Returns:
@@ -1218,15 +1248,18 @@ class dbHandler():
         self._connect()
 
         # build query to get the next backup task with host_uid and NU_STATUS different = 0 (not processed)
-        query = (   "SELECT FILE_TASK.ID_FILE_TASK, "
-                            "FILE_TASK.FK_HOST, HOST.NA_HOST_UID, "
-                            "FILE_TASK.NA_HOST_FILE_PATH, FILE_TASK.NA_HOST_FILE_NAME, "
-                            "FILE_TASK.NA_SERVER_FILE_PATH, FILE_TASK.NA_SERVER_FILE_NAME "
-                    "FROM FILE_TASK "
-                    "JOIN HOST ON FILE_TASK.FK_HOST = HOST.ID_HOST "
-                    "WHERE FILE_TASK.NU_STATUS = 2 "
-                    "ORDER BY FILE_TASK.DT_FILE_TASK "
-                    "LIMIT 1;")
+        query = (   f"SELECT "
+                        f"FILE_TASK.ID_FILE_TASK, "
+                        "FILE_TASK.FK_HOST, HOST.NA_HOST_UID, "
+                        "FILE_TASK.NA_HOST_FILE_PATH, FILE_TASK.NA_HOST_FILE_NAME, "
+                        "FILE_TASK.NA_SERVER_FILE_PATH, FILE_TASK.NA_SERVER_FILE_NAME "
+                    f"FROM FILE_TASK "
+                        f"JOIN HOST ON FILE_TASK.FK_HOST = HOST.ID_HOST "
+                    f"WHERE "
+                        f"FILE_TASK.NU_STATUS = 2 AND "
+                        f"FILE_TASK.NU_TASK_TYPE = {type} "
+                    f"ORDER BY FILE_TASK.DT_FILE_TASK "
+                    f"LIMIT 1;")
         
         self.cursor.execute(query)
         
@@ -1247,70 +1280,108 @@ class dbHandler():
         
         return output
 
+    # Method to retrieve multiple file tasks
+    def get_file_tasks(self, type:int, limit:int) -> list:
+        """This method gets the next host in the list for data processing
+
+        Returns:
+            dict: "task_id": int(task[0]),
+                  "host_id": int(task[1]),
+                  "host_uid": str(task[2]),
+                  "host path": str(task[3]),
+                  "host file": str(task[4]),
+                  "server path": str(task[5]),
+                  "server file": str(task[6])}
+        """
+        
+        # connect to the database
+        self._connect()
+
+        # build query to get a list of files with NU_TASK_TYPE = type and NU_STATUS = 1 (pending action)
+        query = (   f"SELECT "
+                        f"FILE_TASK.ID_FILE_TASK, "
+                        "FILE_TASK.FK_HOST, HOST.NA_HOST_UID, "
+                        "FILE_TASK.NA_HOST_FILE_PATH, FILE_TASK.NA_HOST_FILE_NAME, "
+                        "FILE_TASK.NA_SERVER_FILE_PATH, FILE_TASK.NA_SERVER_FILE_NAME "
+                    f"FROM FILE_TASK "
+                        f"JOIN HOST ON FILE_TASK.FK_HOST = HOST.ID_HOST "
+                    f"WHERE "
+                        f"FILE_TASK.NU_STATUS = 2 AND "
+                        f"FILE_TASK.NU_TASK_TYPE = {type} "
+                    f"ORDER BY FILE_TASK.DT_FILE_TASK "
+                    f"LIMIT {limit};")
+        
+        self.cursor.execute(query)
+        
+        tasks = self.cursor.fetchall()
+        
+        output = []
+        for task in tasks:
+            try:
+                output.append({ "task_id": int(task[0]),
+                                "host_id": int(task[1]),
+                                "host_uid": str(task[2]),
+                                "host path": str(task[3]),
+                                "host file": str(task[4]),
+                                "server path": str(task[5]),
+                                "server file": str(task[6])})
+            except (TypeError, ValueError):
+                pass
+        
+        self._disconnect()
+        
+        return output
+
     # Method to add a new processing task to the database
-    def add_processing_task(self,
-                            host_id:int,
-                            files_list:list = None,
-                            files_set:set = None,
-                            reset_processing_queue:bool = False) -> None:
+    def add_file_task(  self,
+                        host_id:int,
+                        task_type:int,
+                        volume:str,
+                        files:any,
+                        reset_processing_queue:bool = False) -> None:
         """This method adds tasks to the processing queue
         
         Args:
             host_id (int): Zabbix host id primary key.
-            files_list (list, optional): List of files that were recently copied, in the format: [{"remote":remote_file_name,"local":local_file_name}]. Defaults to None.
-            files_set (set, optional): Set of files (filename, path). Defaults to None.
+            files (list or set): List strings corresponding to path and file names or set of tuples (filename, path)
             reset_processing_queue (bool): Flag to reset the processing queue. 
 
         Returns:
             None
         """
-        # connect to the database
-        self._connect()
+                
+        # convert list of filenames with path into tuples (hostid, task_type, path, filename)
+        if isinstance(files, list):
+            files_tuple_list = [(os.path.dirname(item), os.path.basename(item)) for item in files]
+        elif isinstance(files, set):
+            files_tuple_list = [(filepath, filename) for (filename,filepath) in files]
+        else:
+            raise Exception("Invalid input. Expected a list strings or a set of tuples.")
+
+        if volume==k.REPO_UID:
+            target_column = "NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, "
+        else:
+            target_column = "NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
+
+        # compose query to set the process task in the database using executemany method
+        query =(f"INSERT INTO FILE_TASK ("
+                f"FK_HOST, "
+                f"NU_TASK_TYPE, "
+                f"{target_column}"
+                f"DT_FILE_TASK, "
+                f"NU_STATUS)"
+                f"VALUES ("
+                f"{host_id}, "
+                f"{task_type}, "
+                f"%s, %s, "
+                f"NOW(),"
+                f"{task_type});")
         
-        # check if files_list is provided
-        if files_list:
-            # convert list of dictionaries into a list of tuples
-            files_tuple_list = [(host_id,
-                                 os.path.dirname(item["remote"]), os.path.basename(item["remote"]),
-                                 os.path.dirname(item["local"]), os.path.basename(item["local"]))
-                                for item in files_list]
+        # update database
+        self._connect()
 
-            # compose query to set the process task in the database using executemany method
-            query =("INSERT INTO FILE_TASK ("
-                    "FK_HOST, "
-                    "NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
-                    "NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, "
-                    "DT_FILE_TASK, "
-                    "NU_STATUS)"
-                    "VALUES ("
-                    "%s, "
-                    "%s, %s, "
-                    "%s, %s, "
-                    "NOW(),"
-                    "2);")
-            
-            # update database
-            self.cursor.executemany(query, files_tuple_list)
-            self.db_connection.commit()
-
-        # check if files_set is provided
-        if files_set:
-            # convert a set of type (filename, path) into a list of tuples (hostid, path, filename)
-            files_tuple_list = [(host_id, filename, filepath) for (filename,filepath) in files_set]
-
-            # compose query to set the process task in the database using executemany method
-            query =("INSERT INTO FILE_TASK ("
-                    "FK_HOST, "
-                    "NA_SERVER_FILE_NAME, NA_SERVER_FILE_PATH, "
-                    "DT_FILE_TASK) "
-                    "VALUES ("
-                    "%s, "
-                    "%s, %s, "
-                    "NOW());")
-            
-            # update database
-            self.cursor.executemany(query, files_tuple_list)
-            self.db_connection.commit()
+        self.cursor.executemany(query, files_tuple_list)
+        self.db_connection.commit()
         
         if reset_processing_queue:
             # compose query to find how many database entries are in the processing queue with status = -1 for the given host_id
@@ -1339,7 +1410,7 @@ class dbHandler():
                                     reset=reset_processing_queue)        
                 
     # Method to set processing task as completed with success
-    def processing_task_success(self,
+    def file_task_success(self,
                                 task:dict,
                                 equipment_ids:dict) -> None:
         """Set processing task as completed with success
@@ -1369,7 +1440,7 @@ class dbHandler():
         self._disconnect()    
 
     # Method to set processing task as completed with error
-    def processing_task_error(self,
+    def file_task_error(self,
                               task:dict) -> None:
         """Set processing task as completed with error
 
@@ -1642,9 +1713,9 @@ class dbHandler():
                 
                 self.log.entry(f"Host '{host_uid}' created in the database with ID {host_id}")
 
-            # TODO: #26 Harmonize file_list format with add_processing_task method
+            # TODO: #26 Harmonize file_list format with add_file_task method
             
-            self.add_processing_task(host_id=host_id,
+            self.add_file_task(host_id=host_id,
                                      files_set=file_set,
                                      reset_processing_queue=True)
             
