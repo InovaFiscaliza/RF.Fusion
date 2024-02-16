@@ -1281,9 +1281,13 @@ class dbHandler():
         return output
 
     # Method to retrieve multiple file tasks
-    def get_file_tasks(self, type:int, limit:int) -> list:
+    def get_multiple_file_tasks(self, type:int, limit:int=None) -> list:
         """This method gets the next host in the list for data processing
 
+        Args:
+            type (int): Task type
+            limit (int): Number of tasks to retrieve. Default to None.
+            
         Returns:
             dict: "task_id": int(task[0]),
                   "host_id": int(task[1]),
@@ -1296,6 +1300,58 @@ class dbHandler():
         
         # connect to the database
         self._connect()
+
+        # compose a query to retrieve the oldest file task with NU_STATUS = 1 (pending action) and NU_TASK_TYPE = type
+        query = (   f"SELECT "
+                        f"FILE_TASK.ID_FILE_TASK, "
+                        "FILE_TASK.FK_HOST "
+                    f"FROM FILE_TASK "
+                    f"WHERE "
+                        f"FILE_TASK.NU_STATUS = 1 AND "
+                        f"FILE_TASK.NU_TASK_TYPE = {type} "
+                    f"ORDER BY FILE_TASK.DT_FILE_TASK "
+                    f"LIMIT 1;")
+        
+        self.cursor.execute(query)
+        
+        task = self.cursor.fetchone()
+        
+        try:
+            output = {  "task_id": int(task[0]),
+                        "host_id": int(task[1])}
+        except (TypeError, ValueError):
+            output = False
+        
+        if output:
+            # build a query to change NU_STATUS to 2 (under execution) of all tasks associated with the same host_id as the oldest
+            query = (f"UPDATE FILE_TASK "
+                        f"SET NU_STATUS = 2 "
+                        f"WHERE FK_HOST = {output['host_id']} AND "
+                        f"NU_STATUS = 1 AND "
+                        f"NU_TASK_TYPE = {type};")
+            
+            self.cursor.execute(query)
+            self.db_connection.commit()
+        
+            # ! STOPPED HERE
+            # build a query to retrieve list of files associated with the oldest task
+            query = (   f"SELECT "
+                            f"FILE_TASK.ID_FILE_TASK, "
+                            "FILE_TASK.FK_HOST, HOST.NA_HOST_UID, "
+                            "FILE_TASK.NA_HOST_FILE_PATH, FILE_TASK.NA_HOST_FILE_NAME, "
+                            "FILE_TASK.NA_SERVER_FILE_PATH, FILE_TASK.NA_SERVER_FILE_NAME "
+                        f"FROM FILE_TASK "
+                        f"JOIN HOST ON FILE_TASK.FK_HOST = HOST.ID_HOST "
+                        f"WHERE "
+                            f"FILE_TASK.NU_STATUS = 2 AND "
+                            f"FILE_TASK.NU_TASK_TYPE = {type} "
+                        f"ORDER BY FILE_TASK.DT_FILE_TASK "
+                        f"LIMIT {limit};")
+            
+        
+        self._disconnect()
+
+
 
         # build query to get a list of files with NU_TASK_TYPE = type and NU_STATUS = 1 (pending action)
         query = (   f"SELECT "
