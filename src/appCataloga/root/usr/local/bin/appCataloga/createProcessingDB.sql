@@ -15,14 +15,14 @@ CREATE TABLE HOST (
     NA_HOST_USER VARCHAR(50) COMMENT 'Username to access the host',
     NA_HOST_PASSWORD VARCHAR(50) COMMENT 'Password to access the host',
     NU_HOST_FILES BIGINT COMMENT 'Historic total number of files listed for a host in all repositories',
-    NU_PENDING_HOST_CHECK INT COMMENT 'Number of hosts pending check',
+    NU_PENDING_HOST_TASK INT COMMENT 'Number of hosts tasks pending execution',
     DT_LAST_HOST_CHECK DATETIME COMMENT 'Date and time of the host check',
     NU_HOST_CHECK_ERROR FLOAT COMMENT 'Historic total number of errors in host check process',
     NU_PENDING_BACKUP INT COMMENT 'Number of files pending backup',
     DT_LAST_BACKUP DATETIME COMMENT 'Date and time of the last backup',
-    NU_BACKUP_ERROR FLOAT COMMENT 'Historic total number of errors in file backup process',
+    NU_BACKUP_ERROR INT COMMENT 'Historic total number of errors in file backup process',
     NU_PENDING_PROCESSING INT COMMENT 'Number of files pending processing',
-    NU_PROCESSING_ERROR FLOAT COMMENT 'Historic total number of errors in data processing',
+    NU_PROCESSING_ERROR INT COMMENT 'Historic total number of errors in data processing',
     DT_LAST_PROCESSING DATETIME COMMENT 'Date and time of the last processing'
 );
 

@@ -182,10 +182,15 @@ def main():
         
             # test if remote_file does not exist, update the database and skip to the next file
             if not sftp_conn.test(remote_file):
-                db_bp.file_task_error(  host_id=task_dict["host_id"],
-                                        task_id=task_id,
-                                        message=f"File '{remote_file}' not found in remote host {host['host_add']}")
-                log.warning(f"File '{remote_file}' not found in remote host {host['host_add']}")
+                message=f"File '{remote_file}' not found in remote host {host['host_add']}"
+                db_bp.file_task_error(  task_id=task_id,
+                                        message=message)
+                
+                db_bp.update_host_status(   host_id=task_dict["host_id"],
+                                            pending_backup=-1,
+                                            backup_error=1)
+                
+                log.warning(message)
                 server_files.append("File not found")
                 continue
             
@@ -197,7 +202,8 @@ def main():
             # Transfer the file from the remote host to the local host
             try:
                 sftp_conn.transfer(remote_file, full_local_file)
-                server_files.append(local_file)
+                
+                # Change file task from backup to processing. (assume every file needs processing)
                 db_bp.file_task_update( task_id=task_id,
                                         server_file=local_file,
                                         server_path=local_path,
@@ -205,28 +211,41 @@ def main():
                                         status=db_bp.PENDING,
                                         message=f"File '{remote_file}' copied to '{local_file}'")
                 
-                # PARADO AQUI
-                db_bp.host_status_update(host_id=task_dict["host_id"],
-                                         
+                db_bp.update_host_status(   host_id=task_dict["host_id"],
+                                            pending_backup=-1,
+                                            pending_processing=1)
                 
                 log.entry(f"File '{os.path.basename(remote_file)}' copied to '{local_file}'")
+                
+                server_files.append(local_file)
                 
                 # refresh the HALT_FLAG timeout control
                 time_since_start = time.time()-halt_flag_time
                 
                 if time_since_start > time_limit:
                     try:
-                        halt_flag_file_handle = sftp.open(daemon_cfg['HALT_FLAG'], 'w')
-                        halt_flag_file_handle.write(f'running backup for {time_since_start} seconds\n')
+                        halt_flag_file_handle = sftp_conn.sftp.open(daemon_cfg['HALT_FLAG'], 'w')
+                        halt_flag_file_handle.write(f'running backup for {time_since_start/60} minutes\n')
                         halt_flag_file_handle.close()
                     except Exception as e:
-                        log.warning(f"Could not raise halt_flag for host {task.data['host_add']['value']}.{str(e)}")
+                        log.warning(f"Could not raise halt_flag for host {host['host_id']['value']}.{str(e)}")
                         pass
+                
+            except Exception as e:
+                message=f"Error copying '{remote_file}' from host {host['host_add']}.{str(e)}"
+                db_bp.file_task_error(  task_id=task_id,
+                                        message=message)
+                
+                db_bp.update_host_status(   host_id=task_dict["host_id"],
+                                            pending_backup=-1,
+                                            backup_error=1)
+                
+                log.warning(f"Error copying '{remote_file}' from host {host['host_add']}.{str(e)}")
+                
+                server_files.append("Error copying")
+                continue
     
-        
-                Returns:
-            dict:   
-        
+        # ! PARADO AQUI PRECISA PEGAR A LISTA DE ARQUIVOS NO REMOTE HOST E ATUALIZAR COM OS QUE FORAM COPIADOS. USAR SET DROP PARA REMOVER E ADICIONAR AO BACKUP_DONE
         # * Get the list of files to backup from DUE_BACKUP file
         # due_backup_file = sftp.open(daemon_cfg['DUE_BACKUP'], 'r')
         due_backup_str = sftp_conn.read(daemon_cfg['DUE_BACKUP'], 'r')

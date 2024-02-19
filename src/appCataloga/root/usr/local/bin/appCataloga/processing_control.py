@@ -307,9 +307,12 @@ def main():
             try:
                 task['message'] = message
                 
-                db_bp.file_task_error(host_id=task['host_id'],
-                                      task_id=task['task_id'],
+                db_bp.file_task_error(task_id=task['task_id'],
                                       message=message)
+                
+                db_bp.update_host_status(   host_id=task['host_id'],
+                                            pending_processing=-1,
+                                            processing_error=1)
             except Exception as second_e:
                 log.error(f"Error removing processing task: First: {e}; raised another exception: {second_e}")
                 

@@ -927,7 +927,7 @@ class dbHandler():
         query = (f"INSERT IGNORE INTO HOST "
                     f"(ID_HOST, NA_HOST_UID, "
                     f"NU_HOST_FILES, "
-                    f"NU_PENDING_HOST_CHECK, NU_HOST_CHECK_ERROR, "
+                    f"NU_PENDING_HOST_TASK, NU_HOST_CHECK_ERROR, "
                     f"NU_PENDING_PROCESSING, NU_PROCESSING_ERROR) "
                     f"VALUES "
                     f"('{hostid}', '{host_uid}', "
@@ -951,7 +951,7 @@ class dbHandler():
         query = (f"SELECT "
                     f"ID_HOST, "
                     f"NU_HOST_FILES, "
-                    f"NU_PENDING_HOST_CHECK, "
+                    f"NU_PENDING_HOST_TASK, "
                     f"DT_LAST_HOST_CHECK, "
                     f"NU_PENDING_PROCESSING, "
                     f"DT_LAST_PROCESSING "
@@ -1034,63 +1034,36 @@ class dbHandler():
                     "password": (str) Host access password
         """
 
-            # compose query to get host access data from the BPDATA database
-            query = (f"SELECT "
-                        f"NA_HOST_UID, "
-                        f"NA_HOST_ADDRESS, "
-                        f"NA_HOST_PORT, "
-                        f"NA_HOST_USER, "
-                        f"NA_HOST_PASSWORD "
-                    f"FROM HOST "
-                    f"WHERE ID_HOST = '{host_id}';")
-            
-            # Get the data
-            self._connect()
-            
-            self.cursor.execute(query)
-            
-            db_output = self.cursor.fetchone()
-                        
-            self._disconnect()
-            
-            # get the output in a dictionary format
-            try:
-                output = {  "host_uid": str(db_output[0]),
-                            "host_add": str(db_output[1]),
-                            "port": int(db_output[2]),
-                            "user": str(db_output[3]),
-                            "password": str(db_output[4])}
-            except (TypeError, ValueError):
-                output = False
-            
-            return output
-    
-    def update_host_status( self,
-                            host_id:int)
-        """_summary_
-
-        Args:
-            NU_HOST_FILES BIGINT COMMENT 'Historic total number of files listed for a host in all repositories',
-            NU_PENDING_HOST_CHECK INT COMMENT 'Number of hosts pending check',
-            DT_LAST_HOST_CHECK DATETIME COMMENT 'Date and time of the host check',
-            NU_HOST_CHECK_ERROR FLOAT COMMENT 'Historic total number of errors in host check process',
-            NU_PENDING_BACKUP INT COMMENT 'Number of files pending backup',
-            DT_LAST_BACKUP DATETIME COMMENT 'Date and time of the last backup',
-            NU_BACKUP_ERROR FLOAT COMMENT 'Historic total number of errors in file backup process',
-            NU_PENDING_PROCESSING INT COMMENT 'Number of files pending processing',
-            NU_PROCESSING_ERROR FLOAT COMMENT 'Historic total number of errors in data processing',
-
-        Raises:
-            Exception: _description_
-            Exception: _description_
-            Exception: _description_
-
-        Returns:
-            _type_: _description_
-        """    """
-    
-
-    """
+        # compose query to get host access data from the BPDATA database
+        query = (f"SELECT "
+                    f"NA_HOST_UID, "
+                    f"NA_HOST_ADDRESS, "
+                    f"NA_HOST_PORT, "
+                    f"NA_HOST_USER, "
+                    f"NA_HOST_PASSWORD "
+                f"FROM HOST "
+                f"WHERE ID_HOST = '{host_id}';")
+        
+        # Get the data
+        self._connect()
+        
+        self.cursor.execute(query)
+        
+        db_output = self.cursor.fetchone()
+                    
+        self._disconnect()
+        
+        # get the output in a dictionary format
+        try:
+            output = {  "host_uid": str(db_output[0]),
+                        "host_add": str(db_output[1]),
+                        "port": int(db_output[2]),
+                        "user": str(db_output[3]),
+                        "password": str(db_output[4])}
+        except (TypeError, ValueError):
+            output = False
+        
+        return output
     
     # Method add a new host to the backup queue
     def add_host_task(self,
@@ -1126,7 +1099,7 @@ class dbHandler():
                     f"NA_HOST_PORT = '{host_port}', "
                     f"NA_HOST_USER = '{host_user}', "
                     f"NA_HOST_PASSWORD = '{host_passwd}', "
-                    f"NU_PENDING_HOST_CHECK = NU_PENDING_HOST_CHECK + 1 "
+                    f"NU_PENDING_HOST_TASK = NU_PENDING_HOST_TASK + 1 "
                 f"WHERE ID_HOST = '{host_id}';")
         
         # update database
@@ -1222,7 +1195,7 @@ class dbHandler():
         query_parts = []
         
         update_data = { "NU_HOST_FILES": host_files,
-                        "NU_PENDING_HOST_CHECK": pending_host_check,
+                        "NU_PENDING_HOST_TASK": pending_host_check,
                         "NU_HOST_CHECK_ERROR": host_check_error,
                         "NU_PENDING_BACKUP": pending_backup,
                         "NU_BACKUP_ERROR": backup_error,
@@ -1302,7 +1275,7 @@ class dbHandler():
 
         # update database statistics for the host
         query = (f"UPDATE HOST "
-                    f"SET NU_PENDING_HOST_CHECK = NU_PENDING_HOST_CHECK - 1, "
+                    f"SET NU_PENDING_HOST_TASK = NU_PENDING_HOST_TASK - 1, "
                     f"DT_LAST_HOST_CHECK = NOW() "
                  f"WHERE ID_HOST = '{host_id}';")
         self.cursor.execute(query)
@@ -1550,7 +1523,6 @@ class dbHandler():
                 
     # Method to set processing task as completed with error
     def file_task_error(self,
-                        host_id:int,
                         task_id:int,
                         message:str) -> None:
         """Set processing task as completed with error
@@ -1562,9 +1534,6 @@ class dbHandler():
                  "message": message}
         """
                 
-        self.update_host_status(    host_id=host_id,
-                                    pending_processing=-1,
-                                    processing_error=1)
         # connect to the database
         self._connect()
         
