@@ -279,8 +279,7 @@ def main():
                 db_rfm.insert_bridge_spectrum_file(  spectrum_lst,
                                                         [file_id,new_file_id])
                 
-                db_bp.file_task_success(task=task,
-                                              equipment_ids=equipment_ids)
+                db_bp.delete_file_task(task_id=task['task_id'])
                 
                 log.entry(f"Finished processing '{filename}'.")
                 
@@ -308,7 +307,9 @@ def main():
             try:
                 task['message'] = message
                 
-                db_bp.file_task_error(task=task)
+                db_bp.file_task_error(host_id=task['host_id'],
+                                      task_id=task['task_id'],
+                                      message=message)
             except Exception as second_e:
                 log.error(f"Error removing processing task: First: {e}; raised another exception: {second_e}")
                 

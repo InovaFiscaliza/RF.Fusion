@@ -110,26 +110,32 @@ def main():
     except Exception as e:
         log.error(f"Error initializing database: {e}")
         exit(1)
-    
-    """	
-        task={  "task_id": str,
-                "host_id": str,
-                "host_add": str,
-                "port": str,
-                "user": str,
-                "password": str}"""  
-    
-    task = db_bp.next_file_task(type=db_bp.BACKUP)
+        
+    # Get the list of files to backup from the database, where each task is a dictionary with the following
+    # - "host_id": (int) host_id,
+    # - "task_ids": (list)(int) task_ids,
+    # - "host_files": (list)(str) host file names,
+    # - "server_files": (list)(str) server file names
 
-    # Create a SSH client and SFTP connection to the remote host
-    sftp_conn = sftp_connection(   hostname=task["host_add"],
-                                port=task["port"],
-                                username=task["user"],
-                                password=task["passWORD"],
-                                log=log)
-    
     try:
         
+        # * Get the list of files to backup from the database
+        task_dict = db_bp.next_files_for_host(type=db_bp.BACKUP)
+
+        if task_dict is None:
+            log.entry("No host found with pending backup")
+            exit(0)
+
+        # * using task["host_id"] to get the host configuration from the database
+        host = db_bp.get_host(task_dict["host_id"])
+
+        # Create a SSH client and SFTP connection to the remote host
+        sftp_conn = sftp_connection(hostname=host["host_add"],
+                                    port=host["port"],
+                                    username=host["user"],
+                                    password=host["password"],
+                                    log=log)
+    
         # * Get the remote host configuration file
         daemon_cfg_str = sftp_conn.read(k.DAEMON_CFG_FILE, 'r')
         
@@ -148,7 +154,7 @@ def main():
             
             if loop_count > k.HALT_FLAG_CHECK_CYCLES:
                 output = False
-                message = f"HALT_FLAG file found in remote host {task.data['host_add']['value']}. Backup aborted."
+                message = f"HALT_FLAG file found in remote host {host["host_add"]}. Backup aborted."
                 log.error(message)
                 raise HaltFlagError(message)
 
@@ -160,7 +166,67 @@ def main():
         
         # Create a HALT_FLAG file in the remote host
         sftp_conn.touch(daemon_cfg['HALT_FLAG'])
-                        
+                                
+        # * Peform the backup
+        # Loop through all tasks in the task_dict['task_ids'], geting for each its task_id and index
+        local_path = f"{k.REPO_FOLDER}/{k.TMP_FOLDER}/{host['host_add']}"
+        
+        # make sure that the target folder do exist
+        if not os.path.exists(local_path):
+            os.makedirs(local_path)
+        
+        server_files = []
+        for task_id, index in task_dict["task_ids"]:
+            
+            remote_file = task_dict["host_files"][index]
+        
+            # test if remote_file does not exist, update the database and skip to the next file
+            if not sftp_conn.test(remote_file):
+                db_bp.file_task_error(  host_id=task_dict["host_id"],
+                                        task_id=task_id,
+                                        message=f"File '{remote_file}' not found in remote host {host['host_add']}")
+                log.warning(f"File '{remote_file}' not found in remote host {host['host_add']}")
+                server_files.append("File not found")
+                continue
+            
+            # Compose target file name by adding the remote file name to the target folder
+            local_file = os.path.basename(remote_file)
+            
+            full_local_file = os.path.join(local_path, local_file)
+            
+            # Transfer the file from the remote host to the local host
+            try:
+                sftp_conn.transfer(remote_file, full_local_file)
+                server_files.append(local_file)
+                db_bp.file_task_update( task_id=task_id,
+                                        server_file=local_file,
+                                        server_path=local_path,
+                                        task_type=db_bp.PROCESS,
+                                        status=db_bp.PENDING,
+                                        message=f"File '{remote_file}' copied to '{local_file}'")
+                
+                # PARADO AQUI
+                db_bp.host_status_update(host_id=task_dict["host_id"],
+                                         
+                
+                log.entry(f"File '{os.path.basename(remote_file)}' copied to '{local_file}'")
+                
+                # refresh the HALT_FLAG timeout control
+                time_since_start = time.time()-halt_flag_time
+                
+                if time_since_start > time_limit:
+                    try:
+                        halt_flag_file_handle = sftp.open(daemon_cfg['HALT_FLAG'], 'w')
+                        halt_flag_file_handle.write(f'running backup for {time_since_start} seconds\n')
+                        halt_flag_file_handle.close()
+                    except Exception as e:
+                        log.warning(f"Could not raise halt_flag for host {task.data['host_add']['value']}.{str(e)}")
+                        pass
+    
+        
+                Returns:
+            dict:   
+        
         # * Get the list of files to backup from DUE_BACKUP file
         # due_backup_file = sftp.open(daemon_cfg['DUE_BACKUP'], 'r')
         due_backup_str = sftp_conn.read(daemon_cfg['DUE_BACKUP'], 'r')
@@ -168,22 +234,15 @@ def main():
         if due_backup_str == "":
             nu_host_files = 0
             due_backup_list = []
-            exit
         else:
             # Clean the string and split the into a list of files
             due_backup_str = due_backup_str.decode(encoding='utf-8')
             due_backup_str = ''.join(due_backup_str.split('\x00'))
-            due_backup_list = due_backup_str.splitlines()
-            nu_host_files = len(due_backup_list)
             
-            
+            # create a set of filenames from the due_backup_str, where each line correspond to a filename
+            due_backup_set = set(due_backup_str.splitlines())
+            nu_host_files = len(due_backup_set)
 
-        # update database information with files due for backup
-        db_bp.add_file_task(host_id=task["host_id"], files_list=due_backup_list)
-        
-        # ! PArado aqui
-        
-        # * Peform the backup
         # initializa backup control variables
         nu_backup_error = 0
         done_backup_list = []
@@ -191,11 +250,9 @@ def main():
 
         # Test if there are files to backup. Done before the loop to avoid unecessary creation of the target folder
         if nu_host_files > 0:
-            target_folder = f"{k.TMP_FOLDER}/{task.data['host_add']['value']}"
             
-            # make sure that the target folder do exist
-            if not os.path.exists(target_folder):
-                os.makedirs(target_folder)
+            
+            
 
             # use bkp_list_index to control item in the list that is under backup, skipping the ones that failed
             bkp_list_index = 0
@@ -204,19 +261,6 @@ def main():
                 # get the first element in the due_backup_list
                 remote_file = due_backup_list[bkp_list_index]
                 
-                # test if remote_file exists before attempting to copy
-                if _check_remote_file(sftp, remote_file, task):
-                    # refresh the HALT_FLAG timeout control
-                    time_since_start = time.time()-halt_flag_time
-                    
-                    if time_since_start > time_limit:
-                        try:
-                            halt_flag_file_handle = sftp.open(daemon_cfg['HALT_FLAG'], 'w')
-                            halt_flag_file_handle.write(f'running backup for {time_since_start} seconds\n')
-                            halt_flag_file_handle.close()
-                        except Exception as e:
-                            log.warning(f"Could not raise halt_flag for host {task.data['host_add']['value']}.{str(e)}")
-                            pass
                     
                     # Compose target file name by adding the remote file name to the target folder
                     local_file = os.path.join(target_folder, os.path.basename(remote_file))

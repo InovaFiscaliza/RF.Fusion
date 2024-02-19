@@ -178,7 +178,6 @@ def main():
         due_backup_str = sftp_conn.read(filename=daemon_cfg['DUE_BACKUP'], mode='r')
         
         if due_backup_str == "":
-            due_backup_list = []
             exit
         else:
             # Clean the string and split the into a list of files

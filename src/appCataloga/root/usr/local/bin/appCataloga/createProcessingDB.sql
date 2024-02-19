@@ -47,7 +47,7 @@ CREATE TABLE FILE_TASK (
     NA_HOST_FILE_NAME VARCHAR(100) COMMENT 'Name of the file in the host',
     NA_SERVER_FILE_PATH VARCHAR(3000) COMMENT 'Path to the file in the server',
     NA_SERVER_FILE_NAME VARCHAR(100) COMMENT 'Name of the file in the server',
-    NU_STATUS TINYINT DEFAULT 0 COMMENT 'Status flag: -1=Error, 0=Nothing to do, 1=Pending action',
+    NU_STATUS TINYINT DEFAULT 0 COMMENT 'Status flag: -1=Error, 0=Nothing to do, 1=Pending action, 2=Under execution',
     NA_MESSAGE TEXT COMMENT 'Error message and other information',
     CONSTRAINT FK_FILE_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
 );
