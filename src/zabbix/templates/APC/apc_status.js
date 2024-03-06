@@ -6,7 +6,7 @@
 // Split the value into substrings and put these substrings into an array
 var lines = value.split('\n');
 
-// Create list of variables to recover
+// Create list of variables to recover from UPS Status Page
 var parameter_output = {
     'Runtime Remaining': 0,
     'Internal Temperature': 0,
