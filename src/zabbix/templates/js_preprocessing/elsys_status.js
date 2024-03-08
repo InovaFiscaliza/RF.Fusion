@@ -1,7 +1,7 @@
 // Convert APC HTML to JSON
 
 // load the HTML content from a file - test only
-//var value = require('fs').readFileSync('/root/RF.Fusion/src/zabbix/templates/APC/status.html', 'utf8');
+//var value = require('fs').readFileSync('/root/RF.Fusion/test/zabbix/js_preprocessing/elsys_status_2.html', 'utf8');
 
 // Split the value into substrings and put these substrings into an array
 var html_input = value.split('\n');
