@@ -1,0 +1,39 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          socat-forward
+# Required-Start:    $remote_fs $syslog
+# Required-Stop:     $remote_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Socat Port Forwarding Service
+# Description:       Runs socat to forward traffic from port 9081 to port 80
+### END INIT INFO
+
+# Path to socat executable
+SOCAT_BIN=/usr/bin/socat
+PIDFILE=/var/run/socat-forward.pid
+
+case "$1" in
+  start)
+    echo "Starting Socat Port Forwarding Service"
+    $SOCAT_BIN TCP-LISTEN:9081,fork TCP:192.168.10.254:80 &
+    echo $! > $PIDFILE
+    ;;
+  stop)
+    echo "Stopping Socat Port Forwarding Service"
+    pkill -F $PIDFILE
+    ;;
+  status)
+    if [ -f $PIDFILE ]; then
+      echo "Socat Port Forwarding Service is running"
+    else
+      echo "Socat Port Forwarding Service is not running"
+    fi
+    ;;
+  *)
+    echo "Usage: /etc/init.d/socat-forward {start|stop|status}"
+    exit 1
+    ;;
+esac
+
+exit 0

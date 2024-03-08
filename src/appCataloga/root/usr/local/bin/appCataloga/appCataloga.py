@@ -103,14 +103,15 @@ def backup_queue(   conn:str,
     
     db = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
      
-    db.add_backup_task(hostid=hostid,
-                       host_uid=host_uid,
-                       host_addr=host_addr,
-                       host_port=host_port,
-                       host_user=host_user,
-                       host_passwd=host_passwd)
+    db.add_host_task(   task_type=db.BACKUP,
+                        host_id=hostid,
+                        host_uid=host_uid,
+                        host_addr=host_addr,
+                        host_port=host_port,
+                        host_user=host_user,
+                        host_passwd=host_passwd)
     
-    host_stat = db.get_host_task_status(hostid)
+    host_stat = db.get_host_status(hostid)
     
     return host_stat
 

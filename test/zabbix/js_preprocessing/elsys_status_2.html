@@ -1,0 +1,1066 @@
+<script>
+var wlanmode, wlanclientnum;
+var isAP = 0;
+function showWan()
+{
+	var MultiPppoeEnable= 0;
+	var number = 0;
+	var dhcptype = 16;
+	var ipv6Enable = 1;
+
+	
+                window.ip_protocol=_(null,'729|Conectado');
+                window.conexao_dados = window.ip_protocol;
+		window.conexao_dados_ativa = '0';
+		window.ip_address='10.146.141.237';
+                window.ip_address_ims='0.0.0.0,0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0';
+		window.ip_subnet_mask='255.255.255.252';
+		window.default_gateway='10.146.141.238';
+                window.mac_address='';
+                window.nivel_sinal=_(null,'-102 dBm');
+                window.nivel_sinal_percent=_(null,'79%');
+
+
+		
+		var nomeOperadoraNotParsed = "CLARO BR Claro BR";
+		var nomeOperLower = nomeOperadoraNotParsed.toLowerCase();
+      //console.log("nomeOperadoraNotParsed:", nomeOperadoraNotParsed);  //* TODO * comment
+      //console.log("nomeOperLower:", nomeOperLower);  //* TODO * comment
+
+		var operadoraFinal = "";
+
+		if(nomeOperLower.indexOf("claro") != -1){
+			operadoraFinal = "Claro"
+		}else if(nomeOperLower.indexOf("vivo") != -1){
+			operadoraFinal = "Vivo"
+		}else if(nomeOperLower.indexOf("tim") != -1){
+			operadoraFinal = "Tim"
+		}else if(nomeOperLower.indexOf("oi") != -1){
+			operadoraFinal = "Oi"
+		}else if(nomeOperLower.indexOf("nextel") != -1){
+			operadoraFinal = "Nextel"
+		}else if(nomeOperLower.indexOf("algar") != -1){
+			operadoraFinal = "Algar"
+		}else if(nomeOperLower.indexOf("porto") != -1){
+			operadoraFinal = "Porto"
+		}else if(nomeOperLower.indexOf("sercomtel") != -1){
+			operadoraFinal = "Sercomtel"
+		}else if(nomeOperLower.indexOf("Tuenti") != -1){ //* TODO * validar
+        operadoraFinal = "Tuenti";
+		}else if(nomeOperLower.indexOf("Movistar") != -1){ //* TODO * validar
+        operadoraFinal = "Movistar";
+		}else if(nomeOperLower.indexOf("Personal") != -1){ //* TODO * validar
+        operadoraFinal = "Personal";
+      //CHECK IF NECESSARY:
+		//}else if(nomeOperLower.indexOf("Hutchinson") != -1){ //* TODO * CHECK
+      //  operadoraFinal = "Hutchinson";
+		}else{
+		 	operadoraFinal = nomeOperadoraNotParsed;
+		}
+      //console.log("nomeOperLower:", nomeOperLower); //* TODO * comment
+
+		window.nome_operadora=operadoraFinal;
+
+		window.tecnologia='"4G"';
+                window.banda=_(null,'2100 MHz');
+                window.freq_3G=_(null,'2135.0 MHz');
+		window.imei='866989050909818';
+		window.tipo_rede_movel='LTE';
+                window.tipo_de_antena=_(null,'741|Interna');
+		window.statusSim='1';
+		window.statusAT='1';
+		window.levelQuality='-13 dB';
+                window.sim_number=_(null,'743|Não disponível');
+                window.status_PIN=_(null,'PIN OK');
+
+
+	
+
+		if(ipv6Enable)
+		{
+			window.ipv6Enable=1;
+			window.global_Address='';
+			window.ll_address='fe80000000000000fa8096fffe03c712/64';
+			window.default_gateway='fe80000000000000fa8096fffe03c712/64';
+			window.mac_address='f8:80:96:03:c7:12';
+			window.link_type='IP link';
+			window.connection_type='DHCPv6';
+			window.global_address='';
+			window.wan_address='fe8000000000000002e04cfffe8196c9/64';
+			window.gw_default_gateway='';
+			window.mac_address='';
+
+		}
+
+
+		    $('.endereco_ip').text(window.ip_address);
+                    $('.endereco_ip_ims').text(window.ip_address_ims);
+
+			$('.ip_subnet_mask').text(window.ip_subnet_mask);
+
+
+			var isReg = 'reg';
+
+
+			$('.nivel-3g-percent').text(window.nivel_sinal_percent);
+			$('.nome_operadora').text(window.nome_operadora);
+            if(isReg == "reg") {
+              $('.tipo_rede_movel').text(window.tipo_rede_movel);
+            }
+			$('.mac_address').text(window.mac_address);
+			$('.banda').text(window.banda);
+			$('.freq_3G').text(window.freq_3G);
+			$('.imei').text(window.imei);
+                        $('.sim-number').text(_(null,window.sim_number));
+                        $('.status-PIN').text(_(null,window.status_PIN));
+                        $('.ip_protocol').text(_(null,window.ip_protocol));
+                        $('.tipo_de_antena').text(_(null,window.tipo_de_antena));
+
+			if(window.tecnologia=='"3G"'){
+
+				
+				if(window.conexao_dados_ativa == '0'){
+					$('.tecnologia').empty().append('<img id="icon_3g" class="img_tech" src="assets/img/icon_3g_on.png"/>');
+		      $('.tecnologia_inner').empty().append('<img id="icon_3g" src="assets/img/icon_3g_on.png" style="margin-top:-6px; width: 28px;"/>');
+					$('.tecnologia_inner_info').empty();
+				}else if(window.conexao_dados_ativa == '1'){
+					$('.tecnologia').html('<img id="icon_3g" src="assets/img/icon_3g_no_data.png" style="margin-top:-16px; width: 28px;"/>');
+					$('.tecnologia_inner').empty().append('<img id="icon_3g" src="assets/img/icon_3g_no_data.png" style="margin-top:-12px; width: 28px;"/>');
+                                        $('.tecnologia_inner_info').empty().text("Sem serviço de dados");
+				}else if(window.conexao_dados_ativa == '2'){
+					$('.tecnologia').html('<img id="icon_3g" src="assets/img/icon_3g_no_voice.png" style="margin-top:-16px; width: 28px;"/>');
+					$('.tecnologia_inner').empty().append('<img id="icon_3g" src="assets/img/icon_3g_no_voice.png" style="margin-top:-12px; width: 28px;"/>');
+					$('.tecnologia_inner_info').empty().text("Sem conexão de voz");
+				}else{
+					$('.tecnologia').html('<img id="icon_3g" src="assets/img/icon_3g_roaming.png" style="margin-top:-16px; width: 28px;"/>');
+					$('.tecnologia_inner').empty().append('<img id="icon_3g" src="assets/img/icon_3g_roaming.png" style="margin-top:-12px; width: 28px;"/>');
+					$('.tecnologia_inner_info').empty().text("Em roaming");
+				}
+		    
+
+				var nivel_sinal_int = parseInt(window.nivel_sinal_percent);
+
+				if(!Number(parseInt(window.nivel_sinal)) || window.nivel_sinal_percent == 'Sem Sinal'){
+					$('.nivel-3g').text(window.nivel_sinal);
+				}else{
+					$('.nivel-3g').text(window.nivel_sinal+" (RSCP)");
+					if(nivel_sinal_int > 90){
+                                        $(".nivel_sinal_quality").empty().append('<span class="label label-success" style="font-size:55%;" date-translate="159" >Excelente</span>');
+					}else if (nivel_sinal_int > 60 && nivel_sinal_int <= 90) {
+                                                $(".nivel_sinal_quality").empty().append('<span class="label label-info" style="font-size:55%;" date-translate="160" >Bom</span>');
+					}else if (nivel_sinal_int > 30 && nivel_sinal_int <= 60 ) {
+                                                $(".nivel_sinal_quality").empty().append('<span class="label label-warning" style="font-size:55%;" date-translate="161">Aceitável</span>');
+					}else if (nivel_sinal_int <= 30 ) {
+                                                $(".nivel_sinal_quality").empty().append('<span class="label label-danger" style="font-size:55%;" date-translate="162">Fraco</span>');
+					}
+				}
+
+				var level_quality_int = parseInt(window.levelQuality);
+				var level_quality = window.levelQuality+' (Ec/Io)';
+				var append_level_quality;
+
+
+				if(!Number(level_quality_int)){
+					append_level_quality = level_quality;
+				}else if (level_quality_int >= -6) {
+                                        append_level_quality = level_quality+'<span class="label label-success" style="font-size:88%;margin-left:5px;" date-translate="159"  >Excelente</span>';
+				}else if (level_quality_int >= -10 && level_quality_int < -6) {
+                                        append_level_quality = level_quality+'<span class="label label-info" style="font-size:88%;margin-left:5px;" date-translate="160" >Bom</span>';
+				}else if (level_quality_int >= -20 && level_quality_int < -10) {
+                                        append_level_quality = level_quality+'<span class="label label-warning" style="font-size:88%;margin-left:5px;" date-translate="161">Aceitável</span>';
+				}else{
+					append_level_quality = level_quality;
+				}
+
+				$('.signal_quality').empty().append(append_level_quality);
+
+
+			 }
+			 if(window.tecnologia=='"4G"'){
+
+				if(window.conexao_dados_ativa == '0'){
+					$('.tecnologia').empty().append('<img id="icon_4g" class="img_tech" src="assets/img/icon_4g_on.png"/>');
+        	$('.tecnologia_inner').empty().append('<img id="icon_4g" src="assets/img/icon_4g_on.png" width="25" style="margin-top:-6px; width: 28px;"/>');
+					$('.tecnologia_inner_info').empty();
+				}else if(window.conexao_dados_ativa == '1'){
+					$('.tecnologia').empty().append('<img id="icon_4g" class="img_tech" src="assets/img/icon_4g_no_data.png"/>');
+        	$('.tecnologia_inner').empty().append('<img id="icon_4g" src="assets/img/icon_4g_no_data.png" width="25" style="margin-top:-12px; width: 28px;"/>');
+                                        $('.tecnologia_inner_info').empty().text("Sem serviço de dados");
+				}else if(window.conexao_dados_ativa == '2'){
+					$('.tecnologia').empty().append('<img id="icon_4g" class="img_tech" src="assets/img/icon_4g_no_voice.png"/>');
+        	$('.tecnologia_inner').empty().append('<img id="icon_4g" src="assets/img/icon_4g_no_voice.png" width="25" style="margin-top:-12px; width: 28px;"/>');
+					$('.tecnologia_inner_info').empty().text("Sem conexão de voz");	
+				}else{
+					$('.tecnologia').empty().append('<img id="icon_4g" class="img_tech" src="assets/img/icon_4g_roaming.png"/>');
+        	$('.tecnologia_inner').empty().append('<img id="icon_4g" src="assets/img/icon_4g_roaming.png" width="25" style="margin-top:-12px; width: 28px;"/>');
+					$('.tecnologia_inner_info').empty().text("Em roaming");	
+				}
+        
+
+				var nivel_sinal_int = parseInt(window.nivel_sinal_percent);
+
+				if(!Number(parseInt(window.nivel_sinal)) || window.nivel_sinal_percent == 'Sem Sinal'){
+					$('.nivel-3g').text(window.nivel_sinal);
+				}else{
+					$('.nivel-3g').text(window.nivel_sinal+" (RSRP)");
+					if(nivel_sinal_int > 90){
+                                        $(".nivel_sinal_quality").empty().append('<span class="label label-success" style="font-size:55%;" date-translate="159" >Excelente</span>');
+					}else if (nivel_sinal_int > 60 && nivel_sinal_int <= 90) {
+                                                $(".nivel_sinal_quality").empty().append('<span class="label label-info" style="font-size:55%;" date-translate="160" >Bom</span>');
+					}else if (nivel_sinal_int > 30 && nivel_sinal_int <= 60 ) {
+                                                $(".nivel_sinal_quality").empty().append('<span class="label label-warning" style="font-size:55%;" date-translate="161">Aceitável</span>');
+					}else if (nivel_sinal_int <= 30 ) {
+                                                $(".nivel_sinal_quality").empty().append('<span class="label label-danger" style="font-size:55%;" date-translate="162">Fraco</span>');
+					}
+				}
+
+				var level_quality_int = parseInt(window.levelQuality);
+				var level_quality = window.levelQuality+' (RSRQ)';
+				var append_level_quality;
+
+
+				if(!Number(level_quality_int)){
+					append_level_quality = level_quality;
+				}else if (level_quality_int >= -9) {
+                                        append_level_quality = level_quality+'<span class="label label-success" style="font-size:88%;margin-left:5px;" date-translate="159"  >Excelente</span>';
+				}else if (level_quality_int >= -12 && level_quality_int < -9) {
+                                        append_level_quality = level_quality+'<span class="label label-info" style="font-size:88%;margin-left:5px;" date-translate="160" >Bom</span>';
+				}else if (level_quality_int < -12) {
+                                        append_level_quality = level_quality+'<span class="label label-warning" style="font-size:88%;margin-left:5px;" date-translate="161" >Aceitável</span>';
+				}else{
+					append_level_quality = level_quality;
+				}
+				$('.signal_quality').empty().append(append_level_quality);
+       }
+
+			 if(window.tecnologia=='"2G"'){
+
+				if(window.conexao_dados_ativa == '0'){
+					$('.tecnologia').empty().append('<img id="icon_2g" class="img_tech" src="assets/img/icon_2g_on.png"/>');
+			    $('.tecnologia_inner').empty().append('<img id="icon_2g" src="assets/img/icon_2g_on.png" width="25" style="margin-top:-6px; width: 28px;"/>');
+					$('.tecnologia_inner_info').empty();
+				}else if(window.conexao_dados_ativa == '1'){
+					$('.tecnologia').empty().append('<img id="icon_2g" class="img_tech" src="assets/img/icon_2g_no_data.png"/>');
+			    $('.tecnologia_inner').empty().append('<img id="icon_2g" src="assets/img/icon_2g_no_data.png" width="25" style="margin-top:-12px; width: 28px;"/>');
+                                        $('.tecnologia_inner_info').empty().text("Sem serviço de dados");
+				}else if(window.conexao_dados_ativa == '2'){
+					$('.tecnologia').empty().append('<img id="icon_2g" class="img_tech" src="assets/img/icon_2g_no_voice.png"/>');
+			    $('.tecnologia_inner').empty().append('<img id="icon_2g" src="assets/img/icon_2g_no_voice.png" width="25" style="margin-top:-12px; width: 28px;"/>');
+					$('.tecnologia_inner_info').empty().text("Sem conexão de voz");
+				}else{
+					$('.tecnologia').empty().append('<img id="icon_2g" class="img_tech" src="assets/img/icon_2g_roaming.png"/>');
+			    $('.tecnologia_inner').empty().append('<img id="icon_2g" src="assets/img/icon_2g_roaming.png" width="25" style="margin-top:-12px; width: 28px;"/>');
+					$('.tecnologia_inner_info').empty().text("Em roaming");
+				}
+
+					$('.hide_2G').hide();
+
+					var nivel_sinal_int = parseInt(window.nivel_sinal_percent);
+					if(!Number(parseInt(window.nivel_sinal)) || window.nivel_sinal_percent == 'Sem Sinal'){
+						$('.nivel-3g').text(window.nivel_sinal);
+					}else{
+					$('.nivel-3g').text(window.nivel_sinal+" (RSCP)");
+					if(nivel_sinal_int > 90){
+                                        $(".nivel_sinal_quality").empty().append('<span class="label label-success" style="font-size:55%;" date-translate="159" >Excelente</span>');
+					}else if (nivel_sinal_int > 60 && nivel_sinal_int <= 90) {
+                                                $(".nivel_sinal_quality").empty().append('<span class="label label-info" style="font-size:55%;" date-translate="160">Bom</span>');
+					}else if (nivel_sinal_int > 30 && nivel_sinal_int <= 60 ) {
+                                                $(".nivel_sinal_quality").empty().append('<span class="label label-warning" style="font-size:55%;" date-translate="161" >Aceitável</span>');
+					}else if (nivel_sinal_int <= 30 ) {
+                                                $(".nivel_sinal_quality").empty().append('<span class="label label-danger" style="font-size:55%;" date-translate="162">Fraco</span>');
+					}
+				}
+			 }
+
+			 if (window.statusSim=='1')
+			 {
+			    $('.statusSim').empty().append('<img id="icon_chip" src="assets/img/SIMCARD-SIM2.png" width="20" style="margin-top:-14px"/>');
+			 }
+			 else
+			 {
+			    $('.statusSim').empty().append('<img id="icon_chip" src="assets/img/SIMCARD-NAO2.png" width="20" style="margin-top:-14px"/>');
+			 }
+
+			 if(window.statusAT=='1')
+			 {
+			    $('.statusAT').empty().append('<img id="icon_rf" src="assets/img/icon_rf_on1.png" width="30" style="margin-top:-6px"/>');
+			 }
+			 else
+			 {
+			    $('.statusAT').empty().append('<img id="icon_rf" src="assets/img/icon_rf_off1.png" width="30" style="margin-top:-6px"/>');
+			 }
+                         if(window.conexao_dados == _('735','Conectado'))
+			 {
+			    $('.conexao_dados').empty().append('<img id="icon_conexao" src="assets/img/WEB-SIM.png" width="20" style="margin-top:-14px; margin-left:3px;"/>');
+			 }
+			 else
+			 {
+			    $('.conexao_dados').empty().append('<img id="icon_conexao" src="assets/img/WEB-NAO.png" width="20" style="margin-top:-14px; margin-left:3px;"/>');
+				  $(".hide_ipv6_on_disconnect").empty().append("0:0:0:0:0:0:0:0");
+			 }
+}
+
+
+
+showWan();
+</script>
+
+<style>
+.img_tech{
+	margin-top:-21px;
+	max-width: 30px;
+	width:auto;
+}
+</style>
+
+
+<div class="w900 margin-top-10" id="reboot_later" style="color:#FF0000"> </div>
+<script>
+    var status_warning = "";
+
+    if (status_warning != "")
+    {
+        $("#reboot_later").text(_("737",status_warning));
+    }
+
+    $(".resetDataCount").on("click", function () {
+    });
+</script>
+
+
+<form action=/boafrm/formStatus method=POST name="formStatus" target="processa_forms_index">
+<!-- botoes -->
+<div class="w900 margin-top-10">
+    <div class="float-left margin-right-10 fsize-16"><input class="botao botao_reset botao_azul_selecionado" type="button" onClick="mostra('status_3g',this)" data-translate="581" value="Conexão Celular"></div>
+    <div class="float-left margin-right-10 fsize-16"><input class="botao botao_reset" type="button" onClick="mostra('ethernet',this)"  data-translate="582" value="Porta Ethernet"></div>
+    <div class="float-left margin-right-10 fsize-16"><input class="botao botao_reset" type="button" onClick="mostra('sistema',this)"  data-translate="583" value="Sistema"></div>
+        <div style="clear:both"></div>
+</div>
+<div style="height:10px"></div>
+<!-- fim botoes -->
+
+<!-- display conexão 3G -->
+<div id="status_3g" class="hide_object">
+<div class="faixa" style="padding-bottom:5px;">
+  
+<div class="w900">
+        <div class="float-left-internas" style="margin-top: 7px;"><strong><span class="hideMobile"  data-translate="584">SIM: </span><span class="statusSim"></span></strong></div>
+        <div class="float-left-internas" style="margin-top: 7px;"><strong><span class="hideMobile"  data-translate="585">Operadora:</span></strong><span class="nome_operadora titulo_azul" style="margin-left:3px"> </span> </div>
+        <div class="float-left-internas" style="margin-top: 7px;margin-right: 9px;"><strong><span class="hideMobile"  data-translate="586">Nível de Sinal:</span></strong> <span class="titulo_azul nivel-3g-percent"></span></div>
+
+
+	<span class="hideMobile"><div class="float-left-internas" style="margin-top: 3px;"><span class="titulo_azul nivel_sinal_quality"></span></div></span>
+	<div class="float-left-internas" style="margin-top: 7px;"><strong><span class="tecnologia"></span> </strong></div>
+        <div class="float-left-internas" style="margin-top: 7px;"><strong><span class="hideMobile"  data-translate="587">Conexão:</span><span class="conexao_dados"></span> </strong></div>
+
+<div class="float-left-internas">
+	<input type="hidden" value="/index.html?status" name="submit-url">
+        <span class="hideMobile"><input class="botao_azul" name="refresh" type="button" ontouchstart="location.href='index.html?status'"  onClick="location.href='index.html?status'"  data-translate="588" value="ATUALIZAR"></span>
+	<span class="showMobile"><a href="/index.html?status"><img src="assets/img/reload.png" style="width:24px;margin-left: 30px;"/></a></span>
+</div>
+
+<div style="clear:both"></div>
+
+</div>
+
+</div>
+
+  <div class="w900">
+        <table width="100%" border="0" class="spacing-table">
+  <tbody>
+     <tr>
+       <td class="field_name" align="left" data-translate="589">Status da Conexão</td>
+       <td width="79%" align="left"><span class="ip_protocol"></span></td>
+     </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="590">Endereço IP</td>
+      <td width="79%" align="left" ><span class="endereco_ip"></span></td>
+    </tr>
+	<tr style="display:none">
+      <td class="field_name" align="left" data-translate="591">Endereço IPv6</td>
+	  <td align="left" width="79%"><span class="hide_ipv6_on_disconnect"></span></td>
+    </tr>    
+    <tr>
+      <td class="field_name" align="left" data-translate="592">Máscara de Rede</td>
+      <td align="left"><span class="ip_subnet_mask"></span></td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="593">Tecnologia</td>
+      <td align="left"><span class="tecnologia_inner"></span><span class="tecnologia_inner_info" style="margin-left: 10px;"></span></td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="594">Tipo de Rede Móvel</td>
+      <td align="left"><span class="tipo_rede_movel"></span></td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="595">Nível de Sinal</td>
+      <td align="left"><span class="nivel-3g"></span></td>
+    </tr>
+    <tr class="hide_2G">
+      <td class="field_name" align="left" data-translate="596">Qualidade de sinal</td>
+      <td align="left" class="signal_quality"></td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="597">Banda</td>
+      <td align="left"><span class="banda"></span></td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="598">Frequência</td>
+      <td align="left"><span class="freq_3G"></span></td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left">IMEI</td>
+      <td align="left"><span class="imei"></span></td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="599">Número do SIM</td>
+      <td align="left"><span class="sim-number"></span></td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="600">Tipo da Antena</td>
+      <td align="left"><span class="tipo_de_antena"></span></td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="601">PIN de registro</td>
+      <td align="left"><span class="status-PIN"></span></td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="602">Largura de Banda -(somente LTE)</td>
+      <td align="left">20 MHz / 20 MHz (DL/UL)</td>
+    </tr>
+    <tr>
+    <!-- BORR -->
+    <!-- BORR END -->
+
+    <!-- BORR -->
+    <!-- BORR END-->
+
+    <!--BALDER -->
+    <tr>
+      <td class="field_name" align="left" data-translate="857">Consumo</td>
+      <td align="left" width="79%">
+         18203679/45652416 KBytes (DL/UL)
+         <input type="submit" class="botao" style="margin-left: 20px;" name="reset_data_count" id="reset_data_count"
+                value="Zerar" data-translate="858" >
+      </td>
+    </tr>
+    <!-- BALDER END -->
+
+  </tbody>
+</table>
+<div style="height:20px"></div>
+    </div>
+
+</div>
+<!-- fim display conexão 3G -->
+
+<!-- display ethernet" -->
+<div id="ethernet" class="hide_object hide_obj">
+<div class="faixa_risco"></div>
+  <div class="w900">
+        <table width="100%" border="0" class="spacing-table">
+  <tbody>
+    <tr>
+      <td class="field_name" align="left" data-translate="590">Endereço IP</td>
+      <td align="left">192.168.10.254</td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="605">Máscara de Rede</td>
+      <td align="left">255.255.255.0</td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="606">Servidor DHCP</td>
+      <td align="left"><span id="texto_dhcp"></span>
+	       <script>
+                choice=2;
+                if ( choice == 0 ) $('#texto_dhcp').text(_('607','Desabilitado'));
+                if ( choice == 2 ) $('#texto_dhcp').text(_('608','Habilitado'));
+                if ( choice == 15 ) $('#texto_dhcp').text(_('609','Automático'));
+                if ( choice == 19 ) $('#texto_dhcp').text(_('609','Automático'));
+	       </script>
+
+     </td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="610">Endereço MAC</td>
+      <td align="left">f8:80:96:03:c7:12</td>
+    </tr>
+  </tbody>
+</table>
+<div style="height:20px"></div>
+  </div>
+</div>
+<!-- fim display ethernet" -->
+
+
+<!-- display Sistema" -->
+<div id="sistema" class="hide_object hide_obj">
+<div class="faixa_risco"></div>
+  <div class="w900">
+        <table width="100%" border="0" class="spacing-table">
+  <tbody>
+    <tr>
+      <td class="field_name" align="left" data-translate="611">Tempo ligado</td>
+      <td width="79%" align="left">78 Dia(s):18h:45m:9s</td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="612">Versão do Software</td>
+      <td align="left">1.7.1.1.4 / EC25AUFAR02A04M4G</td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="613">Data da Compilação</td>
+      <td align="left">Wed Aug 11 17:34:14 UTC 2021
+</td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="614">Tensão de Alimentação</td>
+      <td align="left">23.7 V <span data-translate="738">( esta tensão deve ser maior ou igual a 9V )</span> </td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="615">Numero Serial:</td>
+      <td align="left">(90)LKI014750042612</td>
+    </tr>
+    <tr>
+      <td class="field_name" align="left" data-translate="616">Versão de HW:</td>
+      <td align="left">01.00</td>
+	</tr>
+	<tr>
+                <td class="field_name" align="left" data-translate="617">Reiniciar agora:</td>
+		<td align="left">
+                        <input id="estilo_input" class="ELY_botao ELY_botao_azul" type="button" data-translate="618" value="Reiniciar" onclick="window.location.href = '/countDownPage.htm' " />
+		</td>
+	</tr>
+  </tbody>
+</table>
+<div style="height:20px"></div>
+  </div>
+</div>
+<!-- fim display sistema" -->
+
+<!-- script do sistema -->
+ <script>
+ // incia a variavel padrap
+ window.texto_sistema='<table>';
+
+ 	var wlan_num = 1;
+ 	var isNewMeshUI =  0 ;
+  	var wlanMode =new Array();
+  	var networkType =new Array();
+  	var band=new Array();
+  	var ssid_drv=new Array();
+  	var channel_drv=new Array();
+  	var wep=new Array();
+  	var wdsEncrypt=new Array();
+  	var meshEncrypt=new Array();
+  	var bssid_drv=new Array();
+  	var clientnum=new Array();
+  	var state_drv=new Array();
+  	var rp_enabled=new Array();
+	var rp_mode=new Array();
+  	var rp_encrypt=new Array();
+  	var rp_clientnum=new Array();
+  	var rp_ssid=new Array();
+  	var rp_bssid=new Array();
+  	var rp_state=new Array();
+	var wlanDisabled=new Array();
+
+	var mssid_num=0;
+
+	var mssid_disable=new Array(wlan_num);
+	var mssid_bssid_drv=new Array(wlan_num);
+	var mssid_clientnum=new Array(wlan_num);
+	var mssid_band=new Array(wlan_num);
+	var mssid_ssid_drv=new Array(wlan_num);
+	var mssid_wep=new Array(wlan_num);
+
+	for(i=0; i<wlan_num; i++)
+	{
+		mssid_disable[i] = new Array(mssid_num);
+		mssid_bssid_drv[i] = new Array(mssid_num);
+		mssid_clientnum[i] = new Array(mssid_num);
+		mssid_band[i] = new Array(mssid_num);
+		mssid_ssid_drv[i] = new Array(mssid_num);
+		mssid_wep[i] = new Array(mssid_num);
+	}
+
+	if (wlan_num > 0)
+	{
+		
+		wlanMode[0] =0;
+		networkType[0] =0;
+		band[0] =12;
+		ssid_drv[0] ='';
+		channel_drv[0] ='';
+		wep[0] ='Disabled';
+		wdsEncrypt[0] ='Disabled';
+ 		if (0 == 1)
+			meshEncrypt[0] ='';
+		else
+			meshEncrypt[0] ='';
+
+		bssid_drv[0] ='';
+		clientnum[0] ='0';
+		state_drv[0] ='';
+		wlanDisabled[0] =0;
+
+		rp_enabled[0] =0;
+		rp_mode[0] =1;
+		rp_encrypt[0] ='Disabled';
+		rp_ssid[0] ='e0:00:19:78:01:10';
+		rp_bssid[0] ='b8:00:00:00:00:00';
+		rp_state[0] ='(null)';
+		rp_clientnum[0] ='0';
+
+		if (mssid_num > 0) {
+			mssid_ssid_drv[0][0] ='';
+			mssid_band[0][0] =12;
+			mssid_disable[0][0] =1;
+			mssid_bssid_drv[0][0] ='';
+			mssid_clientnum[0][0] ='0';
+			mssid_wep[0][0] ='Disabled';
+		}
+
+		if (mssid_num > 1) {
+			mssid_ssid_drv[0][1] ='';
+			mssid_band[0][1] =12;
+			mssid_disable[0][1] =1;
+			mssid_bssid_drv[0][1] ='';
+			mssid_clientnum[0][1] ='0';
+			mssid_wep[0][1] ='Disabled';
+		}
+
+		if (mssid_num > 2) {
+			mssid_ssid_drv[0][2] ='';
+			mssid_band[0][2] =12;
+			mssid_disable[0][2] =1;
+			mssid_bssid_drv[0][2] ='';
+			mssid_clientnum[0][2] ='0';
+			mssid_wep[0][2] ='Disabled';
+		}
+
+		if (mssid_num > 3) {
+			mssid_ssid_drv[0][3] ='';
+			mssid_band[0][3] =12;
+			mssid_disable[0][3] =1;
+			mssid_bssid_drv[0][3] ='';
+			mssid_clientnum[0][3] ='0';
+			mssid_wep[0][3] ='Disabled';
+		}
+
+		if (mssid_num > 4) {
+			mssid_ssid_drv[0][4] ='';
+			mssid_band[0][4] =0;
+			mssid_disable[0][4] =1;
+			mssid_bssid_drv[0][4] ='';
+			mssid_clientnum[0][4] ='0';
+			mssid_wep[0][4] ='Disabled';
+		}
+
+		if (mssid_num > 5) {
+			mssid_ssid_drv[0][5] ='0';
+			mssid_band[0][5] =0;
+			mssid_disable[0][5] =0;
+			mssid_bssid_drv[0][5] ='0';
+			mssid_clientnum[0][5] ='0';
+			mssid_wep[0][5] ='0';
+		}
+
+		if (mssid_num > 6) {
+			mssid_ssid_drv[0][6] ='0';
+			mssid_band[0][6] =0;
+			mssid_disable[0][6] =0;
+			mssid_bssid_drv[0][6] ='0';
+			mssid_clientnum[0][6] ='0';
+			mssid_wep[0][6] ='0';
+		}
+
+		if (mssid_num > 7) {
+			mssid_ssid_drv[0][7] ='0';
+			mssid_band[0][7] =0;
+			mssid_disable[0][7] =0;
+			mssid_bssid_drv[0][7] ='0';
+			mssid_clientnum[0][7] ='0';
+			mssid_wep[0][7] ='0';
+		}
+	} /*if (wlan_num > 0)*/
+
+	if (wlan_num > 1)
+	{
+		
+		wlanMode[1] =0;
+		networkType[1] =0;
+		band[1] =12;
+		ssid_drv[1] ='';
+		channel_drv[1] ='';
+		wep[1] ='Disabled';
+		wdsEncrypt[1] ='Disabled';
+ 		if (0 == 1)
+			meshEncrypt[1] ='';
+		else
+			meshEncrypt[1] ='';
+
+		bssid_drv[1] ='';
+		clientnum[1] ='0';
+		state_drv[1] ='';
+		wlanDisabled[1] =0;
+
+		rp_enabled[1] =0;
+		rp_mode[1] =1;
+		rp_encrypt[1] ='Disabled';
+		rp_ssid[1] ='e0:00:19:78:01:10';
+		rp_bssid[1] ='b8:00:00:00:00:00';
+		rp_state[1] ='(null)';
+		rp_clientnum[1] ='0';
+
+		if (mssid_num > 0) {
+			mssid_ssid_drv[1][0] ='';
+			mssid_band[1][0] =12;
+			mssid_disable[1][0] =1;
+			mssid_bssid_drv[1][0] ='';
+			mssid_clientnum[1][0] ='0';
+			mssid_wep[1][0] ='Disabled';
+		}
+
+		if (mssid_num > 1) {
+			mssid_ssid_drv[1][1] ='';
+			mssid_band[1][1] =12;
+			mssid_disable[1][1] =1;
+			mssid_bssid_drv[1][1] ='';
+			mssid_clientnum[1][1] ='0';
+			mssid_wep[1][1] ='Disabled';
+		}
+
+		if (mssid_num > 2) {
+			mssid_ssid_drv[1][2] ='';
+			mssid_band[1][2] =12;
+			mssid_disable[1][2] =1;
+			mssid_bssid_drv[1][2] ='';
+			mssid_clientnum[1][2] ='0';
+			mssid_wep[1][2] ='Disabled';
+		}
+
+		if (mssid_num > 3) {
+			mssid_ssid_drv[1][3] ='';
+			mssid_band[1][3] =12;
+			mssid_disable[1][3] =1;
+			mssid_bssid_drv[1][3] ='';
+			mssid_clientnum[1][3] ='0';
+			mssid_wep[1][3] ='Disabled';
+		}
+
+		if (mssid_num > 4) {
+			mssid_ssid_drv[1][4] ='';
+			mssid_band[1][4] =0;
+			mssid_disable[1][4] =1;
+			mssid_bssid_drv[1][4] ='';
+			mssid_clientnum[1][4] ='0';
+			mssid_wep[1][4] ='Disabled';
+		}
+
+		if (mssid_num > 5) {
+			mssid_ssid_drv[1][5] ='0';
+			mssid_band[1][5] =0;
+			mssid_disable[1][5] =0;
+			mssid_bssid_drv[1][5] ='0';
+			mssid_clientnum[1][5] ='0';
+			mssid_wep[1][5] ='0';
+		}
+
+		if (mssid_num > 6) {
+			mssid_ssid_drv[1][6] ='0';
+			mssid_band[1][6] =0;
+			mssid_disable[1][6] =0;
+			mssid_bssid_drv[1][6] ='0';
+			mssid_clientnum[1][6] ='0';
+			mssid_wep[1][6] ='0';
+		}
+
+		if (mssid_num > 7) {
+			mssid_ssid_drv[1][7] ='0';
+			mssid_band[1][7] =0;
+			mssid_disable[1][7] =0;
+			mssid_bssid_drv[1][7] ='0';
+			mssid_clientnum[1][7] ='0';
+			mssid_wep[1][7] ='0';
+		}
+	} /*if (wlan_num > 1)*/
+
+	for(i=0; i < wlan_num ; i++)
+   	{
+		if(ssid_drv[i]=="")
+			mssid_num=0;
+		else
+			mssid_num=0;
+
+		if(wlanDisabled[i] == 1)
+			continue;
+
+		window.texto_sistema=window.texto_sistema +'<tr bgcolor="#EEEEEE">\
+		<td width=100% colspan="2" bgcolor="#008000"><font color="#FFFFFF" size=2><b>';
+
+		if (wlan_num > 1) {
+			var num = i + 1;
+			window.texto_sistema=window.texto_sistema +"Wireless " + num + " Configuration";
+		}
+		else
+			window.texto_sistema=window.texto_sistema +"Wireless Configuration";
+		window.texto_sistema=window.texto_sistema +'</b></font></td></tr>';
+
+		window.texto_sistema=window.texto_sistema +'<tr bgcolor="#EEEEEE">\
+		<td width=40%><font size=2><b>Mode</b></td>\
+		<td width=60%><font size=2>' ;
+		/* mode */
+		if(wlanMode[i] == 0)
+			window.texto_sistema=window.texto_sistema +"AP";
+		if (wlanMode[i] == 1) {
+			if (networkType[i] == 0)
+				window.texto_sistema=window.texto_sistema + "Infrastructure Client";
+			else
+				window.texto_sistema=window.texto_sistema + "Ad-hoc Client";
+		}
+		if ( wlanMode[i] == 2 )
+			window.texto_sistema=window.texto_sistema + "WDS";
+		if ( wlanMode[i] == 3 )
+			window.texto_sistema=window.texto_sistema + "AP+WDS";
+		/*#ifdef CONFIG_NEW_MESH_UI*/
+		if( isNewMeshUI ==1 )
+		{
+			if ( wlanMode[i] == 4 )
+				window.texto_sistema=window.texto_sistema + "AP+MESH";
+			if ( wlanMode[i] == 5 )
+				window.texto_sistema=window.texto_sistema + "MESH";
+		}
+		else
+		{
+			if ( wlanMode[i] == 4 )
+				window.texto_sistema=window.texto_sistema + "AP+MPP";
+			if ( wlanMode[i] == 5 )
+				window.texto_sistema=window.texto_sistema + "MPP";
+			if ( wlanMode[i] == 6 )
+				window.texto_sistema=window.texto_sistema + "MAP";
+			if ( wlanMode[i] == 7 )
+				window.texto_sistema=window.texto_sistema + "MP";
+		}
+		/* band */
+		window.texto_sistema=window.texto_sistema +'</td>\
+			<tr bgcolor="#DDDDDD">\
+	    		<td width=40%><font size=2><b>Band</b></td>\
+	    		<td width=60%><font size=2>';
+		if (band[i] == 1)
+   			window.texto_sistema=window.texto_sistema + "2.4 GHz (B)";
+    	else
+    	if (band[i] == 2)
+   			window.texto_sistema=window.texto_sistema + "2.4 GHz (G)";
+    	else
+    	if (band[i] == 8)
+   		{
+    			if(channel_drv[i] > 14)
+    				window.texto_sistema=window.texto_sistema + "5 GHz (N)";
+    			else
+   				window.texto_sistema=window.texto_sistema + "2.4 GHz (N)";
+   		}
+   		else
+   		if (band[i] == 3)
+   			window.texto_sistema=window.texto_sistema + "2.4 GHz (B+G)";
+    	else
+    	if (band[i] == 4)
+   			window.texto_sistema=window.texto_sistema + "5 GHz (A)";
+   		else
+   		if (band[i] == 10)
+   			window.texto_sistema=window.texto_sistema + "2.4 GHz (G+N)";
+   		else
+   		if (band[i] == 11)
+   			window.texto_sistema=window.texto_sistema + "2.4 GHz (B+G+N)";
+   		else
+   		if (band[i] == 12)
+   			window.texto_sistema=window.texto_sistema + "5 GHz (A+N)";
+		else
+		if (band[i] == 15)
+   			window.texto_sistema=window.texto_sistema + "2.4GHz+5 GHz (A+B+G+N)";
+   		else
+   		if (band[i] == 76)
+   			window.texto_sistema=window.texto_sistema + "5 GHz (A+N+AC)";
+   		else
+   		if (band[i] == 64)
+   			window.texto_sistema=window.texto_sistema + "5 GHz (AC)";
+   		else
+   		if (band[i] == 72)
+   			window.texto_sistema=window.texto_sistema + "5 GHz (N+AC)";
+   		else
+   		if (band[i] == 68)
+   			window.texto_sistema=window.texto_sistema + "5 GHz (A+AC)";
+		window.texto_sistema=window.texto_sistema +'</tr>\
+			<tr bgcolor="#EEEEEE">\
+    			<td width=40%><font size=2><b>SSID</b></td>\
+    			<td width=60%><font size=2>';
+		if (wlanMode[i] != 2) {
+			window.texto_sistema=window.texto_sistema +ssid_drv[i];
+		}
+		window.texto_sistema=window.texto_sistema +'</td>\
+			</tr>\
+			<tr bgcolor="#DDDDDD">\
+			<td width=40%><font size=2><b>Channel Number</b></td>\
+			<td width=60%><font size=2>'+channel_drv[i] +'</td>\
+			</tr>\
+			<tr bgcolor="#EEEEEE">\
+			<td width=40%><font size=2><b>Encryption</b></td>\
+			<td width=60%><font size=2>';
+		if (wlanMode[i] == 0 || wlanMode[i] == 1)
+    			window.texto_sistema=window.texto_sistema +wep[i];
+		else if (wlanMode[i] == 2)
+    			window.texto_sistema=window.texto_sistema +wdsEncrypt[i];
+		else if (wlanMode[i] == 3)
+    			window.texto_sistema=window.texto_sistema +wep[i] + '(AP),  ' + wdsEncrypt[i] + '(WDS)';
+		else if (wlanMode[i] == 4 || wlanMode[i] == 6)
+    			window.texto_sistema=window.texto_sistema +wep[i] + '(AP),  ' + meshEncrypt[i] + '(Mesh)';
+    		else if (wlanMode[i] == 5|| wlanMode[i] == 7)
+    			window.texto_sistema=window.texto_sistema + meshEncrypt[i] + '(Mesh)';
+
+		window.texto_sistema=window.texto_sistema +'</td>\
+  			</tr>\
+  			<tr bgcolor="#DDDDDD">\
+    			<td width=40%><font size=2><b>BSSID</b></td>\
+    			<td width=60%><font size=2>'+bssid_drv[i]+'</td>\
+  			</tr>';
+		if (wlanMode[i]!=2) {	//2 means WDS modeform
+			window.texto_sistema=window.texto_sistema +'<tr bgcolor="#EEEEEE">\n';
+			if (wlanMode[i]==0 || wlanMode[i]==3 || wlanMode[i]==4) {
+				window.texto_sistema=window.texto_sistema +"<td width=40%%><font size=2><b>Associated Clients</b></td>\n";
+				window.texto_sistema=window.texto_sistema +"<td width=60%%><font size=2>"+clientnum[i]+"</td></tr>";
+			}
+			else {
+				window.texto_sistema=window.texto_sistema +"<td width=40%%><font size=2><b>State</b></td>\n";
+				window.texto_sistema=window.texto_sistema +'<td width=60%%><font size=2>'+state_drv[i]+'</td></tr>';
+			}
+        	}
+
+		/* mesh does not support virtual ap */
+		if (!wlanDisabled[i] && (wlanMode[i]==0 || wlanMode[i]==3 )) {
+			for (idx=0; idx<mssid_num; idx++) {
+				if (!mssid_disable[i][idx]) {
+					window.texto_sistema=window.texto_sistema +'\
+						<tr bgcolor="#EEEEEE">\
+						<td width=100% colspan="2" bgcolor="#008000"><font color="#FFFFFF" size=2>\
+						<b>Virtual AP'+(idx+1)+' Configuration</b></font></td>\
+						</tr>\
+						<tr bgcolor="#EEEEEE">\
+	    					<td width=40%><font size=2><b>Band</b></td>\
+			    			<td width=60%><font size=2>';
+					if (mssid_band[i][idx] == 1)
+			   			window.texto_sistema=window.texto_sistema + "2.4 GHz (B)";
+					else if (mssid_band[i][idx] == 2)
+			   			window.texto_sistema=window.texto_sistema + "2.4 GHz (G)";
+					else if (mssid_band[i][idx] == 8){
+						if(channel_drv[i] > 14)
+							window.texto_sistema=window.texto_sistema + "5 GHz (N)";
+						else
+			   				window.texto_sistema=window.texto_sistema + "2.4 GHz (N)";
+			   		}
+					else if (mssid_band[i][idx] == 3)
+			   			window.texto_sistema=window.texto_sistema + "2.4 GHz (B+G)";
+					else if (mssid_band[i][idx] == 4)
+			   			window.texto_sistema=window.texto_sistema + "5 GHz (A)";
+					else if (mssid_band[i][idx] == 10)
+			   			window.texto_sistema=window.texto_sistema + "2.4 GHz (G+N)";
+					else if (mssid_band[i][idx] == 11)
+			   			window.texto_sistema=window.texto_sistema + "2.4 GHz (B+G+N)";
+					else if (mssid_band[i][idx] == 12)
+						window.texto_sistema=window.texto_sistema + "5 GHz (A+N)";
+					else if (mssid_band[i][idx] == 76)
+						window.texto_sistema=window.texto_sistema + "5 GHz (A+N+AC)";
+					else if (mssid_band[i][idx] == 64)
+						window.texto_sistema=window.texto_sistema + "5 GHz (AC)";
+					else if (mssid_band[i][idx] == 68)
+						window.texto_sistema=window.texto_sistema + "5 GHz (A+AC)";
+					else if (mssid_band[i][idx] == 72)
+						window.texto_sistema=window.texto_sistema + "5 GHz (N+AC)";
+
+					window.texto_sistema=window.texto_sistema +'</td></tr>\
+						<tr bgcolor="#DDDDDD">\
+			    			<td width=40%><font size=2><b>SSID</b></td>\
+			    			<td width=60%><font size=2>';
+					window.texto_sistema=window.texto_sistema +mssid_ssid_drv[i][idx]+'</td>';
+
+					window.texto_sistema=window.texto_sistema +'</tr>\
+						<tr bgcolor="#EEEEEE">\
+						<td width=40%><font size=2><b>Encryption</b></td>\
+						<td width=60%><font size=2>'+mssid_wep[i][idx]+'</td>';
+
+					window.texto_sistema=window.texto_sistema +'</tr>\
+						<tr bgcolor="#DDDDDD">\
+						<td width=40%><font size=2><b>BSSID</b></td>\
+						<td width=60%><font size=2>'+mssid_bssid_drv[i][idx]+'</td>';
+
+					window.texto_sistema=window.texto_sistema +'</tr>\
+						<tr bgcolor="#EEEEEE">\
+						<td width=40%%><font size=2><b>Associated Clients</b></td>\
+						<td width=60%%><font size=2>'+mssid_clientnum[i][idx]+'</td></tr>';
+				}
+			}
+		}
+
+		//    window.texto_sistema=window.texto_sistema +'</table>\
+		if (rp_enabled[i])	// start of repeater
+		{
+			window.texto_sistema=window.texto_sistema +'<tr bgcolor="#EEEEEE">\
+				<td width=100% colspan="2" bgcolor="#008000"><font color="#FFFFFF" size=2><b>';
+
+			if (wlan_num > 1) {
+				var num = i + 1;
+				window.texto_sistema=window.texto_sistema +"Wireless " + num + " Repeater Interface Configuration";
+			}
+			else
+				window.texto_sistema=window.texto_sistema +"Wireless Repeater Interface Configuration";
+			window.texto_sistema=window.texto_sistema +'</b></font></td></tr>';
+
+			window.texto_sistema=window.texto_sistema +'<tr bgcolor="#EEEEEE">\
+				<td width=40%><font size=2><b>Mode</b></td>\
+				<td width=60%><font size=2>' ;
+			/* mode */
+			if(rp_mode[i] == 0)
+				window.texto_sistema=window.texto_sistema +"AP";
+			else
+				window.texto_sistema=window.texto_sistema + "Infrastructure Client";
+			window.texto_sistema=window.texto_sistema +'</td>\
+				</tr>\
+				<tr bgcolor="#DDDDDD">\
+				<td width=40%><font size=2><b>SSID</b></td>\
+				<td width=60%><font size=2>'+rp_ssid[i] +'</td>\
+				</tr>\
+				<tr bgcolor="#EEEEEE">\
+				<td width=40%><font size=2><b>Encryption</b></td>\
+				<td width=60%><font size=2>'+rp_encrypt[i] +'</td>\
+				</tr>\
+				<tr bgcolor="#DDDDDD">\
+				<td width=40%><font size=2><b>BSSID</b></td>\
+				<td width=60%><font size=2>'+rp_bssid[i] +'</td>\
+				</tr>';
+			window.texto_sistema=window.texto_sistema +'<tr bgcolor="#EEEEEE">\n';
+			if (rp_mode[i]==0 || rp_mode[i]==3) {
+				window.texto_sistema=window.texto_sistema +"<td width=40%%><font size=2><b>Associated Clients</b></td>\n";
+				window.texto_sistema=window.texto_sistema +"<td width=60%%><font size=2>"+rp_clientnum[i]+"</td></tr>";
+			}
+			else {
+				window.texto_sistema=window.texto_sistema +"<td width=40%%><font size=2><b>State</b></td>\n";
+				window.texto_sistema=window.texto_sistema + '<td width=60%%><font size=2>'+rp_state[i]+'</td></tr>';
+			}
+		}	// end of repeater
+	}//end of wlan_num for
+
+	// Escreve tudo em texto_sistema
+	window.texto_sistema='</table>';
+	$('.texto_sistema').html(window.texto_sistema);
+
+</script>
+
+<div class="texto_sistema"></div>
+
+</form>
+
+<div style="clear:both"></div>
+
+<script>
+
+    $(document).ready(translate_page())
+
+</script>

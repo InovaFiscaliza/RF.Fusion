@@ -15,8 +15,8 @@
     - After user confirmation, remove entries in the DIM_SPECTRUM_FILE that are not in the REPO_FOLDER;
     - After user confirmation, move files that are in the REPO_FOLDER but not in the DIM_SPECTRUM_FILE to the TMP_FOLDER folder in the remote server;
     - Access the BPDATA database with the same credentials;
-    - Compare file names from the TRASH_FOLDER and TMP_FOLDER with the files listed in PRC_TASK table in the BPDATA database.
-            - PRC_TASK table have a field named NA_SERVER_FILE_PATH and NA_SERVER_FILE_NAME that store the file name and path.
+    - Compare file names from the TRASH_FOLDER and TMP_FOLDER with the files listed in FILE_TASK table in the BPDATA database.
+            - FILE_TASK table have a field named NA_SERVER_FILE_PATH and NA_SERVER_FILE_NAME that store the file name and path.
             - Generate two lists of files, one for those that are not in the database but in the repository and the other, the otherway arround;
     - After user confirmation, update HOST table in the BPDATA, where:
         - NU_HOST_FILES should be the total number of files for a given host (REPO_FOLDER/20dd, TMP_FOLDER and TRASH_FOLDER);

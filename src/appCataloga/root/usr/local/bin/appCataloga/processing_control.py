@@ -180,7 +180,7 @@ def main():
                     "server path": "none",
                     "server file": "none"}
                     
-            task = db_bp.next_processing_task()
+            task = db_bp.next_file_task(type=db_bp.PROCESS)
 
             # if there is a task in the database
             if task:
@@ -279,15 +279,14 @@ def main():
                 db_rfm.insert_bridge_spectrum_file(  spectrum_lst,
                                                         [file_id,new_file_id])
                 
-                db_bp.processing_task_success(task=task,
-                                              equipment_ids=equipment_ids)
+                db_bp.delete_file_task(task_id=task['task_id'])
                 
                 log.entry(f"Finished processing '{filename}'.")
                 
             else:
-                log.entry(f"No processing task. Waiting for {k.BKP_TASK_REQUEST_WAIT_TIME/k.SECONDS_IN_MINUTE} minutes.")
+                log.entry(f"No processing task. Waiting for {k.HOST_TASK_REQUEST_WAIT_TIME/k.SECONDS_IN_MINUTE} minutes.")
                 # wait for a task to be posted
-                time.sleep(k.BKP_TASK_REQUEST_WAIT_TIME)
+                time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME)
                 
         except Exception as e:
             try:
@@ -308,7 +307,12 @@ def main():
             try:
                 task['message'] = message
                 
-                db_bp.processing_task_error(task=task)
+                db_bp.file_task_error(task_id=task['task_id'],
+                                      message=message)
+                
+                db_bp.update_host_status(   host_id=task['host_id'],
+                                            pending_processing=-1,
+                                            processing_error=1)
             except Exception as second_e:
                 log.error(f"Error removing processing task: First: {e}; raised another exception: {second_e}")
                 
