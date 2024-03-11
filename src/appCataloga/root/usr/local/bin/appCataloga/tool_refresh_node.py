@@ -48,13 +48,13 @@ def list_repo_files(folder:str) -> set:
         folder (str): Folder name to list files
 
     Returns:
-        set: Set of tuples (filename, path) of files in the specified folder and subfolders
+        set: Set of tuples (path, filename) of files in the specified folder and subfolders
     """
     
     command = ["find", folder, "-type", "f"]
     result = subprocess.run(command, stdout=subprocess.PIPE, text=True)
     files = set(result.stdout.strip().split('\n'))
-    return {(Path(filename).name, Path(filename).parent) for filename in files}
+    return {(Path(filename).parent,Path(filename).name) for filename in files}
 
 def move_files_to_tmp_folder(files_to_move, tmp_folder):
     

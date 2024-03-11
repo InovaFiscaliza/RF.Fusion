@@ -122,7 +122,7 @@ def main():
     
     # parse the command line arguments
     call_argument.parse(sys.argv)
-    task_id = call_argument.data["host_add"]["value"]
+    task_id = call_argument.data["task_id"]["value"]
     
     try:
         # create db object using databaseHandler class for the backup and processing database
@@ -185,7 +185,7 @@ def main():
             due_backup_str = ''.join(due_backup_str.split('\x00'))
             due_backup_list = due_backup_str.splitlines()
             
-            db_bp.add_file_task(host_id=task["host_id"], task_type=db_bp.BACKUP, files_list=due_backup_list)
+            db_bp.add_file_task(host_id=task["host_id"], task_type=db_bp.BACKUP, volume=task["host_uid"], files=due_backup_list)
         
         # * Close task 
         sftp_conn.remove(filename=daemon_cfg['DUE_BACKUP'])

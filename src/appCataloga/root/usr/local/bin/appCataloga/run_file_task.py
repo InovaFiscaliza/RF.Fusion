@@ -120,7 +120,7 @@ def main():
     try:
         
         # * Get the list of files to backup from the database
-        task_dict = db_bp.next_files_for_host(type=db_bp.BACKUP)
+        task_dict = db_bp.next_file_tasks(type=db_bp.BACKUP)
 
         if task_dict is None:
             log.entry("No host found with pending backup")

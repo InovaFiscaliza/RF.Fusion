@@ -1119,29 +1119,44 @@ class dbHandler():
         
     # get next host in the list for data backup
     def next_host_task(self,
-                         task_id:int=None) -> dict:
-        """This method gets the next host in the list for data backup
+                       task_id:int=None) -> dict:
+        """This method gets oldest task information related to any host in the backup queue
         
         Args:
-            task_id (int): Optional. If set, get the specific task with the given ID
+            task_id (int): Optional. If set, get information for task with the given ID
 
         Returns:
-            dict: Dictionary with the pending task information: task_id, host_id, host, port, user, password
+            dict: Dictionary with the pending task information:
+                {   "task_id": (int),
+                    "host_id": (int),
+                    "host_uid": (str),
+                    "host_add": (str),
+                    "port": (int),
+                    "user": (str),
+                    "password": (str)}
         """        
         
         # connect to the database
         self._connect()
 
+        query = (   "SELECT "
+                        "HOST_TASK.ID_HOST_TASK, "
+                        "HOST_TASK.FK_HOST, "
+                        "HOST.NA_HOST_UID, "
+                        "HOST.NA_HOST_ADDRESS, "
+                        "HOST.NA_HOST_PORT, "
+                        "HOST.NA_HOST_USER, "
+                        "HOST.NA_HOST_PASSWORD "
+                    "FROM HOST_TASK "
+                    "JOIN HOST ON HOST_TASK.FK_HOST = HOST.ID_HOST ")
+        
         if not task_id:
-            # build query to get the next backup task
-            query = (   "SELECT ID_HOST_TASK, FK_HOST, NA_HOST_ADDRESS, NA_HOST_PORT, NA_HOST_USER, NA_HOST_PASSWORD "
-                        "FROM HOST_TASK "
-                        "ORDER BY DT_HOST_TASK "
-                        "LIMIT 1;")
+            query = query + (
+                    "ORDER BY DT_HOST_TASK "
+                    "LIMIT 1;")
         else:
-            query = (   "SELECT ID_HOST_TASK, FK_HOST, NA_HOST_ADDRESS, NA_HOST_PORT, NA_HOST_USER, NA_HOST_PASSWORD "
-                        "FROM HOST_TASK "
-                        f"WHERE ID_HOST_TASK = {task_id};")
+            query = query + (
+                    f"WHERE ID_HOST_TASK = {task_id};")
         
         self.cursor.execute(query)
         
@@ -1151,10 +1166,11 @@ class dbHandler():
         try:
             output = {  "task_id": int(task[0]),
                         "host_id": int(task[1]),
-                        "host_add": str(task[2]),
-                        "port": int(task[3]),
-                        "user": str(task[4]),
-                        "password": str(task[5])}
+                        "host_uid": str(task[3]),
+                        "host_add": str(task[4]),
+                        "port": int(task[5]),
+                        "user": str(task[6]),
+                        "password": str(task[7])}
         except (TypeError, ValueError):
             output = False
         
@@ -1334,12 +1350,16 @@ class dbHandler():
         return output
 
     # Method to retrieve multiple file tasks
-    def next_files_for_host(self, type:int, limit:int=None) -> dict:
-        """This method gets the next host in the list for data processing
+    def next_file_tasks(self,
+                        task_type:int,
+                        task_status:int=1,
+                        limit:int=None) -> dict:
+        """This method a list of files tasks associated with a host with the oldest pending file task
 
         Args:
             type (int): Task type
-            limit (int): Number of tasks to retrieve. Default to None.
+            task_status (int): Task status: -1=Error, 0=Nothing to do, 1=Pending action, 2=Under execution. Default to 1.
+            limit (int): Number of tasks to retrieve. Default to None will return all available
             
         Returns:
             dict:   "host_id": (int) host_id,
@@ -1348,19 +1368,48 @@ class dbHandler():
                     "server_files": (list)(str) server file names
         """
         
+        def _join_lists_of_lists(host_list, server_list,host_id):
+            
+            # check if the host_list is larger then the server list
+            if len(host_list) >= len(server_list):
+                base_list = host_list
+                plus_list = server_list
+            else:
+                base_list = server_list
+                plus_list = host_list
+            
+            # Create a result dictionary from the base list
+            try:
+                for item in base_list:
+                    result = {int(item[0]): item[1:2] + [None,None]}
+            except (TypeError, ValueError):
+                self.log.error(f"Error parsing next file tasks for host_id {host_id}")
+                pass
+
+            for item in plus_list:
+                try:
+                    key=int(item[0])
+                except (TypeError, ValueError):
+                    self.log.error(f"Error parsing task id while getting next file tasks: {item} for host_id {host_id}")
+                    continue
+                
+                try:
+                    result[key][3:4] = item[1:2]
+                except KeyError:
+                    result[key] = [None,None] + item[1:2]
+        
+            return result
+        
         # connect to the database
         self._connect()
 
-        # compose a query to retrieve the FK_HOST where:
-        # - oldest file task
-        # - NU_STATUS = 1 (pending action)
-        # - NU_TASK_TYPE = type
+        # compose a query to retrieve the FK_HOST of the oldest task with NU_STATUS = task_status and NU_TASK_TYPE = task_type
         query = (   f"SELECT "
                         f"FILE_TASK.FK_HOST "
                     f"FROM FILE_TASK "
                     f"WHERE "
-                        f"FILE_TASK.NU_STATUS = 1 AND "
-                        f"FILE_TASK.NU_TASK_TYPE = {type} "
+                        f"FILE_TASK.NU_STATUS = {task_status} AND "
+                        f"FILE_TASK.NU_TASK_TYPE = {task_type} "
                     f"ORDER BY FILE_TASK.DT_FILE_TASK "
                     f"LIMIT 1;")
         
@@ -1371,6 +1420,7 @@ class dbHandler():
         try:
             host_id = int(task[1])
         except (TypeError, ValueError):
+            # if no task is found, return False
             host_id = False
         
         # if a task is found
@@ -1384,63 +1434,120 @@ class dbHandler():
                         f"WHERE "
                             f"FK_HOST = {host_id} AND "
                             f"NU_STATUS = 1 AND "
-                            f"NU_TASK_TYPE = {type};")
+                            f"NU_TASK_TYPE = {task_type};")
             
             self.cursor.execute(query)
             self.db_connection.commit()
         
             # build a query to retrieve list of files associated with the oldest task
-            query = (   f"SELECT "
-                            f"FILE_TASK.ID_FILE_TASK, "
-                            f"FILE_TASK.NA_HOST_FILE_PATH, FILE_TASK.NA_HOST_FILE_NAME, "
-                            f"FILE_TASK.NA_SERVER_FILE_PATH, FILE_TASK.NA_SERVER_FILE_NAME "
-                        f"FROM FILE_TASK "
-                        f"WHERE "
-                            f"FILE_TASK.NU_STATUS = 2 AND "
-                            f"FILE_TASK.NU_TASK_TYPE = {type} AND "
-                            f"FILE_TASK.FK_HOST = {host_id} "
-                        f"ORDER BY FILE_TASK.DT_FILE_TASK")
-        
-        self._disconnect()
-        
-        if limit:
-            query = query + f" LIMIT {limit};"
-        else:
-            query = query + ";"
-        
-        self.cursor.execute(query)
-        
-        tasks = self.cursor.fetchall()
-        
-        output = {  "host_id": host_id,
-                    "task_ids": [],
-                    "host_files": [],
-                    "server_files": []}
-        for task in tasks:
-            try:
-                output["task_ids"].append(int(task[0]))
-            except (TypeError, ValueError):
-                continue
+            query_host_files = (   f"SELECT "
+                                        f"FILE_TASK.ID_FILE_TASK, "
+                                        f"FILE_TASK.NA_HOST_FILE_PATH, FILE_TASK.NA_HOST_FILE_NAME "
+                                    f"FROM FILE_TASK "
+                                    f"WHERE "
+                                        f"FILE_TASK.NU_STATUS = 2 AND "
+                                        f"FILE_TASK.NU_TASK_TYPE = {task_type} AND "
+                                        f"FILE_TASK.FK_HOST = {host_id} "
+                                    f"ORDER BY FILE_TASK.DT_FILE_TASK")
 
-            try:
-                output["host_files"].append(f"{str(task[1])}/{str(task[2])}")
-            except (TypeError, ValueError):
-                pass
+            if limit:
+                query_host_files = query_host_files + f" LIMIT {limit};"
+            else:
+                query_host_files = query_host_files + ";"
+
+            self.cursor.execute(query_host_files)
+            
+            host_file_tasks = self.cursor.fetchall()
+            
+            query_server_files = (   f"SELECT "
+                                        f"FILE_TASK.ID_FILE_TASK, "
+                                        f"FILE_TASK.NA_SERVER_FILE_PATH, FILE_TASK.NA_SERVER_FILE_NAME "
+                                    f"FROM FILE_TASK "
+                                    f"WHERE "
+                                        f"FILE_TASK.NU_STATUS = 2 AND "
+                                        f"FILE_TASK.NU_TASK_TYPE = {task_type} AND "
+                                        f"FILE_TASK.FK_HOST = {host_id} "
+                                    f"ORDER BY FILE_TASK.DT_FILE_TASK")
+
+            if limit:
+                query_server_files = query_server_files + f" LIMIT {limit};"
+            else:
+                query_server_files = query_server_files + ";"
+
+            self.cursor.execute(query_server_files)
+            
+            server_file_tasks = self.cursor.fetchall()
+
+            output = {  "host_id": host_id,
+                        "task_ids": [],
+                        "host_files": [],
+                        "server_files": []}
+
+            i = max(len(host_file_tasks), len(server_file_tasks))
+            
+            # build output dictionary
+            for i in range(i):
                 
-            try:
-                output["server_files"].append(f"{str(task[3])}/{str(task[4])}")
-            except (TypeError, ValueError):
-                pass
-        
-        # drop task_ids, host_files and server_files if empty
-        if not output["task_ids"]:
-            output.pop("task_ids")
+                try:
+                    host_file_task = int(host_file_tasks[i][0])
+                except (TypeError, ValueError):
+                    host_file_task = None
+                    
+                try:
+                    server_file_task = int(server_file_tasks[i][0])
+                except (TypeError, ValueError):
+                    server_file_task = None
+                    
+                if host_file_task != server_file_task:
+                
+                
+                server_file = server_file_tasks[i]
+                
+                try:
+                    output["task_ids"].append(int(task[0]))
+                except (TypeError, ValueError):
+                    continue
+
+                try:
+                    output["host_files"].append(f"{str(task[1])}/{str(task[2])}")
+                except (TypeError, ValueError):
+                    pass
+                    
+                try:
+                    output["server_files"].append(f"{str(task[3])}/{str(task[4])}")
+                except (TypeError, ValueError):
+                    pass
+
+            output = {  "host_id": host_id,
+                        "task_ids": [],
+                        "host_files": [],
+                        "server_files": []}
             
-        if not output["host_files"]:
-            output.pop("host_files")
+            for task in tasks:
+                try:
+                    output["task_ids"].append(int(task[0]))
+                except (TypeError, ValueError):
+                    continue
+
+                try:
+                    output["host_files"].append(f"{str(task[1])}/{str(task[2])}")
+                except (TypeError, ValueError):
+                    pass
+                    
+                try:
+                    output["server_files"].append(f"{str(task[3])}/{str(task[4])}")
+                except (TypeError, ValueError):
+                    pass
             
-        if not output["server_files"]:
-            output.pop("server_files")
+            # drop task_ids, host_files and server_files if empty
+            if not output["task_ids"]:
+                output.pop("task_ids")
+                
+            if not output["host_files"]:
+                output.pop("host_files")
+                
+            if not output["server_files"]:
+                output.pop("server_files")
         
         return output
 
@@ -1450,13 +1557,17 @@ class dbHandler():
                         task_type:int,
                         volume:str,
                         files:any,
+                        task_status:int = 1,
                         reset_processing_queue:bool = False) -> None:
-        """This method adds tasks to the processing queue
+        """This method adds file tasks
         
         Args:
             host_id (int): Zabbix host id primary key.
-            files (list or set): List strings corresponding to path and file names or set of tuples (filename, path)
-            reset_processing_queue (bool): Flag to reset the processing queue. 
+            task_type (int): Task type: 0=Not set; 1=Backup; 2=Processing
+            volume (str): Volume name
+            files (list or set): List strings corresponding to path/filenames or set of tuples (path, filename)
+            task_status (int): Task status: -1=Error, 0=Nothing to do, 1=Pending action, 2=Under execution. Default to 1.
+            reset_processing_queue (bool): Flag to reset the processing queue. Default to False.
 
         Returns:
             None
@@ -1466,20 +1577,20 @@ class dbHandler():
         if isinstance(files, list):
             files_tuple_list = [(os.path.dirname(item), os.path.basename(item)) for item in files]
         elif isinstance(files, set):
-            files_tuple_list = [(filepath, filename) for (filename,filepath) in files]
+            files_tuple_list = [(filepath, filename) for (filepath,filename) in files]
         else:
             raise Exception("Invalid input. Expected a list strings or a set of tuples.")
 
         if volume==k.REPO_UID:
-            target_column = "NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, "
+            target_columns = "NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, "
         else:
-            target_column = "NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
+            target_columns = "NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
 
         # compose query to set the process task in the database using executemany method
         query =(f"INSERT INTO FILE_TASK ("
                 f"FK_HOST, "
                 f"NU_TASK_TYPE, "
-                f"{target_column}"
+                f"{target_columns}"
                 f"DT_FILE_TASK, "
                 f"NU_STATUS)"
                 f"VALUES ("
@@ -1487,7 +1598,7 @@ class dbHandler():
                 f"{task_type}, "
                 f"%s, %s, "
                 f"NOW(),"
-                f"{task_type});")
+                f"{task_status});")
         
         # update database
         self._connect()
@@ -1652,8 +1763,8 @@ class dbHandler():
         
         # Query to get files from DIM_SPECTRUM_FILE
         query =(f"SELECT "
-                    f"NA_FILE, "
-                    f"NA_PATH "
+                    f"NA_PATH, "
+                    f"NA_FILE "
                 f"FROM "
                     f"DIM_SPECTRUM_FILE "
                 f"WHERE "
@@ -1664,7 +1775,11 @@ class dbHandler():
         
         self.cursor.execute(query)
         
-        db_files = set((row[0], row[1]) for row in self.cursor.fetchall())
+        try:
+            db_files = set((row[0], row[1]) for row in self.cursor.fetchall())
+        except Exception as e:
+            self.log.error(f"Error retrieving files from database: {e}")
+            db_files = set()
         
         self._disconnect()
         
@@ -1750,8 +1865,8 @@ class dbHandler():
         
         # Query to get files from DIM_SPECTRUM_FILE
         query =(f"SELECT "
-                    f"NA_SERVER_FILE_NAME, "
-                    f"NA_SERVER_FILE_PATH "
+                    f"NA_SERVER_FILE_PATH, "
+                    f"NA_SERVER_FILE_NAME "
                 f"FROM "
                     f"FILE_TASK "
                 f"WHERE "
@@ -1762,7 +1877,11 @@ class dbHandler():
         
         self.cursor.execute(query)
         
-        db_files = set((row[0], row[1]) for row in self.cursor.fetchall())
+        try:        
+            db_files = set((row[0], row[1]) for row in self.cursor.fetchall())
+        except Exception as e:
+            self.log.error(f"Error retrieving files from database: {e}")
+            db_files = set()
         
         self._disconnect()
         
