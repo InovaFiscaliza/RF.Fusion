@@ -26,35 +26,46 @@ import time
 import json
 import random
 import signal
+import inspect
 
 # define global variables for log and general use
 log = sh.log()
 
 process_status = {  "conn": False,
                     "halt_flag": False,
-                    "exit": False,}
+                    "running": True}
 
+DEFAULT_LEVEL = 0
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
 ARGUMENTS = {
-    "task_id": {
+    "level": {
         "set": False,
-        "value": DEFAULT_TASK_ID,
+        "value": DEFAULT_LEVEL,
         "warning": "Using default task id"
         }
     }
 
-# Define default arguments
-DEFAULT_TASK_ID = 1
+# Define a signal handler for SIGTERM (kill command )
+def sigterm_handler(signal=None, frame=None) -> None:
+    global process_status
+    global log
+      
+    current_function = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"\nKill signal received at: {current_function}()")
+    process_status["running"] = False
 
-
-# Define a signal handler for SIGTERM
-def sigterm_handler(signal, frame):  
-    log.entry("SIGTERM received. Exiting...")
-    process_status['exit'] = True
+# Define a signal handler for SIGINT (Ctrl+C)
+def sigint_handler(signal=None, frame=None) -> None:
+    global process_status
+    global log
     
+    current_function = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"\nCtrl+C received at: {current_function}()")
+    process_status['running'] = False
 
 # Register the signal handler function, to handle system kill commands
 signal.signal(signal.SIGTERM, sigterm_handler)
+signal.signal(signal.SIGINT, sigint_handler)
 
 class HaltFlagError(Exception):
     pass

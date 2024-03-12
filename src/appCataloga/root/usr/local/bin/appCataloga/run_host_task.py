@@ -22,6 +22,7 @@ sys.path.append('/etc/appCataloga')
 import paramiko
 import time
 import signal
+import inspect
 
 # Import modules for file processing 
 import config as k
@@ -33,16 +34,29 @@ log = sh.log()
 
 process_status = {  "conn": False,
                     "halt_flag": False,
-                    "exit": False,}
+                    "running": True,}
 
-# Define a signal handler for SIGTERM
-def sigterm_handler(signal, frame):  
-    log.entry("SIGTERM received. Exiting...")
-    process_status['exit'] = True
+# Define a signal handler for SIGTERM (kill command )
+def sigterm_handler(signal=None, frame=None) -> None:
+    global process_status
+    global log
+      
+    current_function = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"\nKill signal received at: {current_function}()")
+    process_status["running"] = False
+
+# Define a signal handler for SIGINT (Ctrl+C)
+def sigint_handler(signal=None, frame=None) -> None:
+    global process_status
+    global log
     
+    current_function = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"\nCtrl+C received at: {current_function}()")
+    process_status['running'] = False
 
 # Register the signal handler function, to handle system kill commands
 signal.signal(signal.SIGTERM, sigterm_handler)
+signal.signal(signal.SIGINT, sigint_handler)
 
 class HaltFlagError(Exception):
     pass
@@ -103,7 +117,7 @@ class sftp_connection():
             return file_content
         except FileNotFoundError:
             self.log.error(f"File '{filename}' not found in '{self.host_add}'")
-            return ""
+            return False
         except Exception as e:
             self.log.error(f"Error reading '{filename}' in '{self.host_add}'. {str(e)}")
             raise
@@ -132,8 +146,96 @@ class sftp_connection():
         except Exception as e:
             self.log.error(f"Error closing connection to '{self.host_add}'. {str(e)}")
             raise
+        
+        
+def get_daemon_config(sftp_conn,
+                      task,
+                      db_bp):
+    global log
+    
+    try:
+        daemon_cfg_str = sftp_conn.read(k.DAEMON_CFG_FILE, 'r')
+    except FileNotFoundError:
+        log.error(f"Configuration file '{k.DAEMON_CFG_FILE}' not found in remote host {task['host_uid']}({task['host_add']})")
+        db_bp.update_host_status(host_id=task['host_id'], status=db_bp.HOST_WITHOUT_DAEMON)
+        sftp_conn.close()
+        db_bp.remove_host_task(task_id=task)
+        return None
+    
+    # Parse the configuration file
+    daemon_cfg = sh.parse_cfg(daemon_cfg_str)
+    return daemon_cfg
+
+def check_halt_flag(sftp_conn: sftp_connection, daemon_cfg: dict, task: dict, db_bp: dbh.dbHandler) -> None:
+    """Check if the HALT_FLAG file exists in the remote host and wait for its release.
+    
+    Args:
+        sftp_conn (sftp_connection): The SFTP connection object.
+        daemon_cfg (dict): The daemon configuration dictionary.
+        task (dict): The task dictionary containing host information.
+        db_bp (dbh.dbHandler): The database handler object.
+    
+    Returns:
+        None
+    
+    Raises:
+        HaltFlagError: If the HALT_FLAG file is found and the maximum wait time is exceeded.
+    """
+    global log
+    global process_status
+    
+    loop_count = 0
+    # If HALT_FLAG exists, wait and retry each 5 minutes for 30 minutes
+    while sftp_conn.test(daemon_cfg['HALT_FLAG']):
+        # If HALT_FLAG exists, wait for 5 minutes and test again
+        time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME / k.HALT_FLAG_CHECK_CYCLES)
+        log.warning(f"HALT_FLAG file found in remote host {task['host_uid']}({task['host_add']}). Waiting {(k.HOST_TASK_REQUEST_WAIT_TIME / (k.HALT_FLAG_CHECK_CYCLES * 60))} minutes.")
+        loop_count += 1
+
+        if loop_count > k.HALT_FLAG_CHECK_CYCLES:
+            message = f"HALT_FLAG file found in remote host {task['host_uid']}({task['host_add']}). Host task aborted."
+            log.error(message)
+            sftp_conn.remove(filename=daemon_cfg['HALT_FLAG'])
+            db_bp.update_host_status(host_id=task["host_id"], status=db_bp.HOST_WITH_HALT_FLAG)
+            sftp_conn.close()
+            db_bp.remove_host_task(task_id=task["task_id"])
+            raise HaltFlagError(message)
+
+    # Create a HALT_FLAG file in the remote host
+    sftp_conn.touch(daemon_cfg['HALT_FLAG'])
+
+    process_status["halt_flag"] = daemon_cfg['HALT_FLAG']
+
+def process_due_backup(sftp_conn: sftp_connection, daemon_cfg: dict, task: dict, db_bp: dbh.dbHandler) -> None:
+    """Process the list of files to backup from the DUE_BACKUP file.
+    
+    Args:
+        sftp_conn (sftp_connection): The SFTP connection object.
+        daemon_cfg (dict): The daemon configuration dictionary.
+        task (dict): The task dictionary containing host information.
+        db_bp (dbh.dbHandler): The database handler object.
+    
+    Returns:
+        None
+    """
+    global log
+    global process_status
+    
+    due_backup_str = sftp_conn.read(filename=daemon_cfg['DUE_BACKUP'], mode='r')
+    
+    if due_backup_str:
+        # Clean the string and split it into a list of files
+        due_backup_str = due_backup_str.decode(encoding='utf-8')
+        due_backup_str = ''.join(due_backup_str.split('\x00'))
+        due_backup_list = due_backup_str.splitlines()
+        
+        # Create file tasks for later handling by the file task process
+        db_bp.add_file_task(host_id=task["host_id"], task_type=db_bp.BACKUP_TASK_TYPE, volume=task["host_uid"], files=due_backup_list)
+
 
 def main():
+    global process_status
+    global log
 
     try:
         # create db object using databaseHandler class for the backup and processing database
@@ -141,19 +243,18 @@ def main():
     except Exception as e:
         log.error(f"Error initializing database: {e}")
         exit(1)
-    
-    
-    while not process_status['exit']:
+
+    while process_status["running"]:
         
         try:
             task = db_bp.next_host_task()
-                """	task={  "task_id": str,
-                            "host_id": str,
-                            "host_add": str,
-                            "port": str,
-                            "user": str,
-                            "password": str}"""  
-
+            """	{   "task_id": (int),
+                    "host_id": (int),
+                    "host_uid": (str),
+                    "host_add": (str),
+                    "port": (int),
+                    "user": (str),
+                    "password": (str)}"""  
 
             # Create a SSH client and SFTP connection to the remote host
             sftp_conn = sftp_connection(hostname=task["host_add"],
@@ -164,63 +265,26 @@ def main():
             
             process_status["conn"] = sftp_conn
             
-            # * Get the remote host configuration file
-            try:
-                daemon_cfg_str = sftp_conn.read(k.DAEMON_CFG_FILE, 'r')
-            except FileNotFoundError:
-                log.error(f"Configuration file '{k.DAEMON_CFG_FILE}' not found in remote host {task.data['host_add']['value']}")
-                db_bp.update_host_status(host_id=task["host_id"], status=db_bp.HOST_WITHOUT_DAEMON)
-                sftp_conn.close()
-                db_bp.remove_host_task(task_id=task_id)
-                continue
-            
-            # Parse the configuration file
-            daemon_cfg = sh.parse_cfg(daemon_cfg_str)
+            # Get the remote host configuration file
+            daemon_cfg = get_daemon_config( sftp_conn=sftp_conn,
+                                            task=task,
+                                            db_bp=db_bp)
 
-            # * Check if exist the HALT_FLAG file in the remote host
-            # * Wait for HALT_FLAG release
-            loop_count = 0
-            # If exists wait and retry each 5 minutes for 30 minutes  
-            while sftp_conn.test(daemon_cfg['HALT_FLAG']):
-                # If HALT_FLAG exists, wait for 5 minutes and test again
-                time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME/k.HALT_FLAG_CHECK_CYCLES)
-                log.warning(f"HALT_FLAG file found in remote host {task.data['host_add']['value']}. Waiting {(k.HOST_TASK_REQUEST_WAIT_TIME/(k.HALT_FLAG_CHECK_CYCLES*60))} minutes.")
-                loop_count += 1
-                
-                if loop_count > k.HALT_FLAG_CHECK_CYCLES:
-                    message = f"HALT_FLAG file found in remote host {task.data['host_add']['value']}. Host task aborted."
-                    log.error(message)
-                    sftp_conn.remove(filename=daemon_cfg['HALT_FLAG'])
-                    db_bp.update_host_status(host_id=task["host_id"], status=db_bp.HOST_WITH_HALT_FLAG)
-                    sftp_conn.close()
-                    db_bp.remove_host_task(task_id=task_id)
-                    raise HaltFlagError(message)
+            # Check and set halt flag 
+            check_halt_flag(sftp_conn=sftp_conn,
+                            daemon_cfg=daemon_cfg,
+                            task=task,
+                            db_bp=db_bp)
             
-            # Create a HALT_FLAG file in the remote host
-            sftp_conn.touch(daemon_cfg['HALT_FLAG'])
+            # Get the list of files to backup from DUE_BACKUP file and create file tasks
+            process_due_backup(sftp_conn=sftp_conn,
+                               daemon_cfg=daemon_cfg,
+                               task=task,
+                               db_bp=db_bp)
             
-            process_status["halt_flag"] = daemon_cfg['HALT_FLAG']
-
-            # * Get the list of files to backup from DUE_BACKUP file
-            due_backup_str = sftp_conn.read(filename=daemon_cfg['DUE_BACKUP'], mode='r')
-            
-            if due_backup_str == "":
-                exit
-            else:
-                # Clean the string and split the into a list of files
-                due_backup_str = due_backup_str.decode(encoding='utf-8')
-                due_backup_str = ''.join(due_backup_str.split('\x00'))
-                due_backup_list = due_backup_str.splitlines()
-                
-                # Create file task for later handlling by the file task process
-                db_bp.add_file_task(host_id=task["host_id"], task_type=db_bp.BACKUP_TASK_TYPE, volume=task["host_uid"], files=due_backup_list)
-            
-            # * Close task 
             sftp_conn.remove(filename=daemon_cfg['DUE_BACKUP'])
-            
             sftp_conn.remove(filename=daemon_cfg['HALT_FLAG'])
-            
-            db_bp.remove_host_task(task_id=task_id)
+            db_bp.remove_host_task(task_id=task["task_id"])
     
         except paramiko.AuthenticationException as e:
             log.error(f"Authentication failed. Please check your credentials. {str(e)}")
@@ -232,15 +296,11 @@ def main():
             
         except HaltFlagError:
             pass
-        
+
+    
         except Exception as e:
             log.error(f"Unmapped error occurred: {str(e)}")
             raise ValueError(log.dump_error())
-        
-        except KeyboardInterrupt:
-            log.entry("\nKeyboardInterrupt received. Exiting...")
-            process_status["exit"] = True
-            continue
-    
+            
 if __name__ == "__main__":
     main()
