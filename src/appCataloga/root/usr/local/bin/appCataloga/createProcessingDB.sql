@@ -23,7 +23,8 @@ CREATE TABLE HOST (
     NU_BACKUP_ERROR INT COMMENT 'Historic total number of errors in file backup process',
     NU_PENDING_PROCESSING INT COMMENT 'Number of files pending processing',
     NU_PROCESSING_ERROR INT COMMENT 'Historic total number of errors in data processing',
-    DT_LAST_PROCESSING DATETIME COMMENT 'Date and time of the last processing'
+    DT_LAST_PROCESSING DATETIME COMMENT 'Date and time of the last processing',
+    NU_STATUS TINYINT DEFAULT 0 COMMENT 'Status flag: 0=No Errors or Warnings, 1=No daemon, 2=Halt flag alert'
 );
 
 -- HOST BACKUP TASK LIST

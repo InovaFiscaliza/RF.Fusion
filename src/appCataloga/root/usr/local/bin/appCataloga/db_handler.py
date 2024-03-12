@@ -30,12 +30,14 @@ class dbHandler():
         self.log = log
 
         # constants
-        self.BACKUP = 1
-        self.PROCESS = 2
-        self.ERROR = -1
-        self.NOTHING = 0
-        self.PENDING = 1
-        self.EXECUTION = 2
+        self.BACKUP_TASK_TYPE = 1
+        self.PROCESS_TASK_TYPE = 2
+        self.TASK_ERROR = -1
+        self.TASK_NULL = 0
+        self.TASK_PENDING = 1
+        self.TASK_RUNNING = 2
+        self.HOST_WITHOUT_DAEMON = 1
+        self.HOST_WITH_HALT_FLAG = 2
 
     def _connect(self):
         """Try to connect to the database using the parameters in the config.py file
@@ -923,23 +925,28 @@ class dbHandler():
         # connect to the database
         self._connect()
         
-        # compose query to create a new host entry in the BPDATA database, setting all values to zero. If host already in the database, do nothing
-        query = (f"INSERT IGNORE INTO HOST "
-                    f"(ID_HOST, NA_HOST_UID, "
-                    f"NU_HOST_FILES, "
-                    f"NU_PENDING_HOST_TASK, NU_HOST_CHECK_ERROR, "
-                    f"NU_PENDING_PROCESSING, NU_PROCESSING_ERROR) "
-                    f"VALUES "
-                    f"('{hostid}', '{host_uid}', "
-                    f"0, "
-                    f"0, 0, "
-                    f"0, 0);")
-        
-        # update database
-        self.cursor.execute(query)
-        self.db_connection.commit()
-        
-        self._disconnect()
+        try:
+            # compose query to create a new host entry in the BPDATA database, setting all values to zero. If host already in the database, do nothing
+            query = (f"INSERT IGNORE INTO HOST "
+                        f"(ID_HOST, NA_HOST_UID, "
+                        f"NU_HOST_FILES, "
+                        f"NU_PENDING_HOST_TASK, NU_HOST_CHECK_ERROR, "
+                        f"NU_PENDING_PROCESSING, NU_PROCESSING_ERROR) "
+                        f"VALUES "
+                        f"('{hostid}', '{host_uid}', "
+                        f"0, "
+                        f"0, 0, "
+                        f"0, 0);")
+            
+            # update database
+            self.cursor.execute(query)
+            self.db_connection.commit()
+        except Exception as e:
+            message = f"Error adding host {hostid} to the database"
+            self.log.error(message)
+            raise Exception(message) from e
+        finally:
+            self._disconnect()
 
     # get host status data from the database
     def get_host_status(self,hostid="host_id"):        
@@ -1093,29 +1100,36 @@ class dbHandler():
         # connect to the database
         self._connect()
         
-        # compose query to add 1 to PENDING_BACKUP in the HOST table in BPDATA database for the given host_id
-        query = (f"UPDATE HOST SET "
-                    f"NA_HOST_ADDRESS = '{host_addr}', "
-                    f"NA_HOST_PORT = '{host_port}', "
-                    f"NA_HOST_USER = '{host_user}', "
-                    f"NA_HOST_PASSWORD = '{host_passwd}', "
-                    f"NU_PENDING_HOST_TASK = NU_PENDING_HOST_TASK + 1 "
-                f"WHERE ID_HOST = '{host_id}';")
-        
-        # update database
-        self.cursor.execute(query)
-        self.db_connection.commit()
-        
-        # compose query to set the backup task in the BPDATA database
-        query = (f"INSERT INTO HOST_TASK "
-                 f"(FK_HOST, TASK_TYPE, DT_HOST_TASK) "
-                 f"VALUES "
-                 f"('{host_id}', '{task_type}', NOW();")
+        try:
+            # compose query to add 1 to PENDING_BACKUP in the HOST table in BPDATA database for the given host_id
+            query = (f"UPDATE HOST SET "
+                        f"NA_HOST_ADDRESS = '{host_addr}', "
+                        f"NA_HOST_PORT = '{host_port}', "
+                        f"NA_HOST_USER = '{host_user}', "
+                        f"NA_HOST_PASSWORD = '{host_passwd}', "
+                        f"NU_PENDING_HOST_TASK = NU_PENDING_HOST_TASK + 1 "
+                    f"WHERE ID_HOST = '{host_id}';")
+            
+            # update database
+            self.cursor.execute(query)
+            self.db_connection.commit()
+            
+            # compose query to set the backup task in the BPDATA database
+            query = (f"INSERT INTO HOST_TASK "
+                    f"(FK_HOST, TASK_TYPE, DT_HOST_TASK) "
+                    f"VALUES "
+                    f"('{host_id}', '{task_type}', NOW();")
 
-        # update database
-        self.cursor.execute(query)
-        self.db_connection.commit()
-        self._disconnect()
+            # update database
+            self.cursor.execute(query)
+            self.db_connection.commit()
+            
+        except Exception as e:
+            message = f"Error adding host {host_id} to the backup queue: {e}"
+            self.log.error(message)
+            raise Exception(message) from e
+        finally:
+            self._disconnect()
         
     # get next host in the list for data backup
     def next_host_task(self,
@@ -1186,27 +1200,25 @@ class dbHandler():
                             pending_backup:int = None,
                             backup_error:int = None,
                             pending_processing:int = None,
-                            processing_error:int = None) -> None:
+                            processing_error:int = None,
+                            status:int = None) -> None:
         """This method set/update summary information in the database
 
         Args:
             host_id (int): Zabbix host id primary key.
             equipment_id (int): Equipment id primary key. Default is None.
             reset (bool): If set to True, reset all values to the given values. Default is False.
+            host_files (int): Number of files in the host. Default to none, where there will be no change to this value.
+            pending_host_check (int): Number of files pending backup. Default to none, where there will be no change to this value.
+            host_check_error (int): Number of files with backup error. Default to none, where there will be no change to this value.
+            pending_backup (int): Number of files pending backup. Default to none, where there will be no change to this value.
+            backup_error (int): Number of files with backup error. Default to none, where there will be no change to this value.
+            pending_processing (int): Number of files pending processing. Default to none, where there will be no change to this value.
+            processing_error (int): Number of files with processing error. Default to none, where there will be no change to this value.
+            status (int): Status flag: 0=No Errors or Warnings, 1=No daemon, 2=Halt flag alert. Default to none, where there will be no change to this value.
             
-            All other parameters are optional and default to None. 
-            - host_files (int): Number of files in the host. 
-            - pending_host_check (int): Number of files pending backup.
-            - host_check_error (int): Number of files with backup error.
-            - pending_backup (int): Number of files pending backup.
-            - backup_error (int): Number of files with backup error.
-            - pending_processing (int): Number of files pending processing.
-            - processing_error (int): Number of files with processing error.
         """
-        
-        # connect to the database
-        self._connect()
-        
+                
         # compose and excecute query to update the processing status by adding pending_processing variable to existing value in the database
         query_parts = []
         
@@ -1216,9 +1228,12 @@ class dbHandler():
                         "NU_PENDING_BACKUP": pending_backup,
                         "NU_BACKUP_ERROR": backup_error,
                         "NU_PENDING_PROCESSING": pending_processing,
-                        "NU_PROCESSING_ERROR": processing_error}
+                        "NU_PROCESSING_ERROR": processing_error,
+                        "NU_STATUS": status}
         
         for column, value in update_data.items():
+            if value is None:
+                continue
             if value > 0:
                 if reset:
                     query_parts.append(f"{column} = {value}")
@@ -1253,10 +1268,20 @@ class dbHandler():
         else:
             query = query + f" WHERE ID_HOST = {host_id};"
 
-        self.cursor.execute(query)
-        self.db_connection.commit()
+        try:
+            # connect to the database
+            self._connect()
+
+            self.cursor.execute(query)
+            self.db_connection.commit()
         
-        self._disconnect()
+        except Exception as e:
+            message = f"Error updating host {host_id} status in the database: {e}"
+            self.log.error(message)
+            raise Exception(message) from e
+        
+        finally:
+            self._disconnect()
 
     # Method to remove a completed backup task from the database
     def remove_host_task(self,
@@ -1368,7 +1393,18 @@ class dbHandler():
                     "server_files": (list)(str) server file names
         """
         
-        def _join_lists_of_lists(host_list, server_list,host_id):
+        def _join_lists(host_list:list,
+                        server_list:list) -> dict:
+            """This method joins the host and server lists into a single dictionary with matching task_id
+
+            Args:
+                host_list (list): list with task_id, host_file_path and host_file_name
+                server_list (list): list with task_id, server_file_path and server_file_name
+
+            Returns:
+                dict: Dictionary with the following structure:
+                    {task_id: [host_file_path, host_file_name, server_file_path, server_file_name]}
+            """
             
             # check if the host_list is larger then the server list
             if len(host_list) >= len(server_list):
@@ -1392,7 +1428,6 @@ class dbHandler():
                 except (TypeError, ValueError):
                     self.log.error(f"Error parsing task id while getting next file tasks: {item} for host_id {host_id}")
                     continue
-                
                 try:
                     result[key][3:4] = item[1:2]
                 except KeyError:
@@ -1419,21 +1454,13 @@ class dbHandler():
         
         try:
             host_id = int(task[1])
-        except (TypeError, ValueError):
-            # if no task is found, return False
-            host_id = False
-        
-        # if a task is found
-        if host_id:
+
             # build a query to change NU_STATUS to 2 (under execution) of all tasks where:
-            # - FK_HOST has the same host_id as the oldest,
-            # - task is of the same type and
-            # - NU_STATUS = 1 (pending action)
             query = (   f"UPDATE FILE_TASK SET "
                             f"NU_STATUS = 2 "
                         f"WHERE "
                             f"FK_HOST = {host_id} AND "
-                            f"NU_STATUS = 1 AND "
+                            f"NU_STATUS = {self.TASK_PENDING} AND "
                             f"NU_TASK_TYPE = {task_type};")
             
             self.cursor.execute(query)
@@ -1445,7 +1472,7 @@ class dbHandler():
                                         f"FILE_TASK.NA_HOST_FILE_PATH, FILE_TASK.NA_HOST_FILE_NAME "
                                     f"FROM FILE_TASK "
                                     f"WHERE "
-                                        f"FILE_TASK.NU_STATUS = 2 AND "
+                                        f"FILE_TASK.NU_STATUS = {self.TASK_RUNNING} AND "
                                         f"FILE_TASK.NU_TASK_TYPE = {task_type} AND "
                                         f"FILE_TASK.FK_HOST = {host_id} "
                                     f"ORDER BY FILE_TASK.DT_FILE_TASK")
@@ -1477,77 +1504,14 @@ class dbHandler():
             self.cursor.execute(query_server_files)
             
             server_file_tasks = self.cursor.fetchall()
-
-            output = {  "host_id": host_id,
-                        "task_ids": [],
-                        "host_files": [],
-                        "server_files": []}
-
-            i = max(len(host_file_tasks), len(server_file_tasks))
             
-            # build output dictionary
-            for i in range(i):
-                
-                try:
-                    host_file_task = int(host_file_tasks[i][0])
-                except (TypeError, ValueError):
-                    host_file_task = None
-                    
-                try:
-                    server_file_task = int(server_file_tasks[i][0])
-                except (TypeError, ValueError):
-                    server_file_task = None
-                    
-                if host_file_task != server_file_task:
-                
-                
-                server_file = server_file_tasks[i]
-                
-                try:
-                    output["task_ids"].append(int(task[0]))
-                except (TypeError, ValueError):
-                    continue
+            output = _join_lists(host_list=host_file_tasks,server_list=server_file_tasks)
 
-                try:
-                    output["host_files"].append(f"{str(task[1])}/{str(task[2])}")
-                except (TypeError, ValueError):
-                    pass
-                    
-                try:
-                    output["server_files"].append(f"{str(task[3])}/{str(task[4])}")
-                except (TypeError, ValueError):
-                    pass
-
-            output = {  "host_id": host_id,
-                        "task_ids": [],
-                        "host_files": [],
-                        "server_files": []}
-            
-            for task in tasks:
-                try:
-                    output["task_ids"].append(int(task[0]))
-                except (TypeError, ValueError):
-                    continue
-
-                try:
-                    output["host_files"].append(f"{str(task[1])}/{str(task[2])}")
-                except (TypeError, ValueError):
-                    pass
-                    
-                try:
-                    output["server_files"].append(f"{str(task[3])}/{str(task[4])}")
-                except (TypeError, ValueError):
-                    pass
-            
-            # drop task_ids, host_files and server_files if empty
-            if not output["task_ids"]:
-                output.pop("task_ids")
-                
-            if not output["host_files"]:
-                output.pop("host_files")
-                
-            if not output["server_files"]:
-                output.pop("server_files")
+            output["host_id"] = host_id
+        
+        except (TypeError, ValueError):
+            # if no task is found, return False
+            output = False
         
         return output
 
@@ -1600,30 +1564,35 @@ class dbHandler():
                 f"NOW(),"
                 f"{task_status});")
         
-        # update database
-        self._connect()
+        try:
+            # update database
+            self._connect()
 
-        self.cursor.executemany(query, files_tuple_list)
-        self.db_connection.commit()
-        
-        if reset_processing_queue:
-            # compose query to find how many database entries are in the processing queue with status = -1 for the given host_id
-            query = (f"SELECT COUNT(*) "
-                        f"FROM FILE_TASK "
-                        f"WHERE FK_HOST = {host_id} AND "
-                        f"NU_STATUS = -2;")
+            self.cursor.executemany(query, files_tuple_list)
+            self.db_connection.commit()
             
-            self.cursor.execute(query)
-            
-            # get the number of processing errors
-            try:
-                processing_error = int(self.cursor.fetchone()[0])
-            except (TypeError, ValueError):
+            if reset_processing_queue:
+                # compose query to find how many database entries are in the processing queue with status = -1 for the given host_id
+                query = (f"SELECT COUNT(*) "
+                            f"FROM FILE_TASK "
+                            f"WHERE FK_HOST = {host_id} AND "
+                            f"NU_STATUS = -2;")
+                
+                self.cursor.execute(query)
+                
+                # get the number of processing errors
+                try:
+                    processing_error = int(self.cursor.fetchone()[0])
+                except (TypeError, ValueError):
+                    processing_error = 0
+            else:
                 processing_error = 0
-        else:
-            processing_error = 0
-            
-        self._disconnect()
+        except Exception as e:
+            message = f"Error adding file task for host {host_id} to the database: {e}"
+            self.log.error(message)
+            raise Exception(message) from e
+        finally:
+            self._disconnect()
         
         # update PENDING_PROCESSING in the HOST table in BPDATA database for the given host_id
         nu_processing = len(files_tuple_list) if files_tuple_list else 0

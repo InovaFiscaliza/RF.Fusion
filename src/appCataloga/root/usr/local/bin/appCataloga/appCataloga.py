@@ -69,15 +69,14 @@ def handler(signum, frame, interrupt_write, log):
 
 # function that stop systemd service
 def stop_service():
-    command = ( f'bash -c '
-                f'systemctl stop appCataloga.service')                
+    command = ( 'bash -c '
+                'systemctl stop appCataloga.service')                
 
-    processing_task = subprocess.Popen([command],
-                                        stdout=subprocess.DEVNULL,
-                                        stderr=subprocess.PIPE,
-                                        text=True,
-                                        shell=True)
-
+    subprocess.Popen([command],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        shell=True)
 
 def backup_queue(   conn:str,
                     hostid:str,
@@ -103,7 +102,7 @@ def backup_queue(   conn:str,
     
     db = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
      
-    db.add_host_task(   task_type=db.BACKUP,
+    db.add_host_task(   task_type=db.BACKUP_TASK_TYPE,
                         host_id=hostid,
                         host_uid=host_uid,
                         host_addr=host_addr,

@@ -180,7 +180,7 @@ def main():
                     "server path": "none",
                     "server file": "none"}
                     
-            task = db_bp.next_file_task(type=db_bp.PROCESS)
+            task = db_bp.next_file_task(type=db_bp.PROCESS_TASK_TYPE)
 
             # if there is a task in the database
             if task:
