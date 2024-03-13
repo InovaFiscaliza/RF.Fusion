@@ -1,0 +1,16 @@
+[Unit]
+Description=File task service Worker %i
+After=network.target mariadb.service
+RequiresMountsFor=/mnt/reposfi
+
+[Service]
+Type=simple
+PIDFile=/var/run/gearman_worker_az%i.pid
+WorkingDirectory=/usr/local/bin/appCataloga
+ExecStart=/usr/local/bin/appCataloga/run_file_task.sh start %i
+ExecStop=/usr/local/bin/appCataloga/run_file_task.sh stop %i
+ExecReload=/usr/local/bin/appCataloga/run_file_task.sh restart %i
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

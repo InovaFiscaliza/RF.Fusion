@@ -20,7 +20,6 @@ sys.path.append('/etc/appCataloga')
 
 # Import standard libraries.
 import paramiko
-import time
 import signal
 import inspect
 

@@ -71,6 +71,30 @@ signal.signal(signal.SIGINT, sigint_handler)
 class HaltFlagError(Exception):
     pass
 
+def spawn_file_task(iteration: int) -> None:
+    """Spawn a new file task process.
+    
+    Args:
+        iteration (int): The iteration level of the new process.
+    
+    Returns:
+        None
+    """
+    global process_status
+    global log
+    
+    log.entry(f"Spawning file task process with iteration {iteration}")
+    
+    
+#! TODAY STOPPED HERE
+    # create the command line to call the new process
+    command = f"{sys.executable} {__file__} {call_argument.command_line()}"
+    
+    # call the new process
+    os.system(command)
+    
+    log.entry(f"File task process with iteration {iteration} spawned")
+
 def main():
     global process_status
     global log
@@ -93,21 +117,30 @@ def main():
         
         try:
             
-            # * Get the list of files to backup from the database
+            # Get the list of files to backup from the database
             task = db_bp.next_file_tasks(task_type=db_bp.BACKUP_TASK_TYPE)
-
+            """ task = {"host_id": (int) host_id,
+                        "task_ids": (dict){ task_id: [
+                                                        host_file_path,
+                                                        host_file_name,
+                                                        server_file_path,
+                                                        server_file_name]}
+            """
+            
             if not task:
+                # if it is a higher order iteration, terminate process.
                 if process_status["iteration"] > 0:
                     process_status["running"] = False
                     log.entry(f"No host found with pending backup. Exiting process with level {process_status['iteration']}")
                     continue
+                # if it is the root iteration, wait and try again later.
                 else:
                     time_to_wait = k.FILE_TASK_EXECUTION_WAIT_TIME+k.FILE_TASK_EXECUTION_WAIT_TIME*random.random()
                     log.entry(f"No host found with pending backup. Waiting {time_to_wait} seconds")
                     time.sleep(time_to_wait)
                     continue
 
-            # * using task["host_id"] to get the host configuration from the database
+            # Using task["host_id"] to get the host configuration from the database
             host = db_bp.get_host(task["host_id"])
 
             # Create a SSH client and SFTP connection to the remote host
@@ -132,7 +165,11 @@ def main():
             
             if not process_status["halt_flag"]:
                 continue
-                                    
+            
+            # Before processing the task, spawn another file task process if the iteration is smaller than the maximum
+            if process_status["iteration"] < k.FILE_TASK_MAX_ITERATION:
+                spawn_file_task(iteration=process_status["iteration"]+1)
+            
             # * Peform the backup
             # Loop through all tasks in the task_dict['task_ids'], geting for each its task_id and index
             local_path = f"{k.REPO_FOLDER}/{k.TMP_FOLDER}/{host['host_add']}"

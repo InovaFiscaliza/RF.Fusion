@@ -1387,10 +1387,12 @@ class dbHandler():
             limit (int): Number of tasks to retrieve. Default to None will return all available
             
         Returns:
-            dict:   "host_id": (int) host_id,
-                    "task_ids": (list)(int) task_ids,
-                    "host_files": (list)(str) host file names,
-                    "server_files": (list)(str) server file names
+            dict:  {"host_id": (int) host_id,
+                    "task_ids": (dict){ task_id: [
+                                                    host_file_path,
+                                                    host_file_name,
+                                                    server_file_path,
+                                                    server_file_name]}
         """
         
         def _join_lists(host_list:list,
