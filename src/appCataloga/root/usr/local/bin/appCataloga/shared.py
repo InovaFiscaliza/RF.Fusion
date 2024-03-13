@@ -5,9 +5,11 @@ Shared functions for appCataloga scripts
 import sys
 sys.path.append('/etc/appCataloga')
 import os
-
+import paramiko
 from datetime import datetime
+import time
 
+import db_handler as dbh
 import config as k
 
 class font:
@@ -177,11 +179,12 @@ def parse_cfg(cfg_data="", root_level=True, line_number=0):
             try:
                 # try to convert value to float
                 config_dict[key] = float(value)
-            except 
-                # if not possible, keep value as string
+            except ValueError:
+                # if not possible to use float, keep value as string
                 config_dict[key] = value
-        except:
-            # handle section lines    
+        # handle section lines, where there is no "=" sign and split will fail
+        except ValueError:
+            
             try:
                 if line[0]=="[" and line[-1]=="]":
                     key = line[1:-1]
@@ -192,7 +195,7 @@ def parse_cfg(cfg_data="", root_level=True, line_number=0):
                 else:
                     # ignore lines that do not assign values or define sections
                     pass
-            except:
+            except IndexError:
                 # ignore empty lines
                 pass
     
@@ -229,3 +232,186 @@ class argument:
         for arg in self.data.keys():
             if not self.data[arg]["set"]:
                 self.log.warning(self.data[arg]["warning"])
+                
+class sftpConnection():
+    
+    def __init__(   self,
+                    host_add:str,
+                    port:str,
+                    user:str,
+                    password:str,
+                    log:log) -> None:
+        """Initialize the SSH client and SFTP connection to a remote host with log support."""
+        
+        try:
+            self.log = log
+            self.host_add = host_add
+            self.ssh_client = paramiko.SSHClient()
+            self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.ssh_client.connect(hostname=host_add, port=port, username=user, password=password)
+            self.sftp = self.ssh_client.open_sftp()
+        except Exception as e:
+            self.log.error(f"Error initializing SSH to '{host_add}'. {str(e)}")
+            raise
+                
+    def test(   self,
+                filename:str) -> bool:
+        """Test if a file exists in the remote host
+
+        Args:
+            file (str): File name to be tested
+
+        Returns:
+            bool: True if the file exists, False otherwise
+        """
+        
+        try:
+            self.sftp.lstat(filename)
+            return True
+        except FileNotFoundError:
+            return False
+        except Exception as e:
+            self.log.error(f"Error checking '{filename}' in '{self.host_add}'. {str(e)}")
+            raise
+    
+    def touch(  self,
+                filename:str) -> None:
+        """Create a file in the remote host
+
+        Args:
+            file (str): File name to be created
+        """
+        
+        try:
+            self.sftp.open(filename, 'w').close()
+        except Exception as e:
+            self.log.error(f"Error creating '{filename}' in '{self.host_add}'. {str(e)}")
+            raise
+        
+    def read(   self,
+                filename:str,
+                mode:str) -> str:
+        try:
+            remote_file_handle = self.sftp.open(filename, mode)
+            file_content = remote_file_handle.read()
+            remote_file_handle.close()
+            return file_content
+        except FileNotFoundError:
+            self.log.error(f"File '{filename}' not found in '{self.host_add}'")
+            return False
+        except Exception as e:
+            self.log.error(f"Error reading '{filename}' in '{self.host_add}'. {str(e)}")
+            raise
+    
+    def transfer(   self,
+                    remote_file:str,
+                    local_file:str) -> None:
+        try:
+            return self.sftp.get(remote_file, local_file)
+        except Exception as e:
+            self.log.error(f"Error transferring '{remote_file}' from '{self.host_add}' to '{local_file}'. {str(e)}")
+            raise
+    
+    def remove( self,
+                filename:str) -> None:
+        try:
+            return self.sftp.remove(filename)
+        except FileNotFoundError:
+            self.log.error(f"File '{filename}' not found in '{self.host_add}'")
+            return ""
+        except Exception as e:
+            self.log.error(f"Error removing '{filename}' in '{self.host_add}'. {str(e)}")
+            raise
+    
+    def close(self) -> None:
+        try:
+            self.sftp.close()
+            self.ssh_client.close()
+        except Exception as e:
+            self.log.error(f"Error closing connection to '{self.host_add}'. {str(e)}")
+            raise
+
+class hostDaemon():
+    
+    def __init__(   self,
+                    sftp_conn:sftpConnection,
+                    db_bp: dbh.dbHandler,
+                    task: dict,
+                    log:log) -> None:
+        self.sftp_conn = sftp_conn
+        self.db_bp = db_bp
+        self.task = task
+        self.log = log
+        
+        self.config
+    
+    def get_config(self) -> dict:
+        """Get the remote host configuration file into config class variable
+
+        Raises:
+            FileNotFoundError: If the configuration file is not found in the remote host
+        """
+        
+        try:
+            daemon_cfg_str = self.sftp_conn.read(k.DAEMON_CFG_FILE, 'r')
+            
+            self.config = parse_cfg(daemon_cfg_str)
+
+        except FileNotFoundError:
+            log.error(f"Configuration file '{k.DAEMON_CFG_FILE}' not found in remote host {self.task['host_uid']}({self.task['host_add']})")
+            
+            self.db_bp.update_host_status(host_id=self.task['host_id'], status=self.db_bp.HOST_WITHOUT_DAEMON)
+            self.sftp_conn.close()
+            self.db_bp.remove_host_task(task_id=self.task)
+            
+            raise FileNotFoundError
+
+    def get_halt_flag(self) -> bool:
+        """Set the halt_flag in the remote host if it is not set by another process. Wait for release before continuing.
+        
+        Returns:
+            status (bool): True if the HALT_FLAG file raised, False otherwise.
+        """
+                
+        loop_count = 0
+        # If HALT_FLAG exists, wait and retry each 5 minutes for 30 minutes
+        while self.sftp_conn.test(self.config['HALT_FLAG']):
+            # If HALT_FLAG exists, wait for 5 minutes and test again
+            time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME / k.HALT_FLAG_CHECK_CYCLES)
+            log.warning(f"HALT_FLAG file found in remote host {self.task['host_uid']}({self.task['host_add']}). Waiting {(k.HOST_TASK_REQUEST_WAIT_TIME / (k.HALT_FLAG_CHECK_CYCLES * 60))} minutes.")
+            loop_count += 1
+
+            if loop_count > k.HALT_FLAG_CHECK_CYCLES:
+                message = f"HALT_FLAG file found in remote host {self.task['host_uid']}({self.task['host_add']}). Host task aborted."
+                log.error(message)
+                self.sftp_conn.close()
+                self.db_bp.update_host_status(host_id=self.task["host_id"], status=self.db_bp.HOST_WITH_HALT_FLAG)
+                self.db_bp.remove_host_task(task_id=self.task["task_id"])
+                return False
+
+        # Create a HALT_FLAG file in the remote host
+        self.sftp_conn.touch(self.daemon_cfg['HALT_FLAG'])
+
+        self.process_status["halt_flag"] = self.daemon_cfg['HALT_FLAG']
+        
+        return True
+    
+    def reset(self) -> None:
+        """Reset the halt_flag in the remote host if it is set by this process.
+        
+        Args:
+            sftp_conn (sftp_connection): The SFTP connection object.
+            daemon_cfg (dict): The daemon configuration dictionary.
+            task (dict): The task dictionary containing host information.
+            db_bp (dbh.dbHandler): The database handler object.
+        
+        Returns:
+            None
+        """
+        self.sftp_conn.remove(filename=self.config['DUE_BACKUP'])
+        self.sftp_conn.remove(filename=self.config['HALT_FLAG'])
+        self.sftp_conn.close()
+        
+        self.db_bp.remove_host_task(task_id=self.task["task_id"])
+            
+            

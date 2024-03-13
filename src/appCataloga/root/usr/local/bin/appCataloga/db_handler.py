@@ -1379,7 +1379,7 @@ class dbHandler():
                         task_type:int,
                         task_status:int=1,
                         limit:int=None) -> dict:
-        """This method a list of files tasks associated with a host with the oldest pending file task
+        """Return list of file tasks associated with a host with the oldest pending file task. Return false if no task is found
 
         Args:
             type (int): Task type
@@ -1509,7 +1509,7 @@ class dbHandler():
 
             output["host_id"] = host_id
         
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, IndexError):
             # if no task is found, return False
             output = False
         

@@ -31,17 +31,18 @@ import inspect
 # define global variables for log and general use
 log = sh.log()
 
-process_status = {  "conn": False,
+process_status = {  "iteration": None,
+                    "conn": False,
                     "halt_flag": False,
                     "running": True}
 
-DEFAULT_LEVEL = 0
+DEFAULT_ITERATION = 0
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
 ARGUMENTS = {
-    "level": {
+    "iteration": {
         "set": False,
-        "value": DEFAULT_LEVEL,
-        "warning": "Using default task id"
+        "value": DEFAULT_ITERATION,
+        "warning": "Using default iteration"
         }
     }
 
@@ -70,94 +71,16 @@ signal.signal(signal.SIGINT, sigint_handler)
 class HaltFlagError(Exception):
     pass
 
-class sftp_connection():
-    
-    def __init__(self, host_add:str, port:str, user:str, password:str, log:sh.log) -> None:
-        """Initialize the SSH client and SFTP connection to a remote host with log support."""
-        
-        try:
-            self.log = log
-            self.host_add = host_add
-            self.ssh_client = paramiko.SSHClient()
-            self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            self.ssh_client.connect(hostname=host_add, port=port, username=user, password=password)
-            self.sftp = self.ssh_client.open_sftp()
-        except Exception as e:
-            self.log.error(f"Error initializing SSH to '{host_add}'. {str(e)}")
-            raise
-                
-    def test(self, filename:str) -> bool:
-        """Test if a file exists in the remote host
-
-        Args:
-            file (str): File name to be tested
-
-        Returns:
-            bool: True if the file exists, False otherwise
-        """
-        
-        try:
-            self.sftp.lstat(filename)
-            return True
-        except FileNotFoundError:
-            return False
-        except Exception as e:
-            self.log.error(f"Error checking '{filename}' in '{self.host_add}'. {str(e)}")
-            raise
-    
-    def touch(self, filename:str) -> None:
-        """Create a file in the remote host
-
-        Args:
-            file (str): File name to be created
-        """
-        
-        try:
-            self.sftp.open(filename, 'w').close()
-        except Exception as e:
-            self.log.error(f"Error creating '{filename}' in '{self.host_add}'. {str(e)}")
-            raise
-        
-    def read(self, filename, mode):
-        try:
-            remote_file_handle = self.sftp.open(filename, mode)
-            file_content = remote_file_handle.read()
-            remote_file_handle.close()
-            return file_content
-        except FileNotFoundError:
-            self.log.error(f"File '{filename}' not found in '{self.host_add}'")
-            return ""
-        except Exception as e:
-            self.log.error(f"Error reading '{filename}' in '{self.host_add}'. {str(e)}")
-            raise
-    
-    def transfer(self, remote_file, local_file):
-        return self.sftp.get(remote_file, local_file)
-    
-    def remove(self, filename):
-        return self.sftp.remove(filename)
-    
-    def close(self):
-        self.sftp.close()
-        self.ssh_client.close()
-
 def main():
+    global process_status
+    global log
 
     # create an argument object
     call_argument = sh.argument(log, ARGUMENTS)
     
     # parse the command line arguments
     call_argument.parse(sys.argv)
-    task_id = call_argument.data["task_id"]["value"]
-    
-    """	
-        task={  "task_id": str,
-                "host_id": str,
-                "host_add": str,
-                "port": str,
-                "user": str,
-                "password": str}"""  
-
+    process_status['iteration'] = call_argument.data["iteration"]["value"]
     
     try:
         # create db object using databaseHandler class for the backup and processing database
@@ -165,66 +88,50 @@ def main():
     except Exception as e:
         log.error(f"Error initializing database: {e}")
         exit(1)
-        
-    # Get the list of files to backup from the database, where each task is a dictionary with the following
-    # - "host_id": (int) host_id,
-    # - "task_ids": (list)(int) task_ids,
-    # - "host_files": (list)(str) host file names,
-    # - "server_files": (list)(str) server file names
 
-    while True:
+    while process_status["running"]:
         
-        # ! add exit condition 
         try:
             
             # * Get the list of files to backup from the database
-            task_dict = db_bp.next_file_tasks(type=db_bp.BACKUP_TASK_TYPE)
+            task = db_bp.next_file_tasks(task_type=db_bp.BACKUP_TASK_TYPE)
 
-            if not task_dict:
-                time_to_wait = k.FILE_TASK_EXECUTION_WAIT_TIME+k.FILE_TASK_EXECUTION_WAIT_TIME*random.random()
-                log.entry(f"No host found with pending backup. Waiting {time_to_wait} seconds")
-                time.sleep(time_to_wait)
-                continue
+            if not task:
+                if process_status["iteration"] > 0:
+                    process_status["running"] = False
+                    log.entry(f"No host found with pending backup. Exiting process with level {process_status['iteration']}")
+                    continue
+                else:
+                    time_to_wait = k.FILE_TASK_EXECUTION_WAIT_TIME+k.FILE_TASK_EXECUTION_WAIT_TIME*random.random()
+                    log.entry(f"No host found with pending backup. Waiting {time_to_wait} seconds")
+                    time.sleep(time_to_wait)
+                    continue
 
             # * using task["host_id"] to get the host configuration from the database
-            host = db_bp.get_host(task_dict["host_id"])
+            host = db_bp.get_host(task["host_id"])
 
             # Create a SSH client and SFTP connection to the remote host
-            sftp_conn = sftp_connection(hostname=host["host_add"],
-                                        port=host["port"],
-                                        username=host["user"],
-                                        password=host["password"],
-                                        log=log)
+            sftp_conn = sh.sftp_connection( hostname=host["host_add"],
+                                            port=host["port"],
+                                            username=host["user"],
+                                            password=host["password"],
+                                            log=log)
         
-            # * Get the remote host configuration file
-            daemon_cfg_str = sftp_conn.read(k.DAEMON_CFG_FILE, 'r')
+            process_status["conn"] = sftp_conn
             
-            # Parse the configuration file
-            daemon_cfg = sh.parse_cfg(daemon_cfg_str)
+            daemon = sh.hostDaemon( sftp_conn=sftp_conn,
+                                    db_bp=db_bp,
+                                    task=task,
+                                    log=log)
             
-            # * Check if exist the HALT_FLAG file in the remote host
-            # * Wait for HALT_FLAG release
-            loop_count = 0
-            # If exists wait and retry each 5 minutes for 30 minutes  
-            while sftp_conn.test(daemon_cfg['HALT_FLAG']):
-                # If HALT_FLAG exists, wait for 5 minutes and test again
-                time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME/k.HALT_FLAG_CHECK_CYCLES)
-                
-                loop_count += 1
-                
-                if loop_count > k.HALT_FLAG_CHECK_CYCLES:
-                    message = f"HALT_FLAG file found in remote host {host["host_add"]}. Host task aborted."
-                    log.error(message)
-                    raise HaltFlagError(message)
+            # Get the remote host configuration file
+            daemon.get_config()
 
-            # Set the time limit for HALT_FLAG timeout control according to the HALT_TIMEOUT parameter in the remote host
-            time_limit = daemon_cfg['HALT_TIMEOUT']*k.SECONDS_IN_MINUTE*k.BKP_HOST_ALLOTED_TIME_FRACTION
-
-            # store current time for HALT_FLAG timeout control
-            halt_flag_time = time.time()
+            # Set halt flag 
+            process_status["halt_flag"] = daemon.get_halt_flag()
             
-            # Create a HALT_FLAG file in the remote host
-            sftp_conn.touch(daemon_cfg['HALT_FLAG'])
+            if not process_status["halt_flag"]:
+                continue
                                     
             # * Peform the backup
             # Loop through all tasks in the task_dict['task_ids'], geting for each its task_id and index
