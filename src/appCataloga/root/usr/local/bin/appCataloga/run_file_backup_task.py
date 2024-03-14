@@ -31,18 +31,18 @@ import inspect
 # define global variables for log and general use
 log = sh.log()
 
-process_status = {  "iteration": None,
+process_status = {  "worker": None,
                     "conn": False,
                     "halt_flag": False,
                     "running": True}
 
-DEFAULT_ITERATION = 0
+DEFAULT_WORKER = 0
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
 ARGUMENTS = {
-    "iteration": {
+    "worker": {
         "set": False,
-        "value": DEFAULT_ITERATION,
-        "warning": "Using default iteration"
+        "value": DEFAULT_WORKER,
+        "warning": "Using default worker zero"
         }
     }
 
@@ -71,11 +71,11 @@ signal.signal(signal.SIGINT, sigint_handler)
 class HaltFlagError(Exception):
     pass
 
-def spawn_file_task(iteration: int) -> None:
+def spawn_file_task_worker(worker_list: list) -> None:
     """Spawn a new file task process.
     
     Args:
-        iteration (int): The iteration level of the new process.
+        worker (int): The new worker serial index.
     
     Returns:
         None
@@ -83,28 +83,59 @@ def spawn_file_task(iteration: int) -> None:
     global process_status
     global log
     
-    log.entry(f"Spawning file task process with iteration {iteration}")
+    # find the lowest available worker index for the new process
+    new_worker = 0
+    for i in range(worker_list.__len__() - 1):
+        if new_worker == worker_list[i]:
+            new_worker += 1
+
+    log.entry(f"Spawning file backup task process worker {new_worker}")
     
-    
-#! TODAY STOPPED HERE
-    # create the command line to call the new process
-    command = f"{sys.executable} {__file__} {call_argument.command_line()}"
-    
-    # call the new process
+    # Use systemd to start a new file task process
+    command = f"systemctl start {k.FILE_TASK_SERVICE_NAME}{new_worker}"
     os.system(command)
+
+def worker_counter(process_filename:str) -> list:
+    """Count the number of running file task processes.
     
-    log.entry(f"File task process with iteration {iteration} spawned")
+    Args:
+        None
+    
+    Returns:
+        list: A list with indexes of the running file task processes.
+    """
+    global log
+    worker_list = []
+    
+    try:
+        # get the list of running processes
+        worker_list = os.popen(f"pgrep -f {process_filename}").read().splitlines()
+    except Exception as e:
+        log.error(f"Error counting running workers: {e}")
+        raise ValueError(log.dump_error())
+    
+    # loop through the list of running processes and get the worker serial index from the command line arguments of each process
+    for worker in worker_list:
+        try:
+            worker_args = os.popen(f"cat /proc/{worker}/cmdline").read().split('\x00')
+            worker_args = [arg for arg in worker_args if arg]
+            worker_args = worker_args[1:]
+            worker_args = [arg.split('=') for arg in worker_args]
+            worker_args = {arg[0]:arg[1] for arg in worker_args}
+        except Exception as e:
+            log.error(f"Error getting worker serial index from process {worker}: {e}")
+            raise ValueError(log.dump_error())
+    
+    # reorder worker_args in numerical ascending order
+    worker_list = sorted(worker_args, key=lambda x: int(x))
+    
+    return worker_list
 
 def main():
     global process_status
     global log
 
-    # create an argument object
-    call_argument = sh.argument(log, ARGUMENTS)
-    
-    # parse the command line arguments
-    call_argument.parse(sys.argv)
-    process_status['iteration'] = call_argument.data["iteration"]["value"]
+    worker_list = worker_counter(process_filename=__file__)
     
     try:
         # create db object using databaseHandler class for the backup and processing database
@@ -128,12 +159,13 @@ def main():
             """
             
             if not task:
-                # if it is a higher order iteration, terminate process.
-                if process_status["iteration"] > 0:
-                    process_status["running"] = False
-                    log.entry(f"No host found with pending backup. Exiting process with level {process_status['iteration']}")
+                # if it is not the worker with serial zero, terminate process.
+                if worker_list.__len__() > 2:
+                    log.entry(f"No host found with pending backup. Exiting worker {process_status['worker']}")
+                    # stop systemd service for this worker.
+                    os.system(f"systemctl stop {k.FILE_TASK_SERVICE_NAME}{process_status['worker']}")
                     continue
-                # if it is the root iteration, wait and try again later.
+                # if it is the zero worker, wait and try again later.
                 else:
                     time_to_wait = k.FILE_TASK_EXECUTION_WAIT_TIME+k.FILE_TASK_EXECUTION_WAIT_TIME*random.random()
                     log.entry(f"No host found with pending backup. Waiting {time_to_wait} seconds")
@@ -166,9 +198,9 @@ def main():
             if not process_status["halt_flag"]:
                 continue
             
-            # Before processing the task, spawn another file task process if the iteration is smaller than the maximum
-            if process_status["iteration"] < k.FILE_TASK_MAX_ITERATION:
-                spawn_file_task(iteration=process_status["iteration"]+1)
+            # Before processing the current task, spawn another file backup task process to look for other hosts with pending backup
+            if worker_list.__len__() < k.FILE_TASK_MAX_WORKERS:
+                spawn_file_task_worker(worker_list=worker_list)
             
             # * Peform the backup
             # Loop through all tasks in the task_dict['task_ids'], geting for each its task_id and index

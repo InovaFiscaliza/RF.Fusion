@@ -1,16 +1,16 @@
 #!/bin/bash
 
-# Replace 'path_to_your_python_app' with the actual path to your Python application script.
-APP_PATH="/usr/local/bin/appCataloga/run_file_task.py worker=$2"
-CONDA_PATH="/usr/local/bin/appCataloga/miniconda3/bin/activate"
-ENV_NAME="appdata"
-
-PID_FILE_ROOT="/var/run/run_file_task"
 if [ -n "$2" ]; then
-    PID_FILE="$PID_FILE_ROOT.$2.pid"
+    WORKER=$2
 else
-    PID_FILE="$PID_FILE_ROOT.0.pid"
+    WORKER="0"
 fi
+
+# Replace 'path_to_your_python_app' with the actual path to your Python application script.
+APP_PATH="/usr/local/bin/appCataloga/run_file_backup_task.py worker=$WORKER"
+CONDA_PATH="/usr/local/bin/appCataloga/miniconda3/bin/activate"
+PID_FILE="/var/run/file_backup_task_worker_$WORKER.pid"
+ENV_NAME="appdata"
 
 start() {
 

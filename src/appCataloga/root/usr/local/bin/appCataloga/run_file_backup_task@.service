@@ -1,0 +1,15 @@
+[Unit]
+Description=File backup task service Worker %i
+After=network.target mariadb.service
+RequiresMountsFor=/mnt/reposfi
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/bin/appCataloga
+ExecStart=/usr/local/bin/appCataloga/run_file_backup_task.sh start %i
+ExecStop=/usr/local/bin/appCataloga/run_file_backup_task.sh stop %i
+ExecReload=/usr/local/bin/appCataloga/run_file_backup_task.sh restart %i
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
