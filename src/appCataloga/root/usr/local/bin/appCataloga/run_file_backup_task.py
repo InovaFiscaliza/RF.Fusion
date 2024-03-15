@@ -1,11 +1,16 @@
 #!/usr/bin/python3
-"""Access the control database and get files associated with a host to be backed up to the central repository.
+"""Get list of files to backup from remote host and create file tasks in the control database for backup to the central repository.
     
-    Args: None
+    Args:   Arguments passed from the command line should present in the format: "key=value"
     
-    Returns:
-        stdout: As log messages, if target_screen in log is set to True.
+            Where the possible keys are:
             
+                "worker": int, Serial index of the worker process. Default is 0.
+                
+            (stdin): ctrl+c will soft stop the process similar to kill or systemd stop <service>. kill -9 will hard stop.
+
+    Returns (stdout): As log messages, if target_screen in log is set to True.            
+    
     Raises:
         Exception: If any error occurs, the exception is raised with a message describing the error.
 """
@@ -23,7 +28,6 @@ import db_handler as dbh
 import paramiko
 import os
 import time
-import json
 import random
 import signal
 import inspect
@@ -88,12 +92,13 @@ def spawn_file_task_worker(worker_list: list) -> None:
     for i in range(worker_list.__len__() - 1):
         if new_worker == worker_list[i]:
             new_worker += 1
+        elif new_worker < worker_list[i]:
+            break
 
     log.entry(f"Spawning file backup task process worker {new_worker}")
     
     # Use systemd to start a new file task process
-    command = f"systemctl start {k.FILE_TASK_SERVICE_NAME}{new_worker}"
-    os.system(command)
+    os.system(f"systemctl start {k.FILE_TASK_SERVICE_NAME}{new_worker}")
 
 def worker_counter(process_filename:str) -> list:
     """Count the number of running file task processes.
@@ -109,25 +114,26 @@ def worker_counter(process_filename:str) -> list:
     
     try:
         # get the list of running processes
-        worker_list = os.popen(f"pgrep -f {process_filename}").read().splitlines()
+        runnin_processes = os.popen(f"pgrep -f {process_filename}").read().splitlines()
     except Exception as e:
         log.error(f"Error counting running workers: {e}")
         raise ValueError(log.dump_error())
     
     # loop through the list of running processes and get the worker serial index from the command line arguments of each process
-    for worker in worker_list:
+    for worker in runnin_processes:
         try:
             worker_args = os.popen(f"cat /proc/{worker}/cmdline").read().split('\x00')
             worker_args = [arg for arg in worker_args if arg]
             worker_args = worker_args[1:]
             worker_args = [arg.split('=') for arg in worker_args]
-            worker_args = {arg[0]:arg[1] for arg in worker_args}
+            worker_index = [arg[1] for arg in worker_args]
+            worker_list.append(int(worker_index))
         except Exception as e:
             log.error(f"Error getting worker serial index from process {worker}: {e}")
             raise ValueError(log.dump_error())
     
     # reorder worker_args in numerical ascending order
-    worker_list = sorted(worker_args, key=lambda x: int(x))
+    worker_list = sorted(worker_list)
     
     return worker_list
 
@@ -149,8 +155,8 @@ def main():
         try:
             
             # Get the list of files to backup from the database
-            task = db_bp.next_file_tasks(task_type=db_bp.BACKUP_TASK_TYPE)
-            """ task = {"host_id": (int) host_id,
+            tasks = db_bp.next_file_tasks(task_type=db_bp.BACKUP_TASK_TYPE)
+            """ tasks ={"host_id": (int) host_id,
                         "task_ids": (dict){ task_id: [
                                                         host_file_path,
                                                         host_file_name,
@@ -158,7 +164,7 @@ def main():
                                                         server_file_name]}
             """
             
-            if not task:
+            if not tasks:
                 # if it is not the worker with serial zero, terminate process.
                 if worker_list.__len__() > 2:
                     log.entry(f"No host found with pending backup. Exiting worker {process_status['worker']}")
@@ -173,7 +179,7 @@ def main():
                     continue
 
             # Using task["host_id"] to get the host configuration from the database
-            host = db_bp.get_host(task["host_id"])
+            host = db_bp.get_host(tasks["host_id"])
 
             # Create a SSH client and SFTP connection to the remote host
             sftp_conn = sh.sftp_connection( hostname=host["host_add"],
@@ -186,18 +192,24 @@ def main():
             
             daemon = sh.hostDaemon( sftp_conn=sftp_conn,
                                     db_bp=db_bp,
-                                    task=task,
+                                    host_id=host["host_id"],
+                                    task_dict=tasks["task_ids"],
                                     log=log)
             
             # Get the remote host configuration file
-            daemon.get_config()
+            daemon.get_config(remove_failed_task=False)
 
-            # Set halt flag 
-            process_status["halt_flag"] = daemon.get_halt_flag()
+            # Set halt flag if not already set (first run)
+            if not process_status["halt_flag"]:
+                process_status["halt_flag"] = daemon.get_halt_flag(remove_failed_task=False)
+            else:
+                daemon.reset_halt_flag()
             
+            # After trying to set or reset the halt flag, if it was not set
+                # move to attempt the next task. (current task was susppended bt the get_halt_flag method)
             if not process_status["halt_flag"]:
                 continue
-            
+                        
             # Before processing the current task, spawn another file backup task process to look for other hosts with pending backup
             if worker_list.__len__() < k.FILE_TASK_MAX_WORKERS:
                 spawn_file_task_worker(worker_list=worker_list)
@@ -210,10 +222,12 @@ def main():
             if not os.path.exists(local_path):
                 os.makedirs(local_path)
             
-            server_files = []
-            for task_id, index in task_dict["task_ids"]:
+            for task_id, file_list in tasks["task_ids"].items():
+                filename = file_list[1]
+                file_list[2] = local_path
+                file_list[3] = filename
                 
-                remote_file = task_dict["host_files"][index]
+                remote_file = f"{file_list[0]}/{filename}"
             
                 # test if remote_file does not exist, update the database and skip to the next file
                 if not sftp_conn.test(remote_file):
@@ -221,161 +235,49 @@ def main():
                     db_bp.file_task_error(  task_id=task_id,
                                             message=message)
                     
-                    db_bp.update_host_status(   host_id=task_dict["host_id"],
+                    db_bp.update_host_status(   host_id=host["host_id"],
                                                 pending_backup=-1,
                                                 backup_error=1)
                     
                     log.warning(message)
-                    server_files.append("File not found")
                     continue
                 
                 # Compose target file name by adding the remote file name to the target folder
-                local_file = os.path.basename(remote_file)
-                
-                full_local_file = os.path.join(local_path, local_file)
+                local_file = f"{local_path}/{filename}"
                 
                 # Transfer the file from the remote host to the local host
                 try:
-                    sftp_conn.transfer(remote_file, full_local_file)
+                    sftp_conn.transfer(remote_file, local_file)
                     
                     # Change file task from backup to processing. (assume every file needs processing)
                     db_bp.file_task_update( task_id=task_id,
-                                            server_file=local_file,
+                                            server_file=filename,
                                             server_path=local_path,
                                             task_type=db_bp.PROCESS_TASK_TYPE,
                                             status=db_bp.TASK_PENDING,
                                             message=f"File '{remote_file}' copied to '{local_file}'")
                     
-                    db_bp.update_host_status(   host_id=task_dict["host_id"],
+                    db_bp.update_host_status(   host_id=host["host_id"],
                                                 pending_backup=-1,
                                                 pending_processing=1)
                     
-                    log.entry(f"File '{os.path.basename(remote_file)}' copied to '{local_file}'")
-                    
-                    server_files.append(local_file)
-                    
-                    # refresh the HALT_FLAG timeout control
-                    time_since_start = time.time()-halt_flag_time
-                    
-                    if time_since_start > time_limit:
-                        try:
-                            halt_flag_file_handle = sftp_conn.sftp.open(daemon_cfg['HALT_FLAG'], 'w')
-                            halt_flag_file_handle.write(f'running backup for {time_since_start/60} minutes\n')
-                            halt_flag_file_handle.close()
-                        except Exception as e:
-                            log.warning(f"Could not raise halt_flag for host {host['host_id']['value']}.{str(e)}")
-                            pass
+                    log.entry(f"File '{filename}' copied to '{local_file}'")
                     
                 except Exception as e:
                     message=f"Error copying '{remote_file}' from host {host['host_add']}.{str(e)}"
                     db_bp.file_task_error(  task_id=task_id,
                                             message=message)
                     
-                    db_bp.update_host_status(   host_id=task_dict["host_id"],
+                    db_bp.update_host_status(   host_id=host["host_id"],
                                                 pending_backup=-1,
                                                 backup_error=1)
-                    
-                    log.warning(f"Error copying '{remote_file}' from host {host['host_add']}.{str(e)}")
-                    
-                    server_files.append("Error copying")
                     continue
+                
+                daemon.set_backup_done(remote_file)
         
-            # ! PARADO AQUI PRECISA PEGAR A LISTA DE ARQUIVOS NO REMOTE HOST E ATUALIZAR COM OS QUE FORAM COPIADOS. USAR SET DROP PARA REMOVER E ADICIONAR AO BACKUP_DONE
-            # * Get the list of files to backup from DUE_BACKUP file
-            # due_backup_file = sftp.open(daemon_cfg['DUE_BACKUP'], 'r')
-            due_backup_str = sftp_conn.read(daemon_cfg['DUE_BACKUP'], 'r')
-            
-            if due_backup_str == "":
-                nu_host_files = 0
-                due_backup_list = []
-            else:
-                # Clean the string and split the into a list of files
-                due_backup_str = due_backup_str.decode(encoding='utf-8')
-                due_backup_str = ''.join(due_backup_str.split('\x00'))
-                
-                # create a set of filenames from the due_backup_str, where each line correspond to a filename
-                due_backup_set = set(due_backup_str.splitlines())
-                nu_host_files = len(due_backup_set)
+            # Remove HALT FLAG, close the SSH client and SFTP connection
+            daemon.close_host()
 
-            # initializa backup control variables
-            nu_backup_error = 0
-            done_backup_list = []
-            done_backup_list_remote = []
-
-            # Test if there are files to backup. Done before the loop to avoid unecessary creation of the target folder
-            if nu_host_files > 0:
-                
-                
-                
-
-                # use bkp_list_index to control item in the list that is under backup, skipping the ones that failed
-                bkp_list_index = 0
-                while len(due_backup_list) > bkp_list_index:
-                    
-                    # get the first element in the due_backup_list
-                    remote_file = due_backup_list[bkp_list_index]
-                    
-                        
-                        # Compose target file name by adding the remote file name to the target folder
-                        local_file = os.path.join(target_folder, os.path.basename(remote_file))
-                                            
-                        try:
-                            sftp.get(remote_file, local_file)
-
-                            # Remove the element from the due_backup_list if the backup was successfull
-                            due_backup_list.pop(bkp_list_index)
-                            
-                            # Add the file name to the done_backup remote and local lists
-                            done_backup_list.append({"remote":remote_file,"local":local_file})
-                            done_backup_list_remote.append(remote_file)
-                            
-                            log.entry(f"File '{os.path.basename(remote_file)}' copied to '{local_file}'")
-                        except Exception as e:
-                            log.warning(f"Error copying '{remote_file}' from host {task.data['host_add']['value']}.{str(e)}")
-                            # skip to the next item for backup
-                            bkp_list_index += 1
-                            pass
-                    else:
-                        # If file does not exixt, remove the element from the due_backup_list if the backup was successfull
-                        due_backup_list.pop(bkp_list_index)
-
-                # Test if there is a BACKUP_DONE file in the remote host
-                if not _check_remote_file(sftp, daemon_cfg['BACKUP_DONE'], task):
-                    # Create a BACKUP_DONE file in the remote host with the list of files in done_backup_list_remote
-                    backup_done_file = sftp.open(daemon_cfg['BACKUP_DONE'], 'w')
-                else:
-                    # Append the list of files in done_backup_list_remote to the BACKUP_DONE file in the remote host
-                    backup_done_file = sftp.open(daemon_cfg['BACKUP_DONE'], 'a')
-                    
-                backup_done_file.write("\n".join(done_backup_list_remote) + "\n")
-                backup_done_file.close()
-                    
-                # Overwrite the DUE_BACKUP file in the remote host with the list of files in due_backup_list
-                if len(due_backup_list)>0:
-                    due_backup_file = sftp.open(daemon_cfg['DUE_BACKUP'], 'w')
-                    due_backup_file.write("\n".join(due_backup_list) + "\n")
-                    due_backup_file.close()
-                else:
-                    # Remove the DUE_BACKUP file in the remote host if there are no more files to backup
-                    sftp.remove(daemon_cfg['DUE_BACKUP'])
-                
-                nu_backup_error = len(due_backup_list)/nu_host_files
-            
-            # Remove the HALT_FLAG file from the remote host
-            sftp.remove(daemon_cfg['HALT_FLAG'])
-
-            # Close the SSH client and SFTP connection
-            sftp.close()
-            ssh_client.close()
-            
-            output = { 'host_id': task.data["host_id"]["value"],
-                    'nu_host_files': nu_host_files, 
-                    'nu_pending_backup': len(due_backup_list), 
-                    'nu_backup_error': nu_backup_error,
-                    'done_backup_list':done_backup_list}
-
-            print(json.dumps(output))
-        
         except paramiko.AuthenticationException as e:
             log.error(f"Authentication failed. Please check your credentials. {str(e)}")
             raise ValueError(log.dump_error())
@@ -393,3 +295,4 @@ def main():
     
 if __name__ == "__main__":
     main()
+

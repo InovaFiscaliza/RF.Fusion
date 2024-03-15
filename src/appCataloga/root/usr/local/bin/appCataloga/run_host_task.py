@@ -1,14 +1,9 @@
 #!/usr/bin/python3
 """Get list of files to backup from remote host and create file tasks in the control database for backup to the central repository.
 
-    Args: Arguments passed from the command line should present in the format: "key=value"
+    Args (stdin): ctrl+c will soft stop the process similar to kill command or systemd stop <service>. kill -9 will hard stop.
     
-    Where the possible keys are:
-    
-        "task_id": int, Task id in the control database
-
-    Returns:
-        None
+    Returns (stdout): As log messages, if target_screen in log is set to True.
         
     Raises:
         Exception: If any error occurs, the exception is raised with a message describing the error.
@@ -119,16 +114,17 @@ def main():
             
             process_status["conn"] = sftp_conn
             
-            daemon = sh.hostDaemon(sftp_conn=sftp_conn,
-                                        db_bp=db_bp,
-                                        task=task,
-                                        log=log)
+            daemon = sh.hostDaemon( sftp_conn=sftp_conn,
+                                    db_bp=db_bp,
+                                    host_id=task["host_id"],
+                                    log=log,
+                                    task_id=task["task_id"])
             
             # Get the remote host configuration file
-            daemon.get_config()
+            daemon.get_config(remove_failed_task=True)
 
             # Set halt flag 
-            process_status["halt_flag"] = daemon.get_halt_flag()
+            process_status["halt_flag"] = daemon.get_halt_flag(remove_failed_task=True)
             
             if not process_status["halt_flag"]:
                 continue
@@ -139,7 +135,7 @@ def main():
                                task=task,
                                db_bp=db_bp)
             
-            daemon.reset()
+            daemon.close_host(remove_due_backup=True)
     
         except paramiko.AuthenticationException as e:
             log.error(f"Authentication failed. Please check your credentials. {str(e)}")

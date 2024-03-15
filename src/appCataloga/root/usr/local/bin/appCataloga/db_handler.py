@@ -32,6 +32,7 @@ class dbHandler():
         # constants
         self.BACKUP_TASK_TYPE = 1
         self.PROCESS_TASK_TYPE = 2
+        self.TASK_SUSPENDED = -2
         self.TASK_ERROR = -1
         self.TASK_NULL = 0
         self.TASK_PENDING = 1
@@ -1649,7 +1650,7 @@ class dbHandler():
             server_path (str): Server path
             server_file (str): Server file
             task_type (int): Task type: 0=Not set; 1=Backup; 2=Processing
-            status (int): Status flag: -1=Error, 0=Nothing to do, 1=Pending action, 2=Under execution
+            status (int): Status flag: -2=Suspended, -1=Error, 0=Nothing to do, 1=Pending action, 2=Under execution
             message (str): Error message
         """
         # compose and excecute query to set NU_STATUS to -1 (Error) and server path in the BPDATA database

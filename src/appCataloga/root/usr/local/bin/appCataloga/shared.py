@@ -332,86 +332,169 @@ class sftpConnection():
             raise
 
 class hostDaemon():
+    """Class to handle the remote host daemon tasks
+    """
     
     def __init__(   self,
                     sftp_conn:sftpConnection,
                     db_bp: dbh.dbHandler,
-                    task: dict,
-                    log:log) -> None:
+                    host_id: int,
+                    log:log,
+                    task_id: int = None,
+                    task_dict:dict = None) -> None:
+        
         self.sftp_conn = sftp_conn
         self.db_bp = db_bp
-        self.task = task
         self.log = log
         
-        self.config
+        self.task_id = task_id
+        self.task_dict = task_dict
+        
+        self.config = None
+        self.time_limit = None
+        self.halt_flag_set_time = None
+        
+        self.host = db_bp.get_host(host_id)
+
+    def _handle_failed_task(self, task_id:int,
+                            remove_failed_task:bool,
+                            message:str = None) -> None:
+        
+        if remove_failed_task:
+            self.db_bp.remove_host_task(task_id=task_id)
+        else:
+            self.db_bp.file_task_update(task_id=task_id, status=self.db_bp.TASK_FAILED, message=message)
     
-    def get_config(self) -> dict:
+    def get_config( self,
+                    remove_failed_task:bool = False) -> dict:
         """Get the remote host configuration file into config class variable
+
+        Args:
+            remove_failed_task (bool, optional): Remove the task from the database if the halt_flag is set. Defaults to False, suspend task.
 
         Raises:
             FileNotFoundError: If the configuration file is not found in the remote host
         """
-        
+                
         try:
             daemon_cfg_str = self.sftp_conn.read(k.DAEMON_CFG_FILE, 'r')
             
             self.config = parse_cfg(daemon_cfg_str)
+            
+            # Set the time limit for HALT_FLAG timeout control according to the HALT_TIMEOUT parameter in the remote host
+            self.time_limit = self.config['HALT_TIMEOUT']*k.SECONDS_IN_MINUTE*k.BKP_HOST_ALLOTED_TIME_FRACTION
 
         except FileNotFoundError:
-            log.error(f"Configuration file '{k.DAEMON_CFG_FILE}' not found in remote host {self.task['host_uid']}({self.task['host_add']})")
+            log.error(f"Configuration file '{k.DAEMON_CFG_FILE}' not found in remote host with id {self.host["host_id"]}")
             
-            self.db_bp.update_host_status(host_id=self.task['host_id'], status=self.db_bp.HOST_WITHOUT_DAEMON)
+            self.db_bp.update_host_status(host_id=self.host["host_id"], status=self.db_bp.HOST_WITHOUT_DAEMON)
             self.sftp_conn.close()
-            self.db_bp.remove_host_task(task_id=self.task)
+            
+            task_handle_arguments = {   "remove_failed_task":remove_failed_task,
+                                        "message":"Configuration file not found in remote host"}
+            if self.task_id:
+                self._handle_failed_task(task_id=self.task_id, **task_handle_arguments)
+            if self.task_dict:
+                for task_id in self.task_dict.keys():
+                    self._handle_failed_task(task_id=task_id, **task_handle_arguments)
             
             raise FileNotFoundError
 
-    def get_halt_flag(self) -> bool:
-        """Set the halt_flag in the remote host if it is not set by another process. Wait for release before continuing.
+    def get_halt_flag(  self,
+                        remove_failed_task:bool = False) -> bool:
+        """Set the halt_flag in the remote host if it is not previously set by another process. 
+            Wait for release before continuing using config parameters
+            Remove or suspend the task if the halt_flag can not be set.
+        
+        Args:
+            remove_failed_task (bool, optional): Remove the task if True. Defaults to False, suspend task.
         
         Returns:
             status (bool): True if the HALT_FLAG file raised, False otherwise.
         """
-                
+        
         loop_count = 0
         # If HALT_FLAG exists, wait and retry each 5 minutes for 30 minutes
         while self.sftp_conn.test(self.config['HALT_FLAG']):
             # If HALT_FLAG exists, wait for 5 minutes and test again
             time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME / k.HALT_FLAG_CHECK_CYCLES)
-            log.warning(f"HALT_FLAG file found in remote host {self.task['host_uid']}({self.task['host_add']}). Waiting {(k.HOST_TASK_REQUEST_WAIT_TIME / (k.HALT_FLAG_CHECK_CYCLES * 60))} minutes.")
+            log.warning(f"HALT_FLAG file found in remote host {self.host['host_uid']}({self.host['host_add']}). Waiting {(k.HOST_TASK_REQUEST_WAIT_TIME / (k.HALT_FLAG_CHECK_CYCLES * 60))} minutes.")
             loop_count += 1
 
             if loop_count > k.HALT_FLAG_CHECK_CYCLES:
-                message = f"HALT_FLAG file found in remote host {self.task['host_uid']}({self.task['host_add']}). Host task aborted."
+                message = f"HALT_FLAG file found in remote host {self.host['host_uid']}({self.host['host_add']}). Task aborted."
                 log.error(message)
                 self.sftp_conn.close()
-                self.db_bp.update_host_status(host_id=self.task["host_id"], status=self.db_bp.HOST_WITH_HALT_FLAG)
-                self.db_bp.remove_host_task(task_id=self.task["task_id"])
+                self.db_bp.update_host_status(host_id=self.host["host_id"], status=self.db_bp.HOST_WITH_HALT_FLAG)
+                
+                task_handle_arguments = {   "remove_failed_task":remove_failed_task,
+                                            "message":"Halt flag set in remote host"}
+                if self.task_id:
+                    self._handle_failed_task(task_id=self.task_id, **task_handle_arguments)
+                    
+                if self.task_dict:
+                    for task_id in self.task_dict.keys():
+                        self._handle_failed_task(task_id=task_id, **task_handle_arguments)
+
                 return False
 
         # Create a HALT_FLAG file in the remote host
-        self.sftp_conn.touch(self.daemon_cfg['HALT_FLAG'])
-
-        self.process_status["halt_flag"] = self.daemon_cfg['HALT_FLAG']
+        self.sftp_conn.touch(self.config['HALT_FLAG'])
         
+        self.halt_flag_set_time = time.time()
+
         return True
-    
-    def reset(self) -> None:
+
+
+    def reset_halt_flag(self) -> None:
+        """Reset the halt_flag in the remote host if reached the time limit.
+
+        Returns:
+            None
+        """
+        # refresh the HALT_FLAG timeout control
+        time_since_start = time.time()-self.halt_flag_set_time
+        
+        if time_since_start > self.time_limit:
+            try:
+                halt_flag_file_handle = self.sftp_conn.sftp.open(self.config['HALT_FLAG'], 'w')
+                halt_flag_file_handle.write(f'running backup for {time_since_start/60} minutes\n')
+                halt_flag_file_handle.close()
+            except Exception as e:
+                log.warning(f"Could not raise halt_flag for host {self.host['host_id']}.{str(e)}")
+                pass
+
+    def set_backup_done(self,
+                        filename:str) -> None:
+        """Insert into BACKUP_DONE file the name of the file that was backed up.
+
+        Args:
+            filename (str): file name that was backed up
+        """
+        
+        try:
+            backup_done_handle = self.sftp_conn.sftp.open(self.config['HALT_FLAG'], 'a')
+            backup_done_handle.write(f'{filename}\n')
+            backup_done_handle.close()
+        except Exception as e:
+            log.warning(f"Could not write to BACKUP_DONE file for host {self.host['host_id']}.{str(e)}")
+            pass
+
+    def close_host(self, remove_due_backup:bool = False) -> None:
         """Reset the halt_flag in the remote host if it is set by this process.
         
         Args:
-            sftp_conn (sftp_connection): The SFTP connection object.
-            daemon_cfg (dict): The daemon configuration dictionary.
-            task (dict): The task dictionary containing host information.
-            db_bp (dbh.dbHandler): The database handler object.
+            remove_due_backup (bool, optional): Remove the DUE_BACKUP file. Defaults to False.
         
         Returns:
             None
         """
-        self.sftp_conn.remove(filename=self.config['DUE_BACKUP'])
+        
+        if remove_due_backup:
+            self.sftp_conn.remove(filename=self.config['DUE_BACKUP'])
+            
         self.sftp_conn.remove(filename=self.config['HALT_FLAG'])
         self.sftp_conn.close()
         
-        self.db_bp.remove_host_task(task_id=self.task["task_id"])
-            
-            
+        if self.task_id:
+            self.db_bp.remove_host_task(task_id=self.task_id)
