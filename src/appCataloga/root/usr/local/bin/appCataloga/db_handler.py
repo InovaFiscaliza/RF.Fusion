@@ -6,21 +6,23 @@ import mysql.connector
 import os
 import re
 
-from typing import List, Union
+from typing import List, Union, Any, Tuple
 
 # Import file with constants used in this code that are relevant to the operation
 import config as k
-import shared as sh
 
 class dbHandler():
     """Class associated with the database operations for the appCataloga scripts
     """
 
-    def __init__(self, database=k.RFM_DATABASE_NAME, log=sh.log()):
+    def __init__(self,
+                 database: str,
+                 log: Any) -> None:
         """Initialize a new instance of the DBHandler class.
 
         Args:
-            db_file (str): The path to the SQLite database file.
+            database (str): The name of the database to connect to.
+            log (sh.log): The logging object to use for logging messages.
         """
         
         self.db_connection = None
@@ -80,7 +82,7 @@ class dbHandler():
         self.db_connection.close()
 
     def get_site_id(self,
-                    data:dict) -> (int, bool):
+                    data:dict) -> Tuple[int, bool]:
         """Get site database id based on the coordinates in the data dictionary and limiting distances in the config.py file
 
         Args:
@@ -139,8 +141,7 @@ class dbHandler():
                     site = int,
                     longitude_raw = [float],
                     latitude_raw = [float],
-                    altitude_raw = [float],
-                    log=sh.log()) -> None:
+                    altitude_raw = [float]) -> None:
         """Update site coordinates in the database for existing site
 
         Args:
@@ -209,18 +210,18 @@ class dbHandler():
             
                 self._disconnect()
                 
-                log.entry(f'Updated location at latitude: {latitude}, longitude: {longitude}')    
+                self.log.entry(f'Updated location at latitude: {latitude}, longitude: {longitude}')    
             except Exception as e:
                 self._disconnect()
                 raise Exception(f"Error updating site {self.data['Site_ID']} from database") from e
 
         else:
             # Do not update, avoiding unnecessary processing and variable numeric overflow
-            log.entry(f'Site {site} at latitude: {db_site_latitude}, longitude: {db_site_longitude} reached the maximum number of measurements. No update performed.')
+            self.log.entry(f'Site {site} at latitude: {db_site_latitude}, longitude: {db_site_longitude} reached the maximum number of measurements. No update performed.')
 
 
     def _get_geographic_codes(  self,  
-                                data: dict) -> (int,int,int):
+                                data: dict) -> Tuple[int, int, int]:
         """Get DB keys for state, county and district based on the data in the object
 
         Args:
@@ -231,7 +232,7 @@ class dbHandler():
             Exception: Fail to retrive county name from database
 
         Returns:
-            (int,int,int): Tuple with the DB keys for state, county and district
+            Tuple[int, int, int]: Tuple with the DB keys for state, county and district
         """
 
         self._connect()
@@ -932,10 +933,12 @@ class dbHandler():
                         f"(ID_HOST, NA_HOST_UID, "
                         f"NU_HOST_FILES, "
                         f"NU_PENDING_HOST_TASK, NU_HOST_CHECK_ERROR, "
+                        f"NU_PENDING_BACKUP, NU_BACKUP_ERROR, "
                         f"NU_PENDING_PROCESSING, NU_PROCESSING_ERROR) "
                         f"VALUES "
                         f"('{hostid}', '{host_uid}', "
                         f"0, "
+                        f"0, 0, "
                         f"0, 0, "
                         f"0, 0);")
             
@@ -950,75 +953,78 @@ class dbHandler():
             self._disconnect()
 
     # get host status data from the database
-    def get_host_status(self,hostid="host_id"):        
+    def get_host_status(self,
+                        hostid:int) -> dict:
+        """This method gets host status data from the database
+
+        Args:
+            hostid (int): PK for host in the database.
+
+        Returns:
+            dict:  "id_host": (int) Host id,
+                    "nu_host_files": (int) Number of files in the host,
+                    "nu_pending_host_task": (int) Number of pending host tasks,
+                    "dt_last_host_check": (int) Last time the host was checked (epoch),
+                    "nu_host_check_error": (int) Number of host check errors,
+                    "nu_pending_backup": (int) Number of pending backups,
+                    "dt_last_backup": (int) Last time the host was backed up (epoch),
+                    "nu_backup_error": (int) Number of backup errors,
+                    "nu_pending_processing": (int) Number of pending processing tasks,
+                    "dt_last_processing": (int) Last time the host was processed (epoch),
+                    "nu_processing_error": (int) Number of processing errors,
+                    "nu_status": (int) Host status
+        """
+        
         # TODO #34 Improve task reporting by separating backup tasks from individual backup transactions
         # connect to the database
         self._connect()
 
-        # compose query to get host data from the BKPDATA database
+        query_data = [  "ID_HOST",
+                        "NU_HOST_FILES",
+                        "NU_PENDING_HOST_TASK",
+                        "DT_LAST_HOST_CHECK",
+                        "NU_HOST_CHECK_ERROR",
+                        "NU_PENDING_BACKUP",
+                        "DT_LAST_BACKUP",
+                        "NU_BACKUP_ERROR",
+                        "NU_PENDING_PROCESSING",
+                        "NU_PROCESSING_ERROR",
+                        "DT_LAST_PROCESSING",
+                        "NU_STATUS"]
+
+        # compose query to get host status data from the BPDATA database
         query = (f"SELECT "
-                    f"ID_HOST, "
-                    f"NU_HOST_FILES, "
-                    f"NU_PENDING_HOST_TASK, "
-                    f"DT_LAST_HOST_CHECK, "
-                    f"NU_PENDING_PROCESSING, "
-                    f"DT_LAST_PROCESSING "
-                    f"FROM HOST "
-                    f"WHERE ID_HOST = '{hostid}';")
+                    f"{','.join(query_data)} "
+                f"FROM HOST "
+                f"WHERE ID_HOST = '{hostid}';")
         
         # get host data from the database
         self.cursor.execute(query)
         
         db_output = self.cursor.fetchone()
-        
+                
         # get the output in a dictionary format, converting datetime objects to epoch time
         try:
-            output = {'Host ID': int(db_output[0])}
-                
-            try:
-                output['Total Files'] = int(db_output[1])
-            except (IndexError, ValueError) as e:
-                raise Exception(f"Error retrieving 'Total Files' for host {hostid} from database") from e
-            except (AttributeError, TypeError):
-                pass
-
-            try:
-                output['Files to backup'] = int(db_output[2])
-            except (IndexError, ValueError):
-                raise Exception(f"Error retrieving 'Files to backup' for host {hostid} from database")            
-            except (AttributeError, TypeError):
-                output['Files to backup'] = "N/A"
-                pass
             
-            try:
-                output['Last Backup date'] = db_output[3].timestamp()
-            except (IndexError, ValueError):
-                raise Exception(f"Error retrieving 'Last Backup date' for host {hostid} from database")
-            except (AttributeError, TypeError):
-                output['Last Backup date'] = "N/A"
-                pass
-                
-            try:
-                output['Files to process'] = int(db_output[4])
-            except (IndexError, ValueError):
-                raise Exception(f"Error retrieving 'Files to process' for host {hostid} from database")
-            except (AttributeError, TypeError):
-                output['Files to process'] = "N/A"
-                pass
-                
-            try:
-                output['Last Processing date'] = db_output[5].timestamp()
-                pass
-            except (IndexError, ValueError):
-                raise Exception(f"Error retrieving 'Last Processing date' for host {hostid} from database")
-            except (AttributeError, TypeError):
-                output['Last Processing date'] = "N/A"
+            output = {}
+            for i in range(len(query_data)):
+                if query_data[i][:3] == "DT_":
+                    try:
+                        output[query_data[i][3:].lower()] = db_output[i].timestamp()
+                    except AttributeError:
+                        output[query_data[i][3:].lower()] = "N/A"
+                else:
+                    try:
+                        output[query_data[i][3:].lower()] = int(db_output[i])
+                    except ValueError:
+                        output[query_data[i][3:].lower()] = "N/A"
             
-            output['Status'] = 1
-            output['Message'] = ""
+            output['status'] = 1
+            output['message'] = ""
+            
         except Exception as e:
-            output = {  "Status": 0, 
-                        "Message": f"Error retrieving data for host {hostid}: {e}"}
+            output = {  "status": 0, 
+                        "message": f"Error retrieving data for host {hostid}: {e}"}
 
         self._disconnect()
         
@@ -1117,9 +1123,9 @@ class dbHandler():
             
             # compose query to set the backup task in the BPDATA database
             query = (f"INSERT INTO HOST_TASK "
-                    f"(FK_HOST, TASK_TYPE, DT_HOST_TASK) "
+                    f"(FK_HOST, NU_TYPE, DT_HOST_TASK) "
                     f"VALUES "
-                    f"('{host_id}', '{task_type}', NOW();")
+                    f"('{host_id}', '{task_type}', NOW());")
 
             # update database
             self.cursor.execute(query)
@@ -2078,26 +2084,3 @@ class dbHandler():
         self._disconnect()
         
         return (pending_processing, error_processing)
-    
-    def update_host_status(  self,
-                            host_id:int,
-                            total_files:int,
-                            pending_processing:int,
-                            error_processing:int) -> None:
-        
-        # connect to the database
-        self._connect()
-        
-        # build query to update the number of files in the database for the given host_id
-        query =(f"UPDATE HOST SET "
-                    f"NU_HOST_FILES = {total_files}, "
-                    f"NU_PENDING_PROCESSING = {pending_processing}, "
-                    f"NU_PROCESSING_ERROR = {error_processing} "
-                f"WHERE "
-                    f"ID_HOST = {host_id};")
-        
-        self.cursor.execute(query)
-        
-        self.db_connection.commit()
-        
-        self._disconnect()

@@ -80,9 +80,9 @@ class log:
                 self.log_file.write(message)
                 self.log_file.close()
                 self.target_file = True
-            except:
+            except Exception as e:
                 self.target_file = False
-                self.warning(f"Invalid log_file_name value '{log_file_name}'. Disabling file logging")
+                self.warning(f"Invalid log_file_name value '{log_file_name}'. Disabling file logging. Error: {str(e)}")
         
     def entry(self, new_entry):
         
@@ -385,7 +385,7 @@ class hostDaemon():
             self.time_limit = self.config['HALT_TIMEOUT']*k.SECONDS_IN_MINUTE*k.BKP_HOST_ALLOTED_TIME_FRACTION
 
         except FileNotFoundError:
-            log.error(f"Configuration file '{k.DAEMON_CFG_FILE}' not found in remote host with id {self.host["host_id"]}")
+            self.log.error(f"Configuration file '{k.DAEMON_CFG_FILE}' not found in remote host with id {self.host['host_id']}")
             
             self.db_bp.update_host_status(host_id=self.host["host_id"], status=self.db_bp.HOST_WITHOUT_DAEMON)
             self.sftp_conn.close()
@@ -418,12 +418,12 @@ class hostDaemon():
         while self.sftp_conn.test(self.config['HALT_FLAG']):
             # If HALT_FLAG exists, wait for 5 minutes and test again
             time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME / k.HALT_FLAG_CHECK_CYCLES)
-            log.warning(f"HALT_FLAG file found in remote host {self.host['host_uid']}({self.host['host_add']}). Waiting {(k.HOST_TASK_REQUEST_WAIT_TIME / (k.HALT_FLAG_CHECK_CYCLES * 60))} minutes.")
+            self.log.warning(f"HALT_FLAG file found in remote host {self.host['host_uid']}({self.host['host_add']}). Waiting {(k.HOST_TASK_REQUEST_WAIT_TIME / (k.HALT_FLAG_CHECK_CYCLES * 60))} minutes.")
             loop_count += 1
 
             if loop_count > k.HALT_FLAG_CHECK_CYCLES:
                 message = f"HALT_FLAG file found in remote host {self.host['host_uid']}({self.host['host_add']}). Task aborted."
-                log.error(message)
+                self.log.error(message)
                 self.sftp_conn.close()
                 self.db_bp.update_host_status(host_id=self.host["host_id"], status=self.db_bp.HOST_WITH_HALT_FLAG)
                 
@@ -461,7 +461,7 @@ class hostDaemon():
                 halt_flag_file_handle.write(f'running backup for {time_since_start/60} minutes\n')
                 halt_flag_file_handle.close()
             except Exception as e:
-                log.warning(f"Could not raise halt_flag for host {self.host['host_id']}.{str(e)}")
+                self.log.warning(f"Could not raise halt_flag for host {self.host['host_id']}.{str(e)}")
                 pass
 
     def set_backup_done(self,
@@ -477,7 +477,7 @@ class hostDaemon():
             backup_done_handle.write(f'{filename}\n')
             backup_done_handle.close()
         except Exception as e:
-            log.warning(f"Could not write to BACKUP_DONE file for host {self.host['host_id']}.{str(e)}")
+            self.log.warning(f"Could not write to BACKUP_DONE file for host {self.host['host_id']}.{str(e)}")
             pass
 
     def close_host(self, remove_due_backup:bool = False) -> None:

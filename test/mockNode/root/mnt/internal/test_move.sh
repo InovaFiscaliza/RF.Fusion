@@ -2,6 +2,7 @@
 
 # Working folders and files
 TARGET_FOLDER="/mnt/internal/data/"
+SLEEP_TIME=60
 
 declare -a TEST_FILES=(
     "/mnt/internal/test/SCAN_M_450470_rfeye002088_170426_162736.bin"
@@ -12,11 +13,16 @@ declare -a TEST_FILES=(
 
 for fileName in "${TEST_FILES[@]}"; do
 
+    echo "Copying $fileName"
+
     cp "$fileName" "$TARGET_FOLDER"
 
-    echo "copied $fileName"
+    if [ $SLEEP_TIME -gt 60 ]; then
+        echo "Waiting $(($SLEEP_TIME / 60)) minutes"
+    else
+        echo "Waiting $SLEEP_TIME seconds"
+    fi
 
-    sleep 20
+    sleep $SLEEP_TIME
 
-    echo "finished waiting 20 seconds"
 done

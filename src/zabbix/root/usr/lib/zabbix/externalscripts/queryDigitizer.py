@@ -31,7 +31,7 @@ import socket
 import sys
 import json
 
-import rfFusionLib as rflib
+import z_shared as zsh
 import defaultConfig as k
 
 ARGUMENTS = {
@@ -59,15 +59,13 @@ ARGUMENTS = {
 
 def main():
     # create a warning message object
-    wm = rflib.warning_msg()
+    wm = zsh.warning_msg()
 
     # create an argument object
-    arg = rflib.argument(wm, ARGUMENTS)
+    arg = zsh.argument(wm, ARGUMENTS)
     
     # parse the command line arguments
     arg.parse(sys.argv)
-        
-    host = arg.data["host_add"]["value"]
         
     # Create connection
     try:
@@ -75,14 +73,14 @@ def main():
                             socket.SOCK_STREAM) # TCP
         sock.settimeout(arg.data['timeout']['value']+k.TIMEOUT_BUFFER)  # Set a timeout of 5 seconds for receiving data    
     except socket.error as e:
-        print(f'{{"Status":0,"Error":"Socket error: {e}"}}')
+        print(f'{{"status":0,"message":"Socket error: {e}"}}')
         exit()
     
     # Connect to host
     try:
         sock.connect((arg.data['host_add']['value'], arg.data['port']['value']))
     except socket.error as e:
-        print(f'{{"Status":0,"Error":"Could not connecto to {arg.data["host_add"]["value"]} using {arg.data["port"]["value"]}: {e}"}}')
+        print(f'{{"status":0,"messsage":"Could not connecto to {arg.data["host_add"]["value"]} using {arg.data["port"]["value"]}: {e}"}}')
         sock.close()
         exit()
 
@@ -102,32 +100,32 @@ def main():
         
         sock.close()
     except socket.error as e:
-        print(f'{{"Status":0,"Error":"Socket error from {arg.data["host_add"]["value"]} using {arg.data["port"]["value"]}: {e}"}}')
+        print(f'{{"status":0,"message":"Socket error from {arg.data["host_add"]["value"]} using {arg.data["port"]["value"]}: {e}"}}')
         exit()
 
     try:
         # Parse answer into dictionary
         texts = device.decode('ascii').strip().split(",")
         values = list(map(float,f"{temperature.decode('ascii')},{position.decode('ascii')}".strip().split(",")))
-        outputDict = {'Device': {
-                        'Manufacturer': texts[0],
-                        'Model': texts[1],
-                        'Serial': texts[2],
-                        'Firmware': texts[3]},
-                    'Temperature': {
+        outputDict = {'device': {
+                        'manufacturer': texts[0],
+                        'model': texts[1],
+                        'serial': texts[2],
+                        'firmware': texts[3]},
+                    'temperature': {
                         'RF': values[0],
-                        'Mixer':values[1],
-                        'Digital':values[2]},
+                        'mixer':values[1],
+                        'digital':values[2]},
                     'GNSS': {
-                        'Latitude':values[3],
-                        'Longitude':values[4],
-                        'Altitude':values[5]},
-                    'Status': 1,
-                    'Message': wm.warning_msg}
+                        'latitude':values[3],
+                        'longitude':values[4],
+                        'altitude':values[5]},
+                    'status': 1,
+                    'message': wm.warning_msg}
 
         print(json.dumps(outputDict))
     except Exception as e:
-        print(f'{{"Status":0,"Message":"Error parsing data from {arg.data["host_add"]["value"]} using {arg.data["port"]["value"]}: {e}"}}')
+        print(f'{{"status":0,"message":"Error parsing data from {arg.data["host_add"]["value"]} using {arg.data["port"]["value"]}: {e}"}}')
         exit()
 
 if __name__ == "__main__":

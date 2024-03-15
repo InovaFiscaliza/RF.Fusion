@@ -5,18 +5,7 @@ Access the processing list from BKPDATA database and perform the processing task
     Usage:
         processing_control
             
-    Returns:
-        (json) =  { 'Total Files': (int),
-                    'Files to backup': (int),
-                    'Last Backup data': (str)
-                    'Days since last backup': (int),
-                    'Status': (int), 
-                    'Message': (str)}
-
-        Status may be 1=valid data or 0=error in the script
-        All keys except "Message" are suppresed when Status=0
-        Message describe the error or warning information
-        
+    Returns: (through log)        
         
 """
 # Set system path to include modules from /etc/appCataloga

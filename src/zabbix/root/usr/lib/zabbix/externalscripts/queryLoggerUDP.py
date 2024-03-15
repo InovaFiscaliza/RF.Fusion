@@ -26,7 +26,7 @@ import time
 import sys
 import json
 
-import rfFusionLib as rflib
+import z_shared as zsh
 import defaultConfig as k
 
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
@@ -55,10 +55,10 @@ ARGUMENTS = {
 
 def main():
     # create a warning message object
-    wm = rflib.warning_msg()
+    wm = zsh.warning_msg()
 
     # create an argument object
-    arg = rflib.argument(wm, ARGUMENTS)
+    arg = zsh.argument(wm, ARGUMENTS)
     
     # parse the command line arguments
     arg.parse(sys.argv)
@@ -72,14 +72,14 @@ def main():
                             socket.SOCK_DGRAM) # UDP
         sock.settimeout(arg.data['timeout']['value']+k.TIMEOUT_BUFFER)  # Set a timeout of 5 seconds for receiving data    
     except socket.error as e:
-        print(f'{{"Status":0,"Error":"Socket error: {e}"}}')
+        print(f'{{"status":0,"message":"Socket error: {e}"}}')
         exit()
 
     # Send handshake
     try:
         sock.sendto(connection_request, (arg.data['host_add']['value'], arg.data['port']['value']))
     except socket.error as e:
-        print(f'{{"Status":0,"Error":"Handshake error: {e}"}}')
+        print(f'{{"status":0,"message":"handshake error: {e}"}}')
         sock.close()
         exit()
 
@@ -94,7 +94,7 @@ def main():
             try:
                 dataFromUDP, addr = sock.recvfrom(k.LARGE_BUFFER_SIZE)  # Buffer size is 65536 bytes
             except socket.timeout:
-                print('{"Status":0,"Error":"Timeout without data received"}')
+                print('{"status":0,"message":"Timeout without data received"}')
                 exit()
 
             # Transform binary object into bytearray
@@ -104,7 +104,7 @@ def main():
             raw_data.extend(dataByteArray[8:])
 
     except Exception as e:
-        print('{"Status":0,"Message":"Error receiving and processing data"}')
+        print('{"status":0,"message":"Error receiving and processing data"}')
 
     # extract JSON data from bytestring
     start_index = raw_data.lower().rfind(k.START_TAG)
@@ -118,13 +118,13 @@ def main():
     try:
         dict_output = json.loads(json_output)
 
-        dict_output["Status"] = 1
-        dict_output["Message"] = wm.warning_msg
+        dict_output["status"] = 1
+        dict_output["message"] = wm.warning_msg
 
         print(json.dumps(dict_output))
 
     except json.JSONDecodeError as e:
-        print(f'{"Status":0,"Message":"Error: Malformed JSON received. Dumped: {json_output}"}')
+        print(f'{"status":0,"message":"Error: Malformed JSON received. Dumped: {json_output}"}')
 
 if __name__ == "__main__":
     main()

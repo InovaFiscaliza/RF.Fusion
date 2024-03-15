@@ -21,14 +21,14 @@ Use socket to get data from appColeta TCP stream
 
     Returns:
         (json) =  { <appColeta answer>: (json),
-                    'Status': (int), 
-                    'Message': (str)}
+                    'status': (int), 
+                    'message': (str)}
 """
 import socket
 import sys
 import json
 
-import rfFusionLib as rflib
+import z_shared as zsh
 import defaultConfig as k
 
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
@@ -136,10 +136,10 @@ def summarize_task(appCol_dict:dict) -> dict:
 def main():
     
     # create a warning message object
-    wm = rflib.warning_msg()
+    wm = zsh.warning_msg()
 
     # create an argument object
-    arg = rflib.argument(wm, ARGUMENTS)
+    arg = zsh.argument(wm, ARGUMENTS)
     
     # parse the command line arguments
     arg.parse(sys.argv)
@@ -161,19 +161,19 @@ def main():
     try:
         client_socket.connect((arg.data["host"]["value"], int(arg.data["port"]["value"])))
     except Exception as e:
-        print(f'{{"Status":0,"Message":"Error: {e}"}}')
+        print(f'{{"status":0,"message":"Error: {e}"}}')
         exit()
 
     # send the request to the server
     try:
         client_socket.sendall(request)
     except Exception as e:
-        print(f'{{"Status":0,"Message":"Error during request: {e}"}}')
+        print(f'{{"status":0,"message":"Error during request: {e}"}}')
         client_socket.close()
         exit()
 
     # receive the response from the server
-    json_data_rcv = rflib.receive_message(  client_socket=client_socket,
+    json_data_rcv = zsh.receive_message(  client_socket=client_socket,
                                             encoding=k.ISO_ENCODING,
                                             buffer_size=k.MID_BUFFER_SIZE,
                                             start_tag=k.START_TAG.decode(k.ISO_ENCODING),
@@ -183,10 +183,10 @@ def main():
     try:
         dict_output = json.loads(json_data_rcv)
         
-        dict_output["Status"] = 1
-        dict_output["Message"] = wm.warning_msg
-    except:
-        print(f'{"Status":0,"Message":"Error: Malformed JSON received. Dumped: {json_data_rcv}"}')
+        dict_output["status"] = 1
+        dict_output["message"] = wm.warning_msg
+    except json.JSONDecodeError as e:
+        print(f'{"status":0,"message":"Error: Malformed JSON received. Dumped: {json_data_rcv}"}')
 
     if arg.data["query"]["value"] == "Diagnostic":
         dict_output = summarize_diagnostic(dict_output)

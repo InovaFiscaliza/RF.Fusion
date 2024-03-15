@@ -95,7 +95,7 @@ def receive_message(client_socket, encoding="ISO-8859-1", buffer_size=16384, sta
                 decoded_response = decoded_response + response.decode(encoding)
                 
             except Exception as e:
-                print(f'{{"Status":0,"Message":"Error decoding binary data: {e}"}}')
+                print(f'{{"status":0,"message":"Error decoding binary data: {e}"}}')
                 client_socket.close()
                 exit()
 
@@ -108,12 +108,12 @@ def receive_message(client_socket, encoding="ISO-8859-1", buffer_size=16384, sta
                 client_socket.close()
             
             if (time.time() - start_receiving_message_time > timeout):
-                print(f'{"Status":0,"Message":"Error: Incomplete JSON received. Dumped: {response}"}')
+                print(f'{"status":0,"message":"Error: Incomplete JSON received. Dumped: {response}"}')
                 client_socket.close()
                 exit()
 
     except Exception as e:
-        print(f'{{"Status":0,"Message":"Error while receiving data: {e}"}}')
+        print(f'{{"status":0,"message":"Error while receiving data: {e}"}}')
         client_socket.close()
         exit()
 

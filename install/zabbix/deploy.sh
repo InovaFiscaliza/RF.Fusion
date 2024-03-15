@@ -9,7 +9,7 @@ files=(
     "queryCataloga.py"
     "queryDigitizer.py"
     "queryLoggerUDP.py"
-    "rfFusionLib.py"
+    "z_shared.py"
     "defaultConfig.py"
 )
 

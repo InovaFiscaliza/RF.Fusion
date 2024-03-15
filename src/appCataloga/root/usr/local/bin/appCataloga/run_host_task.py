@@ -17,6 +17,8 @@ sys.path.append('/etc/appCataloga')
 import paramiko
 import signal
 import inspect
+import time
+import random
 
 # Import modules for file processing 
 import config as k
@@ -52,14 +54,14 @@ def sigint_handler(signal=None, frame=None) -> None:
 signal.signal(signal.SIGTERM, sigterm_handler)
 signal.signal(signal.SIGINT, sigint_handler)
 
-def process_due_backup( sftp_conn: sh.sftp_connection,
+def process_due_backup( sftp_conn: sh.sftpConnection,
                         daemon_cfg: dict,
                         task: dict,
                         db_bp: dbh.dbHandler) -> None:
     """Process the list of files to backup from the DUE_BACKUP file.
     
     Args:
-        sftp_conn (sftp_connection): The SFTP connection object.
+        sftp_conn (sftpConnection): The SFTP connection object.
         daemon_cfg (dict): The daemon configuration dictionary.
         task (dict): The task dictionary containing host information.
         db_bp (dbh.dbHandler): The database handler object.
@@ -105,8 +107,14 @@ def main():
                     "user": (str),
                     "password": (str)}"""  
 
+            if not task:
+                    time_to_wait = k.FILE_TASK_EXECUTION_WAIT_TIME+k.FILE_TASK_EXECUTION_WAIT_TIME*random.random()
+                    log.entry(f"No host found with pending tasks. Waiting {time_to_wait} seconds")
+                    time.sleep(time_to_wait)
+                    continue
+                
             # Create a SSH client and SFTP connection to the remote host
-            sftp_conn = sh.sftp_connection( hostname=task["host_add"],
+            sftp_conn = sh.sftpConnection(  hostname=task["host_add"],
                                             port=task["port"],
                                             username=task["user"],
                                             password=task["passWORD"],
