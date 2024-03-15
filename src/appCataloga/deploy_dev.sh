@@ -1,25 +1,44 @@
 #!/bin/bash
 
 # This script is used to deploy the appCataloga application to the development server, creating hard links from the repository to the test folders
+REPO_ROOT_PATH="/root/RF.Fusion/src/appCataloga/root"
+CONF_PATH="/etc/appCataloga/"
+APP_PATH="/usr/local/bin/appCataloga/"
+LOG_FILE="/var/log/appCataloga.log"
 
-# test if /usr/local/appCataloga exists, if not, create it
-if [ ! -d /usr/local/appCataloga ]; then
-    mkdir /usr/local/appCataloga
-fi
+repo_conf=$REPO_ROOT_PATH/$CONF_PATH
+repo_app=$REPO_ROOT_PATH/$APP_PATH
 
-# test if /etc/appCataloga exists, if not, create it
-if [ ! -d /etc/appCataloga ]; then
-    mkdir /etc/appCataloga
-fi
-
-# check if folders ./root/etc/appCataloga and ./root/usr/local/appCataloga exist, if not, exit with error message
-if [ ! -d ./root/etc/appCataloga ] || [ ! -d ./root/usr/local/appCataloga ]; then
-    echo "Error: Run this script from /src/appCataloga folder, such as to have ./root/etc/appCataloga and ./root/usr/local/appCataloga folders accessible."
+# check if the required REPO folders are accessible
+if [ ! -d $repo_conf ] || [ ! -d $repo_app ]; then
+    echo "Error: Configure REPO_ROOT folder path and/or download the repo folder structure"
     exit 1
 fi
 
-# create hard links from ./root/etc/appCataloga to /etc/appCataloga
-ln -f ./root/etc/appCataloga/* /etc/appCataloga
+# test if $APP_PATH folder exists and remove it
+if [ -d $APP_PATH ]; then
+    rm -r $APP_PATH
+fi
+mkdir $APP_PATH
 
-# create hard links from ./root/usr/local/appCataloga to /usr/local/appCataloga
-ln -f ./root/usr/local/appCataloga/* /usr/local/appCataloga
+# test if /etc/appCataloga exists, if not, create it
+if [ -d $CONF_PATH ]; then
+    rm -r $CONF_PATH    
+fi
+mkdir $CONF_PATH
+
+conf_files=$(find "$repo_conf" -type f)
+
+for file in $conf_files; do
+    ln -f "$file" "$CONF_PATH"
+done
+
+app_files=$(find "$repo_app" -type f)
+
+for file in $app_files; do
+    ln -f "$file" "$APP_PATH"
+done
+
+if [ -f $LOG_FILE ]; then
+    rm $LOG_FILE
+fi
