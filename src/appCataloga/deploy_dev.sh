@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # This script is used to deploy the appCataloga application to the development server, creating hard links from the repository to the test folders
+MINICONDA_PATH="/root/miniconda3"
 REPO_ROOT_PATH="/root/RF.Fusion/src/appCataloga/root"
 CONF_PATH="/etc/appCataloga/"
 APP_PATH="/usr/local/bin/appCataloga/"
@@ -41,4 +42,16 @@ done
 
 if [ -f $LOG_FILE ]; then
     rm $LOG_FILE
+fi
+
+if ! ln -s $MINICONDA_PATH $APP_PATH/miniconda3; then
+    echo "Error creating soft link for /etc/systemd/system/appCataloga.service. Do it manually."
+fi
+
+if ! ln -s /usr/local/bin/appCataloga/appCataloga.service /etc/systemd/system/appCataloga.service; then
+    echo "Error creating soft link for /etc/systemd/system/appCataloga.service. Do it manually."
+fi
+
+if ! /sbin/restorecon -v /usr/local/bin/appCataloga/appCataloga.sh; then
+    echo "Error setting SE Linux. Do it manually."
 fi
