@@ -150,7 +150,7 @@ def serve_client(client_socket):
             
             if host[0]==k.BACKUP_QUERY_TAG:
                 try:
-                    log.entry(f"Backup request received data from {client_socket.getpeername()[0]}: {data.decode()}")
+                    log.entry(f"Backup request received data from {client_socket.getpeername()[0]}")
                     
                     host[0]=client_socket.getpeername() # replace list first element with client IP address
                     
