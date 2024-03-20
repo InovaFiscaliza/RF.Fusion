@@ -180,11 +180,17 @@ def main():
 
             # Using task["host_id"] to get the host configuration from the database
             host = db_bp.get_host(tasks["host_id"])
+            """{"host_uid": str,
+                "host_add": str,
+                "port": int,
+                "user": str,
+                "password": str}"""
 
             # Create a SSH client and SFTP connection to the remote host
-            sftp_conn = sh.sftpConnection( hostname=host["host_add"],
+            sftp_conn = sh.sftpConnection(  host_uid=host["host_uid"],
+                                            host_add=host["host_add"],
                                             port=host["port"],
-                                            username=host["user"],
+                                            user=host["user"],
                                             password=host["password"],
                                             log=log)
         

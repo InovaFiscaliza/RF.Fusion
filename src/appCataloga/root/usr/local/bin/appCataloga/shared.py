@@ -236,6 +236,7 @@ class argument:
 class sftpConnection():
     
     def __init__(   self,
+                    host_uid:str,
                     host_add:str,
                     port:str,
                     user:str,
@@ -245,13 +246,14 @@ class sftpConnection():
         
         try:
             self.log = log
+            self.host_uid = host_uid
             self.host_add = host_add
             self.ssh_client = paramiko.SSHClient()
             self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             self.ssh_client.connect(hostname=host_add, port=port, username=user, password=password)
             self.sftp = self.ssh_client.open_sftp()
         except Exception as e:
-            self.log.error(f"Error initializing SSH to '{host_add}'. {str(e)}")
+            self.log.error(f"Error initializing SSH to '{self.host_uid}'({self.host_add}). {str(e)}")
             raise
                 
     def test(   self,
@@ -271,7 +273,7 @@ class sftpConnection():
         except FileNotFoundError:
             return False
         except Exception as e:
-            self.log.error(f"Error checking '{filename}' in '{self.host_add}'. {str(e)}")
+            self.log.error(f"Error checking '{filename}' in '{self.host_uid}'({self.host_add}). {str(e)}")
             raise
     
     def touch(  self,
@@ -285,7 +287,7 @@ class sftpConnection():
         try:
             self.sftp.open(filename, 'w').close()
         except Exception as e:
-            self.log.error(f"Error creating '{filename}' in '{self.host_add}'. {str(e)}")
+            self.log.error(f"Error creating '{filename}' in '{self.host_uid}'({self.host_add}). {str(e)}")
             raise
         
     def read(   self,
@@ -297,10 +299,10 @@ class sftpConnection():
             remote_file_handle.close()
             return file_content
         except FileNotFoundError:
-            self.log.error(f"File '{filename}' not found in '{self.host_add}'")
+            self.log.error(f"File '{filename}' not found in '{self.host_uid}'({self.host_add})")
             return False
         except Exception as e:
-            self.log.error(f"Error reading '{filename}' in '{self.host_add}'. {str(e)}")
+            self.log.error(f"Error reading '{filename}' in '{self.host_uid}'({self.host_add}). {str(e)}")
             raise
     
     def transfer(   self,
@@ -309,7 +311,7 @@ class sftpConnection():
         try:
             return self.sftp.get(remote_file, local_file)
         except Exception as e:
-            self.log.error(f"Error transferring '{remote_file}' from '{self.host_add}' to '{local_file}'. {str(e)}")
+            self.log.error(f"Error transferring '{remote_file}' from '{self.host_uid}'({self.host_add}) to '{local_file}'. {str(e)}")
             raise
     
     def remove( self,
@@ -317,10 +319,10 @@ class sftpConnection():
         try:
             return self.sftp.remove(filename)
         except FileNotFoundError:
-            self.log.error(f"File '{filename}' not found in '{self.host_add}'")
+            self.log.error(f"File '{filename}' not found in '{self.host_uid}'({self.host_add})")
             return ""
         except Exception as e:
-            self.log.error(f"Error removing '{filename}' in '{self.host_add}'. {str(e)}")
+            self.log.error(f"Error removing '{filename}' in '{self.host_uid}'({self.host_add}). {str(e)}")
             raise
     
     def close(self) -> None:
@@ -328,7 +330,7 @@ class sftpConnection():
             self.sftp.close()
             self.ssh_client.close()
         except Exception as e:
-            self.log.error(f"Error closing connection to '{self.host_add}'. {str(e)}")
+            self.log.error(f"Error closing connection to '{self.host_uid}'({self.host_add}). {str(e)}")
             raise
 
 class hostDaemon():

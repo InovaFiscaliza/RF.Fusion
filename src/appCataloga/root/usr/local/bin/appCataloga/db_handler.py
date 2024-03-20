@@ -1187,11 +1187,11 @@ class dbHandler():
         try:
             output = {  "task_id": int(task[0]),
                         "host_id": int(task[1]),
-                        "host_uid": str(task[3]),
-                        "host_add": str(task[4]),
-                        "port": int(task[5]),
-                        "user": str(task[6]),
-                        "password": str(task[7])}
+                        "host_uid": str(task[2]),
+                        "host_add": str(task[3]),
+                        "port": int(task[4]),
+                        "user": str(task[5]),
+                        "password": str(task[6])}
         except (TypeError, ValueError):
             output = False
         
@@ -1358,7 +1358,7 @@ class dbHandler():
                         f"JOIN HOST ON FILE_TASK.FK_HOST = HOST.ID_HOST "
                     f"WHERE "
                         f"FILE_TASK.NU_STATUS = 2 AND "
-                        f"FILE_TASK.NU_TASK_TYPE = {type} "
+                        f"FILE_TASK.NU_TYPE = {type} "
                     f"ORDER BY FILE_TASK.DT_FILE_TASK "
                     f"LIMIT 1;")
         
@@ -1447,13 +1447,13 @@ class dbHandler():
         # connect to the database
         self._connect()
 
-        # compose a query to retrieve the FK_HOST of the oldest task with NU_STATUS = task_status and NU_TASK_TYPE = task_type
+        # compose a query to retrieve the FK_HOST of the oldest task with NU_STATUS = task_status and NU_TYPE = task_type
         query = (   f"SELECT "
                         f"FILE_TASK.FK_HOST "
                     f"FROM FILE_TASK "
                     f"WHERE "
                         f"FILE_TASK.NU_STATUS = {task_status} AND "
-                        f"FILE_TASK.NU_TASK_TYPE = {task_type} "
+                        f"FILE_TASK.NU_TYPE = {task_type} "
                     f"ORDER BY FILE_TASK.DT_FILE_TASK "
                     f"LIMIT 1;")
         
@@ -1470,7 +1470,7 @@ class dbHandler():
                         f"WHERE "
                             f"FK_HOST = {host_id} AND "
                             f"NU_STATUS = {self.TASK_PENDING} AND "
-                            f"NU_TASK_TYPE = {task_type};")
+                            f"NU_TYPE = {task_type};")
             
             self.cursor.execute(query)
             self.db_connection.commit()
@@ -1482,7 +1482,7 @@ class dbHandler():
                                     f"FROM FILE_TASK "
                                     f"WHERE "
                                         f"FILE_TASK.NU_STATUS = {self.TASK_RUNNING} AND "
-                                        f"FILE_TASK.NU_TASK_TYPE = {task_type} AND "
+                                        f"FILE_TASK.NU_TYPE = {task_type} AND "
                                         f"FILE_TASK.FK_HOST = {host_id} "
                                     f"ORDER BY FILE_TASK.DT_FILE_TASK")
 
@@ -1501,7 +1501,7 @@ class dbHandler():
                                     f"FROM FILE_TASK "
                                     f"WHERE "
                                         f"FILE_TASK.NU_STATUS = 2 AND "
-                                        f"FILE_TASK.NU_TASK_TYPE = {task_type} AND "
+                                        f"FILE_TASK.NU_TYPE = {task_type} AND "
                                         f"FILE_TASK.FK_HOST = {host_id} "
                                     f"ORDER BY FILE_TASK.DT_FILE_TASK")
 
@@ -1561,17 +1561,17 @@ class dbHandler():
 
         # compose query to set the process task in the database using executemany method
         query =(f"INSERT INTO FILE_TASK ("
-                f"FK_HOST, "
-                f"NU_TASK_TYPE, "
-                f"{target_columns}"
-                f"DT_FILE_TASK, "
-                f"NU_STATUS)"
+                    f"FK_HOST, "
+                    f"NU_TYPE, "
+                    f"{target_columns}"
+                    f"DT_FILE_TASK, "
+                    f"NU_STATUS) "
                 f"VALUES ("
-                f"{host_id}, "
-                f"{task_type}, "
-                f"%s, %s, "
-                f"NOW(),"
-                f"{task_status});")
+                    f"{host_id}, "
+                    f"{task_type}, "
+                    f"%s, %s, "
+                    f"NOW(), "
+                    f"{task_status});")
         
         try:
             # update database
@@ -1581,7 +1581,7 @@ class dbHandler():
             self.db_connection.commit()
             
             if reset_processing_queue:
-                # compose query to find how many database entries are in the processing queue with status = -1 for the given host_id
+                # compose query to find how many database entries are in the file task with status = -1 for the given host_id
                 query = (f"SELECT COUNT(*) "
                             f"FROM FILE_TASK "
                             f"WHERE FK_HOST = {host_id} AND "
@@ -1605,10 +1605,18 @@ class dbHandler():
         
         # update PENDING_PROCESSING in the HOST table in BPDATA database for the given host_id
         nu_processing = len(files_tuple_list) if files_tuple_list else 0
-        self.update_host_status(    host_id=host_id,
-                                    pending_processing=nu_processing,
-                                    processing_error=processing_error,
-                                    reset=reset_processing_queue)        
+        
+        new_status = {  "host_id":host_id,
+                        "reset":reset_processing_queue}
+        match task_type:
+            case 1:
+                new_status["pending_backup"] = nu_processing
+                new_status["backup_error"] = processing_error
+            case 2:
+                new_status["pending_processing"] = nu_processing
+                new_status["processing_error"] = processing_error
+        
+        self.update_host_status(**new_status)
                 
     # Method to set processing task as completed with error
     def file_task_error(self,
@@ -1671,7 +1679,7 @@ class dbHandler():
         if server_file:
             query = query + f"NA_SERVER_FILE_NAME = '{server_file}', "
         if task_type:
-            query = query + f"NU_TASK_TYPE = {type}, "
+            query = query + f"NU_TYPE = {type}, "
         if status:
             query = query + f"NU_STATUS = {status}, "
         if message:

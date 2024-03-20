@@ -114,10 +114,11 @@ def main():
                     continue
                 
             # Create a SSH client and SFTP connection to the remote host
-            sftp_conn = sh.sftpConnection(  hostname=task["host_add"],
+            sftp_conn = sh.sftpConnection(  host_uid=task["host_uid"],
+                                            host_add=task["host_add"],
                                             port=task["port"],
-                                            username=task["user"],
-                                            password=task["passWORD"],
+                                            user=task["user"],
+                                            password=task["password"],
                                             log=log)
             
             process_status["conn"] = sftp_conn
