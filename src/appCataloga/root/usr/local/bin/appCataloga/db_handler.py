@@ -1395,7 +1395,7 @@ class dbHandler():
             
         Returns:
             dict:  {"host_id": (int) host_id,
-                    "task_ids": (dict){ task_id: [
+                    "file_tasks": (dict){ task_id: [
                                                     host_file_path,
                                                     host_file_name,
                                                     server_file_path,
@@ -1412,7 +1412,7 @@ class dbHandler():
 
             Returns:
                 dict: Dictionary with the following structure:
-                    {task_id: [host_file_path, host_file_name, server_file_path, server_file_name]}
+                    {file_tasks : {task_id: [host_file_path, host_file_name, server_file_path, server_file_name]}}
             """
             
             # check if the host_list is larger then the server list
@@ -1424,9 +1424,10 @@ class dbHandler():
                 plus_list = host_list
             
             # Create a result dictionary from the base list
+            result = {}
             try:
                 for item in base_list:
-                    result = {int(item[0]): item[1:2] + [None,None]}
+                    result[int(item[0])] = [item[1], item[2], None, None]
             except (TypeError, ValueError):
                 self.log.error(f"Error parsing next file tasks for host_id {host_id}")
                 pass
@@ -1438,23 +1439,24 @@ class dbHandler():
                     self.log.error(f"Error parsing task id while getting next file tasks: {item} for host_id {host_id}")
                     continue
                 try:
-                    result[key][3:4] = item[1:2]
+                    result[key][2] = item[1]
+                    result[key][3] = item[2]
                 except KeyError:
-                    result[key] = [None,None] + item[1:2]
+                    result[int(item[0])] = [None, None, item[1], item[2]]
         
-            return result
+            return {"file_tasks":result}
         
         # connect to the database
         self._connect()
 
         # compose a query to retrieve the FK_HOST of the oldest task with NU_STATUS = task_status and NU_TYPE = task_type
         query = (   f"SELECT "
-                        f"FILE_TASK.FK_HOST "
+                        f"FK_HOST "
                     f"FROM FILE_TASK "
                     f"WHERE "
-                        f"FILE_TASK.NU_STATUS = {task_status} AND "
-                        f"FILE_TASK.NU_TYPE = {task_type} "
-                    f"ORDER BY FILE_TASK.DT_FILE_TASK "
+                        f"NU_STATUS = {task_status} AND "
+                        f"NU_TYPE = {task_type} "
+                    f"ORDER BY DT_FILE_TASK "
                     f"LIMIT 1;")
         
         self.cursor.execute(query)
@@ -1462,7 +1464,7 @@ class dbHandler():
         task = self.cursor.fetchone()
         
         try:
-            host_id = int(task[1])
+            host_id = int(task[0])
 
             # build a query to change NU_STATUS to 2 (under execution) of all tasks where:
             query = (   f"UPDATE FILE_TASK SET "
@@ -1477,14 +1479,14 @@ class dbHandler():
         
             # build a query to retrieve list of files associated with the oldest task
             query_host_files = (   f"SELECT "
-                                        f"FILE_TASK.ID_FILE_TASK, "
-                                        f"FILE_TASK.NA_HOST_FILE_PATH, FILE_TASK.NA_HOST_FILE_NAME "
+                                        f"ID_FILE_TASK, "
+                                        f"NA_HOST_FILE_PATH, NA_HOST_FILE_NAME "
                                     f"FROM FILE_TASK "
                                     f"WHERE "
-                                        f"FILE_TASK.NU_STATUS = {self.TASK_RUNNING} AND "
-                                        f"FILE_TASK.NU_TYPE = {task_type} AND "
-                                        f"FILE_TASK.FK_HOST = {host_id} "
-                                    f"ORDER BY FILE_TASK.DT_FILE_TASK")
+                                        f"NU_STATUS = {self.TASK_RUNNING} AND "
+                                        f"NU_TYPE = {task_type} AND "
+                                        f"FK_HOST = {host_id} "
+                                    f"ORDER BY DT_FILE_TASK")
 
             if limit:
                 query_host_files = query_host_files + f" LIMIT {limit};"
@@ -1496,14 +1498,14 @@ class dbHandler():
             host_file_tasks = self.cursor.fetchall()
             
             query_server_files = (   f"SELECT "
-                                        f"FILE_TASK.ID_FILE_TASK, "
-                                        f"FILE_TASK.NA_SERVER_FILE_PATH, FILE_TASK.NA_SERVER_FILE_NAME "
+                                        f"ID_FILE_TASK, "
+                                        f"NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME "
                                     f"FROM FILE_TASK "
                                     f"WHERE "
-                                        f"FILE_TASK.NU_STATUS = 2 AND "
-                                        f"FILE_TASK.NU_TYPE = {task_type} AND "
-                                        f"FILE_TASK.FK_HOST = {host_id} "
-                                    f"ORDER BY FILE_TASK.DT_FILE_TASK")
+                                        f"NU_STATUS = 2 AND "
+                                        f"NU_TYPE = {task_type} AND "
+                                        f"FK_HOST = {host_id} "
+                                    f"ORDER BY DT_FILE_TASK")
 
             if limit:
                 query_server_files = query_server_files + f" LIMIT {limit};"

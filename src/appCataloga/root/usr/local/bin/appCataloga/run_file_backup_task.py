@@ -123,17 +123,25 @@ def worker_counter(process_filename:str) -> list:
     for worker in runnin_processes:
         try:
             worker_args = os.popen(f"cat /proc/{worker}/cmdline").read().split('\x00')
-            worker_args = [arg for arg in worker_args if arg]
-            worker_args = worker_args[1:]
-            worker_args = [arg.split('=') for arg in worker_args]
-            worker_index = [arg[1] for arg in worker_args]
-            worker_list.append(int(worker_index))
+            
+            for i in range(worker_args.__len__()):
+                if worker_args[i] == process_filename:
+                    try:
+                        worker_index = int(worker_args[i+1])
+                    except (IndexError, ValueError, TypeError):
+                        worker_index = DEFAULT_WORKER
+                        pass
+                    worker_list.append(int(worker_index))
+                    break
         except Exception as e:
             log.error(f"Error getting worker serial index from process {worker}: {e}")
             raise ValueError(log.dump_error())
     
     # reorder worker_args in numerical ascending order
     worker_list = sorted(worker_list)
+    
+    # remove duplicates from worker_list
+    worker_list = list(dict.fromkeys(worker_list))
     
     return worker_list
 
@@ -156,14 +164,14 @@ def main():
             
             # Get the list of files to backup from the database
             tasks = db_bp.next_file_tasks(task_type=db_bp.BACKUP_TASK_TYPE)
-            """ tasks ={"host_id": (int) host_id,
-                        "task_ids": (dict){ task_id: [
-                                                        host_file_path,
-                                                        host_file_name,
-                                                        server_file_path,
-                                                        server_file_name]}
+            """ tasks ={   "host_id": (int) host_id,
+                            task_id: [
+                                        host_file_path,
+                                        host_file_name,
+                                        server_file_path,
+                                        server_file_name]}
             """
-            
+            # ! Check this sctructure... maybe return a tupples instead of a dictionary
             if not tasks:
                 # if it is not the worker with serial zero, terminate process.
                 if worker_list.__len__() > 2:
@@ -199,7 +207,7 @@ def main():
             daemon = sh.hostDaemon( sftp_conn=sftp_conn,
                                     db_bp=db_bp,
                                     host_id=host["host_id"],
-                                    task_dict=tasks["task_ids"],
+                                    task_dict=tasks["file_tasks"],
                                     log=log)
             
             # Get the remote host configuration file
@@ -221,14 +229,14 @@ def main():
                 spawn_file_task_worker(worker_list=worker_list)
             
             # * Peform the backup
-            # Loop through all tasks in the task_dict['task_ids'], geting for each its task_id and index
+            # Loop through all tasks in the task_dict['file_tasks'], geting for each its task_id and index
             local_path = f"{k.REPO_FOLDER}/{k.TMP_FOLDER}/{host['host_add']}"
             
             # make sure that the target folder do exist
             if not os.path.exists(local_path):
                 os.makedirs(local_path)
             
-            for task_id, file_list in tasks["task_ids"].items():
+            for task_id, file_list in tasks["file_tasks"].items():
                 filename = file_list[1]
                 file_list[2] = local_path
                 file_list[3] = filename
