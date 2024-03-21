@@ -50,6 +50,7 @@ HOST_TASK_REQUEST_WAIT_TIME = 1800 # seconds to wait for the HALT_FLAG release b
 HALT_FLAG_CHECK_CYCLES = 6 # number of times to check the host while waiting for the HALT_FLAG release
 HOST_TASK_EXECUTION_TIMEOUT = 3600
 BKP_HOST_ALLOTED_TIME_FRACTION = 0.8
+BKP_TASK_MAX_WORKERS = 10
 
 # file processing module configuration
 PROCESSING_CONTROL_MODULE = "/usr/local/bin/appCataloga/processing_control.py"

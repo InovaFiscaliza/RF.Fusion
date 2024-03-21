@@ -1069,7 +1069,8 @@ class dbHandler():
         
         # get the output in a dictionary format
         try:
-            output = {  "host_uid": str(db_output[0]),
+            output = {  "host_id": int(host_id),
+                        "host_uid": str(db_output[0]),
                         "host_add": str(db_output[1]),
                         "port": int(db_output[2]),
                         "user": str(db_output[3]),

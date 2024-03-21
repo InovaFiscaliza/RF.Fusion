@@ -89,7 +89,7 @@ def spawn_file_task_worker(worker_list: list) -> None:
     
     # find the lowest available worker index for the new process
     new_worker = 0
-    for i in range(worker_list.__len__() - 1):
+    for i in range(worker_list.__len__()):
         if new_worker == worker_list[i]:
             new_worker += 1
         elif new_worker < worker_list[i]:
@@ -98,7 +98,8 @@ def spawn_file_task_worker(worker_list: list) -> None:
     log.entry(f"Spawning file backup task process worker {new_worker}")
     
     # Use systemd to start a new file task process
-    os.system(f"systemctl start {k.FILE_TASK_SERVICE_NAME}{new_worker}")
+    # Comment this line for testing if there is no systemd service available
+    # os.system(f"systemctl start {k.FILE_TASK_SERVICE_NAME}{new_worker}")
 
 def worker_counter(process_filename:str) -> list:
     """Count the number of running file task processes.
@@ -171,7 +172,7 @@ def main():
                                         server_file_path,
                                         server_file_name]}
             """
-            # ! Check this sctructure... maybe return a tupples instead of a dictionary
+
             if not tasks:
                 # if it is not the worker with serial zero, terminate process.
                 if worker_list.__len__() > 2:
@@ -214,10 +215,7 @@ def main():
             daemon.get_config(remove_failed_task=False)
 
             # Set halt flag if not already set (first run)
-            if not process_status["halt_flag"]:
-                process_status["halt_flag"] = daemon.get_halt_flag(remove_failed_task=False)
-            else:
-                daemon.reset_halt_flag()
+            process_status["halt_flag"] = daemon.get_halt_flag(remove_failed_task=False)
             
             # After trying to set or reset the halt flag, if it was not set
                 # move to attempt the next task. (current task was susppended bt the get_halt_flag method)
@@ -225,7 +223,7 @@ def main():
                 continue
                         
             # Before processing the current task, spawn another file backup task process to look for other hosts with pending backup
-            if worker_list.__len__() < k.FILE_TASK_MAX_WORKERS:
+            if worker_list.__len__() < k.BKP_TASK_MAX_WORKERS:
                 spawn_file_task_worker(worker_list=worker_list)
             
             # * Peform the backup
@@ -244,7 +242,7 @@ def main():
                 remote_file = f"{file_list[0]}/{filename}"
             
                 # test if remote_file does not exist, update the database and skip to the next file
-                if not sftp_conn.test(remote_file):
+                if not sftp_conn.test(remote_file): # ! Test This
                     message=f"File '{remote_file}' not found in remote host {host['host_add']}"
                     db_bp.file_task_error(  task_id=task_id,
                                             message=message)
