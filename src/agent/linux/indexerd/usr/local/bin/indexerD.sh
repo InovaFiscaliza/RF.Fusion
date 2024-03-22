@@ -87,6 +87,9 @@ rm -f "$TEMP_CHANGED" || {
 # update cookies timestamps with time previous to the file list. This will ensure that files that may have been created or modified during the indexing process are considered
 touch -t "$timestamp" "$LAST_FILE_SEARCH_FLAG"
 
+# open BACKUP_DONE file sort the list of files to be backup and remove duplicates. Backup process may create duplicate entries in the list
+nice -n 15 sort -o "$BACKUP_DONE" -u "$BACKUP_DONE"
+
 # remove the cookie flag that may halt a concurrent process
 rm -f "$HALT_FLAG" || {
     logger "indexerD Error: Could remove $HALT_FLAG"
