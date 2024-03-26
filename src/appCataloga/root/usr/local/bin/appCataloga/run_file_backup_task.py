@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Get list of files to backup from remote host and create file tasks in the control database for backup to the central repository.
+"""Get file tasks in the control database and perform backup to the central repository.
     
     Args:   Arguments passed from the command line should present in the format: "key=value"
     
