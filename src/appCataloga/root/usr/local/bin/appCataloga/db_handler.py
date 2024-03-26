@@ -1336,7 +1336,9 @@ class dbHandler():
         self._disconnect()
 
     # Method to get next host in the list for processing
-    def next_file_task(self, type:int) -> dict:
+    def next_file_task(self,
+                        task_type:int,
+                        task_status:int=1) -> dict:
         """This method gets the next host in the list for data processing
 
         Returns:
@@ -1361,8 +1363,8 @@ class dbHandler():
                     f"FROM FILE_TASK "
                         f"JOIN HOST ON FILE_TASK.FK_HOST = HOST.ID_HOST "
                     f"WHERE "
-                        f"FILE_TASK.NU_STATUS = 2 AND "
-                        f"FILE_TASK.NU_TYPE = {type} "
+                        f"FILE_TASK.NU_STATUS = {task_status} AND "
+                        f"FILE_TASK.NU_TYPE = {task_type} "
                     f"ORDER BY FILE_TASK.DT_FILE_TASK "
                     f"LIMIT 1;")
         
@@ -1380,13 +1382,40 @@ class dbHandler():
                         "server file": str(task[6])}
         except (TypeError, ValueError):
             output = False
-        
+                
         self._disconnect()
         
         return output
 
+    # method to retrive information and get the execution for the next task
+    def get_next_host_task(self,
+                           task_type:int,
+                           task_status:int=1) -> dict:
+        """Get the next task of given type and status and set it as under execution
+
+        Args:
+            tasl_type (int): Task type
+            task_status (int, optional): Task status. Defaults to 1, pending execution.
+
+        Returns:
+            dict:  {"task_id": int(task[0]),
+                    "host_id": int(task[1]),
+                    "host_uid": str(task[2]),
+                    "host path": str(task[3]),
+                    "host file": str(task[4]),
+                    "server path": str(task[5]),
+                    "server file": str(task[6])}
+        """
+        host_task = self.next_file_task(task_type=task_type, task_status=task_status)
+        
+        # update file task to NU_STATUS = 1 (under processing) and NU_PID = pid
+        self.file_task_update(task_id=host_task["task_id"], task_status=self.TASK_RUNNING)
+        
+        return host_task
+
+
     # Method to retrieve multiple file tasks
-    def next_file_tasks(self,
+    def next_file_task_list(self,
                         task_type:int,
                         task_status:int=1,
                         limit:int=None) -> dict:
@@ -1407,7 +1436,8 @@ class dbHandler():
         """
         
         def _join_lists(host_list:list,
-                        server_list:list) -> dict:
+                        server_list:list,
+                        host_message:str) -> dict:
             """This method joins the host and server lists into a single dictionary with matching task_id
 
             Args:
@@ -1433,14 +1463,14 @@ class dbHandler():
                 for item in base_list:
                     result[int(item[0])] = [item[1], item[2], None, None]
             except (TypeError, ValueError):
-                self.log.error(f"Error parsing next file tasks for host_id {host_id}")
+                self.log.error(f"Error parsing next file tasks for {host_message}")
                 pass
 
             for item in plus_list:
                 try:
                     key=int(item[0])
                 except (TypeError, ValueError):
-                    self.log.error(f"Error parsing task id while getting next file tasks: {item} for host_id {host_id}")
+                    self.log.error(f"Error parsing task id while getting next file tasks: {item} for {host_message}")
                     continue
                 try:
                     result[key][2] = item[1]
@@ -1453,29 +1483,15 @@ class dbHandler():
         # connect to the database
         self._connect()
 
-        # compose a query to retrieve the FK_HOST of the oldest task with NU_STATUS = task_status and NU_TYPE = task_type
-        query = (   f"SELECT "
-                        f"FK_HOST "
-                    f"FROM FILE_TASK "
-                    f"WHERE "
-                        f"NU_STATUS = {task_status} AND "
-                        f"NU_TYPE = {task_type} "
-                    f"ORDER BY DT_FILE_TASK "
-                    f"LIMIT 1;")
-        
-        self.cursor.execute(query)
-        
-        task = self.cursor.fetchone()
+        host_task = self.next_file_task(task_type=task_type, task_status=task_status)
         
         try:
-            host_id = int(task[0])
-
             # build a query to change NU_STATUS to 2 (under execution) of all tasks where:
             query = (   f"UPDATE FILE_TASK SET "
                             f"NU_STATUS = 2, "
                             f"NU_PID = {self.log.pid} "
                         f"WHERE "
-                            f"FK_HOST = {host_id} AND "
+                            f"FK_HOST = {host_task['host_id']} AND "
                             f"NU_STATUS = {self.TASK_PENDING} AND "
                             f"NU_TYPE = {task_type};")
             
@@ -1490,7 +1506,7 @@ class dbHandler():
                                     f"WHERE "
                                         f"NU_STATUS = {self.TASK_RUNNING} AND "
                                         f"NU_TYPE = {task_type} AND "
-                                        f"FK_HOST = {host_id} "
+                                        f"FK_HOST = {host_task['host_id']} "
                                     f"ORDER BY DT_FILE_TASK")
 
             if limit:
@@ -1510,7 +1526,7 @@ class dbHandler():
                                     f"WHERE "
                                         f"NU_STATUS = 2 AND "
                                         f"NU_TYPE = {task_type} AND "
-                                        f"FK_HOST = {host_id} "
+                                        f"FK_HOST = {host_task['host_id']} "
                                     f"ORDER BY DT_FILE_TASK")
 
             if limit:
@@ -1523,9 +1539,12 @@ class dbHandler():
             server_file_tasks = self.cursor.fetchall()
             
             # combine server and host file list
-            output = _join_lists(host_list=host_file_tasks,server_list=server_file_tasks)
+            output = _join_lists(   host_list=host_file_tasks,
+                                    server_list=server_file_tasks,
+                                    host_message=f"host '{host_task['host_uid']}' (id: host_id {host_task['host_id']}).")
 
-            output["host_id"] = host_id
+            output["host_id"] = host_task["host_id"]
+            output["host_uid"] = host_task["host_uid"]
         
         except (TypeError, ValueError, IndexError):
             # if no task is found, return False

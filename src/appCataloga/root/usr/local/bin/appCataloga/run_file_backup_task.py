@@ -164,7 +164,7 @@ def main():
         try:
             
             # Get the list of files to backup from the database
-            tasks = db_bp.next_file_tasks(task_type=db_bp.BACKUP_TASK_TYPE)
+            tasks = db_bp.next_file_task_list(task_type=db_bp.BACKUP_TASK_TYPE)
             """ tasks ={   "host_id": (int) host_id,
                             task_id: [
                                         host_file_path,
