@@ -261,7 +261,7 @@ def main():
                 try:
                     sftp_conn.transfer(remote_file, local_file)
                     
-                    # Change file task from backup to processing. (assume every file needs processing)
+                    # Change file task from running backup  to pending processing
                     db_bp.file_task_update( task_id=task_id,
                                             server_file=filename,
                                             server_path=local_path,
@@ -269,9 +269,13 @@ def main():
                                             status=db_bp.TASK_PENDING,
                                             message=f"File '{remote_file}' copied to '{local_file}'")
                     
+                    # update host status
                     db_bp.update_host_status(   host_id=host["host_id"],
                                                 pending_backup=-1,
                                                 pending_processing=1)
+                    
+                    # update host backup done file
+                    daemon.set_backup_done(remote_file)
                     
                     log.entry(f"File '{filename}' copied to '{local_file}'")
                     
@@ -284,8 +288,6 @@ def main():
                                                 pending_backup=-1,
                                                 backup_error=1)
                     continue
-                
-                daemon.set_backup_done(remote_file)
         
             # Remove HALT FLAG, close the SSH client and SFTP connection
             daemon.close_host()

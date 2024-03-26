@@ -1682,7 +1682,7 @@ class dbHandler():
         if server_file:
             query = query + f"NA_SERVER_FILE_NAME = '{server_file}', "
         if task_type:
-            query = query + f"NU_TYPE = {type}, "
+            query = query + f"NU_TYPE = {task_type}, "
         if status:
             query = query + f"NU_STATUS = {status}, "
         if message:

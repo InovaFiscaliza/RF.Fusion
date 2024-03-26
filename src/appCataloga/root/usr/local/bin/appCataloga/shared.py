@@ -475,7 +475,7 @@ class hostDaemon():
         """
         
         try:
-            backup_done_handle = self.sftp_conn.sftp.open(self.config['HALT_FLAG'], 'a')
+            backup_done_handle = self.sftp_conn.sftp.open(self.config['BACKUP_DONE'], 'a')
             backup_done_handle.write(f'{filename}\n')
             backup_done_handle.close()
         except Exception as e:
