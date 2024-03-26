@@ -37,15 +37,12 @@ import os
 # create a warning message object
 log = sh.log(target_screen=True)
 
-process_status = {  "conn": None,
-                    "halt_flag": None,
-                    "running": True}
+process_status = {"running": True}
 
 # recursive function to perform several tries in geocoding before final time out.
 def do_revese_geocode(data:dict,
                       attempt=1,
-                      max_attempts=10,
-                      log=sh.log()) -> dict:
+                      max_attempts=10) -> dict:
     """Perform reverse geocoding using Nominatim service with timeout and attempts
 
     Args:
@@ -61,6 +58,8 @@ def do_revese_geocode(data:dict,
     Returns:
         location: nominatim location object
     """
+    global log
+    
     point = (data['latitude'],data['longitude'])
     
     geocodingService = Nominatim(user_agent=k.NOMINATIM_USER, timeout = 5)
@@ -74,7 +73,7 @@ def do_revese_geocode(data:dict,
         except GeocoderTimedOut:
             if attempt <= max_attempts:
                 time.sleep(2)
-                location = do_revese_geocode(data, attempt=attempt+1,log=log)
+                location = do_revese_geocode(data, attempt=attempt+1)
                 not_geocoded = False
             else:
                 message = f"Geocoder timed out: {point}"
@@ -88,8 +87,7 @@ def do_revese_geocode(data:dict,
     return location
 
 def map_location_to_data(location:dict,
-                         data:dict,
-                         log:sh.log()) -> dict:
+                         data:dict) -> dict:
     """Map location data to data dictionary
 
     Args:
@@ -100,6 +98,8 @@ def map_location_to_data(location:dict,
     Returns:
         dict: data dictionary
     """
+    global log
+    
     # TODO: #8 Insert site name
     for field_name, nominatim_semantic_lst in k.REQUIRED_ADDRESS_FIELD.items():
         data[field_name] = None
@@ -119,8 +119,7 @@ def map_location_to_data(location:dict,
 # function that performs the file processing
 def file_move(  filename: str,
                 path: str,
-                new_path: str,
-                volume=None) -> dict:
+                new_path: str) -> dict:
     """Move file to new path
 
     Args:
@@ -136,19 +135,13 @@ def file_move(  filename: str,
         dict: Dict with target {'file':str,'path':str,'volume':str}
     """
 
-    if not volume:
-        route_path = f"{k.REPO_FOLDER}/"
-        volume = k.REPO_UID
-    else:
-        # assume that source path include the volume path
-        # TODO: #29 Improve volume handling to include multiple volumes
-        route_path = ""
+    volume = k.REPO_UID
          
     # Construct the source file path
-    source_file = f"{route_path}{path}/{filename}"
+    source_file = f"{path}/{filename}"
 
     # Construct the target file path
-    target_file = f"{k.REPO_FOLDER}/{new_path}/{filename}"
+    target_file = f"{new_path}/{filename}"
     
     # Move the file to the new path
     try:
@@ -165,29 +158,23 @@ def main():
 
     try:
         # create db object using databaseHandler class for the backup and processing database
-        db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
-        db_rfm = dbh.dbHandler(database=k.RFM_DATABASE_NAME)
-    except Exception as e:
+        db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
+        db_rfm = dbh.dbHandler(database=k.RFM_DATABASE_NAME, log=log)
+    except Exception as e:  
         log.error("Error initializing database: {e}")
         raise Exception(f"Error initializing database: {e}")
 
-    while True:
+    while process_status["running"]:
         try:
             # Get one backup task from the queue in the database
-            task = {"task_id": 0,
-                    "host_id": 0,
-                    "host_uid": "none",
-                    "host path": "none",
-                    "host file": "none",
-                    "server path": "none",
-                    "server file": "none"}
+            task = None
                     
-            task = db_bp.get_next_host_task(task_type=db_bp.PROCESSING_TASK_TYPE)
+            task = db_bp.get_next_file_task(task_type=db_bp.PROCESS_TASK_TYPE)
 
             # if there is a task in the database
             if task:
                 # get metadata from bin file
-                filename = f"{k.REPO_FOLDER}/{task['server path']}/{task['server file']}"
+                filename = f"{task['server path']}/{task['server file']}"
                 
                 log.entry(f"Start processing '{filename}'.")
                 
@@ -213,8 +200,8 @@ def main():
                                     latitude_raw = bin_data["gps"]._latitude,
                                     altitude_raw = bin_data["gps"]._altitude)
                 else:
-                    location = do_revese_geocode(data=data,log=log)
-                    data = map_location_to_data(location=location,data=data,log=log)
+                    location = do_revese_geocode(data=data)
+                    data = map_location_to_data(location=location,data=data)
                     site = db_rfm.insert_site(data)
                 
                 # update data dictionary with data associated with the entire file scope
@@ -268,7 +255,7 @@ def main():
                 db_rfm.insert_bridge_spectrum_equipment(spectrum_lst)
 
                 new_path = db_rfm.build_path(site_id=data['id_site'])
-                new_path = f"{spectrum.stop_dateidx.year}/{new_path}"
+                new_path = f"{k.REPO_FOLDER}/{spectrum.stop_dateidx.year}/{new_path}"
                 
                 file_data = file_move(  filename=task['server file'],
                                         path=task['server path'],
@@ -288,35 +275,40 @@ def main():
                 time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME)
                 
         except Exception as e:
-            try:
-                file_data = file_move(  filename=task['server file'],
-                                        path=task['server path'],
-                                        new_path=k.TRASH_FOLDER)
-                
-                task['server path'] = file_data['path']
-                
-                message = f"Error processing task: {e}"
-                
-                log.error(message)
-            except Exception as second_e:
-                message = f"Error moving file to trash: First: {e}; raised another exception: {second_e}"
-                log.error(message)
-                pass
-        
-            try:
-                task['message'] = message
-                
-                db_bp.file_task_error(task_id=task['task_id'],
-                                      message=message)
-                
-                db_bp.update_host_status(   host_id=task['host_id'],
-                                            pending_processing=-1,
-                                            processing_error=1)
-            except Exception as second_e:
-                log.error(f"Error removing processing task: First: {e}; raised another exception: {second_e}")
-                
-                # raise a fatal error excpetion to stop the program
-                raise Exception(f"Exception: {e}; raised another exception: {second_e}")
+            
+            if not task:
+                log.error(f"Error in run_file_bin_processing: {e}")
+                continue
+            else:
+                try:
+                    file_data = file_move(  filename=task["server file"],
+                                            path=task["server path"],
+                                            new_path=f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}")
+                    
+                    task['server path'] = file_data['path']
+                    
+                    message = f"Error processing task: {e}"
+                    
+                    log.error(message)
+                except Exception as second_e:
+                    message = f"Error moving file to trash: First: {e}; raised another exception: {second_e}"
+                    log.error(message)
+                    pass
+            
+                try:
+                    task['message'] = message
+                    
+                    db_bp.file_task_error(task_id=task['task_id'],
+                                        message=message)
+                    
+                    db_bp.update_host_status(   host_id=task['host_id'],
+                                                pending_processing=-1,
+                                                processing_error=1)
+                except Exception as second_e:
+                    log.error(f"Error removing processing task: First: {e}; raised another exception: {second_e}")
+                    
+                    # raise a fatal error excpetion to stop the program
+                    raise Exception(f"Exception: {e}; raised another exception: {second_e}")
             
             pass
         

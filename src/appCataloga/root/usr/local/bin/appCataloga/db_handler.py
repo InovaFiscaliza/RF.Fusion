@@ -1381,16 +1381,15 @@ class dbHandler():
                         "server path": str(task[5]),
                         "server file": str(task[6])}
         except (TypeError, ValueError):
-            output = False
+            output = None
                 
         self._disconnect()
         
         return output
 
     # method to retrive information and get the execution for the next task
-    def get_next_host_task(self,
-                           task_type:int,
-                           task_status:int=1) -> dict:
+    def get_next_file_task(self,
+                           task_type:int) -> dict:
         """Get the next task of given type and status and set it as under execution
 
         Args:
@@ -1406,10 +1405,13 @@ class dbHandler():
                     "server path": str(task[5]),
                     "server file": str(task[6])}
         """
-        host_task = self.next_file_task(task_type=task_type, task_status=task_status)
+        host_task = self.next_file_task(task_type=task_type, task_status=self.TASK_PENDING)
         
         # update file task to NU_STATUS = 1 (under processing) and NU_PID = pid
-        self.file_task_update(task_id=host_task["task_id"], task_status=self.TASK_RUNNING)
+        try:
+            self.file_task_update(task_id=host_task["task_id"], status=self.TASK_RUNNING)
+        except TypeError:
+            return False
         
         return host_task
 
@@ -1758,9 +1760,6 @@ class dbHandler():
             self._disconnect()
             raise Exception(f"Error retrieving host_id for task_id {task_id} from database")
         
-        self.update_host_status(    host_id=host_id,
-                                    pending_processing=-1)
-                
         # compose and excecute query to delete the processing task from the BPDATA database
         query = (f"DELETE FROM FILE_TASK "
                  f"WHERE ID_FILE_TASK = {task_id};")
@@ -1770,6 +1769,9 @@ class dbHandler():
         self.db_connection.commit()
         
         self._disconnect()
+
+        self.update_host_status(    host_id=host_id,
+                                    pending_processing=-1)
 
     def list_rfdb_files(self) -> set:
         """List files in DIM_SPECTRUM_FILE table that are associated with k.REPO_UID
