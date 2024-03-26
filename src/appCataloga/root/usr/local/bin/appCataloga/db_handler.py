@@ -2,11 +2,14 @@
 """ This module manage all database operations for the appCataloga scripts """
 
 # Import libraries for:
+import sys
+sys.path.append('/etc/appCataloga')
+
 import mysql.connector
 import os
 import re
 
-from typing import List, Union, Any, Tuple
+from typing import List, Union, Tuple
 
 # Import file with constants used in this code that are relevant to the operation
 import config as k
@@ -17,7 +20,7 @@ class dbHandler():
 
     def __init__(self,
                  database: str,
-                 log: Any) -> None:
+                 log: any) -> None:
         """Initialize a new instance of the DBHandler class.
 
         Args:
@@ -1469,7 +1472,8 @@ class dbHandler():
 
             # build a query to change NU_STATUS to 2 (under execution) of all tasks where:
             query = (   f"UPDATE FILE_TASK SET "
-                            f"NU_STATUS = 2 "
+                            f"NU_STATUS = 2, "
+                            f"NU_PID = {self.log.pid} "
                         f"WHERE "
                             f"FK_HOST = {host_id} AND "
                             f"NU_STATUS = {self.TASK_PENDING} AND "
@@ -1478,7 +1482,7 @@ class dbHandler():
             self.cursor.execute(query)
             self.db_connection.commit()
         
-            # build a query to retrieve list of files associated with the oldest task
+            # build a query to retrieve list of HOST files associated with the oldest task
             query_host_files = (   f"SELECT "
                                         f"ID_FILE_TASK, "
                                         f"NA_HOST_FILE_PATH, NA_HOST_FILE_NAME "
@@ -1498,6 +1502,7 @@ class dbHandler():
             
             host_file_tasks = self.cursor.fetchall()
             
+            # build a query to retrieve list of SERVER files associated with the oldest task
             query_server_files = (   f"SELECT "
                                         f"ID_FILE_TASK, "
                                         f"NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME "
@@ -1517,6 +1522,7 @@ class dbHandler():
             
             server_file_tasks = self.cursor.fetchall()
             
+            # combine server and host file list
             output = _join_lists(host_list=host_file_tasks,server_list=server_file_tasks)
 
             output["host_id"] = host_id
@@ -1685,6 +1691,12 @@ class dbHandler():
             query = query + f"NU_TYPE = {task_type}, "
         if status:
             query = query + f"NU_STATUS = {status}, "
+
+            match status:
+                case self.TASK_PENDING:
+                    query = query + "NU_PID = NULL, "
+                case self.TASK_RUNNING:
+                    query = query + f"NU_PID = {self.log.pid}, "
         if message:
             message = message.replace("'","''")
             query = query + f"NA_MESSAGE = '{message}', "
