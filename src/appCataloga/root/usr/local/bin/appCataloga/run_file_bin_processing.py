@@ -33,11 +33,35 @@ import db_handler as dbh
 import shared as sh
 import os
 
+import signal
+import inspect
 
 # create a warning message object
 log = sh.log(target_screen=True)
 
 process_status = {"running": True}
+
+# Define a signal handler for SIGTERM (kill command )
+def sigterm_handler(signal=None, frame=None) -> None:
+    global process_status
+    global log
+      
+    current_function = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"\nKill signal received at: {current_function}()")
+    process_status["running"] = False
+
+# Define a signal handler for SIGINT (Ctrl+C)
+def sigint_handler(signal=None, frame=None) -> None:
+    global process_status
+    global log
+    
+    current_function = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"\nCtrl+C received at: {current_function}()")
+    process_status['running'] = False
+
+# Register the signal handler function, to handle system kill commands
+signal.signal(signal.SIGTERM, sigterm_handler)
+signal.signal(signal.SIGINT, sigint_handler)
 
 # recursive function to perform several tries in geocoding before final time out.
 def do_revese_geocode(data:dict,
@@ -125,7 +149,6 @@ def file_move(  filename: str,
     Args:
         file (str): source file name
         path (str): source file path
-        volume (str): source volume name (default: k.REPO_UID)
         new_path (str): target file path
 
     Raises:
@@ -135,7 +158,7 @@ def file_move(  filename: str,
         dict: Dict with target {'file':str,'path':str,'volume':str}
     """
 
-    volume = k.REPO_UID
+    
          
     # Construct the source file path
     source_file = f"{path}/{filename}"
@@ -150,7 +173,7 @@ def file_move(  filename: str,
         raise Exception(f"Error moving file {source_file} to {target_file}: {e}")
     
     # Return the target file information
-    return {'filename': filename, 'path': new_path, 'volume': volume}
+    return {'filename': filename, 'path': new_path, 'volume': k.REPO_UID}
 
 def main():
     global process_status
@@ -311,10 +334,6 @@ def main():
                     raise Exception(f"Exception: {e}; raised another exception: {second_e}")
             
             pass
-        
-        except (KeyboardInterrupt, SystemExit):
-            log.entry("Interrupt received. Exiting.")
-            break
             
         
 if __name__ == "__main__":

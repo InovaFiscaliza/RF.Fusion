@@ -1973,7 +1973,7 @@ class dbHandler():
 
         # split the set into subsets based on the Host UID. Try to get host_uid with REGEX and ask user if not found
         subsets = {}
-        for filename, path in file_set:
+        for path, filename in file_set:
             match = pattern.search(filename)
             if not match:
                 host_uid = input(f"Host UID not found in '{filename}'. Please type host UID or press enter to skip: ") # TODO Include function to delete files in the subset with empty key
