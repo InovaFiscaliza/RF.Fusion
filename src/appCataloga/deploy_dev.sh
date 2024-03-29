@@ -10,6 +10,10 @@ LOG_FILE="/var/log/appCataloga.log"
 repo_conf=$REPO_ROOT_PATH/$CONF_PATH
 repo_app=$REPO_ROOT_PATH/$APP_PATH
 
+# create a list of services appCataloga.service, run_file_backup_task@.service, run_file_bin_processing.service and run_host_task.service
+services=("appCataloga.service" "run_file_backup_task@.service" "run_file_bin_processing.service" "run_host_task.service")
+scripts=("appCataloga.sh" "run_file_backup_task.sh" "run_file_bin_processing.sh" "run_host_task.sh")
+
 # check if the required REPO folders are accessible
 if [ ! -d $repo_conf ] || [ ! -d $repo_app ]; then
     echo "Error: Configure REPO_ROOT folder path and/or download the repo folder structure"
@@ -44,14 +48,21 @@ if [ -f $LOG_FILE ]; then
     rm $LOG_FILE
 fi
 
-if ! ln -s $MINICONDA_PATH $APP_PATH/miniconda3; then
-    echo "Error creating soft link for /etc/systemd/system/appCataloga.service. Do it manually."
-fi
 
-if ! ln -s /usr/local/bin/appCataloga/appCataloga.service /etc/systemd/system/appCataloga.service; then
-    echo "Error creating soft link for /etc/systemd/system/appCataloga.service. Do it manually."
-fi
+# loop through the service array and create the soft links if they don't already exist
+for i in "${!services[@]}"; do
+    if ! [ -L "/etc/systemd/system/${services[$i]}" ]; then
+        if ! ln -s "$APP_PATH${scripts[$i]}" "/etc/systemd/system/${services[$i]}"; then
+            echo "Error creating soft link for /etc/systemd/system/${services[$i]}. Do it manually."
+        fi
+    else
+        echo "Soft link for /etc/systemd/system/${services[$i]} already exists."
+    fi
+done
 
-if ! /sbin/restorecon -v /usr/local/bin/appCataloga/appCataloga.sh; then
-    echo "Error setting SE Linux. Do it manually."
-fi
+# loop through script array and set the SE Linux context for each script
+for i in "${!scripts[@]}"; do
+    if ! /sbin/restorecon -v "$APP_PATH${scripts[$i]}"; then
+        echo "Error setting SE Linux. Do it manually."
+    fi
+done
