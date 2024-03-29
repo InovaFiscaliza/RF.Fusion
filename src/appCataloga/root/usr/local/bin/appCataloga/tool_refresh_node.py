@@ -67,14 +67,14 @@ def move_files_to_tmp_folder(files_to_move, tmp_folder):
     else:
         ask_berfore = False
 
-    for filename, path in files_to_move:
+    for filepath, filename in files_to_move:
 
         if ask_berfore:
-            user_input = input(f"Move {path}/{filename} to {tmp_folder}? (y/n): ")
+            user_input = input(f"Move {filepath}/{filename} to {tmp_folder}? (y/n): ")
             if user_input.lower() != 'y':
                 continue
 
-        src_path = Path(path) / filename
+        src_path = Path(filepath) / filename
         dst_path = Path(tmp_folder) / filename
         try:
             src_path.rename(dst_path)
@@ -198,13 +198,13 @@ def refresh_trash_files(log:sh.log) -> None:
                 move_files_to_tmp_folder(self.files, k.TMP_FOLDER)
                 
                 # change pathname to new path
-                self.files = {(filename, k.TMP_FOLDER) for filename, path in self.files}
+                self.files = {(k.TMP_FOLDER, filename) for filepath, filename in self.files}
                     
                 db_bp.add_task_from_file(self.files)
             
             def delete(self) -> None:
-                for filename, path in self.files:
-                    src_path = Path(path) / filename
+                for filepath, filename in self.files:
+                    src_path = Path(filepath) / filename
                     try:
                         src_path.unlink()
                     except Exception as e:
@@ -233,11 +233,11 @@ def refresh_trash_files(log:sh.log) -> None:
                 case 'c':
                     confirmation = input("Do you want to confirm operation for each file? (y/n): ")
                     if confirmation.lower() == 'y':
-                        for filename, path in files_spilled_from_trash:
-                            handle_trash = handle_trash((filename, path))
+                        for filepath, filename in files_spilled_from_trash:
+                            handle_trash = handle_trash((filepath, filename))
                             ask_again = True
                             while ask_again:
-                                single_option = input(f"re(P)rocess {path}/{filename}, (D)elete or (S)kip it? (p/d/s): ")
+                                single_option = input(f"re(P)rocess {filepath}/{filename}, (D)elete or (S)kip it? (p/d/s): ")
 
                                 match single_option.lower():
                                     case 'p':
@@ -247,7 +247,7 @@ def refresh_trash_files(log:sh.log) -> None:
                                         handle_trash.delete()
                                         ask_again = False
                                     case 's':
-                                        log.entry(f"Skipping {path}/{filename}.")
+                                        log.entry(f"Skipping {filepath}/{filename}.")
                                         ask_again = False
                                     case _:
                                         log.entry(f"Invalid option {single_option}. Try again.")     
