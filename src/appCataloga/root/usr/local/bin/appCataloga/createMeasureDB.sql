@@ -121,6 +121,7 @@ CREATE TABLE DIM_SPECTRUM_FILE (
     NA_FILE VARCHAR(100) COMMENT 'Unique identifier to the filename',
     NA_PATH VARCHAR(3000) COMMENT 'Unique identifier to the file path',
     NA_VOLUME VARCHAR(3000) COMMENT 'Unique identifier to the file storage volume',
+    NU_MD5 VARCHAR(32) COMMENT 'MD5 hash of the file',
     PRIMARY KEY (ID_FILE)
 );
 
