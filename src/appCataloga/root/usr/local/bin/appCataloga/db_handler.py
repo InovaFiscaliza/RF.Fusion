@@ -1619,7 +1619,7 @@ class dbHandler():
                 
                 self.cursor.execute(query)
                 
-                # get the number of processing errors
+                # get the number of processing errors to all for a full host status reset
                 try:
                     processing_error = int(self.cursor.fetchone()[0])
                 except (TypeError, ValueError):
@@ -1875,7 +1875,9 @@ class dbHandler():
         
         return None
 
-    def list_bpdb_files(self, status:int) -> set:
+    def list_bpdb_files(self,
+                        task_status:int,
+                        task_type:int) -> set:
         """List files in FILE_TASK table that match a given status
 
         Args:
@@ -1892,7 +1894,8 @@ class dbHandler():
                 f"FROM "
                     f"FILE_TASK "
                 f"WHERE "
-                    f"NU_STATUS = {status}")
+                    f"NU_STATUS = {task_status} AND "
+                    f"NU_TYPE = {task_type}")
         
         # connect to the database
         self._connect()
@@ -2025,9 +2028,11 @@ class dbHandler():
 
             # TODO: #26 Harmonize file_list format with add_file_task method
             
-            self.add_file_task(host_id=host_id,
-                                     files_set=file_set,
-                                     reset_processing_queue=True)
+            self.add_file_task( host_id=host_id,
+                                task_type=self.PROCESS_TASK_TYPE,
+                                volume=k.REPO_UID,
+                                files=file_set,
+                                reset_processing_queue=True)
             
             self.log.entry(f"Added {len(file_set)} files from host {host_uid} to the processing queue")
         
@@ -2052,7 +2057,22 @@ class dbHandler():
         
         self.cursor.execute(query)
         
-        host_ids = [(int(row[0]), int(row[1]), row[2]) for row in self.cursor.fetchall()]
+        host_ids = []
+        for row in self.cursor.fetchall():
+            try:
+                host_id = int(row[0])
+            except (TypeError, ValueError):
+                message = f"Error parsing host_id from database: {row}"
+                self.log.error(message)
+                raise Exception(message)
+            try:
+                equipment_id = int(row[1])
+            except (TypeError, ValueError):
+                equipment_id = None
+                pass
+            host_uid = row[2]
+            
+            host_ids = host_ids + [(host_id, equipment_id, host_uid)]
         
         self._disconnect()
         

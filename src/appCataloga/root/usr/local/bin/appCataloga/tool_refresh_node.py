@@ -129,7 +129,8 @@ def refresh_tmp_files(log:sh.log) -> None:
     # Process TMP folder and database
     repo_tmp_files = list_repo_files(f"{k.REPO_FOLDER}/{k.TMP_FOLDER}")
     
-    db_tmp_files = db_bp.list_bpdb_files(status=k.BP_PENDING_TASK_STATUS)
+    db_tmp_files = db_bp.list_bpdb_files(   task_status=db_bp.TASK_PENDING,
+                                            task_type=db_bp.BACKUP_TASK_TYPE)
     
     log.entry(f"{len(repo_tmp_files)} files in the repository TMP_FOLDER:")
     log.entry(f"{len(db_tmp_files)} database entries related to repository TMP_FOLDER files.\n")
@@ -167,7 +168,8 @@ def refresh_trash_files(log:sh.log) -> None:
     # Process trash folder and database
     repo_trash_files = list_repo_files(f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}")
     
-    db_trash_files = db_bp.list_bpdb_files(status=k.BP_ERROR_TASK_STATUS)
+    db_trash_files = db_bp.list_bpdb_files( task_status=db_bp.TASK_ERROR,
+                                            task_type=db_bp.BACKUP_TASK_TYPE)
     
     # Compare sets
     files_missing_in_trash = db_trash_files - repo_trash_files
