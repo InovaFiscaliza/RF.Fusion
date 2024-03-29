@@ -1931,7 +1931,7 @@ class dbHandler():
         else:
             ask_berfore = False
 
-        for filename, path in files_to_remove:
+        for path, filename in files_to_remove:
             try:
                 if ask_berfore:
                     user_input = input(f"Delete {path}/{filename}? (y/n): ")
@@ -1976,7 +1976,7 @@ class dbHandler():
 
         # split the set into subsets based on the Host UID. Try to get host_uid with REGEX and ask user if not found
         subsets = {}
-        for path, filename in file_set:
+        for filepath, filename in file_set:
             match = pattern.search(filename)
             if not match:
                 host_uid = input(f"Host UID not found in '{filename}'. Please type host UID or press enter to skip: ") # TODO Include function to delete files in the subset with empty key
@@ -1987,9 +1987,9 @@ class dbHandler():
                 if host_uid not in subsets:
                     subsets[host_uid] = set()
                 
-                subsets[host_uid].add((filename, path))
+                subsets[host_uid].add((filepath, filename))
             except Exception as e:
-                self.log.entry(f"Ignoring '{path}/{filename}'. No host_uid defined. Error: {e}")
+                self.log.entry(f"Ignoring '{filepath}/{filename}'. No host_uid defined. Error: {e}")
                 pass
 
         # drop empty subset
