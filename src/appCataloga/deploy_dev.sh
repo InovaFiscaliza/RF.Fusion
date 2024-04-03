@@ -23,12 +23,14 @@ fi
 # test if $APP_PATH folder exists and remove it
 if [ -d $APP_PATH ]; then
     rm -r $APP_PATH
+    echo "Removed $APP_PATH"
 fi
 mkdir $APP_PATH
 
 # test if /etc/appCataloga exists, if not, create it
 if [ -d $CONF_PATH ]; then
-    rm -r $CONF_PATH    
+    rm -r $CONF_PATH
+    echo "Removed $CONF_PATH"
 fi
 mkdir $CONF_PATH
 
@@ -37,6 +39,7 @@ conf_files=$(find "$repo_conf" -type f)
 for file in $conf_files; do
     ln -f "$file" "$CONF_PATH"
 done
+echo "Created new $CONF_PATH"
 
 app_files=$(find "$repo_app" -type f)
 
@@ -48,6 +51,12 @@ if [ -f $LOG_FILE ]; then
     rm $LOG_FILE
 fi
 
+# create link to MINICONDA_PATH within the APP_PATH
+if ! ln -s "$MINICONDA_PATH" "$APP_PATH"; then
+    echo "Error creating soft link for $MINICONDA_PATH. Do it manually."
+fi
+
+echo "Created new $APP_PATH"
 
 # loop through the service array and create the soft links if they don't already exist
 for i in "${!services[@]}"; do
