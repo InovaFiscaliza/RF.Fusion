@@ -38,7 +38,7 @@ def sigterm_handler(signal=None, frame=None) -> None:
     global log
       
     current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"\nKill signal received at: {current_function}()")
+    log.entry(f"Kill signal received at: {current_function}()")
     process_status["running"] = False
 
 # Define a signal handler for SIGINT (Ctrl+C)
@@ -47,7 +47,7 @@ def sigint_handler(signal=None, frame=None) -> None:
     global log
     
     current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"\nCtrl+C received at: {current_function}()")
+    log.entry(f"Ctrl+C received at: {current_function}()")
     process_status['running'] = False
 
 # Register the signal handler function, to handle system kill commands
@@ -88,6 +88,8 @@ def main():
     global process_status
     global log
 
+    log.entry("Starting....")
+    
     try:
         # create db object using databaseHandler class for the backup and processing database
         db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
@@ -108,7 +110,7 @@ def main():
                     "password": (str)}"""  
 
             if not task:
-                    time_to_wait = k.FILE_TASK_EXECUTION_WAIT_TIME+k.FILE_TASK_EXECUTION_WAIT_TIME*random.random()
+                    time_to_wait = k.HOST_TASK_EXECUTION_WAIT_TIME+k.HOST_TASK_EXECUTION_WAIT_TIME*random.random()
                     log.entry(f"No host found with pending tasks. Waiting {time_to_wait} seconds")
                     time.sleep(time_to_wait)
                     continue
@@ -157,6 +159,8 @@ def main():
         except Exception as e:
             log.error(f"Unmapped error occurred: {str(e)}")
             raise ValueError(log.dump_error())
-            
+    
+    log.entry("Shutting down....")
+    
 if __name__ == "__main__":
     main()

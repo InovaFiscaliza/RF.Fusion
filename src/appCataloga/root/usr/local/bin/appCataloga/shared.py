@@ -57,6 +57,7 @@ class log:
         
         self.pid =  os.getpid()
         self.pname = os.path.basename(sys.argv[0])
+        self.last_msg = ""
                 
         if isinstance(verbose,dict):
             self.verbose = verbose
@@ -84,57 +85,46 @@ class log:
             except Exception as e:
                 self.target_file = False
                 self.warning(f"Invalid log_file_name value '{log_file_name}'. Disabling file logging. Error: {str(e)}")
+    
+    def _verbose_output(self):
+        datetime = self.last_update.strftime("%Y/%m/%d %H:%M:%S")
         
+        if self.target_file:
+            message = f"{datetime} | p.{self.pid} | p.{self.pname} | {self.last_msg}\n"
+            self.log_file = open(self.log_file_name, "a")
+            self.log_file.write(message)
+            self.log_file.close()
+    
+        if self.target_screen:
+            message = f"{font.OKGREEN}{datetime} | p.{self.pid} | p.{self.pname} |{font.ENDC} {self.last_msg}"
+            print(message)
+    
     def entry(self, new_entry):
         
-        now = datetime.now()
-        self.log_msg.append((now,self.pid,new_entry))
+        self.last_update = datetime.now()
+        self.last_msg = new_entry
+        self.log_msg.append((self.last_update,self.pid,self.pname,self.last_msg))
         
         if self.verbose["log"]:
-            date_time = now.strftime("%Y/%m/%d %H:%M:%S")
-            if self.target_file:
-                message = f"{date_time} | p.{self.pid} | p.{self.pname} | {new_entry}\n"
-                self.log_file = open(self.log_file_name, "a")
-                self.log_file.write(message)
-                self.log_file.close()
-        
-            if self.target_screen:
-                message = f"{font.OKGREEN}{date_time} | p.{self.pid} | p.{self.pname} |{font.ENDC} {new_entry}"
-                print(message)
+            self._verbose_output()
 
     def warning(self, new_entry):
         
-        now = datetime.now()
-        self.warning_msg.append((now,self.pid,new_entry))
+        self.last_update = datetime.now()
+        self.last_msg = new_entry
+        self.warning_msg.append((self.last_update,self.pid,self.pname,self.last_msg))
         
         if self.verbose["warning"]:
-            date_time = now.strftime("%Y/%m/%d %H:%M:%S")
-            if self.target_file:
-                message = f"{date_time} | p.{self.pid} | p.{self.pname} | {new_entry}\n"
-                self.log_file = open(self.log_file_name, "a")
-                self.log_file.write(message)
-                self.log_file.close()
-        
-            if self.target_screen:
-                message = f"{font.WARNING}{date_time} | p.{self.pid} | p.{self.pname} | {font.ENDC}{new_entry}"
-                print(new_entry)
+            self._verbose_output()
                             
     def error(self, new_entry):
         
-        now = datetime.now()
-        self.error_msg.append((now,self.pid,new_entry))
+        self.last_update = datetime.now()
+        self.last_msg = new_entry
+        self.error_msg.append((self.last_update,self.pid,self.pname,self.last_msg))
         
         if self.verbose["error"]:
-            date_time = now.strftime("%Y/%m/%d %H:%M:%S")
-            if self.target_file:
-                message = f"{date_time} | p.{self.pid} | p.{self.pname} | {new_entry}\n"
-                self.log_file = open(self.log_file_name, "a")
-                self.log_file.write(message)
-                self.log_file.close()
-        
-            if self.target_screen:
-                message = f"{font.FAIL}{date_time} | p.{self.pid} | p.{self.pname} | {font.ENDC}{new_entry}"
-                print(message)
+            self._verbose_output()
 
     def dump_log(self):
         message = ', '.join([str(elem[1]) for elem in self.log_msg])

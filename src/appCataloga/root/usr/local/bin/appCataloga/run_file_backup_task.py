@@ -56,7 +56,7 @@ def sigterm_handler(signal=None, frame=None) -> None:
     global log
       
     current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"\nKill signal received at: {current_function}()")
+    log.entry(f"Kill signal received at: {current_function}()")
     process_status["running"] = False
 
 # Define a signal handler for SIGINT (Ctrl+C)
@@ -65,7 +65,7 @@ def sigint_handler(signal=None, frame=None) -> None:
     global log
     
     current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"\nCtrl+C received at: {current_function}()")
+    log.entry(f"Ctrl+C received at: {current_function}()")
     process_status['running'] = False
 
 # Register the signal handler function, to handle system kill commands
@@ -150,6 +150,8 @@ def main():
     global process_status
     global log
 
+    log.entry("Starting....")
+    
     worker_list = worker_counter(process_filename=__file__)
     
     try:
@@ -306,6 +308,8 @@ def main():
         except Exception as e:
             log.error(f"Unmapped error occurred: {str(e)}")
             raise ValueError(log.dump_error())
+    
+    log.entry("Shutting down....")
     
 if __name__ == "__main__":
     main()

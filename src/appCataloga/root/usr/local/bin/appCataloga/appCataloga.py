@@ -32,6 +32,7 @@ import socket
 import json
 import signal
 from selectors import DefaultSelector, EVENT_READ
+import os
 import time
 import inspect
 
@@ -45,6 +46,8 @@ import db_handler as dbh
 process_status = {  "conn": None,
                     "halt_flag": None,
                     "running": True}
+# Create a pipe
+r_pipe, w_pipe = os.pipe()
 
 # function that stop systemd service
 def stop_service():
@@ -70,8 +73,9 @@ def sigterm_handler(signal=None, frame=None) -> None:
     global log
       
     current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"\nKill signal received at: {current_function}()")
+    log.entry(f"Kill signal received at: {current_function}()")
     process_status["running"] = False
+    os.write(w_pipe, b'\0')
 
 # Define a signal handler for SIGINT (Ctrl+C)
 def sigint_handler(signal=None, frame=None) -> None:
@@ -79,8 +83,9 @@ def sigint_handler(signal=None, frame=None) -> None:
     global log
     
     current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"\nCtrl+C received at: {current_function}()")
+    log.entry(f"Ctrl+C received at: {current_function}()")
     process_status['running'] = False
+    os.write(w_pipe, b'\0')
 
 # Register the signal handler function, to handle system kill commands
 signal.signal(signal.SIGTERM, sigterm_handler)
@@ -194,6 +199,7 @@ def serve_forever(server_socket, interrupt_read):
     sel = DefaultSelector()
     sel.register(interrupt_read, EVENT_READ)
     sel.register(server_socket, EVENT_READ)
+    sel.register(r_pipe, EVENT_READ)
 
     while process_status["running"]:
         # Wait for events using selector.select() method
@@ -218,6 +224,8 @@ def serve_forever(server_socket, interrupt_read):
 def main():
     global log
     
+    log.entry("Starting....")
+    
     try:
         interrupt_read, interrupt_write = socket.socketpair()
         
@@ -230,7 +238,6 @@ def main():
 
         serve_forever(server_socket=server_socket, interrupt_read=interrupt_read)
         
-        log.entry("Shutting down....")
         server_socket.close()
         stop_service()
     
@@ -238,6 +245,8 @@ def main():
         log.entry(f"Error: {e}")
         stop_service()
         exit(1)
+    
+    log.entry("Shutting down....")
 
 if __name__ == "__main__":
     main()

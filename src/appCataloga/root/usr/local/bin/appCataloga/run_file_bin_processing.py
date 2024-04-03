@@ -23,6 +23,7 @@ from rfpye.parser import parse_bin
 
 # Import libraries for file processing
 import time
+import random
 
 from geopy.geocoders import Nominatim   #  Processing of geographic data
 from geopy.exc import GeocoderTimedOut
@@ -47,7 +48,7 @@ def sigterm_handler(signal=None, frame=None) -> None:
     global log
       
     current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"\nKill signal received at: {current_function}()")
+    log.entry(f"Kill signal received at: {current_function}()")
     process_status["running"] = False
 
 # Define a signal handler for SIGINT (Ctrl+C)
@@ -56,7 +57,7 @@ def sigint_handler(signal=None, frame=None) -> None:
     global log
     
     current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"\nCtrl+C received at: {current_function}()")
+    log.entry(f"Ctrl+C received at: {current_function}()")
     process_status['running'] = False
 
 # Register the signal handler function, to handle system kill commands
@@ -179,6 +180,8 @@ def main():
     global process_status
     global log
 
+    log.entry("Starting....")
+    
     try:
         # create db object using databaseHandler class for the backup and processing database
         db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
@@ -293,10 +296,12 @@ def main():
                 log.entry(f"Finished processing '{filename}'.")
                 
             else:
-                log.entry(f"No processing task. Waiting for {k.HOST_TASK_REQUEST_WAIT_TIME/k.SECONDS_IN_MINUTE} minutes.")
-                # wait for a task to be posted
-                time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME)
+                time_to_wait = int(k.FILE_TASK_EXECUTION_WAIT_TIME+k.FILE_TASK_EXECUTION_WAIT_TIME*random.random())
                 
+                log.entry(f"No processing task. Waiting for {time_to_wait} seconds.")
+                # wait for a task to be posted
+                time.sleep(time_to_wait)
+        
         except Exception as e:
             
             if not task:
@@ -335,6 +340,7 @@ def main():
             
             pass
             
+        log.entry("Shutting down....")
         
 if __name__ == "__main__":
     main()
