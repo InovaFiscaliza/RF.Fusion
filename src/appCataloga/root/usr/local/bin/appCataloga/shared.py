@@ -56,6 +56,7 @@ class log:
         self.error_msg = []
         
         self.pid =  os.getpid()
+        self.pname = os.path.basename(sys.argv[0])
                 
         if isinstance(verbose,dict):
             self.verbose = verbose
@@ -74,7 +75,7 @@ class log:
             try:
                 now = datetime.now()
                 date_time = now.strftime("%Y/%m/%d %H:%M:%S")
-                message = f"{date_time} | p.{self.pid} | Log started\n"
+                message = f"{date_time} | p.{self.pid} | p.{self.pname} | Log started\n"
                 
                 self.log_file = open(log_file_name, "a")
                 self.log_file.write(message)
@@ -92,13 +93,13 @@ class log:
         if self.verbose["log"]:
             date_time = now.strftime("%Y/%m/%d %H:%M:%S")
             if self.target_file:
-                message = f"{date_time} | p.{self.pid} | {new_entry}\n"
+                message = f"{date_time} | p.{self.pid} | p.{self.pname} | {new_entry}\n"
                 self.log_file = open(self.log_file_name, "a")
                 self.log_file.write(message)
                 self.log_file.close()
         
             if self.target_screen:
-                message = f"{font.OKGREEN}{date_time} | p.{self.pid} | {font.ENDC}{new_entry}"
+                message = f"{font.OKGREEN}{date_time} | p.{self.pid} | p.{self.pname} |{font.ENDC} {new_entry}"
                 print(message)
 
     def warning(self, new_entry):
@@ -109,13 +110,13 @@ class log:
         if self.verbose["warning"]:
             date_time = now.strftime("%Y/%m/%d %H:%M:%S")
             if self.target_file:
-                message = f"{date_time} | p.{self.pid} | {new_entry}\n"
+                message = f"{date_time} | p.{self.pid} | p.{self.pname} | {new_entry}\n"
                 self.log_file = open(self.log_file_name, "a")
                 self.log_file.write(message)
                 self.log_file.close()
         
             if self.target_screen:
-                message = f"{font.WARNING}{date_time} | p.{self.pid} | {font.ENDC}{new_entry}"
+                message = f"{font.WARNING}{date_time} | p.{self.pid} | p.{self.pname} | {font.ENDC}{new_entry}"
                 print(new_entry)
                             
     def error(self, new_entry):
@@ -126,13 +127,13 @@ class log:
         if self.verbose["error"]:
             date_time = now.strftime("%Y/%m/%d %H:%M:%S")
             if self.target_file:
-                message = f"{date_time} | p.{self.pid} | {new_entry}\n"
+                message = f"{date_time} | p.{self.pid} | p.{self.pname} | {new_entry}\n"
                 self.log_file = open(self.log_file_name, "a")
                 self.log_file.write(message)
                 self.log_file.close()
         
             if self.target_screen:
-                message = f"{font.FAIL}{date_time} | p.{self.pid} | {font.ENDC}{new_entry}"
+                message = f"{font.FAIL}{date_time} | p.{self.pid} | p.{self.pname} | {font.ENDC}{new_entry}"
                 print(message)
 
     def dump_log(self):
