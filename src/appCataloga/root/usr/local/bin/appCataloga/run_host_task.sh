@@ -1,26 +1,15 @@
 #!/bin/bash
 
-
-if [ -n "$2" ]; then
-    WORKER=$2
-else
-    WORKER="0"
-fi
-
 # Replace 'path_to_your_python_app' with the actual path to your Python application script.
-APP_PATH="/usr/local/bin/appCataloga/run_host_task.py worker=$WORKER"
+APP_PATH="/usr/local/bin/appCataloga/run_host_task.py"
 CONDA_PATH="/usr/local/bin/appCataloga/miniconda3/bin/activate"
-PID_FILE="/var/run/host_task_worker_$WORKER.pid"
+PID_FILE="/var/run/run_host_task.pid"
 ENV_NAME="appdata"
 
 # Replace 'path_to_your_python_app' with the actual path to your Python application script.
 
 PID_FILE_ROOT="/var/run/run_host_task"
-if [ -n "$2" ]; then
-    PID_FILE="$PID_FILE_ROOT.$2.pid"
-else
-    PID_FILE="$PID_FILE_ROOT.0.pid"
-fi
+PID_FILE="$PID_FILE_ROOT.pid"
 
 start() {
 
@@ -52,13 +41,6 @@ restart() {
     stop
     start
 }
-
-# add worker id to the PID_FILE name
-if [ -n "$2" ]; then
-    PID_FILE="$PID_FILE.$2.pid"
-else
-    PID_FILE="$PID_FILE.0.pid"
-fi
 
 case "$1" in
 start)

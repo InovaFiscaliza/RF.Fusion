@@ -58,20 +58,24 @@ fi
 
 echo "Created new $APP_PATH"
 
-# loop through the service array and create the soft links if they don't already exist
-for i in "${!services[@]}"; do
-    if ! [ -L "/etc/systemd/system/${services[$i]}" ]; then
-        if ! ln -s "$APP_PATH${scripts[$i]}" "/etc/systemd/system/${services[$i]}"; then
-            echo "Error creating soft link for /etc/systemd/system/${services[$i]}. Do it manually."
-        fi
-    else
-        echo "Soft link for /etc/systemd/system/${services[$i]} already exists."
-    fi
-done
-
 # loop through script array and set the SE Linux context for each script
 for i in "${!scripts[@]}"; do
     if ! /sbin/restorecon -v "$APP_PATH${scripts[$i]}"; then
         echo "Error setting SE Linux. Do it manually."
     fi
 done
+
+# loop through the service array and create the soft links if they don't already exist
+for i in "${!services[@]}"; do
+    if [ -f "/etc/systemd/system/${services[$i]}" ]; then
+        if ! rm "/etc/systemd/system/${services[$i]}"; then
+            echo "Error removing soft link for /etc/systemd/system/${services[$i]}. Do it manually and run again."
+            exit 1
+        fi
+    fi
+    if ! ln -s "$APP_PATH${services[$i]}" "/etc/systemd/system/${services[$i]}"; then
+        echo "Error creating soft link for /etc/systemd/system/${services[$i]}. Do it manually and run again."
+        exit 1
+    fi
+done
+

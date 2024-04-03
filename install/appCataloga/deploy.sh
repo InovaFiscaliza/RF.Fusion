@@ -37,9 +37,8 @@ git_local_repo="$HOME/RF.Fusion"
 git_install_folder="install/appCataloga"
 git_src_folder="src/appCataloga/root"
 
-tmpFolder="/tmp/appCataloga"
-
 # declare folders to be used
+tmpFolder="/tmp/appCataloga"
 dataFolder="etc/appCataloga"
 scriptFolder="usr/local/bin/appCataloga"
 # systemdFolder="etc/systemd/system" To be used for future systemd service files
@@ -48,28 +47,39 @@ scriptFolder="usr/local/bin/appCataloga"
 # declare an associative array with pairs of install required files to download and target folders
 declare -A installFiles=(
     ["secret.py"]=$dataFolder
-    ["equipmentType.csv"]=$dataFolder
-    ["fileType.csv"]=$dataFolder
-    ["IBGE-BR_Municipios_2020_BULKLOAD.csv"]=$dataFolder
-    ["IBGE-BR_UF_2020_BULKLOAD.csv"]=$dataFolder
-    ["measurementUnit.csv"]=$dataFolder
-    ["createMeasureDB.sql"]=$scriptFolder
-    ["createProcessingDB.sql"]=$scriptFolder
 )
 
 # declare an associative array with pairs of update required files to download and target folders
 declare -A updateFiles=(
-    ["config.py"]=$dataFolder
-    ["appCataloga.py"]=$scriptFolder
-    ["backup_control.py"]=$scriptFolder
-    ["backup_single_host.py"]=$scriptFolder
-    ["processing_control.py"]=$scriptFolder
     ["db_handler.py"]=$scriptFolder
     ["shared.py"]=$scriptFolder
-    ["environment.yml"]=$scriptFolder
+    ["run_file_backup_task.py"]=$scriptFolder
+    ["run_file_backup_task@.service"]=$scriptFolder
+    ["run_file_backup_task.sh"]=$scriptFolder
+    ["run_file_bin_processing.py"]=$scriptFolder
+    ["run_file_bin_processing.service"]=$scriptFolder
+    ["run_file_bin_processing.sh"]=$scriptFolder
+    ["run_host_task.py"]=$scriptFolder
+    ["run_host_task@.service"]=$scriptFolder
+    ["run_host_task.sh"]=$scriptFolder
+    ["appCataloga.py"]=$scriptFolder
     ["appCataloga.sh"]=$scriptFolder
     ["appCataloga.service"]=$scriptFolder
+    ["environment.yml"]=$tmpFolder
+    ["equipmentType.csv"]=$tmpFolder
+    ["fileType.csv"]=$tmpFolder
+    ["IBGE-BR_Municipios_2020_BULKLOAD.csv"]=$tmpFolder
+    ["IBGE-BR_UF_2020_BULKLOAD.csv"]=$tmpFolder
+    ["measurementUnit.csv"]=$tmpFolder
+    ["createMeasureDB.sql"]=$tmpFolder
+    ["createProcessingDB.sql"]=$tmpFolder
 )
+
+# declare an associative array with pairs of special required files to download and target folders
+# these files may require special handling by the user if changed
+declare -A special_files=(
+    ["config.py"]=$dataFolder)
+
 
 #! Varios functions to be used later
 print_help() {
@@ -106,10 +116,8 @@ create_tmp_folder() {
 }
 
 download_file() {
-    # download file
+    # download file using name received as argument
     wget -q --show-progress "$1"
-
-    # test if file has csv or sql extension, if so, define type as 644
 
     # check if the file was downloaded, if not, exit
     if [ ! -f "${1##*/}" ]; then
@@ -118,10 +126,11 @@ download_file() {
         rm -rf "$tmpFolder"
         exit
     else
+        # if file was downloaded, convert to unix format and set permissions according to file extension
         dos2unix -q "${1##*/}"
 
         case "${1##*.}" in
-        csv | sql)
+        csv | sql | yml | service)
             chmod 644 "${1##*/}"
             ;;
         py | sh)
@@ -141,8 +150,15 @@ get_files() {
             download_file "$full_file_name"
         done
 
+        # download files that are in the special list
+        for file in "${!special_files[@]}"; do
+            folder="${special_files[$file]}"
+            full_file_name="$repository/$folder/${file}"
+            download_file "$full_file_name"
+        done
+
     elif [ "$1" == "-i" ]; then
-        # download files that are in the update list
+        # download files that are in the install list
         get_files "-u"
 
         # download files in the install list
@@ -152,6 +168,19 @@ get_files() {
             download_file "$full_file_name"
         done
     fi
+}
+
+handle_special() {
+            # test if file is "config.py"
+            if [ "$file" == "config.py" ]; then
+                # check if file is different from the one in the target folder
+                if [ -f "/$folder/$file" ]; then
+                    if ! diff -q "$file" "/$folder/$file"; then
+                        echo "Error: /$folder/$file already exists and is different from the downloaded file."
+                        scritpError=true
+                    fi
+                fi
+            fi
 }
 
 # Function to move files from tmp to target folders
@@ -167,12 +196,29 @@ move_files() {
                 scritpError=true
             fi
         done
+        for file in "${!special_files[@]}"; do
+            folder="${special_files[$file]}"
+            if [ -f "/$folder/$file" ]; then
+                if ! diff -q "$file" "/$folder/$file"; then
+                    echo "Warning: /$folder/$file already exists. A backup will be created in the same folder."
+                    if ! mv -f "/$folder/$file" "/$folder/$file.bak"; then
+                        echo "Error moving /$folder/$file to /$folder/$file.bak"
+                        scritpError=true
+                    fi
+                fi
+                if ! mv -f "$file" "/$folder"; then
+                    echo "Error moving $file to /$folder"
+                    scritpError=true
+                fi
+            fi
+        done
     # move files from the install list to the target folders
     elif [ "$1" == "-i" ]; then
         move_files "-u"
 
         for file in "${!installFiles[@]}"; do
             folder="${installFiles[$file]}"
+            
             if ! mv -f "$file" "/$folder"; then
                 echo "Error moving $file to /$folder"
                 scritpError=true
@@ -184,7 +230,7 @@ move_files() {
         echo "Error moving files. Check user and target folder permissions."
 
         echo "Rolling back files moved to /$dataFolder and /$scriptFolder"
-        remove_files -v
+        remove_files "$1" -v
         exit
     fi
 }
@@ -202,6 +248,7 @@ prepare_service() {
 # Function to remove tmp folder
 remove_tmp_folder() {
     # query user input to remove tmp folder
+    echo "For inital install you will need to run the database creation scripts manually from the /$tmpFolder folder."
     read -p "Remove $tmpFolder? [y/N] " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -220,24 +267,37 @@ remove_tmp_folder() {
 remove_files() {
     scritpError=false
 
-    for file in "${!installFiles[@]}"; do
-        folder="${installFiles[$file]}"
-        if ! rm -f "/$folder/$file}"; then
-            if [ "$1" == "-v" ]; then
-                echo "Error removing /$folder/$file}"
+    if [ "$1" == "-u" ]; then
+        for file in "${!updateFiles[@]}"; do
+            folder="${updateFiles[$file]}"
+            if ! rm -f "/$folder/$file}"; then
+                if [ "$2" == "-v" ]; then
+                    echo "Error removing /$folder/$file}"
+                fi
+                scritpError=true
             fi
-            scritpError=true
-        fi
-    done
-    for file in "${!updateFiles[@]}"; do
-        folder="${updateFiles[$file]}"
-        if ! rm -f "/$folder/$file}"; then
-            if [ "$1" == "-v" ]; then
-                echo "Error removing /$folder/$file}"
+        done
+        for file in "${!special_files[@]}"; do
+            folder="${special_files[$file]}"
+            if ! rm -f "/$folder/$file}"; then
+                if [ "$2" == "-v" ]; then
+                    echo "Error removing /$folder/$file}"
+                fi
+                scritpError=true
             fi
-            scritpError=true
-        fi
-    done
+        done
+    elif [ "$1" == "-i" ]; then
+        remove_files -u "$2"
+        for file in "${!installFiles[@]}"; do
+            folder="${installFiles[$file]}"
+            if ! rm -f "/$folder/$file}"; then
+                if [ "$2" == "-v" ]; then
+                    echo "Error removing /$folder/$file}"
+                fi
+                scritpError=true
+            fi
+        done
+    fi
 
     if [ "$scritpError" == true ]; then
         echo "Error removing files. Please remove them manually."
@@ -249,13 +309,13 @@ remove_files() {
     if [ -z "$(ls -A "/$dataFolder")" ]; then
         rm -rf "/${dataFolder:?}"
     else
-        echo "Error removing folder /${dataFolder:?}."
+        echo "Error removing folder /${dataFolder:?}. Folder not empty."
         scritpError=true
     fi
     if [ -z "$(ls -A "/$scriptFolder")" ]; then
         rm -rf "/${scriptFolder:?}"
     else
-        echo "Error removing folder /${scriptFolder:?}."
+        echo "Error removing folder /${scriptFolder:?}. Folder not empty."
         scritpError=true
     fi
 
@@ -318,7 +378,7 @@ case "$1" in
     update_deploy
     ;;
 -r)
-    remove_files -v
+    remove_files -i -v
     ;;
 -l)
     link_files -v
