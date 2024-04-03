@@ -182,7 +182,7 @@ def main():
                     continue
                 # if it is the zero worker, wait and try again later.
                 else:
-                    time_to_wait = k.FILE_TASK_EXECUTION_WAIT_TIME+k.FILE_TASK_EXECUTION_WAIT_TIME*random.random()
+                    time_to_wait = int(k.FILE_TASK_EXECUTION_WAIT_TIME+k.FILE_TASK_EXECUTION_WAIT_TIME*random.random())
                     log.entry(f"No host found with pending backup. Waiting {time_to_wait} seconds")
                     time.sleep(time_to_wait)
                     continue
@@ -242,7 +242,7 @@ def main():
                 remote_file = f"{file_list[0]}/{filename}"
             
                 # test if remote_file does not exist, update the database and skip to the next file
-                if not sftp_conn.test(remote_file): # ! Test This
+                if not sftp_conn.test(remote_file):
                     message=f"File '{remote_file}' not found in remote host {host['host_add']}"
                     db_bp.file_task_error(  task_id=task_id,
                                             message=message)
