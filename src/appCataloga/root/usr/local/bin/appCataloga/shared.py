@@ -56,7 +56,7 @@ class log:
         self.error_msg = []
         
         self.pid =  os.getpid()
-        self.pname = os.path.basename(sys.argv[0])
+        self.pname = os.path.basename(sys.argv[0]).split(".")[0]
         self.last_msg = ""
                 
         if isinstance(verbose,dict):
@@ -96,7 +96,7 @@ class log:
             self.log_file.close()
     
         if self.target_screen:
-            message = f"{font.OKGREEN}{datetime} | p.{self.pid} | p.{self.pname} |{font.ENDC} {self.last_msg}"
+            message = f"{font.OKGREEN}{datetime} | p.{self.pid} | {self.pname} |{font.ENDC} {self.last_msg}"
             print(message)
     
     def entry(self, new_entry):
@@ -410,7 +410,8 @@ class hostDaemon():
         # If HALT_FLAG exists, wait and retry each 5 minutes for 30 minutes
         while self.sftp_conn.test(self.config['HALT_FLAG']):
             # If HALT_FLAG exists, wait for 5 minutes and test again
-            time.sleep(k.HOST_TASK_REQUEST_WAIT_TIME / k.HALT_FLAG_CHECK_CYCLES)
+            time_to_wait = k.HOST_TASK_REQUEST_WAIT_TIME / k.HALT_FLAG_CHECK_CYCLES
+            time.sleep(time_to_wait)
             self.log.warning(f"HALT_FLAG file found in remote host {self.host['host_uid']}({self.host['host_add']}). Waiting {(k.HOST_TASK_REQUEST_WAIT_TIME / (k.HALT_FLAG_CHECK_CYCLES * 60))} minutes.")
             loop_count += 1
 

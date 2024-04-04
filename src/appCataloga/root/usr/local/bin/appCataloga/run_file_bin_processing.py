@@ -296,9 +296,9 @@ def main():
                 log.entry(f"Finished processing '{filename}'.")
                 
             else:
-                time_to_wait = int(k.FILE_TASK_EXECUTION_WAIT_TIME+k.FILE_TASK_EXECUTION_WAIT_TIME*random.random())
+                time_to_wait = int((k.MAX_FILE_TASK_WAIT_TIME+k.MAX_FILE_TASK_WAIT_TIME*random.random())/2)
                 
-                log.entry(f"No processing task. Waiting for {time_to_wait} seconds.")
+                log.entry(f"Waiting {time_to_wait} seconds for new tasks.")
                 # wait for a task to be posted
                 time.sleep(time_to_wait)
         
@@ -340,7 +340,7 @@ def main():
             
             pass
             
-        log.entry("Shutting down....")
+    log.entry("Shutting down....")
         
 if __name__ == "__main__":
     main()

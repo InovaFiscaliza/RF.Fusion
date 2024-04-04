@@ -1482,9 +1482,6 @@ class dbHandler():
         
             return {"file_tasks":result}
         
-        # connect to the database
-        self._connect()
-
         host_task = self.next_file_task(task_type=task_type, task_status=task_status)
         
         try:
@@ -1497,6 +1494,8 @@ class dbHandler():
                             f"NU_STATUS = {self.TASK_PENDING} AND "
                             f"NU_TYPE = {task_type};")
             
+            # connect to the database
+            self._connect()
             self.cursor.execute(query)
             self.db_connection.commit()
         

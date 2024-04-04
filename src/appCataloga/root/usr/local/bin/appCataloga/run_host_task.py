@@ -110,8 +110,8 @@ def main():
                     "password": (str)}"""  
 
             if not task:
-                    time_to_wait = k.HOST_TASK_EXECUTION_WAIT_TIME+k.HOST_TASK_EXECUTION_WAIT_TIME*random.random()
-                    log.entry(f"No host found with pending tasks. Waiting {time_to_wait} seconds")
+                    time_to_wait = int((k.MAX_HOST_TASK_WAIT_TIME+k.MAX_HOST_TASK_WAIT_TIME*random.random())/2)
+                    log.entry(f"Waiting {time_to_wait} seconds for new tasks.")
                     time.sleep(time_to_wait)
                     continue
                 

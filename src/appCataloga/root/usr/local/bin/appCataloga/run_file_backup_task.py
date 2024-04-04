@@ -99,7 +99,7 @@ def spawn_file_task_worker(worker_list: list) -> None:
     
     # Use systemd to start a new file task process
     # Comment this line for testing if there is no systemd service available
-    # os.system(f"systemctl start {k.FILE_TASK_SERVICE_NAME}{new_worker}")
+    os.system(f"systemctl start {k.FILE_TASK_SERVICE_NAME}{new_worker}")
 
 def worker_counter(process_filename:str) -> list:
     """Count the number of running file task processes.
@@ -144,6 +144,8 @@ def worker_counter(process_filename:str) -> list:
     # remove duplicates from worker_list
     worker_list = list(dict.fromkeys(worker_list))
     
+    log.entry(f"Running workers: {worker_list}")
+    
     return worker_list
 
 def main():
@@ -184,8 +186,8 @@ def main():
                     continue
                 # if it is the zero worker, wait and try again later.
                 else:
-                    time_to_wait = int(k.FILE_TASK_EXECUTION_WAIT_TIME+k.FILE_TASK_EXECUTION_WAIT_TIME*random.random())
-                    log.entry(f"No host found with pending backup. Waiting {time_to_wait} seconds")
+                    time_to_wait = int((k.MAX_FILE_TASK_WAIT_TIME+k.MAX_FILE_TASK_WAIT_TIME*random.random())/2)
+                    log.entry(f"Waiting {time_to_wait} seconds for new tasks.")
                     time.sleep(time_to_wait)
                     continue
 
@@ -308,6 +310,8 @@ def main():
         except Exception as e:
             log.error(f"Unmapped error occurred: {str(e)}")
             raise ValueError(log.dump_error())
+    
+    # TODO: #37 Check if task was completted or a kill request was received, and update the database accordingly to move back tasks to pending status
     
     log.entry("Shutting down....")
     
