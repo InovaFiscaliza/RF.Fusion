@@ -1,4 +1,5 @@
 #!/bin/bash
+echo "All appCataloga services will be started"
 
 systemctl start run_host_task.service
 echo "run_host_task.service started"

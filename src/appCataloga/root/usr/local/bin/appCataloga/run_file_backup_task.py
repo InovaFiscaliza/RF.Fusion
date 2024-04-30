@@ -99,7 +99,7 @@ def spawn_file_task_worker(worker_list: list) -> None:
     
     # Use systemd to start a new file task process
     # Comment this line for testing if there is no systemd service available
-    os.system(f"systemctl start {k.FILE_TASK_SERVICE_NAME}{new_worker}")
+    os.system(f"systemctl start {k.MAX_FILE_TASK_WAIT_TIME}{new_worker}")
 
 def worker_counter(process_filename:str) -> list:
     """Count the number of running file task processes.
@@ -182,7 +182,7 @@ def main():
                 if worker_list.__len__() > 2:
                     log.entry(f"No host found with pending backup. Exiting worker {process_status['worker']}")
                     # stop systemd service for this worker.
-                    os.system(f"systemctl stop {k.FILE_TASK_SERVICE_NAME}{process_status['worker']}")
+                    os.system(f"systemctl stop {k.MAX_FILE_TASK_WAIT_TIME}{process_status['worker']}")
                     continue
                 # if it is the zero worker, wait and try again later.
                 else:

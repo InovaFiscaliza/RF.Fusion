@@ -1,4 +1,5 @@
 #!/bin/bash
+echo "All appCataloga services will be stopped"
 
 systemctl stop run_host_task.service
 echo "run_host_task.service stopped"
