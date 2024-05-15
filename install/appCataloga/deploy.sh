@@ -53,12 +53,12 @@ declare -A installFiles=(
 declare -A updateFiles=(
     ["db_handler.py"]=$scriptFolder
     ["shared.py"]=$scriptFolder
-    ["run_file_backup_task.py"]=$scriptFolder
-    ["run_file_backup_task@.service"]=$scriptFolder
-    ["run_file_backup_task.sh"]=$scriptFolder
-    ["run_file_bin_processing.py"]=$scriptFolder
-    ["run_file_bin_processing.service"]=$scriptFolder
-    ["run_file_bin_processing.sh"]=$scriptFolder
+    ["appCataloga_file_bkp.py"]=$scriptFolder
+    ["appCataloga_file_bkp@.service"]=$scriptFolder
+    ["appCataloga_file_bkp.sh"]=$scriptFolder
+    ["appCataloga_file_bin_proces.py"]=$scriptFolder
+    ["appCataloga_file_bin_proces.service"]=$scriptFolder
+    ["appCataloga_file_bin_proces.sh"]=$scriptFolder
     ["run_host_task.py"]=$scriptFolder
     ["run_host_task@.service"]=$scriptFolder
     ["run_host_task.sh"]=$scriptFolder
@@ -79,7 +79,6 @@ declare -A updateFiles=(
 # these files may require special handling by the user if changed
 declare -A special_files=(
     ["config.py"]=$dataFolder)
-
 
 #! Varios functions to be used later
 print_help() {
@@ -171,16 +170,16 @@ get_files() {
 }
 
 handle_special() {
-            # test if file is "config.py"
-            if [ "$file" == "config.py" ]; then
-                # check if file is different from the one in the target folder
-                if [ -f "/$folder/$file" ]; then
-                    if ! diff -q "$file" "/$folder/$file"; then
-                        echo "Error: /$folder/$file already exists and is different from the downloaded file."
-                        scritpError=true
-                    fi
-                fi
+    # test if file is "config.py"
+    if [ "$file" == "config.py" ]; then
+        # check if file is different from the one in the target folder
+        if [ -f "/$folder/$file" ]; then
+            if ! diff -q "$file" "/$folder/$file"; then
+                echo "Error: /$folder/$file already exists and is different from the downloaded file."
+                scritpError=true
             fi
+        fi
+    fi
 }
 
 # Function to move files from tmp to target folders
@@ -218,7 +217,7 @@ move_files() {
 
         for file in "${!installFiles[@]}"; do
             folder="${installFiles[$file]}"
-            
+
             if ! mv -f "$file" "/$folder"; then
                 echo "Error moving $file to /$folder"
                 scritpError=true

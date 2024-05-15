@@ -1,18 +1,18 @@
 #!/bin/bash
 echo "All appCataloga services will be stopped"
 
-systemctl stop run_host_task.service
-echo "run_host_task.service stopped"
+systemctl stop appCataloga_host_check
+echo "appCataloga_host_check stopped"
 
-# Create a list with all instances of run_file_backup_task@* services
+# Create a list with all instances of appCataloga_file_bkp@* services
 # and stop them
-for i in $(systemctl list-units --full --all | grep run_file_backup_task@ | awk '{print $1}'); do
+for i in $(systemctl list-units --full --all | grep appCataloga_file_bkp@ | awk '{print $1}'); do
     systemctl stop $i
     echo "$i stopped"
 done
 
-systemctl stop run_file_bin_processing.service
-echo "run_file_bin_processing.service stopped"
+systemctl stop appCataloga_file_bin_proces.service
+echo "appCataloga_file_bin_proces.service stopped"
 
 systemctl stop appCataloga.service
 echo "appCataloga.service stopped"
@@ -25,4 +25,3 @@ else
     rm -f /var/log/appCataloga.log
     echo "Log file removed"
 fi
-

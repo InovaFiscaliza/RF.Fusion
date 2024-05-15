@@ -6,9 +6,9 @@ RequiresMountsFor=/mnt/reposfi
 [Service]
 Type=simple
 WorkingDirectory=/usr/local/bin/appCataloga
-ExecStart=/usr/local/bin/appCataloga/run_file_backup_task.sh start %i
-ExecStop=/usr/local/bin/appCataloga/run_file_backup_task.sh stop %i
-ExecReload=/usr/local/bin/appCataloga/run_file_backup_task.sh restart %i
+ExecStart=/usr/local/bin/appCataloga/appCataloga_file_bkp.sh start %i
+ExecStop=/usr/local/bin/appCataloga/appCataloga_file_bkp.sh stop %i
+ExecReload=/usr/local/bin/appCataloga/appCataloga_file_bkp.sh restart %i
 Restart=on-failure
 
 [Install]

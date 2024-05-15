@@ -458,9 +458,9 @@ Activate systemctl service that will keep the application running
 
 ```shell
 systemctl enable --now appCataloga.service
-systemctl enable --now run_host_task.service
-systemctl enable --now run_file_backup_task@0.service 
-systemctl enable --now run_file_bin_processing.service
+systemctl enable --now appCataloga_host_check
+systemctl enable --now appCataloga_file_bkp@0.service 
+systemctl enable --now appCataloga_file_bin_proces.service
 
 ```
 

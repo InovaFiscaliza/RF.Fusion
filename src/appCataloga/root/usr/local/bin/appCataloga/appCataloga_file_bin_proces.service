@@ -6,9 +6,9 @@ RequiresMountsFor=/mnt/reposfi
 [Service]
 Type=simple
 WorkingDirectory=/usr/local/bin/appCataloga
-ExecStart=/usr/local/bin/appCataloga/run_file_bin_processing.sh start
-ExecStop=/usr/local/bin/appCataloga/run_file_bin_processing.sh stop
-ExecReload=/usr/local/bin/appCataloga/run_file_bin_processing.sh restart
+ExecStart=/usr/local/bin/appCataloga/appCataloga_file_bin_proces.sh start
+ExecStop=/usr/local/bin/appCataloga/appCataloga_file_bin_proces.sh stop
+ExecReload=/usr/local/bin/appCataloga/appCataloga_file_bin_proces.sh restart
 Restart=on-failure
 
 [Install]
