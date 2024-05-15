@@ -4,8 +4,15 @@
 # shellcheck source=/usr/local/bin/appCataloga/miniconda3/bin/activate
 APP_PATH="/usr/local/bin/appCataloga/appCataloga_file_bin_proces.py"
 CONDA_PATH="/usr/local/bin/appCataloga/miniconda3/bin/activate"
-PID_FILE="/var/run/file_bin_processing.pid"
 ENV_NAME="appdata"
+
+PID_FILE_PATH="/var/run/appCataloga"
+PID_FILE="$PID_FILE_PATH/appCataloga_file_bin_proces.pid"
+
+# test if PID_FILE_PATH folder exists and create it
+if [ ! -d $PID_FILE_PATH ]; then
+    mkdir $PID_FILE_PATH
+fi
 
 start() {
 
@@ -16,10 +23,10 @@ start() {
         source activate $ENV_NAME
         nohup python $APP_PATH >/dev/null 2>&1 &
         echo $! >$PID_FILE
-        echo "Service started."
         while [ -f $PID_FILE ]; do
             sleep 2
         done
+        echo "Service started."
     fi
 }
 
