@@ -29,10 +29,11 @@ start() {
         source activate $ENV_NAME
         nohup python $APP_PATH >/dev/null 2>&1 &
         echo $! >$PID_FILE
+        echo "Service started."
+        # keep service running until the PID file is removed to avoid systemd restart
         while [ -f $PID_FILE ]; do
             sleep 2
         done
-        echo "Service started."
     fi
 }
 
