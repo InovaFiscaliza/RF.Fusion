@@ -17,14 +17,14 @@ fi
 # Replace 'path_to_your_python_app' with the actual path to your Python application script.
 start() {
 
-    if [ -f "$PID_FILE_PATH/$PID_FILE" ]; then
+    if [ -f "$PID_FILE" ]; then
         echo "The service is already running."
     else
         source "$CONDA_PATH"
         source activate $ENV_NAME
         nohup python $APP_PATH >/dev/null 2>&1 &
-        echo $! >"$PID_FILE_PATH/$PID_FILE"
-        while [ -f "$PID_FILE_PATH/$PID_FILE" ]; do
+        echo $! >"$PID_FILE"
+        while [ -f "$PID_FILE" ]; do
             sleep 2
         done
         echo "Service started."
