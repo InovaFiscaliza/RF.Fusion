@@ -12,13 +12,11 @@ Keep the backup process running in a separate process and restart it if it fails
         <user> single string with user id to be used to access the host
         <pass> single string with user password to be used to access the host
         
-    Returns:
-        (json) =  { 'Total Files': (int),
-                    'Files to backup': (int),
-                    'Last Backup data': (str)
-                    'Days since last backup': (int),
-                    'Status': (int), 
-                    'Message': (str)}
+    Returns: (through soket connection to the client)
+        (json) =  { 'id_host': (int),
+                     ... all host status as recorded in the db ...,
+                     status: (int),
+                     message: (str)}
 
         Status may be 1=valid data or 0=error in the script
         All keys except "Message" are suppresed when Status=0
@@ -34,7 +32,9 @@ import socket
 import json
 import signal
 from selectors import DefaultSelector, EVENT_READ
+import os
 import time
+import inspect
 
 import subprocess
 
@@ -43,41 +43,53 @@ import config as k
 import shared as sh
 import db_handler as dbh
 
-#! TEST ONLY host_statistics initialization remove for production
-HOST_STATISTICS = { "Total Files":1,
-                    "Files pending backup":0,
-                    "Files pending processing":0,
-                    "Last Backup":"today",
-                    "Last Processing":"today",
-                    "Days since last backup":0}
-
-def handler(signum, frame, interrupt_write, log):
-    """Handle interrupt signal from keyboard to the socket select
-
-    Usage:
-        handler(signum, frame)
-    
-    Parameters:
-        <signum>: signal number
-        <frame>: current stack frame (None or a frame object
-        
-    Returns:
-        None
-    """
-    log.entry(f"Signal handler called with signal {signum}")
-    interrupt_write.send(b'\0')
+process_status = {  "conn": None,
+                    "halt_flag": None,
+                    "running": True}
+# Create a pipe
+r_pipe, w_pipe = os.pipe()
 
 # function that stop systemd service
 def stop_service():
-    command = ( f'bash -c '
-                f'systemctl stop appCataloga.service')                
+    command = ( 'bash -c '
+                'systemctl stop appCataloga.service')                
 
-    processing_task = subprocess.Popen([command],
-                                        stdout=subprocess.DEVNULL,
-                                        stderr=subprocess.PIPE,
-                                        text=True,
-                                        shell=True)
+    subprocess.Popen([command],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        shell=True)
 
+try:                # create a warning message object
+    log = sh.log()
+except Exception as e:
+    stop_service()
+    print(f"Error creating log object: {e}")
+    exit(1)
+
+# Define a signal handler for SIGTERM (kill command )
+def sigterm_handler(signal=None, frame=None) -> None:
+    global process_status
+    global log
+      
+    current_function = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"Kill signal received at: {current_function}()")
+    process_status["running"] = False
+    os.write(w_pipe, b'\0')
+
+# Define a signal handler for SIGINT (Ctrl+C)
+def sigint_handler(signal=None, frame=None) -> None:
+    global process_status
+    global log
+    
+    current_function = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"Ctrl+C received at: {current_function}()")
+    process_status['running'] = False
+    os.write(w_pipe, b'\0')
+
+# Register the signal handler function, to handle system kill commands
+signal.signal(signal.SIGTERM, sigterm_handler)
+signal.signal(signal.SIGINT, sigint_handler)
 
 def backup_queue(   conn:str,
                     hostid:str,
@@ -100,10 +112,11 @@ def backup_queue(   conn:str,
     Returns:
         dict: Dictionary with the current status for the hostid
     """
+    global log
     
-    db = dbh.dbHandler(database=k.BKP_DATABASE_NAME)
+    db = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
      
-    db.add_host_task(   task_type=db.BACKUP,
+    db.add_host_task(   task_type=db.BACKUP_TASK_TYPE,
                         host_id=hostid,
                         host_uid=host_uid,
                         host_addr=host_addr,
@@ -115,7 +128,8 @@ def backup_queue(   conn:str,
     
     return host_stat
 
-def serve_client(client_socket, log):
+def serve_client(client_socket):
+    global log
     
     receiving_data = True
     
@@ -141,7 +155,7 @@ def serve_client(client_socket, log):
             
             if host[0]==k.BACKUP_QUERY_TAG:
                 try:
-                    log.entry(f"Backup request received data from {client_socket.getpeername()[0]}: {data.decode()}")
+                    log.entry(f"Backup request received data from {client_socket.getpeername()[0]}")
                     
                     host[0]=client_socket.getpeername() # replace list first element with client IP address
                     
@@ -151,7 +165,7 @@ def serve_client(client_socket, log):
                     
                 except Exception as e:
                     log.entry(f"Error backup request: {e}")
-                    response = f'{k.START_TAG}{{"Status":0,"Error":"Could not create a backup task from the data provided."}}{k.END_TAG}'
+                    response = f'{k.START_TAG}{{"status":0,"error":"Could not create a backup task from the data provided."}}{k.END_TAG}'
                     pass
                     
                 receiving_data = False
@@ -159,14 +173,14 @@ def serve_client(client_socket, log):
             elif host[0]==k.CATALOG_QUERY_TAG:
                 log.entry(f"Catalog query received data from {client_socket.getpeername()[0]}: {data.decode()}")
                 
-                response = f'{k.START_TAG}{{"Status":0,"Error":"catalog command not implemented"}}{k.END_TAG}'
+                response = f'{k.START_TAG}{{"status":0,"error":"catalog command not implemented"}}{k.END_TAG}'
                 
                 receiving_data = False
                 
             else:
                 log.entry(f"Ignored data from from {client_socket.getpeername()[0]}. Received: {data.decode()}")
                 
-                response = f'{k.START_TAG}{{"Status":0,"Error":"host command not recognized"}}{k.END_TAG}'
+                response = f'{k.START_TAG}{{"status":0,"error":"host command not recognized"}}{k.END_TAG}'
                 
                 receiving_data = False
                 
@@ -178,126 +192,42 @@ def serve_client(client_socket, log):
         
         client_socket.close()
 
-def serve_forever(server_socket, interrupt_read, log):
+def serve_forever(server_socket, interrupt_read):
+    global process_status
+    global log
     
     sel = DefaultSelector()
     sel.register(interrupt_read, EVENT_READ)
     sel.register(server_socket, EVENT_READ)
-    
-    running_backup = False
-    running_processing = False
-    serving_forever = True
+    sel.register(r_pipe, EVENT_READ)
 
-    # TODO: #3 change independent running process for backup and processing to a single list of processes and use a loop to check if they are running
-    # TODO: #4 Include methods to send terminating signals to the running processes
-
-    # Use ProcessPoolExecutor to limit the number of concurrent processes
-    while serving_forever or not running_backup or not running_processing:
-        
-        
+    while process_status["running"]:
         # Wait for events using selector.select() method
         for key, _ in sel.select():
-            # if the interrupt_read (^C), shutdown the server
-            if key.fileobj == interrupt_read:
-                interrupt_read.recv(1)
-                if serving_forever:
-                    serving_forever = False
-                    if running_backup:
-                        log.entry("Server will shut down... Waiting for running tasks to finish.")
-                    else:
-                        log.entry("Shutting down....")
-                        exit(0)
-                        
-                else:
-                    log.entry("Shutting down but waiting for tasks to finish... please wait.")
 
             # if client tries to connect, accept the connection and serve the client
             if key.fileobj == server_socket:
                 client_socket, client_address = server_socket.accept()
-                if serving_forever:
+                if process_status["running"]:
                     log.entry(f"Connection established with: {client_address}")
-                    serve_client(client_socket, log)
+                    serve_client(client_socket)
                 else:
                     log.entry("Connection attempt rejected. Server is shutting down.")
-                    response = f'{k.START_TAG}{{"Status":0,"Error":"Server shutting down"}}{k.END_TAG}'
+                    response = f'{k.START_TAG}{{"status":0,"error":"Server shutting down"}}{k.END_TAG}'
                     byte_response = bytes(response, encoding="utf-8")
                     client_socket.sendall(byte_response)        
                     client_socket.close()
-
-        # Whenever there is an event, check if the backup process is running and if not, start it.
-        if not running_backup:
-            # start the backup control module as an independent process
-            command = ( f'bash -c '
-                        f'"source {k.MINICONDA_PATH}; '
-                        f'conda activate appdata; '
-                        f'python3 {k.BACKUP_CONTROL_MODULE}"')                
-
-            backup_process = subprocess.Popen([command],
-                                              stdout=subprocess.DEVNULL,
-                                              stderr=subprocess.PIPE,
-                                              text=True,
-                                              shell=True)
-            
-            log.entry(f"Backup process started: {command}")
-            running_backup = True
-
-        elif backup_process.poll() is not None:
-            backup_output, backup_errors = backup_process.communicate()
-            running_backup = False
-            
-            if backup_output:
-                log.entry(f"Backup process ended with: {backup_output}.")
-
-            if backup_errors:
-                running_backup = False
-                log.entry(f"Backup process error: {backup_errors}.")
-
-        # Whenever there is an event, check if file processing is running and if not, start it.
-        if not running_processing:
-            # start the file processing control module as an independent process
-            command = ( f'bash -c '
-                        f'"source {k.MINICONDA_PATH}; '
-                        f'conda activate appdata; '
-                        f'python3 {k.PROCESSING_CONTROL_MODULE}"')                
-
-            processing_task = subprocess.Popen([command],
-                                              stdout=subprocess.DEVNULL,
-                                              stderr=subprocess.PIPE,
-                                              text=True,
-                                              shell=True)
-            
-            log.entry(f"File processing started: {command}")
-            running_processing = True
-
-        elif processing_task.poll() is not None:
-            processing_output, processing_errors = processing_task.communicate()
-            running_processing = False
-            
-            if processing_output:
-                log.entry(f"File processing ended with: {processing_output}.")
-
-            if processing_errors:
-                running_processing = False
-                log.entry(f"File processing error: {processing_errors}.")
 
         # sleep one second to avoid system hang in case of error
         time.sleep(1)
             
 def main():
+    global log
     
-    try:                # create a warning message object
-        log = sh.log()
-    except Exception as e:
-        print(f"Error creating log object: {e}")
-        stop_service()
-        exit(1)
+    log.entry("Starting....")
     
     try:
         interrupt_read, interrupt_write = socket.socketpair()
-
-        # start signal handler that control a graceful shutdown 
-        signal.signal(signal.SIGINT, lambda signum, frame: handler (signum=signum, frame=frame, interrupt_write=interrupt_write, log=log))
-        signal.signal(signal.SIGTERM, lambda signum, frame: handler (signum=signum, frame=frame, interrupt_write=interrupt_write, log=log))
         
         log.entry(f"Server is listening on port {k.SERVER_PORT}")
 
@@ -306,9 +236,8 @@ def main():
         server_socket.bind(server_address)
         server_socket.listen(k.TOTAL_CONNECTIONS)
 
-        serve_forever(server_socket=server_socket, interrupt_read=interrupt_read, log=log)
+        serve_forever(server_socket=server_socket, interrupt_read=interrupt_read)
         
-        log.entry("Shutting down....")
         server_socket.close()
         stop_service()
     
@@ -316,6 +245,8 @@ def main():
         log.entry(f"Error: {e}")
         stop_service()
         exit(1)
+    
+    log.entry("Shutting down....")
 
 if __name__ == "__main__":
     main()

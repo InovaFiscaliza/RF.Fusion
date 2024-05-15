@@ -10,8 +10,8 @@
                     'Host Updated': (int),
                     'Interface Checked': (int),
                     'Interface Updated': (int),
-                    'Status': (int), 
-                    'Message': (str)}
+                    'status': (int), 
+                    'message': (str)}
 
         Status may be 1=valid data or 0=error in the script
         All keys except "Message" are suppresed when Status=0
@@ -22,7 +22,7 @@ from pyzabbix import ZabbixAPI
 import pandas as pd
 import json
 
-import rfFusionLib as rflib
+import z_shared as zsh
 import secrets as s
 # module constants
 URL_ZABBIX = "http://zabbixsfi.anatel.gov.br/" 
@@ -32,7 +32,7 @@ HOST_DATA = ["hostids", "host", "name", "status"]
 INTER_DATA = ["interfaceid","hostid","type","ip","dns","main"]
 GROUP_DATA = ["groupid","name"]
 
-wm = rflib.warning_msg()
+wm = zsh.warning_msg()
 
 # connect to Zabbix API
 zapi = ZabbixAPI(URL_ZABBIX)
@@ -56,39 +56,39 @@ df_inter = pd.DataFrame(zbx_dict)
 # merge host and interface data
 df_full = pd.merge(df_host, df_inter, on='hostid')
 
-stats = {'Host_Checked':len(df_full),'ID_Updated':0,'Interface_Updated':0,'Errors':0,'Status':1,'Message':'none'}
+stats = {'host_checked':len(df_full),'id_updated':0,'interface_updated':0,'errors':0,'status':1,'message':'none'}
 
 # labda function to set the Zabbix hostid macro value
 def set_host_id(host):
 
     try:
-        zbx_dict = zapi.usermacro.create(hostid=host['hostid'], macro="{$HOST_ID}", value=host.hostid)
-        stats['ID_Updated'] += 1
+        zapi.usermacro.create(hostid=host['hostid'], macro="{$HOST_ID}", value=host.hostid)
+        stats['id_updated'] += 1
     except Exception as e:
         if e.error['code'] == -32602:
             pass
         else:
             wm.compose_warning(e.args[0])
-            stats['Errors'] += 1
-            stats['Status'] = 0
+            stats['errors'] += 1
+            stats['status'] = 0
             pass
         
     try:
-        zbx_dict = zapi.usermacro.create(hostid=host['hostid'], macro="{$INTERFACE_ID}", value=host.interfaceid)
-        stats['Interface_Updated'] += 1
+        zapi.usermacro.create(hostid=host['hostid'], macro="{$INTERFACE_ID}", value=host.interfaceid)
+        stats['interface_updated'] += 1
     except Exception as e:
         if e.error['code'] == -32602:
             pass
         else:
             wm.compose_warning(e.args[0])
-            stats['Errors'] += 1
-            stats['Status'] = 0
+            stats['errors'] += 1
+            stats['status'] = 0
             pass
     
 none = df_full.apply(set_host_id, axis=1)
 
 # produce output
-if stats['Status'] == 0:
-    stats['Message'] = wm.warning_msg
+if stats['status'] == 0:
+    stats['message'] = wm.warning_msg
 
 print(json.dumps(stats))

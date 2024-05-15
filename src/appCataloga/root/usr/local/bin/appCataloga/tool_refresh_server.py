@@ -43,7 +43,7 @@ def list_repo_files(folder:str) -> set:
         folder (str): Folder name to list files
 
     Returns:
-        set: Set of tuples (filename, path) of files in the specified folder and subfolders
+        set: Set of tuples (path, filename) of files in the specified folder and subfolders
     """
     
     command = f"find {folder} -type f"
@@ -56,8 +56,8 @@ def list_repo_files(folder:str) -> set:
             continue
         filename = str(Path(full_filename).name)
         full_path = str(Path(full_filename).parent)
-        relative_path = full_path[len(k.REPO_FOLDER)+1:]
-        files_set.add((filename, relative_path))
+        #relative_path = full_path[len(k.REPO_FOLDER)+1:]
+        files_set.add((full_path, filename))
     
     return files_set
 
@@ -65,7 +65,7 @@ def move_file_set(files_to_move:set, target:str, log:sh.log) -> None:
     """Move files in a set to a target folder
 
     Args:
-        files_to_move (set): Set of tuples (filename, path) of files to move
+        files_to_move (set): Set of tuples (path, filename) of files to move
         target (str): Target folder to move files
         log (sh.log): Log object
     """
@@ -88,16 +88,16 @@ def move_file_set(files_to_move:set, target:str, log:sh.log) -> None:
             log.error(f"Error creating {target_folder}: {e}")
             return
     
-    for filename, path in files_to_move:
+    for path, filename in set(files_to_move):
 
         if ask_berfore:
             user_input = input(f"Move {path}/{filename} to {target}? (y/n): ")
             if user_input.lower() != 'y':
-                files_to_move.pop((filename, path))
+                files_to_move.discard((path, filename))
                 continue
         
-        src_path = Path(f"{k.REPO_FOLDER}/{path}/{filename}")
-        dst_path = Path(target) / filename
+        src_path = Path(f"{path}/{filename}")
+        dst_path = Path(f"{target}/{filename}")
         try:
             src_path.rename(dst_path)
         except Exception as e:
@@ -151,7 +151,8 @@ def refresh_tmp_files(log:sh.log) -> None:
     # Process TMP folder and database
     repo_tmp_files = list_repo_files(f"{k.REPO_FOLDER}/{k.TMP_FOLDER}")
     
-    db_tmp_files = db_bp.list_bpdb_files(status=k.BP_PENDING_TASK_STATUS)
+    db_tmp_files = db_bp.list_bpdb_files(   task_status=db_bp.TASK_PENDING,
+                                            task_type=db_bp.PROCESS_TASK_TYPE)
     
     log.entry(f"{len(repo_tmp_files)} files in the repository TMP_FOLDER:")
     log.entry(f"{len(db_tmp_files)} database entries related to repository TMP_FOLDER files.")
@@ -194,7 +195,8 @@ def refresh_trash_files(log:sh.log) -> None:
     # Process trash folder and database
     repo_trash_files = list_repo_files(f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}")
     
-    db_trash_files = db_bp.list_bpdb_files(status=k.BP_ERROR_TASK_STATUS)
+    db_trash_files = db_bp.list_bpdb_files( task_status=db_bp.TASK_ERROR,
+                                            task_type=db_bp.PROCESS_TASK_TYPE)
     
     # Compare sets
     files_missing_in_trash = db_trash_files - repo_trash_files
@@ -226,13 +228,13 @@ def refresh_trash_files(log:sh.log) -> None:
                 move_file_set(self.files, full_path, self.log)
                 
                 # change pathname to new path
-                self.files = {(filename, full_path) for filename, path in self.files}
+                self.files = {(full_path, filename) for filepath, filename in self.files}
                     
                 db_bp.add_task_from_file(self.files)
             
             def delete(self) -> None:
-                for filename, filepath in self.files:
-                    src_path = Path(f"{k.REPO_FOLDER}/{filepath}/{filename}")
+                for filepath, filename in self.files:
+                    src_path = Path(f"{filepath}/{filename}")
                     try:
                         src_path.unlink()
                     except Exception as e:
@@ -260,8 +262,8 @@ def refresh_trash_files(log:sh.log) -> None:
                         finish_cleaning = True
                         
                 case 'c':
-                    for filename, path in files_spilled_from_trash:
-                        handle_trash.files = {(filename, path)}
+                    for path, filename in files_spilled_from_trash:
+                        handle_trash.files = {(path, filename)}
                         ask_again = True
                         task_summary = {"move":0,
                                         "delete":0,
@@ -273,12 +275,12 @@ def refresh_trash_files(log:sh.log) -> None:
                                 case 'p':
                                     handle_trash.move()
                                     task_summary["move"] += 1
-                                    files_spilled_from_trash.pop((filename, path))
+                                    files_spilled_from_trash.pop((path, filename))
                                     ask_again = False
                                 case 'd':
                                     handle_trash.delete()
                                     task_summary["delete"] += 1
-                                    files_spilled_from_trash.pop((filename, path))
+                                    files_spilled_from_trash.pop((path, filename))
                                     ask_again = False
                                 case 's':
                                     log.entry(f"Skipping {path}/{filename}.")
@@ -315,6 +317,10 @@ def refresh_total_files(log:sh.log) -> None:
     host_id_list = db_bp.list_all_host_ids()
     
     for (host_id,equip_id,host_uid) in host_id_list:
+        if equip_id is None:
+            log.entry(f"Host '{host_uid}' has no equipment associated. Retrieving RFDB entry is not possible")
+            continue
+        
         rfm_file_count = db_rfm.count_rfm_host_files(   equipment_id=equip_id,
                                                         volume=k.REPO_UID)
         

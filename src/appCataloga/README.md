@@ -458,6 +458,10 @@ Activate systemctl service that will keep the application running
 
 ```shell
 systemctl enable --now appCataloga.service
+systemctl enable --now appCataloga_host_check
+systemctl enable --now appCataloga_file_bkp@0.service 
+systemctl enable --now appCataloga_file_bin_proces.service
+
 ```
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>

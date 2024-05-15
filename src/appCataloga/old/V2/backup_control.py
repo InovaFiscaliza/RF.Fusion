@@ -170,9 +170,9 @@ def main():
                     
                     log.warning(f"Backup task killed due to timeout for host {task['host_add']} after {execution_time/60} minutes.")
             
-            log.entry(f"Wainting for {len(tasks)} backup tasks to finish. Next check in {k.HOST_TASK_EXECUTION_WAIT_TIME} seconds.")
+            log.entry(f"Wainting for {len(tasks)} backup tasks to finish. Next check in {k.MAX_HOST_TASK_WAIT_TIME} seconds.")
             # wait for some task to finish or be posted
-            time.sleep(k.HOST_TASK_EXECUTION_WAIT_TIME)
+            time.sleep(k.MAX_HOST_TASK_WAIT_TIME)
             
         else:
             log.entry(f"No backup task. Waiting for {k.HOST_TASK_REQUEST_WAIT_TIME/k.SECONDS_IN_MINUTE} minutes.")

@@ -2,11 +2,12 @@
 
 # Replace 'path_to_your_python_app' with the actual path to your Python application script.
 # shellcheck source=/usr/local/bin/appCataloga/miniconda3/bin/activate
-APP_PATH="/usr/local/bin/appCataloga/appCataloga.py"
+APP_PATH="/usr/local/bin/appCataloga/appCataloga_file_bin_proces.py"
 CONDA_PATH="/usr/local/bin/appCataloga/miniconda3/bin/activate"
 ENV_NAME="appdata"
+
 PID_FILE_PATH="/var/run/appCataloga"
-PID_FILE="$PID_FILE_PATH/appCataloga.pid"
+PID_FILE="$PID_FILE_PATH/appCataloga_file_bin_proces.pid"
 
 # test if PID_FILE_PATH folder exists and create it
 if [ ! -d $PID_FILE_PATH ]; then
@@ -14,7 +15,8 @@ if [ ! -d $PID_FILE_PATH ]; then
 fi
 
 start() {
-    if [ -f $PID_FILE ]; then
+
+    if [ -f "$PID_FILE" ]; then
         echo "The service is already running."
     else
         source "$CONDA_PATH"

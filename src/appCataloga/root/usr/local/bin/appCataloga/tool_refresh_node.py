@@ -48,13 +48,13 @@ def list_repo_files(folder:str) -> set:
         folder (str): Folder name to list files
 
     Returns:
-        set: Set of tuples (filename, path) of files in the specified folder and subfolders
+        set: Set of tuples (path, filename) of files in the specified folder and subfolders
     """
     
     command = ["find", folder, "-type", "f"]
     result = subprocess.run(command, stdout=subprocess.PIPE, text=True)
     files = set(result.stdout.strip().split('\n'))
-    return {(Path(filename).name, Path(filename).parent) for filename in files}
+    return {(Path(filename).parent,Path(filename).name) for filename in files}
 
 def move_files_to_tmp_folder(files_to_move, tmp_folder):
     
@@ -67,14 +67,14 @@ def move_files_to_tmp_folder(files_to_move, tmp_folder):
     else:
         ask_berfore = False
 
-    for filename, path in files_to_move:
+    for filepath, filename in files_to_move:
 
         if ask_berfore:
-            user_input = input(f"Move {path}/{filename} to {tmp_folder}? (y/n): ")
+            user_input = input(f"Move {filepath}/{filename} to {tmp_folder}? (y/n): ")
             if user_input.lower() != 'y':
                 continue
 
-        src_path = Path(path) / filename
+        src_path = Path(filepath) / filename
         dst_path = Path(tmp_folder) / filename
         try:
             src_path.rename(dst_path)
@@ -129,7 +129,8 @@ def refresh_tmp_files(log:sh.log) -> None:
     # Process TMP folder and database
     repo_tmp_files = list_repo_files(f"{k.REPO_FOLDER}/{k.TMP_FOLDER}")
     
-    db_tmp_files = db_bp.list_bpdb_files(status=k.BP_PENDING_TASK_STATUS)
+    db_tmp_files = db_bp.list_bpdb_files(   task_status=db_bp.TASK_PENDING,
+                                            task_type=db_bp.BACKUP_TASK_TYPE)
     
     log.entry(f"{len(repo_tmp_files)} files in the repository TMP_FOLDER:")
     log.entry(f"{len(db_tmp_files)} database entries related to repository TMP_FOLDER files.\n")
@@ -167,7 +168,8 @@ def refresh_trash_files(log:sh.log) -> None:
     # Process trash folder and database
     repo_trash_files = list_repo_files(f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}")
     
-    db_trash_files = db_bp.list_bpdb_files(status=k.BP_ERROR_TASK_STATUS)
+    db_trash_files = db_bp.list_bpdb_files( task_status=db_bp.TASK_ERROR,
+                                            task_type=db_bp.BACKUP_TASK_TYPE)
     
     # Compare sets
     files_missing_in_trash = db_trash_files - repo_trash_files
@@ -196,13 +198,13 @@ def refresh_trash_files(log:sh.log) -> None:
                 move_files_to_tmp_folder(self.files, k.TMP_FOLDER)
                 
                 # change pathname to new path
-                self.files = {(filename, k.TMP_FOLDER) for filename, path in self.files}
+                self.files = {(k.TMP_FOLDER, filename) for filepath, filename in self.files}
                     
                 db_bp.add_task_from_file(self.files)
             
             def delete(self) -> None:
-                for filename, path in self.files:
-                    src_path = Path(path) / filename
+                for filepath, filename in self.files:
+                    src_path = Path(filepath) / filename
                     try:
                         src_path.unlink()
                     except Exception as e:
@@ -231,11 +233,11 @@ def refresh_trash_files(log:sh.log) -> None:
                 case 'c':
                     confirmation = input("Do you want to confirm operation for each file? (y/n): ")
                     if confirmation.lower() == 'y':
-                        for filename, path in files_spilled_from_trash:
-                            handle_trash = handle_trash((filename, path))
+                        for filepath, filename in files_spilled_from_trash:
+                            handle_trash = handle_trash((filepath, filename))
                             ask_again = True
                             while ask_again:
-                                single_option = input(f"re(P)rocess {path}/{filename}, (D)elete or (S)kip it? (p/d/s): ")
+                                single_option = input(f"re(P)rocess {filepath}/{filename}, (D)elete or (S)kip it? (p/d/s): ")
 
                                 match single_option.lower():
                                     case 'p':
@@ -245,7 +247,7 @@ def refresh_trash_files(log:sh.log) -> None:
                                         handle_trash.delete()
                                         ask_again = False
                                     case 's':
-                                        log.entry(f"Skipping {path}/{filename}.")
+                                        log.entry(f"Skipping {filepath}/{filename}.")
                                         ask_again = False
                                     case _:
                                         log.entry(f"Invalid option {single_option}. Try again.")     

@@ -44,11 +44,13 @@ DB_PASSWORD = secret.DB_PASSWORD
 BACKUP_CONTROL_MODULE = "/usr/local/bin/appCataloga/backup_control.py"
 BACKUP_SINGLE_HOST_MODULE = "/usr/local/bin/appCataloga/backup_single_host.py"
 BKP_MAX_PROCESS = 10
-HOST_TASK_EXECUTION_WAIT_TIME = 10
+MAX_HOST_TASK_WAIT_TIME = 30 # seconds to wait for a new task. Minimum half, maximum equal to this value
+MAX_FILE_TASK_WAIT_TIME = 30 # seconds to wait for a new task. Minimum half, maximum equal to this value
 HOST_TASK_REQUEST_WAIT_TIME = 1800 # seconds to wait for the HALT_FLAG release before aborting the task
 HALT_FLAG_CHECK_CYCLES = 6 # number of times to check the host while waiting for the HALT_FLAG release
 HOST_TASK_EXECUTION_TIMEOUT = 3600
 BKP_HOST_ALLOTED_TIME_FRACTION = 0.8
+BKP_TASK_MAX_WORKERS = 10
 
 # file processing module configuration
 PROCESSING_CONTROL_MODULE = "/usr/local/bin/appCataloga/processing_control.py"
