@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Replace 'path_to_your_python_app' with the actual path to your Python application script.
+# shellcheck source=/usr/local/bin/appCataloga/miniconda3/bin/activate
 APP_PATH="/usr/local/bin/appCataloga/appCataloga.py"
 CONDA_PATH="/usr/local/bin/appCataloga/miniconda3/bin/activate"
 ENV_NAME="appdata"

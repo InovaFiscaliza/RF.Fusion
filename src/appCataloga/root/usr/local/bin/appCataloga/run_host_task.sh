@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Replace 'path_to_your_python_app' with the actual path to your Python application script.
+# shellcheck source=/usr/local/bin/appCataloga/miniconda3/bin/activate
 APP_PATH="/usr/local/bin/appCataloga/run_host_task.py"
 CONDA_PATH="/usr/local/bin/appCataloga/miniconda3/bin/activate"
 PID_FILE="/var/run/run_host_task.pid"

@@ -7,6 +7,7 @@ else
 fi
 
 # Replace 'path_to_your_python_app' with the actual path to your Python application script.
+# shellcheck source=/usr/local/bin/appCataloga/miniconda3/bin/activate
 APP_PATH="/usr/local/bin/appCataloga/run_file_backup_task.py worker=$WORKER"
 CONDA_PATH="/usr/local/bin/appCataloga/miniconda3/bin/activate"
 PID_FILE="/var/run/file_backup_task_worker_$WORKER.pid"
