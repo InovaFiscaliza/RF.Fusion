@@ -224,10 +224,10 @@ move_files() {
                         scritpError=true
                     fi
                 fi
-                if ! mv -f "$file" "$folder"; then
-                    echo "Error moving $file to $folder"
-                    scritpError=true
-                fi
+            fi
+            if ! mv -f "$file" "$folder"; then
+                echo "Error moving $file to $folder"
+                scritpError=true
             fi
         done
     # move files from the install list to the target folders
@@ -271,7 +271,7 @@ remove_tmp_folder() {
         exit
     fi
     # query user input to remove tmp folder
-    echo "For inital install you will need to run the database creation scripts manually from the /$tmpFolder folder."
+    echo "For inital install you will need to run the database creation scripts manually from the $tmpFolder folder."
     read -p "Remove $tmpFolder? [y/N] " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
