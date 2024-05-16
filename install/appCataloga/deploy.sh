@@ -35,6 +35,7 @@ deploy_tool_repo="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/mai
 
 # declare folders to be used
 tmpFolder="/tmp/appCataloga"
+downloadFolder="/tmp/appCataloga/download"
 dataFolder="/etc/appCataloga"
 scriptFolder="/usr/local/bin/appCataloga"
 # systemdFolder="etc/systemd/system" To be used for future systemd service files
@@ -101,10 +102,12 @@ create_folders() {
         fi
     fi
 
-    # change to tmp folder for file download
-    if ! cd /$tmpFolder; then
-        echo "Error changing to $tmpFolder"
-        exit
+    # try to create a download folder, if it fails, exit
+    if [ ! -d "$downloadFolder" ]; then
+        if ! mkdir $downloadFolder; then
+            echo "Error creating $downloadFolder"
+            exit
+        fi
     fi
 
     # create data folder if it does not exist
@@ -150,6 +153,12 @@ download_file() {
 }
 # Funciton to download files from the repository
 get_files() {
+
+    # change to downloadFolder folder for file download
+    if ! cd "$downloadFolder"; then
+        echo "Error changing to $downloadFolder"
+        exit
+    fi
 
     if [ "$1" == "-u" ]; then
         # download files that are in the update list
@@ -256,6 +265,11 @@ prepare_service() {
 
 # Function to remove tmp folder
 remove_tmp_folder() {
+    # remove the downloadFolder
+    if ! rm -rf "$downloadFolder"; then
+        echo "Error removing $downloadFolder. Please remove it manually."
+        exit
+    fi
     # query user input to remove tmp folder
     echo "For inital install you will need to run the database creation scripts manually from the /$tmpFolder folder."
     read -p "Remove $tmpFolder? [y/N] " -n 1 -r
