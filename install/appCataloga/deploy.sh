@@ -6,7 +6,7 @@
 #! initial system requirement and argument tests
 
 # if no argument is passed, exit
-simple_help="Use -i to install, -u to update, -r to remove, -l to link files, -du to update this deployment tool. Any additional argument will be ignored."
+simple_help="Use -i to install, -u to update, -r to remove, -du to update this deployment tool. Any additional argument will be ignored."
 
 if [ $# -eq 0 ]; then
     echo "No arguments provided. $simple_help"
@@ -14,7 +14,7 @@ if [ $# -eq 0 ]; then
 fi
 
 case "$1" in
--i | -u | -r | -h | -l | -du) ;;
+-i | -u | -r | -h | -du) ;;
 *)
     echo "Invalid argument. $simple_help"
     exit 1
@@ -33,14 +33,10 @@ fi
 repository="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/src/appCataloga/root/"
 deploy_tool_repo="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh"
 
-git_local_repo="$HOME/RF.Fusion"
-git_install_folder="install/appCataloga"
-git_src_folder="src/appCataloga/root"
-
 # declare folders to be used
 tmpFolder="/tmp/appCataloga"
-dataFolder="etc/appCataloga"
-scriptFolder="usr/local/bin/appCataloga"
+dataFolder="/etc/appCataloga"
+scriptFolder="/usr/local/bin/appCataloga"
 # systemdFolder="etc/systemd/system" To be used for future systemd service files
 
 #TODO: #2 Add group and user properties  individually, securing secret.py
@@ -87,19 +83,16 @@ print_help() {
     echo "    Install will create the target folders and include database reference data and sql scripts."
     echo "    Update will overwrite the python script files only. Database will not be affected and reference data not downloaded."
     echo "    Remove will delete all files that may be downloaded, but will not affect the database."
-    echo "    Link will create hard links from local git repository to the corresponding install locations, allowing for testing."
     echo "    Update deploy will update this deploy script."
     echo -e "\nThe install and update procedure starts by downloading the required files from '$repository' to the '$tmpFolder' folder."
-    echo "    Afterwards, the files will be moved to the target folders at: /$dataFolder and /$scriptFolder and tmp folder will be removed."
+    echo "    Afterwards, the files will be moved to the target folders at: $dataFolder and $scriptFolder and tmp folder will be removed."
     echo "    Changes in these folders and files to be copied must be performed by editing the script."
     echo "If any error occurs during the process, the script will exit and no changes will be made."
-    echo -e "\n Special option -l will setup hardlinks from local git repository to the corresponding install locations, allowing for testing."
-    echo "    In this case, it is expected that the deploy.sh script is in folder defined by the git repository structure, e.g. under $git_local_repo/$git_install_folder"
     echo -e "\nUsage example: ./deploy.sh -i\n"
     exit
 }
 
-create_tmp_folder() {
+create_folders() {
     # try to create a temp folder, if it fails, exit
     if [ ! -d "$tmpFolder" ]; then
         if ! mkdir $tmpFolder; then
@@ -108,9 +101,26 @@ create_tmp_folder() {
         fi
     fi
 
+    # change to tmp folder for file download
     if ! cd /$tmpFolder; then
         echo "Error changing to $tmpFolder"
         exit
+    fi
+
+    # create data folder if it does not exist
+    if [ ! -d "$dataFolder" ]; then
+        if ! mkdir $dataFolder; then
+            echo "Error creating $dataFolder"
+            exit
+        fi
+    fi
+
+    # create script folder if it does not exist
+    if [ ! -d "$scriptFolder" ]; then
+        if ! mkdir $scriptFolder; then
+            echo "Error creating $scriptFolder"
+            exit
+        fi
     fi
 }
 
@@ -145,14 +155,14 @@ get_files() {
         # download files that are in the update list
         for file in "${!updateFiles[@]}"; do
             folder="${updateFiles[$file]}"
-            full_file_name="$repository/$folder/${file}"
+            full_file_name="$repository$folder/${file}"
             download_file "$full_file_name"
         done
 
         # download files that are in the special list
         for file in "${!special_files[@]}"; do
             folder="${special_files[$file]}"
-            full_file_name="$repository/$folder/${file}"
+            full_file_name="$repository$folder/${file}"
             download_file "$full_file_name"
         done
 
@@ -163,7 +173,7 @@ get_files() {
         # download files in the install list
         for file in "${!installFiles[@]}"; do
             folder="${installFiles[$file]}"
-            full_file_name="$repository/$folder/${file}"
+            full_file_name="$repository$folder/${file}"
             download_file "$full_file_name"
         done
     fi
@@ -173,9 +183,9 @@ handle_special() {
     # test if file is "config.py"
     if [ "$file" == "config.py" ]; then
         # check if file is different from the one in the target folder
-        if [ -f "/$folder/$file" ]; then
-            if ! diff -q "$file" "/$folder/$file"; then
-                echo "Error: /$folder/$file already exists and is different from the downloaded file."
+        if [ -f "$folder/$file" ]; then
+            if ! diff -q "$file" "$folder/$file"; then
+                echo "Error: $folder/$file already exists and is different from the downloaded file."
                 scritpError=true
             fi
         fi
@@ -190,23 +200,23 @@ move_files() {
     if [ "$1" == "-u" ]; then
         for file in "${!updateFiles[@]}"; do
             folder="${updateFiles[$file]}"
-            if ! mv -f "$file" "/$folder"; then
-                echo "Error moving $file to /$folder"
+            if ! mv -f "$file" "$folder"; then
+                echo "Error moving $file to $folder"
                 scritpError=true
             fi
         done
         for file in "${!special_files[@]}"; do
             folder="${special_files[$file]}"
-            if [ -f "/$folder/$file" ]; then
-                if ! diff -q "$file" "/$folder/$file"; then
-                    echo "Warning: /$folder/$file already exists. A backup will be created in the same folder."
-                    if ! mv -f "/$folder/$file" "/$folder/$file.bak"; then
-                        echo "Error moving /$folder/$file to /$folder/$file.bak"
+            if [ -f "$folder/$file" ]; then
+                if ! diff -q "$file" "$folder/$file"; then
+                    echo "Warning: $folder/$file already exists. A backup will be created in the same folder."
+                    if ! mv -f "$folder/$file" "$folder/$file.bak"; then
+                        echo "Error moving $folder/$file to $folder/$file.bak"
                         scritpError=true
                     fi
                 fi
-                if ! mv -f "$file" "/$folder"; then
-                    echo "Error moving $file to /$folder"
+                if ! mv -f "$file" "$folder"; then
+                    echo "Error moving $file to $folder"
                     scritpError=true
                 fi
             fi
@@ -218,8 +228,8 @@ move_files() {
         for file in "${!installFiles[@]}"; do
             folder="${installFiles[$file]}"
 
-            if ! mv -f "$file" "/$folder"; then
-                echo "Error moving $file to /$folder"
+            if ! mv -f "$file" "$folder"; then
+                echo "Error moving $file to $folder"
                 scritpError=true
             fi
         done
@@ -228,7 +238,7 @@ move_files() {
     if [ "$scritpError" == true ]; then
         echo "Error moving files. Check user and target folder permissions."
 
-        echo "Rolling back files moved to /$dataFolder and /$scriptFolder"
+        echo "Rolling back files moved to $dataFolder and $scriptFolder"
         remove_files "$1" -v
         exit
     fi
@@ -269,18 +279,18 @@ remove_files() {
     if [ "$1" == "-u" ]; then
         for file in "${!updateFiles[@]}"; do
             folder="${updateFiles[$file]}"
-            if ! rm -f "/$folder/$file}"; then
+            if ! rm -f "$folder/$file}"; then
                 if [ "$2" == "-v" ]; then
-                    echo "Error removing /$folder/$file}"
+                    echo "Error removing $folder/$file}"
                 fi
                 scritpError=true
             fi
         done
         for file in "${!special_files[@]}"; do
             folder="${special_files[$file]}"
-            if ! rm -f "/$folder/$file}"; then
+            if ! rm -f "$folder/$file}"; then
                 if [ "$2" == "-v" ]; then
-                    echo "Error removing /$folder/$file}"
+                    echo "Error removing $folder/$file}"
                 fi
                 scritpError=true
             fi
@@ -289,9 +299,9 @@ remove_files() {
         remove_files -u "$2"
         for file in "${!installFiles[@]}"; do
             folder="${installFiles[$file]}"
-            if ! rm -f "/$folder/$file}"; then
+            if ! rm -f "$folder/$file}"; then
                 if [ "$2" == "-v" ]; then
-                    echo "Error removing /$folder/$file}"
+                    echo "Error removing $folder/$file}"
                 fi
                 scritpError=true
             fi
@@ -305,51 +315,21 @@ remove_files() {
 
     # test if folders are empty, if so, remove them.
     # Splitting file removal and folder removal to avoid removing files created by other processes
-    if [ -z "$(ls -A "/$dataFolder")" ]; then
-        rm -rf "/${dataFolder:?}"
+    if [ -z "$(ls -A "$dataFolder")" ]; then
+        rm -rf "${dataFolder:?}"
     else
-        echo "Error removing folder /${dataFolder:?}. Folder not empty."
+        echo "Error removing folder ${dataFolder:?}. Folder not empty."
         scritpError=true
     fi
-    if [ -z "$(ls -A "/$scriptFolder")" ]; then
-        rm -rf "/${scriptFolder:?}"
+    if [ -z "$(ls -A "$scriptFolder")" ]; then
+        rm -rf "${scriptFolder:?}"
     else
-        echo "Error removing folder /${scriptFolder:?}. Folder not empty."
+        echo "Error removing folder ${scriptFolder:?}. Folder not empty."
         scritpError=true
     fi
 
     if [ "$scritpError" == true ]; then
         echo "All files were removed but error removing folders. Please remove them manually as needed. "
-        exit
-    fi
-}
-
-link_files() {
-    scritpError=false
-
-    for file in "${!installFiles[@]}"; do
-        source="$git_local_repo/$git_src_folder/${installFiles[$file]}/$file"
-        target="/${installFiles[$file]}/$file"
-        if ! ln -f "$source" "$target"; then
-            if [ "$1" == "-v" ]; then
-                echo "Error linking $source to $target"
-            fi
-            scritpError=true
-        fi
-    done
-    for file in "${!updateFiles[@]}"; do
-        source="$git_local_repo/$git_src_folder/${updateFiles[$file]}/$file"
-        target="/${updateFiles[$file]}/$file"
-        if ! ln -f "$source" "$target"; then
-            if [ "$1" == "-v" ]; then
-                echo "Error linking $source to $target"
-            fi
-            scritpError=true
-        fi
-    done
-
-    if [ "$scritpError" == true ]; then
-        echo "Error linking files. Please remove them manually."
         exit
     fi
 }
@@ -367,7 +347,7 @@ case "$1" in
     print_help
     ;;
 -i | -u)
-    create_tmp_folder
+    create_folders
     get_files "$1"
     move_files "$1"
     prepare_service
@@ -378,9 +358,6 @@ case "$1" in
     ;;
 -r)
     remove_files -i -v
-    ;;
--l)
-    link_files -v
     ;;
 *)
     echo "Invalid option: $1"
