@@ -46,7 +46,7 @@ scriptFolder="usr/local/bin/appCataloga"
 #TODO: #2 Add group and user properties  individually, securing secret.py
 # declare an associative array with pairs of install required files to download and target folders
 declare -A installFiles=(
-    ["secret.py"]=$dataFolder
+    [".secret"]=$dataFolder
 )
 
 # declare an associative array with pairs of update required files to download and target folders
