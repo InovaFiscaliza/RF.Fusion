@@ -313,9 +313,9 @@ mysql -u root -p
 
     Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
 vd0RpwMLA
-MariaDB [(none)]> SOURCE /usr/local/bin/appCataloga/createMeasureDB.sql
+MariaDB [(none)]> SOURCE /tmp/appCataloga/createMeasureDB.sql
 
-MariaDB [(none)]> SOURCE /usr/local/bin/appCataloga/createProcessingDB.sql
+MariaDB [(none)]> SOURCE /tmp/appCataloga/createProcessingDB.sql
 
 MariaDB [(none)]> CREATE USER 'appCataloga'@'localhost' IDENTIFIED BY '<app_pass>';
 

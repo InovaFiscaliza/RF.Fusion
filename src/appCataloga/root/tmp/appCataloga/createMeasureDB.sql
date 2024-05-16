@@ -14,7 +14,7 @@ CREATE TABLE DIM_EQUIPMENT_TYPE (
 );
 
 -- Upload Data to DIM_EQUIPMENT_TYPE
-LOAD DATA INFILE '/etc/appCataloga/equipmentType.csv'
+LOAD DATA INFILE '/tmp/appCataloga/equipmentType.csv'
     INTO TABLE DIM_EQUIPMENT_TYPE
     FIELDS TERMINATED BY ','
     LINES TERMINATED BY '\n' 
@@ -42,7 +42,7 @@ CREATE TABLE DIM_SITE_STATE (
 );
 
 -- Upload Data to DIM_SITE_STATE
-LOAD DATA INFILE '/etc/appCataloga/IBGE-BR_UF_2020_BULKLOAD.csv'
+LOAD DATA INFILE '/tmp/appCataloga/IBGE-BR_UF_2020_BULKLOAD.csv'
     INTO TABLE DIM_SITE_STATE
     FIELDS TERMINATED BY ','
     LINES TERMINATED BY '\n' 
@@ -59,7 +59,7 @@ CREATE TABLE DIM_SITE_COUNTY (
 );
 
 -- Upload Data to DIM_SITE_COUNTY
-LOAD DATA INFILE '/etc/appCataloga/IBGE-BR_Municipios_2020_BULKLOAD.csv'
+LOAD DATA INFILE '/tmp/appCataloga/IBGE-BR_Municipios_2020_BULKLOAD.csv'
     INTO TABLE DIM_SITE_COUNTY
     FIELDS TERMINATED BY ','
     LINES TERMINATED BY '\n' 
@@ -108,7 +108,7 @@ CREATE TABLE DIM_FILE_TYPE (
 );
 
 -- Upload Data to DIM_FILE_TYPE
-LOAD DATA INFILE '/etc/appCataloga/fileType.csv'
+LOAD DATA INFILE '/tmp/appCataloga/fileType.csv'
     INTO TABLE DIM_FILE_TYPE
     FIELDS TERMINATED BY ','
     LINES TERMINATED BY '\n' 
@@ -145,7 +145,7 @@ CREATE TABLE DIM_SPECTRUM_UNIT (
 );
 
 -- Upload Data to DIM_SPECTRUM_UNIDADE
-LOAD DATA INFILE '/etc/appCataloga/measurementUnit.csv'
+LOAD DATA INFILE '/tmp/appCataloga/measurementUnit.csv'
     INTO TABLE DIM_SPECTRUM_UNIT
     FIELDS TERMINATED BY ','
     LINES TERMINATED BY '\n' 
