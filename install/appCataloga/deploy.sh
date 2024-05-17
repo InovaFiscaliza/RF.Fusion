@@ -164,15 +164,15 @@ get_files() {
         # download files that are in the update list
         for file in "${!updateFiles[@]}"; do
             folder="${updateFiles[$file]}"
-            full_file_name="$repository$folder/${file}"
-            download_file "$full_file_name"
+            full_file_url="$repository$folder/${file}"
+            download_file "$full_file_url"
         done
 
         # download files that are in the special list
         for file in "${!special_files[@]}"; do
             folder="${special_files[$file]}"
-            full_file_name="$repository$folder/${file}"
-            download_file "$full_file_name"
+            full_file_url="$repository$folder/${file}"
+            download_file "$full_file_url"
         done
 
     elif [ "$1" == "-i" ]; then
@@ -182,8 +182,8 @@ get_files() {
         # download files in the install list
         for file in "${!installFiles[@]}"; do
             folder="${installFiles[$file]}"
-            full_file_name="$repository$folder/${file}"
-            download_file "$full_file_name"
+            full_file_url="$repository$folder/${file}"
+            download_file "$full_file_url"
         done
     fi
 }
@@ -253,14 +253,100 @@ move_files() {
     fi
 }
 
-prepare_service() {
-    if ! ln -s /usr/local/bin/appCataloga/appCataloga.service /etc/systemd/system/appCataloga.service; then
-        echo "Error creating soft link for /etc/systemd/system/appCataloga.service. Do it manually."
+# configure mysql database
+config_database() {
+
+    # test if mysql is installed
+    if ! which mysql >/dev/null; then
+        echo "mysql is required to run this script. Please install it and try again."
+        exit
     fi
 
-    if ! /sbin/restorecon -v /usr/local/bin/appCataloga/appCataloga.sh; then
-        echo "Error setting SE Linux. Do it manually."
+    # test if mysql is running
+    if ! systemctl is-active --quiet mysql; then
+        echo "mysql is not running. Please start it and try again."
+        exit
     fi
+
+    # test if mysql is enabled
+    if ! systemctl is-enabled --quiet mysql; then
+        echo "mysql is not enabled. Please enable it and try again."
+        exit
+    fi
+
+    # test if mysql is configured
+    if ! mysql -e "SELECT 1" >/dev/null; then
+        echo "mysql is not configured. Please configure it and try again."
+        exit
+    fi
+
+    # test if database RFDATA do not exists, create it
+    if mysql -e "USE RFDATA" >/dev/null; then
+        read -p "Database RFDATA already exists. Do you wish to remove it? [y/N]" -n 1 -r
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if ! mysql -e "DROP DATABASE RFDATA"; then
+                echo "Error dropping database RFDATA. Please remove it manually."
+                exit
+            fi
+        else
+            echo "Please remove RFDATA manually and try again."
+            exit
+        fi
+
+        # run the createMeasureDB.sql script to create and populate database
+        if ! mysql -e "SOURCE $tmpFolder/createMeasureDB.sql"; then
+            echo "Error creating database RFDATA. Please check the script and try again."
+            exit
+        fi
+    fi
+
+    # test if database BPDATA do not exists, create it
+    if mysql -e "USE BPDATA" >/dev/null; then
+        read -p "Database BPDATA already exists. Do you wish to remove it? [y/N]" -n 1 -r
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if ! mysql -e "DROP DATABASE BPDATA"; then
+                echo "Error dropping database BPDATA. Please remove it manually."
+                exit
+            fi
+        else
+            echo "Please remove BPDATA manually and try again."
+            exit
+        fi
+
+        # run the createProcessingDB.sql script to create and populate database
+        if ! mysql -e "SOURCE $tmpFolder/createProcessingDB.sql"; then
+            echo "Error creating database RFDATA. Please check the script and try again."
+            exit
+        fi
+    fi
+}
+
+# set SE linux for shell script files and enable services
+prepare_service() {
+
+    for file in "${!updateFiles[@]}"; do
+        folder="${special_files[$file]}"
+        full_file_name="$folder/$file"
+
+        # set SE linux for shell script files
+        if [ "${file##*.}" == "sh" ]; then
+            if ! /sbin/restorecon -v "$full_file_name"; then
+                echo "Error setting SE Linux for $full_file_name. Do it manually."
+            fi
+        fi
+
+        # enable services for restart in systemd
+        if [ "${file##*.}" == "service" ]; then
+            if ! /usr/bin/systemctl enable "$full_file_name"; then
+                echo "Error enabling $full_file_name"
+                scritpError=true
+            fi
+            #            if ! /usr/bin/systemctl start "$full_file_name"; then
+            #                echo "Error starting $full_file_name"
+            #                scritpError=true
+            #            fi
+        fi
+    done
 }
 
 # Function to remove tmp folder
@@ -349,6 +435,10 @@ remove_files() {
 }
 
 update_deploy() {
+
+    echo "WARNING: This will overwrite this deploy script and may cause it to stop working."
+    echo "In case of error, just run it again with the -du option to ensure that it is updated correctly."
+
     wget -q --show-progress $deploy_tool_repo -O ./deploy.sh
     dos2unix -q deploy.sh
     chmod 755 deploy.sh
@@ -364,6 +454,7 @@ case "$1" in
     create_folders
     get_files "$1"
     move_files "$1"
+    config_database
     prepare_service
     remove_tmp_folder
     ;;
