@@ -1,6 +1,6 @@
 #!/bin/bash
 
-deploy_version=0.3
+deploy_version=0.4
 
 # Download files from a repository and install
 # Run as root this script as root
