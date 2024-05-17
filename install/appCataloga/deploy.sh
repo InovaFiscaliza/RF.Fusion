@@ -1,6 +1,6 @@
 #!/bin/bash
 
-deploy_version=0.4
+deploy_version=0.5
 
 # Download files from a repository and install
 # Run as root this script as root
@@ -12,7 +12,7 @@ update_deploy() {
     wget -q --show-progress $deploy_tool_repo -O ./deploy.sh.new
     dos2unix -q deploy.sh.new
     chmod 755 deploy.sh.new
-    new_version=$(grep -oP 'deploy_version=\K[^ ]+' deploy.sh.new)
+    new_version=$(grep -oP 'deploy_version=\K[^ ]+' deploy.sh.new | head -n 1)
     if [ "$new_version" == "$deploy_version" ]; then
         echo "No changes found in the deploy script."
         rm deploy.sh.new
