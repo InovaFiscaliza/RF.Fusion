@@ -1,6 +1,12 @@
 #!/bin/bash
 
-deploy_version=0.6
+deploy_version=0.7
+
+splash_banner() {
+    echo -n "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+    echo -n "appCataloga deploy script version $deploy_version"
+    echo -n "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+}
 
 # Download files from a repository and install
 # Run as root this script as root
@@ -305,7 +311,7 @@ create_database() {
         run_sql "$1" "$2"
     else
         read -p "Database $1 already exists. Do you wish to remove it? [y/N]" -n 1 -r
-        echo -e "\n"
+        echo " "
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             if ! mysql -u "$mysql_user" -p"$password" -e "DROP DATABASE $1"; then
                 echo "Error dropping database $1. Please remove it manually."
@@ -348,7 +354,7 @@ config_database() {
     # prompt user for credentials to be used to access mysql
     read -p "Enter mysql user: " mysql_user
     read -s -p "Enter mysql password: " password
-    echo -e "\n"
+    echo " "
 
     # test if mysql is configured
     if ! mysql -u "$mysql_user" -p"$password" -e "SHOW DATABASES" >/dev/null 2>&1; then
@@ -403,7 +409,7 @@ remove_tmp_folder() {
     # query user input to remove tmp folder
     echo "For inital install you will need to run the database creation scripts manually from the $tmpFolder folder."
     read -p "Remove $tmpFolder? [y/N] " -n 1 -r
-    echo
+    echo " "
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo "Please remove $tmpFolder manually afterwards."
         exit
@@ -482,11 +488,13 @@ remove_files() {
 }
 
 #! Main script
+
 case "$1" in
 -h)
     print_help
     ;;
 -i | -u)
+    splash_banner
     create_folders
     get_files "$1"
     move_files "$1"
@@ -495,9 +503,11 @@ case "$1" in
     remove_tmp_folder
     ;;
 -du)
+    splash_banner
     update_deploy
     ;;
 -r)
+    splash_banner
     remove_files -i -v
     ;;
 *)
