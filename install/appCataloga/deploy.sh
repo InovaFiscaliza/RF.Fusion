@@ -1,6 +1,6 @@
 #!/bin/bash
 
-deploy_version=0.5
+deploy_version=0.6
 
 # Download files from a repository and install
 # Run as root this script as root
@@ -9,6 +9,7 @@ deploy_version=0.5
 deploy_tool_repo="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh"
 
 update_deploy() {
+    echo -e "\n- Updating deploy script..."
     wget -q --show-progress $deploy_tool_repo -O ./deploy.sh.new
     dos2unix -q deploy.sh.new
     chmod 755 deploy.sh.new
@@ -416,9 +417,12 @@ remove_tmp_folder() {
 
 # Function to remove files and folders
 remove_files() {
+
     scritpError=false
 
     if [ "$1" == "-u" ]; then
+        echo -e "\n- Removing files..."
+
         for file in "${!updateFiles[@]}"; do
             folder="${updateFiles[$file]}"
             if ! rm -f "$folder/$file}"; then
