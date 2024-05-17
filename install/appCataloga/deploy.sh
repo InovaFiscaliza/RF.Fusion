@@ -3,6 +3,18 @@
 # Download files from a repository and install
 # Run as root this script as root
 
+# Function to update this deploy script. Placed at start to reduce risk of script break before exit command
+deploy_tool_repo="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh"
+
+update_deploy() {
+    wget -q --show-progress $deploy_tool_repo -O ./deploy.sh.new
+    dos2unix -q deploy.sh.new
+    chmod 755 deploy.sh.new
+    echo -e "\nDeploy script updated."
+    mv deploy.sh.new deploy.sh
+    exit
+}
+
 #! initial system requirement and argument tests
 
 # if no argument is passed, exit
@@ -31,7 +43,6 @@ fi
 
 # define script control variables
 repository="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/src/appCataloga/root/"
-deploy_tool_repo="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh"
 
 # declare folders to be used
 tmpFolder="/tmp/appCataloga"
@@ -432,17 +443,6 @@ remove_files() {
         echo "All files were removed but error removing folders. Please remove them manually as needed. "
         exit
     fi
-}
-
-update_deploy() {
-
-    echo "WARNING: This will overwrite this deploy script and may cause it to stop working."
-    echo "In case of error, just run it again with the -du option to ensure that it is updated correctly."
-
-    wget -q --show-progress $deploy_tool_repo -O ./deploy.sh
-    dos2unix -q deploy.sh
-    chmod 755 deploy.sh
-    echo -e "\nDeploy script updated."
 }
 
 #! Main script
