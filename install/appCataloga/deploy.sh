@@ -51,6 +51,10 @@ dataFolder="/etc/appCataloga"
 scriptFolder="/usr/local/bin/appCataloga"
 # systemdFolder="etc/systemd/system" To be used for future systemd service files
 
+# declare global variables
+mysql_user="to be defined"
+password="to be defined"
+
 #TODO: #2 Add group and user properties  individually, securing secret.py
 # declare an associative array with pairs of install required files to download and target folders
 declare -A installFiles=(
@@ -105,6 +109,9 @@ print_help() {
 }
 
 create_folders() {
+
+    echo "Creating folders..."
+
     # try to create a temp folder, if it fails, exit
     if [ ! -d "$tmpFolder" ]; then
         if ! mkdir $tmpFolder; then
@@ -139,6 +146,7 @@ create_folders() {
 }
 
 download_file() {
+
     # download file using name received as argument
     wget -q --show-progress "$1"
 
@@ -165,6 +173,7 @@ download_file() {
 # Funciton to download files from the repository
 get_files() {
 
+    echo "- Downloading files..."
     # change to downloadFolder folder for file download
     if ! cd "$downloadFolder"; then
         echo "Error changing to $downloadFolder"
@@ -214,6 +223,9 @@ handle_special() {
 
 # Function to move files from tmp to target folders
 move_files() {
+
+    echo "- Moving files..."
+
     scritpError=false
 
     # move files from the update list to the target folders
@@ -264,8 +276,43 @@ move_files() {
     fi
 }
 
+run_sql() {
+    # create database and populate it with the createMeasureDB.sql script
+    if ! mysql -u "$mysql_user" -p"$password" -e "SOURCE $tmpFolder/$2"; then
+        echo "Error creating database $1. Please check the script and try again."
+        exit 1
+    else
+        echo "Database $1 created successfully."
+    fi
+}
+
+create_database() {
+    if ! mysql -u "$mysql_user" -p"$password" -e "USE $1" >/dev/null 2>&1; then
+        echo "Database $1 does not exist. Proceeding to create it..."
+        # Run the createMeasureDB.sql script to create and populate database
+        run_sql "$1" "$2"
+    else
+        read -p "Database $1 already exists. Do you wish to remove it? [y/N]" -n 1 -r
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if ! mysql -u "$mysql_user" -p"$password" -e "DROP DATABASE $1"; then
+                echo "Error dropping database $1. Please remove it manually."
+                exit 1
+            else
+                echo "Database $1 dropped successfully."
+                # Proceed to create the database after dropping
+                run_sql "$1" "$2"
+            fi
+        else
+            echo "Please remove $1 manually and try again."
+            exit 1
+        fi
+    fi
+}
+
 # configure mysql database
 config_database() {
+
+    echo "- Configuring database..."
 
     # test if mysql is installed
     if ! which mysql >/dev/null; then
@@ -290,54 +337,19 @@ config_database() {
     read -s -p "Enter mysql password: " password
 
     # test if mysql is configured
-    if ! mysql -u "$mysql_user" -p"$password" -e "SHOW DATABASES" >/dev/null; then
+    if ! mysql -u "$mysql_user" -p"$password" -e "SHOW DATABASES" >/dev/null 2>&1; then
         echo "mysql is not configured. Please configure it and try again."
         exit
     fi
 
-    # test if database RFDATA do not exists, create it
-    if mysql -u "$mysql_user" -p"$password" -e "USE RFDATA" >/dev/null; then
-        read -p "Database RFDATA already exists. Do you wish to remove it? [y/N]" -n 1 -r
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            if ! mysql -u "$mysql_user" -p"$password" -e "DROP DATABASE RFDATA"; then
-                echo "Error dropping database RFDATA. Please remove it manually."
-                exit
-            fi
-        else
-            echo "Please remove RFDATA manually and try again."
-            exit
-        fi
-
-        # run the createMeasureDB.sql script to create and populate database
-        if ! mysql -u "$mysql_user" -p"$password" -e "SOURCE $tmpFolder/createMeasureDB.sql"; then
-            echo "Error creating database RFDATA. Please check the script and try again."
-            exit
-        fi
-    fi
-
-    # test if database BPDATA do not exists, create it
-    if mysql -u "$mysql_user" -p"$password" -e "USE BPDATA" >/dev/null; then
-        read -p "Database BPDATA already exists. Do you wish to remove it? [y/N]" -n 1 -r
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            if ! mysql -u "$mysql_user" -p"$password" -e "DROP DATABASE BPDATA"; then
-                echo "Error dropping database BPDATA. Please remove it manually."
-                exit
-            fi
-        else
-            echo "Please remove BPDATA manually and try again."
-            exit
-        fi
-
-        # run the createProcessingDB.sql script to create and populate database
-        if ! mysql -u "$mysql_user" -p"$password" -e "SOURCE $tmpFolder/createProcessingDB.sql"; then
-            echo "Error creating database RFDATA. Please check the script and try again."
-            exit
-        fi
-    fi
+    create_database "RFDATA" "createMeasureDB.sql"
+    create_database "BPDATA" "createProcessingDB.sql"
 }
 
 # set SE linux for shell script files and enable services
 prepare_service() {
+
+    echo "- Preparing services..."
 
     for file in "${!updateFiles[@]}"; do
         folder="${special_files[$file]}"
@@ -366,6 +378,9 @@ prepare_service() {
 
 # Function to remove tmp folder
 remove_tmp_folder() {
+
+    echo "- Removing tmp folder..."
+
     # remove the downloadFolder
     if ! rm -rf "$downloadFolder"; then
         echo "Error removing $downloadFolder. Please remove it manually."
