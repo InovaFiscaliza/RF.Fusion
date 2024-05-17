@@ -119,7 +119,7 @@ print_help() {
 
 create_folders() {
 
-    echo "Creating folders..."
+    echo -e "\n- Creating folders..."
 
     # try to create a temp folder, if it fails, exit
     if [ ! -d "$tmpFolder" ]; then
@@ -182,7 +182,6 @@ download_file() {
 # Funciton to download files from the repository
 get_files() {
 
-    echo "- Downloading files..."
     # change to downloadFolder folder for file download
     if ! cd "$downloadFolder"; then
         echo "Error changing to $downloadFolder"
@@ -190,6 +189,7 @@ get_files() {
     fi
 
     if [ "$1" == "-u" ]; then
+        echo -e "\n- Downloading files..."
         # download files that are in the update list
         for file in "${!updateFiles[@]}"; do
             folder="${updateFiles[$file]}"
@@ -233,12 +233,13 @@ handle_special() {
 # Function to move files from tmp to target folders
 move_files() {
 
-    echo "- Moving files..."
-
     scritpError=false
 
     # move files from the update list to the target folders
     if [ "$1" == "-u" ]; then
+
+        echo -e "\n- Moving files..."
+
         for file in "${!updateFiles[@]}"; do
             folder="${updateFiles[$file]}"
             if ! mv -f "$file" "$folder"; then
@@ -302,6 +303,7 @@ create_database() {
         run_sql "$1" "$2"
     else
         read -p "Database $1 already exists. Do you wish to remove it? [y/N]" -n 1 -r
+        echo -e "\n"
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             if ! mysql -u "$mysql_user" -p"$password" -e "DROP DATABASE $1"; then
                 echo "Error dropping database $1. Please remove it manually."
@@ -321,7 +323,7 @@ create_database() {
 # configure mysql database
 config_database() {
 
-    echo "- Configuring database..."
+    echo -e "\n- Configuring database..."
 
     # test if mysql is installed
     if ! which mysql >/dev/null; then
@@ -344,6 +346,7 @@ config_database() {
     # prompt user for credentials to be used to access mysql
     read -p "Enter mysql user: " mysql_user
     read -s -p "Enter mysql password: " password
+    echo -e "\n"
 
     # test if mysql is configured
     if ! mysql -u "$mysql_user" -p"$password" -e "SHOW DATABASES" >/dev/null 2>&1; then
@@ -358,10 +361,10 @@ config_database() {
 # set SE linux for shell script files and enable services
 prepare_service() {
 
-    echo "- Preparing services..."
+    echo -e "\n- Preparing services..."
 
     for file in "${!updateFiles[@]}"; do
-        folder="${special_files[$file]}"
+        folder="${updateFiles[$file]}"
         full_file_name="$folder/$file"
 
         # set SE linux for shell script files
