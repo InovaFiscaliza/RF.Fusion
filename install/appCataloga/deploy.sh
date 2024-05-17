@@ -1,11 +1,11 @@
 #!/bin/bash
 
-deploy_version=0.7
+deploy_version=0.8
 
 splash_banner() {
-    echo -n "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-    echo -n "appCataloga deploy script version $deploy_version"
-    echo -n "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+    echo -e "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+    echo -e "appCataloga deploy script version $deploy_version"
+    echo -e "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
 }
 
 # Download files from a repository and install
