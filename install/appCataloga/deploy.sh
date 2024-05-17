@@ -285,17 +285,21 @@ config_database() {
         exit
     fi
 
+    # prompt user for credentials to be used to access mysql
+    read -p "Enter mysql user: " mysql_user
+    read -s -p "Enter mysql password: " password
+
     # test if mysql is configured
-    if ! mysql -e "SELECT 1" >/dev/null; then
+    if ! mysql -u "$mysql_user" -p"$password" -e "SHOW DATABASES" >/dev/null; then
         echo "mysql is not configured. Please configure it and try again."
         exit
     fi
 
     # test if database RFDATA do not exists, create it
-    if mysql -e "USE RFDATA" >/dev/null; then
+    if mysql -u "$mysql_user" -p"$password" -e "USE RFDATA" >/dev/null; then
         read -p "Database RFDATA already exists. Do you wish to remove it? [y/N]" -n 1 -r
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            if ! mysql -e "DROP DATABASE RFDATA"; then
+            if ! mysql -u "$mysql_user" -p"$password" -e "DROP DATABASE RFDATA"; then
                 echo "Error dropping database RFDATA. Please remove it manually."
                 exit
             fi
@@ -305,17 +309,17 @@ config_database() {
         fi
 
         # run the createMeasureDB.sql script to create and populate database
-        if ! mysql -e "SOURCE $tmpFolder/createMeasureDB.sql"; then
+        if ! mysql -u "$mysql_user" -p"$password" -e "SOURCE $tmpFolder/createMeasureDB.sql"; then
             echo "Error creating database RFDATA. Please check the script and try again."
             exit
         fi
     fi
 
     # test if database BPDATA do not exists, create it
-    if mysql -e "USE BPDATA" >/dev/null; then
+    if mysql -u "$mysql_user" -p"$password" -e "USE BPDATA" >/dev/null; then
         read -p "Database BPDATA already exists. Do you wish to remove it? [y/N]" -n 1 -r
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            if ! mysql -e "DROP DATABASE BPDATA"; then
+            if ! mysql -u "$mysql_user" -p"$password" -e "DROP DATABASE BPDATA"; then
                 echo "Error dropping database BPDATA. Please remove it manually."
                 exit
             fi
@@ -325,7 +329,7 @@ config_database() {
         fi
 
         # run the createProcessingDB.sql script to create and populate database
-        if ! mysql -e "SOURCE $tmpFolder/createProcessingDB.sql"; then
+        if ! mysql -u "$mysql_user" -p"$password" -e "SOURCE $tmpFolder/createProcessingDB.sql"; then
             echo "Error creating database RFDATA. Please check the script and try again."
             exit
         fi
