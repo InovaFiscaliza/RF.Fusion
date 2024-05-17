@@ -194,33 +194,6 @@ systemctl daemon-reload
 
 ## Install appCataloga
 
-### Install python scripts and reference data
-
-Get de deployment script to download and copy relevant files to the appropriate folders
-
-```shell
-mkdir /tmp/appCataloga
-
-cd /tmp/appCataloga
-
-wget https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh
-
-chmod +x deploy.sh
-```
-
-The deployment script have the following options:
-
-* `-h` to show the help message
-* `-i` to install the application
-* `-u` to update the application
-* `-r` to remove the application
-
-To install the application, run the following command
-
-```shell
-./deploy.sh -i
-```
-
 ### Install MariaDB
 
 ```shell
@@ -299,7 +272,7 @@ mysql_secure_installation
     Thanks for using MariaDB!
 ```
 
-Create database and user for the application
+Create user for the application
 
 ```shell
 mysql -u root -p
@@ -313,10 +286,6 @@ mysql -u root -p
 
     Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
 vd0RpwMLA
-MariaDB [(none)]> SOURCE /tmp/appCataloga/createMeasureDB.sql
-
-MariaDB [(none)]> SOURCE /tmp/appCataloga/createProcessingDB.sql
-
 MariaDB [(none)]> CREATE USER 'appCataloga'@'localhost' IDENTIFIED BY '<app_pass>';
 
 MariaDB [(none)]> GRANT ALL PRIVILEGES ON BPDATA.* TO 'appCataloga'@'localhost';
@@ -328,10 +297,27 @@ MariaDB [(none)]> FLUSH PRIVILEGES;
 MariaDB [(none)]> exit
 ```
 
-After the database is created you may remove the original csv files to free up space
+Berfore runnin the deploy script, that wi create the database, ou need to allow the use of sql scripts from the tmp folder
 
 ```shell
-rm -f /etc/appCataloga/*.csv
+nano /etc/systemd/system/multi-user.target.wants/mysqld.service
+```
+
+Edit the following line
+
+```shell
+    # Place temp files in a secure directory, not /tmp
+    PrivateTmp=false
+```
+
+Use 'CTRL+X' to exit and 'Y' to save the changes
+
+Reload the daemon
+
+```shell
+systemctl daemon-reload
+systemctl stop mysqld.service
+systemctl start mysqld.service
 ```
 
 Edit the file `/etc/appCataloga/secret.py` to set the database credentials and other essential parameters as described below
@@ -346,6 +332,33 @@ DB_PASSWORD = '<app_pass>'
 ```
 
 Use 'CTRL+X' to exit and 'Y' to save the changes
+
+### Install python scripts and reference data
+
+Get de deployment script to download and copy relevant files to the appropriate folders
+
+```shell
+mkdir /tmp/appCataloga
+
+cd /tmp/appCataloga
+
+wget https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh
+
+chmod +x deploy.sh
+```
+
+The deployment script have the following options:
+
+* `-h` to show the help message
+* `-i` to install the application
+* `-u` to update the application
+* `-r` to remove the application
+
+To install the application, run the following command
+
+```shell
+./deploy.sh -i
+```
 
 ### Install python environment and the required libraries
 
