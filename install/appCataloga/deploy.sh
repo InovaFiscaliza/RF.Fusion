@@ -16,6 +16,7 @@ update_deploy() {
     new_version=$(grep -oP 'deploy_version=\K[^ ]+' deploy.sh.new | head -n 1)
     if [ "$new_version" == "$deploy_version" ]; then
         echo "No changes found in the deploy script."
+        echo "Current version is $deploy_version."
         rm deploy.sh.new
         exit
     else
