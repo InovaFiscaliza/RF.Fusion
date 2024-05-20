@@ -1,6 +1,6 @@
 #!/bin/bash
 
-deploy_version=0.8
+deploy_version=0.9
 
 splash_banner() {
     echo -e "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -322,8 +322,14 @@ create_database() {
                 run_sql "$1" "$2"
             fi
         else
-            echo "Please remove $1 manually and try again."
-            exit 1
+            read -p "Do you want to proceed with the installation process without the database setup? [y/N]" -n 1 -r
+            echo " "        
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                echo "For inital install you will need to run the database creation scripts manually from the $tmpFolder folder."
+            else
+                echo "Please remove $1 manually and try again."
+                exit 1
+            fi
         fi
     fi
 }
@@ -407,7 +413,6 @@ remove_tmp_folder() {
         exit
     fi
     # query user input to remove tmp folder
-    echo "For inital install you will need to run the database creation scripts manually from the $tmpFolder folder."
     read -p "Remove $tmpFolder? [y/N] " -n 1 -r
     echo " "
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
