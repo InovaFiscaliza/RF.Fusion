@@ -405,7 +405,7 @@ prepare_service() {
 # Function to remove tmp folder
 remove_tmp_folder() {
 
-    echo "- Removing tmp folder..."
+    echo -e "- Removing tmp folder..."
 
     # remove the downloadFolder
     if ! rm -rf "$downloadFolder"; then
@@ -424,6 +424,19 @@ remove_tmp_folder() {
     if ! rm -rf "$tmpFolder"; then
         echo "Error removing $tmpFolder. Please remove it manually."
         exit
+    fi
+}
+
+# Function to create conda enviorment from enviorment.yml
+create_enviorment() {
+    echo -e "\n- Creating conda enviorment..."
+
+
+    if ! conda env create -f "$tmpFolder/environment.yml"; then
+        echo "Error creating conda enviorment. Please check the script and try again."
+        exit
+    else
+        echo "Conda enviorment created successfully."
     fi
 }
 
