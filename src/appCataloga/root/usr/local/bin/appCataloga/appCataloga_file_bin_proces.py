@@ -39,7 +39,7 @@ import signal
 import inspect
 
 # create a warning message object
-log = sh.log(target_screen=True)
+log = sh.log(target_screen=False)
 
 process_status = {"running": True}
 

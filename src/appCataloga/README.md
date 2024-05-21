@@ -360,6 +360,10 @@ To install the application, run the following command
 ./deploy.sh -i
 ```
 
+At the end of the install, do not remove the `/tmp/appCataloga` folder, as it will be used to install the python environment.
+
+Version 0.9 of the deploy script still do not configure the conda environment, a step that must be done manually following the steps described below.
+
 ### Install python environment and the required libraries
 
 Install miniconda under the /usr/local/bin/appCataloga folder
@@ -437,7 +441,7 @@ source /usr/local/bin/appCataloga/miniconda3/bin/activate
 create the environment
 
 ```shell
-(base) conda env create -f /usr/local/bin/appCataloga/environment.yml
+(base) conda env create -f /tmp/appCataloga/environment.yml
 ```
 
 If you want to test any module, you may activate the environment and run the module directly using:
