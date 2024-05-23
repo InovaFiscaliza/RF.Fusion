@@ -25,7 +25,6 @@
 
 import sys
 
-# sys.path.append('Y:\\RF.Fusion\\src\\appCataloga\\root\\etc\\appCataloga\\')
 sys.path.append("/etc/appCataloga")
 
 # Import appCataloga modules
@@ -33,7 +32,6 @@ import config as k
 import shared as sh
 import db_handler as dbh
 
-from pathlib import Path
 import subprocess
 
 
