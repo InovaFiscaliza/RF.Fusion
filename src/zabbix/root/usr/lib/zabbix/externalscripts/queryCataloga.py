@@ -105,18 +105,19 @@ ARGUMENTS = {
 }
 
 
-def hide_sensitive_data(request: str) -> str:
+def hide_sensitive_data(request: str, forbidden: list) -> str:
     """Replace sensitive data in the request list with asterisks
 
     Args:
         request: String to be sanitized
+        forbidden: List of forbidden strings to be sanitized
 
     Returns:
         list: sanitized string
     """
 
-    request = re.sub(r"user=.*", "user=*****", request)
-    request = re.sub(r"passwd=.*", "passwd=*****", request)
+    for f in forbidden:
+        request = re.sub(f, "*****", request)
 
     return request
 
@@ -186,8 +187,10 @@ def main():
     try:
         dict_output = json.loads(json_output)
 
-        # loop through string list within the dict_output['Request'] value and replace strings "user=.*"" and "passwd=.*" with "user=*****" and "passwd=*****"
-        dict_output["request"] = hide_sensitive_data(requestS)
+        dict_output["request"] = hide_sensitive_data(
+            request=requestS,
+            forbidden=[arg.data["user"]["value"], arg.data["passwd"]["value"]],
+        )
 
         dict_output["status_query"] = 1
         dict_output["message_query"] = wm.warning_msg
