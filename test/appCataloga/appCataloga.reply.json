@@ -1,0 +1,18 @@
+{
+    "host": 10367,
+    "host_files": 0,
+    "pending_host_task": 1,
+    "last_host_check": 1716455655.0,
+    "host_check_error": 0,
+    "pending_backup": 0,
+    "last_backup": 1716452913.0,
+    "backup_error": 8,
+    "pending_processing": 0,
+    "processing_error": 225,
+    "last_processing": 1716452920.0,
+    "status": 1,
+    "message": "",
+    "request": "backup 10367 RFEye002080 rfeye002080.anatel.gov.br 2828 ***** *****",
+    "status_query": 1,
+    "message_query": "Warning: Using default host id; Using default host uid; Using default host address; Using default host port; Using default user; Using default password; Using default query tag; Using default timeout"
+}
