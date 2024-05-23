@@ -11,7 +11,7 @@ This script is unsecure and should only run through a secure encrypted network c
 
     Parameters:
         <host_id> Zabbix numerical primary key as defined in the macro {HOST.ID}
-        <host_uid> host name used for physical equipment identification 
+        <host_uid> host name used for physical equipment identification
         <host_add> host IP or host name known to the available DNS
         <host_port> port number to be used to access the host
         <user> user id to be used to access the host
@@ -20,21 +20,32 @@ This script is unsecure and should only run through a secure encrypted network c
         <timeout> timeout in seconds to wait for a response from the remote appCataloga module
 
     Returns:
-        (json) =  { 'Total Files': (int),
-                    'Files pending backup': (int),
-                    'Last Backup': (str)
-                    'Days since last backup': (int),
-                    'Status': (int), 
-                    'Message': (str)}
+        (json) =  { "id_host": (int) zabbix host id,
+                    "host_files": (int) total files in the host,
+                    "pending_host_task": (int) number of pending tasks for the host,
+                    "last_host_check": (int) unix timestamp,
+                    "host_check_error": (int) number of errors in the last check,
+                    "pending_backup": (int) number of files pending backup,
+                    "last_backup": (int) unix timestamp,
+                    "backup_error": (int) number of errors in the last backup,
+                    "pending_processing": (int) number of files pending processing,
+                    "processing_error": (int) number of errors in the last processing,
+                    "last_processing": (int) unix timestamp,
+                    "status": (int) 1=valid data or 0=error in the appCataloga server script,
+                    "message": (str) error or warning informatiom in the appCataloga server script,
+                    "request": (list) list of strings used to compose the request to the server}
+                    "status_query": (int) 1=valid data or 0=error in the client query script,
+                    "message_query": (str) error or warning information in the client query script}
 
         Status may be 1=valid data or 0=error in the script
-        All keys except "Message" are suppressed when Status=0
+        All keys except "message_query" are suppressed when Status=0
         Message describe the error or warning information
 """
 
 import socket
 import sys
 import json
+import re
 
 sys.path.append(
     "C:/Users/Fabio/AppData/Local/Temp/scp31195/root/RF.Fusion/src/zabbix/root/usr/lib/zabbix/externalscripts"
@@ -49,8 +60,8 @@ ARGUMENTS = {
         "set": False,
         "value": k.ACAT_DEFAULT_HOST_ID,
         "message": "Using default host id",
-
-        "types": ["warning", "default"],    },
+        "types": ["warning", "default"],
+    },
     "host_uid": {
         "set": False,
         "value": k.ACAT_DEFAULT_HOST_UID,
@@ -69,7 +80,8 @@ ARGUMENTS = {
     "user": {
         "set": False,
         "value": k.ACAT_DEFAULT_USER,
-        "message": "Using default user"},
+        "message": "Using default user",
+    },
     "passwd": {
         "set": False,
         "value": k.ACAT_DEFAULT_PASSWD,
@@ -88,9 +100,27 @@ ARGUMENTS = {
     "help": {
         "set": True,
         "value": None,
-        "message": "** Use queryCataloga host_id=<host_id> host_uid=<host_uid> host_add=<host_add> host_port=<host_port> user=<user> passwd=<passwd> query_tag=<query_tag> timeout=<timeout>. See code for details **"
+        "message": "** Use queryCataloga host_id=<host_id> host_uid=<host_uid> host_add=<host_add> host_port=<host_port> user=<user> passwd=<passwd> query_tag=<query_tag> timeout=<timeout>. See code for details **",
     },
 }
+
+
+def hide_sensitive_data(request: list) -> list:
+    """Replace sensitive data in the request list with asterisks
+
+    Args:
+        request (list): list of strings to be sanitized
+
+    Returns:
+        list: sanitized list of strings
+    """
+
+    for request_item in request:
+        request_item = re.sub(r"user=.*", "user=*****", request_item)
+        request_item = re.sub(r"passwd=.*", "passwd=*****", request_item)
+
+    return request
+
 
 def main():
     # create a warning message object
@@ -123,7 +153,7 @@ def main():
         client_socket.sendall(request)
     except Exception as e:
         print(
-            f'{{"status":0,"message":"Error: {e}; Could establish socket connection"}}'
+            f'{{"status_query":0,"message_query":"Error: {e}; Could establish socket connection"}}'
         )
         client_socket.close()
         exit()
@@ -132,7 +162,9 @@ def main():
         response = client_socket.recv(k.SMALL_BUFFER_SIZE)
         client_socket.close()
     except Exception as e:
-        print(f'{{"status":0,"message":"Error: {e}; Error receiving data"}}')
+        print(
+            f'{{"status_query":0,"message_query":"Error: {e}; Error receiving data"}}'
+        )
         client_socket.close()
         exit()
 
@@ -140,7 +172,7 @@ def main():
         response = response.decode(k.UTF_ENCODING)
     except Exception as e:
         print(
-            f'{{"status":0,"message":"Error: {e}. Error decoding data with {k.UTF_ENCODING}: {response}"}}'
+            f'{{"status_query":0,"message_query":"Error: {e}. Error decoding data with {k.UTF_ENCODING}: {response}"}}'
         )
         client_socket.close()
         exit()
@@ -155,14 +187,17 @@ def main():
     try:
         dict_output = json.loads(json_output)
 
-        dict_output["status"] = 1
-        dict_output["message"] = wm.warning_msg
+        # loop through string list within the dict_output['Request'] value and replace strings "user=.*"" and "passwd=.*" with "user=*****" and "passwd=*****"
+        dict_output["Request"] = hide_sensitive_data(dict_output["Request"])
+
+        dict_output["status_query"] = 1
+        dict_output["message_query"] = wm.warning_msg
 
         print(json.dumps(dict_output))
 
     except json.JSONDecodeError as e:
         print(
-            f'{"status":0,"message":"Error: Malformed JSON received. Dumped: {response}"}'
+            f'{"status_query":0,"message_query":"Error: Malformed JSON received. Dumped: {response}"}'
         )
 
 
