@@ -1,0 +1,58 @@
+-- MySQL dump 10.19  Distrib 10.3.39-MariaDB, for Linux (x86_64)
+--
+-- Host: localhost    Database: BPDATA
+-- ------------------------------------------------------
+-- Server version	10.3.39-MariaDB
+
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+/*!40101 SET NAMES utf8mb4 */;
+/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+/*!40103 SET TIME_ZONE='+00:00' */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+
+--
+-- Table structure for table `HOST_TASK`
+--
+
+DROP TABLE IF EXISTS `HOST_TASK`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!40101 SET character_set_client = utf8 */;
+CREATE TABLE `HOST_TASK` (
+  `ID_HOST_TASK` int(11) NOT NULL AUTO_INCREMENT COMMENT 'Primary Key to host task table',
+  `FK_HOST` int(11) DEFAULT NULL COMMENT 'Foreign key to host table',
+  `NU_TYPE` tinyint(4) DEFAULT 0 COMMENT 'Host Task Type: 0=Not set; 1=Backup;',
+  `DT_HOST_TASK` datetime DEFAULT NULL COMMENT 'Date and time of the host task creation',
+  `NU_STATUS` tinyint(4) DEFAULT 0 COMMENT 'Status flag: -1=Executed with error; 0=Nothing to do; 1=Pending action',
+  `NA_MESSAGE` text DEFAULT NULL COMMENT 'Error message and other information',
+  `NU_PID` int(11) DEFAULT NULL COMMENT 'Process ID of the task when under execution',
+  PRIMARY KEY (`ID_HOST_TASK`),
+  KEY `FK_HOST_TASK_HOST` (`FK_HOST`),
+  CONSTRAINT `FK_HOST_TASK_HOST` FOREIGN KEY (`FK_HOST`) REFERENCES `HOST` (`ID_HOST`)
+) ENGINE=InnoDB AUTO_INCREMENT=12 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `HOST_TASK`
+--
+
+LOCK TABLES `HOST_TASK` WRITE;
+/*!40000 ALTER TABLE `HOST_TASK` DISABLE KEYS */;
+INSERT INTO `HOST_TASK` VALUES (1,10367,1,'2024-03-15 19:06:55',-1,'Failed',11111),(2,10367,1,'2024-03-16 19:06:55',-1,'Failed Again',22222),(3,123,1,'2024-03-17 19:06:55',-1,'Other Fail',22222),(4,10367,1,'2024-03-18 19:06:55',2,'Running',33333);
+/*!40000 ALTER TABLE `HOST_TASK` ENABLE KEYS */;
+UNLOCK TABLES;
+/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
+
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
+/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
+-- Dump completed on 2024-05-24 12:59:40

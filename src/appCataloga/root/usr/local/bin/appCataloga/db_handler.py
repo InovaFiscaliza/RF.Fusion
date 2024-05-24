@@ -1987,7 +1987,7 @@ class dbHandler:
         self._connect()
 
         # compose query to get ID_FILE_TASK and FK_HOST from FILE_TASK table where NU_STATUS is equal to the given status and NU_TYPE is equal to the given type
-        query = f"SELECT ID_FILE_TASK FROM FILE_TASK WHERE NU_STATUS = {task_status} AND NU_TYPE = {task_type};"
+        query = f"SELECT ID_FILE_TASK, FK_HOST FROM FILE_TASK WHERE NU_STATUS = {task_status} AND NU_TYPE = {task_type};"
 
         self.cursor.execute(query)
 

@@ -100,8 +100,8 @@ def reset_host_check(dbp: dbh.dbHandler, log: sh.log) -> None:
 
         dbp.update_host_status(
             host_id=host_id,
-            nu_host_check_error=-failed_task_list.__len__(),
-            nu_pending_host_task=failed_task_list.__len__(),
+            host_check_error=-failed_task_list.__len__(),
+            pending_host_check=failed_task_list.__len__(),
         )
 
         log.entry(
@@ -230,7 +230,7 @@ def main():
         print(f"Error creating log object: {e}")
         exit(1)
 
-    log.entry("Starting server refresh.")
+    log.entry("Starting task error reset script.")
 
     dbp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
 
