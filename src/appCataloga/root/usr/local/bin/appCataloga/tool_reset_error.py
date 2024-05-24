@@ -62,7 +62,11 @@ class system_service:
             self.log.entry(f"{self.service} stopped by reset tool.")
 
     def start(self) -> None:
-        command = f"systemctl start {self.service}"
+        if self.multi_worker:
+            command = f"systemctl start {self.service}@0.service"
+        else:
+            command = f"systemctl start {self.service}.service"
+
         result = subprocess.run(command, capture_output=True, shell=True, text=True)
         if result.returncode != 0:
             self.log.error(f"Error starting {self.service}: {result.stderr}")
@@ -87,7 +91,7 @@ def reset_host_check(dbp: dbh.dbHandler, log: sh.log) -> None:
     """
     log.entry("Resetting host check tasks.")
     # Stop host check service
-    host_check = system_service("appCataloga_host_check.service", log)
+    host_check = system_service("appCataloga_host_check", log)
     host_check.stop()
 
     # List host tasks that have status 'error'
@@ -147,8 +151,8 @@ def reset_file_bkp(dbp: dbh.dbHandler, log: sh.log) -> None:
 
         dbp.update_host_status(
             host_id=host_id,
-            nu_backup_error=-failed_task_list.__len__(),
-            nu_pending_backup=failed_task_list.__len__(),
+            backup_error=-failed_task_list.__len__(),
+            pending_backup=failed_task_list.__len__(),
         )
 
         log.entry(
@@ -189,7 +193,7 @@ def reset_file_bin_proces(dbp: dbh.dbHandler, log: sh.log) -> None:
 
     # List file processing tasks that have status 'error'
     failed_file_bin_proces_tasks = dbp.list_file_tasks(
-        task_type=dbp.PROCESSING_TASK_TYPE, task_status=dbp.TASK_ERROR
+        task_type=dbp.PROCESS_TASK_TYPE, task_status=dbp.TASK_ERROR
     )
 
     # Iterate over all failed tasks and reset them
@@ -199,8 +203,8 @@ def reset_file_bin_proces(dbp: dbh.dbHandler, log: sh.log) -> None:
 
         dbp.update_host_status(
             host_id=host_id,
-            nu_processing_error=-failed_task_list.__len__(),
-            nu_pending_processing=failed_task_list.__len__(),
+            processing_error=-failed_task_list.__len__(),
+            pending_processing=failed_task_list.__len__(),
         )
 
         log.entry(
@@ -208,7 +212,7 @@ def reset_file_bin_proces(dbp: dbh.dbHandler, log: sh.log) -> None:
         )
 
     running_file_bin_proces_tasks = dbp.list_file_tasks(
-        task_type=dbp.PROCESSING_TASK_TYPE, task_status=dbp.TASK_RUNNING
+        task_type=dbp.PROCESS_TASK_TYPE, task_status=dbp.TASK_RUNNING
     )
 
     for host_id, running_task_list in running_file_bin_proces_tasks.items():
@@ -240,9 +244,7 @@ def main():
 
     reset_file_bin_proces(dbp, log)
 
-    log.entry(
-        "Finish server DB and files refreshing. You may need to manually perform additional tasks. Check the log for details."
-    )
+    log.entry("Finished reseting failed and missing tasks.")
 
 
 if __name__ == "__main__":
