@@ -9,6 +9,7 @@ sys.path.append("/etc/appCataloga")
 import mysql.connector
 import os
 import re
+import pandas as pd
 
 from typing import List, Union, Tuple
 
@@ -2409,3 +2410,47 @@ class dbHandler:
         self._disconnect()
 
         return (pending_processing, error_processing)
+
+    def publish_parquet(self, file_name: str) -> None:
+        # connect to the database
+        self._connect()
+
+        # List all tables in the database
+        query = "SHOW TABLES;"
+        self.cursor.execute(query)
+        tables = self.cursor.fetchall()
+
+        # Create a DataFrame with no values and columns with table names
+        db_df = pd.DataFrame(columns=[table[0] for table in tables])
+
+        # Loop through tables and get data into dataframes
+        for table in tables:
+            table_name = table[0]
+            query = f"SELECT * FROM {table_name};"
+            self.cursor.execute(query)
+            table_data = self.cursor.fetchall()
+
+            table_df = pd.DataFrame(table_data)
+
+            # get column names from the database and assign to the dataframe
+            query = f"SHOW COLUMNS FROM {table_name};"
+            self.cursor.execute(query)
+            columns = self.cursor.fetchall()
+            column_names = [column[0] for column in columns]
+
+            try:
+                table_df.columns = column_names
+            except ValueError:
+                self.log.error(f"Error parsing column names for table {table_name}")
+                continue
+
+            # replace null values with "na"
+            table_df = table_df.fillna("na")
+
+            # store the dataframe in the db_df
+            db_df[table_name] = table_df
+
+        # Save the database to a parquet file
+        db_df.to_parquet(file_name)
+
+        self._disconnect()

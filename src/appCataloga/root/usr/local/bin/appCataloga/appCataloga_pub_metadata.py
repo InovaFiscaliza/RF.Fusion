@@ -74,11 +74,8 @@ def main():
 
     while process_status["running"]:
         try:
-            # get the metadata from the database
-            metadata = rfdb.get_metadata()
-
             # publish the metadata to the parquet file
-            rfdb.publish_metadata(metadata, k.PUBLISH_FILE)
+            rfdb.publish_parquet(file_name=k.PUBLISH_FILE)
 
         except Exception as e:
             log.error(f"Unmapped error occurred: {str(e)}")
