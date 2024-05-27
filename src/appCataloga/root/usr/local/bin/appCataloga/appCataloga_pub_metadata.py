@@ -21,11 +21,12 @@ import db_handler as dbh
 
 import signal
 import inspect
+import os
 
 # define global variables for log and general use
 log = sh.log()
 
-process_status = {"conn": None, "halt_flag": None, "running": True}
+process_status = {"running": True}
 
 
 # Define a signal handler for SIGTERM (kill command )
@@ -57,6 +58,18 @@ signal.signal(signal.SIGTERM, sigterm_handler)
 signal.signal(signal.SIGINT, sigint_handler)
 
 
+def test_path(file_name: str) -> None:
+    """Test if the path to the file exists, if not create it.
+
+    Args:
+        file_name (str): File name with path
+    """
+
+    path = os.path.dirname(file_name)
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+
 def main():
     """Main function to start the host check process."""
 
@@ -74,12 +87,16 @@ def main():
 
     while process_status["running"]:
         try:
+            # test if path to k.PUBLISH_FILE exists
+            test_path(file_name=k.PUBLISH_FILE)
+
             # publish the metadata to the parquet file
             rfdb.publish_parquet(file_name=k.PUBLISH_FILE)
 
         except Exception as e:
             log.error(f"Unmapped error occurred: {str(e)}")
-            raise ValueError(log.dump_error())
+            process_status["running"] = False
+            pass
 
     log.entry("Shutting down....")
 
