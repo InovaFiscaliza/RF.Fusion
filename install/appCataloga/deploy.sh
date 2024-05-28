@@ -466,7 +466,7 @@ remove_install_folders() {
 }
 
 # Function to remove files and folders
-remove_files_after_update() {
+rollback_update() {
 
     scritpError=false
 
@@ -539,6 +539,7 @@ case "$1" in
     ;;
 -r)
     splash_banner
+    disable_services
     remove_install_folders
     ;;
 *)
