@@ -2420,9 +2420,6 @@ class dbHandler:
         self.cursor.execute(query)
         tables = self.cursor.fetchall()
 
-        # Create a DataFrame with no values and columns with table names
-        db_df = pd.DataFrame(columns=[table[0] for table in tables])
-
         # Loop through tables and get data into dataframes
         for table in tables:
             table_name = table[0]
@@ -2447,10 +2444,8 @@ class dbHandler:
             # replace null values with "na"
             table_df = table_df.fillna("na")
 
+            composed_file_name = f"{file_name}.{table_name}.parquet"
             # store the dataframe in the db_df
-            db_df[table_name] = table_df
-
-        # Save the database to a parquet file
-        db_df.to_parquet(file_name)
+            table_df.to_parquet(composed_file_name)
 
         self._disconnect()

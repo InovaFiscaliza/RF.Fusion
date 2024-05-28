@@ -67,7 +67,7 @@ PROCESSING_CONTROL_MODULE = "/usr/local/bin/appCataloga/processing_control.py"
 MAX_NOMINATIN_ATTEMPTS = 10
 
 # metadata publishing module configuration
-PUBLISH_FILE = "/mnt/reposfi/Metadata/rf_metadata.parquet"
+PUBLISH_FILE = "/mnt/reposfi/Metadata/rf_metadata"  # filename without extension
 
 # general configuration
 SECONDS_IN_MINUTE = 60
