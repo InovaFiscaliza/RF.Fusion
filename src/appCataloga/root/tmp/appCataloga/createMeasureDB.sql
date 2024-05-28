@@ -117,6 +117,7 @@ LOAD DATA INFILE '/tmp/appCataloga/fileType.csv'
 
 CREATE TABLE DIM_SPECTRUM_FILE (
     ID_FILE INT NOT NULL AUTO_INCREMENT COMMENT 'Primary Key to file dimension table',
+    DT_FILE_LOGGED DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT 'Timestamp when the db entry was created',
     ID_TYPE_FILE INT COMMENT 'Foreign key to file type table', 
     NA_FILE VARCHAR(100) COMMENT 'Unique identifier to the filename',
     NA_PATH VARCHAR(3000) COMMENT 'Unique identifier to the file path',
