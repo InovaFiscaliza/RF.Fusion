@@ -1,6 +1,6 @@
 #!/bin/bash
 
-deploy_version=0.9
+deploy_version=0.10
 
 splash_banner() {
     echo -e "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -91,6 +91,9 @@ declare -A updateFiles=(
     ["appCataloga_host_check.py"]=$scriptFolder
     ["appCataloga_host_check.service"]=$scriptFolder
     ["appCataloga_host_check.sh"]=$scriptFolder
+    ["appCataloga_pub_metadata.py"]=$scriptFolder
+    ["appCataloga_pub_metadata.service"]=$scriptFolder
+    ["appCataloga_pub_metadata.sh"]=$scriptFolder
     ["appCataloga.py"]=$scriptFolder
     ["appCataloga.sh"]=$scriptFolder
     ["appCataloga.service"]=$scriptFolder
@@ -289,7 +292,11 @@ move_files() {
         echo "Error moving files. Check user and target folder permissions."
 
         echo "Rolling back files moved to $dataFolder and $scriptFolder"
-        remove_files "$1" -v
+        if [ "$1" == "-u" ]; then
+            remove_files_after_update
+        elif [ "$1" == "-i" ]; then
+            remove_install_folders
+        fi
         exit
     fi
 }
@@ -323,7 +330,7 @@ create_database() {
             fi
         else
             read -p "Do you want to proceed with the installation process without the database setup? [y/N]" -n 1 -r
-            echo " "        
+            echo " "
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 echo "For inital install you will need to run the database creation scripts manually from the $tmpFolder folder."
             else
@@ -394,10 +401,6 @@ prepare_service() {
                 echo "Error enabling $full_file_name"
                 scritpError=true
             fi
-            #            if ! /usr/bin/systemctl start "$full_file_name"; then
-            #                echo "Error starting $full_file_name"
-            #                scritpError=true
-            #            fi
         fi
     done
 }
@@ -431,7 +434,6 @@ remove_tmp_folder() {
 create_enviorment() {
     echo -e "\n- Creating conda enviorment..."
 
-
     if ! conda env create -f "$tmpFolder/environment.yml"; then
         echo "Error creating conda enviorment. Please check the script and try again."
         exit
@@ -440,50 +442,7 @@ create_enviorment() {
     fi
 }
 
-# Function to remove files and folders
-remove_files() {
-
-    scritpError=false
-
-    if [ "$1" == "-u" ]; then
-        echo -e "\n- Removing files..."
-
-        for file in "${!updateFiles[@]}"; do
-            folder="${updateFiles[$file]}"
-            if ! rm -f "$folder/$file}"; then
-                if [ "$2" == "-v" ]; then
-                    echo "Error removing $folder/$file}"
-                fi
-                scritpError=true
-            fi
-        done
-        for file in "${!special_files[@]}"; do
-            folder="${special_files[$file]}"
-            if ! rm -f "$folder/$file}"; then
-                if [ "$2" == "-v" ]; then
-                    echo "Error removing $folder/$file}"
-                fi
-                scritpError=true
-            fi
-        done
-    elif [ "$1" == "-i" ]; then
-        remove_files -u "$2"
-        for file in "${!installFiles[@]}"; do
-            folder="${installFiles[$file]}"
-            if ! rm -f "$folder/$file}"; then
-                if [ "$2" == "-v" ]; then
-                    echo "Error removing $folder/$file}"
-                fi
-                scritpError=true
-            fi
-        done
-    fi
-
-    if [ "$scritpError" == true ]; then
-        echo "Error removing files. Please remove them manually."
-        exit
-    fi
-
+remove_install_folders() {
     # test if folders are empty, if so, remove them.
     # Splitting file removal and folder removal to avoid removing files created by other processes
     if [ -z "$(ls -A "$dataFolder")" ]; then
@@ -492,6 +451,7 @@ remove_files() {
         echo "Error removing folder ${dataFolder:?}. Folder not empty."
         scritpError=true
     fi
+
     if [ -z "$(ls -A "$scriptFolder")" ]; then
         rm -rf "${scriptFolder:?}"
     else
@@ -505,18 +465,71 @@ remove_files() {
     fi
 }
 
+# Function to remove files and folders
+remove_files_after_update() {
+
+    scritpError=false
+
+    echo -e "\n- Removing files..."
+
+    for file in "${!updateFiles[@]}"; do
+        folder="${updateFiles[$file]}"
+        if ! rm -f "$folder/$file}"; then
+            echo "Error removing $folder/$file}"
+            scritpError=true
+        fi
+
+    done
+    for file in "${!special_files[@]}"; do
+        folder="${special_files[$file]}"
+        if ! rm -f "$folder/$file}"; then
+            echo "Error removing $folder/$file}"
+            scritpError=true
+        fi
+    done
+
+    if [ "$scritpError" == true ]; then
+        echo "Error removing files. Please remove them manually."
+        exit
+    fi
+}
+
+disable_services() {
+
+    echo -e "\n- Preparing services..."
+
+    for file in "${!updateFiles[@]}"; do
+        folder="${updateFiles[$file]}"
+        full_file_name="$folder/$file"
+
+        if [ "${file##*.}" == "service" ]; then
+            if ! /usr/bin/systemctl disable "$full_file_name"; then
+                echo "Error enabling $full_file_name"
+                scritpError=true
+            fi
+        fi
+
+    done
+}
 #! Main script
 
 case "$1" in
 -h)
     print_help
     ;;
--i | -u)
+-i)
     splash_banner
     create_folders
     get_files "$1"
     move_files "$1"
     config_database
+    prepare_service
+    remove_tmp_folder
+    ;;
+-u)
+    splash_banner
+    get_files "$1"
+    move_files "$1"
     prepare_service
     remove_tmp_folder
     ;;
@@ -526,7 +539,7 @@ case "$1" in
     ;;
 -r)
     splash_banner
-    remove_files -i -v
+    remove_install_folders
     ;;
 *)
     echo "Invalid option: $1"
