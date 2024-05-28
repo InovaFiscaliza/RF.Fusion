@@ -1,6 +1,6 @@
 #!/bin/bash
 
-deploy_version=0.10
+deploy_version=0.11
 
 splash_banner() {
     echo -e "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
