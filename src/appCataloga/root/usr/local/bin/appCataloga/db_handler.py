@@ -2,6 +2,7 @@
 """This module manage all database operations for the appCataloga scripts"""
 
 # Import libraries for:
+
 import sys
 
 sys.path.append("/etc/appCataloga")
@@ -10,7 +11,7 @@ import mysql.connector
 import os
 import re
 import pandas as pd
-
+import datetime
 from typing import List, Union, Tuple
 
 # Import file with constants used in this code that are relevant to the operation
@@ -2449,3 +2450,25 @@ class dbHandler:
             table_df.to_parquet(composed_file_name)
 
         self._disconnect()
+
+    def get_latest_processing_time(self) -> datetime:
+        # connect to the database
+        self._connect()
+
+        # build query to get the latest processing time
+        query = "SELECT MAX(DT_FILE_LOGGED) FROM DIM_SPECTRUM_FILE;"
+
+        self.cursor.execute(query)
+
+        try:
+            latest_processing_time = self.cursor.fetchone()[0].timestamp()
+        except (TypeError, ValueError):
+            self.log.error(
+                f"Error getting the latest timestamp from DIM_SPECTRUM_FILE table. "
+                f"Fetched {self.cursor.fetchone()[0]}"
+            )
+            pass
+
+        self._disconnect()
+
+        return latest_processing_time
