@@ -3,9 +3,12 @@
 deploy_version=0.12
 
 splash_banner() {
-    echo -e "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-    echo -e "appCataloga deploy script version $deploy_version"
-    echo -e "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+
+    terminal_width=$(tput cols)
+
+    echo -e "\e[32m$(printf "%0.s~" $(seq 1 $terminal_width))\e[0m"
+    printf "\e[32m%*s\e[0m\n" $((($terminal_width + ${#deploy_version}) / 2)) "appCataloga deploy script version $deploy_version"
+    echo -e "\e[32m$(printf "%0.s~" $(seq 1 $terminal_width))\e[0m"
 }
 
 # Download files from a repository and install
@@ -15,7 +18,9 @@ splash_banner() {
 deploy_tool_repo="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh"
 
 update_deploy() {
-    echo -e "\n- Updating deploy script..."
+    # print "\n- Updating deploy script..." using green color
+    echo -e "\e[32m\n- Updating deploy script...\e[0m"
+
     wget -q --show-progress $deploy_tool_repo -O ./deploy.sh.new
     dos2unix -q deploy.sh.new
     chmod 755 deploy.sh.new
@@ -52,8 +57,10 @@ esac
 
 # test requirements
 if ! which dos2unix >/dev/null; then
-    echo "dos2unix is required to run this script. Please install it and try again."
-    exit
+    if ! dnf install -y dos2unix; then
+        echo "Error installing dos2unix. Please install it manually and try again."
+        exit
+    fi
 fi
 
 #! Declare constants that control the script
@@ -129,7 +136,7 @@ print_help() {
 }
 
 create_tmp_folders() {
-    echo -e "\n- Creating folders..."
+    echo -e "\e[32m\n- Creting temporary folders...\e[0m"
 
     # try to create a temp folder, if it fails, exit
     if [ ! -d "$tmpFolder" ]; then
@@ -149,6 +156,8 @@ create_tmp_folders() {
 }
 
 create_install_folders() {
+
+    echo -e "\e[32m\n- Creating folders that will be used by the application...\e[0m"
     # create data folder if it does not exist
     if [ ! -d "$dataFolder" ]; then
         if ! mkdir $dataFolder; then
@@ -201,7 +210,8 @@ get_files() {
     fi
 
     if [ "$1" == "-u" ]; then
-        echo -e "\n- Downloading files..."
+        echo -e "\e[32m\n- Downloading files...\e[0m"
+
         # download files that are in the update list
         for file in "${!updateFiles[@]}"; do
             folder="${updateFiles[$file]}"
@@ -250,7 +260,7 @@ move_files() {
     # move files from the update list to the target folders
     if [ "$1" == "-u" ]; then
 
-        echo -e "\n- Moving files..."
+        echo -e "\e[32m\n- Moving files...\e[0m"
 
         for file in "${!updateFiles[@]}"; do
             folder="${updateFiles[$file]}"
@@ -347,6 +357,7 @@ install_database() {
         return
     fi
 
+    echo -e "\e[32m\n- Installing mysql (mariadb)...\e[0m"
     # test if mariadb is installed
     if ! which mysql >/dev/null; then
         echo "Mysql is not installed. Do you wish to install it? [y/N]"
@@ -358,8 +369,6 @@ install_database() {
         fi
     fi
 
-    echo -e "\n- Installing database..."
-
     dnf module install -y mariadb
 
     updatesystemctl enable --now mariadb
@@ -369,7 +378,7 @@ install_database() {
 # configure mysql database
 config_database() {
 
-    echo -e "\n- Configuring database..."
+    echo -e "\e[32m\n- Configuring database...\e[0m"
 
     # test if mysql is running
     if ! systemctl is-active --quiet mysql; then
@@ -399,12 +408,12 @@ config_database() {
 }
 
 update_database() {
-    echo -e "\n- Updating database..."
 
     if [ "$1" = "-skip" ]; then
         return
     fi
 
+    echo -e "\e[32m\n- Updating database...\e[0m"
     # Add required database update scripts here
     # run_sql "databaseUpdate.sql"
 }
@@ -416,7 +425,7 @@ install_miniconda() {
         return
     fi
 
-    echo -e "\n- Installing minconda..."
+    echo -e "\e[32m\n- Installing miniconda...\e[0m"
 
     # test if folder $scriptFolder/miniconda3 exist
     if [ -d "$scriptFolder/miniconda3" ]; then
@@ -458,7 +467,7 @@ create_enviorment() {
         return
     fi
 
-    echo -e "\n- Creating conda enviorment..."
+    echo -e "\e[32m\n- Creating conda environment...\e[0m"
 
     # activate conda in the "$scriptFolder/miniconda3/bin/activate"
     if ! source "$scriptFolder/miniconda3/bin/activate"; then
@@ -481,7 +490,7 @@ update_enviorment() {
         return
     fi
 
-    echo -e "\n- Updating conda enviorment..."
+    echo -e "\e[32m\n- Updating conda environment...\e[0m"
 
     if ! conda env update -f "$tmpFolder/environment.yml"; then
         echo "Error updating conda enviorment. Please check the script and try again."
@@ -494,7 +503,7 @@ update_enviorment() {
 # set SE linux for shell script files and enable services
 prepare_service() {
 
-    echo -e "\n- Preparing services..."
+    echo -e "\e[32m\n- Preparing services...\e[0m"
 
     for file in "${!updateFiles[@]}"; do
         folder="${updateFiles[$file]}"
@@ -520,7 +529,7 @@ prepare_service() {
 # Function to remove tmp folder
 remove_tmp_folder() {
 
-    echo -e "- Removing tmp folder..."
+    echo -e "\e[32m\n- Removing temporary folders...\e[0m"
 
     # remove the downloadFolder
     if ! rm -rf "$downloadFolder"; then
@@ -545,6 +554,8 @@ remove_tmp_folder() {
 remove_install_folders() {
     # test if folders are empty, if so, remove them.
     # Splitting file removal and folder removal to avoid removing files created by other processes
+    echo -e "\e[32m\n- Removing application folders...\e[0m"
+
     if [ -z "$(ls -A "$dataFolder")" ]; then
         rm -rf "${dataFolder:?}"
     else
@@ -570,7 +581,7 @@ rollback_update() {
 
     scritpError=false
 
-    echo -e "\n- Removing files..."
+    echo -e "\e[32m\n- Rolling back installation...\e[0m"
 
     for file in "${!updateFiles[@]}"; do
         folder="${updateFiles[$file]}"
@@ -596,7 +607,7 @@ rollback_update() {
 
 disable_services() {
 
-    echo -e "\n- Preparing services..."
+    echo -e "\e[32m\n- Deactivating services from systemd...\e[0m"
 
     for file in "${!updateFiles[@]}"; do
         folder="${updateFiles[$file]}"
@@ -614,7 +625,7 @@ disable_services() {
 
 remove_mysql() {
 
-    echo -e "\n- Removing mysql..."
+    echo -e "\e[32m\n- Removing mysql...\e[0m"
 
     # test if mysql is running
     if ! systemctl is-active --quiet mysql; then
@@ -647,7 +658,7 @@ remove_database() {
         return
     fi
 
-    echo -e "\n- Removing database..."
+    echo -e "\e[32m\n- Removing database...\e[0m"
 
     # test if mysql is running
     if ! systemctl is-active --quiet mysql; then
