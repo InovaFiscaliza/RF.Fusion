@@ -1,6 +1,6 @@
 #!/bin/bash
 
-deploy_version=0.11
+deploy_version=0.12
 
 splash_banner() {
     echo -e "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -128,8 +128,7 @@ print_help() {
     exit
 }
 
-create_folders() {
-
+create_tmp_folders() {
     echo -e "\n- Creating folders..."
 
     # try to create a temp folder, if it fails, exit
@@ -147,7 +146,9 @@ create_folders() {
             exit
         fi
     fi
+}
 
+create_install_folders() {
     # create data folder if it does not exist
     if [ ! -d "$dataFolder" ]; then
         if ! mkdir $dataFolder; then
@@ -190,7 +191,7 @@ download_file() {
         esac
     fi
 }
-# Funciton to download files from the repository
+# Function to download files from the repository
 get_files() {
 
     # change to downloadFolder folder for file download
@@ -341,16 +342,34 @@ create_database() {
     fi
 }
 
+install_database() {
+    if [ "$1" = "-skip" ]; then
+        return
+    fi
+
+    # test if mariadb is installed
+    if ! which mysql >/dev/null; then
+        echo "Mysql is not installed. Do you wish to install it? [y/N]"
+        read -n 1 -r
+        echo " "
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Please install mysql and try again."
+            exit
+        fi
+    fi
+
+    echo -e "\n- Installing database..."
+
+    dnf module install -y mariadb
+
+    updatesystemctl enable --now mariadb
+
+    mysql_secure_installation
+}
 # configure mysql database
 config_database() {
 
     echo -e "\n- Configuring database..."
-
-    # test if mysql is installed
-    if ! which mysql >/dev/null; then
-        echo "mysql is required to run this script. Please install it and try again."
-        exit
-    fi
 
     # test if mysql is running
     if ! systemctl is-active --quiet mysql; then
@@ -377,6 +396,99 @@ config_database() {
 
     create_database "RFDATA" "createMeasureDB.sql"
     create_database "BPDATA" "createProcessingDB.sql"
+}
+
+update_database() {
+    echo -e "\n- Updating database..."
+
+    if [ "$1" = "-skip" ]; then
+        return
+    fi
+
+    # Add required database update scripts here
+    # run_sql "databaseUpdate.sql"
+}
+
+# Function to install miniconda
+install_miniconda() {
+
+    if [ "$1" = "-skip" ]; then
+        return
+    fi
+
+    echo -e "\n- Installing minconda..."
+
+    # test if folder $scriptFolder/miniconda3 exist
+    if [ -d "$scriptFolder/miniconda3" ]; then
+        echo "Miniconda is already installed. Do you wish to reinstall it? [y/N]"
+        read -n 1 -r
+        echo " "
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            rm -rf "$scriptFolder/miniconda3"
+            exit
+        fi
+    fi
+
+    # download miniconda installer
+    wget -q --show-progress https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O "$downloadFolder/miniconda.sh"
+
+    # check if the file was downloaded, if not, exit
+    if [ ! -f "$downloadFolder/miniconda.sh" ]; then
+        echo "Error downloading miniconda.sh"
+        exit
+    else
+        # if file was downloaded, convert to unix format and set permissions according to file extension
+        dos2unix -q "$downloadFolder/miniconda.sh"
+        chmod 755 "$downloadFolder/miniconda.sh"
+    fi
+
+    # install miniconda
+    if ! "$downloadFolder/miniconda.sh" -b -p "$scriptFolder/miniconda3"; then
+        echo "Error installing miniconda. Please check the script and try again."
+        exit
+    else
+        echo "Miniconda installed successfully."
+    fi
+}
+
+# Function to create conda enviorment from enviorment.yml
+create_enviorment() {
+
+    if [ "$1" = "-skip" ]; then
+        return
+    fi
+
+    echo -e "\n- Creating conda enviorment..."
+
+    # activate conda in the "$scriptFolder/miniconda3/bin/activate"
+    if ! source "$scriptFolder/miniconda3/bin/activate"; then
+        echo "Error activating conda. Please check the script and try again."
+        exit
+    fi
+
+    if ! conda env create -f "$tmpFolder/environment.yml"; then
+        echo "Error creating conda enviorment. Please check the script and try again."
+        exit
+    else
+        echo "Conda enviorment created successfully."
+    fi
+}
+
+# Function to update conda enviorment from enviorment.yml
+update_enviorment() {
+
+    if [ "$1" = "-skip" ]; then
+        return
+    fi
+
+    echo -e "\n- Updating conda enviorment..."
+
+    if ! conda env update -f "$tmpFolder/environment.yml"; then
+        echo "Error updating conda enviorment. Please check the script and try again."
+        exit
+    else
+        echo "Conda enviorment updated successfully."
+    fi
 }
 
 # set SE linux for shell script files and enable services
@@ -427,18 +539,6 @@ remove_tmp_folder() {
     if ! rm -rf "$tmpFolder"; then
         echo "Error removing $tmpFolder. Please remove it manually."
         exit
-    fi
-}
-
-# Function to create conda enviorment from enviorment.yml
-create_enviorment() {
-    echo -e "\n- Creating conda enviorment..."
-
-    if ! conda env create -f "$tmpFolder/environment.yml"; then
-        echo "Error creating conda enviorment. Please check the script and try again."
-        exit
-    else
-        echo "Conda enviorment created successfully."
     fi
 }
 
@@ -511,25 +611,108 @@ disable_services() {
 
     done
 }
-#! Main script
 
+remove_mysql() {
+
+    echo -e "\n- Removing mysql..."
+
+    # test if mysql is running
+    if ! systemctl is-active --quiet mysql; then
+        # stop mysql
+        if ! systemctl stop mysql; then
+            echo "Error stopping mysql. Please stop it manually and try again."
+            exit
+        fi
+    fi
+
+    # test if mysql is enabled
+    if ! systemctl is-enabled --quiet mysql; then
+        # disable mysql
+        if ! systemctl disable mysql; then
+            echo "Error disabling mysql. Please disable it manually and try again."
+            exit
+        fi
+    fi
+
+    # remove mysql
+    if ! dnf remove -y mariadb; then
+        echo "Error removing mysql. Please remove it manually and try again."
+        exit
+    fi
+}
+
+remove_database() {
+
+    if [ "$1" = "-skip" ]; then
+        return
+    fi
+
+    echo -e "\n- Removing database..."
+
+    # test if mysql is running
+    if ! systemctl is-active --quiet mysql; then
+        # try to start it
+        if ! systemctl start mysql; then
+            echo "Error starting mysql. Please start it and try again."
+            exit
+        fi
+    fi
+
+    # prompt user for credentials to be used to access mysql
+    read -p "Enter mysql user: " mysql_user
+    read -s -p "Enter mysql password: " password
+    echo " "
+
+    # test if mysql is configured
+    if ! mysql -u "$mysql_user" -p"$password" -e "SHOW DATABASES" >/dev/null 2>&1; then
+        echo "mysql is not configured. Please configure it and try again."
+        exit
+    fi
+
+    # drop RFDATA and BPDATA databases
+    if ! mysql -u "$mysql_user" -p"$password" -e "DROP DATABASE RFDATA" >/dev/null 2>&1; then
+        echo "Error dropping database RFDATA. Please remove it manually."
+        exit
+    fi
+    # drop BPDATA and BPDATA databases
+    if ! mysql -u "$mysql_user" -p"$password" -e "DROP DATABASE BPDATA" >/dev/null 2>&1; then
+        echo "Error dropping database RFDATA. Please remove it manually."
+        exit
+    fi
+
+    echo "Do you wish to remove mysql? [y/N]"
+    read -n 1 -r
+    echo " "
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        remove_mysql
+    fi
+}
+
+#! Main script
 case "$1" in
 -h)
     print_help
     ;;
 -i)
     splash_banner
-    create_folders
-    get_files "$1"
-    move_files "$1"
+    create_tmp_folders
+    create_install_folders
+    get_files -i
+    move_files -i
+    install_database -skip
     config_database
+    install_miniconda -skip
+    create_enviorment -skip
     prepare_service
     remove_tmp_folder
     ;;
 -u)
     splash_banner
-    get_files "$1"
-    move_files "$1"
+    create_tmp_folders
+    get_files -u
+    move_files -u
+    update_database -skip
+    update_enviorment -skip
     prepare_service
     remove_tmp_folder
     ;;
@@ -541,6 +724,7 @@ case "$1" in
     splash_banner
     disable_services
     remove_install_folders
+    remove_database -skip
     ;;
 *)
     echo "Invalid option: $1"
