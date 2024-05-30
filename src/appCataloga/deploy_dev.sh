@@ -2,7 +2,7 @@
 
 # This script is used to deploy the appCataloga application to the development server, creating hard links from the repository to the test folders
 MINICONDA_PATH="/root/miniconda3"
-REPO_ROOT_PATH="/root/RF.Fusion/src/appCataloga/root"
+REPO_ROOT_PATH="/root/RF.Fusion/RF.Fusion/src/appCataloga/root"
 CONF_PATH="/etc/appCataloga/"
 APP_PATH="/usr/local/bin/appCataloga/"
 LOG_FILE="/var/log/appCataloga.log"
@@ -11,8 +11,8 @@ repo_conf=$REPO_ROOT_PATH/$CONF_PATH
 repo_app=$REPO_ROOT_PATH/$APP_PATH
 
 # create a list of services appCataloga.service, appCataloga_file_bkp@.service, appCataloga_file_bin_proces.service and appCataloga_host_check
-services=("appCataloga.service" "appCataloga_file_bkp@.service" "appCataloga_file_bin_proces.service" "appCataloga_host_check.service")
-scripts=("appCataloga.sh" "appCataloga_file_bkp.sh" "appCataloga_file_bin_proces.sh" "appCataloga_host_check.py")
+services=("appCataloga.service" "appCataloga_file_bkp@.service" "appCataloga_file_bin_proces.service" "appCataloga_host_check.service" "appCataloga_pub_metadata.service")
+scripts=("appCataloga.sh" "appCataloga_file_bkp.sh" "appCataloga_file_bin_proces.sh" "appCataloga_host_check.py" "appCataloga_pub_metadata.sh")
 
 # check if the required REPO folders are accessible
 if [ ! -d $repo_conf ] || [ ! -d $repo_app ]; then
@@ -67,16 +67,14 @@ for i in "${!scripts[@]}"; do
     fi
 done
 
-# loop through the service array and create the soft links if they don't already exist
+# loop through the service list and enable services in systemd
 for i in "${!services[@]}"; do
-    if [ -f "/etc/systemd/system/${services[$i]}" ]; then
-        if ! rm "/etc/systemd/system/${services[$i]}"; then
-            echo "Error removing soft link for /etc/systemd/system/${services[$i]}. Do it manually and run again."
-            exit 1
+    # test if service is enabled, if not, enable it
+    if ! systemctl is-enabled "${services[$i]}" >/dev/null; then
+        echo "${services[$i]} is not enabled."
+
+        if ! systemctl enable "${services[$i]}"; then
+            echo "Error enabling ${services[$i]}. Do it manually."
         fi
-    fi
-    if ! ln -s "$APP_PATH${services[$i]}" "/etc/systemd/system/${services[$i]}"; then
-        echo "Error creating soft link for /etc/systemd/system/${services[$i]}. Do it manually and run again."
-        exit 1
     fi
 done
