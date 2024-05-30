@@ -1,6 +1,6 @@
 #!/bin/bash
 
-deploy_version=0.12
+deploy_version=0.13
 
 splash_banner() {
 
