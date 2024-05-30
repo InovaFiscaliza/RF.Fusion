@@ -11,7 +11,7 @@ repo_conf=$REPO_ROOT_PATH/$CONF_PATH
 repo_app=$REPO_ROOT_PATH/$APP_PATH
 
 # create a list of services appCataloga.service, appCataloga_file_bkp@.service, appCataloga_file_bin_proces.service and appCataloga_host_check
-services=("appCataloga.service" "appCataloga_file_bkp@.service" "appCataloga_file_bin_proces.service" "appCataloga_host_check.service" "appCataloga_pub_metadata.service")
+services=("appCataloga.service" "appCataloga_file_bkp@0.service" "appCataloga_file_bin_proces.service" "appCataloga_host_check.service" "appCataloga_pub_metadata.service")
 scripts=("appCataloga.sh" "appCataloga_file_bkp.sh" "appCataloga_file_bin_proces.sh" "appCataloga_host_check.py" "appCataloga_pub_metadata.sh")
 
 # check if the required REPO folders are accessible
@@ -70,10 +70,10 @@ done
 # loop through the service list and enable services in systemd
 for i in "${!services[@]}"; do
     # test if service is enabled, if not, enable it
-    if ! systemctl is-enabled "${services[$i]}" >/dev/null; then
+    if ! systemctl is-enabled "$APP_PATH${services[$i]}" >/dev/null; then
         echo "${services[$i]} is not enabled."
 
-        if ! systemctl enable "${services[$i]}"; then
+        if ! systemctl enable "$APP_PATH${services[$i]}"; then
             echo "Error enabling ${services[$i]}. Do it manually."
         fi
     fi
