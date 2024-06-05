@@ -110,6 +110,9 @@ appCataloga includes several python scripts that perform the following tasks:
 | /usr/local/bin/appCataloga/backup_control.py | Backup control module. See previously described algorithm overview. |
 | /usr/local/bin/appCataloga/backup_single_host.py | Backup data from a single linux host running indexerD daemon. See previously presented backup task description. |
 | /usr/local/bin/appCataloga/processing_control.py | Metadata extraction module. See previously presented processing task description. |
+| /usr/local/bin/appCataloga/appCataloga_pub_metadata.py | Module that export metadata from the measurement database to a publication folder, using parquet format |
+| /usr/local/bin/appCataloga/appCataloga_pub_metadata.service | Linux service managemente script for the metadata publication module |
+| /usr/local/bin/appCataloga/appCataloga_pub_metadata.sh | Shellscript used to start the CONDA envoronment and call appCataloga_pub_metadata.py |
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
@@ -194,7 +197,39 @@ systemctl daemon-reload
 
 ## Install appCataloga
 
-### Install MariaDB
+### Install python scripts and reference data
+
+Get de deployment script to download and copy relevant files to the appropriate folders
+
+```shell
+mkdir /tmp/appCataloga
+
+cd /tmp/appCataloga
+
+wget https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh
+
+chmod +x deploy.sh
+```
+
+The deployment script have the following options:
+
+* `-h` to show the help message
+* `-i` to install the application
+* `-u` to update the application
+* `-r` to remove the application
+* `-du` to update the deployment script itself.
+
+To install the application, run the following command
+
+```shell
+./deploy.sh -i
+```
+
+In the current version, the deployment script will download files, install MariaDB, Conda and create the necessary python environment.
+
+Please take note of the manual instalation steps, as the deployment script for securing MariaDB and configuring conda will follow similar steps.
+
+### Manual install MariaDB
 
 ```shell
 dnf module install mariadb
@@ -333,38 +368,7 @@ DB_PASSWORD = '<app_pass>'
 
 Use 'CTRL+X' to exit and 'Y' to save the changes
 
-### Install python scripts and reference data
-
-Get de deployment script to download and copy relevant files to the appropriate folders
-
-```shell
-mkdir /tmp/appCataloga
-
-cd /tmp/appCataloga
-
-wget https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh
-
-chmod +x deploy.sh
-```
-
-The deployment script have the following options:
-
-* `-h` to show the help message
-* `-i` to install the application
-* `-u` to update the application
-* `-r` to remove the application
-
-To install the application, run the following command
-
-```shell
-./deploy.sh -i
-```
-
-At the end of the install, do not remove the `/tmp/appCataloga` folder, as it will be used to install the python environment.
-
-Version 0.9 of the deploy script still do not configure the conda environment, a step that must be done manually following the steps described below.
-
-### Install python environment and the required libraries
+### Manual install of the python environment and the required libraries
 
 Install miniconda under the /usr/local/bin/appCataloga folder
 
