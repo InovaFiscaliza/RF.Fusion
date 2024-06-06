@@ -14,6 +14,9 @@ done
 systemctl stop appCataloga_file_bin_proces.service
 echo "appCataloga_file_bin_proces.service stopped"
 
+systemctl stop appCataloga_pub_metadata.service
+echo "appCataloga_pub_metadata.service stopped"
+
 systemctl stop appCataloga.service
 echo "appCataloga.service stopped"
 

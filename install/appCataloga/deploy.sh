@@ -112,6 +112,8 @@ declare -A updateFiles=(
     ["measurementUnit.csv"]=$tmpFolder
     ["createMeasureDB.sql"]=$tmpFolder
     ["createProcessingDB.sql"]=$tmpFolder
+    ["appCataloga_start.sh"]=$scriptFolder
+    ["appCataloga_stop.sh"]=$scriptFolder
 )
 
 # declare an associative array with pairs of special required files to download and target folders

@@ -12,3 +12,6 @@ echo "appCataloga_file_bin_proces.service started"
 
 systemctl start appCataloga.service
 echo "appCataloga.service started"
+
+systemctl start appCataloga_pub_metadata.service
+echo "appCataloga_pub_metadata.service started"

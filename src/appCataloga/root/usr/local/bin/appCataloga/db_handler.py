@@ -1342,13 +1342,37 @@ class dbHandler:
             self.cursor.execute(query)
             self.db_connection.commit()
 
-            # compose query to set the backup task in the BPDATA database
+            # compose query to check if there are any host task for the given host
             query = (
-                f"INSERT INTO HOST_TASK "
-                f"(FK_HOST, NU_TYPE, DT_HOST_TASK) "
-                f"VALUES "
-                f"('{host_id}', '{task_type}', NOW());"
+                f"SELECT ID_HOST_TASK "
+                f"FROM HOST_TASK "
+                f"WHERE FK_HOST = '{host_id}';"
             )
+
+            self.cursor.execute(query)
+
+            task = self.cursor.fetchone()
+
+            try:
+                task_id = int(task[0])
+            except (TypeError, ValueError):
+                task_id = False
+
+            if task_id:
+                # reset task timestamp so that the queue can move on.
+                query = (
+                    f"UPDATE HOST_TASK SET "
+                    f"DT_HOST_TASK = NOW() "
+                    f"WHERE ID_HOST_TASK = {task_id};"
+                )
+            else:
+                # set a new host task
+                query = (
+                    f"INSERT INTO HOST_TASK "
+                    f"(FK_HOST, NU_TYPE, DT_HOST_TASK) "
+                    f"VALUES "
+                    f"('{host_id}', '{task_type}', NOW());"
+                )
 
             # update database
             self.cursor.execute(query)
