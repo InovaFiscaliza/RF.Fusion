@@ -1323,11 +1323,7 @@ class dbHandler:
         # create a new host entry in the database if it does not exist
         self._add_host(host_id, host_uid)
 
-        # connect to the database
-        self._connect()
-
         try:
-            # compose query to add 1 to PENDING_BACKUP in the HOST table in BPDATA database for the given host_id
             query = (
                 f"UPDATE HOST SET "
                 f"NA_HOST_ADDRESS = '{host_addr}', "
@@ -1339,10 +1335,11 @@ class dbHandler:
             )
 
             # update database
+            self._connect()
             self.cursor.execute(query)
             self.db_connection.commit()
 
-            # compose query to check if there are any host task for the given host
+            # Check if there are any host task for the given host
             query = (
                 f"SELECT ID_HOST_TASK "
                 f"FROM HOST_TASK "
@@ -1350,7 +1347,6 @@ class dbHandler:
             )
 
             self.cursor.execute(query)
-
             task = self.cursor.fetchone()
 
             try:
@@ -1362,21 +1358,29 @@ class dbHandler:
                 # reset task timestamp so that the queue can move on.
                 query = (
                     f"UPDATE HOST_TASK SET "
-                    f"DT_HOST_TASK = NOW() "
+                    f"DT_HOST_TASK = NOW(), NU_STATUS = {self.TASK_PENDING}, NA_MESSAGE = 'Refreshed' "
                     f"WHERE ID_HOST_TASK = {task_id};"
                 )
+
+                # update database
+                self.cursor.execute(query)
+                self.db_connection.commit()
+
             else:
                 # set a new host task
                 query = (
                     f"INSERT INTO HOST_TASK "
-                    f"(FK_HOST, NU_TYPE, DT_HOST_TASK) "
+                    f"(FK_HOST, NU_TYPE, DT_HOST_TASK, NU_STATUS, NA_MESSAGE) "
                     f"VALUES "
-                    f"('{host_id}', '{task_type}', NOW());"
+                    f"('{host_id}', '{task_type}', NOW(), {self.TASK_PENDING}, 'New task');"
                 )
 
-            # update database
-            self.cursor.execute(query)
-            self.db_connection.commit()
+                # update database
+                self.cursor.execute(query)
+                self.db_connection.commit()
+
+                # compose query to add 1 to PENDING_BACKUP in the HOST table in BPDATA database for the given host_id
+                self.update_host_status(host_id=host_id, pending_host_check=1)
 
         except Exception as e:
             message = f"Error adding host {host_id} to the backup queue: {e}"
@@ -1419,10 +1423,15 @@ class dbHandler:
             "JOIN HOST ON HOST_TASK.FK_HOST = HOST.ID_HOST "
         )
 
+        # if no task_id was provided, get the oldest
         if not task_id:
-            query = query + ("ORDER BY DT_HOST_TASK " "LIMIT 1;")
+            query = query + (
+                "ORDER BY DT_HOST_TASK LIMIT 1 WHERE HOST_TASK.NU_STATUS = 1;"
+            )
         else:
-            query = query + (f"WHERE ID_HOST_TASK = {task_id};")
+            query = query + (
+                f"WHERE ID_HOST_TASK = {task_id} AND HOST_TASK.NU_STATUS = 1;"
+            )
 
         self.cursor.execute(query)
 
@@ -1522,21 +1531,36 @@ class dbHandler:
 
         return output
 
-    def update_host_task_status(self, task_id: int, status: int) -> None:
-        """Update the status of a host task
+    def update_host_task(
+        self, task_id: int, status: int = None, message: str = None, pid: int = None
+    ) -> None:
+        """Update host task information
 
         Args:
             task_id (int): Task ID
             status (int): New status
         """
 
+        # compose and excecute query to update task information
+        query = "UPDATE HOST_TASK SET "
+
+        if status:
+            query = query + f"NU_STATUS = '{status}', "
+
+            match status:
+                case self.TASK_PENDING:
+                    query = query + "NU_PID = NULL, "
+                case self.TASK_RUNNING:
+                    query = query + f"NU_PID = {self.log.pid}, "
+
+        if message:
+            message = message.replace("'", "''")
+            query = query + f"NA_MESSAGE = '{message}', "
+
+        query = query[:-2] + f" WHERE ID_HOST_TASK = {task_id};"
+
         # connect to the database
         self._connect()
-
-        # compose and excecute query to update the host task status in the BKPDATA database
-        query = (
-            f"UPDATE HOST_TASK SET NU_STATUS = {status} WHERE ID_HOST_TASK = {task_id};"
-        )
 
         self.cursor.execute(query)
         self.db_connection.commit()

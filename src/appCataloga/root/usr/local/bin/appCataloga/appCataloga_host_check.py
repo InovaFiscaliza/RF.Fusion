@@ -122,6 +122,7 @@ def main():
                     "password": (str)}"""
 
             if not task:
+                # wait before trying again
                 time_to_wait = int(
                     (
                         k.MAX_HOST_TASK_WAIT_TIME
@@ -132,6 +133,11 @@ def main():
                 log.entry(f"Waiting {time_to_wait} seconds for new tasks.")
                 time.sleep(time_to_wait)
                 continue
+
+            # set task status to running
+            db_bp.update_host_task(
+                task_id=task["task_id"], status=db_bp.RUNNING_TASK_STATUS
+            )
 
             # Create a SSH client and SFTP connection to the remote host
             sftp_conn = sh.sftpConnection(
@@ -159,7 +165,9 @@ def main():
             # Set halt flag
             process_status["halt_flag"] = daemon.get_halt_flag(remove_failed_task=True)
 
-            if not process_status["halt_flag"]:
+            if not process_status["halt_flag"]:  # set task status to running
+                db_bp.update_host_task(task_id=task["task_id"], status=db_bp.P)
+                db_bp.remove_host_task(task_id=task["task_id"])
                 continue
 
             # Get the list of files to backup from DUE_BACKUP file and create file tasks
