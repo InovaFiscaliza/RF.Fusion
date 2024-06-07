@@ -29,7 +29,7 @@ import db_handler as dbh
 # define global variables for log and general use
 log = sh.log()
 
-process_status = {"conn": None, "halt_flag": None, "running": True}
+process_status = {"running": True}
 
 
 # Define a signal handler for SIGTERM (kill command )
@@ -89,7 +89,7 @@ def process_due_backup(
         # Create file tasks for later handling by the file task process
         db_bp.add_file_task(
             host_id=task["host_id"],
-            task_type=db_bp.BACKUP_TASK_TYPE,
+            task_type=db_bp.FILE_TASK_BACKUP_TYPE,
             volume=task["host_uid"],
             files=due_backup_list,
         )
@@ -149,8 +149,6 @@ def main():
                 log=log,
             )
 
-            process_status["conn"] = sftp_conn
-
             daemon = sh.hostDaemon(
                 sftp_conn=sftp_conn,
                 db_bp=db_bp,
@@ -160,14 +158,11 @@ def main():
             )
 
             # Get the remote host configuration file
-            daemon.get_config(remove_failed_task=True)
-
+            if not daemon.get_config(remove_failed_task=True):
+                continue
+            
             # Set halt flag
-            process_status["halt_flag"] = daemon.get_halt_flag(remove_failed_task=True)
-
-            if not process_status["halt_flag"]:  # set task status to running
-                db_bp.update_host_task(task_id=task["task_id"], status=db_bp.P)
-                db_bp.remove_host_task(task_id=task["task_id"])
+            if not daemon.get_halt_flag(remove_failed_task=True)
                 continue
 
             # Get the list of files to backup from DUE_BACKUP file and create file tasks

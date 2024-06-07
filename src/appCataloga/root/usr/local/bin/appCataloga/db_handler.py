@@ -36,8 +36,9 @@ class dbHandler:
         self.log = log
 
         # constants
-        self.BACKUP_TASK_TYPE = 1
-        self.PROCESS_TASK_TYPE = 2
+        self.HOST_TASK_TYPE = 0
+        self.FILE_TASK_BACKUP_TYPE = 1
+        self.FILE_TASK_PROCESS_TYPE = 2
         self.TASK_SUSPENDED = -2
         self.TASK_ERROR = -1
         self.TASK_NULL = 0
@@ -1152,7 +1153,8 @@ class dbHandler:
             Exception: _description_
 
         Returns:
-            dict:   "host_uid": (str) Host UID,
+            dict:  {"host_id": (int) Host id,
+                    "host_uid": (str) Host UID,
                     "host_add": (str) Host IP address or DNS recognized name,
                     "port": (int) Host SSH port,
                     "user": (str) Host access user,
@@ -2337,7 +2339,7 @@ class dbHandler:
 
             self.add_file_task(
                 host_id=host_id,
-                task_type=self.PROCESS_TASK_TYPE,
+                task_type=self.FILE_TASK_PROCESS_TYPE,
                 volume=k.REPO_UID,
                 files=file_set,
                 reset_processing_queue=True,

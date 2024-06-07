@@ -198,7 +198,7 @@ def main():
             # Get one backup task from the queue in the database
             task = None
 
-            task = db_bp.get_next_file_task(task_type=db_bp.PROCESS_TASK_TYPE)
+            task = db_bp.get_next_file_task(task_type=db_bp.FILE_TASK_PROCESS_TYPE)
 
             # if there is a task in the database
             if task:

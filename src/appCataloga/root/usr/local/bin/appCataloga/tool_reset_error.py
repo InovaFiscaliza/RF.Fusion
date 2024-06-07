@@ -141,7 +141,7 @@ def reset_file_bkp(dbp: dbh.dbHandler, log: sh.log) -> None:
 
     # List file backup tasks that have status 'error'
     failed_file_bkp_tasks = dbp.list_file_tasks(
-        task_type=dbp.BACKUP_TASK_TYPE, task_status=dbp.TASK_ERROR
+        task_type=dbp.FILE_TASK_BACKUP_TYPE, task_status=dbp.TASK_ERROR
     )
 
     # Iterate over all failed tasks and reset them
@@ -160,7 +160,7 @@ def reset_file_bkp(dbp: dbh.dbHandler, log: sh.log) -> None:
         )
 
     running_file_bkp_tasks = dbp.list_file_tasks(
-        task_type=dbp.BACKUP_TASK_TYPE, task_status=dbp.TASK_RUNNING
+        task_type=dbp.FILE_TASK_BACKUP_TYPE, task_status=dbp.TASK_RUNNING
     )
 
     for host_id, running_task_list in running_file_bkp_tasks.items():
@@ -193,7 +193,7 @@ def reset_file_bin_proces(dbp: dbh.dbHandler, log: sh.log) -> None:
 
     # List file processing tasks that have status 'error'
     failed_file_bin_proces_tasks = dbp.list_file_tasks(
-        task_type=dbp.PROCESS_TASK_TYPE, task_status=dbp.TASK_ERROR
+        task_type=dbp.FILE_TASK_PROCESS_TYPE, task_status=dbp.TASK_ERROR
     )
 
     # Iterate over all failed tasks and reset them
@@ -212,7 +212,7 @@ def reset_file_bin_proces(dbp: dbh.dbHandler, log: sh.log) -> None:
         )
 
     running_file_bin_proces_tasks = dbp.list_file_tasks(
-        task_type=dbp.PROCESS_TASK_TYPE, task_status=dbp.TASK_RUNNING
+        task_type=dbp.FILE_TASK_PROCESS_TYPE, task_status=dbp.TASK_RUNNING
     )
 
     for host_id, running_task_list in running_file_bin_proces_tasks.items():
