@@ -45,33 +45,24 @@ DB_USER_NAME = secret.DB_USER_NAME
 DB_PASSWORD = secret.DB_PASSWORD
 
 # backup module configuration
-BKP_MAX_PROCESS = 10
-MAX_HOST_TASK_WAIT_TIME = (
-    30  # seconds to wait for a new task. Minimum half, maximum equal to this value
-)
-MAX_FILE_TASK_WAIT_TIME = (
-    30  # seconds to wait for a new task. Minimum half, maximum equal to this value
-)
-HOST_TASK_REQUEST_WAIT_TIME = (
-    1800  # seconds to wait for the HALT_FLAG release before aborting the task
-)
-HALT_FLAG_CHECK_CYCLES = (
-    6  # number of times to check the host while waiting for the HALT_FLAG release
-)
-HOST_TASK_EXECUTION_TIMEOUT = 3600
+# seconds to wait for a new task. Minimum half, maximum equal to this value
+MAX_HOST_TASK_WAIT_TIME = 30
+# seconds to wait for a new task. Minimum half, maximum equal to this value
+MAX_FILE_TASK_WAIT_TIME = 30
+# seconds to wait for the HALT_FLAG release before aborting the task
+HOST_TASK_REQUEST_WAIT_TIME = 1800
+# number of times to check the host while waiting for the HALT_FLAG release
+HALT_FLAG_CHECK_CYCLES = 6
 BKP_HOST_ALLOTED_TIME_FRACTION = 0.8
-BKP_TASK_MAX_WORKERS = 10
 
-# file processing module configuration
-PROCESSING_CONTROL_MODULE = "/usr/local/bin/appCataloga/processing_control.py"
-MAX_NOMINATIN_ATTEMPTS = 10
+BKP_TASK_MAX_WORKERS = 10
+BKP_TASK_WORKER_SERVICE = "usr/local/bin/appCataloga/appCataloga_file_bkp@"
 
 # metadata publishing module configuration
 PUBLISH_FILE = "/mnt/reposfi/Metadata/rf_metadata"  # filename without extension
 
 # general configuration
 SECONDS_IN_MINUTE = 60
-MINICONDA_PATH = "/usr/local/bin/appCataloga/miniconda3/etc/profile.d/conda.sh"
 
 # daemon standard due for backup file
 DAEMON_CFG_FILE = "/etc/node/indexerD.cfg"
@@ -81,8 +72,6 @@ TMP_FOLDER = "tmp"
 TRASH_FOLDER = "trash"
 REPO_FOLDER = "/mnt/reposfi"
 REPO_UID = "repoSFI"
-BP_PENDING_TASK_STATUS = 0
-BP_ERROR_TASK_STATUS = -1
 
 # Geographic site definition
 MAXIMUM_GNSS_DEVIATION = 0.0005

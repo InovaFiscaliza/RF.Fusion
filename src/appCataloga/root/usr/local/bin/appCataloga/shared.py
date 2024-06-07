@@ -383,25 +383,39 @@ class hostDaemon:
                     self.db_bp.host_task_delete(task_id=task_id)
                 else:
                     self.db_bp.host_task_update(
-                        task_id=task_id, status=self.db_bp.TASK_FAILED, message=message
+                        task_id=task_id, status=self.db_bp.TASK_ERROR, message=message
                     )
 
                 self.db_bp.host_update(host_id=self.host["host_id"], host_check_error=1)
 
-            case [self.db_bp.FILE_TASK_BACKUP_TYPE, self.db_bp.FILE_TASK_PROCESS_TYPE]:
+            case self.db_bp.FILE_TASK_BACKUP_TYPE:
                 if remove_failed_task:
                     self.db_bp.file_task_delete(task_id=task_id)
                 else:
                     self.db_bp.file_task_update(
-                        task_id=task_id, status=self.db_bp.TASK_FAILED, message=message
+                        task_id=task_id, status=self.db_bp.TASK_ERROR, message=message
                     )
 
-                if task_type == self.db_bp.FILE_TASK_BACKUP_TYPE:
-                    self.db_bp.host_update(host_id=self.host["host_id"], backup_error=1)
+                self.db_bp.host_update(
+                    host_id=self.host["host_id"], pending_backup=-1, backup_error=1
+                )
+
+            case self.db_bp.FILE_TASK_PROCESS_TYPE:
+                if remove_failed_task:
+                    self.db_bp.file_task_delete(task_id=task_id)
                 else:
-                    self.db_bp.host_update(
-                        host_id=self.host["host_id"], processing_error=1
+                    self.db_bp.file_task_update(
+                        task_id=task_id, status=self.db_bp.TASK_ERROR, message=message
                     )
+
+                self.db_bp.host_update(
+                    host_id=self.host["host_id"],
+                    pending_processing=-1,
+                    processing_error=1,
+                )
+
+            case _:
+                self.log.error(f"Invalid task type '{task_type}'")
 
     def get_config(self, task_type: int, remove_failed_task: bool = False) -> dict:
         """Get the remote host configuration file into config class variable
@@ -416,6 +430,9 @@ class hostDaemon:
         try:
             daemon_cfg_str = self.sftp_conn.read(k.DAEMON_CFG_FILE, "r")
 
+            if not daemon_cfg_str:
+                raise FileNotFoundError
+
             self.config = parse_cfg(daemon_cfg_str)
 
             # Set the time limit for HALT_FLAG timeout control according to the HALT_TIMEOUT parameter in the remote host
@@ -425,6 +442,7 @@ class hostDaemon:
                 * k.BKP_HOST_ALLOTED_TIME_FRACTION
             )
 
+            return True
         except FileNotFoundError:
             self.log.error(
                 f"Configuration file '{k.DAEMON_CFG_FILE}' not found in remote host with id {self.host['host_id']}"
@@ -447,9 +465,7 @@ class hostDaemon:
                 for task_id in self.task_dict.keys():
                     self._handle_failed_task(task_id=task_id, **task_handle_arguments)
 
-            raise FileNotFoundError
-
-        return True
+            return False
 
     def get_halt_flag(self, task_type: int, remove_failed_task: bool = False) -> bool:
         """Set the halt_flag in the remote host if it is not previously set by another process.

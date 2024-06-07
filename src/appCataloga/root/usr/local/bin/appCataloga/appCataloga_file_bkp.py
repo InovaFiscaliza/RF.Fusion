@@ -14,6 +14,7 @@ Returns (stdout): As log messages, if target_screen in log is set to True.
 Raises:
     Exception: If any error occurs, the exception is raised with a message describing the error.
 """
+# ! KEEP TEST WITH HALT FLAG ERRORS AND CONNECTION ERRORS
 
 # Set system path to include modules from /etc/appCataloga
 import sys
@@ -102,7 +103,7 @@ def spawn_file_task_worker(worker_list: list) -> None:
 
     # Use systemd to start a new file task process
     # Comment this line for testing if there is no systemd service available
-    os.system(f"systemctl start {k.MAX_FILE_TASK_WAIT_TIME}{new_worker}")
+    os.system(f"systemctl start {k.BKP_TASK_WORKER_SERVICE}{new_worker}.service")
 
 
 def worker_counter(process_filename: str) -> list:
@@ -232,29 +233,16 @@ def main():
                 log=log,
             )
 
-            # Get the remote host configuration file
+            # Try to get the remote host configuration file, if fail, signal error and continue to the next task
             if not daemon.get_config(
                 task_type=db_bp.FILE_TASK_BACKUP_TYPE, remove_failed_task=False
             ):
-                for task_id in tasks["file_tasks"]:
-                    db_bp.file_task_update(
-                        task_id=task_id,
-                        status=db_bp.TASK_ERROR,
-                        message="Error getting host configuration",
-                    )
                 continue
 
-            # After trying to set or reset the halt flag, if it was not set
-            # move to attempt the next task. (current task was susppended bt the get_halt_flag method)
+            # Try to raise the halt flag for daemon in the remote host, if fail, signal error and continue to the next task
             if not daemon.get_halt_flag(
                 task_type=db_bp.FILE_TASK_BACKUP_TYPE, remove_failed_task=False
             ):
-                for task_id in tasks["file_tasks"]:
-                    db_bp.file_task_update(
-                        task_id=task_id,
-                        status=db_bp.TASK_ERROR,
-                        message="Error releasing halt flag",
-                    )
                 continue
 
             # Before processing the current task, spawn another file backup task process to look for other hosts with pending backup
