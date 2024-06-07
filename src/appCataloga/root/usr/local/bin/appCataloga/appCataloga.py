@@ -134,7 +134,7 @@ def queue_task(
 
     db = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
 
-    db.add_host_task(
+    db.host_task_create(
         task_type=db.FILE_TASK_BACKUP_TYPE,
         host_id=hostid,
         host_uid=host_uid,
@@ -144,7 +144,7 @@ def queue_task(
         host_passwd=host_passwd,
     )
 
-    host_stat = db.get_host_status(hostid)
+    host_stat = db.host_read_status(hostid)
 
     return host_stat
 

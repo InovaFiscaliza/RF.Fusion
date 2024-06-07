@@ -171,7 +171,7 @@ def main():
     while process_status["running"]:
         try:
             # Get the list of files to backup from the database
-            tasks = db_bp.next_file_task_list(task_type=db_bp.BACKUP_TASK_TYPE)
+            tasks = db_bp.file_task_read_list_one_host(task_type=db_bp.BACKUP_TASK_TYPE)
             """ tasks ={   "host_id": (int) host_id,
                             task_id: [
                                         host_file_path,
@@ -205,7 +205,7 @@ def main():
                     continue
 
             # Using task["host_id"] to get the host configuration from the database
-            host = db_bp.get_host(tasks["host_id"])
+            host = db_bp.host_read_access(tasks["host_id"])
             """{"host_uid": str,
                 "host_add": str,
                 "port": int,
@@ -265,9 +265,12 @@ def main():
                 # test if remote_file does not exist, update the database and skip to the next file
                 if not sftp_conn.test(remote_file):
                     message = f"File '{remote_file}' not found in remote host {host['host_add']}"
-                    db_bp.file_task_error(task_id=task_id, message=message)
 
-                    db_bp.update_host_status(
+                    db_bp.file_task_update(
+                        task_id=task_id, status=db_bp.TASK_ERROR, message=message
+                    )
+
+                    db_bp.host_update(
                         host_id=host["host_id"], pending_backup=-1, backup_error=1
                     )
 
@@ -292,7 +295,7 @@ def main():
                     )
 
                     # update host status
-                    db_bp.update_host_status(
+                    db_bp.host_update(
                         host_id=host["host_id"], pending_backup=-1, pending_processing=1
                     )
 
@@ -303,9 +306,12 @@ def main():
 
                 except Exception as e:
                     message = f"Error copying '{remote_file}' from host {host['host_add']}.{str(e)}"
-                    db_bp.file_task_error(task_id=task_id, message=message)
 
-                    db_bp.update_host_status(
+                    db_bp.file_task_update(
+                        task_id=task_id, status=db_bp.TASK_ERROR, message=message
+                    )
+
+                    db_bp.host_update(
                         host_id=host["host_id"], pending_backup=-1, backup_error=1
                     )
                     continue

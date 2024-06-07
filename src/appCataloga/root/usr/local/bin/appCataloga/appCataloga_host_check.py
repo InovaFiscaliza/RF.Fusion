@@ -87,7 +87,7 @@ def process_due_backup(
         due_backup_list = due_backup_str.splitlines()
 
         # Create file tasks for later handling by the file task process
-        db_bp.add_file_task(
+        db_bp.file_task_create(
             host_id=task["host_id"],
             task_type=db_bp.FILE_TASK_BACKUP_TYPE,
             volume=task["host_uid"],
@@ -112,7 +112,7 @@ def main():
 
     while process_status["running"]:
         try:
-            task = db_bp.next_host_task()
+            task = db_bp.host_task_read()
             """	{   "task_id": (int),
                     "host_id": (int),
                     "host_uid": (str),
@@ -135,7 +135,7 @@ def main():
                 continue
 
             # set task status to running
-            db_bp.update_host_task(
+            db_bp.host_task_update(
                 task_id=task["task_id"], status=db_bp.RUNNING_TASK_STATUS
             )
 
@@ -160,9 +160,9 @@ def main():
             # Get the remote host configuration file
             if not daemon.get_config(remove_failed_task=True):
                 continue
-            
+
             # Set halt flag
-            if not daemon.get_halt_flag(remove_failed_task=True)
+            if not daemon.get_halt_flag(remove_failed_task=True):
                 continue
 
             # Get the list of files to backup from DUE_BACKUP file and create file tasks

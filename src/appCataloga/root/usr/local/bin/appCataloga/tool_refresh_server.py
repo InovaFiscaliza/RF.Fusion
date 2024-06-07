@@ -204,7 +204,7 @@ def refresh_tmp_files(log: sh.log) -> None:
         )
 
         if confirmation.lower() == "y":
-            db_bp.add_task_from_file(files_to_be_processed)
+            db_bp.file_task_create_from_file(files_to_be_processed)
     else:
         log.entry("No file in the TMP_FOLDER to be processed.")
 
@@ -270,7 +270,7 @@ def refresh_trash_files(log: sh.log) -> None:
                     (full_path, filename) for filepath, filename in self.files
                 }
 
-                db_bp.add_task_from_file(self.files)
+                db_bp.file_task_create_from_file(self.files)
 
             def delete(self) -> None:
                 for filepath, filename in self.files:
@@ -368,7 +368,7 @@ def refresh_total_files(log: sh.log) -> None:
         log.error(f"Error initializing database: {e}")
         raise
 
-    host_id_list = db_bp.list_all_host_ids()
+    host_id_list = db_bp.host_read_list()
 
     for host_id, equip_id, host_uid in host_id_list:
         if equip_id is None:
@@ -387,7 +387,7 @@ def refresh_total_files(log: sh.log) -> None:
 
         new_total = rfm_file_count + pending_processing + error_processing
 
-        db_bp.update_host_status(
+        db_bp.host_update(
             host_id=host_id,
             total_files=new_total,
             pending_processing=pending_processing,

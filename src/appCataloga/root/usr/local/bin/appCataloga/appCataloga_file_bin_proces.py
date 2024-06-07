@@ -198,7 +198,9 @@ def main():
             # Get one backup task from the queue in the database
             task = None
 
-            task = db_bp.get_next_file_task(task_type=db_bp.FILE_TASK_PROCESS_TYPE)
+            task = db_bp.file_task_read_one(task_type=db_bp.FILE_TASK_PROCESS_TYPE)
+
+            db_bp.file_task_update(task_id=task["task_id"], status=db_bp.TASK_RUNNING)
 
             # if there is a task in the database
             if task:
@@ -317,7 +319,7 @@ def main():
                 new_file_id = db_rfm.insert_file(**file_data)
                 db_rfm.insert_bridge_spectrum_file(spectrum_lst, [file_id, new_file_id])
 
-                db_bp.delete_file_task(task_id=task["task_id"])
+                db_bp.file_task_delete(task_id=task["task_id"])
 
                 log.entry(f"Finished processing '{filename}'.")
 
@@ -359,9 +361,13 @@ def main():
                 try:
                     task["message"] = message
 
-                    db_bp.file_task_error(task_id=task["task_id"], message=message)
+                    db_bp.file_task_update(
+                        task_id=task["task_id"],
+                        status=db_bp.TASK_ERROR,
+                        message=message,
+                    )
 
-                    db_bp.update_host_status(
+                    db_bp.host_update(
                         host_id=task["host_id"],
                         pending_processing=-1,
                         processing_error=1,

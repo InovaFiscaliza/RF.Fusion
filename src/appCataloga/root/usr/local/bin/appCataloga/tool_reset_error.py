@@ -95,14 +95,14 @@ def reset_host_check(dbp: dbh.dbHandler, log: sh.log) -> None:
     host_check.stop()
 
     # List host tasks that have status 'error'
-    failed_host_tasks = dbp.list_host_tasks(status=dbp.TASK_ERROR)
+    failed_host_tasks = dbp.host_task_read_list(status=dbp.TASK_ERROR)
 
     # Iterate over all failed tasks and reset them
     for host_id, failed_task_list in failed_host_tasks.items():
         for failed_task in failed_task_list:
-            dbp.update_host_task_status(task_id=failed_task, status=dbp.TASK_PENDING)
+            dbp.host_task_update_status(task_id=failed_task, status=dbp.TASK_PENDING)
 
-        dbp.update_host_status(
+        dbp.host_update(
             host_id=host_id,
             host_check_error=-failed_task_list.__len__(),
             pending_host_check=failed_task_list.__len__(),
@@ -113,11 +113,11 @@ def reset_host_check(dbp: dbh.dbHandler, log: sh.log) -> None:
         )
 
     # Set running host tasks status to 'pending' and update host status counters. (since service is stopped, any running task is a broken task)
-    running_host_tasks = dbp.list_host_tasks(status=dbp.TASK_RUNNING)
+    running_host_tasks = dbp.host_task_read_list(status=dbp.TASK_RUNNING)
 
     for host_id, running_task_list in running_host_tasks.items():
         for running_task in running_task_list:
-            dbp.update_host_task_status(task_id=running_task, status=dbp.TASK_PENDING)
+            dbp.host_task_update_status(task_id=running_task, status=dbp.TASK_PENDING)
 
         log.entry(
             f"{running_task_list.__len__()} HOST TASKS that were running for host {host_id} were reset."
@@ -140,7 +140,7 @@ def reset_file_bkp(dbp: dbh.dbHandler, log: sh.log) -> None:
     file_bkp.stop()
 
     # List file backup tasks that have status 'error'
-    failed_file_bkp_tasks = dbp.list_file_tasks(
+    failed_file_bkp_tasks = dbp.file_task_read_list_all(
         task_type=dbp.FILE_TASK_BACKUP_TYPE, task_status=dbp.TASK_ERROR
     )
 
@@ -149,7 +149,7 @@ def reset_file_bkp(dbp: dbh.dbHandler, log: sh.log) -> None:
         for failed_task in failed_task_list:
             dbp.file_task_update(task_id=failed_task, status=dbp.TASK_PENDING)
 
-        dbp.update_host_status(
+        dbp.host_update(
             host_id=host_id,
             backup_error=-failed_task_list.__len__(),
             pending_backup=failed_task_list.__len__(),
@@ -159,7 +159,7 @@ def reset_file_bkp(dbp: dbh.dbHandler, log: sh.log) -> None:
             f"{failed_task_list.__len__()} FILE BACKUP TASKS that FAILED for host {host_id} were reset."
         )
 
-    running_file_bkp_tasks = dbp.list_file_tasks(
+    running_file_bkp_tasks = dbp.file_task_read_list_all(
         task_type=dbp.FILE_TASK_BACKUP_TYPE, task_status=dbp.TASK_RUNNING
     )
 
@@ -192,7 +192,7 @@ def reset_file_bin_proces(dbp: dbh.dbHandler, log: sh.log) -> None:
     file_bin_proces.stop()
 
     # List file processing tasks that have status 'error'
-    failed_file_bin_proces_tasks = dbp.list_file_tasks(
+    failed_file_bin_proces_tasks = dbp.file_task_read_list_all(
         task_type=dbp.FILE_TASK_PROCESS_TYPE, task_status=dbp.TASK_ERROR
     )
 
@@ -201,7 +201,7 @@ def reset_file_bin_proces(dbp: dbh.dbHandler, log: sh.log) -> None:
         for failed_task in failed_task_list:
             dbp.file_task_update(task_id=failed_task, status=dbp.TASK_PENDING)
 
-        dbp.update_host_status(
+        dbp.host_update(
             host_id=host_id,
             processing_error=-failed_task_list.__len__(),
             pending_processing=failed_task_list.__len__(),
@@ -211,7 +211,7 @@ def reset_file_bin_proces(dbp: dbh.dbHandler, log: sh.log) -> None:
             f"{failed_task_list.__len__()} FILE PROCESSING TASKS that FAILED for host {host_id} were reset."
         )
 
-    running_file_bin_proces_tasks = dbp.list_file_tasks(
+    running_file_bin_proces_tasks = dbp.file_task_read_list_all(
         task_type=dbp.FILE_TASK_PROCESS_TYPE, task_status=dbp.TASK_RUNNING
     )
 

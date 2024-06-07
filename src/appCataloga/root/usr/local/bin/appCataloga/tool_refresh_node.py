@@ -179,7 +179,7 @@ def refresh_tmp_files(log: sh.log) -> None:
         confirmation = input("Do you want to add file to be processed? (y/n): ")
 
         if confirmation.lower() == "y":
-            db_bp.add_task_from_file(files_to_be_processed)
+            db_bp.file_task_create_from_file(files_to_be_processed)
     else:
         log.entry("No file in the TMP_FOLDER to be processed.")
 
@@ -236,7 +236,7 @@ def refresh_trash_files(log: sh.log) -> None:
                     (k.TMP_FOLDER, filename) for filepath, filename in self.files
                 }
 
-                db_bp.add_task_from_file(self.files)
+                db_bp.file_task_create_from_file(self.files)
 
             def delete(self) -> None:
                 for filepath, filename in self.files:

@@ -368,7 +368,7 @@ class hostDaemon:
         self.time_limit = None
         self.halt_flag_set_time = None
 
-        self.host = db_bp.get_host(host_id)
+        self.host = db_bp.host_read_access(host_id)
 
     def _handle_failed_task(
         self,
@@ -380,32 +380,32 @@ class hostDaemon:
         match task_type:
             case self.db_bp.HOST_TASK_TYPE:
                 if remove_failed_task:
-                    self.db_bp.remove_host_task(task_id=task_id)
+                    self.db_bp.host_task_delete(task_id=task_id)
                 else:
-                    self.db_bp.update_host_task(
+                    self.db_bp.host_task_update(
                         task_id=task_id, status=self.db_bp.TASK_FAILED, message=message
                     )
 
-                self.db_bp.update_host_status(
-                    host_id=self.host["host_id"], host_check_error=1
-                )
+                    self.db_bp.host_update(
+                        host_id=self.host["host_id"], host_check_error=1
+                    )
 
             case [self.db_bp.FILE_TASK_BACKUP_TYPE, self.db_bp.FILE_TASK_PROCESS_TYPE]:
                 if remove_failed_task:
-                    self.db_bp.delete_file_task(task_id=task_id)
+                    self.db_bp.file_task_delete(task_id=task_id)
                 else:
                     self.db_bp.file_task_update(
                         task_id=task_id, status=self.db_bp.TASK_FAILED, message=message
                     )
 
-                if task_type == self.db_bp.FILE_TASK_BACKUP_TYPE:
-                    self.db_bp.update_host_status(
-                        host_id=self.host["host_id"], backup_error=1
-                    )
-                else:
-                    self.db_bp.update_host_status(
-                        host_id=self.host["host_id"], processing_error=1
-                    )
+                    if task_type == self.db_bp.FILE_TASK_BACKUP_TYPE:
+                        self.db_bp.host_update(
+                            host_id=self.host["host_id"], backup_error=1
+                        )
+                    else:
+                        self.db_bp.host_update(
+                            host_id=self.host["host_id"], processing_error=1
+                        )
 
     def get_config(self, remove_failed_task: bool = False) -> dict:
         """Get the remote host configuration file into config class variable
@@ -434,7 +434,7 @@ class hostDaemon:
                 f"Configuration file '{k.DAEMON_CFG_FILE}' not found in remote host with id {self.host['host_id']}"
             )
 
-            self.db_bp.update_host_status(
+            self.db_bp.host_update(
                 host_id=self.host["host_id"], status=self.db_bp.HOST_WITHOUT_DAEMON
             )
             self.sftp_conn.close()
@@ -482,7 +482,7 @@ class hostDaemon:
                 message = f"HALT_FLAG file found in remote host {self.host['host_uid']}({self.host['host_add']}). Task aborted."
                 self.log.error(message)
                 self.sftp_conn.close()
-                self.db_bp.update_host_status(
+                self.db_bp.host_update(
                     host_id=self.host["host_id"], status=self.db_bp.HOST_WITH_HALT_FLAG
                 )
 
@@ -571,4 +571,4 @@ class hostDaemon:
         self.sftp_conn.close()
 
         if self.task_id:
-            self.db_bp.remove_host_task(task_id=self.task_id)
+            self.db_bp.host_task_delete(task_id=self.task_id)

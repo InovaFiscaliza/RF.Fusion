@@ -146,7 +146,7 @@ def main():
 
             message = f"Latest parquet export time: {latest_export_str}, Latest database update time: {latest_db_update_str}"
             if latest_export < latest_db_update:
-                rfdb.publish_parquet(file_name=k.PUBLISH_FILE)
+                rfdb.export_parquet(file_name=k.PUBLISH_FILE)
 
                 log.entry(f"Published new set of parquet files. {message}.")
             else:

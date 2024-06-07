@@ -7,7 +7,7 @@ echo "appCataloga_host_check stopped"
 # Create a list with all instances of appCataloga_file_bkp@* services
 # and stop them
 for i in $(systemctl list-units --full --all | grep appCataloga_file_bkp@ | awk '{print $1}'); do
-    systemctl stop $i
+    systemctl stop "$i"
     echo "$i stopped"
 done
 
