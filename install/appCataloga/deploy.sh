@@ -1,21 +1,22 @@
 #!/bin/bash
 
-deploy_version=0.14
+deploy_version=0.15
+# Function to update this deploy script. Placed at start to reduce risk of script break before exit command
+deploy_tool_repo="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh"
 
 splash_banner() {
+    # print full screen splash screen with the message received as argument
 
     terminal_width=$(tput cols)
 
     echo -e "\e[32m$(printf "%0.s~" $(seq 1 $terminal_width))\e[0m"
-    printf "\e[32m%*s\e[0m\n" $((($terminal_width + ${#deploy_version}) / 2)) "appCataloga deploy script version $deploy_version"
+    printf "\e[32m%*s\e[0m\n" $((($terminal_width + ${#1}) / 2)) "$1"
     echo -e "\e[32m$(printf "%0.s~" $(seq 1 $terminal_width))\e[0m"
+    echo
 }
 
 # Download files from a repository and install
 # Run as root this script as root
-
-# Function to update this deploy script. Placed at start to reduce risk of script break before exit command
-deploy_tool_repo="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh"
 
 update_deploy() {
     # print "\n- Updating deploy script..." using green color
@@ -702,12 +703,13 @@ remove_database() {
 }
 
 #! Main script
+splash_banner "appCataloga deploy script version $deploy_version"
+
 case "$1" in
 -h)
     print_help
     ;;
 -i)
-    splash_banner
     create_tmp_folders
     create_install_folders
     get_files -i
@@ -720,7 +722,6 @@ case "$1" in
     remove_tmp_folder
     ;;
 -u)
-    splash_banner
     create_tmp_folders
     get_files -u
     move_files -u
@@ -730,11 +731,9 @@ case "$1" in
     remove_tmp_folder
     ;;
 -du)
-    splash_banner
     update_deploy
     ;;
 -r)
-    splash_banner
     disable_services
     remove_install_folders
     remove_database -skip
@@ -745,3 +744,6 @@ case "$1" in
 esac
 
 echo -e "\nSuccess. Please check documentation for further instructions.\n"
+echo "Bye"
+echo
+exit
