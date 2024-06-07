@@ -200,12 +200,14 @@ def main():
 
             task = db_bp.file_task_read_one(task_type=db_bp.FILE_TASK_PROCESS_TYPE)
 
-            db_bp.file_task_update(task_id=task["task_id"], status=db_bp.TASK_RUNNING)
-
             # if there is a task in the database
             if task:
                 # get metadata from bin file
                 filename = f"{task['server path']}/{task['server file']}"
+
+                db_bp.file_task_update(
+                    task_id=task["task_id"], status=db_bp.TASK_RUNNING
+                )
 
                 log.entry(f"Start processing '{filename}'.")
 

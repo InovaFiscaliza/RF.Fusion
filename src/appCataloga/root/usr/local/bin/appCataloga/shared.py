@@ -386,9 +386,7 @@ class hostDaemon:
                         task_id=task_id, status=self.db_bp.TASK_FAILED, message=message
                     )
 
-                    self.db_bp.host_update(
-                        host_id=self.host["host_id"], host_check_error=1
-                    )
+                self.db_bp.host_update(host_id=self.host["host_id"], host_check_error=1)
 
             case [self.db_bp.FILE_TASK_BACKUP_TYPE, self.db_bp.FILE_TASK_PROCESS_TYPE]:
                 if remove_failed_task:
@@ -398,16 +396,14 @@ class hostDaemon:
                         task_id=task_id, status=self.db_bp.TASK_FAILED, message=message
                     )
 
-                    if task_type == self.db_bp.FILE_TASK_BACKUP_TYPE:
-                        self.db_bp.host_update(
-                            host_id=self.host["host_id"], backup_error=1
-                        )
-                    else:
-                        self.db_bp.host_update(
-                            host_id=self.host["host_id"], processing_error=1
-                        )
+                if task_type == self.db_bp.FILE_TASK_BACKUP_TYPE:
+                    self.db_bp.host_update(host_id=self.host["host_id"], backup_error=1)
+                else:
+                    self.db_bp.host_update(
+                        host_id=self.host["host_id"], processing_error=1
+                    )
 
-    def get_config(self, remove_failed_task: bool = False) -> dict:
+    def get_config(self, task_type: int, remove_failed_task: bool = False) -> dict:
         """Get the remote host configuration file into config class variable
 
         Args:
@@ -440,7 +436,7 @@ class hostDaemon:
             self.sftp_conn.close()
 
             task_handle_arguments = {
-                "task_type": self.db_bp.HOST_TASK_TYPE,
+                "task_type": task_type,
                 "remove_failed_task": remove_failed_task,
                 "message": "Configuration file not found in remote host",
             }
@@ -455,7 +451,7 @@ class hostDaemon:
 
         return True
 
-    def get_halt_flag(self, remove_failed_task: bool = False) -> bool:
+    def get_halt_flag(self, task_type: int, remove_failed_task: bool = False) -> bool:
         """Set the halt_flag in the remote host if it is not previously set by another process.
             Wait for release before continuing using config parameters
             Remove or suspend the task if the halt_flag can not be set.
@@ -487,7 +483,7 @@ class hostDaemon:
                 )
 
                 task_handle_arguments = {
-                    "task_type": self.db_bp.HOST_TASK_TYPE,
+                    "task_type": task_type,
                     "remove_failed_task": remove_failed_task,
                     "message": "Halt flag set in remote host",
                 }

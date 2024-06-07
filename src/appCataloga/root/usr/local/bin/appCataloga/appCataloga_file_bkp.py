@@ -36,7 +36,7 @@ import inspect
 # define global variables for log and general use
 log = sh.log()
 
-process_status = {"worker": None, "conn": False, "halt_flag": False, "running": True}
+process_status = {"worker": None, "running": True}
 
 DEFAULT_WORKER = 0
 # define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
@@ -171,13 +171,15 @@ def main():
     while process_status["running"]:
         try:
             # Get the list of files to backup from the database
-            tasks = db_bp.file_task_read_list_one_host(task_type=db_bp.BACKUP_TASK_TYPE)
-            """ tasks ={   "host_id": (int) host_id,
-                            task_id: [
-                                        host_file_path,
-                                        host_file_name,
-                                        server_file_path,
-                                        server_file_name]}
+            tasks = db_bp.file_task_read_list_one_host(
+                task_type=db_bp.FILE_TASK_BACKUP_TYPE
+            )
+            """ tasks ={"host_id": (int) host_id,
+                        "file_tasks": (dict){   task_id: [
+                                                host_file_path,
+                                                host_file_name,
+                                                server_file_path,
+                                                server_file_name]}
             """
 
             if not tasks:
@@ -222,8 +224,6 @@ def main():
                 log=log,
             )
 
-            process_status["conn"] = sftp_conn
-
             daemon = sh.hostDaemon(
                 sftp_conn=sftp_conn,
                 db_bp=db_bp,
@@ -233,14 +233,28 @@ def main():
             )
 
             # Get the remote host configuration file
-            daemon.get_config(remove_failed_task=False)
-
-            # Set halt flag if not already set (first run)
-            process_status["halt_flag"] = daemon.get_halt_flag(remove_failed_task=False)
+            if not daemon.get_config(
+                task_type=db_bp.FILE_TASK_BACKUP_TYPE, remove_failed_task=False
+            ):
+                for task_id in tasks["file_tasks"]:
+                    db_bp.file_task_update(
+                        task_id=task_id,
+                        status=db_bp.TASK_ERROR,
+                        message="Error getting host configuration",
+                    )
+                continue
 
             # After trying to set or reset the halt flag, if it was not set
             # move to attempt the next task. (current task was susppended bt the get_halt_flag method)
-            if not process_status["halt_flag"]:
+            if not daemon.get_halt_flag(
+                task_type=db_bp.FILE_TASK_BACKUP_TYPE, remove_failed_task=False
+            ):
+                for task_id in tasks["file_tasks"]:
+                    db_bp.file_task_update(
+                        task_id=task_id,
+                        status=db_bp.TASK_ERROR,
+                        message="Error releasing halt flag",
+                    )
                 continue
 
             # Before processing the current task, spawn another file backup task process to look for other hosts with pending backup
@@ -333,8 +347,6 @@ def main():
         except Exception as e:
             log.error(f"Unmapped error occurred: {str(e)}")
             raise ValueError(log.dump_error())
-
-    # TODO: #37 Check if task was completted or a kill request was received, and update the database accordingly to move back tasks to pending status
 
     log.entry("Shutting down....")
 

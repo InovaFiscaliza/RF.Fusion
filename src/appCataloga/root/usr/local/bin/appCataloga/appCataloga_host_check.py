@@ -135,9 +135,7 @@ def main():
                 continue
 
             # set task status to running
-            db_bp.host_task_update(
-                task_id=task["task_id"], status=db_bp.RUNNING_TASK_STATUS
-            )
+            db_bp.host_task_update(task_id=task["task_id"], status=db_bp.TASK_RUNNING)
 
             # Create a SSH client and SFTP connection to the remote host
             sftp_conn = sh.sftpConnection(
@@ -158,11 +156,15 @@ def main():
             )
 
             # Get the remote host configuration file
-            if not daemon.get_config(remove_failed_task=True):
+            if not daemon.get_config(
+                task_type=db_bp.HOST_TASK_TYPE, remove_failed_task=True
+            ):
                 continue
 
             # Set halt flag
-            if not daemon.get_halt_flag(remove_failed_task=True):
+            if not daemon.get_halt_flag(
+                task_type=db_bp.HOST_TASK_TYPE, remove_failed_task=True
+            ):
                 continue
 
             # Get the list of files to backup from DUE_BACKUP file and create file tasks

@@ -1554,7 +1554,7 @@ class dbHandler:
         # if no task_id was provided, get the oldest
         if not task_id:
             query = query + (
-                "ORDER BY DT_HOST_TASK LIMIT 1 WHERE HOST_TASK.NU_STATUS = 1;"
+                "WHERE HOST_TASK.NU_STATUS = 1 ORDER BY DT_HOST_TASK LIMIT 1;"
             )
         else:
             query = query + (
