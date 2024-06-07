@@ -1358,7 +1358,7 @@ class dbHandler:
                 # reset task timestamp so that the queue can move on.
                 query = (
                     f"UPDATE HOST_TASK SET "
-                    f"DT_HOST_TASK = NOW(), NU_STATUS = {self.TASK_PENDING}, NA_MESSAGE = 'Refreshed' "
+                    f"DT_HOST_TASK = NOW(), NU_STATUS = {self.TASK_PENDING}, NA_MESSAGE = 'Refreshed', NU_PID = 0 "
                     f"WHERE ID_HOST_TASK = {task_id};"
                 )
 
