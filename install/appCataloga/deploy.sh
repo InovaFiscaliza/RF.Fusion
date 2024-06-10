@@ -1,6 +1,6 @@
 #!/bin/bash
 
-deploy_version=0.17
+deploy_version=0.18
 # Function to update this deploy script. Placed at start to reduce risk of script break before exit command
 deploy_tool_repo="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh"
 
