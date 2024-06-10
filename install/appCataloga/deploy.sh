@@ -1,6 +1,6 @@
 #!/bin/bash
 
-deploy_version=0.16
+deploy_version=0.17
 # Function to update this deploy script. Placed at start to reduce risk of script break before exit command
 deploy_tool_repo="https://raw.githubusercontent.com/InovaFiscaliza/RF.Fusion/main/install/appCataloga/deploy.sh"
 
@@ -115,6 +115,8 @@ declare -A updateFiles=(
     ["createProcessingDB.sql"]=$tmpFolder
     ["tool_start_all.sh"]=$scriptFolder
     ["tool_stop_all.sh"]=$scriptFolder
+    ["tool_refresh_server.py"]=$scriptFolder
+    ["tool_refresh_node.py"]=$scriptFolder
 )
 
 # declare an associative array with pairs of special required files to download and target folders
