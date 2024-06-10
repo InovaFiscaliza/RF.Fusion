@@ -14,7 +14,6 @@ Returns (stdout): As log messages, if target_screen in log is set to True.
 Raises:
     Exception: If any error occurs, the exception is raised with a message describing the error.
 """
-# ! KEEP TEST WITH HALT FLAG ERRORS AND CONNECTION ERRORS
 
 # Set system path to include modules from /etc/appCataloga
 import sys
@@ -291,7 +290,7 @@ def main():
                         task_id=task_id,
                         server_file=filename,
                         server_path=local_path,
-                        task_type=db_bp.PROCESS_TASK_TYPE,
+                        task_type=db_bp.FILE_TASK_PROCESS_TYPE,
                         status=db_bp.TASK_PENDING,
                         message=f"File '{remote_file}' copied to '{local_file}'",
                     )

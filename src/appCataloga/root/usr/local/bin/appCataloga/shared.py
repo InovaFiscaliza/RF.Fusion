@@ -480,13 +480,13 @@ class hostDaemon:
         """
 
         loop_count = 0
+        time_to_wait = k.HOST_TASK_REQUEST_WAIT_TIME / k.HALT_FLAG_CHECK_CYCLES
         # If HALT_FLAG exists, wait and retry each 5 minutes for 30 minutes
         while self.sftp_conn.test(self.config["HALT_FLAG"]):
             # If HALT_FLAG exists, wait for 5 minutes and test again
-            time_to_wait = k.HOST_TASK_REQUEST_WAIT_TIME / k.HALT_FLAG_CHECK_CYCLES
             time.sleep(time_to_wait)
             self.log.warning(
-                f"HALT_FLAG file found in remote host {self.host['host_uid']}({self.host['host_add']}). Waiting {(k.HOST_TASK_REQUEST_WAIT_TIME / (k.HALT_FLAG_CHECK_CYCLES * 60))} minutes."
+                f"HALT_FLAG file found in remote host {self.host['host_uid']}({self.host['host_add']}). Waiting {(time_to_wait / 60.0)} minutes."
             )
             loop_count += 1
 
@@ -495,7 +495,9 @@ class hostDaemon:
                 self.log.error(message)
                 self.sftp_conn.close()
                 self.db_bp.host_update(
-                    host_id=self.host["host_id"], status=self.db_bp.HOST_WITH_HALT_FLAG
+                    host_id=self.host["host_id"],
+                    reset=True,
+                    status=self.db_bp.HOST_WITH_HALT_FLAG,
                 )
 
                 task_handle_arguments = {
