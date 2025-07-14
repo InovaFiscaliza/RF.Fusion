@@ -12,7 +12,7 @@
     <li><a href="#references">References</a></li>
   </ol>
 </details>
-[al](#algorithm-overview)
+
 # About Agents
 
 Agents perform file indexing in the remote monitoring stations, preparing then for copy into the repository.
