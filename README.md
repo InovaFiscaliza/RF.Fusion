@@ -1,3 +1,5 @@
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/InovaFiscaliza/RF.Fusion)
+
 <!-- Improved compatibility of back to top link: See: https://github.com/othneildrew/Best-README-Template/pull/73 -->
 <a name="indexerd-md-top"></a>
 
@@ -40,9 +42,16 @@
 
 RF.Fusion is an integration framework to manage hardware and data across an Spectrum Monitoring Network.
 
-Although conceived with such network in mind, most of the modules could be easily adapted to suit other needs associated with data collection from any distributed automated sensor network, providing a base for projects such as those related to smart cities and environment monitoring.
+The framework is composed by a series of modules that can be used together or independently, depending on the needs of the user.
 
-Modules were constructed with the idea of maximizing code reuse by employing standard open source tools to perform core tasks and dedicated modules to perform equipment specific data integrations
+The modules are designed to be used in a distributed network, where each monitoring unit can operate independently, but also communicate with a central server core for data storage, analysis and publication. Although conceived with such network in mind, most of the modules could be easily adapted to suit other needs associated with data collection from any distributed automated sensor network, providing a base for projects such as those related to smart cities and environment monitoring.
+
+General workflow is depicted in the following figure:
+
+![General Workflow for the Spectrum Monitoring Network](./docs/images/system_workflow.svg)
+
+Modules were constructed with the idea of maximizing code reuse by employing standard open source tools to perform core tasks and dedicated modules to perform equipment specific data integrations.
+
 
 <p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
 
