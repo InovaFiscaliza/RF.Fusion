@@ -1,0 +1,101 @@
+#!/bin/sh
+# script to be run in the upload folder to setup all scripts and configuration files.
+homepath=/home/lx.svc.fi.sensores.pd
+
+# folders used by scripts and to store client data
+script_template=/etc/openvpn/easy-rsa/script_template
+tmp_folder=/etc/openvpn/easy-rsa/pki/tmp
+pkg_folder=/etc/openvpn/easy-rsa/pki/pkg
+ccd_folder=/etc/openvpn/server/ccd
+
+if [ ! -d $script_template ]; then
+    mkdir $script_template
+fi
+
+if [ ! -d $tmp_folder ]; then
+    mkdir $tmp_folder
+fi
+
+if [ ! -d $pkg_folder ]; then
+    mkdir $pkg_folder
+fi
+
+if [ ! -d $script_template ]; then
+    mkdir $script_template
+fi
+
+if [ ! -d $ccd_folder ]; then
+    mkdir $ccd_folder
+fi
+
+mv $homepath/client.conf /etc/openvpn/easy-rsa/script_template/client.conf
+mv $homepath/kkreate /etc/openvpn/easy-rsa/kkreate
+mv $homepath/batch_kk /etc/openvpn/easy-rsa/batch_kk
+mv $homepath/ukkreate /etc/openvpn/easy-rsa/ukkreate
+mv $homepath/batch_ukk /etc/openvpn/easy-rsa/batch_ukk
+mv $homepath/build_ccd /etc/openvpn/easy-rsa/build_ccd
+mv $homepath/rfeye.conf /etc/openvpn/easy-rsa/rfeye.conf
+mv $homepath/etm.conf /etc/openvpn/easy-rsa/etm.conf
+mv $homepath/cwsm.conf /etc/openvpn/easy-rsa/cwsm.conf
+mv $homepath/miaer.conf /etc/openvpn/easy-rsa/miaer.conf
+mv $homepath/ums.conf /etc/openvpn/easy-rsa/ums.conf
+mv $homepath/rme_server.conf /etc/openvpn/easy-rsa/rme_server.conf
+mv $homepath/ovpn_config.md /etc/openvpn/easy-rsa/ovpn_config.md
+mv $homepath/vars /etc/openvpn/easy-rsa/pki/vars
+mv $homepath/server.conf /etc/openvpn/server/server.conf
+mv $homepath/deploy /etc/openvpn/easy-rsa/deploy
+
+chmod 600 /etc/openvpn/easy-rsa/script_template/client.conf
+chmod 700 /etc/openvpn/easy-rsa/kkreate
+chmod 700 /etc/openvpn/easy-rsa/batch_kk
+chmod 700 /etc/openvpn/easy-rsa/ukkreate
+chmod 700 /etc/openvpn/easy-rsa/batch_ukk
+chmod 700 /etc/openvpn/easy-rsa/build_ccd
+chmod 600 /etc/openvpn/easy-rsa/rfeye.conf
+chmod 600 /etc/openvpn/easy-rsa/etm.conf
+chmod 600 /etc/openvpn/easy-rsa/cwsm.conf
+chmod 600 /etc/openvpn/easy-rsa/miaer.conf
+chmod 600 /etc/openvpn/easy-rsa/ums.conf
+chmod 600 /etc/openvpn/easy-rsa/rme_server.conf
+chmod 600 /etc/openvpn/easy-rsa/ovpn_config.md
+chmod 600 /etc/openvpn/easy-rsa/pki/vars
+chmod 600 /etc/openvpn/server/server.conf
+chmod 700 /etc/openvpn/easy-rsa/deploy
+
+chgrp root /etc/openvpn/easy-rsa/script_template/client.conf
+chgrp root /etc/openvpn/easy-rsa/kkreate
+chgrp root /etc/openvpn/easy-rsa/batch_kk
+chgrp root /etc/openvpn/easy-rsa/ukkreate
+chgrp root /etc/openvpn/easy-rsa/batch_ukk
+chgrp root /etc/openvpn/easy-rsa/build_ccd
+chgrp root /etc/openvpn/easy-rsa/rfeye.conf
+chgrp root /etc/openvpn/easy-rsa/etm.conf
+chgrp root /etc/openvpn/easy-rsa/cwsm.conf
+chgrp root /etc/openvpn/easy-rsa/miaer.conf
+chgrp root /etc/openvpn/easy-rsa/ums.conf
+chgrp root /etc/openvpn/easy-rsa/rme_server.conf
+chgrp root /etc/openvpn/easy-rsa/ovpn_config.md
+chgrp root /etc/openvpn/easy-rsa/pki/vars
+chgrp root /etc/openvpn/server/server.conf
+chgrp root /etc/openvpn/easy-rsa/deploy
+
+chown root /etc/openvpn/easy-rsa/script_template/client.conf
+chown root /etc/openvpn/easy-rsa/kkreate
+chown root /etc/openvpn/easy-rsa/batch_kk
+chown root /etc/openvpn/easy-rsa/ukkreate
+chown root /etc/openvpn/easy-rsa/batch_ukk
+chown root /etc/openvpn/easy-rsa/build_ccd
+chown root /etc/openvpn/easy-rsa/rfeye.conf
+chown root /etc/openvpn/easy-rsa/etm.conf
+chown root /etc/openvpn/easy-rsa/cwsm.conf
+chown root /etc/openvpn/easy-rsa/miaer.conf
+chown root /etc/openvpn/easy-rsa/ums.conf
+chown root //etc/openvpn/easy-rsa/rme_server.conf
+chown root /etc/openvpn/easy-rsa/ovpn_config.md
+chown root /etc/openvpn/easy-rsa/pki/vars
+chown root /etc/openvpn/server/server.conf
+chown root /etc/openvpn/easy-rsa/deploy
+
+echo
+echo "Scripts and configuration files copied and primed"
+echo

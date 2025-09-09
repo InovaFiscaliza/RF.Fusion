@@ -1,0 +1,97 @@
+#!/bin/bash
+
+# This script is to build configuration files for fix IP OpenVPN configuration when the number of servers is large.
+# Version 0 probably by CRFS, unknown details
+# Version 1 by Fábio Lobão, Anatel, April 2015.
+# Version 2 by Fábio Lobão, Anatel, April 2022.
+# You must have root privileges to edit and run this file
+
+# Read config file ('build_ccd.cfg') with ip address and server names.
+# The path in where the configuration files will be created
+# The IP address for the fist server. e.g. 192.168.16.1 should be defined as: oct1 = 192; oct2 = 168; oct3 = 16; oct4 = 1
+# The list of servers to have fix IP on the OpenVPN, if used multiple lines, each line should end with space and slash, names should nor have spaces, used to separate names. e.g. declare -a server_list=(\
+# rfeye002046 \
+# rfeye002073 \
+# )
+
+# Test input arguments
+if [ "$#" -ne 1 -o ! -f $1 ] 
+then
+    echo "--------------------"
+    echo "Error: Usage: $0 <name of file with list of clients to be configured>."
+    exit 1
+else
+    configuration=$1
+    echo "--------------------"
+    echo "Starting batch CCD configuration based on $configuration."
+    logger "Initializing batch OpenVPN package generation based on $configuration."
+    source ./$configuration
+fi
+
+
+# Check if the target folder already exist and if affirmative, prompt the user and ask about the action to be taken (Backup, Over-right or Append)
+if [ -d "$ovpn_path" ]; then 
+	if [ -L "$ovpn_path" ]; then
+		echo "Error 70. $ovpn_path is a symbolic link. Please remove, rename or replace and run again the script to build a $ovpn_path folder."
+		exit 67
+	else
+		echo "There is already an $ovpn_path folder. Do you want to make a Backup, Remove or Overwrite to this folder? (B/R/O)"
+		read bro_input
+		case $bro_input in
+			[bB] )
+				echo "Compressing old folder $ovpn_path in a backup file."
+				tar czf $(date +"%F_%H%M%S")-ccd_backup.tar.gz "$ovpn_path"
+				echo "Removing $ovpn_path folder and all its content in five seconds."
+				sleep 5 #wait five seconds to allow the user to repent
+				echo "Removing $ovpn_path folder."
+				rm -rf "$ovpn_path"
+				mkdir "$ovpn_path"
+				;;
+			[rR] )
+				echo "Removing $ovpn_path folder and all its content in five seconds."
+				sleep 5 #wait five seconds to allow the user to repent
+				echo "Removing $ovpn_path folder."
+				rm -rf "$ovpn_path"
+				mkdir "$ovpn_path"
+				;;
+			[oO] )
+				echo "Files with same name will be overwritten and new files might be created."
+				;;
+			*)
+				echo "Error 68. Invalid input. Please manually handle the $ovpn_path folder and/or run again the script and do the proper selection (B/R/O)."
+				exit 68
+				;;
+		esac
+	fi
+else
+	mkdir "$ovpn_path"
+fi
+
+# loop through IPs and echo to create configuration files for each server. At each loop, increment server IP by 4 to be in the correct range and check to keep octets as valid private network IP numbers.
+echo "Creating configuration files."
+for server in "${server_list[@]}"; do
+
+	if [ $topology == "net30" ]; then
+		echo "ifconfig-push $oct1.$oct2.$oct3.$oct4 $oct1.$oct2.$oct3.$((oct4+1))" > "$ovpn_path"/"$server"
+	else
+		echo "ifconfig-push $oct1.$oct2.$oct3.$oct4 $subnet_mask" > "$ovpn_path"/"$server"
+	fi
+
+	((oct4=oct4+2))
+	if ((oct4 > 253 )); then
+		oct4=1
+		((oct3++))
+		if ((oct3 > 253 )); then
+	        	oct3=1
+			((oct2++))
+			if ((oct2 > 253)); then
+				echo "Error 69. Too many servers for the selected start IP. Start at a lower IP address in the range."
+				exit 69
+			fi
+		fi
+	fi
+done
+
+#end script
+echo "Configuration files successfully created in the $ovpn_path folder."
+exit 0

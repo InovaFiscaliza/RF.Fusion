@@ -1,0 +1,15 @@
+[Unit]
+Description=Host task service Worker
+After=network.target mariadb.service
+RequiresMountsFor=/mnt/reposfi
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/bin/appCataloga
+ExecStart=/usr/local/bin/appCataloga/appCataloga_host_check.sh start
+ExecStop=/usr/local/bin/appCataloga/appCataloga_host_check.sh stop
+ExecReload=/usr/local/bin/appCataloga/appCataloga_host_check.sh restart
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

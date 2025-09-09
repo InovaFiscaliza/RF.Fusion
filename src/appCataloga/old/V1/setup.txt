@@ -1,0 +1,26 @@
+Configuração do repositório
+
+Comandos devem ser realizados com SU
+
+Criar usuário 
+    useradd rfeye
+
+Obter uid e gid para usuário rfeye
+    id rfeye
+
+Criar arquivos de credenciais
+    nano /root/.reposfi
+
+Preencher conteúdo do arquivo de credenciais
+    username=mnt.sfi.sensores.pd
+    password=VER PAINEL PRODUCAO
+
+Modificar permissões do arquivo de credenciais
+    chmod 600 /root/.reposfi
+
+Criar diretório para ponto de montagem
+    mkdir /mnt/sfi
+
+Montar unidade
+    mount -t cifs -o credentials=/root/.reposfi,uid=1077,gid=1078,file_mode=0664,dir_mode=0775 //reposfi/sfi$/SENSORES  /mnt/sfi-sensores-repo
+

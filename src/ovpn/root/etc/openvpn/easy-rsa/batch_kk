@@ -1,0 +1,43 @@
+#!/bin/sh
+
+#* ABOUT:
+#     This script reads host names from a file and create packages with key, certificates and configuration to all listed clients
+
+#* USAGE:
+#     Install this script in /etc/openvpn/easy-rsa
+#     kkreate script must be operational in the server
+#     Execute the script with a single argument, with the name of the file containing the names for the new clients
+#     Client names within the file should e separated by spaces or lines
+
+#* OUTPUT:
+#     As output, a series of .tgz files will be created in the /etc/openvpn/easy-rsa/pki/pkg folder
+#     One file will be created for each name in the input file. 
+#     The client package  contains all client necessary files and customized scripts to use de openvpn in a linux machine
+#     Sharing of client keys should be made through a secure channel.
+
+# Test input arguments
+if [ "$#" -ne 1 -o ! -f $1 ]; then
+    echo "--------------------"
+    echo "Error: Usage: $0 <name of configuration file containing a list of clients to be created>."
+    exit 1
+else
+    configuration=$1
+    source ./$configuration
+    echo "--------------------"
+    echo "Starting batch key generation based on $configuration."
+    logger "Initializing batch OpenVPN package generation based on $configuration."
+fi
+
+len=${#server_list[@]}
+counter=1
+for server in "${server_list[@]}"
+do
+    ./kkreate $server
+    echo "$counter/$len: $server.tgz created"
+    ((counter++))
+done
+
+message="Finished creating $len client packages for the OpenVPN, based on $configuration file."
+echo $message
+logger $message
+echo "--------------------"
