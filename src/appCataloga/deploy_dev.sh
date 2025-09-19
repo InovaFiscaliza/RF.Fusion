@@ -1,80 +1,46 @@
 #!/bin/bash
+# Deploy appCataloga no container Debian sem systemd/SELinux
 
-# This script is used to deploy the appCataloga application to the development server, creating hard links from the repository to the test folders
-MINICONDA_PATH="/root/miniconda3"
-REPO_ROOT_PATH="/root/RF.Fusion/RF.Fusion/src/appCataloga/root"
-CONF_PATH="/etc/appCataloga/"
-APP_PATH="/usr/local/bin/appCataloga/"
+MINICONDA_PATH="/opt/conda"
+REPO_ROOT_PATH="/RFFusion/src/appCataloga/root"
+CONF_PATH="/etc/appCataloga"
+APP_PATH="/usr/local/bin/appCataloga"
 LOG_FILE="/var/log/appCataloga.log"
 
-repo_conf=$REPO_ROOT_PATH/$CONF_PATH
-repo_app=$REPO_ROOT_PATH/$APP_PATH
+repo_conf=$REPO_ROOT_PATH$CONF_PATH
+repo_app=$REPO_ROOT_PATH$APP_PATH
 
-# create a list of services appCataloga.service, appCataloga_file_bkp@.service, appCataloga_file_bin_proces.service and appCataloga_host_check
-services=("appCataloga.service" "appCataloga_file_bkp@0.service" "appCataloga_file_bin_proces.service" "appCataloga_host_check.service" "appCataloga_pub_metadata.service")
-scripts=("appCataloga.sh" "appCataloga_file_bkp.sh" "appCataloga_file_bin_proces.sh" "appCataloga_host_check.py" "appCataloga_pub_metadata.sh")
-
-# check if the required REPO folders are accessible
-if [ ! -d $repo_conf ] || [ ! -d $repo_app ]; then
-    echo "Error: Configure REPO_ROOT folder path and/or download the repo folder structure"
+# 1. Verifica pastas do repositório
+if [ ! -d "$repo_conf" ] || [ ! -d "$repo_app" ]; then
+    echo "❌ Erro: configure REPO_ROOT corretamente. Estrutura não encontrada."
     exit 1
 fi
 
-# test if $APP_PATH folder exists and remove it
-if [ -d $APP_PATH ]; then
-    rm -r $APP_PATH
-    echo "Removed $APP_PATH"
-fi
-mkdir $APP_PATH
+# 2. Remove versões antigas
+rm -rf "$APP_PATH" "$CONF_PATH"
+mkdir -p "$APP_PATH" "$CONF_PATH"
 
-# test if /etc/appCataloga exists, if not, create it
-if [ -d $CONF_PATH ]; then
-    rm -r $CONF_PATH
-    echo "Removed $CONF_PATH"
-fi
-mkdir $CONF_PATH
-
-# loop through the conf_files array and create the hard links
-conf_files=$(find "$repo_conf" -type f)
-
-for file in $conf_files; do
+# 3. Cria hard links dos arquivos de configuração
+for file in $(find "$repo_conf" -type f); do
     ln -f "$file" "$CONF_PATH"
 done
-echo "Created new $CONF_PATH"
+echo "✅ Configurações copiadas para $CONF_PATH"
 
-# loop through the app_files array and create the hard links
-app_files=$(find "$repo_app" -type f)
-
-for file in $app_files; do
+# 4. Cria hard links dos arquivos da aplicação
+for file in $(find "$repo_app" -type f); do
     ln -f "$file" "$APP_PATH"
 done
+echo "✅ Aplicação copiada para $APP_PATH"
 
-if [ -f $LOG_FILE ]; then
-    rm $LOG_FILE
-fi
+# 5. Remove log antigo
+rm -f "$LOG_FILE"
 
-# create link to MINICONDA_PATH within the APP_PATH
-if ! ln -s "$MINICONDA_PATH" "$APP_PATH"; then
-    echo "Error creating soft link for $MINICONDA_PATH. Do it manually."
-fi
+# 6. Cria symlink do Miniconda
+ln -sfn "$MINICONDA_PATH" "$APP_PATH/miniconda3"
+echo "✅ Link simbólico para Miniconda criado em $APP_PATH/miniconda3"
 
-echo "Created new $APP_PATH"
+# 7. Ajusta permissão de execução para todos os .sh
+chmod +x "$APP_PATH"/*.sh
+echo "✅ Permissões de execução ajustadas"
 
-# loop through script array and set the SE Linux context for each script
-for i in "${!scripts[@]}"; do
-    if ! /sbin/restorecon -v "$APP_PATH${scripts[$i]}"; then
-        echo "Error setting SE Linux. Do it manually."
-    fi
-done
-
-# loop through the service list and enable services in systemd
-for i in "${!services[@]}"; do
-    # test if service is enabled, if not, enable it
-    if ! systemctl is-enabled "$APP_PATH${services[$i]}" >/dev/null; then
-        echo "${services[$i]} is not enabled."
-
-        if ! systemctl enable "$APP_PATH${services[$i]}"; then
-            echo "Error enabling ${services[$i]}. Do it manually."
-        fi
-    fi
-done
+echo "🚀 Deploy concluído! Agora use os scripts de controle (ex.: tool_start_all.sh)"

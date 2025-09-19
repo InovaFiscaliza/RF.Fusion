@@ -1,0 +1,10 @@
+powershell -ExecutionPolicy Bypass -File .\deploy-debian12-python.ps1
+
+
+Troubleshooting - Em caso de erros limpe o ambiente podman
+
+podman rm -af
+podman rmi -af
+podman volume prune -f
+podman network prune -f
+podman system prune -a -f

@@ -16,9 +16,10 @@ Raises:
 """
 
 # Set system path to include modules from /etc/appCataloga
-import sys
+import sys,os
 
-sys.path.append("/etc/appCataloga")
+CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+sys.path.append(CONFIG_PATH)
 
 from rfpye.parser import parse_bin
 
@@ -255,10 +256,10 @@ def main():
                 receiver = bin_data["hostname"].lower()
                 rec_serial = receiver[5:]
                 equipment_lst = [
-                    f"acc_ant[0]_{rec_serial}",
-                    f"acc_ant[1]_{rec_serial}",
-                    f"acc_ant[2]_{rec_serial}",
-                    f"acc_ant[3]_{rec_serial}",
+                    f"rfeye[0]_{rec_serial}",
+                    f"rfeye[1]_{rec_serial}",
+                    f"rfeye[2]_{rec_serial}",
+                    f"rfeye[3]_{rec_serial}",
                     receiver,
                 ]
 
@@ -298,7 +299,7 @@ def main():
                     # create a list of equipment associated with the spectrum measurement
                     equipment = [
                         equipment_ids[receiver],
-                        equipment_ids[f"acc_ant[{spectrum.antuid}]_{rec_serial}"],
+                        equipment_ids[f"rfeye[{spectrum.antuid}]_{rec_serial}"],
                     ]
                     spectrum_lst.append(
                         {

@@ -4,11 +4,17 @@
 TARGET_FOLDER="/mnt/internal/data/"
 SLEEP_TIME=60
 
+# Ensure target folder exists
+if [ ! -d "$TARGET_FOLDER" ]; then
+    echo "Target folder $TARGET_FOLDER does not exist. Creating..."
+    mkdir -p "$TARGET_FOLDER"
+fi
+
 declare -a TEST_FILES=(
-    "/mnt/internal/test/SCAN_M_450470_rfeye002088_170426_162736.bin"
-    "/mnt/internal/test/SCAN_M_450470_rfeye002088_170426_164029.bin"
-    "/mnt/internal/test/SCAN_M_450470_rfeye002088_170426_165322.bin"
-    "/mnt/internal/test/SCAN_M_450470_rfeye002088_170426_170615.bin"
+    "/mnt/internal/SCAN_M_450470_rfeye002088_170426_162736.bin"
+    "/mnt/internal/SCAN_M_450470_rfeye002088_170426_164029.bin"
+    "/mnt/internal/SCAN_M_450470_rfeye002088_170426_165322.bin"
+    "/mnt/internal/SCAN_M_450470_rfeye002088_170426_170615.bin"
 )
 
 for fileName in "${TEST_FILES[@]}"; do

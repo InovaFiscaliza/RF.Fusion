@@ -24,10 +24,10 @@
     - NU_PROCESSING_ERROR, should be the number of files in the TRASH_FOLDER for a given host.
 """
 
-import sys
+import sys,os
 
-# sys.path.append('Y:\\RF.Fusion\\src\\appCataloga\\root\\etc\\appCataloga\\')
-sys.path.append("/etc/appCataloga")
+CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+sys.path.append(CONFIG_PATH)
 
 # Import appCataloga modules
 import config as k

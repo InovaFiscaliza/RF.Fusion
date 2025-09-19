@@ -7,19 +7,15 @@ Require additional /etc/appCataloga/.secret file with the following content:
         DB_PASSWORD = '<app_pass>'
 """
 
-import importlib.util
+import os, importlib.util,runpy
 import importlib.machinery
 
-SECRET_FILE = "/etc/appCataloga/.secret"
+# load base dir
+base_dir = os.path.dirname(__file__)
+secret_path = os.path.join(base_dir, ".secret")
 
-secret_file = importlib.util.spec_from_file_location(
-    name="secret",  # note that ".test" is not a valid module name
-    location=SECRET_FILE,
-    loader=importlib.machinery.SourceFileLoader("secret", SECRET_FILE),
-)
-
-secret = importlib.util.module_from_spec(secret_file)
-secret_file.loader.exec_module(secret)
+# load secret file
+secret = runpy.run_path(secret_path)
 
 # output processing information
 LOG_VERBOSE = True
@@ -38,11 +34,11 @@ START_TAG = "<json>"
 END_TAG = "</json>"
 
 # database configuration
-SERVER_NAME = r"localhost"
+SERVER_NAME = r"172.21.48.37"
 RFM_DATABASE_NAME = "RFDATA"
 BKP_DATABASE_NAME = "BPDATA"
-DB_USER_NAME = secret.DB_USER_NAME
-DB_PASSWORD = secret.DB_PASSWORD
+DB_USER_NAME = secret["DB_USER_NAME"]
+DB_PASSWORD = secret["DB_PASSWORD"]
 
 # backup module configuration
 # seconds to wait for a new task. Minimum half, maximum equal to this value

@@ -10,9 +10,10 @@ Raises:
 """
 
 # Set system path to include modules from /etc/appCataloga
-import sys
+import sys,os
 
-sys.path.append("/etc/appCataloga")
+CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+sys.path.append(CONFIG_PATH)
 
 # Import standard libraries.
 import paramiko

@@ -3,9 +3,10 @@
 
 # Import libraries for:
 
-import sys
+import sys,os
 
-sys.path.append("/etc/appCataloga")
+CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+sys.path.append(CONFIG_PATH)
 
 import mysql.connector
 import os
@@ -636,7 +637,12 @@ class dbHandler:
             equipment_type_id = False
 
             for type_uid, type_id in equipment_types.items():
-                if name_lower_case.find(type_uid) != -1:
+                # Checks '\r' character at type_uid end
+                if type_uid.endswith('\r'):
+                    type_uid_aux = type_uid[:-1]
+                else:
+                    type_uid_aux = type_uid
+                if type_uid_aux in name_lower_case:
                     equipment_type_id = type_id
                     break
 
@@ -2092,10 +2098,11 @@ class dbHandler:
             output["host_id"] = host_task["host_id"]
             output["host_uid"] = host_task["host_uid"]
 
-        except (TypeError, ValueError, IndexError):
+        except (TypeError, ValueError, IndexError) as e:
             # if no task is found, return False
             output = False
 
+        
         return output
 
     def file_task_read_list_all(self, task_type: int, task_status: int) -> dict:

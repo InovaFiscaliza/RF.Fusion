@@ -33,10 +33,11 @@ Keep the backup process running in a separate process and restart it if it fails
 """
 
 # Set system path to include modules from /etc/appCataloga
-import sys
+import sys,os
 
-# sys.path.append('Y:\\RF.Fusion\\src\\appCataloga\\root\\etc\\appCataloga\\')
-sys.path.append("/etc/appCataloga")
+# load appCataloga path
+CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+sys.path.append(CONFIG_PATH)
 
 # Import standard libraries.
 import socket
@@ -89,9 +90,10 @@ def sigterm_handler(signal=None, frame=None) -> None:
     log.entry(f"Kill signal received at: {current_function}()")
     process_status["running"] = False
     os.write(w_pipe, b"\0")
+    
 
 
-# Define a signal handler for SIGINT (Ctrl+C)
+# Define a signal handler for SIGINT (Ctrl+C) ---#
 def sigint_handler(signal=None, frame=None) -> None:
     global process_status
     global log
@@ -170,7 +172,7 @@ def serve_client(client_socket):
                 host = data.decode().split(" ")
             except Exception as e:
                 log.entry(f"Error decoding data: {e}")
-                host = [None]
+                
 
             if host[0] == k.BACKUP_QUERY_TAG:
                 try:
@@ -182,12 +184,13 @@ def serve_client(client_socket):
                         client_socket.getpeername()
                     )  # replace list first element with client IP address
 
+                    
                     host_statistics = queue_task(
                         *host
                     )  # unpack list to pass as arguments to queue_task
 
                     response = f"{k.START_TAG}{json.dumps(host_statistics)}{k.END_TAG}"
-
+                    
                 except Exception as e:
                     log.entry(f"Error backup request: {e}")
                     response = f'{k.START_TAG}{{"status":0,"message":"Could not create a backup task from the data provided."}}{k.END_TAG}'
