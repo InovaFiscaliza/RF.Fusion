@@ -1,13 +1,13 @@
 #!/usr/bin/python3
 """Get file tasks in the control database and perform backup to the central repository.
 
-Args:   Arguments passed from the command line should present in the format: "key=value"
+Args:
+    Arguments passed from the command line should present in the format: "key=value"
 
-        Where the possible keys are:
+    Where the possible keys are:
+        "worker": int, Serial index of the worker process. Default is 0.
 
-            "worker": int, Serial index of the worker process. Default is 0.
-
-        (stdin): ctrl+c will soft stop the process similar to kill or systemd stop <service>. kill -9 will hard stop.
+(stdin): ctrl+c will soft stop the process similar to kill or systemd stop <service>. kill -9 will hard stop.
 
 Returns (stdout): As log messages, if target_screen in log is set to True.
 
@@ -15,31 +15,33 @@ Raises:
     Exception: If any error occurs, the exception is raised with a message describing the error.
 """
 
-# Set system path to include modules from /etc/appCataloga
-import sys
-
-sys.path.append("/etc/appCataloga")
-
-# Import standard libraries.
-# Import modules for file processing
-import config as k
-import shared as sh
-import db_handler as dbh
-
+# ======================================================================
+# Imports
+# ======================================================================
+import sys, os
 import paramiko
-import os
 import time
 import random
 import signal
 import inspect
 
-# define global variables for log and general use
+# load appCataloga path
+CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+sys.path.append(CONFIG_PATH)
+
+# Import project libs
+import config as k
+import shared as sh
+import db_handler as dbh
+
+# ======================================================================
+# Globals
+# ======================================================================
 log = sh.log()
 
 process_status = {"worker": None, "running": True}
 
 DEFAULT_WORKER = 0
-# define arguments as dictionary to associate each argumenbt key to a default value and associated warning messages
 ARGUMENTS = {
     "worker": {
         "set": False,
@@ -49,27 +51,23 @@ ARGUMENTS = {
 }
 
 
-# Define a signal handler for SIGTERM (kill command )
+# ======================================================================
+# Signal handlers
+# ======================================================================
 def sigterm_handler(signal=None, frame=None) -> None:
-    global process_status
-    global log
-
+    global process_status, log
     current_function = inspect.currentframe().f_back.f_code.co_name
     log.entry(f"Kill signal received at: {current_function}()")
     process_status["running"] = False
 
 
-# Define a signal handler for SIGINT (Ctrl+C)
 def sigint_handler(signal=None, frame=None) -> None:
-    global process_status
-    global log
-
+    global process_status, log
     current_function = inspect.currentframe().f_back.f_code.co_name
     log.entry(f"Ctrl+C received at: {current_function}()")
     process_status["running"] = False
 
 
-# Register the signal handler function, to handle system kill commands
 signal.signal(signal.SIGTERM, sigterm_handler)
 signal.signal(signal.SIGINT, sigint_handler)
 
@@ -78,91 +76,101 @@ class HaltFlagError(Exception):
     pass
 
 
+# ======================================================================
+# Argument parsing
+# ======================================================================
+def parse_arguments():
+    global ARGUMENTS, process_status, log
+    for arg in sys.argv[1:]:
+        if "=" in arg:
+            key, value = arg.split("=", 1)
+            if key in ARGUMENTS:
+                try:
+                    ARGUMENTS[key]["value"] = int(value)
+                    ARGUMENTS[key]["set"] = True
+                except ValueError:
+                    log.warning(f"Invalid value for {key}, using default {ARGUMENTS[key]['value']}")
+            else:
+                log.warning(f"Unknown argument: {arg}")
+
+    process_status["worker"] = ARGUMENTS["worker"]["value"]
+    if not ARGUMENTS["worker"]["set"]:
+        log.warning(ARGUMENTS["worker"]["warning"])
+
+
+# ======================================================================
+# Worker management
+# ======================================================================
 def spawn_file_task_worker(worker_list: list) -> None:
-    """Spawn a new file task process.
-
-    Args:
-        worker (int): The new worker serial index.
-
-    Returns:
-        None
-    """
-    global process_status
     global log
-
-    # find the lowest available worker index for the new process
     new_worker = 0
-    for i in range(worker_list.__len__()):
+    for i in range(len(worker_list)):
         if new_worker == worker_list[i]:
             new_worker += 1
         elif new_worker < worker_list[i]:
             break
 
     log.entry(f"Spawning file backup task process worker {new_worker}")
-
-    # Use systemd to start a new file task process
-    # Comment this line for testing if there is no systemd service available
     os.system(f"systemctl start {k.BKP_TASK_WORKER_SERVICE}{new_worker}.service")
 
 
 def worker_counter(process_filename: str) -> list:
-    """Count the number of running file task processes.
-
-    Args:
-        None
-
-    Returns:
-        list: A list with indexes of the running file task processes.
-    """
+    """Count the number of running file task processes."""
     global log
     worker_list = []
 
     try:
-        # get the list of running processes
-        runnin_processes = os.popen(f"pgrep -f {process_filename}").read().splitlines()
+        running_processes = os.popen(f"pgrep -f {process_filename}").read().splitlines()
     except Exception as e:
         log.error(f"Error counting running workers: {e}")
-        raise ValueError(log.dump_error())
+        return []
 
-    # loop through the list of running processes and get the worker serial index from the command line arguments of each process
-    for worker in runnin_processes:
+    for worker in running_processes:
         try:
-            worker_args = os.popen(f"cat /proc/{worker}/cmdline").read().split("\x00")
+            proc_path = f"/proc/{worker}/cmdline"
+            if not os.path.exists(proc_path):
+                log.warning(f"Process {worker} terminated before inspection.")
+                continue
 
-            for i in range(worker_args.__len__()):
-                if worker_args[i] == process_filename:
+            worker_args = open(proc_path).read().split("\x00")
+            for i in range(len(worker_args)):
+                if process_filename in worker_args[i]:
                     try:
-                        worker_index = int(worker_args[i + 1])
+                        if "=" in worker_args[i + 1]:
+                            worker_index = int(worker_args[i + 1].split("=")[1])
+                        else:
+                            worker_index = int(worker_args[i + 1])
                     except (IndexError, ValueError, TypeError):
                         worker_index = DEFAULT_WORKER
-                        pass
-                    worker_list.append(int(worker_index))
+                    worker_list.append(worker_index)
                     break
         except Exception as e:
-            log.error(f"Error getting worker serial index from process {worker}: {e}")
-            raise ValueError(log.dump_error())
+            log.warning(f"Could not inspect process {worker}: {e}")
+            continue
 
-    # reorder worker_args in numerical ascending order
-    worker_list = sorted(worker_list)
-
-    # remove duplicates from worker_list
-    worker_list = list(dict.fromkeys(worker_list))
-
+    worker_list = sorted(list(dict.fromkeys(worker_list)))
     log.entry(f"Running workers: {worker_list}")
-
     return worker_list
 
 
+
+# ======================================================================
+# Main loop
+# ======================================================================
 def main():
-    global process_status
-    global log
+    global process_status, log
+    
+    print('Verificacao:')
+    print(k.BKP_DATABASE_NAME)
+    
 
-    log.entry("Starting....")
+    parse_arguments()
+    log.entry(f"Starting worker {process_status['worker']}...")
 
-    worker_list = worker_counter(process_filename=__file__)
-
+    worker_list = worker_counter(process_filename=os.path.basename(__file__))
+    
+    
     try:
-        # create db object using databaseHandler class for the backup and processing database
         db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
         log.error(f"Error initializing database: {e}")
@@ -170,51 +178,20 @@ def main():
 
     while process_status["running"]:
         try:
-            # Get the list of files to backup from the database
-            tasks = db_bp.file_task_read_list_one_host(
-                task_type=db_bp.FILE_TASK_BACKUP_TYPE
-            )
-            """ tasks ={"host_id": (int) host_id,
-                        "file_tasks": (dict){   task_id: [
-                                                host_file_path,
-                                                host_file_name,
-                                                server_file_path,
-                                                server_file_name]}
-            """
-
+            tasks = db_bp.file_task_read_list_one_host(task_type=db_bp.FILE_TASK_BACKUP_TYPE)
             if not tasks:
-                # if it is not the worker with serial zero, terminate process.
                 if worker_list.__len__() > 2:
-                    log.entry(
-                        f"No host found with pending backup. Exiting worker {process_status['worker']}"
-                    )
-                    # stop systemd service for this worker.
-                    os.system(
-                        f"systemctl stop {k.MAX_FILE_TASK_WAIT_TIME}{process_status['worker']}"
-                    )
+                    log.entry(f"No host found with pending backup. Exiting worker {process_status['worker']}")
+                    os.system(f"systemctl stop {k.BKP_TASK_WORKER_SERVICE}{process_status['worker']}.service")
                     continue
-                # if it is the zero worker, wait and try again later.
                 else:
-                    time_to_wait = int(
-                        (
-                            k.MAX_FILE_TASK_WAIT_TIME
-                            + k.MAX_FILE_TASK_WAIT_TIME * random.random()
-                        )
-                        / 2
-                    )
+                    time_to_wait = int((k.MAX_FILE_TASK_WAIT_TIME + k.MAX_FILE_TASK_WAIT_TIME * random.random()) / 2)
                     log.entry(f"Waiting {time_to_wait} seconds for new tasks.")
                     time.sleep(time_to_wait)
                     continue
 
-            # Using task["host_id"] to get the host configuration from the database
             host = db_bp.host_read_access(tasks["host_id"])
-            """{"host_uid": str,
-                "host_add": str,
-                "port": int,
-                "user": str,
-                "password": str}"""
 
-            # Create a SSH client and SFTP connection to the remote host
             sftp_conn = sh.sftpConnection(
                 host_uid=host["host_uid"],
                 host_add=host["host_add"],
@@ -232,27 +209,15 @@ def main():
                 log=log,
             )
 
-            # Try to get the remote host configuration file, if fail, signal error and continue to the next task
-            if not daemon.get_config(
-                task_type=db_bp.FILE_TASK_BACKUP_TYPE, remove_failed_task=False
-            ):
+            if not daemon.get_config(task_type=db_bp.FILE_TASK_BACKUP_TYPE, remove_failed_task=False):
+                continue
+            if not daemon.get_halt_flag(task_type=db_bp.FILE_TASK_BACKUP_TYPE, remove_failed_task=False):
                 continue
 
-            # Try to raise the halt flag for daemon in the remote host, if fail, signal error and continue to the next task
-            if not daemon.get_halt_flag(
-                task_type=db_bp.FILE_TASK_BACKUP_TYPE, remove_failed_task=False
-            ):
-                continue
-
-            # Before processing the current task, spawn another file backup task process to look for other hosts with pending backup
             if worker_list.__len__() < k.BKP_TASK_MAX_WORKERS:
                 spawn_file_task_worker(worker_list=worker_list)
 
-            # * Peform the backup
-            # Loop through all tasks in the task_dict['file_tasks'], geting for each its task_id and index
             local_path = f"{k.REPO_FOLDER}/{k.TMP_FOLDER}/{host['host_add']}"
-
-            # make sure that the target folder do exist
             if not os.path.exists(local_path):
                 os.makedirs(local_path)
 
@@ -263,29 +228,20 @@ def main():
 
                 remote_file = f"{file_list[0]}/{filename}"
 
-                # test if remote_file does not exist, update the database and skip to the next file
                 if not sftp_conn.test(remote_file):
                     message = f"File '{remote_file}' not found in remote host {host['host_add']}"
-
-                    db_bp.file_task_update(
-                        task_id=task_id, status=db_bp.TASK_ERROR, message=message
-                    )
-
-                    db_bp.host_update(
-                        host_id=host["host_id"], pending_backup=-1, backup_error=1
-                    )
-
+                    db_bp.file_task_update(task_id=task_id, status=db_bp.TASK_ERROR, message=message)
+                    db_bp.host_update(host_id=host["host_id"], pending_backup=-1, backup_error=1)
                     log.warning(message)
                     continue
 
-                # Compose target file name by adding the remote file name to the target folder
                 local_file = f"{local_path}/{filename}"
 
-                # Transfer the file from the remote host to the local host
                 try:
+                    print('Teste local do arquivo:')
+                    print(local_file)
+                    
                     sftp_conn.transfer(remote_file, local_file)
-
-                    # Change file task from running backup  to pending processing
                     db_bp.file_task_update(
                         task_id=task_id,
                         server_file=filename,
@@ -294,43 +250,25 @@ def main():
                         status=db_bp.TASK_PENDING,
                         message=f"File '{remote_file}' copied to '{local_file}'",
                     )
-
-                    # update host status
-                    db_bp.host_update(
-                        host_id=host["host_id"], pending_backup=-1, pending_processing=1
-                    )
-
-                    # update host backup done file
+                    db_bp.host_update(host_id=host["host_id"], pending_backup=-1, pending_processing=1)
                     daemon.set_backup_done(remote_file)
-
                     log.entry(f"File '{filename}' copied to '{local_file}'")
-
                 except Exception as e:
-                    message = f"Error copying '{remote_file}' from host {host['host_add']}.{str(e)}"
-
-                    db_bp.file_task_update(
-                        task_id=task_id, status=db_bp.TASK_ERROR, message=message
-                    )
-
-                    db_bp.host_update(
-                        host_id=host["host_id"], pending_backup=-1, backup_error=1
-                    )
+                    message = f"Error copying '{remote_file}' from host {host['host_add']}. {str(e)}"
+                    db_bp.file_task_update(task_id=task_id, status=db_bp.TASK_ERROR, message=message)
+                    db_bp.host_update(host_id=host["host_id"], pending_backup=-1, backup_error=1)
                     continue
 
-            # Remove HALT FLAG, close the SSH client and SFTP connection
             daemon.close_host()
 
         except paramiko.AuthenticationException as e:
             log.error(f"Authentication failed. Please check your credentials. {str(e)}")
             raise ValueError(log.dump_error())
-
         except paramiko.SSHException as e:
             log.error(f"SSH error: {str(e)}")
             raise ValueError(log.dump_error())
-
         except HaltFlagError:
             pass
-
         except Exception as e:
             log.error(f"Unmapped error occurred: {str(e)}")
             raise ValueError(log.dump_error())

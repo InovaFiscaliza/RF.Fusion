@@ -7,243 +7,282 @@ This guide shows how to create a **Debian 7 (Wheezy)** container **from scratch*
 - **ipvlan (mode=l2)** network on WSL's /20 subnet  
 - container with **static IP**, **SSH** via **RSA key**  
 - working **ping** (capabilities `NET_RAW`/`NET_ADMIN`)  
-- image **committed** and **exported** to `.tar`
 
 > **Note:** Debian 7 is old; the `vsyscall=emulate` setting is essential to avoid *segfaults* (Exit 139) with legacy glibc.
 
 ---
 
-## 0) Install Podman on Windows and enable WSL2
+## 1) Script to Install Podman Machine and Configure WSL
 
-In **PowerShell (Administrator)**:
+1. **Check Podman installation**  
+   Verifies if Podman is installed. If not, installs it automatically via PowerShell (`winget`).  
 
-```powershell
-# 0.1 — Enable WSL and VM Platform
-dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
-dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
+2. **Check WSL2 configuration**  
+   Confirms if WSL2 is set as the default version. Updates the system if necessary.  
 
-# 0.2 — Set WSL2 as default
-wsl --set-default-version 2
+3. **Configure vsyscall**  
+   Adds `vsyscall=emulate` in `.wslconfig` for compatibility with older Debian containers. Restarts WSL and Podman machine.  
 
-# 0.3 — Install Podman (via winget)
-winget install -e --id RedHat.Podman
+4. **Check Podman machine**  
+   Validates if the Podman machine is already running. If not, initializes it with `podman machine init --now`.  
 
-# (recommended) Restart Windows
-# shutdown /r /t 0
+5. **Finish setup**  
+   Completes the setup process and displays a success message.  
 
-# 0.4 — Initialize the Podman VM (WSL2 backend)
-podman machine init --now
+Copy the code below into a file named **`setup-podman.ps1`**:
 
-# 0.5 — Verifications
-podman --version
-podman machine info
-```
-
----
-
-## Option 1) Create Docker image directly from Docker Hub
-
-This option fetches a container directly from the <a href="https://hub.docker.com/r/krlmlr/debian-ssh" target="_blank">Docker Hub</a> repository. 
-
-## 1) Pull Debian 7 image from Docker Hub
-
-We'll use the image with **OpenSSH preinstalled**, to avoid `apt` issues on Wheezy:
 
 ```powershell
-podman pull docker.io/krlmlr/debian-ssh:wheezy
-```
----
+# setup-podman.ps1
+Write-Host "=== [1/5] Checking Podman installation ==="
+if (Get-Command podman -ErrorAction SilentlyContinue) {
+    Write-Host "Podman is already installed."
+} else {
+    Write-Host "Installing Podman via winget..."
+    winget install -e --id RedHat.Podman -h
+}
 
-## 2) Enable `vsyscall=emulate` in WSL2
+Write-Host "=== [2/5] Checking WSL2 ==="
+$wslVersion = (wsl --status 2>$null | Select-String "Default Version") -replace "[^0-9]", ""
+if ($wslVersion -eq "2") {
+    Write-Host "WSL2 is already set as default."
+} else {
+    Write-Host "Setting WSL2 as default..."
+    wsl --set-default-version 2
+}
 
-Create/adjust `.wslconfig` and restart WSL:
-
-```powershell
-$conf = @"
+Write-Host "=== [3/5] Configuring vsyscall=emulate ==="
+$confFile = "$env:USERPROFILE\.wslconfig"
+if ((Test-Path $confFile) -and (Select-String "vsyscall=emulate" $confFile -Quiet)) {
+    Write-Host "vsyscall=emulate already configured."
+} else {
+    $conf = @"
 [wsl2]
 kernelCommandLine=vsyscall=emulate
 "@
-Set-Content -Path "$env:USERPROFILE\.wslconfig" -Value $conf -Encoding ASCII -Force
+    Set-Content -Path $confFile -Value $conf -Encoding ASCII -Force
+    Write-Host "vsyscall=emulate configured. Restarting WSL..."
+    podman machine stop 2>$null
+    wsl --shutdown
+    podman machine start
+}
 
-podman machine stop 2>$null
-wsl --shutdown
-podman machine start
+Write-Host "=== [4/5] Checking Podman machine ==="
+if ((podman machine list | Select-String "Running") -ne $null) {
+    Write-Host "Podman machine is already running."
+} else {
+    podman machine init --now
+}
 
-podman machine ssh "cat /proc/cmdline"   # should include vsyscall=emulate
+Write-Host "=== [5/5] Setup completed successfully ==="
+```
+
+### ▶️ Running the Script
+
+To execute the script, open **PowerShell** in the project directory and run:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup-podman.ps1
 ```
 
 ---
 
-## 3) Generate **RSA** key for SSH (Wheezy doesn’t support ed25519)
+## 2) Setup Network
+
+If this is your first time installing the repository containers, you need to configure a local network to enable communication between the host and the containers.  
+
+![Network Architecture](/docs/images/HLD_RFFusion.svg)
+
+Save the code below into a file named **`setup-network.ps1`**:
 
 ```powershell
-if (!(Test-Path "$env:USERPROFILE\.ssh")) { New-Item -ItemType Directory "$env:USERPROFILE\.ssh" | Out-Null }
-ssh-keygen -t rsa -b 2048 -C "podman-wheezy" -f "$env:USERPROFILE\.ssh\id_rsa"
-# press Enter twice to leave passphrase empty
+# setup-network.ps1
+# Force context to "podman-machine-default-root"
+Write-Host "=== Switching Podman context to podman-machine-default-root ==="
+podman context use podman-machine-default-root | Out-Null
+
+$networkName = "rede-direct"
+$expectedSubnet = "172.21.48.0/20"
+$expectedGateway = "172.21.48.1"
+
+Write-Host "=== Checking network $networkName ==="
+$network = podman network inspect $networkName 2>$null
+
+if ($LASTEXITCODE -eq 0) {
+    if ($network | Select-String $expectedSubnet -Quiet) {
+        Write-Host "Network $networkName already exists and is correct."
+    } else {
+        Write-Host "Network $networkName exists but is incorrect. Recreating..."
+        podman network rm $networkName
+        podman network create -d ipvlan -o parent=eth0 -o mode=l2 `
+          --subnet $expectedSubnet --gateway $expectedGateway $networkName
+    }
+} else {
+    Write-Host "Network $networkName not found. Creating..."
+    podman network create -d ipvlan -o parent=eth0 -o mode=l2 `
+      --subnet $expectedSubnet --gateway $expectedGateway $networkName
+}
+
+Write-Host "Network $networkName configured successfully."
+````
+
+### ▶️ Running the Script
+
+To execute the script, open **PowerShell** in the project directory and run:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup-network.ps1
 ```
 
----
+### 3) Create Debian 7 Wheezy Docker Container
 
-## 4) Create **ipvlan** network (mode=L2) in WSL's /20 subnet
+The following **Dockerfile** builds a Debian 7 (Wheezy) image and installs the required packages:  
+- `cron`  
+- `net-tools`  
+- `openssh-server`  
+- utility packages (`procps`)  
 
-Discover the route to Podman VM:
+It also configures the Debian archive repositories, initializes SSH, and ensures both **cron** and **sshd** run at container startup. Copy the code below and save as **`Dockerfile`**.
+
+```dockerfile
+FROM debian:wheezy
+
+# Configure archive repositories
+RUN echo "deb http://archive.debian.org/debian wheezy main contrib non-free" > /etc/apt/sources.list \
+ && echo "Acquire::Check-Valid-Until false;" > /etc/apt/apt.conf
+
+# Install packages ignoring expired signatures
+RUN apt-get update || true \
+ && apt-get -o Acquire::AllowInsecureRepositories=true \
+           -o Acquire::AllowDowngradeToInsecureRepositories=true \
+           install -y --allow-unauthenticated \
+           openssh-server cron procps net-tools \
+ && mkdir -p /var/run/sshd \
+ && ssh-keygen -A \
+ && echo "root:changeme" | chpasswd
+
+# Expose default SSH port
+EXPOSE 22
+
+# Start cron and sshd together
+CMD service cron start && /usr/sbin/sshd -D
+```
+In this step, pay attention to the **`$repoRoot`** parameter. You must set it to the path of your **local repository**. For example:
 
 ```powershell
-podman machine ssh "ip route"
-# sample output:
-# default via 172.21.48.1 dev eth0
-# 172.21.48.0/20 dev eth0 proto kernel scope link src 172.21.56.34
+$repoRoot = "C:\your_repo\GitHub\RF.Fusion"
+````
+to be mapped to containers volumes `/mnt/internal` and `/mnt/upgrade`. After this step, copy the code below, replace `$repoRoot$` and save as **`run-deb7-ssh-cron.ps1`**.
+
+``` powershell
+# run-deb7-ssh-cron.ps1
+Write-Host "=== Switching Podman context to podman-machine-default-root ==="
+podman context use podman-machine-default-root | Out-Null
+
+$containerName = "deb7-ssh-v2"
+$imageName     = "debian7-ssh-cron"
+$containerIP   = "172.21.48.35"
+
+# Caminho do repositório Git no host
+$repoRoot = "C:\your_repo\Documentos\GitHub\RF.Fusion"
+
+# Volumes
+$volumes = @(
+    @{ host="$repoRoot\test\mockNode\mock_volume\mnt\internal"; container="/mnt/internal" },
+    @{ host="$repoRoot\src\agent\linux\AnatelUpgradePack_Node_20-6_v1"; container="/mnt/upgrade" }
+)
+
+# Prepara args
+$arguments = @(
+  "run","-d",
+  "--name",$containerName,
+  "--network","rede-direct",
+  "--ip",$containerIP,
+  "--restart=always",
+  "--cap-add=NET_RAW","--cap-add=NET_ADMIN",
+  "--security-opt","seccomp=unconfined",
+  "--security-opt","label=disable"
+)
+
+foreach ($vol in $volumes) {
+    if (!(Test-Path $vol.host)) {
+        Write-Host "ERROR: Directory $($vol.host) does not exist!"
+        exit 1
+    }
+    Write-Host ("Mapped: {0} -> {1}" -f $vol.host, $vol.container)
+    $arguments += @("-v", ("{0}:{1}:Z" -f $vol.host, $vol.container))
+}
+
+# Remove container antigo
+$exists = podman ps -a --format "{{.Names}}" | Where-Object { $_ -eq $containerName }
+if ($exists) {
+    Write-Host "Container $containerName found. Removing..."
+    podman rm -f $containerName | Out-Null
+}
+
+# Build da imagem customizada
+Write-Host "=== Building custom Debian 7 image with SSH and Cron ==="
+podman build -f Dockerfile -t $imageName .
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "❌ ERROR: Failed to build the image. Aborting..."
+    exit 1
+}
+
+# Rodar container
+Write-Host "=== Starting container $containerName at $containerIP ==="
+& podman @arguments $imageName
+
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "✅ Container $containerName is running at $containerIP"
+    Write-Host "Access via: ssh root@$containerIP"
+    Write-Host "Default password: changeme"
+} else {
+    Write-Host "❌ ERROR: Failed to create container $containerName"
+}
+
 ```
 
-Create **ipvlan** network using the observed gateway (usually `172.21.48.1`):
+### ▶️ Running the Script
+
+To execute the script, open **PowerShell** in the project directory and run:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run-deb7-ssh-cron.ps1
+```
+
+### 4) Accessing the Created Container
+
+Once the container **`deb7-ssh-v2`** is running, you can access it in two different ways:
+
+#### 🔹 Using Podman Exec (direct shell access)
+
+Run the following command in **PowerShell** to open a Bash session inside the container:
 
 ```powershell
-podman network rm rede-direct 2>$null
-podman network create -d ipvlan `
-  -o parent=eth0 `
-  -o mode=l2 `
-  --subnet 172.21.48.0/20 `
-  --gateway 172.21.48.1 `
-  rede-direct
-
-podman network inspect rede-direct
+podman exec -it deb7-ssh-v2 bash
 ```
+#### 🔹 Using SSH
 
-> Why **ipvlan**? On WSL2/Hyper-V, `macvlan` is usually blocked by vSwitch. `ipvlan` reuses eth0's MAC and works better.
-
----
-
-## 5) Run the container (static IP, SSH, NET_RAW/NET_ADMIN)
-
-Load your **public key**:
+To test SSH connectivity, execute the command below. Use the credentials for the first login as `root` and password `changeme`.
 
 ```powershell
-$pub = Get-Content "$env:USERPROFILE\.ssh\id_rsa.pub" -Raw
+ssh root@172.21.48.35
 ```
 
-Create/run the container:
+### 5) Saving the Current State of the Container
+
+After configuring and running the container, you may want to **save its current state** as a new image.  
+This allows you to reuse the customized container later without repeating the setup.
+
 
 ```powershell
-podman rm -f deb7-ssh 2>$null
+# Stop the container
+podman stop deb7-ssh-v2
 
-podman run -d --name deb7-ssh `
-  --network rede-direct `
-  --ip 172.21.48.35 `
-  --restart=always `
-  --cap-add=NET_RAW --cap-add=NET_ADMIN `
-  --entrypoint /usr/sbin/sshd `
-  --security-opt seccomp=unconfined `
-  --security-opt label=disable `
-  docker.io/krlmlr/debian-ssh:wheezy -D
+# Commit the container to a new image
+podman commit deb7-ssh-v2 debian7-ssh-cron-snapshot
+
+# Verify
+podman images
+
+# (Optional) Restart the container
+podman start deb7-ssh-v2
 ```
-
-**Why these flags?**
-
-- `--network rede-direct --ip 172.21.48.35`: Static IP within WSL’s /20 subnet (accessible from Windows).
-- `--cap-add=NET_RAW --cap-add=NET_ADMIN`: Enables **ping** and other network tools.
-- `--entrypoint /usr/sbin/sshd -D`: SSH as **PID 1** (foreground).
-- `seccomp=unconfined` / `label=disable`: Reduce compatibility issues with legacy Wheezy binaries.
-
----
-
-## 6) Test connectivity (Windows → container)
-
-```powershell
-arp -d *                                   # clear ARP cache (helps on first run)
-ping 172.21.48.35                          # should respond <1 ms
-ssh -i "$env:USERPROFILE\.ssh\id_rsa" root@172.21.48.35
-# type "yes" at host key warning (first connection)
-```
-
-If you see a host key conflict (from prior `[127.0.0.1]:2222` access):
-```powershell
-ssh-keygen -R "[127.0.0.1]:2222"
-ssh-keygen -R "172.21.48.35"
-```
-
----
-
-## 7) (Optional) Harden SSH
-
-Inside the **container**:
-
-```bash
-# only key auth; no passwords
-sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-pkill -HUP sshd || /usr/sbin/sshd
-```
-
-If you want a **fallback password**:
-```bash
-sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-echo 'root:changeme' | chpasswd
-pkill -HUP sshd || /usr/sbin/sshd
-```
-
----
-
-## 8) Test ping from container (NET_RAW)
-
-Inside the **container**:
-
-```bash
-whoami
-ip addr show eth0
-ping 10.1.50.51     # host Windows
-```
-
-If you see **"ping must run as root"** even as root, recreate the container with `--cap-add=NET_RAW --cap-add=NET_ADMIN` (already included above).
-
----
-
-## 9) Commit and export the image
-
-Create an image from the current container state and export it to `.tar`:
-
-```powershell
-podman commit deb7-ssh debian7:ssh-v2
-podman save -o debian7-ssh-v2.tar debian7:ssh-v2
-```
-
-Reuse it on another host:
-
-```powershell
-podman load -i debian7-ssh-v2.tar
-podman run -d --name deb7-ssh `
-  --network rede-direct `
-  --ip 172.21.48.35 `
-  --restart=always `
-  --cap-add=NET_RAW --cap-add=NET_ADMIN `
-  --entrypoint /usr/sbin/sshd `
-  --security-opt seccomp=unconfined `
-  --security-opt label=disable `
-  debian7:ssh-v2 -D
-```
-
----
-
-## Diagram (quick view)
-
-```
-Windows (X.X.X.X)
-   |
-   |  vEthernet (WSL) 172.21.48.1/20
-   v
-WSL2 / Podman VM (eth0 = 172.21.56.34/20)
-   |
-   |  rede-direct  (ipvlan mode=l2)  172.21.48.0/20  gw 172.21.48.1
-   v
-Container Debian 7  (172.21.48.35)  [sshd + NET_RAW/NET_ADMIN]
-```
-
----
-
-## Quick tips / Troubleshooting
-
-- **Exit 139 / segfault (Wheezy)** → missing `vsyscall=emulate` in `.wslconfig`
-- **Ping doesn’t work** → recreate container with `--cap-add=NET_RAW --cap-add=NET_ADMIN`
-- **First ping fails** → run `arp -d *` in Windows and check `podman network inspect rede-direct`
-- **SSH host key conflict** → use `ssh-keygen -R ...` to clear old entries
-
----

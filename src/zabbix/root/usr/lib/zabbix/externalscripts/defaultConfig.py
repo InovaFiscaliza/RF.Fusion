@@ -16,16 +16,17 @@ UTF_ENCODING = "utf-8" # used by queryCataloga.py
 ISO_ENCODING = "ISO-8859-1" # used by queryappColeta.py
 
 # appCataloga constants
-ACAT_SERVER_ADD = "192.168.200.30"  # Change this to the server's hostname or IP address
+ACAT_SERVER_ADD = "172.21.48.36"  # Change this to the server's hostname or IP address
 ACAT_SERVER_PORT = 5555
+ACAT_SERVER_TIMEOUT = 1000
 
 # appCataloga default arguments
 ACAT_DEFAULT_HOST_ID = "10367"
 ACAT_DEFAULT_HOST_UID = "RFEye002080"
-ACAT_DEFAULT_HOST_ADD = "192.168.1.138"
+ACAT_DEFAULT_HOST_ADD = "172.21.48.35"
 ACAT_DEFAULT_HOST_PORT = 22
-ACAT_DEFAULT_USER = "sshUser"  # user should have access to the host with rights to interact with the indexer daemon
-ACAT_DEFAULT_PASSWD = "sshuserpass"
+ACAT_DEFAULT_USER = "root"  # user should have access to the host with rights to interact with the indexer daemon
+ACAT_DEFAULT_PASSWD = "changeme"
 ACAT_DEFAULT_QUERY_TAG = "backup"
 ACAT_DEFAULT_TIMEOUT = 2
 

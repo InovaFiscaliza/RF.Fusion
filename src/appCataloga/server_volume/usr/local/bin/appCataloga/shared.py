@@ -3,9 +3,11 @@
 Shared functions for appCataloga scripts
 """
 
-import sys
+import sys,os
 
-sys.path.append("/etc/appCataloga")
+CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+sys.path.append(CONFIG_PATH)
+
 import os
 import paramiko
 from datetime import datetime

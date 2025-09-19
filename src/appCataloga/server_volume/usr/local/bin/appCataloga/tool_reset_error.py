@@ -23,9 +23,10 @@
 - start appCataloga_file_bin_proces.service using systemd
 """
 
-import sys
+import sys,os
 
-sys.path.append("/etc/appCataloga")
+CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+sys.path.append(CONFIG_PATH)
 
 # Import appCataloga modules
 import config as k
