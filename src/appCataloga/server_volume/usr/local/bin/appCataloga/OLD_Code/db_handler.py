@@ -13,7 +13,8 @@ import os
 import re
 import pandas as pd
 import datetime
-from typing import List, Union, Tuple
+import json
+from typing import List, Union, Tuple, Optional, Any, Dict
 
 # Import file with constants used in this code that are relevant to the operation
 import config as k
@@ -35,18 +36,6 @@ class dbHandler:
         self.database = database
         self.data = None
         self.log = log
-
-        # constants
-        self.HOST_TASK_TYPE = 0
-        self.FILE_TASK_BACKUP_TYPE = 1
-        self.FILE_TASK_PROCESS_TYPE = 2
-        self.TASK_SUSPENDED = -2
-        self.TASK_ERROR = -1
-        self.TASK_NULL = 0
-        self.TASK_PENDING = 1
-        self.TASK_RUNNING = 2
-        self.HOST_WITHOUT_DAEMON = 1
-        self.HOST_WITH_HALT_FLAG = 2
 
     def _connect(self):
         """Try to connect to the database using the parameters in the config.py file
@@ -1086,7 +1075,13 @@ class dbHandler:
         return latest_processing_time
 
     # Internal method to add host to the database
-    def host_create(self, hostid: str, host_uid: str) -> None:
+    def host_create(self, 
+                    host_id: int, 
+                    host_uid: str,
+                    host_addr: str,
+                    host_port: int,
+                    host_user: str,
+                    host_passwd: str) -> None:
         """This method adds a new host to the database if it does not exist.
             If host already in the database, do nothing.
             When creatining new host, initialize host statistics to zero.
@@ -1105,12 +1100,16 @@ class dbHandler:
             query = (
                 f"INSERT IGNORE INTO HOST "
                 f"(ID_HOST, NA_HOST_UID, "
+                f"NA_HOST_ADDRESS, NA_HOST_PORT, "
+                f"NA_HOST_USER, NA_HOST_PASSWORD, "
                 f"NU_HOST_FILES, "
                 f"NU_PENDING_HOST_TASK, NU_HOST_CHECK_ERROR, "
                 f"NU_PENDING_BACKUP, NU_BACKUP_ERROR, "
                 f"NU_PENDING_PROCESSING, NU_PROCESSING_ERROR) "
                 f"VALUES "
-                f"('{hostid}', '{host_uid}', "
+                f"({host_id}, '{host_uid}', "
+                f"'{host_addr}', {host_port}, "
+                f"'{host_user}', '{host_passwd}', "
                 f"0, "
                 f"0, 0, "
                 f"0, 0, "
@@ -1121,7 +1120,7 @@ class dbHandler:
             self.cursor.execute(query)
             self.db_connection.commit()
         except Exception as e:
-            message = f"Error adding host {hostid} to the database"
+            message = f"Error adding host {host_id} to the database"
             self.log.error(message)
             raise Exception(message) from e
         finally:
@@ -1320,7 +1319,7 @@ class dbHandler:
         """This method set/update summary information in the database
 
         Args:
-            host_id (int): Zabbix host id primary key.
+            host_id (str): Zabbix host id primary key.
             equipment_id (int): Equipment id primary key. Default is None.
             reset (bool): If set to True, reset all values to the given values. Default is False.
             host_files (int): Number of files in the host. Default to none, where there will be no change to this value.
@@ -1331,7 +1330,6 @@ class dbHandler:
             pending_processing (int): Number of files pending processing. Default to none, where there will be no change to this value.
             processing_error (int): Number of files with processing error. Default to none, where there will be no change to this value.
             status (int): Status flag: 0=No Errors or Warnings, 1=No daemon, 2=Halt flag alert. Default to none, where there will be no change to this value.
-
         """
 
         # compose and excecute query to update the processing status by adding pending_processing variable to existing value in the database
@@ -1348,26 +1346,30 @@ class dbHandler:
             "NU_STATUS": status,
         }
 
+        # Add each element from dictionary to query
         for column, value in update_data.items():
             if value is None:
                 continue
-            if value > 0:
-                if reset:
-                    query_parts.append(f"{column} = {value}")
-                else:
-                    query_parts.append(f"{column} = {column} + {value}")
-            elif value < 0:
-                if reset:
-                    query_parts.append(f"{column} = {value}")
-                else:
-                    query_parts.append(f"{column} = {column} - {-value}")
-            elif value == 0:
-                if reset:
-                    query_parts.append(f"{column} = 0")
+            if isinstance(value, str):
+                query_parts.append(f"{column} = '{value}'")
+            else: 
+                if value > 0:
+                    if reset:
+                        query_parts.append(f"{column} = {value}")
+                    else:
+                        query_parts.append(f"{column} = {column} + {value}")
+                elif value < 0:
+                    if reset:
+                        query_parts.append(f"{column} = {value}")
+                    else:
+                        query_parts.append(f"{column} = {column} - {-value}")
+                elif value == 0:
+                    if reset:
+                        query_parts.append(f"{column} = 0")
+                    else:
+                        continue
                 else:
                     continue
-            else:
-                continue
 
         query = "UPDATE HOST SET " + ", ".join(map(str, query_parts))
 
@@ -1433,53 +1435,44 @@ class dbHandler:
     def host_task_create(
         self,
         task_type: int,
-        host_id: str,
+        host_id: int,
         host_uid: str,
         host_addr: str,
-        host_port: str,
+        host_port: int,
         host_user: str,
         host_passwd: str,
+        filter_dict: dict = None,
     ) -> None:
         """This adds a host task to the database.
             If the host does not exist, create it.
 
         Args:
-            hostid (str): Zabbix host id primary key.
+            task_type (int): Task Type: 1=Backup, 2=Process, 3=Discovery
+            host_id (int): Zabbix host id primary key.
+            host_uid (str): Zabbix node name e.g. RFEYE00280
             host_addr (str): Remote host IP/DNS address.
-            host_port (str): Remote host SSH access port.
+            host_port (int): Remote host SSH access port.
             host_user (str): Remote host access user.
             host_passwd (str): Remote host access password.
-
+            filter_dict (dict)
         Returns:
             None
         """
 
         # create a new host entry in the database if it does not exist
-        self.host_create(host_id, host_uid)
+        self.host_create(host_id=host_id, host_uid=host_uid,
+                         host_addr=host_addr, host_port=host_port,
+                         host_user=host_user, host_passwd=host_passwd)
 
-        try:
-            query = (
-                f"UPDATE HOST SET "
-                f"NA_HOST_ADDRESS = '{host_addr}', "
-                f"NA_HOST_PORT = '{host_port}', "
-                f"NA_HOST_USER = '{host_user}', "
-                f"NA_HOST_PASSWORD = '{host_passwd}', "
-                f"NU_PENDING_HOST_TASK = NU_PENDING_HOST_TASK + 1 "
-                f"WHERE ID_HOST = '{host_id}';"
-            )
-
-            # update database
-            self._connect()
-            self.cursor.execute(query)
-            self.db_connection.commit()
-
+        try:                   
             # Check if there are any host task for the given host
             query = (
                 f"SELECT ID_HOST_TASK "
                 f"FROM HOST_TASK "
                 f"WHERE FK_HOST = '{host_id}';"
             )
-
+            # update database
+            self._connect()
             self.cursor.execute(query)
             task = self.cursor.fetchone()
 
@@ -1492,21 +1485,28 @@ class dbHandler:
                 # reset task timestamp so that the queue can move on.
                 query = (
                     f"UPDATE HOST_TASK SET "
-                    f"DT_HOST_TASK = NOW(), NU_STATUS = {self.TASK_PENDING}, NA_MESSAGE = 'Refreshed', NU_PID = 0 "
+                    f"DT_HOST_TASK = NOW(), "
+                    f"NU_STATUS = {k.TASK_PENDING}, "
+                    f"NA_MESSAGE = 'Refreshed', "
+                    f"NU_PID = 0 "
                     f"WHERE ID_HOST_TASK = {task_id};"
-                )
+                )   
 
                 # update database
                 self.cursor.execute(query)
                 self.db_connection.commit()
 
             else:
-                # set a new host task
+                # prepare filter (default to NONE)
+                filter_json = json.dumps(filter_dict if filter_dict else k.NONE_FILTER)
+
+                # insert new host task with filter
                 query = (
                     f"INSERT INTO HOST_TASK "
-                    f"(FK_HOST, NU_TYPE, DT_HOST_TASK, NU_STATUS, NA_MESSAGE) "
+                    f"(FK_HOST, NU_TYPE, DT_HOST_TASK, NU_STATUS, NA_MESSAGE, FILTER) "
                     f"VALUES "
-                    f"('{host_id}', '{task_type}', NOW(), {self.TASK_PENDING}, 'New task');"
+                    f"('{host_id}', '{task_type}', NOW(), {k.TASK_PENDING}, "
+                    f"'New task', '{filter_json}');"
                 )
 
                 # update database
@@ -1533,21 +1533,26 @@ class dbHandler:
         Returns:
             dict: Dictionary with the pending task information:
                 {   "task_id": (int),
+                    "task_nu_type": (int),
                     "host_id": (int),
+                    "host_filter": (json),
                     "host_uid": (str),
                     "host_add": (str),
                     "port": (int),
                     "user": (str),
-                    "password": (str)}
+                    "password": (str),          
         """
 
         # connect to the database
         self._connect()
 
+        # Inserted NU_TYPE into query below
         query = (
             "SELECT "
             "HOST_TASK.ID_HOST_TASK, "
+            "HOST_TASK.NU_TYPE, "
             "HOST_TASK.FK_HOST, "
+            "HOST_TASK.FILTER, "
             "HOST.NA_HOST_UID, "
             "HOST.NA_HOST_ADDRESS, "
             "HOST.NA_HOST_PORT, "
@@ -1572,15 +1577,19 @@ class dbHandler:
         task = self.cursor.fetchone()
         self._disconnect()
 
+        # Inserted task_nutype into output dictionary
         try:
             output = {
                 "task_id": int(task[0]),
-                "host_id": int(task[1]),
-                "host_uid": str(task[2]),
-                "host_add": str(task[3]),
-                "port": int(task[4]),
-                "user": str(task[5]),
-                "password": str(task[6]),
+                "task_nu_type": int(task[1]),
+                "host_id": int(task[2]),
+                "host_filter": json.loads(task[3]),
+                "host_uid": str(task[4]),
+                "host_add": str(task[5]),
+                "port": int(task[6]),
+                "user": str(task[7]),
+                "password": str(task[8]),
+                
             }
         except (TypeError, ValueError):
             output = False
@@ -1641,9 +1650,9 @@ class dbHandler:
             query = query + f"NU_STATUS = '{status}', "
 
             match status:
-                case self.TASK_PENDING:
+                case k.TASK_PENDING:
                     query = query + "NU_PID = NULL, "
-                case self.TASK_RUNNING:
+                case k.TASK_RUNNING:
                     if pid:
                         query = query + f"NU_PID = {pid}, "
                     else:
@@ -1707,109 +1716,979 @@ class dbHandler:
 
         self._disconnect()
 
-    # Method to add a new processing task to the database
+    def _safe_parse_date(self,value: Optional[str], log=None) -> Optional[datetime.datetime]:
+        """Safely parse a string into a `datetime.datetime`.
+
+        This helper attempts to parse an ISO-like string (e.g., "YYYY-MM-DD" or full
+        ISO timestamp) using `datetime.datetime.fromisoformat`. If parsing fails, it
+        returns `None` and optionally logs the reason.
+
+        Args:
+            value (str | None): Date/time string in ISO format. If `None` or empty,
+                the function returns `None`.
+            log (object, optional): Logger with `.entry(str)` method. If provided,
+                invalid inputs are logged as warnings.
+
+        Returns:
+            datetime.datetime: | None: Parsed datetime object on success; `None` on failure.
+        """
+        if not value:
+            return None
+        try:
+            return datetime.datetime.fromisoformat(str(value))
+        except Exception as e:
+            if log:
+                log.entry(f"Invalid date in filter: {value} ({e}) - ignored")
+            return None
+    
+    
     def file_task_create(
         self,
         host_id: int,
-        task_type: int,
         volume: str,
-        files: any,
-        task_status: int = 1,
+        files: Any,
+        *,
+        # Routing policy derived from filter result
+        backup_type: int = k.FILE_TASK_BACKUP_TYPE,
+        backup_status: int = k.TASK_PENDING,
+        discovery_type: int = k.FILE_TASK_DISCOVERY,
+        discovery_status: int = k.TASK_DONE,
+        # Optional behavior
         reset_processing_queue: bool = False,
+        file_metadata: Optional[List[Dict[str, Any]]] = None,
+        task_filter: Optional[Dict[str, Any]] = None,
+        log=None,
     ) -> None:
-        """This method adds file tasks
+        """
+        Create FILE_TASK rows for a given host and route each file into
+        (Backup, Pending) or (Discovery, Done) strictly based on the provided filter.
+
+        Selection logic:
+        - The filter is evaluated via _apply_filter(), returning 0/1 flags.
+        - If flag == 1 -> (NU_TYPE=backup_type,    NU_STATUS=backup_status).
+        - If flag == 0 -> (NU_TYPE=discovery_type, NU_STATUS=discovery_status).
+
+        Notes:
+        - No FL_BACKUP_REQUESTED column is used anymore.
+        - DT_FILE_TASK is set to NOW() on insertion.
+        - Host counters can be updated afterward via _update_host_counters().
 
         Args:
-            host_id (int): Zabbix host id primary key.
-            task_type (int): Task type: 0=Not set; 1=Backup; 2=Processing
-            volume (str): Volume name
-            files (list or set): List strings corresponding to path/filenames or set of tuples (path, filename)
-            task_status (int): Task status: -1=Error, 0=Nothing to do, 1=Pending action, 2=Under execution. Default to 1.
-            reset_processing_queue (bool): Flag to reset the processing queue. Default to False.
+            host_id (int):
+                Target FK_HOST.
+            volume (str):
+                Volume identifier to choose host vs. server path columns (k.REPO_UID for server).
+            files (list[str] | set[tuple[str, str]]):
+                Either full paths or pre-split (path, filename) pairs.
+            backup_type, backup_status:
+                Type/status assigned to selected rows.
+            discovery_type, discovery_status:
+                Type/status assigned to non-selected rows.
+            reset_processing_queue (bool):
+                If True, calls _count_processing_errors(host_id) after insert to assist
+                queue metrics (NU_STATUS = -2 rows).
+            file_metadata (list[dict] | None):
+                Optional per-file metadata aligned with 'files' order.
+                Keys accepted:
+                "NA_EXTENSION"/"extension", "VL_FILE_SIZE_KB"/"size",
+                "DT_FILE_CREATED"/"created", "DT_FILE_MODIFIED"/"modified".
+            task_filter (dict | None):
+                Filter definition compatible with _apply_filter(), e.g.:
+                {
+                    "mode": "ALL" | "NONE" | "RANGE" | "LAST",
+                    "start_date": "YYYY-MM-DD HH:MM:SS" | ISO,
+                    "end_date":   "YYYY-MM-DD HH:MM:SS" | ISO,
+                    "last_n_files": 100,
+                    "extension": ".bin"
+                }
+            log (object | None):
+                Optional logger with .entry(str)/.error(str).
 
         Returns:
-            None
+            None. Side-effects on the database (INSERTs/commits) or raises on failure.
         """
+        # 1) Normalize input files
+        files_tuple_list = self._normalize_files(files)
+        if not files_tuple_list:
+            return
 
-        # convert list of filenames with path into tuples (hostid, task_type, path, filename)
-        if isinstance(files, list):
-            files_tuple_list = [
-                (os.path.dirname(item), os.path.basename(item)) for item in files
-            ]
-        elif isinstance(files, set):
-            files_tuple_list = [(filepath, filename) for (filepath, filename) in files]
-        else:
-            raise Exception(
-                "Invalid input. Expected a list strings or a set of tuples."
-            )
-
-        if volume == k.REPO_UID:
-            target_columns = "NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME, "
-        else:
-            target_columns = "NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, "
-
-        # compose query to set the process task in the database using executemany method
-        query = (
-            f"INSERT INTO FILE_TASK ("
-            f"FK_HOST, "
-            f"NU_TYPE, "
-            f"{target_columns}"
-            f"DT_FILE_TASK, "
-            f"NU_STATUS) "
-            f"VALUES ("
-            f"{host_id}, "
-            f"{task_type}, "
-            f"%s, %s, "
-            f"NOW(), "
-            f"{task_status});"
+        # 2) Compute selection flags via filter (0/1 per file)
+        selection_flags: List[int] = self._apply_filter(
+            files_tuple_list=files_tuple_list,
+            file_metadata=file_metadata,
+            task_filter=task_filter,
+            log=log,
         )
 
+        # 3) Build INSERT SQL and value tuples
+        insert_sql = self._build_file_task_query(volume)
+        values = self._build_file_task_values_route(
+            host_id=host_id,
+            files_tuple_list=files_tuple_list,
+            file_metadata=file_metadata,
+            selection_flags=selection_flags,
+            backup_type=backup_type,
+            backup_status=backup_status,
+            discovery_type=discovery_type,
+            discovery_status=discovery_status,
+        )
+
+        # 4) Execute batch insert
         try:
-            # update database
             self._connect()
-
-            self.cursor.executemany(query, files_tuple_list)
+            self.cursor.executemany(insert_sql, values)
             self.db_connection.commit()
+            task_error = 0
+            task_finished = len(selection_flags)
 
-            if reset_processing_queue:
-                # compose query to find how many database entries are in the file task with status = -1 for the given host_id
-                query = (
-                    f"SELECT COUNT(*) "
-                    f"FROM FILE_TASK "
-                    f"WHERE FK_HOST = {host_id} AND "
-                    f"NU_STATUS = -2;"
-                )
-
-                self.cursor.execute(query)
-
-                # get the number of processing errors to all for a full host status reset
-                try:
-                    processing_error = int(self.cursor.fetchone()[0])
-                except (TypeError, ValueError):
-                    processing_error = 0
-            else:
-                processing_error = 0
         except Exception as e:
-            message = f"Error adding file task for host {host_id} to the database: {e}"
-            self.log.error(message)
-            raise Exception(message) from e
+            self.db_connection.rollback()
+            task_error = len(selection_flags)
+            task_finished = 0
+            if log:
+                log.error(f"Error adding file task for host {host_id}: {e}")
+            raise
         finally:
             self._disconnect()
 
-        # update PENDING_PROCESSING in the HOST table in BPDATA database for the given host_id
-        nu_processing = len(files_tuple_list) if files_tuple_list else 0
+        # 5) Update host-level counters (implementation-specific)
+        self._update_host_counters(
+            host_id=host_id,
+            task_type=k.FILE_TASK_BACKUP_TYPE,              # optional: can be ignored or derived internally
+            n_created=task_finished,
+            processing_error=task_error,
+            reset_processing_queue=reset_processing_queue,
+        )
 
-        new_status = {"host_id": host_id, "reset": reset_processing_queue}
-        match task_type:
-            case 1:
-                new_status["pending_backup"] = nu_processing
+    def _normalize_files(self, files: Any) -> List[Tuple[str, str]]:
+        """Normalize `files` into a list of `(path, filename)` tuples.
+
+        Accepts either a list of full paths or a set of `(path, filename)` tuples
+        already prepared. Provides consistent output for insertion building.
+
+        Args:
+            files (list | set): Input file list as:
+                - list[str]: full file paths, or
+                - set[tuple[str, str]]: (path, filename) tuples.
+
+        Returns:
+            list[tuple[str, str]]: A normalized list of `(path, filename)` tuples
+            ready to be used in SQL insert value-building.
+
+        Raises:
+            Exception: If `files` is neither a list of strings nor a set of tuples.
+        """
+        if isinstance(files, list):
+            return [(os.path.dirname(item), os.path.basename(item)) for item in files]
+        if isinstance(files, set):
+            return list(files)
+        raise Exception("Invalid input. Expected a list[str] or set[(path, filename)].")
+    
+    def _build_file_task_query(self, volume: str) -> str:
+        """
+        Build a parametrized INSERT statement for FILE_TASK (without FL_BACKUP_REQUESTED).
+
+        Args:
+            volume (str):
+                Volume identifier used to decide which path columns to populate:
+                - If equals `k.REPO_UID`, uses server-side columns
+                (NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME).
+                - Otherwise, uses host-side columns
+                (NA_HOST_FILE_PATH, NA_HOST_FILE_NAME).
+
+        Returns:
+            str: SQL text with placeholders suitable for `cursor.executemany`.
+    """
+        if volume == k.REPO_UID:
+            path_cols = "NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME"
+        else:
+            path_cols = "NA_HOST_FILE_PATH, NA_HOST_FILE_NAME"
+
+        sql = f"""
+            INSERT INTO FILE_TASK (
+                FK_HOST,
+                NU_TYPE,
+                {path_cols},
+                NA_EXTENSION,
+                VL_FILE_SIZE_KB,
+                DT_FILE_CREATED,
+                DT_FILE_MODIFIED,
+                DT_FILE_TASK,
+                NU_STATUS,
+                NA_MESSAGE
+            )
+            VALUES (
+                %s,  -- FK_HOST
+                %s,  -- NU_TYPE
+                %s,  -- PATH (host or server)
+                %s,  -- FILENAME (host or server)
+                %s,  -- NA_EXTENSION
+                %s,  -- VL_FILE_SIZE_KB
+                %s,  -- DT_FILE_CREATED
+                %s,  -- DT_FILE_MODIFIED
+                NOW(),  -- DT_FILE_TASK
+                %s,   -- NU_STATUS
+                %s -- NA_MESSAGE
+            );
+        """.strip()
+        return sql
+    
+    def _build_file_task_values_route(
+        self,
+        host_id: int,
+        files_tuple_list: List[Tuple[str, str]],
+        file_metadata: Optional[List[Dict[str, Any]]],
+        selection_flags: List[int],
+        *,
+        backup_type: int = k.FILE_TASK_BACKUP_TYPE,         # NU_TYPE when selected (Backup)
+        backup_status: int = k.TASK_PENDING,                # NU_STATUS when selected (Pending)
+        discovery_type: int = k.FILE_TASK_DISCOVERY,        # NU_TYPE when not selected (Discovery)
+        discovery_status: int = k.TASK_DONE,                # NU_STATUS when not selected (Done)
+    ) -> List[Tuple[Any, ...]]:
+        
+        """
+        Build value tuples aligned with `_build_file_task_query()`, routing NU_TYPE/NU_STATUS
+        based on selection flags from `_apply_filter`.
+
+        Args:
+            host_id (int):
+                Target host foreign key (FK_HOST).
+            files_tuple_list (list[tuple[str, str]]):
+                Normalized (path, filename) pairs in the same order used by the filter.
+            file_metadata (list[dict] | None):
+                Optional per-file metadata aligned with `files_tuple_list`. Recognized keys:
+                - "NA_EXTENSION" | "extension"
+                - "VL_FILE_SIZE_KB" | "size" (bytes; converted to KB if integer)
+                - "DT_FILE_CREATED" | "created"
+                - "DT_FILE_MODIFIED" | "modified"
+            selection_flags (list[int]):
+                0/1 list returned by `_apply_filter`, aligned with `files_tuple_list`.
+            backup_type (int, keyword-only):
+                NU_TYPE to assign when `selection_flags[i] == 1`. Default: 1 (Backup).
+            backup_status (int, keyword-only):
+                NU_STATUS to assign when `selection_flags[i] == 1`. Default: 1 (Pending).
+            discovery_type (int, keyword-only):
+                NU_TYPE to assign when `selection_flags[i] == 0`. Default: 3 (Discovery).
+            discovery_status (int, keyword-only):
+                NU_STATUS to assign when `selection_flags[i] == 0`. Default: 0 (Done).
+
+        Returns:
+            list[tuple]:
+                Each tuple matches the placeholders of `_build_file_task_query()` in order:
+                (FK_HOST, NU_TYPE, PATH, FILENAME, NA_EXTENSION, VL_FILE_SIZE_KB,
+                DT_FILE_CREATED, DT_FILE_MODIFIED, NU_STATUS)
+    """
+        values: List[Tuple[Any, ...]] = []
+
+        for idx, (path, filename) in enumerate(files_tuple_list):
+            meta = file_metadata[idx] if (file_metadata and idx < len(file_metadata)) else {}
+
+            # Normalize keys for extension/size/dates
+            ext = meta.get("NA_EXTENSION") or meta.get("extension")
+            size_kb = meta.get("VL_FILE_SIZE_KB")
+            if size_kb is None:
+                # Convert 'size' (bytes) -> KB when possible
+                raw_size = meta.get("size")
+                if isinstance(raw_size, int):
+                    size_kb = raw_size
+            created = meta.get("DT_FILE_CREATED") or meta.get("created")
+            modified = meta.get("DT_FILE_MODIFIED") or meta.get("modified")
+
+            # Route type/status based on filter selection
+            flag = int(selection_flags[idx]) if (selection_flags and idx < len(selection_flags)) else 0
+            nu_type = backup_type if flag == k.FILE_TASK_BACKUP_TYPE else discovery_type
+            nu_status = backup_status if flag == k.TASK_PENDING else discovery_status
+            
+            # Build message string
+            type_msg = f"Backup" if nu_type == k.FILE_TASK_BACKUP_TYPE else f"Discovery"
+            status_msg = ("Pending" if nu_status == k.TASK_PENDING
+              else "Done" if nu_status == k.TASK_DONE
+              else "Error")
+            
+            message = f"{type_msg} {status_msg} of file {path}/{filename}"
+            row = (
+                host_id,     # FK_HOST
+                nu_type,     # NU_TYPE (routed)
+                path,        # PATH
+                filename,    # NAME
+                ext,         # NA_EXTENSION
+                size_kb,     # VL_FILE_SIZE_KB
+                created,     # DT_FILE_CREATED
+                modified,    # DT_FILE_MODIFIED
+                nu_status,   # NU_STATUS (routed)
+                message,
+            )
+            values.append(row)
+
+        return values
+
+
+    def _apply_filter(
+        self,
+        files_tuple_list: List[Tuple[str, str]],
+        file_metadata: Optional[List[dict]],
+        task_filter: Optional[dict],
+        log=None
+    ) -> List[int]:
+        """Apply `task_filter` to decide `FL_BACKUP_REQUESTED` for each file.
+
+        Supported modes:
+        - "NONE": all flags set to 0
+        - "ALL":  all flags set to 1
+        - "RANGE": select files by date range (created/modified)
+            * only start_date  -> select files with dt >= start_date
+            * only end_date    -> select files with dt <= end_date
+            * both provided    -> start_date <= dt <= end_date
+            * requires metadata with a usable timestamp
+        - "LAST": select the last N files
+            * if metadata available -> order by timestamp (created/modified)
+            * otherwise             -> use the given list order
+            * if N > total          -> all files selected
+        - "extension" (optional): acts as a refinement (AND); if provided,
+            only files whose metadata extension exactly matches this value are kept.
+
+        Args:
+            files_tuple_list (list[tuple[str, str]]): List of `(path, filename)` in the
+                same order used for insertion.
+            file_metadata (list[dict] | None): Optional metadata aligned with the above list.
+                If not provided and mode="RANGE", no file can be matched by date.
+            task_filter (dict | None): The normalized filter to apply:
+                {
+                "mode": "ALL" | "NONE" | "RANGE" | "LAST",
+                "start_date": str | None,
+                "end_date": str | None,
+                "last_n_files": int | None,
+                "extension": str | None
+                }
+            log (object, optional): Logger with `.entry(str)`; used for diagnostics
+                (invalid dates, etc.).
+
+        Returns:
+            list[int]: A list of the same length as `files_tuple_list`,
+            with `0` or `1` (integers) per position indicating whether each
+            file should be flagged with `FL_BACKUP_REQUESTED=1`.
+        """
+        n_files = len(files_tuple_list)
+        flags = [0] * n_files
+
+        if not task_filter:
+            return flags
+
+        mode = task_filter.get("mode")
+        if mode == "NONE":
+            return flags
+        if mode == "ALL":
+            return [1] * n_files
+
+        # --- RANGE mode ---
+        if mode == "RANGE":
+            start = self._safe_parse_date(task_filter.get("start_date"), log=log)
+            end = self._safe_parse_date(task_filter.get("end_date"), log=log)
+
+            if not file_metadata:
+                # No timestamps available; cannot evaluate date-based range.
+                return flags
+
+            for i, meta in enumerate(file_metadata):
+                created = meta.get("DT_FILE_CREATED") or meta.get("DT_FILE_MODIFIED")
+                created_dt = self._safe_parse_date(created, log=log)
+                if not created_dt:
+                    continue
+
+                if start and not end:
+                    if created_dt >= start:
+                        flags[i] = 1
+                elif end and not start:
+                    if created_dt <= end:
+                        flags[i] = 1
+                elif start and end:
+                    if start <= created_dt <= end:
+                        flags[i] = 1
+                # If both start/end are None or invalid, nothing is selected.
+
+        # --- LAST mode ---
+        elif mode == "LAST":
+            n = int(task_filter.get("last_n_files") or 0)
+            if n > 0:
+                if file_metadata:
+                    # Build (index, timestamp) list; fallback to datetime.min if invalid
+                    indexed = []
+                    for i, meta in enumerate(file_metadata):
+                        ts = meta.get("DT_FILE_CREATED") or meta.get("DT_FILE_MODIFIED")
+                        dt = self._safe_parse_date(ts, log=log) or datetime.datetime.min
+                        indexed.append((i, dt))
+                    # Sort by timestamp (oldest -> newest) and take the last N
+                    indexed.sort(key=lambda x: x[1])
+                    take = min(n, len(indexed))
+                    for idx, _ in indexed[-take:]:
+                        flags[idx] = 1
+                else:
+                    # No metadata: assume the LAST N by input order
+                    take = min(n, n_files)
+                    for i in range(n_files - take, n_files):
+                        flags[i] = 1
+
+        # --- Extension refinement (AND) ---
+        ext = (task_filter.get("NA_EXTENSION") or "").strip()
+        if ext:
+            # If we have no metadata, we cannot verify extensions -> return zeros
+            if not file_metadata:
+                return [0] * n_files
+
+            # Keep only files whose extension matches exactly
+            for i, meta in enumerate(file_metadata):
+                if flags[i] == 1:
+                    if not meta.get("NA_EXTENSION") or meta.get("NA_EXTENSION") != ext:
+                        flags[i] = 0
+
+        return flags
+
+
+    def _update_host_counters(
+        self,
+        host_id: int,
+        task_type: int,
+        n_created:int,
+        processing_error:int,
+        reset_processing_queue:bool
+    ) -> None:
+            """Update `HOST` table counters after creating file tasks.
+
+            Based on `task_type`, this updates the appropriate "pending" and "error"
+            counters (e.g., `pending_backup`, `backup_error`, etc.). The update is
+            delegated to `self.host_update(**new_status)` to keep DB writes consistent.
+
+            Args:
+                host_id (int): Foreign key to `HOST` table.
+                task_type (int): File task type (e.g., `self.FILE_TASK_BACKUP_TYPE`).
+                n_created (int): Number of `FILE_TASK` rows just inserted for this host.
+                processing_error (int): Count of rows with `NU_STATUS=-2` (if computed).
+                reset_processing_queue (bool): Whether overall counters should be reset.
+
+            Returns:
+                None
+            """
+            
+            new_status = {"host_id": host_id}
+
+            if task_type == k.FILE_TASK_BACKUP_TYPE:
+                new_status["pending_backup"] = n_created
                 new_status["backup_error"] = processing_error
-            case 2:
-                new_status["pending_processing"] = nu_processing
+
+            elif task_type == k.FILE_TASK_PROCESS_TYPE:
+                new_status["pending_processing"] = n_created
                 new_status["processing_error"] = processing_error
+                
+            else:
+                new_status["pending_backup"] = 0
+                new_status["backup_error"] = 0
+                new_status["pending_processing"] = 0
+                new_status["processing_error"] = 0
 
-        self.host_update(**new_status)
+            # If additional types exist (e.g., INFO), they can be handled here.
 
+            self.host_update(**new_status)
+    
+    
+    def _read_file_tasks_for_host(
+        self,
+        host_id: int,
+        limit: Optional[int] = None,
+        log=None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch FILE_TASK rows for a specific host (FK_HOST = host_id), ordered by
+        DT_FILE_TASK ascending, and return a normalized list of dictionaries.
+
+        This helper centralizes the SELECT query and normalizes the output for downstream
+        consumers (e.g., filter evaluation, routing NU_TYPE/NU_STATUS, batch updates).
+        It coalesces host/server path fields, converts datetimes to ISO-like strings,
+        and ensures consistent scalar types. The legacy FL_BACKUP_REQUESTED column is
+        not used nor returned.
+
+        Args:
+            host_id (int):
+                Host foreign key (FK_HOST) to filter FILE_TASK rows.
+            limit (int | None):
+                Optional maximum number of rows to return (applies LIMIT in SQL).
+            log (object | None):
+                Optional logger with `.error(str)` to record query errors.
+
+        Returns:
+            list[dict]:
+                A list of normalized FILE_TASK records. Each item contains:
+                {
+                "id": int,                      # ID_FILE_TASK
+                "host_id": int,                 # FK_HOST
+                "NU_TYPE": int | None,          # NU_TYPE
+                "path": str,                    # NA_HOST_FILE_PATH or NA_SERVER_FILE_PATH (coalesced)
+                "filename": str,                # NA_HOST_FILE_NAME  or NA_SERVER_FILE_NAME (coalesced)
+                "NA_EXTENSION": str | None,     # NA_EXTENSION
+                "VL_FILE_SIZE_KB": int | None,      # VL_FILE_SIZE_KB
+                "DT_FILE_CREATED": str | None,      # DT_FILE_CREATED  -> ISO-like string when possible
+                "DT_FILE_MODIFIED": str | None,     # DT_FILE_MODIFIED -> ISO-like string when possible
+                "dt_task": str | None,              # DT_FILE_TASK     -> ISO-like string when possible
+                "NU_STATUS": int | None,            # NU_STATUS
+                "NU_PID": int | None,               # NU_PID (best-effort int normalization)
+                "NA_MESSAGE": str | None,           # NA_MESSAGE
+                "raw": { ... }                      # raw mapping of original columns
+                }
+
+        Raises:
+            Exception:
+                Propagates database driver exceptions (e.g., connection or execution errors).
+        """
+        # WHERE clause and parameters
+        where_sql = "FK_HOST = %s"
+        params: list = [host_id]
+
+        # Optional LIMIT
+        limit_sql = f" LIMIT {int(limit)}" if isinstance(limit, int) and limit > 0 else ""
+
+        # Fixed ORDER BY ensures deterministic ordering for downstream logic
+        select_sql = f"""
+            SELECT
+                ID_FILE_TASK,
+                FK_HOST,
+                NU_TYPE,
+                NA_HOST_FILE_PATH,
+                NA_HOST_FILE_NAME,
+                NA_SERVER_FILE_PATH,
+                NA_SERVER_FILE_NAME,
+                NA_EXTENSION,
+                VL_FILE_SIZE_KB,
+                DT_FILE_CREATED,
+                DT_FILE_MODIFIED,
+                DT_FILE_TASK,
+                NU_STATUS,
+                NU_PID,
+                NA_MESSAGE
+            FROM FILE_TASK
+            WHERE {where_sql}
+            ORDER BY DT_FILE_TASK ASC
+            {limit_sql};
+        """.strip()
+
+        # Execute query
+        try:
+            self._connect()
+            self.cursor.execute(select_sql, tuple(params))
+            rows = self.cursor.fetchall()
+        except Exception as e:
+            if log:
+                log.error(f"Error fetching FILE_TASK (host_id={host_id}): {e}")
+            raise
+        finally:
+            self._disconnect()
+
+        tasks: List[Dict[str, Any]] = []
+        for r in rows:
+            # Support both tuple- and dict-style cursor outputs
+            if isinstance(r, dict):
+                raw = r
+                id_task = raw.get("ID_FILE_TASK")
+                fk_host = raw.get("FK_HOST")
+                nu_type = raw.get("NU_TYPE")
+                h_path  = raw.get("NA_HOST_FILE_PATH")
+                h_name  = raw.get("NA_HOST_FILE_NAME")
+                s_path  = raw.get("NA_SERVER_FILE_PATH")
+                s_name  = raw.get("NA_SERVER_FILE_NAME")
+                na_ext  = raw.get("NA_EXTENSION")
+                size_kb = raw.get("VL_FILE_SIZE_KB")
+                dt_cre  = raw.get("DT_FILE_CREATED")
+                dt_mod  = raw.get("DT_FILE_MODIFIED")
+                dt_task = raw.get("DT_FILE_TASK")
+                status  = raw.get("NU_STATUS")
+                pid     = raw.get("NU_PID")
+                message = raw.get("NA_MESSAGE")
+            else:
+                (
+                    id_task, fk_host, nu_type,
+                    h_path, h_name, s_path, s_name,
+                    na_ext, size_kb, dt_cre, dt_mod, dt_task,
+                    status, pid, message
+                ) = r
+                raw = {
+                    "ID_FILE_TASK": id_task,
+                    "FK_HOST": fk_host,
+                    "NU_TYPE": nu_type,
+                    "NA_HOST_FILE_PATH": h_path,
+                    "NA_HOST_FILE_NAME": h_name,
+                    "NA_SERVER_FILE_PATH": s_path,
+                    "NA_SERVER_FILE_NAME": s_name,
+                    "NA_EXTENSION": na_ext,
+                    "VL_FILE_SIZE_KB": size_kb,
+                    "DT_FILE_CREATED": dt_cre,
+                    "DT_FILE_MODIFIED": dt_mod,
+                    "DT_FILE_TASK": dt_task,
+                    "NU_STATUS": status,
+                    "NU_PID": pid,
+                    "NA_MESSAGE": message,
+                }
+
+            # Prefer host path/name; if absent, fall back to server path/name
+            pathx = h_path or s_path or ""
+            namex = h_name or s_name or ""
+
+            # Normalize PID to int when possible; otherwise keep None
+            try:
+                pid_norm = int(pid) if isinstance(pid, (int, str)) and str(pid).isdigit() else None
+            except Exception:
+                pid_norm = None
+
+            tasks.append({
+                "host_id": int(fk_host),
+                "path": pathx,
+                "filename": namex,
+                "ID_FILE_TASK": int(id_task),
+                "NU_TYPE": int(nu_type) if nu_type is not None else None,
+                "NA_EXTENSION": na_ext,
+                "VL_FILE_SIZE_KB": int(size_kb) if size_kb is not None else None,
+                "DT_FILE_CREATED": self._safe_parse_date(dt_cre),
+                "DT_FILE_MODIFIED":self._safe_parse_date(dt_mod),
+                "DT_FILE_TASK": self._safe_parse_date(dt_task),
+                "NU_STATUS": int(status) if status is not None else None,
+                "NU_PID": pid_norm,
+                "NA_MESSAGE": message,
+                "raw": raw,
+            })
+
+        return tasks
+
+    
+    def _build_filter_inputs_from_tasks(
+        self,
+        tasks: List[Dict[str, Any]],
+    ) -> Tuple[List[Tuple[str, str]], List[Dict[str, Any]]]:
+        """
+        Build `_apply_filter` inputs from normalized tasks returned by `_read_file_tasks_for_host`.
+
+        Args:
+            tasks (list[dict]):
+                Normalized FILE_TASK rows, each with keys like "path", "filename",
+                "extension", "created", "modified" (as produced by `_read_file_tasks_for_host`).
+
+        Returns:
+            tuple:
+                - files_tuple_list (list[tuple[str, str]]): [(path, filename), ...]
+                - file_metadata (list[dict]): [{"extension": str|None, "created": str|None, "modified": str|None}, ...]
+        """
+        files_tuple_list = [(t.get("path", "") or "", t.get("filename", "") or "") for t in tasks]
+        file_metadata = [
+            {
+                "NA_EXTENSION": t.get("NA_EXTENSION"),
+                "DT_FILE_CREATED": t.get("DT_FILE_CREATED"),
+                "DT_FILE_MODIFIED": t.get("DT_FILE_MODIFIED"),
+                "VL_FILE_SIZE_KB": t.get("VL_FILE_SIZE_KB")
+            }
+            for t in tasks
+        ]
+        return files_tuple_list, file_metadata
+
+    def _compute_updates(
+        self,
+        tasks: List[Dict[str, Any]],
+        *,
+        backup_type: int,
+        backup_status: int,
+        discovery_type: int,
+        discovery_status: int,
+        skip_statuses: Tuple[int, ...],
+        reset_error_statuses: Tuple[int, ...],
+        reset_only_when_selected: bool,
+        reset_to_status: int,
+        log=None,
+    ) -> Tuple[List[Dict[str, Any]], List[int]]:
+        """
+        Determine which FILE_TASK rows must be updated or reset.
+
+        Args:
+            tasks (list[dict]): Tasks already fetched and annotated with 'selected'.
+            backup_type (int): NU_TYPE for selected tasks.
+            backup_status (int): NU_STATUS for selected tasks.
+            discovery_type (int): NU_TYPE for non-selected tasks.
+            discovery_status (int): NU_STATUS for non-selected tasks.
+            skip_statuses (tuple[int, ...]): Statuses to ignore.
+            reset_error_statuses (tuple[int, ...]): Statuses that qualify for reset.
+            reset_only_when_selected (bool): Only reset errors if selected.
+            reset_to_status (int): Target status when resetting.
+            log (optional): Logger instance.
+
+        Returns:
+            tuple: (updates, resets)
+                updates -> list of dicts with column updates per ID_FILE_TASK.
+                resets -> list of task IDs to be reset.
+        """
+        updates = []
+        resets = []
+
+        for t in tasks:
+            curr_status = t["NU_STATUS"]
+            curr_type = t["NU_TYPE"]
+
+            # Skip running tasks
+            if curr_status in skip_statuses:
+                continue
+
+            # Routing policy based on selection flag
+            if t.get("selected"):
+                new_type, new_status = backup_type, backup_status
+            else:
+                new_type, new_status = discovery_type, discovery_status
+
+            # Compose update message
+            path = t.get("path")
+            filename = t.get("filename")
+            msg = f"{'Backup' if new_type == k.FILE_TASK_BACKUP_TYPE 
+                else 'Discovery'} {'Pending' if new_status == k.FILE_TASK_DISCOVERY else 'Done'} of file {path}/{filename}"
+
+            # Add to update list if something changed
+            if (new_type, new_status) != (curr_type, curr_status):
+                updates.append({
+                    "ID_FILE_TASK": t["ID_FILE_TASK"],
+                    "NU_TYPE": new_type,
+                    "NU_STATUS": new_status,
+                    "NA_MESSAGE": msg,
+                })
+
+            # Identify error rows eligible for reset
+            if curr_status in reset_error_statuses:
+                if not reset_only_when_selected or t.get("selected"):
+                    resets.append(t["ID_FILE_TASK"])
+
+        return updates, resets
+
+    def _apply_updates(
+        self,
+        updates: List[Dict[str, Any]],
+        resets: List[int],
+        *,
+        clear_pid_on_reset: bool,
+        clear_message_on_reset: bool,
+        touch_task_datetime_on_reset: bool,
+        reset_to_status: int,
+        log=None,
+    ) -> Dict[str, int]:
+        """
+        Execute all UPDATE operations in a single database transaction.
+
+        This method performs two types of updates:
+            1) Regular updates for changed NU_TYPE / NU_STATUS / NA_MESSAGE fields.
+            2) Error resets for tasks with invalid or failed statuses.
+
+        Each regular update also refreshes DT_FILE_TASK with the current timestamp.
+
+        Args:
+            updates (list[dict]): List of rows to update (with ID_FILE_TASK).
+            resets (list[int]): List of task IDs to reset.
+            clear_pid_on_reset (bool): Set NU_PID=NULL on reset if True.
+            clear_message_on_reset (bool): Set NA_MESSAGE=NULL on reset if True.
+            touch_task_datetime_on_reset (bool): Set DT_FILE_TASK=NOW() on reset if True.
+            reset_to_status (int): Status assigned during reset.
+            log (optional): Logger for tracing errors.
+
+        Returns:
+            dict: {
+                "rows_updated": int,
+                "errors_reset": int,
+                "error_rows": int
+            }
+        """
+        summary = {"rows_updated": 0, "error_rows":0, "errors_reset": 0}
+
+        # No updates or resets required
+        if not updates and not resets:
+            return summary
+
+        self._connect()
+        try:
+            # --- Perform regular updates ---
+            if updates:
+                # Build dynamic SQL update statement
+                # Always refresh DT_FILE_TASK with current timestamp (NOW())
+                for row in updates:
+                    set_parts = [
+                        "NU_TYPE = %s",
+                        "NU_STATUS = %s",
+                        "NA_MESSAGE = %s",
+                        "DT_FILE_TASK = NOW()"  # always update timestamp
+                    ]
+                    sql = f"UPDATE FILE_TASK SET {', '.join(set_parts)} WHERE ID_FILE_TASK = %s;"
+                    params = (
+                        row["NU_TYPE"],
+                        row["NU_STATUS"],
+                        row["NA_MESSAGE"],
+                        row["ID_FILE_TASK"],
+                    )
+                    self.cursor.execute(sql, params)
+
+                summary["rows_updated"] = self.cursor.rowcount or len(updates)
+                summary["errors_reset"]= 0
+
+            # --- Perform resets for error statuses ---
+            if resets:
+                # Build reset query dynamically based on configuration
+                set_parts = ["NU_STATUS = %s"]
+                if clear_pid_on_reset:
+                    set_parts.append("NU_PID = NULL")
+                if clear_message_on_reset:
+                    set_parts.append("NA_MESSAGE = NULL")
+                # Ensure DT_FILE_TASK is updated even when touch flag is False
+                # to maintain consistency with normal updates
+                set_parts.append("DT_FILE_TASK = NOW()")
+
+                reset_sql = f"UPDATE FILE_TASK SET {', '.join(set_parts)} WHERE ID_FILE_TASK = %s;"
+                params = [(reset_to_status, row_id) for row_id in resets]
+                self.cursor.executemany(reset_sql, params)
+                summary["errors_reset"] = self.cursor.rowcount or len(resets)
+
+            # Commit all database changes
+            self.db_connection.commit()
+            return summary
+
+        except Exception as e:
+            # Rollback transaction on any failure
+            self.db_connection.rollback()
+            summary["rows_updated"] = 0
+            summary["errors_reset"]= self.cursor.rowcount or len(updates)
+            if log:
+                log.error(f"Error applying backlog updates: {e}")
+            raise
+        finally:
+            # Always close connection
+            self._disconnect()
+
+
+
+    def _get_tasks_with_selection(self, host_id: int, task_filter: Dict[str, Any], limit: Optional[int] = None, log=None) -> List[Dict[str, Any]]:
+        """
+        Retrieve FILE_TASK entries for a given host and evaluate which ones match the filter.
+
+        Args:
+            host_id (int): Host identifier (FK_HOST).
+            task_filter (dict): JSON-style filter (mode, start_date, end_date, etc.).
+            limit (int | None): Optional max number of rows.
+            log (optional): Logger for tracing operations.
+
+        Returns:
+            list[dict]: List of FILE_TASK entries with an extra 'selected' field (True/False).
+        """
+        # Fetch task list ordered by DT_FILE_TASK ascending
+        tasks = self._read_file_tasks_for_host(host_id=host_id, limit=limit, log=log)
+        if not tasks:
+            return []
+
+        # Build tuples and metadata for filtering
+        files_tuple_list, file_metadata = self._build_filter_inputs_from_tasks(tasks)
+
+        # Evaluate selection mask (list of 0/1)
+        selection = self._apply_filter(files_tuple_list, file_metadata, task_filter, log=log)
+
+        # Annotate each task with selection flag
+        for t, flag in zip(tasks, selection):
+            t["selected"] = bool(flag)
+        return tasks
+
+    
+    def update_backlog_by_filter(
+        self,
+        host_id: int,
+        task_filter: Dict[str, Any],
+        limit: Optional[int] = None,
+        *,
+        # Routing policy
+        backup_type: int = k.FILE_TASK_BACKUP_TYPE,
+        backup_status: int = k.TASK_PENDING,
+        discovery_type: int = k.FILE_TASK_DISCOVERY,
+        discovery_status: int = k.TASK_DONE,
+        # Safety rules
+        skip_statuses: Tuple[int, ...] = (2,),
+        reset_error_statuses: Tuple[int, ...] = (-2, -1),
+        reset_only_when_selected: bool = True,
+        reset_to_status: int = 1,
+        clear_pid_on_reset: bool = True,
+        clear_message_on_reset: bool = False,
+        touch_task_datetime_on_reset: bool = False,
+        log=None,
+    ) -> Dict[str, int]:
+        """
+        Update backlog tasks for a given host based on selection filters and routing policy.
+
+        Process overview:
+            1) Fetch FILE_TASK entries for the given host.
+            2) Apply the selection filter to determine which tasks should be "selected".
+            3) Compute which rows must be updated or reset (error recovery).
+            4) Execute all SQL updates in a single transaction.
+
+        Args:
+            host_id (int): Target FK_HOST to filter FILE_TASK.
+            task_filter (dict): Filtering configuration for _apply_filter().
+            limit (int | None): Optional limit on the number of rows read.
+            backup_type (int): NU_TYPE value for selected tasks.
+            backup_status (int): NU_STATUS value for selected tasks.
+            discovery_type (int): NU_TYPE value for non-selected tasks.
+            discovery_status (int): NU_STATUS value for non-selected tasks.
+            skip_statuses (tuple[int, ...]): Statuses that must not be updated.
+            reset_error_statuses (tuple[int, ...]): Error statuses eligible for reset.
+            reset_only_when_selected (bool): Whether to reset only tasks selected by filter.
+            reset_to_status (int): NU_STATUS to set when resetting errors.
+            clear_pid_on_reset (bool): If True, NU_PID is set to NULL on reset.
+            clear_message_on_reset (bool): If True, NA_MESSAGE is cleared on reset.
+            touch_task_datetime_on_reset (bool): If True, DT_FILE_TASK is set to NOW() on reset.
+            log (optional): Optional logger for progress and errors.
+
+        Returns:
+            dict: Summary of the operation:
+                {
+                    "rows_read": int,
+                    "rows_updated": int,
+                    "errors_reset": int
+                }
+        """
+        summary = {"rows_read": 0, "rows_updated": 0, "errors_reset": 0}
+
+        # 1) Fetch and apply selection filter
+        tasks = self._get_tasks_with_selection(host_id, task_filter, limit, log=log)
+        summary["rows_read"] = len(tasks)
+        if not tasks:
+            return summary
+
+        # 2) Compute updates and resets based on routing logic
+        updates, resets = self._compute_updates(
+            tasks,
+            backup_type=backup_type,
+            backup_status=backup_status,
+            discovery_type=discovery_type,
+            discovery_status=discovery_status,
+            skip_statuses=skip_statuses,
+            reset_error_statuses=reset_error_statuses,
+            reset_only_when_selected=reset_only_when_selected,
+            reset_to_status=reset_to_status,
+            log=log,
+        )
+
+        # 3) Execute all updates and resets in a single transaction
+        result = self._apply_updates(
+            updates,
+            resets,
+            clear_pid_on_reset=clear_pid_on_reset,
+            clear_message_on_reset=clear_message_on_reset,
+            touch_task_datetime_on_reset=touch_task_datetime_on_reset,
+            reset_to_status=reset_to_status,
+            log=log,
+        )
+
+        summary.update(result)
+        
+        # 4) Update host with results
+        self._update_host_counters(host_id=host_id,task_type=k.BACKUP_QUERY_TAG,
+                                   n_created=result["rows_updated"],
+                                   processing_error=result["error_rows"])
+        return summary
+
+    
+    
+    
     def file_task_create_from_file(self, file_set: set) -> None:
         """Create a new task entry based only in a set of file names and paths
 
@@ -1891,7 +2770,7 @@ class dbHandler:
 
             self.file_task_create(
                 host_id=host_id,
-                task_type=self.FILE_TASK_PROCESS_TYPE,
+                task_type=k.FILE_TASK_PROCESS_TYPE,
                 volume=k.REPO_UID,
                 files=file_set,
                 reset_processing_queue=True,
@@ -1959,7 +2838,11 @@ class dbHandler:
 
     # Method to retrieve multiple file tasks
     def file_task_read_list_one_host(
-        self, task_type: int, task_status: int = 1, limit: int = None
+        self, 
+        task_type: int, 
+        task_status: int = 1,
+        flag_backup_requested: int =1, 
+        limit: int = None
     ) -> dict:
         """Return list of file tasks associated with a host with the oldest pending file task. Return false if no task is found
 
@@ -2035,7 +2918,7 @@ class dbHandler:
                 f"NU_PID = {self.log.pid} "
                 f"WHERE "
                 f"FK_HOST = {host_task['host_id']} AND "
-                f"NU_STATUS = {self.TASK_PENDING} AND "
+                f"NU_STATUS = {k.TASK_PENDING} AND "
                 f"NU_TYPE = {task_type};"
             )
 
@@ -2051,8 +2934,9 @@ class dbHandler:
                 f"NA_HOST_FILE_PATH, NA_HOST_FILE_NAME "
                 f"FROM FILE_TASK "
                 f"WHERE "
-                f"NU_STATUS = {self.TASK_RUNNING} AND "
+                f"NU_STATUS = {task_status} AND "
                 f"NU_TYPE = {task_type} AND "
+                f"FL_BACKUP_REQUESTED = {flag_backup_requested} AND "
                 f"FK_HOST = {host_task['host_id']} "
                 f"ORDER BY DT_FILE_TASK"
             )
@@ -2075,6 +2959,7 @@ class dbHandler:
                 f"WHERE "
                 f"NU_STATUS = 2 AND "
                 f"NU_TYPE = {task_type} AND "
+                f"FL_BACKUP_REQUESTED = {flag_backup_requested} AND "
                 f"FK_HOST = {host_task['host_id']} "
                 f"ORDER BY DT_FILE_TASK"
             )
@@ -2149,9 +3034,14 @@ class dbHandler:
         server_file: str = None,
         task_type: int = None,
         status: int = None,
+        na_extension: str = None,
+        file_size: int = None,
+        dt_file_created: datetime = None,
+        dt_file_mod: datetime = None,
         message: str = None,
     ) -> None:
         """Set processing task as completed with error
+           Update only the args inputted
 
         Args:
             task_id (int): Task id
@@ -2161,6 +3051,10 @@ class dbHandler:
             server_file (str): Server file
             task_type (int): Task type: 0=Not set; 1=Backup; 2=Processing
             status (int): Status flag: -2=Suspended, -1=Error, 0=Nothing to do, 1=Pending action, 2=Under execution
+            na_extension (str): Extension of file to be evaluated
+            file_size (int): File size in KB
+            dt_file_created (datetime): date time of creation file
+            dt_file_mod (datetime): date time of modification file
             message (str): Error message
         """
         # compose and excecute query to set NU_STATUS to -1 (Error) and server path in the BPDATA database
@@ -2176,13 +3070,20 @@ class dbHandler:
             query = query + f"NA_SERVER_FILE_NAME = '{server_file}', "
         if task_type:
             query = query + f"NU_TYPE = {task_type}, "
-        if status:
+        if status != None :
             query = query + f"NU_STATUS = {status}, "
-
+        if na_extension:
+            query = query + f"NA_EXTENSION = '{na_extension}', "
+        if file_size:
+            query = query + f"VL_FILE_SIZE_KB = {file_size}, "
+        if dt_file_created:
+            query = query + f"DT_FILE_CREATED = '{dt_file_created}', "
+        if dt_file_mod:
+            query = query + f"DT_FILE_MODIFIED = '{dt_file_mod}', "
             match status:
-                case self.TASK_PENDING:
+                case k.TASK_PENDING:
                     query = query + "NU_PID = NULL, "
-                case self.TASK_RUNNING:
+                case k.TASK_RUNNING:
                     query = query + f"NU_PID = {self.log.pid}, "
         if message:
             message = message.replace("'", "''")
@@ -2197,7 +3098,8 @@ class dbHandler:
         self.db_connection.commit()
 
         self._disconnect()
-
+      
+        
     # Method to set processing task as completed with success
     def file_task_delete(
         self,

@@ -51,6 +51,9 @@ HOST_TASK_REQUEST_WAIT_TIME = 1800
 HALT_FLAG_CHECK_CYCLES = 6
 BKP_HOST_ALLOTED_TIME_FRACTION = 0.8
 
+# appCataloga_host_check configuration
+HOST_CHECK_INTERVAL = 60  # seconds between cycles
+
 BKP_TASK_MAX_WORKERS = 10
 BKP_TASK_WORKER_SERVICE = "usr/local/bin/appCataloga/appCataloga_file_bkp@"
 
@@ -88,3 +91,26 @@ DEFAULT_VBW = 0.0
 DEFAULT_DETECTOR = "RMS"
 DEFAULT_SAMPLE_DURATION = 0.0
 DEFAULT_ATTENUATION_GAIN = 0.0
+
+# Default None Filter
+NONE_FILTER = {
+    "mode": "NONE",
+    "start_date": None,
+    "end_date": None,
+    "last_n_files": None,
+    "extension": None,
+    "file_name": None,
+}
+
+# Database Tasks Constants
+HOST_TASK_TYPE = 0
+FILE_TASK_BACKUP_TYPE = 1      # Create a backup task
+FILE_TASK_PROCESS_TYPE = 2     # Process a backup task of indexerD mapped files
+FILE_TASK_DISCOVERY = 3        # Create a discovery task to get file metadata
+TASK_SUSPENDED = -2
+TASK_ERROR = -1
+TASK_DONE = 0
+TASK_PENDING = 1
+TASK_RUNNING = 2
+HOST_WITHOUT_DAEMON = 1
+HOST_WITH_HALT_FLAG = 2

@@ -32,8 +32,7 @@ from geopy.exc import GeocoderTimedOut
 
 # Import modules for file processing
 import config as k
-from db.dbHandlerBKP import dbHandlerBKP
-from db.dbHandlerRFM import dbHandlerRFM
+import db_handler as dbh
 import shared as sh
 import os
 
@@ -189,8 +188,8 @@ def main():
 
     try:
         # create db object using databaseHandler class for the backup and processing database
-        db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
-        db_rfm = dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)
+        db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
+        db_rfm = dbh.dbHandler(database=k.RFM_DATABASE_NAME, log=log)
     except Exception as e:
         log.error("Error initializing database: {e}")
         raise Exception(f"Error initializing database: {e}")
@@ -200,21 +199,15 @@ def main():
             # Get one backup task from the queue in the database
             task = None
 
-            task = db_bp.read_file_tasks(task_type=k.FILE_TASK_PROCESS_TYPE,
-                                         task_status=k.TASK_PENDING,
-                                         single_task=True)
-            #task = db_bp.file_task_read_one(task_type=db_bp.FILE_TASK_PROCESS_TYPE)
+            task = db_bp.file_task_read_one(task_type=db_bp.FILE_TASK_PROCESS_TYPE)
 
             # if there is a task in the database
             if task:
-                
-                host_info = db_bp.host_read_access(host_id=task["FK_HOST"])
                 # get metadata from bin file
-                filename = f"{task['NA_SERVER_FILE_PATH']}/{task['NA_SERVER_FILE_NAME']}"
+                filename = f"{task['server path']}/{task['server file']}"
 
                 db_bp.file_task_update(
-                    task_id=task["ID_FILE_TASK"],
-                    NU_STATUS=k.TASK_RUNNING
+                    task_id=task["task_id"], status=db_bp.TASK_RUNNING
                 )
 
                 log.entry(f"Start processing '{filename}'.")
@@ -251,9 +244,9 @@ def main():
 
                 # update data dictionary with data associated with the entire file scope
                 file_id = db_rfm.insert_file(
-                    filename=task["NA_HOST_FILE_NAME"],
-                    path=task["NA_HOST_FILE_PATH"],
-                    volume=host_info["host_uid"],
+                    filename=task["host file"],
+                    path=task["host path"],
+                    volume=task["host_uid"],
                 )
 
                 data["id_procedure"] = db_rfm.insert_procedure(bin_data["method"])
@@ -321,15 +314,15 @@ def main():
                 new_path = f"{k.REPO_FOLDER}/{spectrum.stop_dateidx.year}/{new_path}"
 
                 file_data = file_move(
-                    filename=task["NA_SERVER_FILE_NAME"],
-                    path=task["NA_SERVER_FILE_PATH"],
+                    filename=task["server file"],
+                    path=task["server path"],
                     new_path=new_path,
                 )
 
                 new_file_id = db_rfm.insert_file(**file_data)
                 db_rfm.insert_bridge_spectrum_file(spectrum_lst, [file_id, new_file_id])
 
-                db_bp.file_task_delete(task_id=task["ID_FILE_TASK"])
+                db_bp.file_task_delete(task_id=task["task_id"])
 
                 log.entry(f"Finished processing '{filename}'.")
 
@@ -353,12 +346,12 @@ def main():
             else:
                 try:
                     file_data = file_move(
-                        filename=task["NA_SERVER_FILE_NAME"],
-                        path=task["NA_SERVER_FILE_PATH"],
+                        filename=task["server file"],
+                        path=task["server path"],
                         new_path=f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}",
                     )
 
-                    task["NA_SERVER_FILE_PATH"] = file_data["path"]
+                    task["server path"] = file_data["path"]
 
                     message = f"Error processing task: {e}"
 
@@ -372,16 +365,16 @@ def main():
                     task["message"] = message
 
                     db_bp.file_task_update(
-                        task_id=task["ID_FILE_TASK"],
-                        status=k.TASK_ERROR,
+                        task_id=task["task_id"],
+                        status=db_bp.TASK_ERROR,
                         message=message,
                     )
 
-                    # db_bp.host_update(
-                    #     host_id=task["ID_FILE_TASK"],
-                    #     pending_processing=-1,
-                    #     processing_error=1,
-                    # )
+                    db_bp.host_update(
+                        host_id=task["host_id"],
+                        pending_processing=-1,
+                        processing_error=1,
+                    )
                 except Exception as second_e:
                     log.error(
                         f"Error removing processing task: First: {e}; raised another exception: {second_e}"

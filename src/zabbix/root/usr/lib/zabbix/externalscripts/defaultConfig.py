@@ -28,6 +28,7 @@ ACAT_DEFAULT_HOST_PORT = 22
 ACAT_DEFAULT_USER = "root"  # user should have access to the host with rights to interact with the indexer daemon
 ACAT_DEFAULT_PASSWD = "changeme"
 ACAT_DEFAULT_QUERY_TAG = "backup"
+ACAT_FILE_METADATA_QUERY_TAG ="fileMetadata"
 ACAT_DEFAULT_TIMEOUT = 2
 
 # appColeta constants

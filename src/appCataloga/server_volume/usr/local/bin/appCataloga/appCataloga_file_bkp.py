@@ -1,279 +1,332 @@
-#!/usr/bin/python3
-"""Get file tasks in the control database and perform backup to the central repository.
+#! /usr/bin/python3
+"""
+File Backup Worker: transfers pending FILE_TASK records (NU_TYPE = BACKUP, NU_STATUS = PENDING)
+from remote nodes to the central repository via SFTP.
 
-Args:
-    Arguments passed from the command line should present in the format: "key=value"
+Behavior:
+    1. Prepare   → Initialize worker, logger, database, and signal handlers.
+    2. Initialize → Detect or spawn workers and connect to the remote host.
+    3. Act       → Transfer files, update statuses, and manage SFTP operations.
+    4. Finalize  → Release locks, close sessions, and gracefully terminate.
 
-    Where the possible keys are:
-        "worker": int, Serial index of the worker process. Default is 0.
-
-(stdin): ctrl+c will soft stop the process similar to kill or systemd stop <service>. kill -9 will hard stop.
-
-Returns (stdout): As log messages, if target_screen in log is set to True.
-
-Raises:
-    Exception: If any error occurs, the exception is raised with a message describing the error.
+Logs:
+    Printed to stdout if 'target_screen=True' is set in configuration.
 """
 
 # ======================================================================
 # Imports
 # ======================================================================
-import sys, os
-import paramiko
+import sys
+import os
 import time
 import random
 import signal
 import inspect
+import subprocess
+import paramiko
+from datetime import datetime
 
-# load appCataloga path
-CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
-sys.path.append(CONFIG_PATH)
+# Load configuration and database modules
+_CFG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
+    sys.path.append(_CFG_DIR)
 
-# Import project libs
-import config as k
+_DB_DIR = os.path.join(os.path.dirname(__file__), "db")
+if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
+    sys.path.append(_DB_DIR)
+
 import shared as sh
-import db_handler as dbh
+from db.dbHandlerBKP import dbHandlerBKP
+import config as k
+
 
 # ======================================================================
 # Globals
 # ======================================================================
 log = sh.log()
-
-process_status = {"worker": None, "running": True}
-
-DEFAULT_WORKER = 0
-ARGUMENTS = {
-    "worker": {
-        "set": False,
-        "value": DEFAULT_WORKER,
-        "warning": "Using default worker zero",
-    }
-}
+process_status = {"worker": 0, "running": True}
 
 
 # ======================================================================
-# Signal handlers
+# Signal Handling
 # ======================================================================
-def sigterm_handler(signal=None, frame=None) -> None:
+def _signal_handler(sig=None, frame=None):
+    """Handle SIGTERM and SIGINT for graceful shutdown."""
     global process_status, log
-    current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"Kill signal received at: {current_function}()")
+    func = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"Signal {sig} received at {func}() — stopping worker loop.")
     process_status["running"] = False
 
 
-def sigint_handler(signal=None, frame=None) -> None:
-    global process_status, log
-    current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"Ctrl+C received at: {current_function}()")
-    process_status["running"] = False
-
-
-signal.signal(signal.SIGTERM, sigterm_handler)
-signal.signal(signal.SIGINT, sigint_handler)
-
-
-class HaltFlagError(Exception):
-    pass
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
 
 
 # ======================================================================
-# Argument parsing
+# Argument Parsing
 # ======================================================================
-def parse_arguments():
-    global ARGUMENTS, process_status, log
+def parse_arguments() -> None:
+    """Parse command-line arguments (e.g., worker=1)."""
+    global process_status
+    worker = 0
     for arg in sys.argv[1:]:
-        if "=" in arg:
-            key, value = arg.split("=", 1)
-            if key in ARGUMENTS:
-                try:
-                    ARGUMENTS[key]["value"] = int(value)
-                    ARGUMENTS[key]["set"] = True
-                except ValueError:
-                    log.warning(f"Invalid value for {key}, using default {ARGUMENTS[key]['value']}")
-            else:
-                log.warning(f"Unknown argument: {arg}")
-
-    process_status["worker"] = ARGUMENTS["worker"]["value"]
-    if not ARGUMENTS["worker"]["set"]:
-        log.warning(ARGUMENTS["worker"]["warning"])
+        if arg.startswith("worker="):
+            try:
+                worker = int(arg.split("=")[1])
+            except ValueError:
+                log.warning("Invalid worker value, defaulting to 0.")
+    process_status["worker"] = worker
+    log.entry(f"Worker ID set to {worker}.")
 
 
 # ======================================================================
-# Worker management
+# Worker Management (systemd-free, portable)
 # ======================================================================
-def spawn_file_task_worker(worker_list: list) -> None:
-    global log
-    new_worker = 0
-    for i in range(len(worker_list)):
-        if new_worker == worker_list[i]:
-            new_worker += 1
-        elif new_worker < worker_list[i]:
-            break
-
-    log.entry(f"Spawning file backup task process worker {new_worker}")
-    os.system(f"systemctl start {k.BKP_TASK_WORKER_SERVICE}{new_worker}.service")
-
-
-def worker_counter(process_filename: str) -> list:
-    """Count the number of running file task processes."""
-    global log
-    worker_list = []
-
+def list_running_workers(process_filename: str) -> list[int]:
+    """Detect currently running worker processes for this script."""
+    workers = []
     try:
-        running_processes = os.popen(f"pgrep -f {process_filename}").read().splitlines()
+        running_pids = os.popen(f"pgrep -f {process_filename}").read().splitlines()
     except Exception as e:
-        log.error(f"Error counting running workers: {e}")
-        return []
+        log.error(f"Error listing worker processes: {e}")
+        return workers
 
-    for worker in running_processes:
+    for pid in running_pids:
+        cmdline_path = f"/proc/{pid}/cmdline"
+        if not os.path.exists(cmdline_path):
+            continue
         try:
-            proc_path = f"/proc/{worker}/cmdline"
-            if not os.path.exists(proc_path):
-                log.warning(f"Process {worker} terminated before inspection.")
-                continue
-
-            worker_args = open(proc_path).read().split("\x00")
-            for i in range(len(worker_args)):
-                if process_filename in worker_args[i]:
-                    try:
-                        if "=" in worker_args[i + 1]:
-                            worker_index = int(worker_args[i + 1].split("=")[1])
-                        else:
-                            worker_index = int(worker_args[i + 1])
-                    except (IndexError, ValueError, TypeError):
-                        worker_index = DEFAULT_WORKER
-                    worker_list.append(worker_index)
+            args = open(cmdline_path).read().split("\x00")
+            for arg in args:
+                if arg.startswith("worker="):
+                    workers.append(int(arg.split("=")[1]))
                     break
         except Exception as e:
-            log.warning(f"Could not inspect process {worker}: {e}")
+            log.warning(f"Unable to inspect PID {pid}: {e}")
             continue
 
-    worker_list = sorted(list(dict.fromkeys(worker_list)))
-    log.entry(f"Running workers: {worker_list}")
-    return worker_list
+    workers = sorted(set(workers))
+    log.entry(f"Detected running workers: {workers}")
+    return workers
 
+
+def spawn_additional_worker(current_workers: list[int]) -> None:
+    """Spawn a detached backup worker using subprocess.Popen()."""
+    next_worker = 0
+    while next_worker in current_workers:
+        next_worker += 1
+
+    if len(current_workers) >= k.BKP_TASK_MAX_WORKERS:
+        log.entry("Maximum worker limit reached — not spawning new worker.")
+        return
+
+    cmd = [sys.executable, os.path.abspath(__file__), f"worker={next_worker}"]
+    try:
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        log.entry(f"Spawned new backup worker (index={next_worker}).")
+    except Exception as e:
+        log.error(f"Failed to spawn worker {next_worker}: {e}")
 
 
 # ======================================================================
-# Main loop
+# Task Operations
+# ======================================================================
+def transfer_file_task(db: dbHandlerBKP, host: dict, sftp, task_id: int,
+                       remote_dir: str, filename: str, local_path: str) -> bool:
+    """
+    Transfer a single FILE_TASK from remote node to local repository.
+
+    Args:
+        db (dbHandlerBKP): Database handler.
+        host (dict): Host record.
+        sftp: Active SFTP connection object.
+        task_id (int): Task identifier.
+        remote_dir (str): Remote directory on the host.
+        filename (str): Filename to transfer.
+        local_path (str): Local destination directory.
+
+    Returns:
+        bool: True if transfer succeeded, False otherwise.
+    """
+    remote_path = f"{remote_dir}/{filename}"
+    local_file = os.path.join(local_path, filename)
+
+    # Verify remote file existence
+    if not sftp.test(remote_path):
+        msg = f"File '{remote_path}' not found on host {host['host_addr']}."
+        db.file_task_update(task_id=task_id, NU_STATUS=k.TASK_ERROR, NA_MESSAGE=msg)
+        log.warning(msg)
+        return False
+
+    # Attempt transfer
+    try:
+        sftp.transfer(remote_path, local_file)
+        db.file_task_update(
+            task_id=task_id,
+            NU_PID=os.getpid(),
+            NA_SERVER_FILE_NAME=filename,
+            NA_SERVER_FILE_PATH=local_path,
+            NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+            NU_STATUS=k.TASK_PENDING,
+            NA_MESSAGE=f"Transferred '{remote_path}' → '{local_file}'.",
+        )
+        log.entry(f"Transfer OK: {remote_path} → {local_file}")
+        return True
+
+    except Exception as e:
+        msg = f"Error transferring '{remote_path}' from {host['host_addr']}: {e}"
+        db.file_task_update(task_id=task_id, NU_STATUS=k.TASK_ERROR, NA_MESSAGE=msg)
+        log.error(msg)
+        return False
+
+
+# ======================================================================
+# Main Execution
 # ======================================================================
 def main():
-    global process_status, log
-    
-    print('Verificacao:')
-    print(k.BKP_DATABASE_NAME)
-    
-
+    """Main backup loop divided into four logical acts."""
     parse_arguments()
-    log.entry(f"Starting worker {process_status['worker']}...")
+    worker_id = process_status["worker"]
+    log.entry(f"Backup worker {worker_id} started.")
 
-    worker_list = worker_counter(process_filename=os.path.basename(__file__))
-    
-    
+    # Database initialization
     try:
-        db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
+        db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error(f"Error initializing database: {e}")
-        exit(1)
+        log.error(f"Failed to initialize database: {e}")
+        sys.exit(1)
 
+    # ===============================================================
+    # Main loop
+    # ===============================================================
     while process_status["running"]:
+        daemon = None
+        sftp_conn = None
+        host = None
+
         try:
-            tasks = db_bp.file_task_read_list_one_host(task_type=db_bp.FILE_TASK_BACKUP_TYPE)
+            # -------------------------------------------------------
+            # ACT II — Retrieve pending BACKUP tasks
+            # -------------------------------------------------------
+            tasks = db_bp.read_file_tasks(
+                task_type=k.FILE_TASK_BACKUP_TYPE,
+                task_status=k.TASK_PENDING,
+                group_by_host=True,
+            )
+
             if not tasks:
-                if worker_list.__len__() > 2:
-                    log.entry(f"No host found with pending backup. Exiting worker {process_status['worker']}")
-                    os.system(f"systemctl stop {k.BKP_TASK_WORKER_SERVICE}{process_status['worker']}.service")
-                    continue
-                else:
-                    time_to_wait = int((k.MAX_FILE_TASK_WAIT_TIME + k.MAX_FILE_TASK_WAIT_TIME * random.random()) / 2)
-                    log.entry(f"Waiting {time_to_wait} seconds for new tasks.")
-                    time.sleep(time_to_wait)
-                    continue
-
-            host = db_bp.host_read_access(tasks["host_id"])
-
-            sftp_conn = sh.sftpConnection(
-                host_uid=host["host_uid"],
-                host_add=host["host_add"],
-                port=host["port"],
-                user=host["user"],
-                password=host["password"],
-                log=log,
-            )
-
-            daemon = sh.hostDaemon(
-                sftp_conn=sftp_conn,
-                db_bp=db_bp,
-                host_id=host["host_id"],
-                task_dict=tasks["file_tasks"],
-                log=log,
-            )
-
-            if not daemon.get_config(task_type=db_bp.FILE_TASK_BACKUP_TYPE, remove_failed_task=False):
-                continue
-            if not daemon.get_halt_flag(task_type=db_bp.FILE_TASK_BACKUP_TYPE, remove_failed_task=False):
+                wait_time = int((k.MAX_FILE_TASK_WAIT_TIME + k.MAX_FILE_TASK_WAIT_TIME * random.random()) / 2)
+                log.entry(f"No pending backups. Sleeping {wait_time}s.")
+                time.sleep(wait_time)
                 continue
 
-            if worker_list.__len__() < k.BKP_TASK_MAX_WORKERS:
-                spawn_file_task_worker(worker_list=worker_list)
+            host_id = tasks[0]["FK_HOST"]
+            host = db_bp.host_read_access(host_id)
+            sftp_conn, daemon = sh.init_host_context(host, log)
 
-            local_path = f"{k.REPO_FOLDER}/{k.TMP_FOLDER}/{host['host_add']}"
-            if not os.path.exists(local_path):
-                os.makedirs(local_path)
+            # -------------------------------------------------------
+            # ACT III — Host prechecks (configuration & lock)
+            # -------------------------------------------------------
+            if not daemon.get_config():
+                log.warning(f"[CONFIG] Missing configuration for host {host['host_addr']}.")
+                continue
 
-            for task_id, file_list in tasks["file_tasks"].items():
-                filename = file_list[1]
-                file_list[2] = local_path
-                file_list[3] = filename
+            if not daemon.get_halt_flag(service="appCataloga_file_bkp", use_pid=True):
+                log.warning(f"[LOCK] Host {host['host_addr']} filesystem busy.")
+                continue
 
-                remote_file = f"{file_list[0]}/{filename}"
+            running_workers = list_running_workers(os.path.basename(__file__))
+            if len(running_workers) < k.BKP_TASK_MAX_WORKERS:
+                spawn_additional_worker(running_workers)
 
-                if not sftp_conn.test(remote_file):
-                    message = f"File '{remote_file}' not found in remote host {host['host_add']}"
-                    db_bp.file_task_update(task_id=task_id, status=db_bp.TASK_ERROR, message=message)
-                    db_bp.host_update(host_id=host["host_id"], pending_backup=-1, backup_error=1)
-                    log.warning(message)
-                    continue
+            local_path = os.path.join(k.REPO_FOLDER, k.TMP_FOLDER, host["host_addr"])
+            os.makedirs(local_path, exist_ok=True)
 
-                local_file = f"{local_path}/{filename}"
+            # -------------------------------------------------------
+            # ACT IV — Transfer and record updates
+            # -------------------------------------------------------
+            success = 0
+            fail = 0
 
+            # Iterate in each task found for host
+            for curr_task in tasks:
                 try:
-                    print('Teste local do arquivo:')
-                    print(local_file)
-                    
-                    sftp_conn.transfer(remote_file, local_file)
-                    db_bp.file_task_update(
-                        task_id=task_id,
-                        server_file=filename,
-                        server_path=local_path,
-                        task_type=db_bp.FILE_TASK_PROCESS_TYPE,
-                        status=db_bp.TASK_PENDING,
-                        message=f"File '{remote_file}' copied to '{local_file}'",
+                    check = transfer_file_task(
+                        db=db_bp, host=host, sftp=sftp_conn,
+                        task_id=curr_task["ID_FILE_TASK"],
+                        remote_dir=curr_task["NA_HOST_FILE_PATH"],
+                        filename=curr_task["NA_HOST_FILE_NAME"],
+                        local_path=local_path
                     )
-                    db_bp.host_update(host_id=host["host_id"], pending_backup=-1, pending_processing=1)
-                    daemon.set_backup_done(remote_file)
-                    log.entry(f"File '{filename}' copied to '{local_file}'")
+
+                    if check:
+                        success += 1
+                        # Check FILE_TASK_HISTORY for previous records
+                        file_history = db_bp.check_file_history(
+                            NA_HOST_FILE_NAME=curr_task["NA_HOST_FILE_NAME"]
+                        )
+                        if not file_history:
+                            db_bp.file_history_create(
+                                k.FILE_TASK_BACKUP_TYPE,
+                                FK_HOST=curr_task["FK_HOST"],
+                                NA_HOST_FILE_PATH=curr_task["NA_HOST_FILE_PATH"],
+                                NA_HOST_FILE_NAME=curr_task["NA_HOST_FILE_NAME"],
+                                NA_SERVER_FILE_NAME=curr_task["NA_HOST_FILE_NAME"],
+                                NA_SERVER_FILE_PATH=local_path,
+                                VL_FILE_SIZE_KB=curr_task["VL_FILE_SIZE_KB"]
+                            )
+                        else:
+                            db_bp.file_history_update(
+                                k.FILE_TASK_BACKUP_TYPE,
+                                file_history[0]["ID_HISTORY"]
+                            )
+                    else:
+                        fail += 1
+
                 except Exception as e:
-                    message = f"Error copying '{remote_file}' from host {host['host_add']}. {str(e)}"
-                    db_bp.file_task_update(task_id=task_id, status=db_bp.TASK_ERROR, message=message)
-                    db_bp.host_update(host_id=host["host_id"], pending_backup=-1, backup_error=1)
+                    fail += 1
+                    log.error(f"[Worker {worker_id}] Error processing file '{curr_task.get('NA_HOST_FILE_NAME')}': {e}")
                     continue
 
-            daemon.close_host()
+            # Consolidated host update
+            db_bp.host_update(
+                host_id=host["host_id"],
+                NU_HOST_FILES=success,
+                DT_LAST_BACKUP=datetime.now(),
+            )
 
+        # ---------------------------------------------------------------
+        # ACT V — Exception Handling (network, ssh, etc.)
+        # ---------------------------------------------------------------
         except paramiko.AuthenticationException as e:
-            log.error(f"Authentication failed. Please check your credentials. {str(e)}")
-            raise ValueError(log.dump_error())
+            log.error(f"SFTP authentication failed: {e}")
+            time.sleep(10)
         except paramiko.SSHException as e:
-            log.error(f"SSH error: {str(e)}")
-            raise ValueError(log.dump_error())
-        except HaltFlagError:
-            pass
+            log.error(f"SFTP connection error: {e}")
+            time.sleep(10)
         except Exception as e:
-            log.error(f"Unmapped error occurred: {str(e)}")
-            raise ValueError(log.dump_error())
+            log.error(f"[Worker {worker_id}] Unexpected error: {e}")
+            time.sleep(5)
 
-    log.entry("Shutting down....")
+        # ---------------------------------------------------------------
+        # ACT VI — Finalization (release locks, cleanup)
+        # ---------------------------------------------------------------
+        finally:
+            try:
+                if daemon:
+                    daemon.release_halt_flag(service="appCataloga_file_bkp", use_pid=True)
+                    daemon.close_host(cleanup_due_backup=True)
+                elif host:
+                    log.warning(f"Skipped cleanup — daemon not initialized for host {host['host_addr']}.")
+            except Exception as e:
+                log.warning(f"Cleanup failed: {e}")
+
+    log.entry(f"Backup worker {worker_id} shutting down gracefully.")
 
 
 if __name__ == "__main__":

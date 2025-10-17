@@ -18,7 +18,7 @@ sys.path.append(CONFIG_PATH)
 # Import appCataloga modules
 import config as k
 import shared as sh
-from db.dbHandlerRFM import dbHandlerRFM
+import db_handler as dbh
 
 import signal
 import inspect
@@ -119,7 +119,7 @@ def main():
 
     try:
         # create db object using databaseHandler class for the backup and processing database
-        rfdb = dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)
+        rfdb = dbh.dbHandler(database=k.RFM_DATABASE_NAME, log=log)
     except Exception as e:
         log.error(f"Error initializing database: {e}")
         exit(1)

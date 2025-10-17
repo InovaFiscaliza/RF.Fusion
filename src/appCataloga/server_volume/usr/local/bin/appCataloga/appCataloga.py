@@ -1,285 +1,346 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Listen to socket command to perform backup from a specific host and retuns the current status for said host.
-Keep the backup process running in a separate process and restart it if it fails.
+appCataloga - Host Backup Orchestrator Daemon
 
-    Usage:
-        appCataloga
-
-    Parameters: <via socket connection>
-        <hostid> single string with unique hostid
-        <host_add> single string with host IP or host name known to the available DNS
-        <user> single string with user id to be used to access the host
-        <pass> single string with user password to be used to access the host
-
-    Returns: (through soket connection to the client)
-        (json) =  { "id_host": (int) zabbix host id,
-                    "host_files": (int) total files in the host,
-                    "pending_host_task": (int) number of pending tasks for the host,
-                    "last_host_check": (int) unix timestamp,
-                    "host_check_error": (int) number of errors in the last check,
-                    "pending_backup": (int) number of files pending backup,
-                    "last_backup": (int) unix timestamp,
-                    "backup_error": (int) number of errors in the last backup,
-                    "pending_processing": (int) number of files pending processing,
-                    "processing_error": (int) number of errors in the last processing,
-                    "last_processing": (int) unix timestamp,
-                    "status": (int) 1=valid data or 0=error in the script,
-                    "message": (str) error or warning information}
-
-        Status may be 1=valid data or 0=error in the script
-        All keys except "message" are suppresed when Status=0
-        Message describe the error or warning information
+This daemon listens for socket commands to enqueue backup tasks for remote hosts,
+interacts with the database layer (dbHandlerBKP), and handles graceful shutdown.
+It is designed to run in Linux environments without relying on systemd; shutdown
+is implemented by locating PIDs for this script and sending POSIX signals.
 """
 
-# Set system path to include modules from /etc/appCataloga
-import sys,os
-
-# load appCataloga path
-CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
-sys.path.append(CONFIG_PATH)
-
-# Import standard libraries.
-import socket
-import json
-import signal
-from selectors import DefaultSelector, EVENT_READ
 import os
+import sys
+import json
 import time
-import inspect
-
+import socket
+import signal
 import subprocess
+from selectors import DefaultSelector, EVENT_READ
 
-# Import modules for file processing
-import config as k
+# load Config and Database folders
+_CFG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
+    sys.path.append(_CFG_DIR)
+_DB_DIR = os.path.join(os.path.dirname(__file__), "db")
+if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
+    sys.path.append(_DB_DIR)
+
+# Import customized libraries
+from db.dbHandlerBKP import dbHandlerBKP
 import shared as sh
-import db_handler as dbh
+import config as k
 
-process_status = {"conn": None, "halt_flag": None, "running": True}
-# Create a pipe
+
+# ======================================================================
+# Global state and logger
+# ======================================================================
+process_status = {"running": True}
+
+# Pipe used to wake the selector on SIGINT/SIGTERM for fast shutdown
 r_pipe, w_pipe = os.pipe()
 
-
-# function that stop systemd service
-def stop_service():
-    command = "bash -c " "systemctl stop appCataloga.service"
-
-    subprocess.Popen(
-        [command],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-        shell=True,
-    )
+# Logger using shared.py implementation (configured via config.py by default)
+log = sh.log()
 
 
-try:  # create a warning message object
-    log = sh.log()
-except Exception as e:
-    stop_service()
-    print(f"Error creating log object: {e}")
-    exit(1)
+# ======================================================================
+# Signal handling
+# ======================================================================
+def sigterm_handler(signum: int = None, frame=None) -> None:
+    """Handle SIGTERM: set shutdown flag and wake the selector.
 
+    Args:
+        signum (int, optional): Signal number.
+        frame (FrameType, optional): Current stack frame.
 
-# Define a signal handler for SIGTERM (kill command )
-def sigterm_handler(signal=None, frame=None) -> None:
-    global process_status
-    global log
-
-    current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"Kill signal received at: {current_function}()")
+    Returns:
+        None
+    """
     process_status["running"] = False
-    os.write(w_pipe, b"\0")
-    
+    try:
+        os.write(w_pipe, b"\\0")
+    except Exception:
+        pass
 
 
-# Define a signal handler for SIGINT (Ctrl+C) ---#
-def sigint_handler(signal=None, frame=None) -> None:
-    global process_status
-    global log
+def sigint_handler(signum: int = None, frame=None) -> None:
+    """Handle SIGINT: set shutdown flag and wake the selector.
 
-    current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"Ctrl+C received at: {current_function}()")
+    Args:
+        signum (int, optional): Signal number.
+        frame (FrameType, optional): Current stack frame.
+
+    Returns:
+        None
+    """
     process_status["running"] = False
-    os.write(w_pipe, b"\0")
+    try:
+        os.write(w_pipe, b"\\0")
+    except Exception:
+        pass
 
 
-# Register the signal handler function, to handle system kill commands
 signal.signal(signal.SIGTERM, sigterm_handler)
 signal.signal(signal.SIGINT, sigint_handler)
 
 
-def queue_task(
-    conn: str,
-    hostid: str,
-    host_uid: str,
-    host_addr: str,
-    host_port: str,
-    host_user: str,
-    host_passwd: str,
-):
-    """Add host to queue task in the database and return current status
+# ======================================================================
+# Service stop: kill by PID discovery (no systemd dependency)
+# ======================================================================
+def stop_self_service(script_name: str = "appCataloga.py") -> None:
+    """Stop daemon processes by script name using POSIX signals.
+
+    This function searches for all PIDs whose command line contains the given
+    script name (e.g., "appCataloga.py") and attempts a clean termination:
+    first sends SIGTERM, waits briefly, and escalates to SIGKILL if needed.
 
     Args:
-        conn (str): Socket connection object. Defaults to "ClientIP".
-        hostid (str): Target host id. Used as PK in the database host table.
-        host_uid (str): Unique physical identifier to the host.
-        host_addr (str): IP address or DNS to the host to be contacted.
-        host_port (str): SSH port to be used to connect to the host.
-        host_user (str): Host user for the SSH connection.
-        host_passwd (str): Host password for the SSH connection.
+        script_name (str): Name to search in the process list. Defaults to "appCataloga.py".
 
     Returns:
-        dict: Dictionary with the current status for the hostid
+        None
     """
-    global log
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", script_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        pids = [int(pid) for pid in result.stdout.split() if pid.strip().isdigit()]
+        current_pid = os.getpid()
 
-    db = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
+        if not pids:
+            log.entry(f"No running process found for {script_name}")
+            return
 
-    db.host_task_create(
-        task_type=db.FILE_TASK_BACKUP_TYPE,
-        host_id=hostid,
-        host_uid=host_uid,
-        host_addr=host_addr,
-        host_port=host_port,
-        host_user=host_user,
-        host_passwd=host_passwd,
-    )
-
-    host_stat = db.host_read_status(hostid)
-
-    return host_stat
-
-
-def serve_client(client_socket):
-    global log
-
-    receiving_data = True
-
-    while receiving_data:
-        try:
-            data = client_socket.recv(128)
-        except Exception as e:
-            log.entry(f"Error receiving data: {e}")
-            data = None
-
-        # in case of error or no data received
-        if not data:
-            receiving_data = False
-
-        else:
+        # Send SIGTERM to other matching processes
+        for pid in pids:
+            if pid == current_pid:
+                continue
             try:
-                host = data.decode().split(" ")
+                os.kill(pid, signal.SIGTERM)
+                log.entry(f"Sent SIGTERM to PID {pid}")
+            except ProcessLookupError:
+                # Process already exited
+                continue
             except Exception as e:
-                log.entry(f"Error decoding data: {e}")
-                
+                log.warning(f"Failed to send SIGTERM to PID {pid}: {e}")
 
-            if host[0] == k.BACKUP_QUERY_TAG:
-                try:
-                    log.entry(
-                        f"Backup request received data from {client_socket.getpeername()[0]}"
+        # Wait and escalate to SIGKILL if still alive
+        time.sleep(2.0)
+        for pid in pids:
+            if pid == current_pid:
+                continue
+            try:
+                # os.kill(pid, 0) checks for existence without sending a signal
+                os.kill(pid, 0)
+            except OSError:
+                continue  # Process is gone
+            else:
+                os.kill(pid, signal.SIGKILL)
+                log.warning(f"Sent SIGKILL to stubborn PID {pid}")
+
+    except Exception as e:
+        log.error(f"stop_self_service failed: {e}")
+
+
+# ======================================================================
+# Client handling
+# ======================================================================
+def serve_client(client_socket: socket.socket) -> None:
+    """Handle a single TCP client connection and enqueue a backup task if requested.
+
+    This function processes one client request sent to the appCataloga daemon.  
+    It expects a message framed by START_TAG/END_TAG tokens and containing all
+    required host identification parameters and optional filter settings.
+    
+    The function performs the following steps:
+        1. Receive and decode the socket message (max 256 bytes).
+        2. Parse it using `shared.parse_socket_message()`.
+        3. Validate the command type (only BACKUP_QUERY_TAG is supported).
+        4. Check if the referenced host exists in the database:
+            - If not, create a new HOST record.
+        5. Enqueue a corresponding HOST_TASK via `db_bp.queue_host_task()`.
+        6. Update host status counters and return a structured JSON response.
+        7. Always send a response to the client, even in case of error.
+
+    Args:
+        client_socket (socket.socket): Active socket connection from the requesting host.
+
+    Raises:
+        Exception: Propagated for unexpected internal errors, though most are logged and handled.
+
+    Returns:
+        None: The function sends the response directly to the socket and closes the connection.
+    """
+    
+    peer_ip = "unknown"
+    try:
+        peer_ip, _ = client_socket.getpeername()
+    except Exception:
+        pass
+
+    response = f'{k.START_TAG}{{"status":0,"message":"Unexpected error"}}{k.END_TAG}'
+
+    try:
+        raw_msg = client_socket.recv(256)
+        if not raw_msg:
+            response = f'{k.START_TAG}{{"status":0,"message":"Empty request"}}{k.END_TAG}'
+            return
+
+        try:
+            host = sh.parse_socket_message(
+                data=raw_msg.decode(),
+                peername=client_socket.getpeername(),
+                log=log
+            )
+        except Exception as e:
+            log.entry(f"[PARSE] Failed to parse message from {peer_ip}: {e}")
+            host = {"command": None, "peer": {"ip": peer_ip}}
+
+        if host.get("command") == k.BACKUP_QUERY_TAG:
+            try:
+                host_id = int(host.get("host_id") or 0)
+                if host_id <= 0:
+                    log.warning(f"[REQUEST] Invalid host_id from {peer_ip}. Ignoring request.")
+                    return
+
+                log.entry(f"[REQUEST] Backup command received from {peer_ip} (host_id={host_id})")
+
+                # Ensure host exists
+                if not db_bp.host_exists(host_id):
+                    log.entry(f"[CREATE] Host {host_id} not found. Creating new record.")
+                    db_bp.host_create(
+                        ID_HOST=host.get("host_id"),
+                        NA_HOST_NAME=host.get("host_uid"),
+                        NA_HOST_ADDRESS=host.get("host_addr"),
+                        NA_HOST_PORT=host.get("host_port"),
+                        NA_HOST_USER=host.get("user"),
+                        NA_HOST_PASSWORD=host.get("password"),
                     )
 
-                    host[0] = (
-                        client_socket.getpeername()
-                    )  # replace list first element with client IP address
-
-                    
-                    host_statistics = queue_task(
-                        *host
-                    )  # unpack list to pass as arguments to queue_task
-
-                    response = f"{k.START_TAG}{json.dumps(host_statistics)}{k.END_TAG}"
-                    
-                except Exception as e:
-                    log.entry(f"Error backup request: {e}")
-                    response = f'{k.START_TAG}{{"status":0,"message":"Could not create a backup task from the data provided."}}{k.END_TAG}'
-                    pass
-
-                receiving_data = False
-
-            elif host[0] == k.CATALOG_QUERY_TAG:
-                log.entry(
-                    f"Catalog query received data from {client_socket.getpeername()[0]}: {data.decode()}"
+                # Queue new host task
+                host_statistics = db_bp.queue_host_task(
+                    host_id=host_id,
+                    task_type=k.FILE_TASK_DISCOVERY,
+                    filter_dict=host.get("filter"),
                 )
+                try:
+                    response_data = json.dumps(host_statistics)
+                except Exception:
+                    response_data = '{"status":0,"message":"Invalid response format"}'
 
-                response = f'{k.START_TAG}{{"status":0,"message":"catalog command not implemented"}}{k.END_TAG}'
+                response = f"{k.START_TAG}{response_data}{k.END_TAG}"
 
-                receiving_data = False
+            except Exception as e:
+                if db_bp.host_exists(host_id):
+                    db_bp.host_update(host_id=host_id, NU_HOST_CHECK_ERROR=1)
+                    log.warning(f"[UPDATE] Host {host_id} marked with host_check_error=1 due to failure.")
+                log.entry(f"[ERROR] Failed to handle backup request from {peer_ip}: {e}")
+                response = f'{k.START_TAG}{{"status":0,"message":"Failed to create backup task"}}{k.END_TAG}'
+        else:
+            log.entry(f"[IGNORE] Unsupported command from {peer_ip}: {raw_msg[:200]}...")
+            response = f'{k.START_TAG}{{"status":0,"message":"Unknown host command"}}{k.END_TAG}'
 
-            else:
-                log.entry(
-                    f"Ignored data from from {client_socket.getpeername()[0]}. Received: {data.decode()}"
-                )
+    except Exception as e:
+        log.entry(f"[FATAL] Unexpected error while serving {peer_ip}: {e}")
 
-                response = f'{k.START_TAG}{{"status":0,"message":"host command not recognized"}}{k.END_TAG}'
-
-                receiving_data = False
-
-        byte_response = bytes(response, encoding="utf-8")
-
-        client_socket.sendall(byte_response)
-
-        log.entry(f"Response sent to {client_socket.getpeername()[0]}: {response}")
-
-        client_socket.close()
+    finally:
+        try:
+            client_socket.sendall(response.encode("utf-8"))
+            log.entry(f"[RESPONSE] Sent to {peer_ip}: {response}")
+        except Exception as e:
+            log.warning(f"[SEND] Failed to send response to {peer_ip}: {e}")
+        try:
+            client_socket.close()
+        except Exception:
+            pass
 
 
-def serve_forever(server_socket, interrupt_read):
-    global process_status
-    global log
+# ======================================================================
+# Server loop
+# ======================================================================
+def serve_forever(server_socket: socket.socket) -> None:
+    """Main TCP accept loop using selectors with pipe wake-up on signals.
 
+    Args:
+        server_socket (socket.socket): Listening socket.
+
+    Returns:
+        None
+    """
     sel = DefaultSelector()
-    sel.register(interrupt_read, EVENT_READ)
     sel.register(server_socket, EVENT_READ)
     sel.register(r_pipe, EVENT_READ)
 
     while process_status["running"]:
-        # Wait for events using selector.select() method
         for key, _ in sel.select():
-            # if client tries to connect, accept the connection and serve the client
             if key.fileobj == server_socket:
-                client_socket, client_address = server_socket.accept()
-                if process_status["running"]:
-                    log.entry(f"Connection established with: {client_address}")
-                    serve_client(client_socket)
-                else:
-                    log.entry("Connection attempt rejected. Server is shutting down.")
-                    response = f'{k.START_TAG}{{"status":0,"message":"Server shutting down"}}{k.END_TAG}'
-                    byte_response = bytes(response, encoding="utf-8")
-                    client_socket.sendall(byte_response)
-                    client_socket.close()
+                try:
+                    client_socket, client_address = server_socket.accept()
+                    client_socket.setblocking(True)
+                    if process_status["running"]:
+                        log.entry(f"Connection established with {client_address}")
+                        serve_client(client_socket)
+                    else:
+                        # If shutting down, return a framed message then close
+                        shutdown_resp = f'{k.START_TAG}{{"status":0,"message":"Server shutting down"}}{k.END_TAG}'
+                        client_socket.sendall(shutdown_resp.encode("utf-8"))
+                        client_socket.close()
+                except Exception as e:
+                    log.entry(f"Accept/serve error: {e}")
 
-        # sleep one second to avoid system hang in case of error
-        time.sleep(1)
+            elif key.fileobj == r_pipe:
+                # Drain the wake-up byte; loop condition will break at top
+                try:
+                    os.read(r_pipe, 1)
+                except Exception:
+                    pass
 
 
-def main():
-    global log
+# ======================================================================
+# Entrypoint
+# ======================================================================
+def main() -> None:
+    """Program entrypoint: create server socket and run the accept loop.
 
-    log.entry("Starting....")
+    Returns:
+        None
+    """
+    log.entry("Starting appCataloga service...")
 
+    server_socket = None
     try:
-        interrupt_read, interrupt_write = socket.socketpair()
-
-        log.entry(f"Server is listening on port {k.SERVER_PORT}")
-
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_address = ("", k.SERVER_PORT)
-        server_socket.bind(server_address)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind(("", k.SERVER_PORT))
         server_socket.listen(k.TOTAL_CONNECTIONS)
+        log.entry(f"Server listening on port {k.SERVER_PORT}")
 
-        serve_forever(server_socket=server_socket, interrupt_read=interrupt_read)
+        # Initialize DB handler after network init to surface socket errors early
+        global db_bp
+        db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME,log=log)
 
-        server_socket.close()
-        stop_service()
+        serve_forever(server_socket)
 
     except Exception as e:
-        log.entry(f"Error: {e}")
-        stop_service()
-        exit(1)
+        log.error(f"Fatal error: {e}")
+        # Attempt to stop other running instances (excludes current PID)
+        stop_self_service(script_name="appCataloga.py")
+        sys.exit(1)
 
-    log.entry("Shutting down....")
+    finally:
+        try:
+            if server_socket:
+                server_socket.close()
+        except Exception:
+            pass
+        # Attempt to stop other running instances (excludes current PID)
+        stop_self_service(script_name="appCataloga.py")
+        log.entry("Server shutdown complete.")
 
 
 if __name__ == "__main__":
