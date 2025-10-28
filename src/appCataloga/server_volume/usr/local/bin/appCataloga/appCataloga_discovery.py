@@ -121,6 +121,10 @@ def main() -> None:
             sftp = None
             error = False
             n_backup = {"moved_to_backup": 0}
+            
+            # Change HOST_TASK to running status
+            db.host_task_update(task_id=task_id,
+                                NU_STATUS=k.TASK_RUNNING)
 
             # ----------------------------------------------------------
             # 2. Initialize host context (SFTP + daemon)
@@ -131,7 +135,9 @@ def main() -> None:
             except Exception as e:
                 log.error(f"[INIT] Failed to initialize host {host_id}: {e}")
                 db.host_update(ID_HOST=host_id, HOST_CHECK_ERROR=1)
-                db.host_task_delete(task_id=task_id)
+                db.host_task_update(task_id=task_id,
+                                    NU_STATUS=k.TASK_ERROR,
+                                    NA_MESSAGE="Error, unable to open SFTP connection")
                 continue
 
             # ----------------------------------------------------------
@@ -146,7 +152,9 @@ def main() -> None:
 
             if error:
                 db.host_update(ID_HOST=host_id, HOST_CHECK_ERROR=1)
-                db.host_task_delete(task_id=task_id)
+                db.host_task_update(task_id=task_id,
+                                    NU_STATUS=k.TASK_ERROR,
+                                    NA_MESSAGE="Error, unable establish daemon connection")
                 continue
 
             # ----------------------------------------------------------

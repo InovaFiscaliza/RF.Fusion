@@ -162,6 +162,10 @@ def transfer_file_task(db: dbHandlerBKP, host: dict, sftp, task_id: int,
         db.file_task_update(task_id=task_id, NU_STATUS=k.TASK_ERROR, NA_MESSAGE=msg)
         log.warning(msg)
         return False
+    
+    # Update current task in FILE_TASK table
+    db.file_task_update(task_id=task_id, 
+                                NU_STATUS=k.TASK_RUNNING)
 
     # Attempt transfer
     try:
@@ -282,8 +286,8 @@ def main():
                             )
                         else:
                             db_bp.file_history_update(
-                                k.FILE_TASK_BACKUP_TYPE,
-                                file_history[0]["ID_HISTORY"]
+                                task_type=k.FILE_TASK_BACKUP_TYPE,
+                                file_name=curr_task["NA_HOST_FILE_NAME"]
                             )
                     else:
                         fail += 1

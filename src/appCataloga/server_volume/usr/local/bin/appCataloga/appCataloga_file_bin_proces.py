@@ -39,6 +39,7 @@ import os
 
 import signal
 import inspect
+from datetime import datetime
 
 # create a warning message object
 log = sh.log(target_screen=False)
@@ -330,6 +331,12 @@ def main():
                 db_rfm.insert_bridge_spectrum_file(spectrum_lst, [file_id, new_file_id])
 
                 db_bp.file_task_delete(task_id=task["ID_FILE_TASK"])
+                
+                # Update FILE_HISTORY and HOST tables with datetime of the last processing
+                db_bp.file_history_update(task_type=k.FILE_TASK_PROCESS_TYPE,
+                                          file_name=file_data["filename"])
+                db_bp.host_update(host_id=host_info["host_id"],
+                                  DT_LAST_PROCESSING=datetime.now())
 
                 log.entry(f"Finished processing '{filename}'.")
 

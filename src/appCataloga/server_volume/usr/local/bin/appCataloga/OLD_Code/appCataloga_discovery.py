@@ -147,7 +147,7 @@ def main():
                 continue
 
             # Set task status to running
-            db_bp.host_task_update(task_id=custom_read["task_id"], status=k.TASK_RUNNING)
+            db_bp.host_task_update(task_id=custom_read["task_id"], NU_STATUS=k.TASK_RUNNING)
 
             # Create a SSH client and SFTP connection to the remote host
             sftp_conn, daemon = sh.init_host_context(host=custom_read,log=log)

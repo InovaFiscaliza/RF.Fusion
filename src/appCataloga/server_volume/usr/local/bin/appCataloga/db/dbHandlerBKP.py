@@ -691,63 +691,86 @@ class dbHandlerBKP(DBHandlerBase):
 
     def host_task_update(
         self,
-        task_id: int,
-        status: Optional[int] = None,
-        message: Optional[str] = None,
-        pid: Optional[int] = None,
-    ) -> None:
-        """Update host task information safely using parameterized SQL.
+        task_id: Optional[int] = None,
+        where_dict: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Safely update HOST_TASK fields with validation, supporting task_id or custom where_dict.
 
         Args:
-            task_id (int): Task ID (ID_HOST_TASK)
-            status (Optional[int]): New task status. If provided, controls PID logic.
-            message (Optional[str]): Optional message text.
-            pid (Optional[int]): Process ID associated with the task.
+            task_id (Optional[int]): Task ID (ID_HOST_TASK). Required unless where_dict is provided.
+            where_dict (Optional[Dict[str, Any]]): Optional WHERE condition for bulk updates.
+            **kwargs: Fields to update. Only keys in VALID_FIELDS_HOST_TASK are applied.
+
+        Returns:
+            Dict[str, Any]: {
+                "success": bool,
+                "rows_affected": int,
+                "updated_fields": Dict[str, Any]
+            }
 
         Raises:
+            ValueError: If neither task_id nor where_dict is provided.
             Exception: On SQL execution or commit failure.
         """
 
-        # --- Build the SET dictionary dynamically ---
+        # --- Validation of target criteria ---
+        if task_id is None and not where_dict:
+            raise ValueError("host_task_update() requires either 'task_id' or 'where_dict' argument.")
+
+        valid_fields = getattr(self, "VALID_FIELDS_HOST_TASK", set())
         set_dict: Dict[str, Any] = {}
 
-        if status is not None:
-            set_dict["NU_STATUS"] = status
+        # --- Build update dictionary (only valid fields) ---
+        for key, value in kwargs.items():
+            if key in valid_fields:
+                set_dict[key] = value
+            else:
+                self.log.warning(f"[DB] Ignored invalid field '{key}' in host_task_update().")
 
-            # Adjust NU_PID depending on status
+        # --- Apply business logic if applicable ---
+        if "NU_STATUS" in set_dict:
+            status = set_dict["NU_STATUS"]
             if status == k.TASK_PENDING:
                 set_dict["NU_PID"] = None
-            elif status == k.TASK_RUNNING:
-                set_dict["NU_PID"] = pid if pid else getattr(self.log, "pid", None)
+            elif status == k.TASK_RUNNING and "NU_PID" not in set_dict:
+                set_dict["NU_PID"] = getattr(self.log, "pid", None)
 
-        elif pid is not None:
-            # Update PID independently
-            set_dict["NU_PID"] = pid
-
-        if message:
-            # Sanitization handled by parameterized query
-            set_dict["NA_MESSAGE"] = message
-
-        # Nothing to update
+        # --- Nothing to update ---
         if not set_dict:
-            self.log.warning(f"[DB] host_task_update() called with no changes for task {task_id}.")
-            return
+            self.log.warning(f"[DB] host_task_update() called with no valid fields for update.")
+            return {"success": False, "rows_affected": 0, "updated_fields": {}}
 
-        where_dict = {"ID_HOST_TASK": task_id}
+        # --- Determine WHERE condition ---
+        where = where_dict if where_dict else {"ID_HOST_TASK": task_id}
 
         try:
-            # Execute safe update via DBHandlerBase
-            self._update_row(
+            rows_affected = self._update_row(
                 table="HOST_TASK",
-                set_dict=set_dict,
-                where_dict=where_dict,
+                data=set_dict,
+                where=where,
                 commit=True,
             )
-            self.log.entry(f"[DB] HOST_TASK {task_id} updated successfully: {set_dict}")
+
+            msg_prefix = f"[DB] HOST_TASK update"
+            if task_id:
+                msg_prefix += f" (ID={task_id})"
+            elif where_dict:
+                msg_prefix += f" (WHERE={where_dict})"
+
+            if rows_affected == 0:
+                self.log.warning(f"{msg_prefix}: no matching rows found.")
+            else:
+                self.log.entry(f"{msg_prefix}: {rows_affected} row(s) updated → {set_dict}")
+
+            return {"success": True, "rows_affected": rows_affected, "updated_fields": set_dict}
+
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[DB] Failed to update HOST_TASK {task_id}: {e}")
+            self.log.error(f"[DB] Failed to update HOST_TASK ({task_id or where_dict}): {e}")
             raise
+
+
 
             
     def host_task_delete(self, task_id: int) -> bool:
@@ -1677,60 +1700,96 @@ class dbHandlerBKP(DBHandlerBase):
             f"for file '{kwargs.get('NA_HOST_FILE_NAME')}'."
         )
         
-    def file_history_update(self, task_type: int, task_id: int, **kwargs) -> None:
+    def file_history_update(
+        self,
+        task_type: int,
+        file_name: Optional[str] = None,
+        *,
+        task_id: Optional[int] = None,
+        host_id: Optional[int] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
         """
-        Update an existing entry in FILE_TASK_HISTORY.
+        Update an existing entry in FILE_TASK_HISTORY using NA_HOST_FILE_NAME as the primary key.
 
-        This method updates the specified FILE_TASK_HISTORY record identified
-        by its ID_HISTORY (task_id) with the provided field values.
+        This method updates the specified FILE_TASK_HISTORY record identified by its
+        NA_HOST_FILE_NAME (or ID_HISTORY as a fallback) with the provided field values.
 
         Args:
-            task_id (int): The ID of the FILE_TASK_HISTORY record to update.
+            task_type (int): The FILE_TASK_* constant indicating task type (e.g., BACKUP or PROCESS).
+            file_name (Optional[str]): The name of the host file to match in FILE_TASK_HISTORY.
+            task_id (Optional[int]): Fallback unique ID (ID_HISTORY) if file_name is not provided.
+            host_id (Optional[int]): Optional host filter for disambiguation (FK_HOST).
             **kwargs: Column values to update.
 
         Returns:
-            None
+            Dict[str, Any]: {
+                "success": bool,
+                "rows_affected": int,
+                "updated_fields": Dict[str, Any],
+                "where_used": Dict[str, Any]
+            }
 
         Raises:
-            ValueError: If no fields are provided or if invalid fields are detected.
+            ValueError: If no update fields are provided or if invalid fields are detected.
         """
-        valid_fields = self.VALID_FIELDS_FILE_HISTORY
 
-         # --- Assign timestamp based on task type ---
-        if task_type == k.FILE_TASK_BACKUP_TYPE:
-            if not kwargs.get("DT_BACKUP"):
-                kwargs["DT_BACKUP"] = datetime.now()
-        elif task_type == k.FILE_TASK_PROCESS_TYPE:
-            if not kwargs.get("DT_PROCESSED"):
-                kwargs["DT_PROCESSED"] = datetime.now()
-            
-        # --- Validate provided fields ---
+        valid_fields = getattr(self, "VALID_FIELDS_FILE_HISTORY", set())
+
+        # --- Automatic timestamps based on task type ---
+        if task_type == k.FILE_TASK_BACKUP_TYPE and not kwargs.get("DT_BACKUP"):
+            kwargs["DT_BACKUP"] = datetime.now()
+        elif task_type == k.FILE_TASK_PROCESS_TYPE and not kwargs.get("DT_PROCESSED"):
+            kwargs["DT_PROCESSED"] = datetime.now()
+
+        # --- Validate fields ---
         if not kwargs:
             raise ValueError("No fields provided for update in FILE_TASK_HISTORY.")
-
         for key in kwargs.keys():
             if key not in valid_fields:
                 raise ValueError(f"Invalid field '{key}' for FILE_TASK_HISTORY.")
 
-        # --- Perform update ---
-        affected_rows = self._update_row(
-            table="FILE_TASK_HISTORY",
-            data=kwargs,
-            where={"ID_HISTORY": task_id},
-            commit=True,
-        )
-
-        # --- Logging ---
-        if affected_rows:
-            self.log.entry(
-                f"[DBHandlerBKP] Updated FILE_TASK_HISTORY record (ID={task_id}) "
-                f"with fields: {', '.join(kwargs.keys())}."
-            )
+        # --- Determine WHERE condition ---
+        if file_name:
+            where_dict = {"NA_HOST_FILE_NAME": file_name}
+            if host_id:
+                where_dict["FK_HOST"] = host_id
+        elif task_id is not None:
+            where_dict = {"ID_HISTORY": task_id}
         else:
-            self.log.entry(
-                f"[DBHandlerBKP] No FILE_TASK_HISTORY record found with ID={task_id} "
-                f"to update."
+            raise ValueError("Either 'file_name' or 'task_id' must be provided for update.")
+
+        # --- Perform update ---
+        try:
+            affected_rows = self._update_row(
+                table="FILE_TASK_HISTORY",
+                data=kwargs,
+                where=where_dict,
+                commit=True,
             )
+
+            if affected_rows:
+                self.log.entry(
+                    f"[DBHandlerBKP] Updated FILE_TASK_HISTORY ({where_dict}) "
+                    f"with fields: {', '.join(kwargs.keys())}."
+                )
+            else:
+                self.log.warning(
+                    f"[DBHandlerBKP] No FILE_TASK_HISTORY entry found for {where_dict}. Nothing updated."
+                )
+
+            return {
+                "success": True,
+                "rows_affected": affected_rows,
+                "updated_fields": kwargs,
+                "where_used": where_dict,
+            }
+
+        except Exception as e:
+            self.db_connection.rollback()
+            self.log.error(f"[DBHandlerBKP] Failed to update FILE_TASK_HISTORY ({where_dict}): {e}")
+            raise
+
 
 
 

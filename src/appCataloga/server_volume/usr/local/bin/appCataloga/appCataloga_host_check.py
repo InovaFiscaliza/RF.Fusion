@@ -165,9 +165,9 @@ def main():
                             DT_LAST_CHECK=now,
                         )
 
-                        if is_offline:
-                            db.host_task_resume_by_host(host_id)
-                            db.file_task_resume_by_host(host_id)
+                        # Host is online - check pending or error task and resume them
+                        db.host_task_resume_by_host(host_id)
+                        db.file_task_resume_by_host(host_id)
 
                 except Exception as e:
                     log.error(f"[DB] Transaction failed for host {addr}: {e}")
