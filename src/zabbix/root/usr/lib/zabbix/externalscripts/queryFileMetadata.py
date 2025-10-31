@@ -104,7 +104,7 @@ ARGUMENTS = {
     },
     "filter": {
         "set": True,
-        "value":'{"mode":"FILE","start_date":null,"end_date":null,"last_n_files":null,"extension":null, "file_name":"SCAN_M_450470_rfeye002088_170426_162736.bin"}',
+        "value":'{"mode":"ALL","start_date":null,"end_date":null,"last_n_files":null,"extension":".bin", "file_name":"*.bin", "force_backup": true}',
         "message": "Backup request is {value}",
     },
 }

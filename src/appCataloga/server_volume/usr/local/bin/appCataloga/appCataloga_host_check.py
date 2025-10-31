@@ -176,9 +176,7 @@ def main():
             # ----------------------------------------------------------
             # Step 5 — Sleep before next iteration
             # ----------------------------------------------------------
-            cycle_interval = getattr(k, "HOST_CHECK_CYCLE_INTERVAL", 30)
-            log.entry(f"[CYCLE] Host check complete. Sleeping {cycle_interval}s.")
-            time.sleep(cycle_interval)
+            sh._random_jitter_sleep()
 
         except Exception as e:
             log.error(f"[MAIN] Unexpected error in host check loop: {e}")

@@ -224,9 +224,7 @@ def main():
             )
 
             if not tasks:
-                wait_time = int((k.MAX_FILE_TASK_WAIT_TIME + k.MAX_FILE_TASK_WAIT_TIME * random.random()) / 2)
-                log.entry(f"No pending backups. Sleeping {wait_time}s.")
-                time.sleep(wait_time)
+                sh._random_jitter_sleep()
                 continue
 
             host_id = tasks[0]["FK_HOST"]

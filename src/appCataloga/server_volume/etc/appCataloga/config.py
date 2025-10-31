@@ -100,6 +100,7 @@ NONE_FILTER = {
     "last_n_files": None,
     "extension": None,
     "file_name": None,
+    "force_backup": None,
 }
 
 # Database Tasks Constants

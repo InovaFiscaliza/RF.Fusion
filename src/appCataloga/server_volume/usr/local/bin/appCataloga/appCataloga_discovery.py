@@ -21,7 +21,6 @@ import os
 import sys
 import time
 import json
-import random
 import signal
 import traceback
 import subprocess
@@ -89,9 +88,7 @@ def _release_all_halt_flags() -> None:
             log.warning(f"[cleanup] Failed to release HALT_FLAG: {e}")
 
 
-def _random_jitter_sleep() -> None:
-    """Small random delay to reduce race conditions between workers."""
-    time.sleep(random.uniform(0.5, 2.0))
+
 
 
 # ======================================================================
@@ -101,10 +98,9 @@ def main() -> None:
     """Main loop for the discovery microservice."""
     db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     log.entry("[INIT] appCataloga_discovery microservice started.")
-    _random_jitter_sleep()
+    sh._random_jitter_sleep()
 
     while process_status["running"]:
-        now = datetime.now(timezone.utc)
 
         try:
             # ----------------------------------------------------------
@@ -112,7 +108,7 @@ def main() -> None:
             # ----------------------------------------------------------
             task = db.host_task_read(task_status=k.TASK_PENDING)
             if not task:
-                _random_jitter_sleep()
+                sh._random_jitter_sleep()
                 continue
 
             host_id = int(task.get("host_id"))
@@ -162,10 +158,12 @@ def main() -> None:
             # ----------------------------------------------------------
             try:
                 host_filter = Filter(task.get("host_filter"), log=log).data
-                file_list = daemon.get_mapped_files(filter=host_filter)
+                file_list = daemon.get_mapped_files(filter=host_filter,
+                                                    callBackFileHistory=db.check_file_history)
                 if not file_list:
                     log.entry(f"[DISCOVERY] No files found for host {host_id}.")
                 else:
+                    
                     file_metadata = daemon.get_metadata_files(file_list=file_list)
                     db.file_task_create(
                         host_id=host_id,

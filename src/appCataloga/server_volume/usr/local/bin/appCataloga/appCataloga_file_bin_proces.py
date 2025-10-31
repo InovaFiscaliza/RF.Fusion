@@ -341,17 +341,8 @@ def main():
                 log.entry(f"Finished processing '{filename}'.")
 
             else:
-                time_to_wait = int(
-                    (
-                        k.MAX_FILE_TASK_WAIT_TIME
-                        + k.MAX_FILE_TASK_WAIT_TIME * random.random()
-                    )
-                    / 2
-                )
-
-                log.entry(f"Waiting {time_to_wait} seconds for new tasks.")
                 # wait for a task to be posted
-                time.sleep(time_to_wait)
+                sh._random_jitter_sleep()
 
         except Exception as e:
             if not task:

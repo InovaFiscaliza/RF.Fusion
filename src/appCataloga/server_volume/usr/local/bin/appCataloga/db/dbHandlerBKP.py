@@ -1170,45 +1170,44 @@ class dbHandlerBKP(DBHandlerBase):
         file_metadata: List[Dict[str, Any]],
     ) -> int:
         """
-        Recreate FILE_TASK entries for the given files.
+        Create or update FILE_TASK entries for the given files (transactional upsert).
 
-        For each file in the list:
-        - If an entry with the same NA_HOST_FILE_NAME already exists, delete it.
-        - Create a new FILE_TASK record using the provided metadata.
+        For each file:
+        - If a FILE_TASK with the same (FK_HOST, NA_HOST_FILE_NAME) exists, it is updated.
+        - Otherwise, a new record is inserted.
+        All operations occur within a single transaction; failures trigger rollback.
 
-        No filtering or selection logic is applied.
+        Args:
+            host_id (int): Host identifier.
+            task_type (int): Task type (e.g., discovery, backup).
+            task_status (int): Task status code.
+            files (List[str]): Absolute remote file paths.
+            file_metadata (List[Dict[str, Any]]): Metadata list for each file, expected keys:
+                - "NA_FILE", "NA_EXTENSION", "VL_FILE_SIZE_KB",
+                "DT_FILE_CREATED", "DT_FILE_MODIFIED"
+
+        Returns:
+            int: Number of records inserted or updated.
         """
         self._connect()
-        created = 0
+        processed = 0
 
         try:
-            # Build (path, name) pairs for all files
-            tuples = [(os.path.dirname(f), os.path.basename(f)) for f in files]
+            file_pairs = [(os.path.dirname(f), os.path.basename(f)) for f in files]
 
-            for path, name in tuples:
-                # Find metadata for this file
+            for path, name in file_pairs:
                 meta = next((m for m in file_metadata if m.get("NA_FILE") == name), {})
                 if not meta:
                     self.log.warning(f"[file_task_create] Missing metadata for {name}")
                     continue
 
-                # Delete existing task if it already exists
-                try:
-                    self._delete_row(
-                        "FILE_TASK",
-                        where={"FK_HOST": host_id, "NA_HOST_FILE_NAME": name},
-                        commit=False,
-                    )
-                except Exception as e:
-                    self.log.warning(f"[file_task_create] Could not delete old entry for {name}: {e}")
-                    
-                # Compose message
-                msg = self._compose_message(task_type=task_type,
-                                            task_status=task_status,
-                                            path=path,
-                                            name=name)
+                msg = self._compose_message(
+                    task_type=task_type,
+                    task_status=task_status,
+                    path=path,
+                    name=name,
+                )
 
-                # Always create a new FILE_TASK entry
                 payload = {
                     "FK_HOST": host_id,
                     "NA_HOST_FILE_PATH": path,
@@ -1217,22 +1216,42 @@ class dbHandlerBKP(DBHandlerBase):
                     "VL_FILE_SIZE_KB": meta.get("VL_FILE_SIZE_KB"),
                     "DT_FILE_CREATED": meta.get("DT_FILE_CREATED"),
                     "DT_FILE_MODIFIED": meta.get("DT_FILE_MODIFIED"),
-                    "NU_TYPE": task_type,    # Fixed type for now
-                    "NU_STATUS": task_status,  # Fixed status for now
+                    "NU_TYPE": task_type,
+                    "NU_STATUS": task_status,
                     "DT_FILE_TASK": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "NA_MESSAGE": msg,
                 }
 
-                self._insert_row("FILE_TASK", payload, commit=False)
-                created += 1
+                # --- Tenta atualizar primeiro ---
+                try:
+                    rows_affected = self._update_row(
+                        "FILE_TASK",
+                        data={k: v for k, v in payload.items() if k not in ("FK_HOST", "NA_HOST_FILE_NAME")},
+                        where={"FK_HOST": host_id, "NA_HOST_FILE_NAME": name},
+                        commit=False,
+                    )
+                except Exception as e:
+                    self.log.warning(f"[file_task_create] Update failed for {name}: {e}")
+                    rows_affected = 0
+
+                # --- Se não atualizou nenhuma linha, faz INSERT ---
+                if not rows_affected:
+                    try:
+                        self._insert_row("FILE_TASK", payload, commit=False)
+                    except Exception as e:
+                        self.log.error(f"[file_task_create] Insert failed for {name}: {e}")
+                        continue
+
+                processed += 1
 
             self.db_connection.commit()
-            return created
+            return processed
 
         except Exception as e:
             self.db_connection.rollback()
             self.log.error(f"[dbHandlerBKP] file_task_create failed: {e}")
             raise
+
         finally:
             self._disconnect()
 
@@ -1462,6 +1481,52 @@ class dbHandlerBKP(DBHandlerBase):
                 self.log.entry(f"[DBHandlerBKP] Resumed {total_resumed} FILE_TASK entries for host {host_id}.")
         except Exception as e:
             self.log.error(f"[DBHandlerBKP] Failed to resume FILE_TASK entries for host {host_id}: {e}")
+            
+    def check_file_task(self, **kwargs) -> list[dict]:
+        """
+        Query FILE_TASK with dynamic filters based on provided keyword arguments.
+
+        Only valid column names defined in `valid_fields` are allowed to form the WHERE clause.
+        Each key in kwargs must match a valid field name in the table.
+
+        Args:
+            **kwargs: Dynamic filter arguments (e.g., FK_HOST=123, NU_STATUS=1, NA_HOST_FILE_NAME='file.bin').
+
+        Returns:
+            list[dict]: Matching rows from FILE_TASK_HISTORY. Returns an empty list if none found.
+
+        Raises:
+            ValueError: If any provided keyword does not match a valid field.
+            mysql.connector.Error: On query failure.
+        """
+        valid_fields = self.VALID_FIELDS_FILE_TASK
+
+        # Validate and build WHERE clause
+        where_clause = {}
+        for key, value in kwargs.items():
+            if key not in valid_fields:
+                raise ValueError(f"Invalid field in _check_file_history(): '{key}' is not a valid column.")
+            where_clause[key] = value
+
+        # Execute the SELECT query
+        rows = self._select_rows(
+            table="FILE_TASK",
+            where=where_clause,
+            order_by="ID_FILE_TASK DESC",
+            cols=[
+                "ID_FILE_TASK",
+                "FK_HOST",
+                "DT_FILE_TASK",
+                "NA_HOST_FILE_PATH",
+                "NA_HOST_FILE_NAME",
+                "VL_FILE_SIZE_KB",
+                "NA_SERVER_FILE_PATH",
+                "NA_SERVER_FILE_NAME",
+                "NA_MESSAGE",
+            ],
+        )
+
+        return rows or None
 
     # ======================================================================
     # BACKLOG MANAGEMENT
@@ -1527,11 +1592,11 @@ class dbHandlerBKP(DBHandlerBase):
                 group_by_host=True,
             )
 
-            summary["rows_read"] = len(tasks)
             if not tasks:
                 self.log.entry("[DBHandlerBKP] No eligible FILE_TASKs found for routing.")
                 return summary
-
+            
+            summary["rows_read"] = len(tasks)
             # 2) Build filterable inputs (from backlog)
             tuples, metadata = Filter.build_inputs_from_tasks(tasks)
 
@@ -1547,7 +1612,7 @@ class dbHandlerBKP(DBHandlerBase):
             # 4) Process each task
             for i, task in enumerate(tasks):
                 flag = int(flags[i]) if i < len(flags) else 0
-
+                
                 routed_type, routed_status = self._route_from_flag(
                     flag,
                     search_type=search_type,

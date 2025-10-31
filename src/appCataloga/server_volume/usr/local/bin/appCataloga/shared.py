@@ -27,6 +27,7 @@ import paramiko
 import posixpath
 import fnmatch
 import stat
+import random
 from datetime import datetime
 from typing import Any, Dict, List, Tuple, Optional, Union
 from enum import Enum
@@ -681,7 +682,7 @@ class sftpConnection:
             else:
                 # Check if filename matches the given pattern
                 if fnmatch.fnmatch(entry.filename, pattern):
-                    matched_files.append(full_path)  # Return only filename
+                    matched_files.append(full_path)  
 
         return matched_files
 
@@ -993,35 +994,81 @@ class hostDaemon:
         except Exception as e:
             self.log.warning(f"[HALT] release_halt_flag() encountered an unexpected error: {e}")
             
-    def get_mapped_files(self, filter: Dict):
+    
+    def get_mapped_files(self, filter: Dict, callBackFileHistory):
         """
-        Get file list found in remote host, either by reading a control file
-        or by searching the remote filesystem directly using wildcard patterns.
+        Retrieve a list of remote files eligible for backup according to the given filter.
+
+        The method supports three main operational modes:
+
+        - **Default (any mode other than FILE or AGENT)**:
+            Reads the `.files.changed.list` file from the remote node to obtain
+            files detected as pending backup by the Agent process.
+
+        - **FILE**:
+            Performs a remote filesystem search using wildcard patterns
+            (e.g., `*.bin`, `data_*.csv`) to find specific files.
+
+        - **AGENT**:
+            Scans the remote repository recursively, optionally filtered by
+            file extension (e.g., `.bin`, `.log`). If `force_backup` is False,
+            only files not yet recorded in `FILE_TASK` or `FILE_TASK_HISTORY`
+            are returned, using the provided callbacks.
 
         Args:
-            filter (Dict): Dictionary containing mode and (optionally) file_name.
+            filter (dict): Filter configuration. Expected keys:
+                - **mode** (str): One of ("NONE", "FILE", "AGENT", "RANGE", ...).
+                - **file_name** (Optional[str]): Wildcard for FILE mode.
+                - **extension** (Optional[str]): Extension filter for AGENT mode.
+                - **force_backup** (Optional[bool]): Forces backup of all files (AGENT mode).
+            callBackFileTask (Callable): Function used to check existence of a file
+                in the current FILE_TASK table. Expected signature:
+                `callBackFileTask(NA_HOST_FILE_NAME: str) -> bool`.
+            callBackFileHistory (Callable): Function used to check existence of a file
+                in FILE_TASK_HISTORY. Expected signature:
+                `callBackFileHistory(NA_HOST_FILE_NAME: str) -> bool`.
 
         Returns:
-            list: List of file paths found on the remote host.
+            list[str]: List of absolute remote file paths to be backed up.
+                    Returns an empty list if no files are found or on error.
+
+        Raises:
+            Exception: Propagates unexpected errors in lower-level SFTP operations.
         """
-        due_backup_list = None
+        due_backup_list: List[str] = []
+        filter_mode = (filter.get("mode") or "").upper()
 
-        if filter.get("mode") != "FILE":
-            # Read .files.changed.list in remote node and check new available files discovered by Agent
-            due_backup_str = self.sftp_conn.read(
-                filename=self.config["DUE_BACKUP"], mode="r"
-            )
+        # ------------------------------------------------------------------
+        # 1. Default mode → read control file from remote agent
+        # ------------------------------------------------------------------
+        if filter_mode not in ("FILE", "AGENT"):
+            try:
+                raw_bytes = self.sftp_conn.read(filename=self.config["DUE_BACKUP"], mode="r")
+            except Exception as e:
+                self.log.warning(
+                    f"[get_mapped_files] Failed to read control file "
+                    f"{self.config.get('DUE_BACKUP')}: {e}"
+                )
+                return []
 
-            if due_backup_str:
-                # Clean the string and split it into a list of files
-                due_backup_str = due_backup_str.decode(encoding="utf-8", errors="ignore")
-                due_backup_str = "".join(due_backup_str.split("\x00"))
-                due_backup_list = due_backup_str.splitlines()
+            if not raw_bytes:
+                return []
 
-        else:
-            # Perform remote search for files using wildcard
-            file_pattern = filter.get("file_name")
-            remote_dir = self.config.get("LOCAL_REPO")  # default to root if not provided
+            try:
+                decoded_str = raw_bytes.decode("utf-8", errors="ignore").replace("\x00", "").strip()
+                due_backup_list = [
+                    line.strip() for line in decoded_str.splitlines() if line.strip()
+                ]
+            except Exception as e:
+                self.log.error(f"[get_mapped_files] Failed to decode control file: {e}")
+                return []
+
+        # ------------------------------------------------------------------
+        # 2. FILE mode → direct search by wildcard
+        # ------------------------------------------------------------------
+        elif filter_mode == "FILE":
+            file_pattern = filter.get("file_name") or "*"
+            remote_dir = self.config.get("LOCAL_REPO", "/")
 
             try:
                 due_backup_list = self.sftp_conn.sftp_find_files(
@@ -1030,10 +1077,38 @@ class hostDaemon:
                     recursive=True
                 )
             except Exception as e:
-                self.log.error(f"[get_mapped_files] Failed to search remote files: {e}")
+                self.log.error(f"[get_mapped_files] Failed to search remote files (FILE mode): {e}")
                 due_backup_list = []
 
-        return due_backup_list
+        # ------------------------------------------------------------------
+        # 3. AGENT mode → recursive search with file-level verification
+        # ------------------------------------------------------------------
+        elif filter_mode == "AGENT":
+            remote_dir = self.config.get("LOCAL_REPO", "/")
+            extension = filter.get("extension")
+            file_pattern = f"*{extension}" if extension else "*"
+
+            try:
+                all_remote_files = self.sftp_conn.sftp_find_files(
+                    remote_path=remote_dir,
+                    pattern=file_pattern,
+                    recursive=True
+                )
+
+                if not all_remote_files:
+                    return []
+
+                # Selectively include files not found in history or current tasks
+                for full_path in all_remote_files:
+                    filename = full_path.split("/")[-1]
+                    if not callBackFileHistory(NA_HOST_FILE_NAME=filename):
+                        due_backup_list.append(full_path)
+
+            except Exception as e:
+                self.log.error(f"[get_mapped_files] Failed to search remote files (AGENT mode): {e}")
+                due_backup_list = []
+
+        return due_backup_list or []
 
     
     # ------------- public APIs preserved (call the unified implementation) ----
@@ -1109,24 +1184,74 @@ class hostDaemon:
 # Filter class + parse_filter wrapper
 # =====================================================================
 class Filter:
-    """Unified handler for parsing, validating and applying file filters."""
+    """Unified handler for parsing, validating, and applying file filters.
 
-    def __init__(self, filter_raw: Union[str, Dict[str, Any], None] = None, log: Optional["log"] = None):
+    Provides standardized logic for applying file-level filters based on
+    metadata (name, modification date, extension, etc.) and supports multiple
+    modes such as RANGE, FILE, LAST, ALL, and AGENT.
+
+    Attributes:
+        raw (Union[str, dict, None]): Raw filter configuration (JSON or dict).
+        data (dict): Normalized filter configuration after parsing/validation.
+        log (Optional[Any]): Optional logger for diagnostic messages.
+    """
+
+    # ------------------------------------------------------------------
+    # Filter mode constants
+    # ------------------------------------------------------------------
+    MODE_NONE = "NONE"
+    MODE_ALL = "ALL"
+    MODE_FILE = "FILE"
+    MODE_RANGE = "RANGE"
+    MODE_LAST = "LAST"
+    MODE_AGENT = "AGENT"
+
+    VALID_MODES = (
+        MODE_NONE,
+        MODE_ALL,
+        MODE_FILE,
+        MODE_RANGE,
+        MODE_LAST,
+        MODE_AGENT,
+    )
+
+    def __init__(self, filter_raw: Union[str, Dict[str, Any], None] = None, log: Optional[Any] = None):
+        """Initialize a Filter instance.
+
+        Args:
+            filter_raw: JSON string or dict containing filter configuration.
+            log: Optional logger instance for diagnostic output.
+        """
         self.log = log
         self.raw = filter_raw
         self.data = self._parse_and_validate()
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Parsing & Validation
     # ------------------------------------------------------------------
     @staticmethod
     def _default_dict() -> Dict[str, Any]:
-        """Return a default filter dictionary."""
-        return dict(mode="NONE", start_date=None, end_date=None,
-                    last_n_files=None, extension=None, file_name=None)
+        """Return a default filter dictionary.
+
+        Returns:
+            dict: Default filter configuration with neutral values.
+        """
+        return dict(
+            mode=Filter.MODE_NONE,
+            start_date=None,
+            end_date=None,
+            last_n_files=None,
+            extension=None,
+            file_name=None,
+            force_backup=None,
+        )
 
     def _parse_and_validate(self) -> Dict[str, Any]:
-        """Parse and validate filter input."""
+        """Parse and validate the filter configuration.
+
+        Returns:
+            dict: Normalized and validated filter configuration.
+        """
         try:
             f = self._parse_raw()
             self._validate(f)
@@ -1137,9 +1262,14 @@ class Filter:
             return self._default_dict()
 
     def _parse_raw(self) -> Dict[str, Any]:
-        """Normalize raw JSON or dict input."""
+        """Normalize raw JSON or dict input into canonical structure.
+
+        Returns:
+            dict: Parsed configuration dictionary.
+        """
         if not self.raw:
             return self._default_dict()
+
         if isinstance(self.raw, str):
             try:
                 f = json.loads(self.raw)
@@ -1152,67 +1282,105 @@ class Filter:
         else:
             return self._default_dict()
 
-        # Normalize keys and mode
         return {
-            "mode": str(f.get("mode", "NONE")).upper().strip(),
+            "mode": str(f.get("mode", Filter.MODE_NONE)).upper().strip(),
             "start_date": f.get("start_date"),
             "end_date": f.get("end_date"),
             "last_n_files": f.get("last_n_files"),
             "extension": f.get("extension"),
             "file_name": f.get("file_name"),
+            "force_backup": f.get("force_backup"),
         }
 
     def _validate(self, f: Dict[str, Any]) -> None:
-        """Apply validation and corrections in-place."""
+        """Apply validation and type normalization to the parsed dictionary.
+
+        Args:
+            f: Dictionary representing the parsed filter configuration.
+        """
         mode = f["mode"]
-        if mode == "RANGE":
+        
+        
+        if mode == Filter.MODE_RANGE:
             start, end = self._safe_date(f.get("start_date")), self._safe_date(f.get("end_date"))
             if start and end and start > end:
                 start, end = end, start
             f["start_date"], f["end_date"] = start, end
-        elif mode == "FILE":
+
+        elif mode == Filter.MODE_FILE:
             if not (f.get("file_name") or "").strip():
-                f["mode"] = "NONE"
-        elif mode == "LAST":
+                f["mode"] = Filter.MODE_NONE
+
+        elif mode == Filter.MODE_LAST:
             try:
                 f["last_n_files"] = max(1, int(f["last_n_files"]))
             except Exception:
                 f["last_n_files"] = None
 
+        elif mode == Filter.MODE_AGENT:
+            val = f.get("force_backup", None)
+            if not val:
+                f["force_backup"] = False
+            elif isinstance(val, (list, dict, bool)):
+                f["force_backup"] = val
+            else:
+                f["force_backup"] = True
+
+            # Normalize extension
+            # Accepts for instance "bin" or ".bin"
+            ext = f.get("extension")
+            if isinstance(ext, str):
+                ext = ext.strip().lower()
+                if ext and not ext.startswith("."):
+                    ext = f".{ext}"
+                f["extension"] = ext
+            else:
+                f["extension"] = None
+
     @staticmethod
     def _safe_date(val: Any) -> Optional[str]:
-        """Convert to ISO8601 string if valid."""
+        """Convert value to ISO8601 date string if valid.
+
+        Args:
+            val: Value to convert.
+
+        Returns:
+            Optional[str]: ISO8601 formatted date string, or None if invalid.
+        """
         try:
             return datetime.fromisoformat(str(val).replace("Z", "")).isoformat()
         except Exception:
             return None
 
-    def evaluate(self, files_tuple_list, file_metadata, candidate_paths=None):
-        """
-        Evaluate which files match the configured filtering rules.
-
-        Supports modes: NONE, ALL, FILE, RANGE, LAST — with optional extension filter.
+    # ------------------------------------------------------------------
+    # Evaluation logic (Strategy dispatch)
+    # ------------------------------------------------------------------
+    
+    def evaluate(
+        self,
+        files_tuple_list: List[Tuple[str, str]],
+        file_metadata: Dict[str, Dict[str, Any]],
+        candidate_paths: Optional[List[str]],
+    ) -> List[int]:
+        """Fallback evaluation logic for standard modes.
 
         Args:
-            files_tuple_list (List[Tuple[str, str]]): (path, filename) pairs from backlog.
-            file_metadata (Dict[str, Dict]): Metadata per filename.
-            candidate_paths (Optional[List[str]]): List of absolute file paths
-                (used only when mode == 'FILE').
+            files_tuple_list: List of (directory, filename) tuples.
+            file_metadata: Metadata dictionary keyed by filename.
+            candidate_paths: Optional subset of absolute paths.
+            file_history_checker: Optional callable for checking history.
 
         Returns:
-            List[int]: 1 if the file matches the filter, 0 otherwise.
+            List[int]: Evaluation flags (1 = match, 0 = skip).
         """
         mode = self.data["mode"]
         flags = []
 
-        # Normalize candidate paths for cross-platform safety
-        candidate_set = set()
-        if candidate_paths:
-            candidate_set = {os.path.normpath(p.strip()) for p in candidate_paths}
+        candidate_set = {os.path.normpath(p.strip()) for p in candidate_paths or []}
 
-        # Pre-parse date range
+        # Parse RANGE dates
         start_dt = end_dt = None
-        if mode == "RANGE":
+        if mode == Filter.MODE_RANGE:
             start = self.data.get("start_date")
             end = self.data.get("end_date")
             try:
@@ -1223,9 +1391,9 @@ class Filter:
             except Exception:
                 pass
 
-        # Handle LAST mode
+        # Prepare LAST selection
         selected_names = set()
-        if mode == "LAST" and self.data.get("last_n_files"):
+        if mode == Filter.MODE_LAST and self.data.get("last_n_files"):
             try:
                 last_n = int(self.data["last_n_files"])
                 sorted_files = sorted(
@@ -1241,24 +1409,26 @@ class Filter:
             except Exception:
                 pass
 
-        # ------------------------------------------------------------------
         # Main evaluation loop
-        # ------------------------------------------------------------------
         for path, name in files_tuple_list:
             meta = file_metadata.get(name, {})
             include = False
 
-            if mode == "ALL":
+            # All files moving to backup queue
+            if mode == Filter.MODE_ALL:
                 include = True
-
-            elif mode == "NONE":
+            
+            # No files moving to backup queue
+            elif mode == Filter.MODE_NONE:
                 include = False
-
-            elif mode == "FILE" and candidate_set:
+            
+            # Only discovered files moving to backup queue
+            elif mode == Filter.MODE_FILE and candidate_set:
                 joined = os.path.normpath(os.path.join(path, name))
-                include = (joined in candidate_set)
-
-            elif mode == "RANGE":
+                include = joined in candidate_set
+            
+            # Only files among the range moving to backup queue
+            elif mode == Filter.MODE_RANGE:
                 mod = meta.get("dt_file_modified")
                 if isinstance(mod, str):
                     try:
@@ -1272,14 +1442,14 @@ class Filter:
                         include = mod >= start_dt
                     elif end_dt:
                         include = mod <= end_dt
-
-            elif mode == "LAST" and selected_names:
+            
+            # Only last files moving to backup queue
+            elif mode == Filter.MODE_LAST and selected_names:
                 include = name in selected_names
-
-            # Apply extension restriction (AND logic)
-            if self.data.get("extension"):
-                ext = os.path.splitext(name)[1].lower()
-                include = include and (ext == self.data["extension"].lower())
+            
+            # Only agent files
+            elif mode == Filter.MODE_AGENT:
+                include = bool(self.data.get("force_backup"))
 
             flags.append(1 if include else 0)
 
@@ -1290,8 +1460,17 @@ class Filter:
     # Static utilities
     # ------------------------------------------------------------------
     @staticmethod
-    def build_inputs_from_tasks(tasks):
-        """Convert FILE_TASK records into filterable inputs."""
+    def build_inputs_from_tasks(tasks: List[Dict[str, Any]]) -> Tuple[List[Tuple[str, str]], Dict[str, Dict[str, Any]]]:
+        """Convert FILE_TASK database records into filterable input structures.
+
+        Args:
+            tasks: List of FILE_TASK records.
+
+        Returns:
+            Tuple[List[Tuple[str, str]], Dict[str, Dict[str, Any]]]:
+                - Tuples: (directory, filename) pairs.
+                - Metadata: Mapping of filename to metadata dict.
+        """
         tuples = [(t["NA_HOST_FILE_PATH"], t["NA_HOST_FILE_NAME"]) for t in tasks]
         metadata = {
             t["NA_HOST_FILE_NAME"]: {
@@ -1302,43 +1481,35 @@ class Filter:
         return tuples, metadata
 
     @staticmethod
-    def build_inputs_from_files(file_list: List[str], file_metadata: List[Dict[str, Any]]):
-        """
-        Build tuples and metadata dicts from a list of remote files and metadata.
-
-        This method mirrors `build_inputs_from_tasks`, but is intended for cases where
-        file information comes directly from SFTP discovery instead of database records.
+    def build_inputs_from_files(
+        file_list: List[str],
+        file_metadata: List[Dict[str, Any]],
+    ) -> Tuple[List[Tuple[str, str]], Dict[str, Dict[str, Any]]]:
+        """Convert remote file discovery results into tuples and metadata dicts.
 
         Args:
-            file_list (List[str]): List of absolute remote file paths (e.g., /mnt/internal/data/file.bin)
-            file_metadata (List[Dict[str, Any]]): List of metadata dicts corresponding to each file.
-                Each entry must contain, at minimum:
-                    - "NA_FILE": filename (basename only)
-                    - "NA_EXTENSION": file extension
-                    - "DT_FILE_MODIFIED": datetime of last modification
+            file_list: List of absolute remote file paths.
+            file_metadata: List of metadata dicts with at least:
+                - "NA_FILE": filename (basename)
+                - "NA_EXTENSION": file extension
+                - "DT_FILE_MODIFIED": last modified timestamp
 
         Returns:
             Tuple[List[Tuple[str, str]], Dict[str, Dict[str, Any]]]:
-                - tuples: [(remote_dir, filename), ...]
-                - metadata: {filename: {"extension": ..., "dt_file_modified": ...}, ...}
+                - Tuples: (remote_dir, filename)
+                - Metadata: {filename: {...}}
         """
-
         tuples: List[Tuple[str, str]] = []
         metadata: Dict[str, Dict[str, Any]] = {}
 
         for f in file_list:
             try:
-                # Always split using POSIX semantics for remote paths
                 remote_dir, remote_name = posixpath.split(f)
-                if not remote_name:
-                    continue
-
-                tuples.append((remote_dir, remote_name))
+                if remote_name:
+                    tuples.append((remote_dir, remote_name))
             except Exception as e:
-                # Defensive logging if malformed path
                 print(f"[Filter.build_inputs_from_files] Skipped malformed path '{f}': {e}")
 
-        # Build metadata dictionary indexed by filename
         for meta in file_metadata or []:
             name = meta.get("NA_FILE")
             if not name:
@@ -1350,49 +1521,34 @@ class Filter:
 
         return tuples, metadata
 
-
     @staticmethod
-    def apply(files_tuple_list, file_metadata, filter_cfg, candidate_paths=None, log=None):
-        """
-        Apply filtering rules to a given set of files and metadata.
-
-        This method instantiates a Filter object based on the provided configuration
-        and executes its evaluation logic. If 'candidate_paths' is provided, the
-        filter is further restricted to that subset of paths.
+    def apply(
+        files_tuple_list: List[Tuple[str, str]],
+        file_metadata: Union[List[Dict[str, Any]], Dict[str, Dict[str, Any]]],
+        filter_cfg: Dict[str, Any],
+        candidate_paths: Optional[List[str]] = None,
+        log: Optional[Any] = None,
+    ) -> List[int]:
+        """Apply a filter configuration to a given set of files and metadata.
 
         Args:
-            files_tuple_list (List[Tuple[str, str]]): (directory, filename) tuples.
-            file_metadata (Dict[str, Dict]): Metadata dictionary for each file.
-            filter_cfg (Dict[str, Any]): Filter configuration (mode, date, etc.).
-            candidate_paths (Optional[List[str]]): Restriction subset (absolute paths).
-            log (Optional[Logger]): Logger instance for debugging.
+            files_tuple_list: (directory, filename) pairs.
+            file_metadata: File metadata (list or dict form).
+            filter_cfg: Filter configuration dictionary or JSON string.
+            candidate_paths: Optional subset of paths (FILE mode).
+            log: Optional logger for diagnostics.
+            file_history_checker: Optional callback for history lookup.
 
         Returns:
-            List[int]: 1 if the file matches the filter, 0 otherwise.
+            List[int]: List of flags (1 = file included, 0 = excluded).
         """
-        # Convert list of dicts → dict form expected by evaluate()
-        if isinstance(file_metadata, list):
-            file_metadata_dict = {
-                meta["NA_FILE"]: {
-                    "dt_file_modified": meta.get("DT_FILE_MODIFIED"),
-                    "extension": meta.get("NA_EXTENSION"),
-                    "file_size_kb": meta.get("VL_FILE_SIZE_KB"),
-                }
-                for meta in file_metadata
-                if "NA_FILE" in meta
-            }
-        else:
-            file_metadata_dict = file_metadata
-
         try:
-            f = Filter(filter_cfg)
-            return f.evaluate(files_tuple_list, file_metadata_dict, candidate_paths)
+            f = Filter(filter_cfg, log=log)
+            return f.evaluate(files_tuple_list, file_metadata, candidate_paths)
         except Exception as e:
             if log:
                 log.error(f"[Filter] apply() failed: {e}")
             raise
-
-
     
 def parse_filter(filter_raw: Union[str, Dict[str, Any], None], log: Optional[Any] = None) -> Dict[str, Any]:
     """Safely parse and normalize a raw filter (legacy wrapper).
@@ -1520,3 +1676,8 @@ def init_host_context(host: dict, log):
     )
 
     return sftp_conn, daemon
+
+
+def _random_jitter_sleep() -> None:
+    """Small random delay to reduce race conditions between workers."""
+    time.sleep(random.uniform(0.5, k.MAX_HOST_TASK_WAIT_TIME))
