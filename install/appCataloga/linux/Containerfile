@@ -7,7 +7,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV CONDA_DIR=/opt/conda
 ENV PATH=$CONDA_DIR/bin:$PATH
 
-# --- Pacotes básicos + net-tools + SSH ---
+# ============================================================================
+# 1️⃣ Instala pacotes básicos e utilitários
+# ============================================================================
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl wget git bash bzip2 ca-certificates \
@@ -15,20 +17,30 @@ RUN apt-get update && \
         libglib2.0-0 libxext6 libsm6 libxrender1 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# --- Instala Miniconda ---
+# ============================================================================
+# 2️⃣ Instala o Miniconda
+# ============================================================================
 RUN curl -sLo ~/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
     bash ~/miniconda.sh -b -p $CONDA_DIR && \
     rm ~/miniconda.sh && \
     $CONDA_DIR/bin/conda clean -afy
 
-# --- Cria diretório de trabalho ---
-WORKDIR /app
+# ============================================================================
+# 3️⃣ Aceita os Termos de Serviço (TOS) da Anaconda
+# ============================================================================
+RUN $CONDA_DIR/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    $CONDA_DIR/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
-# --- Copia arquivos necessários para o build ---
+# ============================================================================
+# 4️⃣ Define diretório de trabalho e copia arquivos necessários
+# ============================================================================
+WORKDIR /app
 COPY environment.yml /tmp/environment.yml
 COPY docker-entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# --- Criação forçada do ambiente Conda com logs ---
+# ============================================================================
+# 5️⃣ Cria o ambiente Conda a partir do environment.yml
+# ============================================================================
 RUN set -eux; \
     sed -i 's/\r$//g' /usr/local/bin/entrypoint.sh; \
     chmod +x /usr/local/bin/entrypoint.sh; \
@@ -43,15 +55,21 @@ RUN set -eux; \
     echo "✅ Conda environment created successfully"; \
     $CONDA_DIR/bin/conda clean -afy
 
-# --- Configura o SSH e usuário root ---
+# ============================================================================
+# 6️⃣ Configura SSH e usuário root
+# ============================================================================
 RUN mkdir -p /var/run/sshd && chmod 755 /var/run/sshd && \
     echo "root:changeme" | chpasswd && \
     sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
     sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 
-# --- Exposição de portas ---
+# ============================================================================
+# 7️⃣ Expõe portas padrão
+# ============================================================================
 EXPOSE 22 5555
 
-# --- Entrypoint ---
+# ============================================================================
+# 8️⃣ Entrypoint e execução
+# ============================================================================
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/usr/sbin/sshd", "-D"]
