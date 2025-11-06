@@ -1,48 +1,25 @@
 #!/bin/bash
 set -e
-
 echo -e "\e[32m=== [1/3] Checking Podman installation ===\e[0m"
+if ! command -v podman >/dev/null 2>&1; then
+    echo -e "\e[33mPodman not found. Installing...\e[0m"
+    dnf install -y podman
+else
+    echo -e "\e[36mPodman is already installed.\e[0m"
+fi
 
-# Verifica se o Podman está instalado
-if ! command -v podman &>/dev/null; then
-  echo "Podman not found. Installing..."
-  if command -v dnf &>/dev/null; then
-    sudo dnf install -y podman
-  elif command -v yum &>/dev/null; then
-    sudo yum install -y podman
-  else
-    echo "ERROR: No supported package manager found (dnf/yum)."
+echo -e "\n\e[32m=== [2/3] Checking Podman group permissions ===\e[0m"
+if getent group podman >/dev/null 2>&1; then
+    echo -e "\e[36mPodman group exists.\e[0m"
+else
+    echo -e "\e[33mNo 'podman' group found. (Normal in native RHEL installs)\e[0m"
+fi
+
+echo -e "\n\e[32m=== [3/3] Validating Podman environment ===\e[0m"
+if podman info >/dev/null 2>&1; then
+    echo -e "\e[36mPodman is functional.\e[0m"
+else
+    echo -e "\e[31mPodman is not functional. Check installation.\e[0m"
     exit 1
-  fi
-else
-  echo "Podman is already installed."
 fi
-
-echo -e "\e[32m=== [2/3] Checking Podman group permissions ===\e[0m"
-
-# Detecta se grupo 'podman' existe
-if getent group podman >/dev/null; then
-  echo "Podman group found."
-  if [ "$EUID" -ne 0 ]; then
-    echo "Adding user $USER to podman group..."
-    sudo usermod -aG podman "$USER"
-  else
-    echo "Running as root — no need to add to podman group."
-  fi
-else
-  echo "No 'podman' group found. (Normal in native RHEL installs)"
-  echo "Skipping group assignment step."
-fi
-
-echo -e "\e[32m=== [3/3] Validating Podman environment ===\e[0m"
-
-# Testa se Podman responde corretamente
-if podman info &>/dev/null; then
-  echo "Podman is functional."
-else
-  echo "ERROR: Podman installation check failed."
-  echo "Try running 'podman system migrate' or reinstall Podman."
-  exit 1
-fi
-
 echo -e "\e[32mPodman setup complete.\e[0m"
