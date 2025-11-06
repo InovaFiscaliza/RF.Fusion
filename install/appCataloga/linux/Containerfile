@@ -1,91 +1,57 @@
-# Base Debian 12
+# ============================================================================
+# Containerfile - Debian 12 Python (RF.Fusion)
+# ============================================================================
 FROM debian:12
 
 ENV DEBIAN_FRONTEND=noninteractive
-
-# ==============================
-# Etapa 1: Bootstrap mínimo (HTTP)
-# ==============================
-RUN cat > /etc/apt/sources.list.d/debian.sources <<EOF
-Types: deb
-URIs: http://ftp.de.debian.org/debian
-Suites: bookworm
-Components: main contrib non-free
-EOF
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        curl wget git bash bzip2 ca-certificates openssh-server && \
-    rm -rf /var/lib/apt/lists/*
-
-# ==============================
-# Etapa 2: Configuração completa (HTTPS)
-# ==============================
-RUN cat > /etc/apt/sources.list.d/debian.sources <<EOF
-Types: deb
-URIs: https://deb.debian.org/debian
-Suites: bookworm bookworm-updates
-Components: main contrib non-free
-
-Types: deb
-URIs: https://security.debian.org/debian-security
-Suites: bookworm-security
-Components: main contrib non-free
-EOF
-
-RUN apt-get update
-
-# ==============================
-# Etapa 3: Instalar Miniconda
-# ==============================
 ENV CONDA_DIR=/opt/conda
 ENV PATH=$CONDA_DIR/bin:$PATH
 
+# --- Pacotes básicos + net-tools + SSH ---
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl wget git bash bzip2 ca-certificates \
+        openssh-server iputils-ping net-tools \
+        libglib2.0-0 libxext6 libsm6 libxrender1 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# --- Instala Miniconda ---
 RUN curl -sLo ~/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
     bash ~/miniconda.sh -b -p $CONDA_DIR && \
     rm ~/miniconda.sh && \
     $CONDA_DIR/bin/conda clean -afy
 
-# ==============================
-# Etapa 4: Criar ambiente Conda
-# ==============================
+# --- Cria diretório de trabalho ---
 WORKDIR /app
 
+# --- Copia arquivos necessários para o build ---
 COPY environment.yml /tmp/environment.yml
 COPY docker-entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# Normaliza fins de linha (CRLF -> LF) e garante execução
+# --- Criação forçada do ambiente Conda com logs ---
 RUN set -eux; \
     sed -i 's/\r$//g' /usr/local/bin/entrypoint.sh; \
-    chmod +x /usr/local/bin/entrypoint.sh
+    chmod +x /usr/local/bin/entrypoint.sh; \
+    echo "📦 Creating Conda environment from environment.yml..."; \
+    if [ -f /tmp/environment.yml ]; then \
+        $CONDA_DIR/bin/conda env create -f /tmp/environment.yml || \
+        $CONDA_DIR/bin/conda env update -f /tmp/environment.yml || \
+        { echo "❌ Conda environment creation failed"; exit 1; }; \
+    else \
+        echo "⚠️  environment.yml not found, skipping Conda env creation"; \
+    fi; \
+    echo "✅ Conda environment created successfully"; \
+    $CONDA_DIR/bin/conda clean -afy
 
-# Aceitar ToS automaticamente e remover canal Intel
-RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
-    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r && \
-    sed -i '/- intel/d' /tmp/environment.yml
+# --- Configura o SSH e usuário root ---
+RUN mkdir -p /var/run/sshd && chmod 755 /var/run/sshd && \
+    echo "root:changeme" | chpasswd && \
+    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 
-# Criar ambiente Conda
-RUN conda env create -f /tmp/environment.yml && \
-    conda clean -afy
+# --- Exposição de portas ---
+EXPOSE 22 5555
 
-# ==============================
-# SSH: preparar diretório e validar config
-# ==============================
-RUN set -eux; \
-    mkdir -p /var/run/sshd && chmod 755 /var/run/sshd; \
-    /usr/sbin/sshd -t
-
-# ==============================
-# Ping: instalar com suid root
-# ==============================
-RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping && \
-    chmod u+s /usr/bin/ping && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# ==============================
-# Finalização
-# ==============================
-EXPOSE 22 5555 8080
-
+# --- Entrypoint ---
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/usr/sbin/sshd", "-D"]
