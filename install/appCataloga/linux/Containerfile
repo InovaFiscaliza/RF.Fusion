@@ -26,28 +26,37 @@ RUN curl -sLo ~/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-late
     $CONDA_DIR/bin/conda clean -afy
 
 # ============================================================================
-# 3️⃣ Aceita os Termos de Serviço (TOS) da Anaconda
+# 3️⃣ Aceita Termos de Serviço da Anaconda
 # ============================================================================
 RUN $CONDA_DIR/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
     $CONDA_DIR/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
 # ============================================================================
-# 4️⃣ Remove o canal Intel (inacessível) e adiciona canais seguros
+# 4️⃣ Configura canais Conda
 # ============================================================================
 RUN $CONDA_DIR/bin/conda config --remove channels intel || true && \
     $CONDA_DIR/bin/conda config --add channels conda-forge && \
     $CONDA_DIR/bin/conda config --add channels defaults && \
-    echo "✅ Intel channel removed. Using conda-forge and defaults."
+    echo "✅ Intel channel removed from Conda config."
 
 # ============================================================================
-# 5️⃣ Define diretório de trabalho e copia arquivos necessários
+# 5️⃣ Define diretório de trabalho e copia arquivos
 # ============================================================================
 WORKDIR /app
 COPY environment.yml /tmp/environment.yml
 COPY docker-entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # ============================================================================
-# 6️⃣ Cria o ambiente Conda a partir do environment.yml
+# 6️⃣ Remove canal 'intel' diretamente do environment.yml
+# ============================================================================
+RUN set -eux; \
+    echo "🧹 Cleaning environment.yml (removing intel channel)..."; \
+    sed -i '/- intel/d' /tmp/environment.yml; \
+    echo "✅ Cleaned environment.yml:"; \
+    grep -A3 channels /tmp/environment.yml || true
+
+# ============================================================================
+# 7️⃣ Cria o ambiente Conda
 # ============================================================================
 RUN set -eux; \
     sed -i 's/\r$//g' /usr/local/bin/entrypoint.sh; \
@@ -64,7 +73,7 @@ RUN set -eux; \
     $CONDA_DIR/bin/conda clean -afy
 
 # ============================================================================
-# 7️⃣ Configura SSH e usuário root
+# 8️⃣ Configura SSH e usuário root
 # ============================================================================
 RUN mkdir -p /var/run/sshd && chmod 755 /var/run/sshd && \
     echo "root:changeme" | chpasswd && \
@@ -72,12 +81,12 @@ RUN mkdir -p /var/run/sshd && chmod 755 /var/run/sshd && \
     sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 
 # ============================================================================
-# 8️⃣ Expõe portas padrão
+# 9️⃣ Expõe portas padrão
 # ============================================================================
 EXPOSE 22 5555
 
 # ============================================================================
-# 9️⃣ Entrypoint e execução
+# 🔟 Entrypoint e execução
 # ============================================================================
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/usr/sbin/sshd", "-D"]
