@@ -262,17 +262,10 @@ def main():
                 # ! WORK ONLY FOR RFEYE######  TODO: #10 refactor to a more generic solution that works for all equipment
                 # Create a list of the equipment that may be present in the file, the four antennas and the receiver
                 receiver = bin_data["hostname"].lower()
-                rec_serial = receiver[5:]
-                equipment_lst = [
-                    f"rfeye[0]_{rec_serial}",
-                    f"rfeye[1]_{rec_serial}",
-                    f"rfeye[2]_{rec_serial}",
-                    f"rfeye[3]_{rec_serial}",
-                    receiver,
-                ]
+                
 
                 # insert the equipment in the database and/or get the ids if the equipment already exists
-                equipment_ids = db_rfm.insert_equipment(equipment_lst)
+                equipment_ids = db_rfm.insert_equipment(receiver)
 
                 spectrum_lst = []
                 for spectrum in bin_data["spectrum"]:
@@ -307,7 +300,7 @@ def main():
                     # create a list of equipment associated with the spectrum measurement
                     equipment = [
                         equipment_ids[receiver],
-                        equipment_ids[f"rfeye[{spectrum.antuid}]_{rec_serial}"],
+                        equipment_ids[f"rfeye[{spectrum.antuid}]_{receiver}"],
                     ]
                     spectrum_lst.append(
                         {

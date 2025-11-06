@@ -158,21 +158,20 @@ def main() -> None:
             # ----------------------------------------------------------
             try:
                 host_filter = Filter(task.get("host_filter"), log=log).data
-                file_list = daemon.get_mapped_files(filter=host_filter,
-                                                    callBackFileHistory=db.check_file_history)
-                if not file_list:
+                file_metadata = daemon.get_metadata_files(filter=host_filter,
+                                                    callBackFileHistory=db.check_file_history,
+                                                    callBackFileTaskHistory=db.check_file_task)
+                if not file_metadata:
                     log.entry(f"[DISCOVERY] No files found for host {host_id}.")
                 else:
                     
-                    file_metadata = daemon.get_metadata_files(file_list=file_list)
                     db.file_task_create(
                         host_id=host_id,
-                        files=file_list,
                         file_metadata=file_metadata,
                         task_type=k.FILE_TASK_DISCOVERY,
                         task_status=k.TASK_DONE,
                     )
-                    log.entry(f"[DISCOVERY] Created {len(file_list)} FILE_TASK(s) for host {host_id}.")
+                    log.entry(f"[DISCOVERY] Created {len(file_metadata)} FILE_TASK(s) for host {host_id}.")
             except Exception as e:
                 log.error(f"[DISCOVERY] Failed to create FILE_TASKs for host {host_id}: {e}")
                 error = True
@@ -189,7 +188,7 @@ def main() -> None:
                         search_status=k.TASK_DONE,
                         new_type=k.FILE_TASK_BACKUP_TYPE,
                         new_status=k.TASK_PENDING,
-                        candidate_paths=file_list if file_list else [],
+                        candidate_paths=file_metadata,
                     )
                     log.entry(f"[DISCOVERY] Promoted {n_backup['moved_to_backup']} FILE_TASK(s) to BACKUP.")
                 except Exception as e:

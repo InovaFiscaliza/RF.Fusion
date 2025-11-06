@@ -104,7 +104,7 @@ ARGUMENTS = {
     },
     "filter": {
         "set": True,
-        "value":'{"mode":"ALL","start_date":null,"end_date":null,"last_n_files":null,"extension":".bin", "file_name":"*.bin", "force_backup": true}',
+        "value":'{"mode":"FILE","start_date":"2025-10-30","end_date":null,"last_n_files":null,"extension":".bin", "file_name":"*.bin", "agent": "local"}',
         "message": "Backup request is {value}",
     },
 }

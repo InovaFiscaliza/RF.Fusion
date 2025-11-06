@@ -1166,7 +1166,6 @@ class dbHandlerBKP(DBHandlerBase):
         host_id: int,
         task_type: int,
         task_status: int,
-        files: List[str],
         file_metadata: List[Dict[str, Any]],
     ) -> int:
         """
@@ -1193,53 +1192,48 @@ class dbHandlerBKP(DBHandlerBase):
         processed = 0
 
         try:
-            file_pairs = [(os.path.dirname(f), os.path.basename(f)) for f in files]
-
-            for path, name in file_pairs:
-                meta = next((m for m in file_metadata if m.get("NA_FILE") == name), {})
-                if not meta:
-                    self.log.warning(f"[file_task_create] Missing metadata for {name}")
-                    continue
-
+            
+            for file in file_metadata:
+        
                 msg = self._compose_message(
                     task_type=task_type,
                     task_status=task_status,
-                    path=path,
-                    name=name,
+                    path=file.get("NA_PATH"),
+                    name=file.get("NA_FILE"),
                 )
 
                 payload = {
                     "FK_HOST": host_id,
-                    "NA_HOST_FILE_PATH": path,
-                    "NA_HOST_FILE_NAME": name,
-                    "NA_EXTENSION": meta.get("NA_EXTENSION"),
-                    "VL_FILE_SIZE_KB": meta.get("VL_FILE_SIZE_KB"),
-                    "DT_FILE_CREATED": meta.get("DT_FILE_CREATED"),
-                    "DT_FILE_MODIFIED": meta.get("DT_FILE_MODIFIED"),
+                    "NA_HOST_FILE_PATH": file.get("NA_PATH"),
+                    "NA_HOST_FILE_NAME": file.get("NA_FILE"),
+                    "NA_EXTENSION": file.get("NA_EXTENSION"),
+                    "VL_FILE_SIZE_KB": file.get("VL_FILE_SIZE_KB"),
+                    "DT_FILE_CREATED": file.get("DT_FILE_CREATED"),
+                    "DT_FILE_MODIFIED": file.get("DT_FILE_MODIFIED"),
                     "NU_TYPE": task_type,
                     "NU_STATUS": task_status,
                     "DT_FILE_TASK": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "NA_MESSAGE": msg,
                 }
 
-                # --- Tenta atualizar primeiro ---
+                # --- First try update existing database  ---
                 try:
                     rows_affected = self._update_row(
                         "FILE_TASK",
                         data={k: v for k, v in payload.items() if k not in ("FK_HOST", "NA_HOST_FILE_NAME")},
-                        where={"FK_HOST": host_id, "NA_HOST_FILE_NAME": name},
+                        where={"FK_HOST": host_id, "NA_HOST_FILE_NAME": file.get("NA_FILE")},
                         commit=False,
                     )
                 except Exception as e:
-                    self.log.warning(f"[file_task_create] Update failed for {name}: {e}")
+                    self.log.warning(f"[file_task_create] Update failed for {file.get('NA_FILE')}: {e}")
                     rows_affected = 0
 
-                # --- Se não atualizou nenhuma linha, faz INSERT ---
+                # --- If does not exist entry for this filename then created a new one ---
                 if not rows_affected:
                     try:
                         self._insert_row("FILE_TASK", payload, commit=False)
                     except Exception as e:
-                        self.log.error(f"[file_task_create] Insert failed for {name}: {e}")
+                        self.log.error(f"[file_task_create] Insert failed for {file.get('NA_FILE')}: {e}")
                         continue
 
                 processed += 1
@@ -1597,13 +1591,11 @@ class dbHandlerBKP(DBHandlerBase):
                 return summary
             
             summary["rows_read"] = len(tasks)
-            # 2) Build filterable inputs (from backlog)
-            tuples, metadata = Filter.build_inputs_from_tasks(tasks)
+            
 
             # 3) Apply filtering logic (optionally restricted by candidate_paths)
             flags = Filter.apply(
-                files_tuple_list=tuples,
-                file_metadata=metadata,
+                tasks=tasks,
                 filter_cfg=task_filter,
                 candidate_paths=candidate_paths,
                 log=self.log,
