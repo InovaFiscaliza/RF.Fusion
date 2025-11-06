@@ -26,16 +26,9 @@ if podman ps -a --format "{{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
     podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 fi
 
-# --- Detecta se o volume suporta atributos estendidos (xattr) ---
-LABEL_OPT=":Z"
-TMP_FILE="${HOST_VOLUME_REPOS}/.xattr_test"
-if ! (touch "$TMP_FILE" 2>/dev/null && setfattr -n user.test -v test "$TMP_FILE" 2>/dev/null); then
-    LABEL_OPT=":rw"
-    echo -e "\e[33mWarning: Volume $HOST_VOLUME_REPOS does not support xattr. Using $LABEL_OPT instead of :Z.\e[0m"
-fi
-rm -f "$TMP_FILE" 2>/dev/null || true
-
-# --- Executa o container ---
+# --- Montagem segura sem SELinux no /mnt/reposfi ---
+# /RFFusion-dev/RF.Fusion → usa :Z normalmente
+# /mnt/reposfi → usa :rw (sem SELinux relabel)
 echo -e "\e[36mStarting container $CONTAINER_NAME on network $NETWORK...\e[0m"
 podman run -d \
   --name "$CONTAINER_NAME" \
@@ -45,7 +38,7 @@ podman run -d \
   -p ${APP_PORT}:5555 \
   -e SSH_PASSWORD=changeme \
   -v "${HOST_VOLUME_RFF}:${CONTAINER_VOLUME_RFF}:Z" \
-  -v "${HOST_VOLUME_REPOS}:${CONTAINER_VOLUME_REPOS}${LABEL_OPT}" \
+  -v "${HOST_VOLUME_REPOS}:${CONTAINER_VOLUME_REPOS}:rw" \
   debian12-python
 
 echo -e "\e[32mContainer started successfully!\e[0m"
@@ -57,5 +50,5 @@ echo -e "\nContainer IP:"
 podman inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CONTAINER_NAME"
 
 echo -e "\e[36m\nMounted host paths:\e[0m"
-echo -e "  ${HOST_VOLUME_RFF}  →  ${CONTAINER_VOLUME_RFF}"
-echo -e "  ${HOST_VOLUME_REPOS}  →  ${CONTAINER_VOLUME_REPOS}"
+echo -e "  ${HOST_VOLUME_RFF}  →  ${CONTAINER_VOLUME_RFF} (Z)"
+echo -e "  ${HOST_VOLUME_REPOS}  →  ${CONTAINER_VOLUME_REPOS} (rw - SELinux disabled)"
