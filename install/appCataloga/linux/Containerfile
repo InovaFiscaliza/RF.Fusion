@@ -32,14 +32,22 @@ RUN $CONDA_DIR/bin/conda tos accept --override-channels --channel https://repo.a
     $CONDA_DIR/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
 # ============================================================================
-# 4️⃣ Define diretório de trabalho e copia arquivos necessários
+# 4️⃣ Remove o canal Intel (inacessível) e adiciona canais seguros
+# ============================================================================
+RUN $CONDA_DIR/bin/conda config --remove channels intel || true && \
+    $CONDA_DIR/bin/conda config --add channels conda-forge && \
+    $CONDA_DIR/bin/conda config --add channels defaults && \
+    echo "✅ Intel channel removed. Using conda-forge and defaults."
+
+# ============================================================================
+# 5️⃣ Define diretório de trabalho e copia arquivos necessários
 # ============================================================================
 WORKDIR /app
 COPY environment.yml /tmp/environment.yml
 COPY docker-entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # ============================================================================
-# 5️⃣ Cria o ambiente Conda a partir do environment.yml
+# 6️⃣ Cria o ambiente Conda a partir do environment.yml
 # ============================================================================
 RUN set -eux; \
     sed -i 's/\r$//g' /usr/local/bin/entrypoint.sh; \
@@ -56,7 +64,7 @@ RUN set -eux; \
     $CONDA_DIR/bin/conda clean -afy
 
 # ============================================================================
-# 6️⃣ Configura SSH e usuário root
+# 7️⃣ Configura SSH e usuário root
 # ============================================================================
 RUN mkdir -p /var/run/sshd && chmod 755 /var/run/sshd && \
     echo "root:changeme" | chpasswd && \
@@ -64,12 +72,12 @@ RUN mkdir -p /var/run/sshd && chmod 755 /var/run/sshd && \
     sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 
 # ============================================================================
-# 7️⃣ Expõe portas padrão
+# 8️⃣ Expõe portas padrão
 # ============================================================================
 EXPOSE 22 5555
 
 # ============================================================================
-# 8️⃣ Entrypoint e execução
+# 9️⃣ Entrypoint e execução
 # ============================================================================
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/usr/sbin/sshd", "-D"]
