@@ -1,37 +1,52 @@
 #!/usr/bin/env bash
 set -e
 
-echo "=== Deploying Debian 12 MariaDB + SSH container (Linux native) ==="
+echo "=== Deploying Debian 12 MariaDB + SSH container (Rootful mode) ==="
 
 # -------------------------------------------------------------------
-# 1) Parâmetros
+# 1) Parâmetros principais
 # -------------------------------------------------------------------
 CONTAINER_NAME="debian12-mariadb"
-IMAGE_NAME="debian12-mariadb"
+IMAGE_NAME="debian12-mariadb-ssh"
+NETWORK_NAME="rffusion-net"
+
+# Subnet e IP consistentes
+SUBNET="10.99.0.0/24"
 HOST_IP="10.99.0.3"
-HOST_VOLUME="/RFFusion-dev/RF.Fusion/src/appCataloga/server_volume"
+
+# Volume persistente do host
+HOST_VOLUME="/RF.Fusion/src/appCataloga/server_volume"
 
 # -------------------------------------------------------------------
 # 2) Build da imagem
 # -------------------------------------------------------------------
 echo "--- STEP 1: Building image ---"
-podman build -t "$IMAGE_NAME" -f ./Containerfile .
+sudo podman build -t "$IMAGE_NAME" -f ./Containerfile .
 
 # -------------------------------------------------------------------
-# 3) Criação da rede, se não existir
+# 3) Criação da rede bridge rootful
 # -------------------------------------------------------------------
-NETWORK_NAME="rffusion-net"
-if ! podman network exists "$NETWORK_NAME"; then
+if ! sudo podman network exists "$NETWORK_NAME"; then
     echo "--- STEP 2: Creating Podman network '$NETWORK_NAME' ---"
-    podman network create --subnet 10.99.0.0/24 "$NETWORK_NAME"
+    sudo podman network create --subnet "$SUBNET" "$NETWORK_NAME"
 else
     echo "[info] Network '$NETWORK_NAME' already exists."
 fi
 
 # -------------------------------------------------------------------
-# 4) Execução do container
+# 4) Parar e remover container antigo (se existir)
 # -------------------------------------------------------------------
-podman run -dit \
+if sudo podman ps -a --format '{{.Names}}' | grep -q "^$CONTAINER_NAME$"; then
+    echo "[info] Removing old container '$CONTAINER_NAME'..."
+    sudo podman stop "$CONTAINER_NAME" || true
+    sudo podman rm "$CONTAINER_NAME" || true
+fi
+
+# -------------------------------------------------------------------
+# 5) Execução do container (modo rootful, acessível externamente)
+# -------------------------------------------------------------------
+echo "--- STEP 3: Running container ---"
+sudo podman run -dit \
     --name "$CONTAINER_NAME" \
     --hostname "$CONTAINER_NAME" \
     --network "$NETWORK_NAME" \
@@ -43,16 +58,25 @@ podman run -dit \
     -e SSH_PASSWORD="changeme" \
     "$IMAGE_NAME"
 
-
-
 # -------------------------------------------------------------------
-# 5) Verificação
+# 6) Verificação
 # -------------------------------------------------------------------
 echo "--- STEP 4: Checking container status ---"
-podman ps --filter "name=$CONTAINER_NAME"
+sudo podman ps --filter "name=$CONTAINER_NAME"
 
-echo "=== Deployment complete ==="
-echo "Container IP: $HOST_IP"
+# -------------------------------------------------------------------
+# 7) Teste simples de conectividade interna (MariaDB)
+# -------------------------------------------------------------------
+echo "--- STEP 5: Testing internal MariaDB connection ---"
+sudo podman exec "$CONTAINER_NAME" mariadb -uroot -pchangeme -e "SELECT VERSION();" || {
+    echo "❌ MariaDB connection failed inside container."
+    exit 1
+}
+
+echo
+echo "✅ Deployment successful!"
+echo "Container name: $CONTAINER_NAME"
+echo "Container IP (bridge): $HOST_IP"
+echo "MariaDB available at: 172.16.18.11:3336"
+echo "SSH available at: 172.16.18.11:2222"
 echo "Mapped volume: $HOST_VOLUME"
-echo "MariaDB port: 3306"
-echo "SSH port: 22"
