@@ -20,7 +20,7 @@ podman build -t "$IMAGE_NAME" -f ./Containerfile .
 # -------------------------------------------------------------------
 # 3) Criação da rede, se não existir
 # -------------------------------------------------------------------
-NETWORK_NAME="rfnet"
+NETWORK_NAME="rffusion-net"
 if ! podman network exists "$NETWORK_NAME"; then
     echo "--- STEP 2: Creating Podman network '$NETWORK_NAME' ---"
     podman network create --subnet 10.99.0.0/24 "$NETWORK_NAME"
