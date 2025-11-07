@@ -9,7 +9,7 @@ echo "=== Deploying Debian 12 MariaDB + SSH container (Linux native) ==="
 CONTAINER_NAME="debian12-mariadb"
 IMAGE_NAME="debian12-mariadb"
 HOST_IP="10.99.0.3"
-HOST_VOLUME="/RF.Fusion/src/appCataloga/server_volume"
+HOST_VOLUME="/RFFusion-dev/RF.Fusion/src/appCataloga/server_volume"
 
 # -------------------------------------------------------------------
 # 2) Build da imagem
