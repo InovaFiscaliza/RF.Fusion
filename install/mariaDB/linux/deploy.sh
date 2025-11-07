@@ -31,18 +31,18 @@ fi
 # -------------------------------------------------------------------
 # 4) Execução do container
 # -------------------------------------------------------------------
-echo "--- STEP 3: Running container ---"
 podman run -dit \
     --name "$CONTAINER_NAME" \
     --hostname "$CONTAINER_NAME" \
     --network "$NETWORK_NAME" \
     --ip "$HOST_IP" \
     -p 3306:3306 \
-    -p 22:22 \
+    -p 2222:22 \
     -v "${HOST_VOLUME}:/server_volume:Z" \
     -e MARIADB_ROOT_PASSWORD="changeme" \
     -e SSH_PASSWORD="changeme" \
     "$IMAGE_NAME"
+
 
 # -------------------------------------------------------------------
 # 5) Verificação
