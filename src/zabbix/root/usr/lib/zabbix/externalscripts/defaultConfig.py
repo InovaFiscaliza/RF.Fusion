@@ -21,8 +21,8 @@ ACAT_SERVER_PORT = 5555
 ACAT_SERVER_TIMEOUT = 1000
 
 # appCataloga default arguments
-ACAT_DEFAULT_HOST_ID = "10367"
-ACAT_DEFAULT_HOST_UID = "RFEye002080"
+ACAT_DEFAULT_HOST_ID = "10368"
+ACAT_DEFAULT_HOST_UID = "RFEye002081"
 ACAT_DEFAULT_HOST_ADD = "172.21.48.35"
 ACAT_DEFAULT_HOST_PORT = 22
 ACAT_DEFAULT_USER = "root"  # user should have access to the host with rights to interact with the indexer daemon

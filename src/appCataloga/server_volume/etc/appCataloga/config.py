@@ -104,7 +104,8 @@ NONE_FILTER = {
 }
 
 # Database Tasks Constants
-HOST_TASK_TYPE = 0
+HOST_TASK_CHECK_TYPE = 1       # Create a Host Check Task
+HOST_PROCESSING_TYPE = 2       # Create a Host Processing
 FILE_TASK_BACKUP_TYPE = 1      # Create a backup task
 FILE_TASK_PROCESS_TYPE = 2     # Process a backup task of indexerD mapped files
 FILE_TASK_DISCOVERY = 3        # Create a discovery task to get file metadata

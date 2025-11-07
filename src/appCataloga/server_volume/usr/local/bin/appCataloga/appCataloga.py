@@ -225,7 +225,8 @@ def serve_client(client_socket: socket.socket) -> None:
                 # Queue new host task
                 host_statistics = db_bp.queue_host_task(
                     host_id=host_id,
-                    task_type=k.FILE_TASK_DISCOVERY,
+                    task_type=k.HOST_TASK_CHECK_TYPE,
+                    task_status=k.TASK_PENDING,
                     filter_dict=host.get("filter"),
                 )
                 try:

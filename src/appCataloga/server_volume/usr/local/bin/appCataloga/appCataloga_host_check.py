@@ -106,72 +106,61 @@ def main():
             # ----------------------------------------------------------
             # Step 1 — Fetch all registered hosts
             # ----------------------------------------------------------
-            hosts = db.host_read_all()
-            if not hosts:
-                log.entry("No hosts registered. Sleeping 60s.")
+            task = db.host_task_read(task_type=k.HOST_TASK_CHECK_TYPE,
+                                      task_status=k.TASK_PENDING)
+            if not task:
+                log.entry("No HOST TASK registered. Sleeping 60s.")
                 time.sleep(60)
                 continue
 
             now = datetime.now()
+            host_id = task["host_id"]
+            addr = task["host_addr"]
+            port = task["port"]
 
-            for host in hosts:
-                host_id = host["ID_HOST"]
-                addr = host["NA_HOST_ADDRESS"]
-                port = host.get("NA_HOST_PORT", 22)
-                is_offline = bool(host.get("IS_OFFLINE", False))
-                last_check = host.get("DT_LAST_CHECK")
+            # ------------------------------------------------------
+            # Step 2 — Connectivity test
+            # ------------------------------------------------------
+            online = is_host_online(addr, port)
+            log.entry(f"[CHECK] Host {addr}:{port} → {'ONLINE' if online else 'OFFLINE'}")
 
-                # ------------------------------------------------------
-                # Step 2 — Adaptive check interval
-                # ------------------------------------------------------
-                online_interval = getattr(k, "HOST_CHECK_INTERVAL", 300)  # Default 5 min
-                offline_interval = getattr(k, "HOST_CHECK_OFFLINE_INTERVAL", 60)  # Default 1 min
+            # ------------------------------------------------------
+            # Step 4 — Atomic transaction for consistency
+            # ------------------------------------------------------
+            try:
+                if not online:
+                    # Host unreachable → mark offline and suspend tasks
+                    db.host_update(
+                        host_id=host_id,
+                        IS_OFFLINE=True,
+                        NU_HOST_CHECK_ERROR=1,  # increment failure counter
+                        DT_LAST_FAIL=now,
+                        DT_LAST_CHECK=now,
+                    )
 
-                # Determine appropriate check interval
-                interval = offline_interval if is_offline else online_interval
-                if last_check and isinstance(last_check, datetime):
-                    elapsed = (now - last_check).total_seconds()
-                    if elapsed < interval:
-                        continue  # Skip if recently checked
+                    db.host_task_suspend_by_host(host_id)
+                    db.file_task_suspend_by_host(host_id)
 
-                # ------------------------------------------------------
-                # Step 3 — Connectivity test
-                # ------------------------------------------------------
-                online = is_host_online(addr, port)
-                log.entry(f"[CHECK] Host {addr}:{port} → {'ONLINE' if online else 'OFFLINE'}")
+                else:
+                    # Host reachable → reset offline flag and resume tasks if needed
+                    db.host_update(
+                        host_id=host_id,
+                        IS_OFFLINE=False,
+                        DT_LAST_CHECK=now,
+                    )
 
-                # ------------------------------------------------------
-                # Step 4 — Atomic transaction for consistency
-                # ------------------------------------------------------
-                try:
-                    if not online:
-                        # Host unreachable → mark offline and suspend tasks
-                        db.host_update(
-                            host_id=host_id,
-                            IS_OFFLINE=True,
-                            NU_HOST_CHECK_ERROR=1,  # increment failure counter
-                            DT_LAST_FAIL=now,
-                            DT_LAST_CHECK=now,
-                        )
+                    # Host is online - check pending or error task and resume them
+                    db.host_task_resume_by_host(host_id)
+                    db.file_task_resume_by_host(host_id)
+                    
+                    # Send task to next step
+                    db.host_task_update(task_id=task["task_id"],
+                                        NU_TYPE=k.HOST_PROCESSING_TYPE,
+                                        NU_STATUS=k.TASK_PENDING)
 
-                        db.host_task_suspend_by_host(host_id)
-                        db.file_task_suspend_by_host(host_id)
-
-                    else:
-                        # Host reachable → reset offline flag and resume tasks if needed
-                        db.host_update(
-                            host_id=host_id,
-                            IS_OFFLINE=False,
-                            DT_LAST_CHECK=now,
-                        )
-
-                        # Host is online - check pending or error task and resume them
-                        db.host_task_resume_by_host(host_id)
-                        db.file_task_resume_by_host(host_id)
-
-                except Exception as e:
-                    log.error(f"[DB] Transaction failed for host {addr}: {e}")
-                    time.sleep(1)
+            except Exception as e:
+                log.error(f"[DB] Transaction failed for host {addr}: {e}")
+                time.sleep(1)
 
             # ----------------------------------------------------------
             # Step 5 — Sleep before next iteration

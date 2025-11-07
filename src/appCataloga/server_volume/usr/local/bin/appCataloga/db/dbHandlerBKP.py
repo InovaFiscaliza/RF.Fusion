@@ -491,6 +491,7 @@ class dbHandlerBKP(DBHandlerBase):
         self,
         host_id: int,
         task_type: int,
+        task_status: int,
         filter_dict: dict,
     ) -> dict:
         """Queue a new backup discovery task for a given host.
@@ -863,6 +864,7 @@ class dbHandlerBKP(DBHandlerBase):
                 table="HOST_TASK",
                 data={
                     "NU_STATUS": k.TASK_PENDING,
+                    "NU_TYPE": k.HOST_PROCESSING_TYPE,
                     "NA_MESSAGE": "Host reachable again — suspended task resumed automatically"
                 },
                 where={"FK_HOST": host_id, "NU_STATUS": k.TASK_SUSPENDED},
@@ -873,6 +875,7 @@ class dbHandlerBKP(DBHandlerBase):
                 table="HOST_TASK",
                 data={
                     "NU_STATUS": k.TASK_PENDING,
+                    "NU_TYPE": k.HOST_PROCESSING_TYPE,
                     "NA_MESSAGE": "Host reachable again — previously failed task resubmitted"
                 },
                 where={"FK_HOST": host_id, "NU_STATUS": k.TASK_ERROR},

@@ -106,7 +106,8 @@ def main() -> None:
             # ----------------------------------------------------------
             # 1. Fetch one pending HOST_TASK
             # ----------------------------------------------------------
-            task = db.host_task_read(task_status=k.TASK_PENDING)
+            task = db.host_task_read(task_type=k.HOST_PROCESSING_TYPE,
+                                     task_status=k.TASK_PENDING)
             if not task:
                 sh._random_jitter_sleep()
                 continue
