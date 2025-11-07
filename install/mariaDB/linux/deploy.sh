@@ -36,12 +36,13 @@ podman run -dit \
     --hostname "$CONTAINER_NAME" \
     --network "$NETWORK_NAME" \
     --ip "$HOST_IP" \
-    -p 3306:3306 \
+    -p 3336:3306 \
     -p 2222:22 \
     -v "${HOST_VOLUME}:/server_volume:Z" \
     -e MARIADB_ROOT_PASSWORD="changeme" \
     -e SSH_PASSWORD="changeme" \
     "$IMAGE_NAME"
+
 
 
 # -------------------------------------------------------------------
