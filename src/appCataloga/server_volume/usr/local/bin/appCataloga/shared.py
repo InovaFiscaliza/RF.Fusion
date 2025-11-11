@@ -17,7 +17,7 @@ Key Classes:
 All public names and method signatures from the legacy version are preserved.
 All comments and docstrings follow Google Style and are written in English.
 """
-
+from __future__ import annotations
 import sys
 import os
 import stat
@@ -31,6 +31,8 @@ import random
 from datetime import datetime
 from typing import Any, Dict, List, Tuple, Optional, Union
 from enum import Enum
+
+
 
 # ---------------------------------------------------------------------
 # Config import path (as in original code). We keep the behavior so the

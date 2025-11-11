@@ -45,6 +45,20 @@ RUN curl -sLo ~/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-late
     bash ~/miniconda.sh -b -p $CONDA_DIR && \
     rm ~/miniconda.sh && \
     $CONDA_DIR/bin/conda clean -afy
+	
+# ==============================
+# Ping: instalar com suid root
+# ==============================
+RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping && \
+    chmod u+s /usr/bin/ping && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ==============================
+# Net-tools: ifconfig, netstat, route, etc.
+# ==============================
+RUN apt-get update && apt-get install -y --no-install-recommends net-tools && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 
 # ==============================
 # Etapa 4: Criar ambiente Conda

@@ -1,92 +1,105 @@
-# ============================================================================
-# Containerfile - Debian 12 Python (RF.Fusion)
-# ============================================================================
+# Base Debian 12
 FROM debian:12
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+# ==============================
+# Etapa 1: Bootstrap mínimo (HTTP)
+# ==============================
+RUN cat > /etc/apt/sources.list.d/debian.sources <<EOF
+Types: deb
+URIs: http://ftp.de.debian.org/debian
+Suites: bookworm
+Components: main contrib non-free
+EOF
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl wget git bash bzip2 ca-certificates openssh-server && \
+    rm -rf /var/lib/apt/lists/*
+
+# ==============================
+# Etapa 2: Configuração completa (HTTPS)
+# ==============================
+RUN cat > /etc/apt/sources.list.d/debian.sources <<EOF
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: bookworm bookworm-updates
+Components: main contrib non-free
+
+Types: deb
+URIs: https://security.debian.org/debian-security
+Suites: bookworm-security
+Components: main contrib non-free
+EOF
+
+RUN apt-get update
+
+# ==============================
+# Etapa 3: Instalar Miniconda
+# ==============================
 ENV CONDA_DIR=/opt/conda
 ENV PATH=$CONDA_DIR/bin:$PATH
 
-# ============================================================================
-# 1️⃣ Instala pacotes básicos e utilitários
-# ============================================================================
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        curl wget git bash bzip2 ca-certificates \
-        openssh-server iputils-ping net-tools \
-        libglib2.0-0 libxext6 libsm6 libxrender1 && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# ============================================================================
-# 2️⃣ Instala o Miniconda
-# ============================================================================
 RUN curl -sLo ~/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
     bash ~/miniconda.sh -b -p $CONDA_DIR && \
     rm ~/miniconda.sh && \
     $CONDA_DIR/bin/conda clean -afy
+	
+# ==============================
+# Ping: instalar com suid root
+# ==============================
+RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping && \
+    chmod u+s /usr/bin/ping && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ============================================================================
-# 3️⃣ Aceita Termos de Serviço da Anaconda
-# ============================================================================
-RUN $CONDA_DIR/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
-    $CONDA_DIR/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+# ==============================
+# Net-tools: ifconfig, netstat, route, etc.
+# ==============================
+RUN apt-get update && apt-get install -y --no-install-recommends net-tools && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ============================================================================
-# 4️⃣ Configura canais Conda
-# ============================================================================
-RUN $CONDA_DIR/bin/conda config --remove channels intel || true && \
-    $CONDA_DIR/bin/conda config --add channels conda-forge && \
-    $CONDA_DIR/bin/conda config --add channels defaults && \
-    echo "✅ Intel channel removed from Conda config."
 
-# ============================================================================
-# 5️⃣ Define diretório de trabalho e copia arquivos
-# ============================================================================
+# ==============================
+# Etapa 4: Criar ambiente Conda
+# ==============================
 WORKDIR /app
+
 COPY environment.yml /tmp/environment.yml
 COPY docker-entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# ============================================================================
-# 6️⃣ Remove canal 'intel' diretamente do environment.yml
-# ============================================================================
-RUN set -eux; \
-    echo "🧹 Cleaning environment.yml (removing intel channel)..."; \
-    sed -i '/- intel/d' /tmp/environment.yml; \
-    echo "✅ Cleaned environment.yml:"; \
-    grep -A3 channels /tmp/environment.yml || true
-
-# ============================================================================
-# 7️⃣ Cria o ambiente Conda
-# ============================================================================
+# Normaliza fins de linha (CRLF -> LF) e garante execução
 RUN set -eux; \
     sed -i 's/\r$//g' /usr/local/bin/entrypoint.sh; \
-    chmod +x /usr/local/bin/entrypoint.sh; \
-    echo "📦 Creating Conda environment from environment.yml..."; \
-    if [ -f /tmp/environment.yml ]; then \
-        $CONDA_DIR/bin/conda env create -f /tmp/environment.yml || \
-        $CONDA_DIR/bin/conda env update -f /tmp/environment.yml || \
-        { echo "❌ Conda environment creation failed"; exit 1; }; \
-    else \
-        echo "⚠️  environment.yml not found, skipping Conda env creation"; \
-    fi; \
-    echo "✅ Conda environment created successfully"; \
-    $CONDA_DIR/bin/conda clean -afy
+    chmod +x /usr/local/bin/entrypoint.sh
 
-# ============================================================================
-# 8️⃣ Configura SSH e usuário root
-# ============================================================================
-RUN mkdir -p /var/run/sshd && chmod 755 /var/run/sshd && \
-    echo "root:changeme" | chpasswd && \
-    sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
-    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+# Aceitar ToS automaticamente e remover canal Intel
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r && \
+    sed -i '/- intel/d' /tmp/environment.yml
 
-# ============================================================================
-# 9️⃣ Expõe portas padrão
-# ============================================================================
-EXPOSE 22 5555
+# Criar ambiente Conda
+RUN conda env create -f /tmp/environment.yml && \
+    conda clean -afy
 
-# ============================================================================
-# 🔟 Entrypoint e execução
-# ============================================================================
+# ==============================
+# SSH: preparar diretório e validar config
+# ==============================
+RUN set -eux; \
+    mkdir -p /var/run/sshd && chmod 755 /var/run/sshd; \
+    /usr/sbin/sshd -t
+
+# ==============================
+# Ping: instalar com suid root
+# ==============================
+RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping && \
+    chmod u+s /usr/bin/ping && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ==============================
+# Finalização
+# ==============================
+EXPOSE 22 5555 8080
+
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["/usr/sbin/sshd", "-D"]

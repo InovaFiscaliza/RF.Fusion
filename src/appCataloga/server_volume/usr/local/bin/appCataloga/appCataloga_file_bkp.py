@@ -217,7 +217,7 @@ def main():
             # -------------------------------------------------------
             # ACT II — Retrieve pending BACKUP tasks
             # -------------------------------------------------------
-            tasks = db_bp.read_file_tasks(
+            tasks,host_id = db_bp.read_file_tasks(
                 task_type=k.FILE_TASK_BACKUP_TYPE,
                 task_status=k.TASK_PENDING,
                 group_by_host=True,
@@ -227,7 +227,6 @@ def main():
                 sh._random_jitter_sleep()
                 continue
 
-            host_id = tasks[0]["FK_HOST"]
             host = db_bp.host_read_access(host_id)
             sftp_conn, daemon = sh.init_host_context(host, log)
 

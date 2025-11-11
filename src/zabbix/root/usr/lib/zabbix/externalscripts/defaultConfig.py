@@ -16,14 +16,14 @@ UTF_ENCODING = "utf-8" # used by queryCataloga.py
 ISO_ENCODING = "ISO-8859-1" # used by queryappColeta.py
 
 # appCataloga constants
-ACAT_SERVER_ADD = "172.21.48.36"  # Change this to the server's hostname or IP address
+ACAT_SERVER_ADD = "10.99.0.2"  # Change this to the server's hostname or IP address
 ACAT_SERVER_PORT = 5555
 ACAT_SERVER_TIMEOUT = 1000
 
 # appCataloga default arguments
 ACAT_DEFAULT_HOST_ID = "10368"
 ACAT_DEFAULT_HOST_UID = "RFEye002081"
-ACAT_DEFAULT_HOST_ADD = "172.21.48.35"
+ACAT_DEFAULT_HOST_ADD = "10.99.0.4"
 ACAT_DEFAULT_HOST_PORT = 22
 ACAT_DEFAULT_USER = "root"  # user should have access to the host with rights to interact with the indexer daemon
 ACAT_DEFAULT_PASSWD = "changeme"

@@ -148,7 +148,7 @@ def main() -> None:
                 error = True
 
             if error:
-                db.host_update(ID_HOST=host_id, HOST_CHECK_ERROR=1)
+                db.host_update(host_id=host_id, HOST_CHECK_ERROR=1)
                 db.host_task_update(task_id=task_id,
                                     NU_STATUS=k.TASK_ERROR,
                                     NA_MESSAGE="Error, unable establish daemon connection")

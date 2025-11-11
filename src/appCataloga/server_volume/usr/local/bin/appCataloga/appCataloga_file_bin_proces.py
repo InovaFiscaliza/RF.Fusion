@@ -201,7 +201,7 @@ def main():
             # Get one backup task from the queue in the database
             task = None
 
-            task = db_bp.read_file_tasks(task_type=k.FILE_TASK_PROCESS_TYPE,
+            task,host_id = db_bp.read_file_tasks(task_type=k.FILE_TASK_PROCESS_TYPE,
                                          task_status=k.TASK_PENDING,
                                          single_task=True)
             #task = db_bp.file_task_read_one(task_type=db_bp.FILE_TASK_PROCESS_TYPE)
@@ -209,7 +209,7 @@ def main():
             # if there is a task in the database
             if task:
                 
-                host_info = db_bp.host_read_access(host_id=task["FK_HOST"])
+                host_info = db_bp.host_read_access(host_id=host_id)
                 # get metadata from bin file
                 filename = f"{task['NA_SERVER_FILE_PATH']}/{task['NA_SERVER_FILE_NAME']}"
 
@@ -223,6 +223,16 @@ def main():
                 # store reference information to the file
                 try:
                     bin_data = parse_bin(filename)
+                
+                except FileNotFoundError:
+                    # File was moved until processing started. Set task back to pending for retry
+                    db_bp.file_task_update(
+                        task_id=task["ID_FILE_TASK"],
+                        NU_STATUS=k.TASK_PENDING,
+                        NU_TYPE=k.FILE_TASK_BACKUP_TYPE,
+                        NA_MESSAGE=f"File not found: {filename} - Retry Backup",
+                    )
+                    continue
                 except Exception as e:
                     raise Exception(f"Error parsing file {filename}: {e}")
 
@@ -298,14 +308,14 @@ def main():
                     data["nu_att_gain"] = k.DEFAULT_ATTENUATION_GAIN
 
                     # create a list of equipment associated with the spectrum measurement
-                    equipment = [
-                        equipment_ids[receiver],
-                        equipment_ids[f"rfeye[{spectrum.antuid}]_{receiver}"],
-                    ]
+                    # equipment = [
+                    #     equipment_ids[receiver],
+                    #     equipment_ids[f"rfeye[{spectrum.antuid}]_{receiver}"],
+                    # ]
                     spectrum_lst.append(
                         {
                             "spectrum": db_rfm.insert_spectrum(data),
-                            "equipment": equipment,
+                            "equipment": receiver,
                         }
                     )
 

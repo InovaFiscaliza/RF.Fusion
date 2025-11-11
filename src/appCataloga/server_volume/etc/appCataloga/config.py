@@ -34,7 +34,7 @@ START_TAG = "<json>"
 END_TAG = "</json>"
 
 # database configuration
-SERVER_NAME = r"172.21.48.37"
+SERVER_NAME = r"10.99.0.3"
 RFM_DATABASE_NAME = "RFDATA"
 BKP_DATABASE_NAME = "BPDATA"
 DB_USER_NAME = secret["DB_USER_NAME"]
@@ -50,6 +50,9 @@ HOST_TASK_REQUEST_WAIT_TIME = 1800
 # number of times to check the host while waiting for the HALT_FLAG release
 HALT_FLAG_CHECK_CYCLES = 6
 BKP_HOST_ALLOTED_TIME_FRACTION = 0.8
+
+# Max time in hours that a task can be in running state
+MAX_TASK_RUNNING_TIME_HOURS = 6
 
 # appCataloga_host_check configuration
 HOST_CHECK_INTERVAL = 60  # seconds between cycles

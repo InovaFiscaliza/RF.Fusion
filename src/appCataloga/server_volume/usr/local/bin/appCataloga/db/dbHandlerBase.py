@@ -284,32 +284,13 @@ class DBHandlerBase:
         commit: bool = True,
         touch_field: Optional[str] = None,
     ) -> int:
-        """Update rows in a table with safe, parameterized SQL.
+        """Update rows in a table with safe, parameterized SQL (supports operators __lt, __gt, __lte, __gte, __like)."""
 
-        This method dynamically builds an UPDATE statement using the provided
-        dictionaries for SET and WHERE clauses, preventing SQL injection and
-        supporting flexible multi-condition updates.
-
-        Args:
-            table (str): Target table name.
-            data (Dict[str, Any]): Mapping of columns and new values.
-            where (Optional[Dict[str, Any]]): Dictionary of WHERE filters.
-            commit (bool, optional): Whether to commit after execution. Defaults to True.
-            touch_field (Optional[str], optional): If provided, also updates this field
-                with the current timestamp (e.g., DT_LAST_UPDATE or DT_FILE_TASK).
-
-        Returns:
-            int: Number of affected rows.
-
-        Raises:
-            mysql.connector.Error: On SQL execution or commit failure.
-        """
-        # Sanity check
         if not data and not touch_field:
             self.log.warning(f"[DBHandlerBase] UPDATE skipped: no data for {table}")
             return 0
 
-        # Build SET clause
+        # --- Build SET clause ---
         set_parts = [f"{col}=%s" for col in data.keys()]
         params = list(data.values())
 
@@ -318,18 +299,35 @@ class DBHandlerBase:
 
         sql = f"UPDATE {table} SET {', '.join(set_parts)}"
 
-        # Add WHERE clause if present
+        # --- Build WHERE clause ---
         if where:
-            where_clause = " AND ".join([f"{col}=%s" for col in where.keys()])
-            sql += f" WHERE {where_clause}"
-            params.extend(where.values())
+            where_parts = []
+            for key, value in where.items():
+                if "__" in key:
+                    col, op = key.split("__", 1)
+                    if op == "lt":
+                        where_parts.append(f"{col} < %s")
+                    elif op == "gt":
+                        where_parts.append(f"{col} > %s")
+                    elif op == "lte":
+                        where_parts.append(f"{col} <= %s")
+                    elif op == "gte":
+                        where_parts.append(f"{col} >= %s")
+                    elif op == "like":
+                        where_parts.append(f"{col} LIKE %s")
+                    else:
+                        raise ValueError(f"Unsupported operator __{op}")
+                else:
+                    where_parts.append(f"{key}=%s")
+                params.append(value)
+
+            sql += " WHERE " + " AND ".join(where_parts)
 
         sql += ";"
 
         try:
             self.cursor.execute(sql, tuple(params))
             affected = int(self.cursor.rowcount or 0)
-
             if commit:
                 self.db_connection.commit()
 
@@ -340,7 +338,6 @@ class DBHandlerBase:
             self.db_connection.rollback()
             self.log.error(f"[DBHandlerBase] UPDATE failed on {table}: {e}")
             raise
-
 
 
     def _delete_row(
