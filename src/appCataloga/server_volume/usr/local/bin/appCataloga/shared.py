@@ -534,6 +534,36 @@ class sftpConnection:
         except Exception as e:
             self.log.error(f"Error removing '{filename}' in '{self.host_uid}'({self.host_addr}). {e}")
             raise
+        
+    def is_connected(self) -> bool:
+        """Return True if the SSH/SFTP connection is still alive.
+
+        Performs a lightweight check of the underlying SSH transport
+        and, if possible, a quick SFTP lstat() on the remote home directory.
+
+        Returns:
+            bool: True if the connection is active; False if closed or broken.
+        """
+        try:
+            # Check if SSH client and transport are still active
+            if not self.ssh_client:
+                return False
+
+            transport = self.ssh_client.get_transport()
+            if not transport or not transport.is_active():
+                return False
+
+            # Optional quick SFTP check (may fail silently if already closed)
+            if self.sftp:
+                try:
+                    self.sftp.listdir(".")
+                except Exception:
+                    # Ignore file errors, only socket-level failures matter
+                    pass
+
+            return True
+        except Exception:
+            return False
 
     def close(self) -> None:
         """Close SFTP and SSH sessions (best-effort).
@@ -1406,8 +1436,8 @@ class Filter:
         start_dt = end_dt = None
         if mode == Filter.MODE_RANGE:
             try:
-                start = self.data.get("start_date")
-                end = self.data.get("end_date")
+                start = self.data["start_date"]
+                end = self.data["end_date"]
                 if isinstance(start, str):
                     start_dt = datetime.fromisoformat(start)
                 if isinstance(end, str):
@@ -1417,7 +1447,7 @@ class Filter:
 
         # --- LAST mode: pick N most recent files ---
         selected_names = set()
-        if mode == Filter.MODE_LAST and self.data.get("last_n_files"):
+        if mode == Filter.MODE_LAST and self.data["last_n_files"]:
             try:
                 last_n = int(self.data["last_n_files"])
                 sorted_tasks = sorted(
@@ -1433,7 +1463,7 @@ class Filter:
                 pass
 
         # --- Normalize extension filter ---
-        extension_filter = self.data.get("extension")
+        extension_filter = self.data["extension"]
         if isinstance(extension_filter, str):
             extension_filter = extension_filter.strip().lower()
             if not extension_filter:

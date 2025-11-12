@@ -215,7 +215,7 @@ def main() -> None:
             # Cleanup (HALT_FLAG + connection)
             # ----------------------------------------------------------
             try:
-                if daemon:
+                if daemon and daemon.sftp_conn.is_connected():
                     daemon.release_halt_flag(service="appCataloga_discovery")
                     daemon.close_host(cleanup_due_backup=True)
             except Exception as e:
