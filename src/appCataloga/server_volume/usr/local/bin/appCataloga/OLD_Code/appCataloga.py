@@ -187,7 +187,6 @@ def serve_client(client_socket):
         else:
             try:
                 host = sh.parse_socket_message(data.decode(), client_socket.getpeername() )
-                print(host)
             except Exception as e:
                 log.entry(f"Error decoding data: {e}")
                 
