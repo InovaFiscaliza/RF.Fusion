@@ -21,7 +21,9 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     exit 1
 fi
 
-services=("appCataloga" "appCataloga_file_bkp" "appCataloga_file_bin_proces" "appCataloga_host_check" "appCataloga_pub_metadata")
+#services=("appCataloga" "appCataloga_host_check" "appCataloga_file_bkp" "appCataloga_file_bin_proces" "appCataloga_pub_metadata")
+# Por enquanto nao vou subir o pub metadata 
+services=("appCataloga" "appCataloga_host_check" "appCataloga_file_bkp" "appCataloga_file_bin_proces")
 
 # Uso esta linha caso queira desativar algum servico e depurar via terminal
 #services=("appCataloga" "appCataloga_file_bkp" "appCataloga_host_check" "appCataloga_pub_metadata")

@@ -21,7 +21,8 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
 fi
 
 # Lista dos serviços (cada um tem um .sh correspondente no mesmo diretório)
-services=("appCataloga" "appCataloga_file_bkp" "appCataloga_file_bin_proces" "appCataloga_host_check" "appCataloga_pub_metadata")
+services=("appCataloga" "appCataloga_file_bkp" "appCataloga_file_bin_proces" "appCataloga_host_check")
+#services=("appCataloga" "appCataloga_file_bkp" "appCataloga_file_bin_proces" "appCataloga_host_check" "appCataloga_pub_metadata")
 
 for i in "${services[@]}"; do
     SCRIPT_PATH="$SCRIPT_DIR/${i}.sh"
