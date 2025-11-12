@@ -902,7 +902,7 @@ class dbHandlerBKP(DBHandlerBase):
                 where={
                     "FK_HOST": host_id,
                     "NU_STATUS": k.TASK_RUNNING,
-                    "DT_FILE_TASK__lt": threshold_time,
+                    "DT_HOST_TASK__lt": threshold_time,
                 },
                 commit=True,
             )
@@ -1470,86 +1470,86 @@ class dbHandlerBKP(DBHandlerBase):
     
     from datetime import datetime, timedelta
 
-def file_task_resume_by_host(self, host_id: int) -> None:
-    """
-    Resume previously suspended, errored, or stale FILE_TASK entries for a given host.
+    def file_task_resume_by_host(self, host_id: int) -> None:
+        """
+        Resume previously suspended, errored, or stale FILE_TASK entries for a given host.
 
-    This method reactivates:
-        - Tasks with NU_STATUS = TASK_SUSPENDED (host became reachable again).
-        - Tasks with NU_STATUS = TASK_ERROR (reprocessed for retry).
-        - Tasks with NU_STATUS = TASK_RUNNING whose DT_FILE_TASK timestamp is older
-          than (now - MAX_TASK_RUNNING_TIME_HOURS), assuming the process crashed or
-          was interrupted unexpectedly.
+        This method reactivates:
+            - Tasks with NU_STATUS = TASK_SUSPENDED (host became reachable again).
+            - Tasks with NU_STATUS = TASK_ERROR (reprocessed for retry).
+            - Tasks with NU_STATUS = TASK_RUNNING whose DT_FILE_TASK timestamp is older
+            than (now - MAX_TASK_RUNNING_TIME_HOURS), assuming the process crashed or
+            was interrupted unexpectedly.
 
-    Args:
-        host_id (int): Unique identifier (FK_HOST) of the host whose file-level
-            tasks should be reactivated.
+        Args:
+            host_id (int): Unique identifier (FK_HOST) of the host whose file-level
+                tasks should be reactivated.
 
-    Returns:
-        None
-    """
-    try:
-        total_resumed = 0
-        max_hours = getattr(k, "MAX_TASK_RUNNING_TIME_HOURS", 6)
-        threshold_time = datetime.now() - timedelta(hours=max_hours)
+        Returns:
+            None
+        """
+        try:
+            total_resumed = 0
+            max_hours = getattr(k, "MAX_TASK_RUNNING_TIME_HOURS", 6)
+            threshold_time = datetime.now() - timedelta(hours=max_hours)
 
-        # --- Reactivate suspended tasks ---
-        resumed_suspended = self._update_row(
-            table="FILE_TASK",
-            data={
-                "NU_STATUS": k.TASK_PENDING,
-                "NA_MESSAGE": "Host reachable again — suspended file task resumed automatically",
-            },
-            where={
-                "FK_HOST": host_id,
-                "NU_STATUS": k.TASK_SUSPENDED,
-            },
-            commit=True,
-        )
-
-        # --- Reactivate tasks previously marked as error ---
-        resumed_error = self._update_row(
-            table="FILE_TASK",
-            data={
-                "NU_STATUS": k.TASK_PENDING,
-                "NA_MESSAGE": "Host reachable again — previously failed file task resubmitted",
-            },
-            where={
-                "FK_HOST": host_id,
-                "NU_STATUS": k.TASK_ERROR,
-            },
-            commit=True,
-        )
-
-        # --- Reactivate tasks stuck in TASK_RUNNING for too long ---
-        resumed_stale_running = self._update_row(
-            table="FILE_TASK",
-            data={
-                "NU_STATUS": k.TASK_PENDING,
-                "NA_MESSAGE": f"Detected stale running file task (> {max_hours}h) — resubmitted automatically",
-            },
-            where={
-                "FK_HOST": host_id,
-                "NU_STATUS": k.TASK_RUNNING,
-                "DT_FILE_TASK__lt": threshold_time,
-            },
-            commit=True,
-        )
-
-        total_resumed = resumed_suspended + resumed_error + resumed_stale_running
-
-        if total_resumed > 0:
-            self.log.entry(
-                f"[DBHandlerBKP] Resumed {total_resumed} FILE_TASK entries for host {host_id} "
-                f"(including stale TASK_RUNNING older than {max_hours}h)."
-            )
-        else:
-            self.log.entry(
-                f"[DBHandlerBKP] No FILE_TASK entries required resumption for host {host_id}."
+            # --- Reactivate suspended tasks ---
+            resumed_suspended = self._update_row(
+                table="FILE_TASK",
+                data={
+                    "NU_STATUS": k.TASK_PENDING,
+                    "NA_MESSAGE": "Host reachable again — suspended file task resumed automatically",
+                },
+                where={
+                    "FK_HOST": host_id,
+                    "NU_STATUS": k.TASK_SUSPENDED,
+                },
+                commit=True,
             )
 
-    except Exception as e:
-        self.log.error(f"[DBHandlerBKP] Failed to resume FILE_TASK entries for host {host_id}: {e}")
+            # --- Reactivate tasks previously marked as error ---
+            resumed_error = self._update_row(
+                table="FILE_TASK",
+                data={
+                    "NU_STATUS": k.TASK_PENDING,
+                    "NA_MESSAGE": "Host reachable again — previously failed file task resubmitted",
+                },
+                where={
+                    "FK_HOST": host_id,
+                    "NU_STATUS": k.TASK_ERROR,
+                },
+                commit=True,
+            )
+
+            # --- Reactivate tasks stuck in TASK_RUNNING for too long ---
+            resumed_stale_running = self._update_row(
+                table="FILE_TASK",
+                data={
+                    "NU_STATUS": k.TASK_PENDING,
+                    "NA_MESSAGE": f"Detected stale running file task (> {max_hours}h) — resubmitted automatically",
+                },
+                where={
+                    "FK_HOST": host_id,
+                    "NU_STATUS": k.TASK_RUNNING,
+                    "DT_FILE_TASK__lt": threshold_time,
+                },
+                commit=True,
+            )
+
+            total_resumed = resumed_suspended + resumed_error + resumed_stale_running
+
+            if total_resumed > 0:
+                self.log.entry(
+                    f"[DBHandlerBKP] Resumed {total_resumed} FILE_TASK entries for host {host_id} "
+                    f"(including stale TASK_RUNNING older than {max_hours}h)."
+                )
+            else:
+                self.log.entry(
+                    f"[DBHandlerBKP] No FILE_TASK entries required resumption for host {host_id}."
+                )
+
+        except Exception as e:
+            self.log.error(f"[DBHandlerBKP] Failed to resume FILE_TASK entries for host {host_id}: {e}")
 
             
     def check_file_task(self, **kwargs) -> list[dict]:
