@@ -54,6 +54,7 @@ class DBHandlerBase:
             "user": k.DB_USER_NAME,
             "password": k.DB_PASSWORD,
             "host": k.SERVER_NAME,
+            "port": k.DB_PORT,
             "database": self.database,
         }
         

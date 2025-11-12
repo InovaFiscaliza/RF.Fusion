@@ -34,7 +34,8 @@ START_TAG = "<json>"
 END_TAG = "</json>"
 
 # database configuration
-SERVER_NAME = r"10.99.0.3"
+SERVER_NAME = r"10.99.0.1"
+DB_PORT = 3336
 RFM_DATABASE_NAME = "RFDATA"
 BKP_DATABASE_NAME = "BPDATA"
 DB_USER_NAME = secret["DB_USER_NAME"]
