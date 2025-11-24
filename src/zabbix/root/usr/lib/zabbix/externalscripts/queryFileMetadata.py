@@ -104,7 +104,7 @@ ARGUMENTS = {
     },
     "filter": {
         "set": True,
-        "value":'{"mode":"RANGE","start_date":"2025-11-09","end_date":null,"last_n_files":null,"extension":".bin", "file_name":"*.bin", "agent": "local"}',
+        "value":'{"mode":"RANGE","start_date":"2020-01-01","end_date":null,"last_n_files":null,"extension":".bin", "file_name":"*.bin", "agent": "local"}',
         "message": "Backup request is {value}",
     },
 }

@@ -56,6 +56,7 @@ def _signal_handler(sig=None, frame=None):
     func = inspect.currentframe().f_back.f_code.co_name
     log.entry(f"Signal {sig} received at {func}() — stopping worker loop.")
     process_status["running"] = False
+    os._exit(0)
 
 
 signal.signal(signal.SIGTERM, _signal_handler)
@@ -136,198 +137,348 @@ def spawn_additional_worker(current_workers: list[int]) -> None:
 # ======================================================================
 # Task Operations
 # ======================================================================
-def transfer_file_task(db: dbHandlerBKP, host: dict, sftp, task_id: int,
-                       remote_dir: str, filename: str, local_path: str) -> bool:
+def transfer_file_task(sftp, remote_dir: str, filename: str, local_path: str) -> None:
     """
-    Transfer a single FILE_TASK from remote node to local repository.
+    Transfer a single file from the remote host to the local repository.
 
-    Args:
-        db (dbHandlerBKP): Database handler.
-        host (dict): Host record.
-        sftp: Active SFTP connection object.
-        task_id (int): Task identifier.
-        remote_dir (str): Remote directory on the host.
-        filename (str): Filename to transfer.
-        local_path (str): Local destination directory.
+    Protected by a timeout to prevent SFTP stalls.
 
-    Returns:
-        bool: True if transfer succeeded, False otherwise.
+    Raises:
+        FileNotFoundError
+        TimeoutError
+        RuntimeError
     """
+
     remote_path = f"{remote_dir}/{filename}"
     local_file = os.path.join(local_path, filename)
 
-    # Verify remote file existence
+    # 1) Check file existence
     if not sftp.test(remote_path):
-        msg = f"File '{remote_path}' not found on host {host['host_addr']}."
-        db.file_task_update(task_id=task_id, NU_STATUS=k.TASK_ERROR, NA_MESSAGE=msg)
-        log.warning(msg)
-        return False
-    
-    # Update current task in FILE_TASK table
-    db.file_task_update(task_id=task_id, 
-                                NU_STATUS=k.TASK_RUNNING)
+        raise FileNotFoundError(f"Remote file '{remote_path}' not found.")
 
-    # Attempt transfer
+    # 2) Transfer with timeout
     try:
-        sftp.transfer(remote_path, local_file)
-        db.file_task_update(
-            task_id=task_id,
-            NU_PID=os.getpid(),
-            NA_SERVER_FILE_NAME=filename,
-            NA_SERVER_FILE_PATH=local_path,
-            NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
-            NU_STATUS=k.TASK_PENDING,
-            NA_MESSAGE=f"Transferred '{remote_path}' → '{local_file}'.",
+        sh.run_with_timeout(
+            lambda: sftp.transfer(remote_path, local_file),
+            timeout=k.HOST_BUSY_TIMEOUT  # timeout in seconds (adjustable)
         )
-        log.entry(f"Transfer OK: {remote_path} → {local_file}")
-        return True
+
+    except TimeoutError as te:
+        raise TimeoutError(
+            f"Timeout transferring '{remote_path}' → '{local_file}': {te}"
+        )
 
     except Exception as e:
-        msg = f"Error transferring '{remote_path}' from {host['host_addr']}: {e}"
-        db.file_task_update(task_id=task_id, NU_STATUS=k.TASK_ERROR, NA_MESSAGE=msg)
-        log.error(msg)
-        return False
+        raise RuntimeError(
+            f"Failed to transfer '{remote_path}' → '{local_file}': {e}"
+        )
+
+
 
 
 # ======================================================================
 # Main Execution
 # ======================================================================
 def main():
-    """Main backup loop divided into four logical acts."""
+    """Main FILE_TASK backup pipeline (one task per worker)."""
+
     parse_arguments()
     worker_id = process_status["worker"]
-    log.entry(f"Backup worker {worker_id} started.")
+    log.entry(f"[INIT] Backup worker {worker_id} started.")
 
-    # Database initialization
+    # -------------------------------------------------------
+    # DB INIT
+    # -------------------------------------------------------
     try:
-        db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+        db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error(f"Failed to initialize database: {e}")
+        log.error(f"[INIT] Failed to initialize database: {e}")
         sys.exit(1)
 
-    # ===============================================================
-    # Main loop
-    # ===============================================================
+    # =======================================================
+    # MAIN LOOP
+    # =======================================================
     while process_status["running"]:
+
+        # Runtime objects
         daemon = None
         sftp_conn = None
         host = None
+        err = sh.ErrorHandler(log)
+        file_was_transferred = False
+
+        task = None
+        host_id = None
+        file_task_id = None
 
         try:
-            # -------------------------------------------------------
-            # ACT II — Retrieve pending BACKUP tasks
-            # -------------------------------------------------------
-            tasks,host_id = db_bp.read_file_tasks(
-                task_type=k.FILE_TASK_BACKUP_TYPE,
-                task_status=k.TASK_PENDING,
-                group_by_host=True,
-            )
+            # ===================================================
+            # ACT I — Fetch FILE_TASK (pending backup)
+            # ===================================================
+            try:
+                row = db.read_file_task(
+                    task_status=k.TASK_PENDING,
+                    task_type=k.FILE_TASK_BACKUP_TYPE,
+                    check_host_busy=True,
+                )
+            except Exception as e:
+                err.set("Failed to read FILE_TASK", stage="READ_FILE_TASK", exc=e)
 
-            if not tasks:
+            if err.triggered:
+                err.log_error()
+                continue
+
+            if not row:
                 sh._random_jitter_sleep()
                 continue
 
-            host = db_bp.host_read_access(host_id)
-            sftp_conn, daemon = sh.init_host_context(host, log)
+            task, host_id, file_task_id = row
 
-            # -------------------------------------------------------
-            # ACT III — Host prechecks (configuration & lock)
-            # -------------------------------------------------------
-            if not daemon.get_config():
-                log.warning(f"[CONFIG] Missing configuration for host {host['host_addr']}.")
+            # ===================================================
+            # ACT II — Lock host + mark FILE_TASK running
+            # ===================================================
+            try:
+                db.host_update(
+                    host_id=host_id,
+                    IS_BUSY=True,
+                    DT_BUSY=datetime.now(),
+                    NU_PID=os.getpid(),
+                )
+
+                db.file_task_update(
+                    file_task_id,
+                    NU_STATUS=k.TASK_RUNNING,
+                    NU_PID=os.getpid(),
+                    NA_MESSAGE=sh._compose_message(
+                        task_type=k.FILE_TASK_BACKUP_TYPE,
+                        task_status=k.TASK_RUNNING,
+                        path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                        name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                    ),
+                )
+
+            except Exception as e:
+                err.set("Failed locking host or marking FILE_TASK running",
+                        stage="LOCK_TASK", exc=e)
+
+            if err.triggered:
+                err.log_error(host_id=host_id, task_id=file_task_id)
                 continue
 
-            if not daemon.get_halt_flag(service="appCataloga_file_bkp", use_pid=True):
-                log.warning(f"[LOCK] Host {host['host_addr']} filesystem busy.")
+            # ===================================================
+            # ACT III — Load HOST metadata
+            # ===================================================
+            try:
+                host = db.host_read_access(host_id)
+                if not host:
+                    raise RuntimeError("Host metadata missing")
+            except Exception as e:
+                err.set("Failed to load HOST metadata", stage="READ_HOST", exc=e)
+
+            if err.triggered:
+                err.log_error(host_id=host_id, task_id=file_task_id)
                 continue
 
-            running_workers = list_running_workers(os.path.basename(__file__))
-            if len(running_workers) < k.BKP_TASK_MAX_WORKERS:
-                spawn_additional_worker(running_workers)
+            # ===================================================
+            # ACT IV — Init SFTP + daemon
+            # ===================================================
+            try:
+                sftp_conn, daemon = sh.init_host_context(task, log)
+            except Exception as e:
+                err.set("Failed to initialize SFTP/Daemon",
+                        stage="INIT", exc=e)
 
-            local_path = os.path.join(k.REPO_FOLDER, k.TMP_FOLDER, host["host_addr"])
-            os.makedirs(local_path, exist_ok=True)
+            if err.triggered:
+                err.log_error(host_id=host_id, task_id=file_task_id)
+                continue
 
-            # -------------------------------------------------------
-            # ACT IV — Transfer and record updates
-            # -------------------------------------------------------
-            success = 0
-            fail = 0
+            # ===================================================
+            # ACT V — Prechecks (config + HALT_FLAG)
+            # ===================================================
+            try:
+                if not daemon.get_config():
+                    raise RuntimeError("Invalid daemon config")
 
-            # Iterate in each task found for host
-            for curr_task in tasks:
-                try:
-                    check = transfer_file_task(
-                        db=db_bp, host=host, sftp=sftp_conn,
-                        task_id=curr_task["ID_FILE_TASK"],
-                        remote_dir=curr_task["NA_HOST_FILE_PATH"],
-                        filename=curr_task["NA_HOST_FILE_NAME"],
-                        local_path=local_path
-                    )
+                if not daemon.get_halt_flag(
+                    service="appCataloga_file_bkp",
+                    use_pid=True,
+                ):
+                    raise RuntimeError("Filesystem busy (HALT_FLAG)")
+            except Exception as e:
+                err.set("Precheck failed", stage="PRECHECK", exc=e)
 
-                    if check:
-                        success += 1
-                        # Check FILE_TASK_HISTORY for previous records
-                        file_history = db_bp.check_file_history(
-                            NA_HOST_FILE_NAME=curr_task["NA_HOST_FILE_NAME"]
-                        )
-                        if not file_history:
-                            db_bp.file_history_create(
-                                k.FILE_TASK_BACKUP_TYPE,
-                                FK_HOST=curr_task["FK_HOST"],
-                                NA_HOST_FILE_PATH=curr_task["NA_HOST_FILE_PATH"],
-                                NA_HOST_FILE_NAME=curr_task["NA_HOST_FILE_NAME"],
-                                NA_SERVER_FILE_NAME=curr_task["NA_HOST_FILE_NAME"],
-                                NA_SERVER_FILE_PATH=local_path,
-                                VL_FILE_SIZE_KB=curr_task["VL_FILE_SIZE_KB"]
-                            )
-                        else:
-                            db_bp.file_history_update(
-                                task_type=k.FILE_TASK_BACKUP_TYPE,
-                                file_name=curr_task["NA_HOST_FILE_NAME"]
-                            )
-                    else:
-                        fail += 1
+            if err.triggered:
+                err.log_error(host_id=host_id, task_id=file_task_id)
+                continue
 
-                except Exception as e:
-                    fail += 1
-                    log.error(f"[Worker {worker_id}] Error processing file '{curr_task.get('NA_HOST_FILE_NAME')}': {e}")
-                    continue
+            # ===================================================
+            # ACT VI — Prepare local folder
+            # ===================================================
+            try:
+                local_path = os.path.join(
+                    k.REPO_FOLDER, k.TMP_FOLDER, host["host_uid"]
+                )
+                os.makedirs(local_path, exist_ok=True)
+            except Exception as e:
+                err.set("Failed preparing local folder",
+                        stage="LOCAL_PATH", exc=e)
 
-            # Consolidated host update
-            db_bp.host_update(
-                host_id=host["host_id"],
-                NU_HOST_FILES=success,
-                DT_LAST_BACKUP=datetime.now(),
-            )
+            if err.triggered:
+                err.log_error(host_id=host_id, task_id=file_task_id)
+                continue
 
-        # ---------------------------------------------------------------
-        # ACT V — Exception Handling (network, ssh, etc.)
-        # ---------------------------------------------------------------
-        except paramiko.AuthenticationException as e:
-            log.error(f"SFTP authentication failed: {e}")
-            time.sleep(10)
-        except paramiko.SSHException as e:
-            log.error(f"SFTP connection error: {e}")
-            time.sleep(10)
-        except Exception as e:
-            log.error(f"[Worker {worker_id}] Unexpected error: {e}")
+            # ===================================================
+            # ACT VII — Transfer file (pure function)
+            # ===================================================
+            try:
+                transfer_file_task(
+                    sftp=sftp_conn,
+                    remote_dir=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                    filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                    local_path=local_path,
+                )
+                file_was_transferred = True
+
+            except Exception as e:
+                err.set("File transfer failed", stage="TRANSFER", exc=e)
+
+            if err.triggered:
+                err.log_error(host_id=host_id, task_id=file_task_id)
+                continue
+
+            # ===================================================
+            # ACT VIII — FILE_HISTORY update
+            # ===================================================
+            try:
+                db.file_history_update(
+                    task_type=k.FILE_TASK_BACKUP_TYPE,
+                    file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                    NA_SERVER_FILE_NAME=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                    NA_SERVER_FILE_PATH=local_path,
+                )
+            except Exception as e:
+                err.set("Failed updating FILE_TASK_HISTORY",
+                        stage="HISTORY", exc=e)
+
+            if err.triggered:
+                err.log_error(host_id=host_id, task_id=file_task_id)
+                continue
+
+            # ===================================================
+            # ACT IX — Final DB update (TASK_DONE)
+            # ===================================================
+            try:
+                db.file_task_update(
+                    task_id=file_task_id,
+                    NU_STATUS=k.TASK_DONE,
+                    NA_SERVER_FILE_PATH=local_path,
+                    NA_SERVER_FILE_NAME=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                    NA_MESSAGE=sh._compose_message(
+                        task_type=k.FILE_TASK_BACKUP_TYPE,
+                        task_status=k.TASK_DONE,
+                        path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                        name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                    ),
+                )
+            except Exception as e:
+                err.set("Failed finalizing FILE_TASK", stage="FINAL", exc=e)
+
+            if err.triggered:
+                err.log_error(host_id=host_id, task_id=file_task_id)
+                continue
+
+        # =======================================================
+        # NETWORK / SSH ERRORS
+        # =======================================================
+        except (paramiko.AuthenticationException, paramiko.SSHException) as e:
+            log.error(f"[SSH] {e}")
             time.sleep(5)
 
-        # ---------------------------------------------------------------
-        # ACT VI — Finalization (release locks, cleanup)
-        # ---------------------------------------------------------------
+        except Exception as e:
+            log.error(f"[UNEXPECTED] Worker {worker_id}: {e}")
+            time.sleep(3)
+
+        # =======================================================
+        # ALWAYS — CLEANUP + UNLOCK HOST + CREATE STATS TASK
+        # =======================================================
         finally:
+            # ===========================================================
+            # ERROR HANDLING — mark FILE_TASK as ERROR (if any)
+            # ===========================================================
             try:
-                if daemon:
-                    daemon.release_halt_flag(service="appCataloga_file_bkp", use_pid=True)
-                    daemon.close_host(cleanup_due_backup=True)
-                elif host:
-                    log.warning(f"Skipped cleanup — daemon not initialized for host {host['host_addr']}.")
+                if err.triggered and file_task_id is not None:
+                    try:
+                        db.file_task_update(
+                            task_id=file_task_id,
+                            NU_STATUS=k.TASK_ERROR,
+                            NA_MESSAGE=sh._compose_message(
+                                task_type=k.FILE_TASK_BACKUP_TYPE,
+                                task_status=k.TASK_ERROR,
+                                path=(
+                                    task["FILE_TASK__NA_HOST_FILE_PATH"]
+                                    if task else "N/A"
+                                ),
+                                name=(
+                                    task["FILE_TASK__NA_HOST_FILE_NAME"]
+                                    if task else "N/A"
+                                ),
+                                extra_msg=err.msg,
+                            ),
+                        )
+                    except Exception as e:
+                        log.warning(f"[CLEANUP] Failed marking FILE_TASK ERROR: {e}")
+
+                # ===========================================================
+                # ALWAYS — cleanup network connections + halt flag
+                # ===========================================================
+                if daemon and getattr(daemon, "sftp_conn", None):
+                    try:
+                        daemon.release_halt_flag(
+                            service="appCataloga_file_bkp",
+                            use_pid=True,
+                        )
+                    except Exception:
+                        pass
+
+                    try:
+                        daemon.close_host(cleanup_due_backup=True)
+                    except Exception:
+                        pass
+
+                if sftp_conn:
+                    try:
+                        sftp_conn.close()
+                    except Exception:
+                        pass
+
             except Exception as e:
-                log.warning(f"Cleanup failed: {e}")
+                log.warning(f"[CLEANUP] Error inside cleanup block: {e}")
+
+            # ===========================================================
+            # ALWAYS — unlock HOST
+            # ===========================================================
+            if host_id is not None:
+                try:
+                    db.host_update(
+                        host_id=host_id,
+                        IS_BUSY=False,
+                        NU_PID=0,
+                    )
+                except Exception:
+                    pass
+
+                # =======================================================
+                # Create HOST statistics task ONLY if backup succeeded
+                # =======================================================
+                if file_was_transferred:
+                    try:
+                        db.host_task_statistics_create(host_id=host_id)
+                        
+                    except Exception as e:
+                        log.warning(f"[FINALIZE] Failed creating stats task: {e}")
 
     log.entry(f"Backup worker {worker_id} shutting down gracefully.")
+
 
 
 if __name__ == "__main__":

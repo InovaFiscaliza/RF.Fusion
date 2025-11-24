@@ -151,110 +151,107 @@ def stop_self_service(script_name: str = "appCataloga.py") -> None:
 # Client handling
 # ======================================================================
 def serve_client(client_socket: socket.socket) -> None:
-    """Handle a single TCP client connection and enqueue a backup task if requested.
-
-    This function processes one client request sent to the appCataloga daemon.  
-    It expects a message framed by START_TAG/END_TAG tokens and containing all
-    required host identification parameters and optional filter settings.
-    
-    The function performs the following steps:
-        1. Receive and decode the socket message (max 256 bytes).
-        2. Parse it using `shared.parse_socket_message()`.
-        3. Validate the command type (only BACKUP_QUERY_TAG is supported).
-        4. Check if the referenced host exists in the database:
-            - If not, create a new HOST record.
-        5. Enqueue a corresponding HOST_TASK via `db_bp.queue_host_task()`.
-        6. Update host status counters and return a structured JSON response.
-        7. Always send a response to the client, even in case of error.
-
-    Args:
-        client_socket (socket.socket): Active socket connection from the requesting host.
-
-    Raises:
-        Exception: Propagated for unexpected internal errors, though most are logged and handled.
-
-    Returns:
-        None: The function sends the response directly to the socket and closes the connection.
     """
-    
+    Handle TCP client request using RF.Fusion ErrorHandler.
+    """
+
     peer_ip = "unknown"
     try:
         peer_ip, _ = client_socket.getpeername()
     except Exception:
         pass
 
-    response = f'{k.START_TAG}{{"status":0,"message":"Unexpected error"}}{k.END_TAG}'
+    err = sh.ErrorHandler(log)
+    response_payload = {"status": 0, "message": "Unexpected error"}
+    host = None
+    host_id = None
 
     try:
+        # ===============================================================
+        # STAGE 1 — RECEIVE RAW MESSAGE
+        # ===============================================================
         raw_msg = client_socket.recv(256)
         if not raw_msg:
-            response = f'{k.START_TAG}{{"status":0,"message":"Empty request"}}{k.END_TAG}'
-            return
+            err.set("Empty request", stage="READ")
+            raise Exception("Empty request")
 
+        # ===============================================================
+        # STAGE 2 — PARSE MESSAGE
+        # ===============================================================
+        host = sh.parse_socket_message(
+            data=raw_msg.decode(),
+            peername=client_socket.getpeername(),
+            log=log,
+        )
+
+        if host.get("command") != k.BACKUP_QUERY_TAG:
+            err.set("Unsupported command", stage="COMMAND")
+            raise Exception("Unsupported command")
+
+        host_id = host.get("host_id")
+        if host_id is None or host_id <= 0:
+            err.set("Invalid host_id", stage="PARSE")
+            raise Exception("Invalid host_id")
+
+        # All metadata is safe to use (parse_socket_message guarantees structure)
+        host_uid   = host["host_uid"]
+        host_addr  = host["host_addr"]
+        host_port  = host["host_port"]
+        user       = host["user"]
+        password   = host["password"]
+        host_filter = host["filter"]
+
+        # ===============================================================
+        # STAGE 3 — ENSURE HOST EXISTS
+        # ===============================================================
         try:
-            host = sh.parse_socket_message(
-                data=raw_msg.decode(),
-                peername=client_socket.getpeername(),
-                log=log
+            log.entry(f"[HOST] Upsert new HOST entry id={host_id}")
+            db_bp.host_upsert(
+                ID_HOST=host_id,
+                NA_HOST_NAME=host_uid,
+                NA_HOST_ADDRESS=host_addr,
+                NA_HOST_PORT=host_port,
+                NA_HOST_USER=user,
+                NA_HOST_PASSWORD=password,
             )
         except Exception as e:
-            log.entry(f"[PARSE] Failed to parse message from {peer_ip}: {e}")
-            host = {"command": None, "peer": {"ip": peer_ip}}
+            err.set("Failed to create/ensure HOST", stage="HOST_CREATE", exc=e)
+            raise
 
-        if host.get("command") == k.BACKUP_QUERY_TAG:
-            try:
-                host_id = int(host.get("host_id") or 0)
-                if host_id <= 0:
-                    log.warning(f"[REQUEST] Invalid host_id from {peer_ip}. Ignoring request.")
-                    return
+        # ===============================================================
+        # STAGE 4 — QUEUE HOST_TASK
+        # ===============================================================
+        try:
+            result = db_bp.queue_host_task(
+                host_id=host_id,
+                task_type=k.HOST_TASK_CHECK_TYPE,
+                task_status=k.TASK_PENDING,
+                filter_dict=host_filter,
+            )
+            response_payload = result
+        except Exception as e:
+            db_bp.host_update(host_id=host_id, NU_HOST_CHECK_ERROR=1)
+            err.set("Failed to queue HOST_TASK", stage="QUEUE", exc=e)
+            raise
 
-                log.entry(f"[REQUEST] Backup command received from {peer_ip} (host_id={host_id})")
-
-                # Ensure host exists
-                if not db_bp.host_exists(host_id):
-                    log.entry(f"[CREATE] Host {host_id} not found. Creating new record.")
-                    db_bp.host_create(
-                        ID_HOST=host.get("host_id"),
-                        NA_HOST_NAME=host.get("host_uid"),
-                        NA_HOST_ADDRESS=host.get("host_addr"),
-                        NA_HOST_PORT=host.get("host_port"),
-                        NA_HOST_USER=host.get("user"),
-                        NA_HOST_PASSWORD=host.get("password"),
-                    )
-
-                # Queue new host task
-                host_statistics = db_bp.queue_host_task(
-                    host_id=host_id,
-                    task_type=k.HOST_TASK_CHECK_TYPE,
-                    task_status=k.TASK_PENDING,
-                    filter_dict=host.get("filter"),
-                )
-                try:
-                    response_data = json.dumps(host_statistics)
-                except Exception:
-                    response_data = '{"status":0,"message":"Invalid response format"}'
-
-                response = f"{k.START_TAG}{response_data}{k.END_TAG}"
-
-            except Exception as e:
-                if db_bp.host_exists(host_id):
-                    db_bp.host_update(host_id=host_id, NU_HOST_CHECK_ERROR=1)
-                    log.warning(f"[UPDATE] Host {host_id} marked with host_check_error=1 due to failure.")
-                log.entry(f"[ERROR] Failed to handle backup request from {peer_ip}: {e}")
-                response = f'{k.START_TAG}{{"status":0,"message":"Failed to create backup task"}}{k.END_TAG}'
-        else:
-            log.entry(f"[IGNORE] Unsupported command from {peer_ip}: {raw_msg[:200]}...")
-            response = f'{k.START_TAG}{{"status":0,"message":"Unknown host command"}}{k.END_TAG}'
-
-    except Exception as e:
-        log.entry(f"[FATAL] Unexpected error while serving {peer_ip}: {e}")
+    except Exception:
+        pass  # All errors handled by err
 
     finally:
+        # ===============================================================
+        # FINAL RESPONSE
+        # ===============================================================
+        if err.triggered:
+            err.log_error(host_id=host_id)
+            response_payload = {"status": 0, "message": err.msg}
+
         try:
-            client_socket.sendall(response.encode("utf-8"))
-            log.entry(f"[RESPONSE] Sent to {peer_ip}: {response}")
+            framed = f"{k.START_TAG}{json.dumps(response_payload)}{k.END_TAG}"
+            client_socket.sendall(framed.encode("utf-8"))
+            log.entry(f"[RESPONSE] Sent to {peer_ip}: {framed}")
         except Exception as e:
             log.warning(f"[SEND] Failed to send response to {peer_ip}: {e}")
+
         try:
             client_socket.close()
         except Exception:

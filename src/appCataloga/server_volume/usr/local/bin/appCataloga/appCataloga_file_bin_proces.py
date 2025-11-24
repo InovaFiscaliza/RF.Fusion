@@ -186,63 +186,116 @@ def main():
     global process_status
     global log
 
-    log.entry("Starting....")
+    log.entry("[INIT] Starting appCataloga_file_bin_process")
 
+    # ===============================================================
+    # DATABASE INIT
+    # ===============================================================
     try:
-        # create db object using databaseHandler class for the backup and processing database
         db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
         db_rfm = dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error("Error initializing database: {e}")
-        raise Exception(f"Error initializing database: {e}")
+        log.error(f"[INIT] Failed to initialize database: {e}")
+        raise
 
+    # ===============================================================
+    # MAIN LOOP
+    # ===============================================================
     while process_status["running"]:
+
+        # Runtime state & handler
+        err = sh.ErrorHandler(log)
+
+        # Runtime objects
+        row = None
+        host_info = None
+        file_task_id = None
+        server_path = None
+        server_name = None
+        file_was_processed = False
+        host_id = None
+
         try:
-            # Get one backup task from the queue in the database
-            task = None
+            # ===========================================================
+            # ACT I — Fetch task
+            # ===========================================================
+            try:
+                row, host_id, task_id = db_bp.read_file_task(
+                    task_type=k.FILE_TASK_BACKUP_TYPE,
+                    task_status=k.TASK_DONE,
+                    check_host_busy=False,
+                )
+            except Exception as e:
+                err.set("Failed reading FILE_TASK", "READ_TASK", e)
 
-            task,host_id = db_bp.read_file_tasks(task_type=k.FILE_TASK_PROCESS_TYPE,
-                                         task_status=k.TASK_PENDING,
-                                         single_task=True)
-            #task = db_bp.file_task_read_one(task_type=db_bp.FILE_TASK_PROCESS_TYPE)
+            if err.triggered:
+                continue
 
-            # if there is a task in the database
-            if task:
-                
-                host_info = db_bp.host_read_access(host_id=host_id)
-                # get metadata from bin file
-                filename = f"{task['NA_SERVER_FILE_PATH']}/{task['NA_SERVER_FILE_NAME']}"
+            if not row:
+                sh._random_jitter_sleep()
+                continue
+
+            # Shortcuts
+            file_task_id = row["FILE_TASK__ID_FILE_TASK"]
+            server_path = row["FILE_TASK__NA_SERVER_FILE_PATH"]
+            server_name = row["FILE_TASK__NA_SERVER_FILE_NAME"]
+            host_path = row["FILE_TASK__NA_HOST_FILE_PATH"]
+            host_name = row["FILE_TASK__NA_HOST_FILE_NAME"]
+            filename = f"{server_path}/{server_name}"
+
+            # ===========================================================
+            # ACT II — Load HOST metadata + lock HOST + set FILE_TASK RUNNING
+            # ===========================================================
+            try:
+                host_info = db_bp.host_read_access(host_id)
+                if not host_info:
+                    raise RuntimeError("host_read_access returned None")
 
                 db_bp.file_task_update(
-                    task_id=task["ID_FILE_TASK"],
-                    NU_STATUS=k.TASK_RUNNING
+                    task_id=file_task_id,
+                    NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+                    NU_STATUS=k.TASK_RUNNING,
+                    NA_MESSAGE=f"Processing BIN: {filename}",
                 )
+            except Exception as e:
+                err.set("Failed loading host or marking task running", "MARK_RUNNING", e)
 
-                log.entry(f"Start processing '{filename}'.")
+            if err.triggered:
+                continue
 
-                # store reference information to the file
-                try:
-                    bin_data = parse_bin(filename)
-                
-                except FileNotFoundError:
-                    # File was moved until processing started. Set task back to pending for retry
-                    db_bp.file_task_update(
-                        task_id=task["ID_FILE_TASK"],
-                        NU_STATUS=k.TASK_PENDING,
-                        NU_TYPE=k.FILE_TASK_BACKUP_TYPE,
-                        NA_MESSAGE=f"File not found: {filename} - Retry Backup",
-                    )
-                    continue
-                except Exception as e:
-                    raise Exception(f"Error parsing file {filename}: {e}")
+            host_uid = host_info["host_uid"]
+            log.entry(f"[PROCESS] Starting processing '{filename}'")
 
-                # TODO: #9 check site type processing the raw gps data and set the data dictionary used by get_site_id method
-                # start arranging the site data
+            # ===========================================================
+            # ACT III — Parse BIN file
+            # ===========================================================
+            try:
+                bin_data = parse_bin(filename)
+            except FileNotFoundError:
+                # Return to pending backup instead of error
+                db_bp.file_task_update(
+                    task_id=file_task_id,
+                    NU_STATUS=k.TASK_PENDING,
+                    NU_TYPE=k.FILE_TASK_BACKUP_TYPE,
+                    NA_MESSAGE=f"File missing: {filename} — Retry backup",
+                )
+                continue
+            except Exception as e:
+                err.set(f"Error parsing file {filename}", "PARSE", e)
+
+            if err.triggered:
+                continue
+
+            # ===========================================================
+            # ACT IV — SITE PROCESSING
+            # ===========================================================
+            try:
+                gps = bin_data["gps"]
                 data = {
-                    "longitude": bin_data["gps"].longitude,
-                    "latitude": bin_data["gps"].latitude,
-                    "altitude": bin_data["gps"].altitude,
-                    "nu_gnss_measurements": len(bin_data["gps"]._longitude),
+                    "longitude": gps.longitude,
+                    "latitude": gps.latitude,
+                    "altitude": gps.altitude,
+                    "nu_gnss_measurements": len(gps._longitude),
                 }
 
                 site = db_rfm.get_site_id(data)
@@ -251,53 +304,68 @@ def main():
                     data["id_site"] = site
                     db_rfm.update_site(
                         site=site,
-                        longitude_raw=bin_data["gps"]._longitude,
-                        latitude_raw=bin_data["gps"]._latitude,
-                        altitude_raw=bin_data["gps"]._altitude,
+                        longitude_raw=gps._longitude,
+                        latitude_raw=gps._latitude,
+                        altitude_raw=gps._altitude,
                     )
                 else:
-                    location = do_revese_geocode(data=data)
-                    data = map_location_to_data(location=location, data=data)
+                    location = do_revese_geocode(data)
+                    data = map_location_to_data(location, data)
                     site = db_rfm.insert_site(data)
 
-                # update data dictionary with data associated with the entire file scope
-                file_id = db_rfm.insert_file(
-                    filename=task["NA_HOST_FILE_NAME"],
-                    path=task["NA_HOST_FILE_PATH"],
-                    volume=host_info["host_uid"],
+            except Exception as e:
+                err.set("Site/location processing failed", "SITE", e)
+
+            if err.triggered:
+                continue
+
+            # ===========================================================
+            # ACT V — RAW FILE INSERT
+            # ===========================================================
+            try:
+                first_file_id = db_rfm.insert_file(
+                    filename=host_name,
+                    path=host_path,
+                    volume=host_uid,
                 )
-
                 data["id_procedure"] = db_rfm.insert_procedure(bin_data["method"])
+            except Exception as e:
+                err.set("Failed inserting raw file", "INSERT_FILE", e)
 
-                # ! WORK ONLY FOR RFEYE######  TODO: #10 refactor to a more generic solution that works for all equipment
-                # Create a list of the equipment that may be present in the file, the four antennas and the receiver
+            if err.triggered:
+                continue
+
+            # ===========================================================
+            # ACT VI — SPECTRUM PROCESSING
+            # ===========================================================
+            try:
                 receiver = bin_data["hostname"].lower()
-                
-
-                # insert the equipment in the database and/or get the ids if the equipment already exists
-                equipment_ids = db_rfm.insert_equipment(receiver)
+                db_rfm.insert_equipment(receiver)
 
                 spectrum_lst = []
                 for spectrum in bin_data["spectrum"]:
-                    data["id_detector_type"] = db_rfm.insert_detector_type(
-                        k.DEFAULT_DETECTOR
-                    )
-                    data["id_trace_type"] = db_rfm.insert_trace_type(
-                        spectrum.processing
-                    )
-                    data["id_measure_unit"] = db_rfm.insert_measure_unit(spectrum.dtype)
-                    data["na_description"] = spectrum.description
-                    data["nu_freq_start"] = spectrum.start_mega
-                    data["nu_freq_end"] = spectrum.stop_mega
-                    data["dt_time_start"] = spectrum.start_dateidx.strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    )
-                    data["dt_time_end"] = spectrum.stop_dateidx.strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    )
-                    data["nu_sample_duration"] = k.DEFAULT_SAMPLE_DURATION
-                    data["nu_trace_count"] = len(spectrum.timestamp)
-                    data["nu_trace_length"] = spectrum.ndata
+                    
+                    na_description = getattr(
+                            spectrum,
+                            "description",
+                            f"{spectrum.processing.upper()} — {spectrum.start_mega}–{spectrum.stop_mega} MHz ({spectrum.dtype})"
+                        )
+
+                    data.update({
+                        "id_detector_type": db_rfm.insert_detector_type(k.DEFAULT_DETECTOR),
+                        "id_trace_type": db_rfm.insert_trace_type(spectrum.processing),
+                        "id_measure_unit": db_rfm.insert_measure_unit(spectrum.dtype),
+                        "na_description": na_description,
+                        "nu_freq_start": spectrum.start_mega,
+                        "nu_freq_end": spectrum.stop_mega,
+                        "dt_time_start": spectrum.start_dateidx.strftime("%Y-%m-%d %H:%M:%S"),
+                        "dt_time_end": spectrum.stop_dateidx.strftime("%Y-%m-%d %H:%M:%S"),
+                        "nu_sample_duration": k.DEFAULT_SAMPLE_DURATION,
+                        "nu_trace_count": len(spectrum.timestamp),
+                        "nu_trace_length": spectrum.ndata,
+                        "nu_att_gain": k.DEFAULT_ATTENUATION_GAIN,
+                    })
+
                     try:
                         data["nu_rbw"] = spectrum.bw
                     except AttributeError:
@@ -305,97 +373,104 @@ def main():
                             data["nu_freq_end"] - data["nu_freq_start"]
                         ) / data["nu_trace_length"]
 
-                    data["nu_att_gain"] = k.DEFAULT_ATTENUATION_GAIN
-
-                    # create a list of equipment associated with the spectrum measurement
-                    # equipment = [
-                    #     equipment_ids[receiver],
-                    #     equipment_ids[f"rfeye[{spectrum.antuid}]_{receiver}"],
-                    # ]
-                    spectrum_lst.append(
-                        {
-                            "spectrum": db_rfm.insert_spectrum(data),
-                            "equipment": receiver,
-                        }
-                    )
+                    spectrum_lst.append({
+                        "spectrum": db_rfm.insert_spectrum(data),
+                        "equipment": receiver,
+                    })
 
                 db_rfm.insert_bridge_spectrum_equipment(spectrum_lst)
 
+            except Exception as e:
+                err.set("Spectrum processing failed", "SPECTRUM", e)
+
+            if err.triggered:
+                continue
+
+            # ===========================================================
+            # ACT VII — MOVE FILE TO FINAL DESTINATION
+            # ===========================================================
+            try:
                 new_path = db_rfm.build_path(site_id=data["id_site"])
                 new_path = f"{k.REPO_FOLDER}/{spectrum.stop_dateidx.year}/{new_path}"
 
                 file_data = file_move(
-                    filename=task["NA_SERVER_FILE_NAME"],
-                    path=task["NA_SERVER_FILE_PATH"],
+                    filename=server_name,
+                    path=server_path,
                     new_path=new_path,
                 )
+            except Exception as e:
+                err.set("Failed moving file to final path", "MOVE", e)
 
-                new_file_id = db_rfm.insert_file(**file_data)
-                db_rfm.insert_bridge_spectrum_file(spectrum_lst, [file_id, new_file_id])
-
-                db_bp.file_task_delete(task_id=task["ID_FILE_TASK"])
-                
-                # Update FILE_HISTORY and HOST tables with datetime of the last processing
-                db_bp.file_history_update(task_type=k.FILE_TASK_PROCESS_TYPE,
-                                          file_name=file_data["filename"])
-                db_bp.host_update(host_id=host_info["host_id"],
-                                  DT_LAST_PROCESSING=datetime.now())
-
-                log.entry(f"Finished processing '{filename}'.")
-
-            else:
-                # wait for a task to be posted
-                sh._random_jitter_sleep()
-
-        except Exception as e:
-            if not task:
-                log.error(f"Error in appCataloga_file_bin_proces: {e}")
+            if err.triggered:
                 continue
-            else:
+
+            # ===========================================================
+            # ACT VIII — SECOND FILE + BRIDGES
+            # ===========================================================
+            try:
+                second_file_id = db_rfm.insert_file(**file_data)
+                db_rfm.insert_bridge_spectrum_file(
+                    spectrum_lst,
+                    [first_file_id, second_file_id],
+                )
+            except Exception as e:
+                err.set("Failed inserting final file", "FILE2", e)
+
+            if err.triggered:
+                continue
+
+            # ===========================================================
+            # ACT IX — Mark success (ONLY SET FLAG)
+            # ===========================================================
+            file_was_processed = True
+            log.entry(f"[DONE] Finished processing '{filename}'")
+
+        # ===============================================================
+        # FATAL ERRORS
+        # ===============================================================
+        except Exception as e:
+            err.set("Unexpected fatal error", "UNEXPECTED", e)
+
+        # ===============================================================
+        # FINALLY — CENTRALIZED UPDATES
+        # ===============================================================
+        finally:
+
+            # SUCCESS FLOW
+            if file_was_processed:
                 try:
-                    file_data = file_move(
-                        filename=task["NA_SERVER_FILE_NAME"],
-                        path=task["NA_SERVER_FILE_PATH"],
-                        new_path=f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}",
+                    db_bp.file_task_delete(task_id=file_task_id)
+                    db_bp.file_history_update(
+                        task_type=k.FILE_TASK_PROCESS_TYPE,
+                        file_name=file_data["filename"],
                     )
+                    db_bp.host_task_statistics_create(host_id=host_id)
+                except Exception as e:
+                    log.error(f"[FINALIZE] Error finalizing successful task: {e}")
 
-                    task["NA_SERVER_FILE_PATH"] = file_data["path"]
-
-                    message = f"Error processing task: {e}"
-
-                    log.error(message)
-                except Exception as second_e:
-                    message = f"Error moving file to trash: First: {e}; raised another exception: {second_e}"
-                    log.error(message)
-                    pass
-
+            # ERROR FLOW
+            if err.triggered and file_task_id:
                 try:
-                    task["message"] = message
+                    try:
+                        file_move(
+                            filename=server_name,
+                            path=server_path,
+                            new_path=f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}",
+                        )
+                    except Exception as e2:
+                        log.warning(f"[CLEANUP] Failed moving file to trash: {e2}")
 
                     db_bp.file_task_update(
-                        task_id=task["ID_FILE_TASK"],
-                        status=k.TASK_ERROR,
-                        message=message,
+                        task_id=file_task_id,
+                        NU_STATUS=k.TASK_ERROR,
+                        NA_MESSAGE=err.msg,
                     )
+                except Exception as e3:
+                    fatal = f"Fatal during error flow: Main={err.exc}; Cleanup={e3}"
+                    log.error(fatal)
+                    raise Exception(fatal)
 
-                    # db_bp.host_update(
-                    #     host_id=task["ID_FILE_TASK"],
-                    #     pending_processing=-1,
-                    #     processing_error=1,
-                    # )
-                except Exception as second_e:
-                    log.error(
-                        f"Error removing processing task: First: {e}; raised another exception: {second_e}"
-                    )
 
-                    # raise a fatal error excpetion to stop the program
-                    raise Exception(
-                        f"Exception: {e}; raised another exception: {second_e}"
-                    )
-
-            pass
-
-    log.entry("Shutting down....")
 
 
 if __name__ == "__main__":

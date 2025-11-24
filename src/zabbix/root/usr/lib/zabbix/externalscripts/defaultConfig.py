@@ -8,7 +8,7 @@ Some constants are envorinment specific and should be changed to match the local
 # shared constants (used by: queryCataloga.py, queryLogger
 START_TAG = b"<json>" # used by queryLoggerUDP.py, queryCataloga.py
 END_TAG = b"</json>" # used by queryLoggerUDP.py, queryCataloga.py
-SMALL_BUFFER_SIZE = 1024 # used by queryCataloga.py, queryDigitizer.py
+SMALL_BUFFER_SIZE = 2048 # used by queryCataloga.py, queryDigitizer.py
 MID_BUFFER_SIZE = 16384 # used by queryappColeta.py
 LARGE_BUFFER_SIZE = 65536 # used by queryLoggerUDP.py
 TIMEOUT_BUFFER = 1 # used by queryLoggerUDP.py and quryDigitizer.py. Additional time after timeout to wait for data to be received

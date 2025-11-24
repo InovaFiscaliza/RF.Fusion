@@ -22,6 +22,7 @@ import sys
 import os
 import stat
 import time
+import threading
 import json
 import paramiko
 import posixpath
@@ -30,6 +31,7 @@ import stat
 import random
 from datetime import datetime
 from typing import Any, Dict, List, Tuple, Optional, Union
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from enum import Enum
 
 
@@ -52,7 +54,11 @@ import config as k  # noqa: E402  (must be available at runtime)
 # ---------------------------------------------------------------------
 NO_MSG = "none"
 
-
+# Shared executor – limited number of worker threads
+_TIMEOUT_EXECUTOR = ThreadPoolExecutor(
+    max_workers=8,  # você pode ajustar entre 4–16 dependendo do hardware
+    thread_name_prefix="timeout-worker"
+)
 # =====================================================================
 # HaltFlag class to manage objects
 # =====================================================================
@@ -632,66 +638,135 @@ class sftpConnection:
         }
 
     def _get_metadata_batch(self, file_list: List[str]) -> List[Dict[str, Any]]:
-        """Collect metadata for multiple files using a unified implementation.
-
-        Args:
-            file_list (list[str]): Absolute remote file paths to be inspected.
-
-        Returns:
-            list[dict]: A list of metadata dicts in the same order as inputs.
-                If a file is not found, an empty dict is placed in that index.
-
-        Raises:
-            Exception: When unexpected SFTP or SSH errors occur.
         """
+        Fast batch metadata retrieval using a single remote SSH command (Linux hosts only).
+        Output structure is identical to `_stat_to_metadata()`.
+        """
+        if not file_list:
+            return []
+
         results: List[Dict[str, Any]] = []
-        for filename in file_list:
+
+        # Prepare command using GNU stat format:
+        # %n = name, %s = size, %W = birth time, %Y = mtime, %X = atime, %U = uid, %G = gid, %a = octal perms
+        quoted_files = " ".join(f"'{f}'" for f in file_list)
+        cmd = (
+            "stat -c '%n|%s|%W|%Y|%X|%U|%G|%f' "  # %f = hex mode (we will convert to symbolic)
+            f"{quoted_files}"
+        )
+
+        try:
+            _, stdout, stderr = self.ssh_client.exec_command(cmd)
+            output = stdout.read().decode().strip().splitlines()
+
+        except Exception as e:
+            self.log.error(f"[FAST_META] Failed batch stat on {self.host_uid}: {e}")
+            raise
+
+        # Process each line returned
+        for raw in output:
             try:
-                attrs = self.sftp.stat(filename)
+                fullpath, size, ctime, mtime, atime, uid, gid, hex_mode = raw.split("|")
 
-                # Try to read creation time using remote 'stat -c %W' if available
-                created_ts: Optional[int] = None
-                try:
-                    cmd = f"stat -c %W {filename}"
-                    _, stdout, _ = self.ssh_client.exec_command(cmd, get_pty=False)
-                    out = stdout.read().decode("utf-8", errors="ignore").strip()
-                    created_ts = int(out) if out.isdigit() else None
-                except Exception:
-                    created_ts = None
+                # Convert types
+                size_bytes = int(size)
+                size_kb = size_bytes // 1024
 
-                results.append(self._stat_to_metadata(attrs, filename, created_ts))
+                # Convert timestamps
+                mtime_ts = int(mtime)
+                atime_ts = int(atime)
+                ctime_ts = int(ctime)
 
-            except FileNotFoundError:
-                self.log.error(
-                    f"File '{filename}' not found in '{self.host_uid}'({self.host_addr})"
-                )
-                results.append({})
+                dt_modified = datetime.fromtimestamp(mtime_ts)
+                dt_accessed = datetime.fromtimestamp(atime_ts)
+
+                # If no birth time available, reuse modified
+                dt_created = dt_modified
+                if ctime_ts > 0:
+                    dt_created = datetime.fromtimestamp(ctime_ts)
+
+                # Permissions: convert hex → int → symbolic
+                mode_int = int(hex_mode, 16)
+                permissions = stat.filemode(mode_int)
+
+                # Path components
+                filename = os.path.basename(fullpath)
+                dirname = os.path.dirname(fullpath)
+                _, ext = os.path.splitext(filename)
+
+                # Build metadata dict identical to _stat_to_metadata()
+                metadata = {
+                    "NA_FILE": filename,
+                    "NA_PATH": dirname,
+                    "NA_FULL_PATH": f"{dirname}/{filename}",
+                    "NA_EXTENSION": ext,
+                    "VL_FILE_SIZE_KB": size_kb,
+                    "DT_FILE_CREATED": dt_created,
+                    "DT_FILE_MODIFIED": dt_modified,
+                    "DT_FILE_ACCESSED": dt_accessed,
+                    "NA_OWNER": str(uid),
+                    "NA_GROUP": str(gid),
+                    "NA_PERMISSIONS": permissions,
+                }
+
+                results.append(metadata)
+
             except Exception as e:
-                self.log.error(
-                    f"Error retrieving metadata for '{filename}' in '{self.host_uid}'({self.host_addr}). {e}"
-                )
-                raise
+                self.log.error(f"[FAST_META] Failed to parse line '{raw}': {e}")
+                results.append({})
+
         return results
+
+
 
     def sftp_find_files(self, remote_path: str, pattern: str, recursive: bool = True) -> List[str]:
         """
-        Search for files on a remote host via SFTP that match a given wildcard pattern.
+        Recursively search for remote files over SFTP matching a case-insensitive pattern.
 
-        This method traverses the specified remote directory and returns the names of files
-        that match the provided pattern (supports UNIX-style wildcards such as '*' and '?').
-        When `recursive` is True, it will also explore subdirectories.
+        This function lists the contents of a directory on a remote host using SFTP and
+        returns all files whose names match the given UNIX-style wildcard pattern
+        (e.g., "*.bin", "scan_*", "?abc.txt"). Matching is performed in a *case-insensitive*
+        manner, ensuring that patterns like "scan_*.bin" also match files such as
+        "SCAN_123.BIN" or "Scan_Test.bin".
+
+        If `recursive=True`, subdirectories are explored depth-first, and all matching
+        files from the entire subtree are returned. Directory entries are ignored in the
+        result; only full file paths are returned.
+
+        The returned list contains the *original, case-preserved paths* exactly as found
+        on the remote filesystem, even though comparison is performed in lowercase.
 
         Args:
-            remote_path (str): The base remote directory path to search in.
-            pattern (str): The filename pattern to match (e.g., "data*", "*.txt").
-            recursive (bool, optional): Whether to search subdirectories recursively.
+            remote_path (str):
+                Base directory on the remote host where the search begins.
+
+            pattern (str):
+                Case-insensitive wildcard pattern used for matching filenames.
+                Supports UNIX wildcards: '*', '?', and character ranges.
+
+            recursive (bool, optional):
+                Whether to search inside subdirectories recursively.
                 Defaults to True.
 
         Returns:
-            List[str]: A list containing the names of files that match the pattern.
-                    Directory paths are excluded; only filenames are returned.
+            List[str]:
+                A list of full remote file paths matching the pattern. Paths are returned
+                with original casing and formatting as reported by the remote SFTP server.
+
+        Notes:
+            - If the directory cannot be listed (e.g., due to permission errors), the
+            function safely logs a warning and returns an empty list.
+            - Symbolic links are treated based on the underlying SFTP server's
+            representation—typically as files unless explicitly flagged as directories.
+            - The search behavior closely mimics shell-style globbing but without
+            requiring the remote filesystem to support glob operations.
+
         """
+
         matched_files = []
+
+        # Prepare pattern for case-insensitive comparison
+        lowercase_pattern = pattern.lower()
 
         try:
             entries = self.sftp.listdir_attr(remote_path)
@@ -702,22 +777,25 @@ class sftpConnection:
         for entry in entries:
             full_path = os.path.join(remote_path, entry.filename).replace("\\", "/")
 
-            # Check if entry is a directory
+            # Directory → recurse
             if stat.S_ISDIR(entry.st_mode):
                 if recursive:
                     try:
-                        # Recursive search in subdirectory
                         matched_files.extend(
                             self.sftp_find_files(full_path, pattern, recursive=True)
                         )
                     except Exception as e:
                         print(f"[WARN] Skipped directory {full_path}: {e}")
+
             else:
-                # Check if filename matches the given pattern
-                if fnmatch.fnmatch(entry.filename, pattern):
-                    matched_files.append(full_path)  
+                # ----------------------------------------
+                #  CASE-INSENSITIVE MATCH
+                # ----------------------------------------
+                if fnmatch.fnmatch(entry.filename.lower(), lowercase_pattern):
+                    matched_files.append(full_path)
 
         return matched_files
+
 
 # =====================================================================
 # hostDaemon (public API preserved)
@@ -769,25 +847,60 @@ class hostDaemon:
     # ----------------------------------------------------------------------
     # Configuration loader
     # ----------------------------------------------------------------------
-    def get_config(self) -> bool:
-        """Load the daemon configuration file from the remote node.
+    
 
-        Reads and parses the file defined in k.DAEMON_CFG_FILE on the remote
-        host, storing the resulting dictionary into self.config.
-
-        Returns:
-            bool: True if configuration loaded successfully; False otherwise.
+    def get_config(self, timeout: int = 60) -> bool:
         """
+        Load daemon configuration exclusively from the remote indexerD.cfg via SFTP.
+        Timeout is enforced manually because sftp_conn.read() has no built-in timeout.
+        """
+
         try:
-            cfg_content = self.sftp_conn.read(k.DAEMON_CFG_FILE, "r")
+            self.log.entry(f"[CONFIG] Reading remote cfg: {k.DAEMON_CFG_FILE}")
+
+            # ----------------------------------------------
+            # Execute SFTP read inside a worker thread
+            # ----------------------------------------------
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    self.sftp_conn.read, k.DAEMON_CFG_FILE, "r"
+                )
+                cfg_content = future.result(timeout=timeout)
+
+            # ----------------------------------------------
+            # Validate response
+            # ----------------------------------------------
             if not cfg_content:
-                raise FileNotFoundError("Empty configuration file.")
+                raise FileNotFoundError("Remote configuration file is empty or unreadable.")
+
             cfg, _ = parse_cfg(cfg_content)
             self.config = cfg
+
+            self.log.entry("[CONFIG] Remote configuration loaded successfully.")
             return True
-        except Exception as e:
-            self.log.error(f"[HostDaemon] Failed to load config: {e}")
+
+        # TIMEOUT
+        except TimeoutError:
+            self.log.error(
+                f"[CONFIG] Timeout (> {timeout}s) while reading remote config. "
+                "Closing SFTP connection."
+            )
+            try:
+                self.sftp_conn.close()
+            except Exception:
+                pass
             return False
+
+        # FILE NOT FOUND
+        except FileNotFoundError as e:
+            self.log.error(f"[CONFIG] File not found: {e}")
+            return False
+
+        # OTHER ERRORS
+        except Exception as e:
+            self.log.error(f"[CONFIG] Failed to load configuration: {e}")
+            return False
+
 
     # ----------------------------------------------------------------------
     # HALT flag management
@@ -1030,85 +1143,86 @@ class hostDaemon:
     
     def _get_mapped_files(self, filter: Dict, callBackFileHistory, callBackFileTaskHistory):
         """
-        Retrieve remote or local files eligible for backup according to the given filter.
+        Resolve candidate file paths for metadata discovery.
 
-        The behavior is determined by the `agent` property validated by Filter._validate():
-            - agent = "remote": reads `.files.changed.list` from the remote node.
-            - agent = "local" : performs recursive file searches on the repository path,
-                                with behavior depending on `mode`.
-
-        Local mode behavior:
-            - FILE : wildcard-based direct search (forced backup).
-            - others (ALL, RANGE, LAST, etc.): recursive search filtered by extension
-            and excluding files already present in FILE_TASK_HISTORY.
-
-        Args:
-            filter (dict): Normalized filter configuration (from Filter.data).
-            callBackFileHistory (Callable): Function to check existence of a filename
-                in FILE_TASK_HISTORY. Signature:
-                `callBackFileHistory(NA_HOST_FILE_NAME: str) -> bool`.
-
-        Returns:
-            list[str]: List of absolute file paths to be backed up.
+        Responsibilities:
+            - FILE defines pattern and disables DB filtering.
+            - REMOTE/LOCAL perform file lookup only.
+            - DB filtering is applied afterwards in a single place.
         """
-        due_backup_list: List[str] = []
-        mode = (filter.get("mode") or "").upper()
+
+        mode  = (filter.get("mode") or "").upper()
         agent = (filter.get("agent") or "").upper()
 
-        # ------------------------------------------------------------------
-        # REMOTE agent → read list generated by remote node
-        # ------------------------------------------------------------------
+        # ----------------------------------------------------------
+        # 1) Determine pattern and DB filtering behavior
+        # ----------------------------------------------------------
+        if mode == "FILE":
+            pattern = filter.get("file_name") or "*"
+            skip_db_filter = True
+        else:
+            ext = filter.get("extension")
+            pattern = f"*{ext}" if ext else "*"
+            skip_db_filter = False
+
+        candidates: List[str] = []
+
+        # ----------------------------------------------------------
+        # 2) Collect file candidates from REMOTE agent
+        # ----------------------------------------------------------
         if agent == "REMOTE":
             try:
-                raw_bytes = self.sftp_conn.read(filename=self.config["DUE_BACKUP"], mode="r")
-                if not raw_bytes:
-                    return []
-                decoded = raw_bytes.decode("utf-8", errors="ignore").replace("\x00", "").strip()
-                due_backup_list = [line for line in decoded.splitlines() if line.strip()]
+                raw = self.sftp_conn.read(self.config["DUE_BACKUP"], mode="r")
+                if raw:
+                    candidates = [
+                        line.strip()
+                        for line in raw.decode("utf-8", errors="ignore")
+                                .replace("\x00", "")
+                                .strip()
+                                .splitlines()
+                        if line.strip()
+                    ]
             except Exception as e:
-                self.log.warning(f"[get_mapped_files] Failed to read remote control file: {e}")
+                self.log.warning(f"[get_mapped_files] REMOTE read failed: {e}")
                 return []
 
-        # ------------------------------------------------------------------
-        # LOCAL agent → direct filesystem scan
-        # ------------------------------------------------------------------
+        # ----------------------------------------------------------
+        # 3) Collect file candidates from LOCAL agent
+        # ----------------------------------------------------------
         elif agent == "LOCAL":
             remote_dir = self.config.get("LOCAL_REPO", "/")
 
-            # Pattern choice
-            if mode == "FILE":
-                pattern = filter.get("file_name") or "*"
-            else:
-                extension = filter.get("extension")
-                pattern = f"*{extension}" if extension else "*"
-
-            # Single unified SFTP search
             try:
-                all_files = self.sftp_conn.sftp_find_files(
+                candidates = self.sftp_conn.sftp_find_files(
                     remote_path=remote_dir,
                     pattern=pattern,
-                    recursive=True,
+                    recursive=True
                 )
             except Exception as e:
-                self.log.error(f"[get_mapped_files] Failed to list local repo files: {e}")
+                self.log.error(f"[get_mapped_files] LOCAL scan failed: {e}")
                 return []
 
-            if not all_files:
-                return []
+        else:
+            self.log.error(f"[get_mapped_files] Invalid agent '{agent}'.")
+            return []
 
-            # Forced backup (FILE mode)
-            if mode == "FILE":
-                due_backup_list = all_files
+        # ----------------------------------------------------------
+        # 4) FILE mode → forced return (agnostic to DB, agent)
+        # ----------------------------------------------------------
+        if skip_db_filter:
+            return candidates
 
-            # Filtered backup (ALL/RANGE/LAST)
-            else:
-                for full_path in all_files:
-                    filename = os.path.basename(full_path)
-                    # Check existing file in FILE_TASK_HISTORY
-                    if not callBackFileHistory(NA_HOST_FILE_NAME=filename) and not callBackFileTaskHistory(NA_HOST_FILE_NAME=filename):
-                        due_backup_list.append(full_path)
+        # ----------------------------------------------------------
+        # 5) Apply DB filtering (ONLY for non-FILE modes)
+        # ----------------------------------------------------------
+        filtered = []
+        for path in candidates:
+            name = os.path.basename(path)
+            if not callBackFileHistory(NA_HOST_FILE_NAME=name) and not callBackFileTaskHistory(NA_HOST_FILE_NAME=name):
+                filtered.append(path)
 
-        return due_backup_list or []
+        return filtered
+
 
     
     # ------------- public APIs preserved (call the unified implementation) ----
@@ -1124,20 +1238,60 @@ class hostDaemon:
         res = self.sftp_conn._get_metadata_batch([filename])
         return res[0] if res else {}
 
-    def get_metadata_files(self, filter: Dict, callBackFileHistory, callBackFileTaskHistory):
-        """Get metadata for multiple remote files (public API preserved).
-
-        Args:
-            file_list (list[str]): Absolute remote file paths to inspect.
+    def get_metadata_files(self, filter: dict, callBackFileHistory, callBackFileTaskHistory):
+        """
+        Discover file paths (via _get_mapped_files), extract metadata,
+        and apply secondary metadata-based filters (RANGE, LAST, FILE).
 
         Returns:
-            list[dict]: A list of metadata dicts (or empty dicts for not-found files).
+            list[dict]: Final list of metadata dicts.
         """
-        
-        file_list = self._get_mapped_files(filter=filter,
-                                           callBackFileHistory=callBackFileHistory,
-                                           callBackFileTaskHistory=callBackFileTaskHistory)
-        return self.sftp_conn._get_metadata_batch(file_list=file_list)
+        try:
+            # ----------------------------------------------------------
+            # 1) Primary mapping (file list discovery)
+            # ----------------------------------------------------------
+            file_list = run_with_timeout(
+                lambda: self._get_mapped_files(
+                    filter=filter,
+                    callBackFileHistory=callBackFileHistory,
+                    callBackFileTaskHistory=callBackFileTaskHistory
+                ),
+                timeout=k.HOST_BUSY_TIMEOUT  # timeout for file listing (SFTP recursion)
+            )
+
+            if not file_list:
+                return []
+
+            # ----------------------------------------------------------
+            # 2) Metadata extraction (can stall on remote SFTP)
+            # ----------------------------------------------------------
+            metadata = run_with_timeout(
+                lambda: self.sftp_conn._get_metadata_batch(file_list=file_list),
+                timeout=k.HOST_BUSY_TIMEOUT  # timeout per metadata batch
+            )
+
+            # Remove empty metadata entries
+            metadata = [m for m in metadata if m]
+
+            if not metadata:
+                return []
+
+            # ----------------------------------------------------------
+            # 3) Metadata-level secondary filter (always fast)
+            # ----------------------------------------------------------
+            filter_obj = Filter(filter_raw=filter, log=self.log)
+            metadata = filter_obj.evaluate_metadata(metadata)
+
+            return metadata
+
+        except TimeoutError as te:
+            self.log.error(f"[get_metadata_files] TimeoutError: {te}")
+            return []
+
+        except Exception as e:
+            self.log.error(f"[get_metadata_files] Unexpected error: {e}")
+            return []
+
 
     # ----------------------------------------------------------------------
     # Backup completion logging
@@ -1404,214 +1558,423 @@ class Filter:
     # ------------------------------------------------------------------
     # Evaluation logic (Strategy dispatch)
     # ------------------------------------------------------------------
-    
-    def evaluate(
+    def evaluate_database(
         self,
-        tasks: List[Dict[str, Any]],
-        candidate_paths: Optional[List[Dict[str, Any]]],
-    ) -> List[int]:
+        host_id: int,
+        search_type: Optional[int] = None,
+        search_status: Optional[Union[int, List[int]]] = None,
+        file_list: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
         """
-        Evaluate FILE_TASK entries according to the active filter configuration.
-
-        Args:
-            tasks (List[Dict[str, Any]]): List of FILE_TASK dictionaries obtained from the database.
-                Each task must contain at least:
-                    - NA_HOST_FILE_PATH
-                    - NA_HOST_FILE_NAME
-                    - DT_FILE_CREATED
-                    - NA_EXTENSION
-            candidate_paths (Optional[List[Dict[str, Any]]]): Optional list of dictionaries,
-                each containing the key 'NA_FULL_PATH'. Used only when mode == FILE.
+        Builds SQL filtering metadata for FILE_TASK updates.
 
         Returns:
-            List[int]: List of binary flags where 1 = match and 0 = skip.
+            {
+                "where": { ... },
+                "extra_sql": "ORDER BY ... LIMIT ...",
+                "msg_prefix": "Backup Pending"
+            }
         """
-        mode = self.data["mode"]
-        flags: List[int] = []
 
-        # Extract full paths from provided candidates
-        candidate_set = [f['NA_FULL_PATH'] for f in candidate_paths] if candidate_paths else []
+        mode = (self.data.get("mode") or "").upper()
 
-        # --- RANGE mode: prepare date boundaries ---
-        start_dt = end_dt = None
-        if mode == Filter.MODE_RANGE:
-            try:
-                start = self.data["start_date"]
-                end = self.data["end_date"]
-                if isinstance(start, str):
-                    start_dt = datetime.fromisoformat(start)
-                if isinstance(end, str):
-                    end_dt = datetime.fromisoformat(end)
-            except Exception:
-                pass
+        # ============================================================
+        # Base SQL WHERE clause
+        # ============================================================
+        where: Dict[str, Any] = {"FK_HOST": host_id}
 
-        # --- LAST mode: pick N most recent files ---
-        selected_names = set()
-        if mode == Filter.MODE_LAST and self.data["last_n_files"]:
-            try:
-                last_n = int(self.data["last_n_files"])
-                sorted_tasks = sorted(
-                    [t for t in tasks if t.get("DT_FILE_CREATED")],
-                    key=lambda t: t["DT_FILE_CREATED"],
-                    reverse=True,
-                )
-                selected_names = {
-                    t["NA_HOST_FILE_NAME"]
-                    for t in sorted_tasks[:last_n]
-                }
-            except Exception:
-                pass
+        # NU_TYPE
+        if search_type is not None:
+            where["NU_TYPE"] = search_type
 
-        # --- Normalize extension filter ---
-        extension_filter = self.data["extension"]
-        if isinstance(extension_filter, str):
-            extension_filter = extension_filter.strip().lower()
-            if not extension_filter:
-                extension_filter = None
-        else:
-            extension_filter = None
+        # NU_STATUS (int or list -> __in)
+        if search_status is not None:
+            if isinstance(search_status, (list, tuple)):
+                where["NU_STATUS__in"] = list(search_status)
+            else:
+                where["NU_STATUS"] = search_status
 
-        # --- Main evaluation loop ---
-        for t in tasks:
-            path = t.get("NA_HOST_FILE_PATH", "")
-            name = t.get("NA_HOST_FILE_NAME", "")
-            full_path = os.path.join(path, name)
-            include = False
+        # ============================================================
+        # Extension filter
+        # ============================================================
+        extension = self.data.get("extension")
+        if isinstance(extension, str):
+            extension = extension.strip().lower() or None
+        if extension:
+            where["NA_EXTENSION__like"] = f"%{extension}"
 
-            # MODE: ALL
-            if mode == Filter.MODE_ALL:
-                include = True
+        # ============================================================
+        # Extra SQL (ORDER BY, LIMIT)
+        # ============================================================
+        extra_sql = ""
 
-            # MODE: NONE
-            elif mode == Filter.MODE_NONE:
-                include = False
+        # ============================================================
+        # msg_prefix (always computed for valid modes)
+        # ============================================================
+        msg_prefix = _compose_message(
+            search_type, search_status, "", "", prefix_only=True
+        )
 
-            # MODE: FILE (explicit match list)
-            elif mode == Filter.MODE_FILE and candidate_set:
-                include = full_path in candidate_set
-
-            # MODE: RANGE (date filtering)
-            elif mode == Filter.MODE_RANGE:
-                mod = t.get("DT_FILE_CREATED")
-                if isinstance(mod, str):
-                    try:
-                        mod = datetime.fromisoformat(mod)
-                    except Exception:
-                        mod = None
-                if isinstance(mod, datetime):
-                    if start_dt and end_dt:
-                        include = start_dt <= mod <= end_dt
-                    elif start_dt:
-                        include = mod >= start_dt
-                    elif end_dt:
-                        include = mod <= end_dt
-
-            # MODE: LAST (latest N files)
-            elif mode == Filter.MODE_LAST and selected_names:
-                include = name in selected_names
-
-            # Optional extension filter
-            if include and extension_filter:
-                include = str(name).lower().endswith(extension_filter)
-
-            flags.append(1 if include else 0)
-
-        return flags
-
-
-    # ------------------------------------------------------------------
-    # Static utilities
-    # ------------------------------------------------------------------
-    @staticmethod
-    def build_inputs_from_tasks(tasks: List[Dict[str, Any]]) -> Tuple[List[Tuple[str, str]], Dict[str, Dict[str, Any]]]:
-        """Convert FILE_TASK database records into filterable input structures.
-
-        Args:
-            tasks: List of FILE_TASK records.
-
-        Returns:
-            Tuple[List[Tuple[str, str]], Dict[str, Dict[str, Any]]]:
-                - Tuples: (directory, filename) pairs.
-                - Metadata: Mapping of filename to metadata dict.
-        """
-        tuples = [(t["NA_HOST_FILE_PATH"], t["NA_HOST_FILE_NAME"]) for t in tasks]
-        metadata = {
-            t["NA_HOST_FILE_NAME"]: {
-                "extension": t.get("NA_EXTENSION"),
-                "dt_file_modified": t.get("DT_FILE_MODIFIED"),
-            } for t in tasks
-        }
-        return tuples, metadata
-
-    @staticmethod
-    def build_inputs_from_files(
-        file_list: List[str],
-        file_metadata: List[Dict[str, Any]],
-    ) -> Tuple[List[Tuple[str, str]], Dict[str, Dict[str, Any]]]:
-        """Convert remote file discovery results into tuples and metadata dicts.
-
-        Args:
-            file_list: List of absolute remote file paths.
-            file_metadata: List of metadata dicts with at least:
-                - "NA_FILE": filename (basename)
-                - "NA_EXTENSION": file extension
-                - "DT_FILE_MODIFIED": last modified timestamp
-
-        Returns:
-            Tuple[List[Tuple[str, str]], Dict[str, Dict[str, Any]]]:
-                - Tuples: (remote_dir, filename)
-                - Metadata: {filename: {...}}
-        """
-        tuples: List[Tuple[str, str]] = []
-        metadata: Dict[str, Dict[str, Any]] = {}
-
-        for f in file_list:
-            try:
-                remote_dir, remote_name = posixpath.split(f)
-                if remote_name:
-                    tuples.append((remote_dir, remote_name))
-            except Exception as e:
-                print(f"[Filter.build_inputs_from_files] Skipped malformed path '{f}': {e}")
-
-        for meta in file_metadata or []:
-            name = meta.get("NA_FILE")
-            if not name:
-                continue
-            metadata[name] = {
-                "extension": meta.get("NA_EXTENSION"),
-                "dt_file_modified": meta.get("DT_FILE_MODIFIED"),
+        # ============================================================
+        # MODE = ALL
+        # ============================================================
+        if mode == Filter.MODE_ALL:
+            return {
+                "where": where,
+                "extra_sql": extra_sql,
+                "msg_prefix": msg_prefix
             }
 
-        return tuples, metadata
+        # ============================================================
+        # MODE = NONE
+        # ============================================================
+        if mode == Filter.MODE_NONE:
+            return {"where": None, "extra_sql": "", "msg_prefix": None}
 
-    @staticmethod
-    def apply(
-        tasks:List[Dict[str, Any]],
-        filter_cfg: Dict[str, Any],
-        candidate_paths: Optional[List[str]] = None,
-        log: Optional[Any] = None,
-    ) -> List[int]:
-        """Apply a filter configuration to a given set of files and metadata.
+        # ============================================================
+        # MODE = FILE
+        # ============================================================
+        if mode == Filter.MODE_FILE:
 
-        Args:
-            files_tuple_list: (directory, filename) pairs.
-            file_metadata: File metadata (list or dict form).
-            filter_cfg: Filter configuration dictionary or JSON string.
-            candidate_paths: Optional subset of paths (FILE mode).
-            log: Optional logger for diagnostics.
-            file_history_checker: Optional callback for history lookup.
+            if not file_list:
+                return {"where": None, "extra_sql": "", "msg_prefix": None}
 
-        Returns:
-            List[int]: List of flags (1 = file included, 0 = excluded).
+            normalized = []
+
+            for item in file_list:
+
+                # -----------------------------
+                # String: filename or path
+                # -----------------------------
+                if isinstance(item, str):
+                    normalized.append(os.path.basename(item))
+                    continue
+
+                # -----------------------------
+                # Dict: metadata from daemon
+                # -----------------------------
+                if isinstance(item, dict):
+
+                    # Priority: NA_FULL_PATH
+                    if "NA_FULL_PATH" in item:
+                        normalized.append(os.path.basename(item["NA_FULL_PATH"]))
+                        continue
+
+                    # Fallback: NA_FILE
+                    if "NA_FILE" in item:
+                        normalized.append(item["NA_FILE"])
+                        continue
+
+                    # Fallback: NA_HOST_FILE_NAME
+                    if "NA_HOST_FILE_NAME" in item:
+                        normalized.append(item["NA_HOST_FILE_NAME"])
+                        continue
+
+                    continue  # ignore invalid dicts
+
+                # otherwise ignore invalid item types
+
+            if not normalized:
+                return {"where": None, "extra_sql": "", "msg_prefix": None}
+
+            where["NA_HOST_FILE_NAME__in"] = normalized
+
+            return {
+                "where": where,
+                "extra_sql": extra_sql,
+                "msg_prefix": msg_prefix
+            }
+
+        # ============================================================
+        # MODE = RANGE
+        # ============================================================
+        if mode == Filter.MODE_RANGE:
+
+            start = self.data.get("start_date")
+            end = self.data.get("end_date")
+
+            if start and end:
+                where["DT_FILE_CREATED__between"] = (start, end)
+            elif start:
+                where["DT_FILE_CREATED__gte"] = start
+            elif end:
+                where["DT_FILE_CREATED__lte"] = end
+            else:
+                return {"where": None, "extra_sql": "", "msg_prefix": None}
+
+            return {
+                "where": where,
+                "extra_sql": extra_sql,
+                "msg_prefix": msg_prefix
+            }
+
+        # ============================================================
+        # MODE = LAST   (N most recent by DT_FILE_CREATED)
+        # ============================================================
+        if mode == Filter.MODE_LAST:
+            last_n = int(self.data.get("last_n_files", 0))
+
+            if last_n <= 0:
+                return {"where": None, "extra_sql": "", "msg_prefix": None}
+
+            extra_sql = f"ORDER BY DT_FILE_CREATED DESC LIMIT {last_n}"
+
+            return {
+                "where": where,
+                "extra_sql": extra_sql,
+                "msg_prefix": msg_prefix
+            }
+
+        # ============================================================
+        # Fallback (should not happen, but safe)
+        # ============================================================
+        return {
+            "where": where,
+            "extra_sql": extra_sql,
+            "msg_prefix": msg_prefix
+        }
+        
+    def evaluate_metadata(self, metadata_list: list[dict]) -> list[dict]:
         """
-        try:
-            f = Filter(filter_cfg, log=log)
-            return f.evaluate(tasks, candidate_paths)
-        except Exception as e:
-            if log:
-                log.error(f"[Filter] apply() failed: {e}")
-            raise
-    
+        Apply secondary metadata-based filters (RANGE, LAST).
+        FILE, ALL, NONE return metadata_list unchanged.
+
+        Range logic:
+            - only start_date  → ts >= start
+            - only end_date    → ts <= end
+            - both provided    → start <= ts <= end
+        """
+
+        # ------------------------------------------------------------------
+        # Minimum-size protection: ignore empty or near-empty files
+        # (do NOT mutate the original metadata_list)
+        # ------------------------------------------------------------------
+        filtered_metadata = [
+            m for m in metadata_list
+            if (m.get("VL_FILE_SIZE_KB") or 0) >= k.MIN_FILE_SIZE_KB
+        ]
+
+        # If all entries were filtered out → return empty list
+        if not filtered_metadata:
+            return []
+
+        # From here on, use only the filtered copy (immutable behavior)
+        metadata_list = filtered_metadata
+
+        mode      = (self.data.get("mode") or "").upper()
+        extension = (self.data.get("extension") or "").lower()
+
+        # ------------------------------------------------------------------
+        # 1. FILE / ALL / NONE: no metadata filtering
+        #    (extension still may be enforced)
+        # ------------------------------------------------------------------
+        if mode in ("FILE", "ALL", "NONE"):
+            if extension:
+                return [
+                    m for m in metadata_list
+                    if (m.get("NA_EXTENSION") or "").lower() == extension
+                ]
+            return metadata_list
+
+        # ------------------------------------------------------------------
+        # 2. RANGE mode (smart behavior)
+        # ------------------------------------------------------------------
+        if mode == "RANGE":
+
+            start_raw = self.data.get("start_date")
+            end_raw   = self.data.get("end_date")
+
+            start = None
+            end = None
+
+            # Convert start_date
+            if isinstance(start_raw, datetime):
+                start = start_raw
+            elif isinstance(start_raw, str) and start_raw.strip():
+                try:
+                    start = datetime.fromisoformat(start_raw)
+                except:
+                    pass  # invalid format → ignored
+
+            # Convert end_date
+            if isinstance(end_raw, datetime):
+                end = end_raw
+            elif isinstance(end_raw, str) and end_raw.strip():
+                try:
+                    end = datetime.fromisoformat(end_raw)
+                except:
+                    pass
+
+            # Clean list to append filtered results
+            filtered = []
+
+            # Apply RANGE FILTER
+            for m in metadata_list:
+                ts = m.get("DT_FILE_CREATED")
+                if not ts:
+                    continue
+
+                # Start only
+                if start and not end:
+                    if ts >= start:
+                        filtered.append(m)
+                    continue
+
+                # End only
+                if end and not start:
+                    if ts <= end:
+                        filtered.append(m)
+                    continue
+
+                # Both start and end
+                if start and end:
+                    if start <= ts <= end:
+                        filtered.append(m)
+                    continue
+
+                # No start and no end → return everything
+                filtered.append(m)
+
+            # Apply extension if present
+            if extension:
+                filtered = [
+                    m for m in filtered
+                    if (m.get("NA_EXTENSION") or "").lower() == extension
+                ]
+
+            return filtered
+
+        # ------------------------------------------------------------------
+        # 3. LAST mode
+        # ------------------------------------------------------------------
+        if mode == "LAST":
+            last_n = int(self.data.get("last_n") or 0)
+            if last_n <= 0:
+                # Only extension enforcement if needed
+                if extension:
+                    return [
+                        m for m in metadata_list
+                        if (m.get("NA_EXTENSION") or "").lower() == extension
+                    ]
+                return metadata_list
+
+            # Sort by timestamp
+            ordered = sorted(
+                metadata_list,
+                key=lambda m: m.get("DT_FILE_CREATED") or 0
+            )
+
+            # Extension enforcement
+            if extension:
+                ordered = [
+                    m for m in ordered
+                    if (m.get("NA_EXTENSION") or "").lower() == extension
+                ]
+
+            # Take last N
+            return ordered[-last_n:]
+
+        # ------------------------------------------------------------------
+        # 4. Unknown mode → return all (with extension check)
+        # ------------------------------------------------------------------
+        if extension:
+            return [
+                m for m in metadata_list
+                if (m.get("NA_EXTENSION") or "").lower() == extension
+            ]
+
+        return metadata_list
+
+
+class ErrorHandler:
+    """
+    Centralized error tracking helper for microservices.
+
+    Stores error state across multiple stages and provides utility methods for
+    checking, logging, and retrieving structured error messages.
+
+    Usage:
+        err = ErrorHandler(log)
+        err.set("Discovery failed", stage="DISCOVERY", exc=e)
+
+        if err.triggered:
+            err.log_error(host_id=..., task_id=...)
+    """
+
+    def __init__(self, log):
+        self.logger = log          # <-- RENOMEADO
+        self.reason = None
+        self.stage = None
+        self.exc = None
+
+    def set(self, reason: str, stage: str = None, exc: Exception = None):
+        """Register an error once."""
+        if not self.reason:
+            self.reason = reason
+            self.stage = stage
+            self.exc = exc
+
+    @property
+    def triggered(self) -> bool:
+        return self.reason is not None
+
+    @property
+    def msg(self) -> str:
+        if self.stage:
+            return f"{self.stage}: {self.reason}"
+        return self.reason or ""
+
+    def log_error(self, host_id=None, task_id=None):
+        """Unified logging format for errors."""
+        parts = ["[ERROR_HANDLER]"]
+
+        if self.stage:
+            parts.append(f"[{self.stage}]")
+
+        if host_id is not None:
+            parts.append(f"[HOST={host_id}]")
+
+        if task_id is not None:
+            parts.append(f"[TASK={task_id}]")
+
+        parts.append(self.reason or "Unknown error")
+
+        if self.exc:
+            parts.append(f"Exception: {repr(self.exc)}")
+
+        self.logger.error(" ".join(parts))
+
+
+class TimeoutError(Exception):
+    """Raised when a function exceeds the allowed timeout."""
+    pass
+
+def run_with_timeout(func, timeout: float):
+    """
+    Execute `func()` with a timeout using a global ThreadPoolExecutor.
+
+    Benefits:
+        - No thread leaking (all threads reused)
+        - Real timeout control
+        - Exceptions pass-through
+        - Same signature you were already using
+
+    Raises:
+        TimeoutError
+        Exception forwarded from func()
+    """
+    future = _TIMEOUT_EXECUTOR.submit(func)
+
+    try:
+        return future.result(timeout=timeout)
+
+    except FuturesTimeoutError:
+        raise TimeoutError(f"Operation timed out after {timeout} seconds")
+
+    except Exception as e:
+        raise e
+
+  
 def parse_filter(filter_raw: Union[str, Dict[str, Any], None], log: Optional[Any] = None) -> Dict[str, Any]:
     """Safely parse and normalize a raw filter (legacy wrapper).
 
@@ -1711,27 +2074,58 @@ def init_host_context(host: dict, log):
     """
     Initialize SFTP connection and hostDaemon context for a given host.
 
-    This prepares the remote session for controlled backup execution.
-    The caller is responsible for closing both `daemon` and `sftp_conn`
-    after use (typically via try/finally).
+    The caller must close both `daemon` and `sftp_conn` after use.
+    Typical usage is inside a try/finally cleanup block.
+
+    Expected host dictionary format:
+        {
+            "HOST__ID_HOST": ...,
+            "HOST__NA_HOST_NAME": ...,
+            "HOST__NA_HOST_ADDRESS": ...,
+            "HOST__NA_HOST_PORT": ...,
+            "HOST__NA_HOST_USER": ...,
+            "HOST__NA_HOST_PASSWORD": ...
+        }
 
     Args:
-        host (dict): Host configuration record from database.
-        tasks (dict): FILE_TASK mapping for this host.
+        host (dict): Dictionary containing host metadata, usually obtained
+            from DB JOIN operations via `_select_custom()`.
         log: Shared logger instance.
 
     Returns:
-        Tuple[sh.sftpConnection, sh.hostDaemon]: Active SFTP session and daemon.
+        Tuple[sftpConnection, hostDaemon]:
+            A live SFTP connection and a hostDaemon object.
     """
+
+    # --------------------------------------------------------------
+    # Extract required HOST fields (raises KeyError if missing)
+    # --------------------------------------------------------------
+    try:
+        host_uid  = host["HOST__NA_HOST_NAME"]
+        host_addr = host["HOST__NA_HOST_ADDRESS"]
+        port      = int(host["HOST__NA_HOST_PORT"])
+        user      = host["HOST__NA_HOST_USER"]
+        password  = host["HOST__NA_HOST_PASSWORD"]
+    except KeyError as e:
+        missing = str(e)
+        log.error(f"[INIT] Missing field in host metadata: {missing}")
+        raise
+
+    # --------------------------------------------------------------
+    # Create SFTP connection object
+    # --------------------------------------------------------------
     sftp_conn = sftpConnection(
-        host_uid=host["host_uid"],
-        host_addr=host["host_addr"],
-        port=host["port"],
-        user=host["user"],
-        password=host["password"],
+        host_uid=host_uid,
+        host_addr=host_addr,
+        port=port,
+        user=user,
+        password=password,
         log=log,
     )
 
+    # --------------------------------------------------------------
+    # Create daemon associated with the same SFTP session
+    # --------------------------------------------------------------
     daemon = hostDaemon(
         sftp_conn=sftp_conn,
         log=log,
@@ -1743,3 +2137,55 @@ def init_host_context(host: dict, log):
 def _random_jitter_sleep() -> None:
     """Small random delay to reduce race conditions between workers."""
     time.sleep(random.uniform(0.5, k.MAX_HOST_TASK_WAIT_TIME))
+    
+def _compose_message(
+    task_type: int,
+    task_status: int,
+    path: Optional[str] = None,
+    name: Optional[str] = None,
+    *,
+    prefix_only: bool = False
+) -> str:
+    """
+    Build a standardized NA_MESSAGE for FILE_TASK transitions.
+
+    Args:
+        task_type (int): Destination NU_TYPE.
+        task_status (int): Destination NU_STATUS.
+        path (str|None): Remote directory path.
+        name (str|None): Remote filename.
+        prefix_only (bool): If True, returns only "<Type> <Status>".
+
+    Returns:
+        str: Either:
+            "Backup Pending"
+            "Backup Pending of file /dir/base.ext"
+    """
+
+    # ---- type message ----
+    if task_type == k.FILE_TASK_BACKUP_TYPE:
+        type_msg = "Backup"
+    elif task_type == k.FILE_TASK_DISCOVERY:
+        type_msg = "Discovery"
+    else:
+        type_msg = "Processing"
+
+    # ---- status message ----
+    status_msg = (
+        "Pending" if task_status == k.TASK_PENDING else
+        "Done"    if task_status == k.TASK_DONE else
+        "Running" if task_status == k.TASK_RUNNING else
+        "Error"   if task_status == k.TASK_ERROR else
+        "Refresh"
+    )
+
+    prefix = f"{type_msg} {status_msg}"
+
+    if prefix_only:
+        return prefix
+
+    # When not prefix_only, *require* path and name to be present
+    path = path or ""
+    name = name or ""
+
+    return f"{prefix} of file {path}/{name}"
