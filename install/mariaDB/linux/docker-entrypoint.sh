@@ -21,41 +21,31 @@ echo "root:${SSH_PASSWORD:-changeme}" | chpasswd
 # 2) MariaDB
 # -------------------------------------------------------------------
 echo "[entrypoint] Configuring MariaDB..."
-
-# /var/run/mysqld precisa de permissão – permitido
 mkdir -p /var/run/mysqld
-chown mysql:mysql /var/run/mysqld || true
+chmod 775 /var/run/mysqld
 
-DATADIR="/var/lib/mysql"
+# *** IMPORTANTE ***
+# NÃO fazer chown no /var/lib/mysql → isso quebra em qualquer FS sem chmod, mas é OK no volume Podman
 
-# IMPORTANTE:
-# nunca faça chown/chmod em /var/lib/mysql (bind mount)
-# apenas inicialize se ainda não existir "mysql/" dentro dele
-if [ ! -d "$DATADIR/mysql" ]; then
+if [ ! -d /var/lib/mysql/mysql ]; then
     echo "[entrypoint] First run: initializing MariaDB data directory..."
-    mariadb-install-db --user=mysql --datadir="$DATADIR" --skip-test-db
-else
-    echo "[entrypoint] Existing MariaDB directory detected, skipping initialization."
+    mariadb-install-db --user=mysql --datadir=/var/lib/mysql > /dev/null
 fi
 
-# -------------------------------------------------------------------
-# 3) Criar usuário root remoto (após subir MariaDB)
-# -------------------------------------------------------------------
-echo "[entrypoint] Starting MariaDB (bootstrap)..."
-mysqld --datadir="$DATADIR" --skip-networking &
-MYSQLPID=$!
+echo "[entrypoint] Starting temporary MariaDB..."
+mysqld_safe --skip-networking --datadir=/var/lib/mysql &
+pid="$!"
 
-# Esperar MariaDB subir
 for i in {30..0}; do
     if mariadb -uroot --protocol=socket -e "SELECT 1;" &>/dev/null; then
         break
     fi
-    echo "[entrypoint] Waiting MariaDB to become ready..."
+    echo "[entrypoint] Waiting for MariaDB..."
     sleep 1
 done
 
-if [ "$i" = 0 ]; then
-    echo "[entrypoint] ERROR: MariaDB did not start."
+if [[ "$i" = "0" ]]; then
+    echo "[entrypoint] MariaDB did not start during initialization"
     exit 1
 fi
 
@@ -66,14 +56,14 @@ mariadb --protocol=socket <<-EOSQL
     FLUSH PRIVILEGES;
 EOSQL
 
-echo "[entrypoint] Stopping bootstrap MariaDB..."
+echo "[entrypoint] Shutdown temporary MariaDB..."
 mysqladmin --protocol=socket -uroot -p"${MARIADB_ROOT_PASSWORD:-changeme}" shutdown
 
 # -------------------------------------------------------------------
-# 4) Subir serviços finais
+# 3) Running services
 # -------------------------------------------------------------------
-echo "[entrypoint] Starting MariaDB (production mode)..."
-mysqld --datadir="$DATADIR" --bind-address=0.0.0.0 &
+echo "[entrypoint] Starting MariaDB in normal mode..."
+mysqld_safe --datadir=/var/lib/mysql --bind-address=0.0.0.0 &
 
 echo "[entrypoint] Starting SSH..."
 exec /usr/sbin/sshd -D -e
