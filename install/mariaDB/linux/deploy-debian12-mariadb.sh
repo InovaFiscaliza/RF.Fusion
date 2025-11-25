@@ -14,24 +14,21 @@ DBPassword="changeme"
 HostSSHPort="2224"
 HostDBPort="9081"
 
-# Scripts SQL originais
-sqlProcessing="/server_volume/tmp/appCataloga/createProcessingDB-v8.sql"
-sqlMeasure="/server_volume/tmp/appCataloga/createMeasureDB-v4.sql"
+# Scripts SQL (no host)
+sqlProcessing="/RFFusion-dev/RF.Fusion/src/appCataloga/server_volume/tmp/appCataloga/createProcessingDB-v8.sql"
+sqlMeasure="/RFFusion-dev/RF.Fusion/src/appCataloga/server_volume/tmp/appCataloga/createMeasureDB-v4.sql"
 
-repoRoot="/RFFusion-dev/RF.Fusion"
 projectRoot="$(dirname "$(realpath "$0")")"
 
 # ============================================================
-# 1. Garantir rede
+# 1. Rede
 # ============================================================
 echo "=== Ensuring network ${NetworkName} ==="
 networkScript="${projectRoot}/setup-network.sh"
-if [[ -f "$networkScript" ]]; then
-    bash "$networkScript"
-fi
+[[ -f "$networkScript" ]] && bash "$networkScript"
 
 # ============================================================
-# 2. Build
+# 2. Build da imagem
 # ============================================================
 echo "=== Building ${ImageName} ==="
 podman rmi -f "${ImageName}" >/dev/null 2>&1 || true
@@ -42,7 +39,6 @@ echo "✔ Image built"
 # 3. Deploy
 # ============================================================
 echo "=== Deploying container ${ContainerName} ==="
-
 podman rm -f "${ContainerName}" >/dev/null 2>&1 || true
 
 podman run -d \
@@ -56,49 +52,57 @@ podman run -d \
   -e "SSH_PASSWORD=${SSHPassword}" \
   -p "${HostSSHPort}:22" \
   -p "${HostDBPort}:3306" \
-  -v "${repoRoot}/src/appCataloga/server_volume:/server_volume:Z" \
+  -v "/RFFusion-dev/RF.Fusion/src/appCataloga/server_volume:/server_volume:Z" \
   "${ImageName}:latest" >/dev/null
 
 echo "Waiting MariaDB startup..."
-sleep 10
+sleep 15   # tempo necessário
 
 # ============================================================
-# 4. Check running state
+# 4. Verificar container
 # ============================================================
 state=$(podman inspect -f '{{.State.Status}}' "${ContainerName}")
-if [[ "$state" != "running" ]]; then
+if [[ "${state}" != "running" ]]; then
     echo "❌ ERROR: Container failed (state: ${state})"
+    echo "Use: podman logs ${ContainerName}"
     exit 1
 fi
-
 echo "✔ Container running"
 
 # ============================================================
-# 5. Teste inicial
+# 5. Testar MariaDB
 # ============================================================
 echo "Checking MariaDB..."
 if podman exec "${ContainerName}" \
     mariadb -uroot -p"${DBPassword}" -e "SELECT 1;" >/dev/null 2>&1; then
     echo "✔ MariaDB OK"
 else
-    echo "⚠ MariaDB not responding"
+    echo "⚠ MariaDB not ready — continuing anyway"
 fi
 
 # ============================================================
-# 6. Executar arquivos SQL originais
+# 6. Executar SQL
 # ============================================================
 echo "=== Running project SQL scripts ==="
 
-if podman exec "${ContainerName}" mariadb -uroot -p"${DBPassword}" < "${sqlProcessing}"; then
-    echo "✔ createProcessingDB-v8.sql executed"
+if [[ -f "${sqlProcessing}" ]]; then
+    if podman exec -i "${ContainerName}" mariadb -uroot -p"${DBPassword}" < "${sqlProcessing}"; then
+        echo "✔ createProcessingDB-v8.sql executed"
+    else
+        echo "⚠ Failed createProcessingDB-v8.sql"
+    fi
 else
-    echo "⚠ Failed createProcessingDB-v8.sql"
+    echo "⚠ File not found: ${sqlProcessing}"
 fi
 
-if podman exec "${ContainerName}" mariadb -uroot -p"${DBPassword}" < "${sqlMeasure}"; then
-    echo "✔ createMeasureDB-v4.sql executed"
+if [[ -f "${sqlMeasure}" ]]; then
+    if podman exec -i "${ContainerName}" mariadb -uroot -p"${DBPassword}" < "${sqlMeasure}"; then
+        echo "✔ createMeasureDB-v4.sql executed"
+    else
+        echo "⚠ Failed createMeasureDB-v4.sql"
+    fi
 else
-    echo "⚠ Failed createMeasureDB-v4.sql"
+    echo "⚠ File not found: ${sqlMeasure}"
 fi
 
 # ============================================================

@@ -23,7 +23,8 @@ echo "[entrypoint] Configuring MariaDB..."
 mkdir -p /var/run/mysqld
 chmod 775 /var/run/mysqld
 
-# ⚠ NÃO usar chown em /var/lib/mysql → volume rootless cuida disso
+# 🔥 AJUSTE MÍNIMO NECESSÁRIO
+chown -R mysql:mysql /var/lib/mysql
 
 if [ ! -d /var/lib/mysql/mysql ]; then
     echo "[entrypoint] First run: initializing MariaDB..."
