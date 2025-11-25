@@ -177,23 +177,9 @@ def main():
             if not err.triggered and task_type == k.HOST_TASK_UPDATE_STATISTICS_TYPE:
 
                 try:
-                    # Mark host busy
-                    db.host_update(
-                        host_id=host_id,
-                        IS_BUSY=True,
-                        DT_BUSY=datetime.now(),
-                        NU_PID=os.getpid()
-                    )
-
+                    
                     # Perform statistics update
                     db.host_update_statistics(host_id=host_id)
-
-                    # Unmark busy
-                    db.host_update(
-                        host_id=host_id,
-                        IS_BUSY=False,
-                        NU_PID=0
-                    )
 
                     # Delete statistics task
                     db.host_task_delete(task_id=task_id)
@@ -208,13 +194,7 @@ def main():
                 err.log_error(host_id=host_id, task_id=task_id)
 
                 try:
-                    db.host_update(
-                        host_id=host_id,
-                        IS_BUSY=False,
-                        NU_PID=0,
-                        NU_HOST_CHECK_ERROR=1,
-                    )
-
+                    
                     # Remove the failed task (avoid loops)
                     db.host_task_delete(task_id=task_id)
 

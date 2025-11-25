@@ -1,3 +1,8 @@
+-- Active: 1692774226190@@127.0.0.1@3306@BPDATA
+-- ACTIVATE DATABASE
+CREATE DATABASE RFDATA
+    DEFAULT CHARACTER SET = 'utf8mb4';
+
 /* =====================================================================
    createMeasureDB-v4.sql - versão revisada
    - UTF8MB4 unificado
