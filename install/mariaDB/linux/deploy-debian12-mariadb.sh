@@ -4,8 +4,7 @@ set -Eeuo pipefail
 # =======================================================================
 # Script: deploy-debian12-mariadb.sh
 # Objetivo: Build do zero e deploy do container Debian 12 + MariaDB + SSH
-#            com inicialização automática dos bancos de dados RFDATA e RFMEASURE
-# Conversão fiel de deploy-debian12-mariadb.ps1 (PowerShell → Shell Script)
+#           com inicialização automática dos bancos RFDATA e RFMEASURE
 # =======================================================================
 
 # ------------------------------
@@ -17,7 +16,7 @@ NetworkName="rffusion-net"
 IPAddress="10.99.0.3"
 SSHPassword="changeme"
 DBPassword="changeme"
-HostSSHPort="2224"     # igual ao PS1 (evita conflito)
+HostSSHPort="2224"
 HostDBPort="9081"
 
 # ------------------------------
@@ -28,6 +27,7 @@ sqlMeasure="/server_volume/tmp/appCataloga/createMeasureDB-v4.sql"
 
 repoRoot="/RFFusion-dev/RF.Fusion"
 projectRoot="$(dirname "$(realpath "$0")")"
+dbVolumeHost="/mnt/reposfi/database"
 
 # =======================================================================
 # 1. Contexto
@@ -48,6 +48,15 @@ if [[ -f "$networkScript" ]]; then
     }
 else
     echo "⚠️  WARNING: setup-network.sh not found in ${projectRoot}. Skipping network setup."
+fi
+
+# =======================================================================
+# Criar volume persistente do MariaDB
+# =======================================================================
+echo "=== Ensuring persistent DB volume exists at ${dbVolumeHost} ==="
+if [[ ! -d "${dbVolumeHost}" ]]; then
+    mkdir -p "${dbVolumeHost}"
+    echo "Created directory ${dbVolumeHost}"
 fi
 
 # =======================================================================
@@ -87,6 +96,7 @@ podman run -d \
   -p "${HostSSHPort}:22" \
   -p "${HostDBPort}:3306" \
   -v "${repoRoot}/src/appCataloga/server_volume:/server_volume:Z" \
+  -v "/mnt/reposfi/database:/var/lib/mysql:Z" \
   "${ImageName}:latest" >/dev/null
 
 sleep 8
@@ -118,22 +128,34 @@ else
 fi
 
 # =======================================================================
-# 6. Inicialização do banco de dados
+# 6. Permissões completas do root
 # =======================================================================
-echo "=== [6/6] Initializing MariaDB databases ==="
+echo "=== Applying root permissions and remote access ==="
+
+podman exec "${ContainerName}" bash -c "
+mysql -u root -p${DBPassword} <<EOF
+
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${DBPassword}';
+CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${DBPassword}';
+ALTER USER 'root'@'%' IDENTIFIED BY '${DBPassword}';
+
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'localhost' WITH GRANT OPTION;
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+
+FLUSH PRIVILEGES;
+
+EOF
+"
+
+echo "✅ Root permissions applied."
+
+# =======================================================================
+# 7. Inicialização do banco de dados
+# =======================================================================
+echo "=== Initializing MariaDB databases ==="
 podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlProcessing}" || true
 podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlMeasure}" || true
 
-if [[ $? -eq 0 ]]; then
-    echo "✅ Databases successfully created and initialized."
-    echo "Access DB via host: 127.0.0.1:${HostDBPort} (user=root, pass=${DBPassword})"
-else
-    echo "⚠️  Warning: Database initialization may have failed. Check logs."
-fi
-
-# =======================================================================
-# Teste de conectividade interna
-# =======================================================================
 echo "=== Testing internal network connectivity ==="
 if podman exec -it "${ContainerName}" ping -c 3 10.99.0.2 >/dev/null 2>&1; then
     echo "✅ Container can reach 10.99.0.2 (Python node)."
