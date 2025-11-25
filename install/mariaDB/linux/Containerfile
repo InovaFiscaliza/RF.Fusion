@@ -41,17 +41,20 @@ RUN set -eux; \
       mariadb-server mariadb-client; \
     rm -rf /var/lib/apt/lists/*; \
     mkdir -p /var/run/sshd
-
+	
 # ==============================
-# Ping: ajustar suid root (já instalado acima)
+# Ping: instalar com suid root
 # ==============================
-RUN chmod u+s /usr/bin/ping
+RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping && \
+    chmod u+s /usr/bin/ping && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ==============================
 # Net-tools: ifconfig, netstat, route, etc.
 # ==============================
 RUN apt-get update && apt-get install -y --no-install-recommends net-tools && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
+
 
 # --- Config MariaDB ---
 RUN sed -ri "s/^(bind-address\s*=).*$/\\1 0.0.0.0/" /etc/mysql/mariadb.conf.d/50-server.cnf || \
@@ -70,8 +73,8 @@ RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
 # Portas expostas
 EXPOSE 22 3306
 
-# Volumes  
-# ❗ REMOVIDO: /var/lib/mysql (impede o MariaDB de iniciar)
+# Volumes
+VOLUME ["/var/lib/mysql"]
 VOLUME ["/srv/app_volume"]
 
 WORKDIR /app
