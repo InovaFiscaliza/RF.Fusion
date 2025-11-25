@@ -21,11 +21,13 @@ echo "root:${SSH_PASSWORD:-changeme}" | chpasswd
 # 2) MariaDB
 # -------------------------------------------------------------------
 echo "[entrypoint] Configuring MariaDB..."
+
 mkdir -p /var/run/mysqld
 chmod 775 /var/run/mysqld
 
-# *** IMPORTANTE ***
-# NÃO fazer chown no /var/lib/mysql → isso quebra em qualquer FS sem chmod, mas é OK no volume Podman
+# ⚠ IMPORTANTE:
+# NÃO usar chown em /var/lib/mysql → volume rootless resolve permissões automaticamente
+# e chown quebra o container em qualquer FS que impeça alteracao de UID/GID
 
 if [ ! -d /var/lib/mysql/mysql ]; then
     echo "[entrypoint] First run: initializing MariaDB data directory..."
@@ -36,6 +38,7 @@ echo "[entrypoint] Starting temporary MariaDB..."
 mysqld_safe --skip-networking --datadir=/var/lib/mysql &
 pid="$!"
 
+# Aguardar MariaDB responder
 for i in {30..0}; do
     if mariadb -uroot --protocol=socket -e "SELECT 1;" &>/dev/null; then
         break
@@ -44,7 +47,7 @@ for i in {30..0}; do
     sleep 1
 done
 
-if [[ "$i" = "0" ]]; then
+if [[ "$i" == "0" ]]; then
     echo "[entrypoint] MariaDB did not start during initialization"
     exit 1
 fi

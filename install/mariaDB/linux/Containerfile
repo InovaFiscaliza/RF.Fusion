@@ -51,6 +51,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping &&
 RUN apt-get update && apt-get install -y --no-install-recommends net-tools && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# ================================
+# 🔥 FIX REAL: garantir diretório do MariaDB
+# ================================
+RUN mkdir -p /var/lib/mysql && chown -R mysql:mysql /var/lib/mysql
+
 # --- Config MariaDB ---
 RUN sed -ri "s/^(bind-address\s*=).*$/\\1 0.0.0.0/" /etc/mysql/mariadb.conf.d/50-server.cnf || \
     echo -e "[mysqld]\nbind-address=0.0.0.0" > /etc/mysql/mariadb.conf.d/50-server.cnf
