@@ -11,6 +11,7 @@ mkdir -p /var/run/sshd
 chmod 755 /var/run/sshd
 
 if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
+    echo "[entrypoint] Generating SSH host keys..."
     ssh-keygen -A
 fi
 
@@ -21,14 +22,12 @@ echo "root:${SSH_PASSWORD:-changeme}" | chpasswd
 # -------------------------------------------------------------------
 echo "[entrypoint] Configuring MariaDB..."
 mkdir -p /var/run/mysqld
+chown -R mysql:mysql /var/run/mysqld
 chmod 775 /var/run/mysqld
 
-# 🔥 AJUSTE MÍNIMO NECESSÁRIO
-chown -R mysql:mysql /var/lib/mysql
-
 if [ ! -d /var/lib/mysql/mysql ]; then
-    echo "[entrypoint] First run: initializing MariaDB..."
-    mariadb-install-db --user=mysql --datadir=/var/lib/mysql >/dev/null
+    echo "[entrypoint] Initializing database..."
+    mariadb-install-db --user=mysql --datadir=/var/lib/mysql > /dev/null
 fi
 
 echo "[entrypoint] Starting temporary MariaDB..."
@@ -43,15 +42,19 @@ for i in {30..0}; do
     sleep 1
 done
 
-if [[ "$i" == "0" ]]; then
-    echo "[entrypoint] MariaDB did not start during initialization"
+if [ "$i" = 0 ]; then
+    echo >&2 "[entrypoint] MariaDB init process failed."
     exit 1
 fi
 
-echo "[entrypoint] Applying root remote access..."
+echo "[entrypoint] Running initialization SQL..."
 mariadb --protocol=socket <<-EOSQL
     CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${MARIADB_ROOT_PASSWORD:-changeme}';
     GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
+
+    CREATE DATABASE IF NOT EXISTS appdb;
+    CREATE USER IF NOT EXISTS 'appdb'@'%' IDENTIFIED BY 'changeme';
+    GRANT ALL PRIVILEGES ON appdb.* TO 'appdb'@'%';
     FLUSH PRIVILEGES;
 EOSQL
 
@@ -59,9 +62,9 @@ echo "[entrypoint] Shutting down temporary MariaDB..."
 mysqladmin --protocol=socket -uroot -p"${MARIADB_ROOT_PASSWORD:-changeme}" shutdown
 
 # -------------------------------------------------------------------
-# 3) Start final services
+# 3) Subir serviços finais
 # -------------------------------------------------------------------
-echo "[entrypoint] Starting MariaDB (normal mode)..."
+echo "[entrypoint] Starting MariaDB..."
 mysqld_safe --datadir=/var/lib/mysql --bind-address=0.0.0.0 &
 
 echo "[entrypoint] Starting SSH..."
