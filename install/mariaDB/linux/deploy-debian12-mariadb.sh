@@ -30,7 +30,7 @@ if ! podman network exists "${NetworkName}"; then
     [[ -f "$networkScript" ]] && bash "$networkScript"
     echo "✔ Network created"
 else
-    echo "✔ Network already exists"
+    echo "✔ Network exists"
 fi
 
 # ============================================================
@@ -64,12 +64,14 @@ podman run -d \
 echo "✔ Container started"
 
 # ============================================================
-# 4. Esperar MariaDB (sem sleep fixo)
+# 4. Esperar MariaDB (via TCP)
 # ============================================================
 echo "Waiting MariaDB startup (max 40s)..."
+
 for i in {1..40}; do
     if podman exec "${ContainerName}" \
-        mariadb -uroot -p"${DBPassword}" -e "SELECT 1;" >/dev/null 2>&1; then
+        mariadb -h127.0.0.1 -P3306 -uroot -p"${DBPassword}" \
+        -e "SELECT 1;" &>/dev/null; then
         echo "✔ MariaDB ready"
         break
     fi
@@ -77,13 +79,13 @@ for i in {1..40}; do
 done
 
 if [[ $i -eq 40 ]]; then
-    echo "❌ MariaDB did not start"
+    echo "❌ MariaDB did not start in time"
     podman logs "${ContainerName}"
     exit 1
 fi
 
 # ============================================================
-# 5. Executar SQLs **dentro do contêiner**
+# 5. Executar SQLs dentro do contêiner (TCP)
 # ============================================================
 echo "=== Running project SQL scripts ==="
 
@@ -91,17 +93,17 @@ run_sql_inside_container() {
     local file="$1"
     local label="$2"
 
-    # valida se existe dentro do contêiner
+    # verificar existência no contêiner
     if ! podman exec "${ContainerName}" test -f "${file}"; then
         echo "⚠ SQL not found inside container: ${file}"
         return
     fi
 
-    echo "→ Executing ${label} (inside container)"
+    echo "→ Executing ${label} (inside container, via TCP)"
 
-    if podman exec "${ContainerName}" \
-        sh -c "mariadb -uroot -p${DBPassword} < ${file}"; then
-        echo "✔ ${label} executed"
+    if podman exec "${ContainerName}" sh -c \
+        "mariadb -h127.0.0.1 -P3306 -uroot -p${DBPassword} < ${file}"; then
+        echo "✔ ${label} executed successfully"
     else
         echo "❌ ERROR running ${label}"
     fi
