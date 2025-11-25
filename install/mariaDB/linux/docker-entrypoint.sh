@@ -21,29 +21,41 @@ echo "root:${SSH_PASSWORD:-changeme}" | chpasswd
 # 2) MariaDB
 # -------------------------------------------------------------------
 echo "[entrypoint] Configuring MariaDB..."
-mkdir -p /var/run/mysqld
-chown -R mysql:mysql /var/run/mysqld
-chmod 775 /var/run/mysqld
 
-if [ ! -d /var/lib/mysql/mysql ]; then
-    echo "[entrypoint] Initializing database..."
-    mariadb-install-db --user=mysql --datadir=/var/lib/mysql > /dev/null
+# /var/run/mysqld precisa de permissão – permitido
+mkdir -p /var/run/mysqld
+chown mysql:mysql /var/run/mysqld || true
+
+DATADIR="/var/lib/mysql"
+
+# IMPORTANTE:
+# nunca faça chown/chmod em /var/lib/mysql (bind mount)
+# apenas inicialize se ainda não existir "mysql/" dentro dele
+if [ ! -d "$DATADIR/mysql" ]; then
+    echo "[entrypoint] First run: initializing MariaDB data directory..."
+    mariadb-install-db --user=mysql --datadir="$DATADIR" --skip-test-db
+else
+    echo "[entrypoint] Existing MariaDB directory detected, skipping initialization."
 fi
 
-echo "[entrypoint] Starting temporary MariaDB..."
-mysqld_safe --skip-networking --datadir=/var/lib/mysql &
-pid="$!"
+# -------------------------------------------------------------------
+# 3) Criar usuário root remoto (após subir MariaDB)
+# -------------------------------------------------------------------
+echo "[entrypoint] Starting MariaDB (bootstrap)..."
+mysqld --datadir="$DATADIR" --skip-networking &
+MYSQLPID=$!
 
+# Esperar MariaDB subir
 for i in {30..0}; do
     if mariadb -uroot --protocol=socket -e "SELECT 1;" &>/dev/null; then
         break
     fi
-    echo "[entrypoint] Waiting for MariaDB..."
+    echo "[entrypoint] Waiting MariaDB to become ready..."
     sleep 1
 done
 
 if [ "$i" = 0 ]; then
-    echo >&2 "[entrypoint] MariaDB init process failed."
+    echo "[entrypoint] ERROR: MariaDB did not start."
     exit 1
 fi
 
@@ -51,21 +63,17 @@ echo "[entrypoint] Running initialization SQL..."
 mariadb --protocol=socket <<-EOSQL
     CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '${MARIADB_ROOT_PASSWORD:-changeme}';
     GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;
-
-    CREATE DATABASE IF NOT EXISTS appdb;
-    CREATE USER IF NOT EXISTS 'appdb'@'%' IDENTIFIED BY 'changeme';
-    GRANT ALL PRIVILEGES ON appdb.* TO 'appdb'@'%';
     FLUSH PRIVILEGES;
 EOSQL
 
-echo "[entrypoint] Shutting down temporary MariaDB..."
+echo "[entrypoint] Stopping bootstrap MariaDB..."
 mysqladmin --protocol=socket -uroot -p"${MARIADB_ROOT_PASSWORD:-changeme}" shutdown
 
 # -------------------------------------------------------------------
-# 3) Subir serviços finais
+# 4) Subir serviços finais
 # -------------------------------------------------------------------
-echo "[entrypoint] Starting MariaDB..."
-mysqld_safe --datadir=/var/lib/mysql --bind-address=0.0.0.0 &
+echo "[entrypoint] Starting MariaDB (production mode)..."
+mysqld --datadir="$DATADIR" --bind-address=0.0.0.0 &
 
 echo "[entrypoint] Starting SSH..."
 exec /usr/sbin/sshd -D -e
