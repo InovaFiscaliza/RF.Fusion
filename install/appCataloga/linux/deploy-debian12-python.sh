@@ -23,9 +23,11 @@ HostAppPort="5555"
 repoRoot="/RFFusion-dev/RF.Fusion"
 projectRoot="$(dirname "$(realpath "$0")")"
 
+# Ajuste importante:
+# /mnt/reposfi NÃO pode ter :Z porque o filesystem não suporta xattrs/SELinux
 volumes=(
   "${repoRoot}:/RFFusion:Z"
-  "/mnt/reposfi:/mnt/reposfi:Z"
+  "/mnt/reposfi:/mnt/reposfi"
 )
 
 echo "=== [1/6] Switching Podman context ==="

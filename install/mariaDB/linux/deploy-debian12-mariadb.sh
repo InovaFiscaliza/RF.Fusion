@@ -96,7 +96,7 @@ podman run -d \
   -p "${HostSSHPort}:22" \
   -p "${HostDBPort}:3306" \
   -v "${repoRoot}/src/appCataloga/server_volume:/server_volume:Z" \
-  -v "/mnt/reposfi/database:/var/lib/mysql:Z" \
+  -v "/mnt/reposfi/database:/var/lib/mysql" \
   "${ImageName}:latest" >/dev/null
 
 sleep 8
@@ -150,7 +150,7 @@ EOF
 echo "✅ Root permissions applied."
 
 # =======================================================================
-# 7. Inicialização do banco de dados
+# 7. Inicialização dos bancos
 # =======================================================================
 echo "=== Initializing MariaDB databases ==="
 podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlProcessing}" || true
