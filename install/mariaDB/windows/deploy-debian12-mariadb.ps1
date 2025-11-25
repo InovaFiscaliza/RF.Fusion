@@ -12,7 +12,7 @@ param(
     [string]$SSHPassword   = "changeme",
     [string]$DBPassword    = "changeme",
     [string]$HostSSHPort   = "2224",     # alterado para evitar conflito
-    [string]$HostDBPort    = "3336"
+    [string]$HostDBPort    = "9081"
 )
 
 $ErrorActionPreference = "Stop"

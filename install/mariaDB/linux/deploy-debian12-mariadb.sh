@@ -18,13 +18,13 @@ IPAddress="10.99.0.3"
 SSHPassword="changeme"
 DBPassword="changeme"
 HostSSHPort="2224"     # igual ao PS1 (evita conflito)
-HostDBPort="3336"
+HostDBPort="9081"
 
 # ------------------------------
 # Caminhos e variáveis auxiliares
 # ------------------------------
-sqlProcessing="/server_volume/tmp/appCataloga/createProcessingDB-v7.sql"
-sqlMeasure="/server_volume/tmp/appCataloga/createMeasureDB-v3.sql"
+sqlProcessing="/server_volume/tmp/appCataloga/createProcessingDB-v8.sql"
+sqlMeasure="/server_volume/tmp/appCataloga/createMeasureDB-v4.sql"
 
 repoRoot="/RFFusion-dev/RF.Fusion"
 projectRoot="$(dirname "$(realpath "$0")")"

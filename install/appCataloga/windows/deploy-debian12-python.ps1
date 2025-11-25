@@ -9,7 +9,7 @@ param(
     [string]$NetworkName   = "rffusion-net",
     [string]$IPAddress     = "10.99.0.2",
     [string]$SSHPassword   = "changeme",
-    [string]$HostSSHPort   = "2222",
+    [string]$HostSSHPort   = "2828",
     [string]$HostAppPort   = "5555",
 )
 

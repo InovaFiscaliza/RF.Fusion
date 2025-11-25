@@ -4,6 +4,7 @@ set -Eeuo pipefail
 # =======================================================================
 # Script: deploy-debian12-python.sh
 # Objetivo: Build e inicialização do container Debian 12 com suporte a Python e SSH
+# Convertido de PowerShell (deploy-debian12-python.ps1) para Shell Script (RHEL)
 # =======================================================================
 
 # ------------------------------
@@ -22,10 +23,8 @@ HostAppPort="5555"
 # ------------------------------
 repoRoot="/RFFusion-dev/RF.Fusion"
 projectRoot="$(dirname "$(realpath "$0")")"
-
 volumes=(
   "${repoRoot}:/RFFusion:Z"
-  "/mnt/reposfi:/mnt/reposfi:Z"
 )
 
 echo "=== [1/6] Switching Podman context ==="
