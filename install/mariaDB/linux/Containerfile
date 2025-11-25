@@ -1,5 +1,5 @@
 # ============================================================
-# Containerfile: Debian 12 + MariaDB + SSH (final corrigido)
+# Containerfile: Debian 12 + MariaDB + SSH (corrigido)
 # ============================================================
 
 FROM debian:12-slim
@@ -38,23 +38,16 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
       bash curl tini \
       openssh-server openssh-client iproute2 iputils-ping netcat-openbsd \
-      mariadb-server mariadb-client; \
+      mariadb-server mariadb-client net-tools; \
     rm -rf /var/lib/apt/lists/*; \
     mkdir -p /var/run/sshd
 
-# Ping suid
-RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping && \
-    chmod u+s /usr/bin/ping && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Net-tools
-RUN apt-get update && apt-get install -y --no-install-recommends net-tools && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
 # ================================
-# 🔥 FIX REAL: garantir diretório do MariaDB
+# 🔥 FIX: garantir diretórios críticos do MariaDB
 # ================================
-RUN mkdir -p /var/lib/mysql && chown -R mysql:mysql /var/lib/mysql
+RUN mkdir -p /var/lib/mysql /var/run/mysqld && \
+    chown -R mysql:mysql /var/lib/mysql /var/run/mysqld && \
+    chmod 775 /var/run/mysqld
 
 # --- Config MariaDB ---
 RUN sed -ri "s/^(bind-address\s*=).*$/\\1 0.0.0.0/" /etc/mysql/mariadb.conf.d/50-server.cnf || \

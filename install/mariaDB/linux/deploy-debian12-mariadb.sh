@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # =======================================================================
 # Script: deploy-debian12-mariadb.sh
-# Objetivo: Build + Deploy Debian 12 + MariaDB + SSH com volume interno
+# Objetivo: Build + Deploy Debian 12 + MariaDB + SSH (DB interno)
 # =======================================================================
 
 ContainerName="debian12-mariadb"
@@ -19,18 +19,7 @@ repoRoot="/RFFusion-dev/RF.Fusion"
 projectRoot="$(dirname "$(realpath "$0")")"
 
 # =======================================================================
-# 1. Garantir volume persistente
-# =======================================================================
-echo "=== Ensuring podman volume 'mariadb_data' exists ==="
-if ! podman volume inspect mariadb_data >/dev/null 2>&1; then
-    echo "Volume not found. Creating..."
-    podman volume create mariadb_data >/dev/null
-else
-    echo "Volume mariadb_data already exists."
-fi
-
-# =======================================================================
-# 2. Rede
+# 1. Rede
 # =======================================================================
 echo "=== Ensuring network ${NetworkName} exists ==="
 networkScript="${projectRoot}/setup-network.sh"
@@ -41,9 +30,9 @@ else
 fi
 
 # =======================================================================
-# 3. Build da imagem
+# 2. Build da imagem
 # =======================================================================
-echo "=== [3/6] Building image ${ImageName} ==="
+echo "=== [2/5] Building image ${ImageName} ==="
 
 if podman images --format '{{.Repository}}' | grep -q "^${ImageName}$"; then
     echo "Removing old image..."
@@ -54,9 +43,9 @@ podman build -t "${ImageName}" .
 echo "✔ Image build completed"
 
 # =======================================================================
-# 4. Deploy do container
+# 3. Deploy do container
 # =======================================================================
-echo "=== [4/6] Deploying container ${ContainerName} ==="
+echo "=== [3/5] Deploying container ${ContainerName} ==="
 
 if podman ps -a --format '{{.Names}}' | grep -q "^${ContainerName}$"; then
     echo "Container exists. Removing..."
@@ -76,7 +65,6 @@ podman run -d \
   -e "SSH_PASSWORD=${SSHPassword}" \
   -p "${HostSSHPort}:22" \
   -p "${HostDBPort}:3306" \
-  -v mariadb_data:/var/lib/mysql \
   -v "${repoRoot}/src/appCataloga/server_volume:/server_volume:Z" \
   "${ImageName}:latest" >/dev/null
 
@@ -84,7 +72,7 @@ echo "Waiting MariaDB startup..."
 sleep 10
 
 # =======================================================================
-# 5. Verificação do estado
+# 4. Verificação do estado
 # =======================================================================
 state=$(podman inspect -f '{{.State.Status}}' "${ContainerName}")
 
@@ -97,16 +85,13 @@ fi
 echo "✔ Container is running"
 
 # =======================================================================
-# 6. Teste das portas
+# 5. Testes rápidos
 # =======================================================================
 echo "Testing exposed ports..."
 
 nc -z localhost "${HostSSHPort}" && echo "✔ SSH ok" || echo "⚠ SSH FAIL"
 nc -z localhost "${HostDBPort}" && echo "✔ DB ok" || echo "⚠ DB FAIL"
 
-# =======================================================================
-# 7. Teste inicial do banco (health-check leve)
-# =======================================================================
 echo "Checking MariaDB availability..."
 if podman exec "${ContainerName}" mariadb -uroot -p"${DBPassword}" -e "SELECT 1;" >/dev/null 2>&1; then
     echo "✔ MariaDB is responding"
