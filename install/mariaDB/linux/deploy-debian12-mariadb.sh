@@ -14,7 +14,7 @@ DBPassword="changeme"
 HostSSHPort="2224"
 HostDBPort="9081"
 
-# Scripts SQL (no host)
+# Caminhos **dentro do contêiner**
 sqlProcessing="/server_volume/tmp/appCataloga/createProcessingDB-v8.sql"
 sqlMeasure="/server_volume/tmp/appCataloga/createMeasureDB-v4.sql"
 
@@ -24,13 +24,13 @@ projectRoot="$(dirname "$(realpath "$0")")"
 # 1. Rede
 # ============================================================
 echo "=== Ensuring network ${NetworkName} ==="
+networkScript="${projectRoot}/setup-network.sh"
 
 if ! podman network exists "${NetworkName}"; then
-    echo "Network ${NetworkName} not found — creating..."
-    networkScript="${projectRoot}/setup-network.sh"
     [[ -f "$networkScript" ]] && bash "$networkScript"
+    echo "✔ Network created"
 else
-    echo "✔ Network exists"
+    echo "✔ Network already exists"
 fi
 
 # ============================================================
@@ -45,8 +45,6 @@ echo "✔ Image built"
 # 3. Deploy
 # ============================================================
 echo "=== Deploying container ${ContainerName} ==="
-
-# remove container anterior
 podman rm -f "${ContainerName}" >/dev/null 2>&1 || true
 
 podman run -d \
@@ -66,13 +64,13 @@ podman run -d \
 echo "✔ Container started"
 
 # ============================================================
-# 4. Esperar MariaDB de verdade (sem sleep fixo)
+# 4. Esperar MariaDB (sem sleep fixo)
 # ============================================================
 echo "Waiting MariaDB startup (max 40s)..."
-
 for i in {1..40}; do
-    if podman exec "${ContainerName}" mariadb -uroot -p"${DBPassword}" -e "SELECT 1;" >/dev/null 2>&1; then
-        echo "✔ MariaDB OK"
+    if podman exec "${ContainerName}" \
+        mariadb -uroot -p"${DBPassword}" -e "SELECT 1;" >/dev/null 2>&1; then
+        echo "✔ MariaDB ready"
         break
     fi
     sleep 1
@@ -80,52 +78,40 @@ done
 
 if [[ $i -eq 40 ]]; then
     echo "❌ MariaDB did not start"
-    echo "Use: podman logs ${ContainerName}"
-    exit 1
-fi
-
-# ============================================================
-# 5. Verificar estado final do container
-# ============================================================
-state=$(podman inspect -f '{{.State.Status}}' "${ContainerName}")
-if [[ "${state}" != "running" ]]; then
-    echo "❌ ERROR: Container failed (state: ${state})"
-    echo "Logs:"
     podman logs "${ContainerName}"
     exit 1
 fi
-echo "✔ Container running"
 
 # ============================================================
-# 6. Executar SQL
+# 5. Executar SQLs **dentro do contêiner**
 # ============================================================
 echo "=== Running project SQL scripts ==="
 
-run_sql() {
+run_sql_inside_container() {
     local file="$1"
-    local name="$2"
+    local label="$2"
 
-    if [[ ! -f "${file}" ]]; then
-        echo "⚠ SQL file not found: ${file}"
+    # valida se existe dentro do contêiner
+    if ! podman exec "${ContainerName}" test -f "${file}"; then
+        echo "⚠ SQL not found inside container: ${file}"
         return
     fi
 
-    echo "→ Executing ${name}"
+    echo "→ Executing ${label} (inside container)"
 
-    if podman exec -i "${ContainerName}" \
-        mariadb -uroot -p"${DBPassword}" < "${file}"
-    then
-        echo "✔ ${name} executed"
+    if podman exec "${ContainerName}" \
+        sh -c "mariadb -uroot -p${DBPassword} < ${file}"; then
+        echo "✔ ${label} executed"
     else
-        echo "❌ ERROR running ${name}"
+        echo "❌ ERROR running ${label}"
     fi
 }
 
-run_sql "${sqlProcessing}" "createProcessingDB-v8.sql"
-run_sql "${sqlMeasure}"    "createMeasureDB-v4.sql"
+run_sql_inside_container "${sqlProcessing}" "createProcessingDB-v8.sql"
+run_sql_inside_container "${sqlMeasure}"    "createMeasureDB-v4.sql"
 
 # ============================================================
-# 7. Final
+# 6. Final
 # ============================================================
 echo "=== Deploy Ready ==="
 echo "MariaDB host access: 127.0.0.1:${HostDBPort}"
