@@ -61,6 +61,15 @@ EOSQL
 echo "[entrypoint] Shutting down temporary MariaDB..."
 mysqladmin --protocol=socket -uroot -p"${MARIADB_ROOT_PASSWORD:-changeme}" shutdown
 
+# ================================================================
+# ✔ ADIÇÃO MÍNIMA: aguardar mysqld morrer completamente
+# ================================================================
+sleep 2
+while pgrep -x mysqld >/dev/null; do
+    echo "[entrypoint] Waiting temporary mysqld to exit..."
+    sleep 1
+done
+
 # -------------------------------------------------------------------
 # 3) Subir serviços finais
 # -------------------------------------------------------------------
