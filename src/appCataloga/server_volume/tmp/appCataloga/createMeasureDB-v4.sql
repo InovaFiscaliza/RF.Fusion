@@ -1,14 +1,17 @@
--- Active: 1692774226190@@127.0.0.1@3306@BPDATA
--- ACTIVATE DATABASE
-CREATE DATABASE RFDATA
-    DEFAULT CHARACTER SET = 'utf8mb4';
-
 /* =====================================================================
-   createMeasureDB-v4.sql - versão revisada
-   - UTF8MB4 unificado
-   - LOAD DATA com terminador CRLF correto
-   - Sanitização inline no LOAD
+   createMeasureDB-v4.1.sql
+   - Correção dos LOAD DATA (LF '\n' ao invés de CRLF '\r\n')
+   - Mantém estrutura e lógica da versão v4 original
+   - Usar diretamente: mysql -u root -p < createMeasureDB-v4.1.sql
    ===================================================================== */
+
+-- =====================================================================
+-- CREATE DATABASE
+-- =====================================================================
+CREATE DATABASE IF NOT EXISTS RFDATA
+    DEFAULT CHARACTER SET utf8mb4
+    DEFAULT COLLATE utf8mb4_unicode_ci;
+
 USE RFDATA;
 
 -- =====================================================================
@@ -24,7 +27,7 @@ CREATE TABLE DIM_EQUIPMENT_TYPE (
 LOAD DATA INFILE '/server_volume/tmp/appCataloga/equipmentType.csv'
     INTO TABLE DIM_EQUIPMENT_TYPE
     FIELDS TERMINATED BY ','
-    LINES TERMINATED BY '\r\n'
+    LINES TERMINATED BY '\n'
     IGNORE 1 LINES
     (ID_EQUIPMENT_TYPE, NA_EQUIPMENT_TYPE, NA_EQUIPMENT_TYPE_UID);
 
@@ -54,12 +57,12 @@ CREATE TABLE DIM_SITE_STATE (
 LOAD DATA INFILE '/server_volume/tmp/appCataloga/IBGE-BR_UF_2020_BULKLOAD.csv'
     INTO TABLE DIM_SITE_STATE
     FIELDS TERMINATED BY ','
-    LINES TERMINATED BY '\r\n'
+    LINES TERMINATED BY '\n'
     IGNORE 1 LINES
     (ID_STATE, NA_STATE, LC_STATE);
 
 -- =====================================================================
--- DIM_SITE_COUNTY (com sanitização inline)
+-- DIM_SITE_COUNTY
 -- =====================================================================
 CREATE TABLE DIM_SITE_COUNTY (
     ID_COUNTY INT NOT NULL,
@@ -73,10 +76,10 @@ CREATE TABLE DIM_SITE_COUNTY (
 LOAD DATA INFILE '/server_volume/tmp/appCataloga/IBGE-BR_Municipios_2020_BULKLOAD.csv'
     INTO TABLE DIM_SITE_COUNTY
     FIELDS TERMINATED BY ','
-    LINES TERMINATED BY '\r\n'
+    LINES TERMINATED BY '\n'
     IGNORE 1 LINES
     (ID_COUNTY, FK_STATE, @county)
-SET NA_COUNTY = TRIM(REPLACE(REPLACE(REPLACE(REPLACE(@county, '|',''), CHAR(13),''), CHAR(10),''), CHAR(9),''));
+SET NA_COUNTY = TRIM(REPLACE(REPLACE(REPLACE(REPLACE(@county, '|',''), CHAR(13),''), CHAR(10),''), CHAR(9), ''));
 
 -- =====================================================================
 -- DIM_SITE_DISTRICT
@@ -133,7 +136,7 @@ CREATE TABLE DIM_FILE_TYPE (
 LOAD DATA INFILE '/server_volume/tmp/appCataloga/fileType.csv'
     INTO TABLE DIM_FILE_TYPE
     FIELDS TERMINATED BY ','
-    LINES TERMINATED BY '\r\n'
+    LINES TERMINATED BY '\n'
     IGNORE 1 LINES
     (ID_TYPE_FILE, NA_TYPE_FILE);
 
@@ -147,8 +150,8 @@ CREATE TABLE DIM_SPECTRUM_FILE (
     NA_FILE VARCHAR(100),
     NA_PATH VARCHAR(3000),
     NA_VOLUME VARCHAR(3000),
-    NU_MD5 VARCHAR(32),
     NA_EXTENSION VARCHAR(20),
+    NU_MD5 VARCHAR(32),
     VL_FILE_SIZE_KB BIGINT,
     DT_FILE_CREATED DATETIME,
     DT_FILE_MODIFIED DATETIME,
@@ -180,7 +183,7 @@ CREATE TABLE DIM_SPECTRUM_UNIT (
 LOAD DATA INFILE '/server_volume/tmp/appCataloga/measurementUnit.csv'
     INTO TABLE DIM_SPECTRUM_UNIT
     FIELDS TERMINATED BY ','
-    LINES TERMINATED BY '\r\n'
+    LINES TERMINATED BY '\n'
     IGNORE 1 LINES
     (ID_MEASURE_UNIT, NA_MEASURE_UNIT);
 
