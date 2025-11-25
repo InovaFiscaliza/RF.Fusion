@@ -28,7 +28,7 @@ sqlProcessing="/server_volume/tmp/appCataloga/createProcessingDB-v8.sql"
 sqlMeasure="/server_volume/tmp/appCataloga/createMeasureDB-v4.sql"
 
 repoRoot="/RFFusion-dev/RF.Fusion"
-dbVolumeHost="/mnt/reposfi/database"
+dbVolumeHost="/mnt/database"
 
 projectRoot="$(dirname "$(realpath "$0")")"
 
