@@ -82,15 +82,13 @@ args=(
     run -d
     --name "$ContainerName"
     --hostname "$ContainerName"
-    --network "$NetworkName"
-    --ip "$IPAddress"
-    --cap-add=NET_RAW
-    --cap-add=NET_ADMIN
+    --network "slirp4netns:allow_host_loopback=true"
     --restart=always
     -e "SSH_PASSWORD=${SSHPassword}"
     -p "${HostSSHPort}:22"
     -p "${HostAppPort}:5555"
 )
+
 
 for mapping in "${volumes[@]}"; do
     host_path="${mapping%%:*}"
