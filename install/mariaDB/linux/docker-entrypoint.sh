@@ -4,31 +4,21 @@ set -Eeuo pipefail
 echo "=== [entrypoint] init MariaDB + SSH container ==="
 
 # -------------------------------------------------------------------
-# 1) SSH CONFIG
+# 1) SSH
 # -------------------------------------------------------------------
 echo "[entrypoint] Configuring SSH..."
 mkdir -p /var/run/sshd
 chmod 755 /var/run/sshd
 
-# Gera chaves caso não existam
 if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
     echo "[entrypoint] Generating SSH host keys..."
     ssh-keygen -A
 fi
 
-# Ajusta a senha do root
 echo "root:${SSH_PASSWORD:-changeme}" | chpasswd
 
-# ⚠️ CONFIGURA SSHD PARA PORT 2222
-echo "[entrypoint] Setting SSH to port 2222..."
-# Garante que não existe linha duplicada
-sed -i "s/^#Port .*/Port 2222/" /etc/ssh/sshd_config
-sed -i "s/^Port .*/Port 2222/" /etc/ssh/sshd_config
-# Caso não exista nenhuma linha:
-grep -q "^Port 2222" /etc/ssh/sshd_config || echo "Port 2222" >> /etc/ssh/sshd_config
-
 # -------------------------------------------------------------------
-# 2) MariaDB INIT
+# 2) MariaDB
 # -------------------------------------------------------------------
 echo "[entrypoint] Configuring MariaDB..."
 mkdir -p /var/run/mysqld
@@ -72,10 +62,10 @@ echo "[entrypoint] Shutting down temporary MariaDB..."
 mysqladmin --protocol=socket -uroot -p"${MARIADB_ROOT_PASSWORD:-changeme}" shutdown
 
 # -------------------------------------------------------------------
-# 3) START FINAL SERVICES
+# 3) Subir serviços finais
 # -------------------------------------------------------------------
 echo "[entrypoint] Starting MariaDB..."
 mysqld_safe --datadir=/var/lib/mysql --bind-address=0.0.0.0 &
 
-echo "[entrypoint] Starting SSH on port 2222..."
+echo "[entrypoint] Starting SSH..."
 exec /usr/sbin/sshd -D -e

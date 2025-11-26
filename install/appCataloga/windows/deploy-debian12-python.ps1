@@ -9,8 +9,8 @@ param(
     [string]$NetworkName   = "rffusion-net",
     [string]$IPAddress     = "10.99.0.2",
     [string]$SSHPassword   = "changeme",
-    [string]$HostSSHPort   = "2828",
-    [string]$HostAppPort   = "5555"
+    [string]$HostSSHPort   = "2222",
+    [string]$HostAppPort   = "5555",
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,16 +76,14 @@ $arguments = @(
     "run","-d",
     "--name",$ContainerName,
     "--hostname",$ContainerName,
-
-    # Rede rootless funcional
-    "--network","slirp4netns:allow_host_loopback=true",
-
+    "--network",$NetworkName,
+    "--ip",$IPAddress,
+    "--cap-add=NET_RAW",
+    "--cap-add=NET_ADMIN",
     "--restart=always",
-
     "-e","SSH_PASSWORD=$SSHPassword",
-
     "-p","$HostSSHPort`:22",
-    "-p","$HostAppPort`:5555"
+    "-p","$HostAppPort`:5555",
 )
 
 foreach ($vol in $volumes) {
