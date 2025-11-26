@@ -78,16 +78,15 @@ echo "Starting new container..."
 podman run -d \
   --name "${ContainerName}" \
   --hostname "${ContainerName}" \
-  --network "${NetworkName}" \
-  --ip "${IPAddress}" \
-  --cap-add=NET_RAW \
-  --cap-add=NET_ADMIN \
+  --network "slirp4netns:allow_host_loopback=true" \
+  --restart=always \
   -e "MARIADB_ROOT_PASSWORD=${DBPassword}" \
   -e "SSH_PASSWORD=${SSHPassword}" \
   -p "${HostSSHPort}:22" \
   -p "${HostDBPort}:3306" \
   -v "${repoRoot}/src/appCataloga/server_volume:/server_volume:Z" \
   "${ImageName}:latest" >/dev/null
+
 
 sleep 8
 
