@@ -60,8 +60,10 @@ def sigterm_handler(signum: int = None, frame=None) -> None:
     process_status["running"] = False
     try:
         os.write(w_pipe, b"\\0")
+        sys.exit(0)
     except Exception:
         pass
+        
 
 
 def sigint_handler(signum: int = None, frame=None) -> None:
@@ -77,6 +79,7 @@ def sigint_handler(signum: int = None, frame=None) -> None:
     process_status["running"] = False
     try:
         os.write(w_pipe, b"\\0")
+        sys.exit(0)
     except Exception:
         pass
 

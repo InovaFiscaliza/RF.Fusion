@@ -62,7 +62,8 @@ _DAEMON_REGISTRY: List[Any] = []
 def _handle_sigterm(sig, frame) -> None:
     """Handle SIGTERM/SIGINT to stop the main loop gracefully."""
     process_status["running"] = False
-
+    _release_all_halt_flags()
+    sys.exit(0)
 
 signal.signal(signal.SIGTERM, _handle_sigterm)
 signal.signal(signal.SIGINT, _handle_sigterm)
@@ -290,7 +291,7 @@ def main() -> None:
                 # Enqueue statistics update task
                 try:
                     # Only update if files were discovered
-                    if n.get("rows_updated") > 0:
+                    if n.get("rows_updated") > 0 or len(file_metadata) > 0:
                         db.host_task_statistics_create(host_id=host_id)
                     
                 except Exception as e:

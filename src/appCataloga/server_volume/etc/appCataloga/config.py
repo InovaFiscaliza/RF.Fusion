@@ -38,7 +38,7 @@ END_TAG                 = "</json>"
 # database configuration
 #------------------------------------------
 SERVER_NAME             = r"10.99.0.1"
-DB_PORT                 = 3336
+DB_PORT                 = 9081
 RFM_DATABASE_NAME       = "RFDATA"
 BKP_DATABASE_NAME       = "BPDATA"
 DB_USER_NAME            = secret["DB_USER_NAME"]
@@ -55,6 +55,7 @@ HOST_BUSY_TIMEOUT               = 18000     # 18000 seconds or 5 hours
 BKP_TASK_MAX_WORKERS            = 10
 BKP_TASK_WORKER_SERVICE         = "usr/local/bin/appCataloga/appCataloga_file_bkp@"
 MIN_FILE_SIZE_KB                = 1         # minimum file size to be backed up in KB
+MIN_FILE_AGE_MINUTES            = 30        # minimum file age to be backed up in minutes
 #------------------------------------------
 # metadata publishing module configuration
 #------------------------------------------

@@ -45,6 +45,7 @@ def _signal_handler(sig=None, frame=None):
     func = inspect.currentframe().f_back.f_code.co_name
     log.entry(f"Signal {sig} received at {func}() — stopping host_check loop.")
     process_status["running"] = False
+    sys.exit(0)
 
 
 signal.signal(signal.SIGTERM, _signal_handler)

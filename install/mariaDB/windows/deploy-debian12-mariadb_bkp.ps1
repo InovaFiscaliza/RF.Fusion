@@ -18,8 +18,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 # Caminho local para os scripts SQL (dentro do volume montado)
-$sqlProcessing = "/server_volume/tmp/appCataloga/createProcessingDB-v8.sql"
-$sqlMeasure    = "/server_volume/tmp/appCataloga/createMeasureDB-v4.sql"
+$sqlProcessing = "/server_volume/tmp/appCataloga/createProcessingDB-v7.sql"
+$sqlMeasure    = "/server_volume/tmp/appCataloga/createMeasureDB-v3.sql"
 
 # =======================================================================
 # 1. Contexto
@@ -28,7 +28,7 @@ Write-Host "=== [1/6] Switching Podman context ===" -ForegroundColor Cyan
 podman context use podman-machine-default-root | Out-Null
 
 $projectRoot = $PSScriptRoot
-$repoRoot = "C:\Users\augustopeterle\OneDrive - ANATEL\Documentos\GitHub\RF.Fusion"
+$repoRoot = "/RFFusion-dev/RF.Fusion"
 
 # =======================================================================
 # 2. Garantir rede
@@ -82,11 +82,10 @@ podman run -d `
   -e SSH_PASSWORD=$SSHPassword `
   -p "$HostSSHPort`:22" `
   -p "$HostDBPort`:3306" `
-  -v "${repoRoot}/src/appCataloga/server_volume:/server_volume:Z" `
-  "${ImageName}:latest" | Out-Null
+  -v "${repoRoot}/src/appCataloga/server_volume:/server_volume:Z" \
+  ${ImageName}:latest | Out-Null
 
 Start-Sleep -Seconds 8
-
 
 # =======================================================================
 # 5. Verificação do container

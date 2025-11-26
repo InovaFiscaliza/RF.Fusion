@@ -29,7 +29,7 @@ import posixpath
 import fnmatch
 import stat
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Tuple, Optional, Union
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from enum import Enum
@@ -1736,38 +1736,57 @@ class Filter:
         
     def evaluate_metadata(self, metadata_list: list[dict]) -> list[dict]:
         """
-        Apply secondary metadata-based filters (RANGE, LAST).
-        FILE, ALL, NONE return metadata_list unchanged.
+        Apply secondary metadata-based filters (RANGE, LAST) while also enforcing
+        basic file sanity checks:
+            1. Minimum file size
+            2. Minimum file age (e.g., ignore files modified less than X minutes ago)
 
-        Range logic:
-            - only start_date  → ts >= start
-            - only end_date    → ts <= end
-            - both provided    → start <= ts <= end
+        FILE, ALL, NONE → no timestamp filtering besides the basic protections.
+        RANGE → applies start/end date interval.
+        LAST → selects the last N based on timestamp.
         """
 
-        # ------------------------------------------------------------------
-        # Minimum-size protection: ignore empty or near-empty files
-        # (do NOT mutate the original metadata_list)
-        # ------------------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # Basic protections (non-mutating)
+        # ----------------------------------------------------------------------
+
+        # 1. Minimum size filter
         filtered_metadata = [
             m for m in metadata_list
             if (m.get("VL_FILE_SIZE_KB") or 0) >= k.MIN_FILE_SIZE_KB
         ]
 
-        # If all entries were filtered out → return empty list
         if not filtered_metadata:
             return []
 
-        # From here on, use only the filtered copy (immutable behavior)
+        # 2. Minimum age filter
+        # --------------------------------------------------------------
+        # Files modified within the last X minutes are ignored.
+        # Prevents partial/incomplete files from leaking into backup.
+        # --------------------------------------------------------------
+        MIN_AGE_MINUTES = getattr(k, "MIN_FILE_AGE_MINUTES", 30)  # default = 30
+        age_threshold = datetime.now() - timedelta(minutes=MIN_AGE_MINUTES)
+
+        filtered_metadata = [
+            m for m in filtered_metadata
+            if (m.get("DT_FILE_CREATED") and m["DT_FILE_CREATED"] <= age_threshold)
+        ]
+
+        if not filtered_metadata:
+            return []
+
+        # From here on, only use the filtered list
         metadata_list = filtered_metadata
 
+        # ----------------------------------------------------------------------
+        # Extract input parameters
+        # ----------------------------------------------------------------------
         mode      = (self.data.get("mode") or "").upper()
         extension = (self.data.get("extension") or "").lower()
 
-        # ------------------------------------------------------------------
-        # 1. FILE / ALL / NONE: no metadata filtering
-        #    (extension still may be enforced)
-        # ------------------------------------------------------------------
+        # ======================================================================
+        # 1. FILE / ALL / NONE (only extension filter applies)
+        # ======================================================================
         if mode in ("FILE", "ALL", "NONE"):
             if extension:
                 return [
@@ -1776,9 +1795,9 @@ class Filter:
                 ]
             return metadata_list
 
-        # ------------------------------------------------------------------
-        # 2. RANGE mode (smart behavior)
-        # ------------------------------------------------------------------
+        # ======================================================================
+        # 2. RANGE mode
+        # ======================================================================
         if mode == "RANGE":
 
             start_raw = self.data.get("start_date")
@@ -1787,55 +1806,49 @@ class Filter:
             start = None
             end = None
 
-            # Convert start_date
-            if isinstance(start_raw, datetime):
-                start = start_raw
-            elif isinstance(start_raw, str) and start_raw.strip():
-                try:
+            # Convert dates
+            try:
+                if isinstance(start_raw, datetime):
+                    start = start_raw
+                elif isinstance(start_raw, str) and start_raw.strip():
                     start = datetime.fromisoformat(start_raw)
-                except:
-                    pass  # invalid format → ignored
+            except:
+                pass
 
-            # Convert end_date
-            if isinstance(end_raw, datetime):
-                end = end_raw
-            elif isinstance(end_raw, str) and end_raw.strip():
-                try:
+            try:
+                if isinstance(end_raw, datetime):
+                    end = end_raw
+                elif isinstance(end_raw, str) and end_raw.strip():
                     end = datetime.fromisoformat(end_raw)
-                except:
-                    pass
+            except:
+                pass
 
-            # Clean list to append filtered results
             filtered = []
 
-            # Apply RANGE FILTER
+            # Apply RANGE logic
             for m in metadata_list:
                 ts = m.get("DT_FILE_CREATED")
                 if not ts:
                     continue
 
-                # Start only
                 if start and not end:
                     if ts >= start:
                         filtered.append(m)
                     continue
 
-                # End only
                 if end and not start:
                     if ts <= end:
                         filtered.append(m)
                     continue
 
-                # Both start and end
                 if start and end:
                     if start <= ts <= end:
                         filtered.append(m)
                     continue
 
-                # No start and no end → return everything
                 filtered.append(m)
 
-            # Apply extension if present
+            # Extension enforcement
             if extension:
                 filtered = [
                     m for m in filtered
@@ -1844,39 +1857,31 @@ class Filter:
 
             return filtered
 
-        # ------------------------------------------------------------------
+        # ======================================================================
         # 3. LAST mode
-        # ------------------------------------------------------------------
+        # ======================================================================
         if mode == "LAST":
             last_n = int(self.data.get("last_n") or 0)
-            if last_n <= 0:
-                # Only extension enforcement if needed
-                if extension:
-                    return [
-                        m for m in metadata_list
-                        if (m.get("NA_EXTENSION") or "").lower() == extension
-                    ]
-                return metadata_list
 
-            # Sort by timestamp
             ordered = sorted(
                 metadata_list,
                 key=lambda m: m.get("DT_FILE_CREATED") or 0
             )
 
-            # Extension enforcement
             if extension:
                 ordered = [
                     m for m in ordered
                     if (m.get("NA_EXTENSION") or "").lower() == extension
                 ]
 
-            # Take last N
-            return ordered[-last_n:]
+            if last_n > 0:
+                return ordered[-last_n:]
 
-        # ------------------------------------------------------------------
-        # 4. Unknown mode → return all (with extension check)
-        # ------------------------------------------------------------------
+            return ordered
+
+        # ======================================================================
+        # 4. Unknown mode
+        # ======================================================================
         if extension:
             return [
                 m for m in metadata_list
@@ -1884,6 +1889,7 @@ class Filter:
             ]
 
         return metadata_list
+
 
 
 class ErrorHandler:

@@ -83,7 +83,7 @@ $arguments = @(
     "--restart=always",
     "-e","SSH_PASSWORD=$SSHPassword",
     "-p","$HostSSHPort`:22",
-    "-p","$HostAppPort`:5555"
+    "-p","$HostAppPort`:5555",
 )
 
 foreach ($vol in $volumes) {
