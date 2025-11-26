@@ -4,8 +4,7 @@ set -Eeuo pipefail
 # =======================================================================
 # Script: deploy-debian12-mariadb.sh
 # Objetivo: Build do zero e deploy do container Debian 12 + MariaDB + SSH
-#            com inicialização automática dos bancos de dados RFDATA e RFMEASURE
-# Conversão fiel de deploy-debian12-mariadb.ps1 (PowerShell → Shell Script)
+#           com inicialização automática dos bancos RFDATA e RFMEASURE
 # =======================================================================
 
 # ------------------------------
@@ -13,11 +12,11 @@ set -Eeuo pipefail
 # ------------------------------
 ContainerName="debian12-mariadb"
 ImageName="debian12-mariadb"
-NetworkName="rffusion-net"
-IPAddress="10.99.0.3"
+NetworkName="podman"            # Rede válida e ativa
+IPAddress="10.88.0.33"          # IP fixo dentro da rede podman
 SSHPassword="changeme"
 DBPassword="changeme"
-HostSSHPort="2224"     # igual ao PS1 (evita conflito)
+HostSSHPort="2224"
 HostDBPort="9081"
 
 # ------------------------------
@@ -30,25 +29,15 @@ repoRoot="/RFFusion-dev/RF.Fusion"
 projectRoot="$(dirname "$(realpath "$0")")"
 
 # =======================================================================
-# 1. Contexto
+# 1. Contexto (removido: podman-machine-default-root → desnecessário)
 # =======================================================================
-echo "=== [1/6] Switching Podman context ==="
-podman context use podman-machine-default-root >/dev/null 2>&1 || true
+echo "=== [1/6] Using default Podman context ==="
+podman context use default >/dev/null 2>&1 || true
 
 # =======================================================================
-# 2. Garantir rede
+# 2. Garantir rede (somente log – rede podman já existe no sistema)
 # =======================================================================
-echo "=== [2/6] Ensuring network ${NetworkName} exists ==="
-networkScript="${projectRoot}/setup-network.sh"
-if [[ -f "$networkScript" ]]; then
-    echo "Running setup-network.sh..."
-    bash "$networkScript" || {
-        echo "❌ ERROR: setup-network.sh failed to ensure network configuration."
-        exit 1
-    }
-else
-    echo "⚠️  WARNING: setup-network.sh not found in ${projectRoot}. Skipping network setup."
-fi
+echo "=== [2/6] Network ${NetworkName} is managed by Podman and already exists ==="
 
 # =======================================================================
 # 3. Build da imagem
@@ -103,7 +92,6 @@ fi
 
 echo "✅ Container is running."
 
-# Teste de conectividade das portas locais
 echo "Testing host ports..."
 if nc -z localhost "${HostSSHPort}" >/dev/null 2>&1; then
     echo "✅ SSH port ${HostSSHPort} reachable"
@@ -135,10 +123,10 @@ fi
 # Teste de conectividade interna
 # =======================================================================
 echo "=== Testing internal network connectivity ==="
-if podman exec -it "${ContainerName}" ping -c 3 10.99.0.2 >/dev/null 2>&1; then
-    echo "✅ Container can reach 10.99.0.2 (Python node)."
+if podman exec -it "${ContainerName}" ping -c 3 10.88.0.1 >/dev/null 2>&1; then
+    echo "✅ Container reached gateway 10.88.0.1."
 else
-    echo "⚠️  Container cannot reach 10.99.0.2. Check bridge or capabilities."
+    echo "⚠️  Container cannot reach gateway. Check Podman network."
 fi
 
 echo "=== ✅ Deployment completed successfully ==="
