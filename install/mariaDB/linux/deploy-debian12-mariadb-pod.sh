@@ -27,6 +27,7 @@ podman build --no-cache -t "${ImageName}" .
 echo "=== Deploying container ${ContainerName} ==="
 podman rm -f "$ContainerName" >/dev/null 2>&1 || true
 
+# ⚠️ Mapeamento correto — SEM duplicação, SEM rbind, SEM flags extras
 podman run -d \
     --name "${ContainerName}" \
     --pod "${PodName}" \
@@ -36,7 +37,8 @@ podman run -d \
     -v "${repoRoot}/src/appCataloga/server_volume:/server_volume:Z" \
     "${ImageName}:latest" >/dev/null
 
-sleep 8
+echo "=== Waiting MariaDB to boot ==="
+sleep 10
 
 echo "=== Initializing databases ==="
 podman exec -i "${ContainerName}" mysql -u root -p"${DBPassword}" < "${sqlProcessing}" || true
