@@ -72,7 +72,6 @@ args=(
     run -d
     --name "$ContainerName"
     --pod "$PodName"
-    --hostname "$ContainerName"
     --restart=always
     -e "SSH_PASSWORD=${SSHPassword}"
 )

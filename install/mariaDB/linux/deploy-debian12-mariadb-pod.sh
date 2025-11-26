@@ -60,7 +60,6 @@ fi
 podman run -d \
   --name "${ContainerName}" \
   --pod "${PodName}" \
-  --hostname "${ContainerName}" \
   --restart=always \
   -e "MARIADB_ROOT_PASSWORD=${DBPassword}" \
   -e "SSH_PASSWORD=${SSHPassword}" \
