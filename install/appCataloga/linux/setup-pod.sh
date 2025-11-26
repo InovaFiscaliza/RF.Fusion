@@ -9,9 +9,16 @@ if podman pod exists "$PodName"; then
     exit 0
 fi
 
-echo "=== Creating POD $PodName (NO PORTS HERE) ==="
+echo "=== Creating POD $PodName with required ports ==="
 podman pod create \
-    --name "$PodName"
+    --name "$PodName" \
+    -p "2828:22" \
+    -p "5555:5555" \
+    -p "9081:3306" \
+    -p "2224:2222"
 
 echo "=== ✅ POD created successfully ==="
-echo "Containers will publish ONLY their own ports."
+echo "Python SSH  = 2828 -> 22"
+echo "Python API  = 5555 -> 5555"
+echo "MariaDB DB  = 9081 -> 3306"
+echo "MariaDB SSH = 2224 -> 2222"

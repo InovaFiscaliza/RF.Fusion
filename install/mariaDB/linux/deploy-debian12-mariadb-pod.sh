@@ -34,8 +34,6 @@ podman run -d \
     -e "MARIADB_ROOT_PASSWORD=${DBPassword}" \
     -e "SSH_PASSWORD=${SSHPassword}" \
     -v "${repoRoot}/src/appCataloga/server_volume:/server_volume:Z" \
-    -p "2224:22" \
-    -p "9081:3306" \
     "${ImageName}:latest" >/dev/null
 
 echo "=== Waiting MariaDB to boot ==="
@@ -46,4 +44,5 @@ podman exec -i "${ContainerName}" mysql -u root -p"${DBPassword}" < "${sqlProces
 podman exec -i "${ContainerName}" mysql -u root -p"${DBPassword}" < "${sqlMeasure}" || true
 
 echo "=== ✅ MariaDB ready on localhost:9081 ==="
-echo "Connect: mysql -h 127.0.0.1 -P 9081 -uroot -p${DBPassword}"
+echo "SSH: ssh root@localhost -p 2224"
+echo "DB:  mysql -h 127.0.0.1 -P 9081 -uroot -p${DBPassword}"
