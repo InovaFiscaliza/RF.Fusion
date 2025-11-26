@@ -34,6 +34,10 @@ args=(
     --pod "$PodName"
     --restart=always
     -e "SSH_PASSWORD=${SSHPassword}"
+
+    # 🔥 PUBLICAÇÃO DAS PORTAS DO PYTHON
+    -p "2828:22"
+    -p "5555:5555"
 )
 
 for v in "${volumes[@]}"; do

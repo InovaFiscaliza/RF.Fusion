@@ -27,7 +27,6 @@ podman build --no-cache -t "${ImageName}" .
 echo "=== Deploying container ${ContainerName} ==="
 podman rm -f "$ContainerName" >/dev/null 2>&1 || true
 
-# ⚠️ Mapeamento correto — SEM duplicação, SEM rbind, SEM flags extras
 podman run -d \
     --name "${ContainerName}" \
     --pod "${PodName}" \
@@ -35,6 +34,8 @@ podman run -d \
     -e "MARIADB_ROOT_PASSWORD=${DBPassword}" \
     -e "SSH_PASSWORD=${SSHPassword}" \
     -v "${repoRoot}/src/appCataloga/server_volume:/server_volume:Z" \
+    -p "2224:22" \
+    -p "9081:3306" \
     "${ImageName}:latest" >/dev/null
 
 echo "=== Waiting MariaDB to boot ==="
