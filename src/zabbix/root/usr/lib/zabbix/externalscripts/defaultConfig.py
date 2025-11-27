@@ -27,7 +27,7 @@ ACAT_DEFAULT_HOST_ADD = "172.24.1.25"
 ACAT_DEFAULT_HOST_PORT = 2828
 ACAT_DEFAULT_USER = "root"  # user should have access to the host with rights to interact with the indexer daemon
 ACAT_DEFAULT_PASSWD = "root"
-ACAT_DEFAULT_QUERY_TAG = "backup1"
+ACAT_DEFAULT_QUERY_TAG = "backup"
 ACAT_FILE_METADATA_QUERY_TAG ="fileMetadata"
 ACAT_DEFAULT_TIMEOUT = 2
 

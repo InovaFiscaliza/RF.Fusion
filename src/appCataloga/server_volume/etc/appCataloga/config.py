@@ -31,7 +31,7 @@ LOG_FILE = "/var/log/appCataloga.log"
 #------------------------------------------
 SERVER_PORT             = 5555
 TOTAL_CONNECTIONS       = 50
-BACKUP_QUERY_TAG        = "backup1"
+BACKUP_QUERY_TAG        = "backup"
 START_TAG               = "<json>"
 END_TAG                 = "</json>"
 #------------------------------------------

@@ -98,13 +98,13 @@ ARGUMENTS = {
         "message": "Using default timeout",
     },
     "help": {
-        "set": True,
+        "set": False,
         "value": None,
         "message": "** Use queryCataloga host_id=<host_id> host_uid=<host_uid> host_add=<host_add> host_port=<host_port> user=<user> passwd=<passwd> query_tag=<query_tag> timeout=<timeout>. See code for details **",
     },
     "filter": {
-        "set": True,
-        "value":'{"mode":"RANGE","start_date":"2019-01-01","end_date":null,"last_n_files":null,"extension":".bin", "file_path": "/mnt/internal/data/PMEC2019/Brasilia/SLMA", "file_name":null, "agent": "local"}',
+        "set": False,
+        "value":'{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".bin", "file_path": "/mnt/internal", "file_name":null, "agent": "local"}',
         "message": "Backup request is {value}",
     },
 }
@@ -159,7 +159,7 @@ def main():
 
     try:
         client_socket.connect((k.ACAT_SERVER_ADD, k.ACAT_SERVER_PORT))
-        client_socket.settimeout(k.ACAT_SERVER_TIMEOUT)
+        #client_socket.settimeout(k.ACAT_SERVER_TIMEOUT)
         client_socket.sendall(request)
     except Exception as e:
         print(
