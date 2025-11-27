@@ -1172,6 +1172,8 @@ class hostDaemon:
         # ----------------------------------------------------------
         if agent == "REMOTE":
             try:
+                # Load config in remote Agent node
+                self.get_config()
                 raw = self.sftp_conn.read(self.config["DUE_BACKUP"], mode="r")
                 if raw:
                     candidates = [
@@ -1190,8 +1192,7 @@ class hostDaemon:
         # 3) Collect file candidates from LOCAL agent
         # ----------------------------------------------------------
         elif agent == "LOCAL":
-            remote_dir = self.config.get("LOCAL_REPO", "/")
-
+            remote_dir = filter.get("file_path",k.DEFAULT_DATA_FOLDER)
             try:
                 candidates = self.sftp_conn.sftp_find_files(
                     remote_path=remote_dir,
@@ -1399,6 +1400,7 @@ class Filter:
             last_n_files=None,
             extension=None,
             file_name=None,
+            file_path=k.DEFAULT_DATA_FOLDER,
             agent="remote",
         )
 
@@ -1444,6 +1446,7 @@ class Filter:
             "end_date": f.get("end_date"),
             "last_n_files": f.get("last_n_files"),
             "extension": f.get("extension"),
+            "file_path": f.get("file_path",k.DEFAULT_DATA_FOLDER),
             "file_name": f.get("file_name"),
             "agent": f.get("agent"),
         }
@@ -1525,15 +1528,15 @@ class Filter:
 
         # --- Define active fields ---
         active_fields = {
-            Filter.MODE_RANGE: {"start_date", "end_date", "extension", "agent"},
-            Filter.MODE_FILE: {"file_name", "extension", "agent"},
-            Filter.MODE_LAST: {"last_n_files", "extension", "agent"},
-            Filter.MODE_ALL: {"extension", "agent"},
-            Filter.MODE_NONE: {"extension", "agent"},
+            Filter.MODE_RANGE: {"start_date", "end_date", "extension", "agent", "file_path"},
+            Filter.MODE_FILE: {"file_name", "extension", "agent","file_path"},
+            Filter.MODE_LAST: {"last_n_files", "extension", "agent","file_path"},
+            Filter.MODE_ALL: {"extension", "agent","file_path"},
+            Filter.MODE_NONE: {"extension", "agent","file_path"},
         }
 
         # --- Nullify unused fields ---
-        all_fields = {"start_date", "end_date", "last_n_files", "extension", "file_name", "agent"}
+        all_fields = {"start_date", "end_date", "last_n_files", "extension", "file_name", "agent","file_path"}
         keep = active_fields.get(f["mode"], set())
         for key in all_fields - keep:
             f[key] = None

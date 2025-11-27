@@ -62,32 +62,12 @@ _DAEMON_REGISTRY: List[Any] = []
 def _handle_sigterm(sig, frame) -> None:
     """Handle SIGTERM/SIGINT to stop the main loop gracefully."""
     process_status["running"] = False
-    _release_all_halt_flags()
     sys.exit(0)
 
 signal.signal(signal.SIGTERM, _handle_sigterm)
 signal.signal(signal.SIGINT, _handle_sigterm)
 
 
-# ======================================================================
-# Utility helpers
-# ======================================================================
-def _register_daemon_for_cleanup(daemon: Any) -> None:
-    """Track HostDaemon instances for later HALT_FLAG cleanup."""
-    if daemon:
-        _DAEMON_REGISTRY.append(daemon)
-
-
-def _release_all_halt_flags() -> None:
-    """Release all HALT_FLAGs created during this process runtime."""
-    for daemon in _DAEMON_REGISTRY:
-        try:
-            if daemon and daemon.sftp_conn.is_connected():
-                if getattr(daemon, "halt_flag_set_time", None):
-                    daemon.release_halt_flag(service="appCataloga_discovery", force=True)
-                    log.entry("[cleanup] Released HALT_FLAG from registry.")
-        except Exception as e:
-            log.warning(f"[cleanup] Failed to release HALT_FLAG: {e}")
 
 
 # ======================================================================
@@ -176,23 +156,7 @@ def main() -> None:
                 continue
 
             # ==========================================================
-            # ACT IV — Prechecks (Config + HALT_FLAG)
-            # ==========================================================
-            if not daemon.get_config():
-                err.set("Failed to load remote configuration", "CONFIG")
-
-            elif not daemon.get_halt_flag(
-                service="appCataloga_discovery",
-                use_pid=False
-            ):
-                err.set("Filesystem busy (halt flag set)", "HALT_FLAG")
-
-            if err.triggered:
-                err.log_error(host_id=host_id, task_id=task_id)
-                continue
-
-            # ==========================================================
-            # ACT V — Discovery
+            # ACT IV — Discovery
             # ==========================================================
             try:
                 host_filter = Filter(task["host_filter"], log=log).data
@@ -229,7 +193,7 @@ def main() -> None:
                 err.set("Discovery failed", "DISCOVERY", e)
 
             # ==========================================================
-            # ACT VI — Promote → BACKUP queue
+            # ACT V — Promote → BACKUP queue
             # ==========================================================
             if not err.triggered:
                 try:
@@ -253,7 +217,7 @@ def main() -> None:
                     err.set("Backlog promotion failed", "BACKLOG", e)
 
             # ==========================================================
-            # ACT VII — Centralized Error Handling
+            # ACT VI — Centralized Error Handling
             # ==========================================================
             if err.triggered:
                 err.log_error(host_id=host_id, task_id=task_id)
@@ -300,8 +264,6 @@ def main() -> None:
             # Close connections
             try:
                 if daemon and daemon.sftp_conn.is_connected():
-                    daemon.release_halt_flag("appCataloga_discovery")
-                    daemon.close_host(cleanup_due_backup=True)
                     sftp.close()
             except Exception as e:
                 log.warning(f"[CLEANUP] Failed to cleanup host: {e}")

@@ -37,8 +37,8 @@ END_TAG                 = "</json>"
 #------------------------------------------
 # database configuration
 #------------------------------------------
-SERVER_NAME             = r"10.99.0.1"
-DB_PORT                 = 9081
+SERVER_NAME             = r"10.88.0.33"
+DB_PORT                 = 3306
 RFM_DATABASE_NAME       = "RFDATA"
 BKP_DATABASE_NAME       = "BPDATA"
 DB_USER_NAME            = secret["DB_USER_NAME"]
@@ -67,8 +67,11 @@ SECONDS_IN_MINUTE = 60
 #------------------------------------------
 # daemon standard indexerD configuration
 #------------------------------------------
+DEFAULT_DATA_FOLDER = "/mnt/internal"
 DAEMON_CFG_FILE = "/etc/node/indexerD.cfg"
 LOCAL_INDEXERD  = {
+    "LOCAL_REPO"            : "/mnt/internal/data",
+    "INDEXERD_FOLDER"       : "/mnt/internal/.indexerD",
     "TEMP_CHANGED"          : "temp.changed.list",
     "DUE_BACKUP"            : "files.changed.list",
     "BACKUP_DONE"           : "backup.done.list",
@@ -114,7 +117,7 @@ NONE_FILTER = {
     "last_n_files"  : None,
     "extension"     : None,
     "file_name"     : None,
-    "file_path"     : None,
+    "file_path"     : "/mnt/internal/data",
     "agent"         : "local"
 }
 #------------------------------------------

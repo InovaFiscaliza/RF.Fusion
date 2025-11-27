@@ -104,7 +104,7 @@ ARGUMENTS = {
     },
     "filter": {
         "set": True,
-        "value":'{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".bin", "file_name":null, "agent": "local"}',
+        "value":'{"mode":"RANGE","start_date":"2019-01-01","end_date":null,"last_n_files":null,"extension":".bin", "file_path": "/mnt/internal/data/PMEC2019/Brasilia/SLMA", "file_name":null, "agent": "local"}',
         "message": "Backup request is {value}",
     },
 }

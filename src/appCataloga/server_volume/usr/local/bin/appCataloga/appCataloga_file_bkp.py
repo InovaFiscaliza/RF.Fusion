@@ -174,8 +174,6 @@ def transfer_file_task(sftp, remote_dir: str, filename: str, local_path: str) ->
         )
 
 
-
-
 # ======================================================================
 # Main Execution
 # ======================================================================
@@ -292,27 +290,9 @@ def main():
                 err.log_error(host_id=host_id, task_id=file_task_id)
                 continue
 
-            # ===================================================
-            # ACT V — Prechecks (config + HALT_FLAG)
-            # ===================================================
-            try:
-                if not daemon.get_config():
-                    raise RuntimeError("Invalid daemon config")
-
-                if not daemon.get_halt_flag(
-                    service="appCataloga_file_bkp",
-                    use_pid=True,
-                ):
-                    raise RuntimeError("Filesystem busy (HALT_FLAG)")
-            except Exception as e:
-                err.set("Precheck failed", stage="PRECHECK", exc=e)
-
-            if err.triggered:
-                err.log_error(host_id=host_id, task_id=file_task_id)
-                continue
 
             # ===================================================
-            # ACT VI — Prepare local folder
+            # ACT V — Prepare local folder
             # ===================================================
             try:
                 local_path = os.path.join(
@@ -328,7 +308,7 @@ def main():
                 continue
 
             # ===================================================
-            # ACT VII — Transfer file (pure function)
+            # ACT VI — Transfer file (pure function)
             # ===================================================
             try:
                 transfer_file_task(
@@ -347,7 +327,7 @@ def main():
                 continue
 
             # ===================================================
-            # ACT VIII — FILE_HISTORY update
+            # ACT VII — FILE_HISTORY update
             # ===================================================
             try:
                 db.file_history_update(
@@ -365,7 +345,7 @@ def main():
                 continue
 
             # ===================================================
-            # ACT IX — Final DB update (TASK_DONE)
+            # ACT VIII — Final DB update (TASK_DONE)
             # ===================================================
             try:
                 db.file_task_update(
@@ -431,25 +411,12 @@ def main():
                 # ===========================================================
                 # ALWAYS — cleanup network connections + halt flag
                 # ===========================================================
-                if daemon and getattr(daemon, "sftp_conn", None):
-                    try:
-                        daemon.release_halt_flag(
-                            service="appCataloga_file_bkp",
-                            use_pid=True,
-                        )
-                    except Exception:
-                        pass
-
-                    try:
-                        daemon.close_host(cleanup_due_backup=True)
-                    except Exception:
-                        pass
-
-                if sftp_conn:
-                    try:
+                # Close connections
+                try:
+                    if daemon and daemon.sftp_conn.is_connected():
                         sftp_conn.close()
-                    except Exception:
-                        pass
+                except Exception as e:
+                    log.warning(f"[CLEANUP] Failed to cleanup host: {e}")
 
             except Exception as e:
                 log.warning(f"[CLEANUP] Error inside cleanup block: {e}")

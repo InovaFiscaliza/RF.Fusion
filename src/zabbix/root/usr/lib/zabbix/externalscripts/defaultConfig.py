@@ -16,7 +16,7 @@ UTF_ENCODING = "utf-8" # used by queryCataloga.py
 ISO_ENCODING = "ISO-8859-1" # used by queryappColeta.py
 
 # appCataloga constants
-ACAT_SERVER_ADD = "10.99.0.2"  # Change this to the server's hostname or IP address
+ACAT_SERVER_ADD = "10.88.0.2"  # Change this to the server's hostname or IP address
 ACAT_SERVER_PORT = 5555
 ACAT_SERVER_TIMEOUT = 1000
 
