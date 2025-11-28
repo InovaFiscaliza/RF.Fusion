@@ -142,8 +142,6 @@ def main():
 
     try:
         client_socket.connect((k.ACAT_SERVER_ADD, k.ACAT_SERVER_PORT))
-        client_ip, client_port = client_socket.getsockname()
-
         #client_socket.settimeout(k.ACAT_SERVER_TIMEOUT)
         
         requestS = (
@@ -155,10 +153,8 @@ def main():
         f'{arg.data["user"]["value"]} '
         f'{arg.data["passwd"]["value"]} '
         f'{arg.data["filter"]["value"]} '
-        f'"TCP_Port": "{client_port}" '
     )
         request = bytes(requestS, encoding="utf-8")
-        print(requestS)
         client_socket.sendall(request)
     except Exception as e:
         print(

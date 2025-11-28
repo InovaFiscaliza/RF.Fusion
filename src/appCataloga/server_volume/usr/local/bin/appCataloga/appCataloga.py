@@ -160,8 +160,7 @@ def serve_client(client_socket: socket.socket) -> None:
 
     peer_ip = "unknown"
     try:
-        #peer_ip, _ = client_socket.getpeername()
-        peer_ip = k.ZABBIX_ADDRESS
+        peer_ip, _ = client_socket.getpeername()
     except Exception:
         pass
 
@@ -253,16 +252,6 @@ def serve_client(client_socket: socket.socket) -> None:
             framed = f"{k.START_TAG}{json.dumps(response_payload)}{k.END_TAG}"     
             client_socket.sendall(framed.encode("utf-8"))
             
-            #---------------------------------------------
-            # Zabbix passive check submission
-            local_ip, local_port = client_socket.getpeername()
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                s.connect((k.ZABBIX_ADDRESS, 5555))
-                s.sendall(framed.encode("utf-8"))
-            finally:
-                s.close()
-            #------------------------------------------------
             log.entry(f"[RESPONSE] Sent to {peer_ip}: {framed}")
         except Exception as e:
             log.warning(f"[SEND] Failed to send response to {peer_ip}: {e}")

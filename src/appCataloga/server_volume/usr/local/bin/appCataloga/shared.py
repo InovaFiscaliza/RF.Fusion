@@ -2049,6 +2049,7 @@ def parse_socket_message(peername: Tuple[str, int], data: str, log: Optional[log
 
         filter_dict = parse_filter(filter_raw, log)
 
+
         return {
             "peer": {"ip": peer_ip, "port": peer_port},
             "command": msg_type,
