@@ -137,8 +137,16 @@ def main():
     # parse the command line arguments
     arg.parse(sys.argv)
 
-    # compose the request to the server
-    requestS = (
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.settimeout(arg.data["timeout"]["value"])
+
+    try:
+        client_socket.connect((k.ACAT_SERVER_ADD, k.ACAT_SERVER_PORT))
+        client_ip, client_port = client_socket.getsockname()
+
+        #client_socket.settimeout(k.ACAT_SERVER_TIMEOUT)
+        
+        requestS = (
         f'{arg.data["query_tag"]["value"]} '
         f'{arg.data["host_id"]["value"]} '
         f'{arg.data["host_uid"]["value"]} '
@@ -146,20 +154,11 @@ def main():
         f'{arg.data["host_port"]["value"]} '
         f'{arg.data["user"]["value"]} '
         f'{arg.data["passwd"]["value"]} '
-        f'{arg.data["filter"]["value"]}'
+        f'{arg.data["filter"]["value"]} '
+        f'"TCP_Port": "{client_port}" '
     )
-
-    request = bytes(requestS, encoding="utf-8")
-    
-    # DEBUG
-    print(request)
-
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_socket.settimeout(arg.data["timeout"]["value"])
-
-    try:
-        client_socket.connect((k.ACAT_SERVER_ADD, k.ACAT_SERVER_PORT))
-        #client_socket.settimeout(k.ACAT_SERVER_TIMEOUT)
+        request = bytes(requestS, encoding="utf-8")
+        print(requestS)
         client_socket.sendall(request)
     except Exception as e:
         print(

@@ -34,6 +34,7 @@ TOTAL_CONNECTIONS       = 50
 BACKUP_QUERY_TAG        = "backup"
 START_TAG               = "<json>"
 END_TAG                 = "</json>"
+ZABBIX_ADDRESS          = "172.24.0.13"
 #------------------------------------------
 # database configuration
 #------------------------------------------

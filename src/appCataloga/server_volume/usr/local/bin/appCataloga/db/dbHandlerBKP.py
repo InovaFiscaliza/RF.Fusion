@@ -793,6 +793,8 @@ class dbHandlerBKP(DBHandlerBase):
             FILTER=filter_dict,
         )
 
+        # Fetch updated host statistics
+        self.host_update_statistics(host_id=host_id)
         host_statistics = self.host_read_status(host_id)
         return host_statistics
     
