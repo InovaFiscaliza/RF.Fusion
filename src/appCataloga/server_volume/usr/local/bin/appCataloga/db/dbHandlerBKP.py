@@ -454,6 +454,29 @@ class dbHandlerBKP(DBHandlerBase):
 
         finally:
             self._disconnect()
+    
+    def get_last_discovery(self, host_id: int) -> Optional[datetime]:
+        """
+        Return HOST.DT_LAST_DISCOVERY for the given host_id.
+        Uses _select_rows(), which returns a list of dicts.
+        """
+
+        try:
+            rows = self._select_rows(
+                table="HOST",
+                where={"ID_HOST": host_id},
+                cols=["DT_LAST_DISCOVERY"],
+                limit=1,
+            )
+        except Exception as e:
+            self.log.error(f"[DB] Failed to read DT_LAST_DISCOVERY: {e}")
+            return None
+
+        if not rows:
+            return None
+
+        dt = rows[0].get("DT_LAST_DISCOVERY")
+        return dt if dt else None
 
 
     def host_update(
@@ -723,47 +746,52 @@ class dbHandlerBKP(DBHandlerBase):
         """
         Query HOST_TASK using dynamic filters based on provided keyword arguments.
 
-        Only valid column names defined in VALID_FIELDS_HOST_TASK are permitted.
-        Returns a list of matching rows (empty list if no results).
+        Supports:
+            - Scalar filters      → NU_TYPE=1
+            - List filters        → NU_TYPE=[1,2]
+            - Full set of operators from _select_custom()
+            - Raw SQL via '#CUSTOM#'
 
-        Args:
-            **kwargs: Key-value pairs representing column filters
-                    (e.g., FK_HOST=123, NU_STATUS=1).
+        Only valid field names in VALID_FIELDS_HOST_TASK are accepted.
 
         Returns:
-            list[dict]: List of matching HOST_TASK rows.
+            list[dict]: Matching HOST_TASK rows (empty list if none).
         """
 
         valid_fields = self.VALID_FIELDS_HOST_TASK
 
-        # Build validated WHERE clause
+        # ------------------------------------------------------------------
+        # Build WHERE clause in the format expected by _select_custom()
+        # ------------------------------------------------------------------
         where_clause = {}
+
         for key, value in kwargs.items():
+
+            # Validate field name
             if key not in valid_fields:
                 raise ValueError(
                     f"Invalid field in check_host_task(): '{key}' is not a valid column."
                 )
+
+            # List → IN operator
+            if isinstance(value, (list, tuple, set)):
+                where_clause[key] = ("IN", list(value))
+                continue
+
+            # Otherwise → default equality
             where_clause[key] = value
 
-        # Execute SELECT
-        rows = self._select_rows(
-            table="HOST_TASK",
+        # ------------------------------------------------------------------
+        # Execute SELECT using _select_custom() with proper alias handling
+        # ------------------------------------------------------------------
+        rows = self._select_custom(
+            table="HOST_TASK ht",   # requires alias
             where=where_clause,
-            order_by="ID_HOST_TASK DESC",
-            cols=[
-                "ID_HOST_TASK",
-                "FK_HOST",
-                "NU_TYPE",
-                "DT_HOST_TASK",
-                "NU_STATUS",
-                "NU_PID",
-                "FILTER",
-                "NA_MESSAGE",
-            ],
+            order_by="ht.ID_HOST_TASK DESC",
         )
 
-        # Always return a list
         return rows or []
+
 
     
     def queue_host_task(
@@ -787,11 +815,24 @@ class dbHandlerBKP(DBHandlerBase):
         Returns:
             dict: Host status dictionary from host_read_status().
         """
-        self.host_task_create(
-            NU_TYPE=task_type,
+        # Build json Filter structure
+        filter_json = json.dumps(filter_dict)
+        
+        # Check if existing pending Task
+        task = self.check_host_task(
             FK_HOST=host_id,
-            FILTER=filter_dict,
-        )
+            NU_TYPE=[k.HOST_TASK_CHECK_TYPE, k.HOST_TASK_PROCESSING_TYPE],
+            FILTER=filter_json
+            )
+            
+        
+        # If not found, create new HOST_TASK
+        if not task:
+            self.host_task_create(
+                NU_TYPE=task_type,
+                FK_HOST=host_id,
+                FILTER=filter_dict,
+            )
 
         # Fetch updated host statistics
         self.host_update_statistics(host_id=host_id)
@@ -1208,7 +1249,7 @@ class dbHandlerBKP(DBHandlerBase):
                 table="HOST_TASK",
                 data={
                     "NU_STATUS": k.TASK_PENDING,
-                    "NU_TYPE": k.HOST_PROCESSING_TYPE,
+                    "NU_TYPE": k.HOST_TASK_PROCESSING_TYPE,
                     "NA_MESSAGE": (
                         "Host reachable again — suspended task resumed automatically"
                     ),
@@ -1227,7 +1268,7 @@ class dbHandlerBKP(DBHandlerBase):
                 table="HOST_TASK",
                 data={
                     "NU_STATUS": k.TASK_PENDING,
-                    "NU_TYPE": k.HOST_PROCESSING_TYPE,
+                    "NU_TYPE": k.HOST_TASK_PROCESSING_TYPE,
                     "NA_MESSAGE": (
                         "Host reachable again — previously failed task resubmitted"
                     ),
@@ -1246,7 +1287,7 @@ class dbHandlerBKP(DBHandlerBase):
                 table="HOST_TASK",
                 data={
                     "NU_STATUS": k.TASK_PENDING,
-                    "NU_TYPE": k.HOST_PROCESSING_TYPE,
+                    "NU_TYPE": k.HOST_TASK_PROCESSING_TYPE,
                     "NA_MESSAGE": (
                         f"Detected stale running task (> {busy_timeout_seconds}s) — "
                         f"resubmitted automatically"
@@ -1377,7 +1418,7 @@ class dbHandlerBKP(DBHandlerBase):
         """
         self._connect()
         processed = 0
-
+        
         try:
             for file in file_metadata:
                 msg = _compose_message(
@@ -1408,7 +1449,8 @@ class dbHandlerBKP(DBHandlerBase):
                     data=payload,
                     unique_keys=["FK_HOST", "NA_HOST_FILE_NAME"],
                     commit=False,
-                    touch_field="DT_FILE_TASK"
+                    touch_field="DT_FILE_TASK",
+                    log_each=False
                 )
 
                 processed += 1
@@ -1696,6 +1738,19 @@ class dbHandlerBKP(DBHandlerBase):
         )
 
         return rows or None
+    
+    def get_all_filetask_names(self, host_id: int) -> set:
+        """
+        Return a set containing all filenames already present in FILE_TASK
+        for the given host.
+        """
+        rows = self._select_rows(
+            table="FILE_TASK",
+            where={"FK_HOST": host_id},
+            cols=["NA_HOST_FILE_NAME"]
+        )
+        return {r["NA_HOST_FILE_NAME"] for r in rows}
+
 
     # ======================================================================
     # BACKLOG MANAGEMENT
@@ -1779,6 +1834,20 @@ class dbHandlerBKP(DBHandlerBase):
     # ======================================================================
     # BACKLOG MANAGEMENT
     # ======================================================================
+    def get_all_filetaskhistory_names(self, host_id: int) -> set:
+        """
+        Return a set containing all filenames already present in FILE_TASK_HISTORY
+        for the given host.
+        """
+        rows = self._select_rows(
+            table="FILE_TASK_HISTORY",
+            where={"FK_HOST": host_id},
+            cols=["NA_HOST_FILE_NAME"]
+        )
+        return {r["NA_HOST_FILE_NAME"] for r in rows}
+
+    
+
     def check_file_history(self, **kwargs) -> list[dict]:
         """
         Query FILE_TASK_HISTORY with dynamic filters based on provided keyword arguments.
@@ -1896,7 +1965,8 @@ class dbHandlerBKP(DBHandlerBase):
                     data=payload,
                     unique_keys=["FK_HOST", "NA_HOST_FILE_NAME", "NU_TYPE"],
                     commit=False,
-                    touch_field="DT_DISCOVERED"
+                    touch_field="DT_DISCOVERED",
+                    log_each=False
                 )
 
                 processed += 1

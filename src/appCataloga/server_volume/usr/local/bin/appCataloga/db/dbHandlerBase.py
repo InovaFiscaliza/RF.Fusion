@@ -436,6 +436,7 @@ class DBHandlerBase:
         *,
         commit: bool = True,
         touch_field: Optional[str] = None,
+        log_each: bool = False,   # <--- NEW FLAG
     ) -> int:
         """
         Perform an atomic UPSERT operation (INSERT or UPDATE) using
@@ -446,14 +447,13 @@ class DBHandlerBase:
             data (Dict[str, Any]): Column-value mapping to insert or update.
             unique_keys (List[str]): List of columns that define the unique constraint.
             commit (bool, optional): Whether to commit immediately. Defaults to True.
-            touch_field (str, optional): Optional field to auto-update with NOW() when updated.
+            touch_field (str, optional): Field to auto-update with NOW() on update.
+            log_each (bool, optional): If True, logs every UPSERT (default False).
 
         Returns:
-            int: Number of affected rows (1 = inserted or updated).
-
-        Raises:
-            Exception: If the query fails (rolled back automatically).
+            int: Number of affected rows.
         """
+
         if not data:
             self.log.warning(f"[DBHandlerBase] UPSERT skipped: no data for {table}")
             return 0
@@ -480,16 +480,23 @@ class DBHandlerBase:
         try:
             self.cursor.execute(sql, tuple(data.values()))
             affected = int(self.cursor.rowcount or 0)
+
             if commit:
                 self.db_connection.commit()
 
-            self.log.entry(f"[DBHandlerBase] UPSERT executed successfully on {table} ({affected} row affected).")
+            # Only log if explicitly requested
+            if log_each:
+                self.log.entry(
+                    f"[DBHandlerBase] UPSERT executed on {table} ({affected} row affected): {data.get('NA_HOST_FILE_NAME')}"
+                )
+
             return affected
 
         except Exception as e:
             self.db_connection.rollback()
             self.log.error(f"[DBHandlerBase] UPSERT failed on {table}: {e}")
             raise
+
 
 
     def _delete_row(

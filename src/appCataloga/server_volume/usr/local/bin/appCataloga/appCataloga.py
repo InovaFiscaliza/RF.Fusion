@@ -16,6 +16,7 @@ import time
 import socket
 import signal
 import subprocess
+from datetime import datetime
 from selectors import DefaultSelector, EVENT_READ
 
 # load Config and Database folders
@@ -247,6 +248,12 @@ def serve_client(client_socket: socket.socket) -> None:
         if err.triggered:
             err.log_error(host_id=host_id)
             response_payload = {"status": 0, "message": err.msg}
+        else:
+            response_payload.update({
+                "status": 1,
+                "message": f"Host task created successfully at {datetime.now()}",
+                "filter": f"{host_filter}"
+            })
 
         try:
             framed = f"{k.START_TAG}{json.dumps(response_payload)}{k.END_TAG}"     

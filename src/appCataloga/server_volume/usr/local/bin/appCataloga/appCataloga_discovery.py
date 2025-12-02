@@ -95,10 +95,11 @@ def main() -> None:
         task = None
         host_id = None
         task_id = None
+        fatal_error = False   # FIX: global flag to ensure final cleanup always happens
 
         try:
             # ==========================================================
-            # ACT I — Fetch next HOST_TASK (PROCESSING_TYPE, pending)
+            # ACT I — Fetch next HOST_TASK (PROCESSING pending)
             # ==========================================================
             task = db.host_task_read(
                 task_type=k.HOST_TASK_PROCESSING_TYPE,
@@ -109,8 +110,7 @@ def main() -> None:
             if not task:
                 sh._random_jitter_sleep()
                 continue
-            
-            # Tasks contents
+
             host_id = task["HOST__ID_HOST"]
             task_id = task["HOST_TASK__ID_HOST_TASK"]
 
@@ -129,68 +129,79 @@ def main() -> None:
                     NU_STATUS=k.TASK_RUNNING,
                     NU_PID=os.getpid(),
                 )
+
             except Exception as e:
                 err.set("Failed to lock HOST or HOST_TASK", "LOCK_TASK", e)
 
+            # FIX:
+            # Never continue inside this try-block.
+            # If an error is triggered, mark fatal_error and allow main try...finally to run.
             if err.triggered:
-                err.log_error(host_id=host_id, task_id=task_id)
-                continue
+                fatal_error = True
 
             # ==========================================================
             # ACT III — Init SFTP + HostDaemon
             # ==========================================================
-            try:
-                sftp, daemon = sh.init_host_context(task, log)
+            if not err.triggered:
+                try:
+                    sftp, daemon = sh.init_host_context(task, log)
 
-            except paramiko.AuthenticationException as e:
-                err.set("Authentication failed (bad credentials)", "AUTH", e)
+                except paramiko.AuthenticationException as e:
+                    err.set("Authentication failed (bad credentials)", "AUTH", e)
 
-            except paramiko.SSHException as e:
-                err.set("SSH negotiation failed", "SSH", e)
+                except paramiko.SSHException as e:
+                    err.set("SSH negotiation failed", "SSH", e)
 
-            except Exception as e:
-                err.set("Host initialization failed", "INIT", e)
+                except Exception as e:
+                    err.set("Host initialization failed", "INIT", e)
 
+            # Do not allow the pipeline to proceed after any failure
             if err.triggered:
-                err.log_error(host_id=host_id, task_id=task_id)
-                continue
+                fatal_error = True
 
             # ==========================================================
             # ACT IV — Discovery
             # ==========================================================
-            try:
-                host_filter = Filter(task["host_filter"], log=log).data
+            if not err.triggered:
+                try:
+                    host_filter = Filter(task["host_filter"], log=log)
 
-                file_metadata = daemon.get_metadata_files(
-                    filter=host_filter,
-                    callBackFileHistory=db.check_file_history,
-                    callBackFileTaskHistory=db.check_file_task,
-                )
-
-                if file_metadata:
-                    # Create FILE_TASK to keep program pipeline
-                    db.file_task_create(
+                    file_metadata = daemon.get_metadata_files(
+                        filter_obj=host_filter,
                         host_id=host_id,
-                        file_metadata=file_metadata,
-                        task_type=k.FILE_TASK_DISCOVERY,
-                        task_status=k.TASK_DONE,
+                        callBackFileTask=db.get_all_filetask_names,
+                        callBackFileTaskHistory=db.get_all_filetaskhistory_names,
+                        callBackGetLastDBDate=db.get_last_discovery
                     )
-                    
-                    # Create FILE_TASK_HISTORY entries to preserve statistics
-                    db.file_history_create(
-                        host_id=host_id,
-                        file_metadata=file_metadata,
-                        task_type=k.FILE_TASK_DISCOVERY,
-                        task_status=k.TASK_DONE,
-    )
-                    log.entry(
-                        f"[DISCOVERY] {len(file_metadata)} FILE_TASK(s) created for host {host_id}"
-                    )
-                else:
-                    log.entry(f"[DISCOVERY] Host {host_id}: no files found")
 
-            except Exception as e:
-                err.set("Discovery failed", "DISCOVERY", e)
+                    if file_metadata:
+                        # Create FILE_TASK entries
+                        db.file_task_create(
+                            host_id=host_id,
+                            file_metadata=file_metadata,
+                            task_type=k.FILE_TASK_DISCOVERY,
+                            task_status=k.TASK_DONE,
+                        )
+
+                        # Create FILE_TASK_HISTORY entries
+                        db.file_history_create(
+                            host_id=host_id,
+                            file_metadata=file_metadata,
+                            task_type=k.FILE_TASK_DISCOVERY,
+                            task_status=k.TASK_DONE,
+                        )
+
+                        log.entry(
+                            f"[DISCOVERY] {len(file_metadata)} FILE_TASK(s) created for host {host_id}"
+                        )
+                    else:
+                        log.entry(f"[DISCOVERY] Host {host_id}: no files found")
+
+                except Exception as e:
+                    err.set("Discovery failed", "DISCOVERY", e)
+
+            if err.triggered:
+                fatal_error = True
 
             # ==========================================================
             # ACT V — Promote → BACKUP queue
@@ -216,32 +227,35 @@ def main() -> None:
                 except Exception as e:
                     err.set("Backlog promotion failed", "BACKLOG", e)
 
-            # ==========================================================
-            # ACT VI — Centralized Error Handling
-            # ==========================================================
             if err.triggered:
-                err.log_error(host_id=host_id, task_id=task_id)
-
-                db.host_task_update(
-                    task_id=task_id,
-                    NU_STATUS=k.TASK_ERROR,
-                    NA_MESSAGE=err.msg,
-                )
-
-                continue
+                fatal_error = True
 
         # ==============================================================
         # OUTER EXCEPTIONS
         # ==============================================================
         except Exception as e:
             log.error(f"[MAIN] Unexpected error: {e}\n{traceback.format_exc()}")
+            fatal_error = True  # Ensures proper final cleanup
 
         # ==============================================================
-        # FINALLY — UNLOCK + CLEANUP
+        # FINALLY — UNLOCK + CLEANUP (ALWAYS EXECUTED)
         # ==============================================================
         finally:
 
-            # Unlock host (always)
+            # Handle TASK error state
+            if err.triggered and task_id:
+                err.log_error(host_id=host_id, task_id=task_id)
+
+                try:
+                    db.host_task_update(
+                        task_id=task_id,
+                        NU_STATUS=k.TASK_ERROR,
+                        NA_MESSAGE=err.msg,
+                    )
+                except Exception:
+                    pass
+
+            # Always unlock host regardless of errors
             if host_id is not None:
                 try:
                     db.host_update(
@@ -252,23 +266,29 @@ def main() -> None:
                 except Exception:
                     pass
 
-                # Enqueue statistics update task
+                # Create statistics update task only when successful operations occurred
                 try:
-                    # Only update if files were discovered
-                    if n.get("rows_updated") > 0 or len(file_metadata) > 0:
+                    if (not err.triggered) and (
+                        n.get("rows_updated", 0) > 0 or len(file_metadata) > 0
+                    ):
                         db.host_task_statistics_create(host_id=host_id)
-                    
                 except Exception as e:
                     log.warning(f"[FINALIZE] Failed to create statistics task: {e}")
 
-            # Close connections
+            # Close SFTP safely
             try:
                 if daemon and daemon.sftp_conn.is_connected():
                     sftp.close()
             except Exception as e:
                 log.warning(f"[CLEANUP] Failed to cleanup host: {e}")
 
+            # If a fatal error occurred, skip to next iteration
+            if fatal_error:
+                sh._random_jitter_sleep()
+                continue
+
             sh._random_jitter_sleep()
+
 
 
 

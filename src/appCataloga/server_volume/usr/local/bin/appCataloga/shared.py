@@ -33,6 +33,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Tuple, Optional, Union
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from enum import Enum
+import shlex
 
 
 
@@ -637,6 +638,92 @@ class sftpConnection:
             "NA_PERMISSIONS": permissions,
         }
 
+    def _get_metadata_batch_rev1(self, file_list: List[str]) -> List[Dict[str, Any]]:
+        """
+        REV3 — Fast, safe and RFeye-compatible metadata extraction.
+        Works with any file count (5k+), no xargs -0, no bash -lc,
+        no command-line overflow, no busybox incompatibilities.
+        """
+
+        if not file_list:
+            return []
+
+        results: List[Dict[str, Any]] = []
+
+        # Lista enviada por stdin (evita overflow de argumentos)
+        file_list_str = "\n".join(file_list)
+
+        # Comando compatível com Debian7 + BusyBox + Dash
+        # Executa 'stat' linha por linha, nunca estoura limite.
+        cmd = "while read f; do stat -c '%n|%s|%W|%Y|%X|%U|%G|%f' \"$f\"; done"
+
+        try:
+            stdin, stdout, stderr = self.ssh_client.exec_command(cmd)
+
+            # Envia a lista de arquivos como stdin
+            stdin.write(file_list_str)
+            stdin.channel.shutdown_write()
+
+            # Lê saída completa
+            output = stdout.read().decode().strip().splitlines()
+            err = stderr.read().decode().strip()
+            if err:
+                self.log.warning(f"[FAST_META] STDERR from stat: {err}")
+
+        except Exception as e:
+            self.log.error(f"[FAST_META] Failed batch stat on {self.host_uid}: {e}")
+            return []
+
+        # -------------------------
+        # Parse linha por linha
+        # -------------------------
+        for raw in output:
+            try:
+                fullpath, size, ctime, mtime, atime, uid, gid, hex_mode = raw.split("|")
+
+                size_bytes = int(size)
+                size_kb = size_bytes // 1024
+
+                mtime_ts = int(mtime)
+                atime_ts = int(atime)
+                ctime_ts = int(ctime)
+
+                dt_modified = datetime.fromtimestamp(mtime_ts)
+                dt_accessed = datetime.fromtimestamp(atime_ts)
+                dt_created = (
+                    datetime.fromtimestamp(ctime_ts)
+                    if ctime_ts > 0 else dt_modified
+                )
+
+                mode_int = int(hex_mode, 16)
+                permissions = stat.filemode(mode_int)
+
+                filename = os.path.basename(fullpath)
+                dirname = os.path.dirname(fullpath)
+                _, ext = os.path.splitext(filename)
+
+                metadata = {
+                    "NA_FILE": filename,
+                    "NA_PATH": dirname,
+                    "NA_FULL_PATH": f"{dirname}/{filename}",
+                    "NA_EXTENSION": ext,
+                    "VL_FILE_SIZE_KB": size_kb,
+                    "DT_FILE_CREATED": dt_created,
+                    "DT_FILE_MODIFIED": dt_modified,
+                    "DT_FILE_ACCESSED": dt_accessed,
+                    "NA_OWNER": str(uid),
+                    "NA_GROUP": str(gid),
+                    "NA_PERMISSIONS": permissions,
+                }
+
+                results.append(metadata)
+
+            except Exception as e:
+                self.log.error(f"[FAST_META] Failed to parse line '{raw}': {e}")
+                results.append({})
+
+        return results
+
     def _get_metadata_batch(self, file_list: List[str]) -> List[Dict[str, Any]]:
         """
         Fast batch metadata retrieval using a single remote SSH command (Linux hosts only).
@@ -716,7 +803,106 @@ class sftpConnection:
                 results.append({})
 
         return results
+    
+    
+    def sftp_find_files_rev2(
+        self,
+        remote_path: str,
+        pattern: str,
+        recursive: bool = True,
+        newer_than: Optional[str] = None,
+    ):
+        """
+        Fast remote file discovery using GNU find (Debian 7 compatible).
 
+        Args:
+            remote_path (str): Base directory on the target host.
+            pattern (str): File matching pattern ('*.bin', etc.).
+            recursive (bool): Enable recursive search.
+            newer_than (Optional[str]): If provided, use -newermt "<timestamp>"
+                to perform incremental discovery on the remote host.
+
+        Returns:
+            List[str]: List of absolute file paths returned by the remote find.
+        """
+
+        remote_path = remote_path.rstrip("/")
+
+        # sanitize pattern
+        pattern = pattern.strip().replace('"', "").replace("'", "")
+        if not pattern.startswith("*"):
+            pattern = "*" + pattern
+
+        depth = "" if recursive else "-maxdepth 1"
+
+        # incremental part
+        newer = ""
+        if newer_than:
+            # Debian 7 supports -newermt syntax
+            newer = f'-newermt "{newer_than}"'
+
+        cmd = f"find {remote_path} {depth} -type f -iname '{pattern}' {newer}"
+
+        self.log.entry(f"[DEBUG] exec remote: {cmd}")
+
+        try:
+            stdin, stdout, stderr = self.ssh_client.exec_command(cmd, timeout=120)
+            out = stdout.read().decode().splitlines()
+            err = stderr.read().decode().strip()
+
+            if err:
+                self.log.warning(f"[FIND STDERR] {err}")
+
+            return out
+
+        except Exception as e:
+            self.log.error(f"[ERROR] find failed: {e}")
+            return []
+
+
+
+    def sftp_find_files_rev1(self, remote_path: str, pattern: str, recursive: bool = True) -> List[str]:
+        """
+        Optimized SFTP recursive file search with same signature and behavior.
+        """
+
+        matched_files = []
+        lower_pattern = pattern.lower()
+
+        # Manual stack avoids deep recursion (faster + safer)
+        stack = [remote_path]
+
+        while stack:
+            path = stack.pop()
+
+            # Try listing names only (MUCH faster than listdir_attr)
+            try:
+                names = self.sftp.listdir(path)
+            except Exception as e:
+                print(f"[WARN] Cannot list {path}: {e}")
+                continue
+
+            for name in names:
+                full_path = f"{path.rstrip('/')}/{name}"
+
+                # Use lstat ONLY when needed (about 3–10× faster)
+                try:
+                    attr = self.sftp.lstat(full_path)
+                except Exception as e:
+                    print(f"[WARN] Cannot stat {full_path}: {e}")
+                    continue
+
+                # Directory → go deeper
+                if stat.S_ISDIR(attr.st_mode):
+                    if recursive:
+                        stack.append(full_path)
+
+                else:
+                    # Case-insensitive match
+                    if fnmatch.fnmatch(name.lower(), lower_pattern):
+                        matched_files.append(full_path)
+
+        return matched_files
 
 
     def sftp_find_files(self, remote_path: str, pattern: str, recursive: bool = True) -> List[str]:
@@ -1141,89 +1327,193 @@ class hostDaemon:
             self.log.warning(f"[HALT] release_halt_flag() encountered an unexpected error: {e}")
             
     
-    def _get_mapped_files(self, filter: Dict, callBackFileHistory, callBackFileTaskHistory):
+    def _get_mapped_files(
+        self,
+        filter_obj: Filter,
+        callBackFileTaskNames,           # ← new: bulk FILE_TASK fetch
+        callBackFileTaskHistoryNames,    # ← new: bulk FILE_TASK_HISTORY fetch
+        callBackGetLastDBDate,
+        host_id: int,
+    ):
         """
         Resolve candidate file paths for metadata discovery.
 
         Responsibilities:
-            - FILE defines pattern and disables DB filtering.
-            - REMOTE/LOCAL perform file lookup only.
-            - DB filtering is applied afterwards in a single place.
+            - LOCAL: perform fast remote FIND (with optional incremental filter)
+            - REMOTE: read DUE_BACKUP from the remote agent
+            - FILE mode: bypass DB filtering + incremental filtering
+            - ALL / NONE / RANGE / LAST: enable incremental discovery using
+            HOST.DT_LAST_DISCOVERY via callback
+            - Bulk DB filtering: avoid 10k+ SELECTs per discovery
         """
 
-        mode  = (filter.get("mode") or "").upper()
-        agent = (filter.get("agent") or "").upper()
+        # Normalize filter in case a dict was passed
+        if isinstance(filter_obj, dict):
+            filter_obj = Filter(filter_obj, log=self.log)
 
-        # ----------------------------------------------------------
-        # 1) Determine pattern and DB filtering behavior
-        # ----------------------------------------------------------
-        if mode == "FILE":
-            pattern = filter.get("file_name") or "*"
-            skip_db_filter = True
-        else:
-            ext = filter.get("extension")
-            pattern = f"*{ext}" if ext else "*"
-            skip_db_filter = False
+        mode  = (filter_obj.data.get("mode")  or "").upper()
+        agent = (filter_obj.data.get("agent") or "").upper()
 
-        candidates: List[str] = []
+        # --------------------------------------------------------------
+        # Build pattern '*.bin' or file_name override
+        # --------------------------------------------------------------
+        pattern = filter_obj._build_pattern()
 
-        # ----------------------------------------------------------
-        # 2) Collect file candidates from REMOTE agent
-        # ----------------------------------------------------------
+        # --------------------------------------------------------------
+        # Incremental discovery threshold (except FILE mode)
+        # --------------------------------------------------------------
+        newer_than = None
+        if mode != Filter.MODE_FILE:
+            try:
+                last_dt = callBackGetLastDBDate(host_id)
+                if last_dt:
+                    newer_than = last_dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception as e:
+                self.log.warning(f"[get_mapped_files] last discovery lookup failed: {e}")
+
+        # --------------------------------------------------------------
+        # REMOTE agent → read DUE_BACKUP
+        # --------------------------------------------------------------
         if agent == "REMOTE":
             try:
-                # Load config in remote Agent node
                 self.get_config()
                 raw = self.sftp_conn.read(self.config["DUE_BACKUP"], mode="r")
-                if raw:
-                    candidates = [
-                        line.strip()
-                        for line in raw.decode("utf-8", errors="ignore")
-                                .replace("\x00", "")
-                                .strip()
-                                .splitlines()
-                        if line.strip()
-                    ]
+                if not raw:
+                    return []
+
+                return [
+                    line.strip()
+                    for line in raw.decode("utf-8", errors="ignore")
+                            .replace("\x00", "")
+                            .splitlines()
+                    if line.strip()
+                ]
+
             except Exception as e:
                 self.log.warning(f"[get_mapped_files] REMOTE read failed: {e}")
                 return []
 
-        # ----------------------------------------------------------
-        # 3) Collect file candidates from LOCAL agent
-        # ----------------------------------------------------------
+        # --------------------------------------------------------------
+        # LOCAL agent → fast find (with optional incremental)
+        # --------------------------------------------------------------
         elif agent == "LOCAL":
-            remote_dir = filter.get("file_path",k.DEFAULT_DATA_FOLDER)
-            try:
-                candidates = self.sftp_conn.sftp_find_files(
-                    remote_path=remote_dir,
-                    pattern=pattern,
-                    recursive=True
-                )
-            except Exception as e:
-                self.log.error(f"[get_mapped_files] LOCAL scan failed: {e}")
-                return []
+            remote_dir = filter_obj.data.get("file_path", k.DEFAULT_DATA_FOLDER)
+
+            candidates = self.sftp_conn.sftp_find_files_rev2(
+                remote_path=remote_dir,
+                pattern=pattern,
+                recursive=True,
+                newer_than=newer_than,
+            )
 
         else:
-            self.log.error(f"[get_mapped_files] Invalid agent '{agent}'.")
+            self.log.error(f"[get_mapped_files] Invalid agent '{agent}'")
             return []
 
-        # ----------------------------------------------------------
-        # 4) FILE mode → forced return (agnostic to DB, agent)
-        # ----------------------------------------------------------
-        if skip_db_filter:
+        # --------------------------------------------------------------
+        # FILE MODE → return raw file list (no DB filtering)
+        # --------------------------------------------------------------
+        if mode == Filter.MODE_FILE:
             return candidates
 
-        # ----------------------------------------------------------
-        # 5) Apply DB filtering (ONLY for non-FILE modes)
-        # ----------------------------------------------------------
+        # --------------------------------------------------------------
+        # Bulk DB filtering (super fast)
+        # --------------------------------------------------------------
+        try:
+            task_names       = set(callBackFileTaskNames(host_id))          # FILE_TASK
+            task_hist_names  = set(callBackFileTaskHistoryNames(host_id))   # FILE_TASK_HISTORY
+        except Exception as e:
+            self.log.error(f"[get_mapped_files] Failed bulk history load: {e}")
+            task_names = set()
+            task_hist_names = set()
+
+        # --------------------------------------------------------------
+        # Filter only files not seen in FILE_TASK or FILE_TASK_HISTORY
+        # --------------------------------------------------------------
         filtered = []
         for path in candidates:
             name = os.path.basename(path)
-            if not callBackFileHistory(NA_HOST_FILE_NAME=name) and not callBackFileTaskHistory(NA_HOST_FILE_NAME=name):
-                filtered.append(path)
+
+            if name in task_names:
+                continue
+            if name in task_hist_names:
+                continue
+
+            filtered.append(path)
 
         return filtered
 
+
+    
+    def _get_metadata_printf(self, remote_dir: str, pattern: str, newer_than: Optional[str]):
+        """
+        Ultra-fast metadata extraction using GNU find -printf.
+        Compatible with Debian 7 findutils.
+        Extracts: fullpath, size, ctime, mtime, atime, uid, gid, mode.
+
+        Returns:
+            List[dict]: Unified metadata list ready for FILE_TASK/FILE_HISTORY.
+        """
+
+        remote_dir = remote_dir.rstrip("/")
+        newer = f'-newermt "{newer_than}"' if newer_than else ""
+        pattern = pattern.strip().replace('"', "").replace("'", "")
+        if not pattern.startswith("*"):
+            pattern = "*" + pattern
+
+        cmd = (
+            f"find {remote_dir} -type f -iname '{pattern}' {newer} "
+            "-printf '%p|%s|%C@|%T@|%A@|%U|%G|%m\n'"
+        )
+
+        try:
+            stdin, stdout, stderr = self.sftp_conn.ssh_client.exec_command(cmd, timeout=120)
+            output = stdout.read().decode().strip().splitlines()
+
+            err = stderr.read().decode().strip()
+            if err:
+                self.log.warning(f"[PRINTF_META] STDERR from find: {err}")
+
+        except Exception as e:
+            self.log.error(f"[PRINTF_META] Failed find -printf: {e}")
+            return []
+
+        results = []
+        for raw in output:
+            try:
+                fullpath, size, c_at, m_at, a_at, uid, gid, mode = raw.split("|")
+
+                filename = os.path.basename(fullpath)
+                dirname = os.path.dirname(fullpath)
+                _, ext = os.path.splitext(filename)
+
+                size_kb = int(int(size) // 1024)
+
+                dt_created  = datetime.fromtimestamp(float(c_at))
+                dt_modified = datetime.fromtimestamp(float(m_at))
+                dt_accessed = datetime.fromtimestamp(float(a_at))
+
+                permissions = stat.filemode(int(mode, 8))  # mode already octal
+
+                results.append({
+                    "NA_FULL_PATH": fullpath,
+                    "NA_PATH": dirname,
+                    "NA_FILE": filename,
+                    "NA_EXTENSION": ext,
+                    "VL_FILE_SIZE_KB": size_kb,
+                    "DT_FILE_CREATED": dt_created,
+                    "DT_FILE_MODIFIED": dt_modified,
+                    "DT_FILE_ACCESSED": dt_accessed,
+                    "NA_OWNER": str(uid),
+                    "NA_GROUP": str(gid),
+                    "NA_PERMISSIONS": permissions,
+                })
+
+            except Exception as e:
+                self.log.error(f"[PRINTF_META] PARSE ERROR '{raw}': {e}")
+                results.append({})
+
+        return results
 
     
     # ------------- public APIs preserved (call the unified implementation) ----
@@ -1239,59 +1529,58 @@ class hostDaemon:
         res = self.sftp_conn._get_metadata_batch([filename])
         return res[0] if res else {}
 
-    def get_metadata_files(self, filter: dict, callBackFileHistory, callBackFileTaskHistory):
+    def get_metadata_files(
+        self,
+        host_id: int,
+        filter_obj: Filter,
+        callBackFileTask,
+        callBackFileTaskHistory,
+        callBackGetLastDBDate,
+    ):
         """
-        Discover file paths (via _get_mapped_files), extract metadata,
-        and apply secondary metadata-based filters (RANGE, LAST, FILE).
+        Final discovery stage using ultra-fast find -printf metadata.
+        """
 
-        Returns:
-            list[dict]: Final list of metadata dicts.
-        """
         try:
-            # ----------------------------------------------------------
-            # 1) Primary mapping (file list discovery)
-            # ----------------------------------------------------------
-            file_list = run_with_timeout(
-                lambda: self._get_mapped_files(
-                    filter=filter,
-                    callBackFileHistory=callBackFileHistory,
-                    callBackFileTaskHistory=callBackFileTaskHistory
-                ),
-                timeout=k.HOST_BUSY_TIMEOUT  # timeout for file listing (SFTP recursion)
+            # 1) mapped file list (incremental filter)
+            file_list = self._get_mapped_files(
+                filter_obj=filter_obj,
+                callBackFileTaskNames=callBackFileTask,
+                callBackFileTaskHistoryNames=callBackFileTaskHistory,
+                callBackGetLastDBDate=callBackGetLastDBDate,
+                host_id=host_id,
             )
 
             if not file_list:
                 return []
 
-            # ----------------------------------------------------------
-            # 2) Metadata extraction (can stall on remote SFTP)
-            # ----------------------------------------------------------
-            metadata = run_with_timeout(
-                lambda: self.sftp_conn._get_metadata_batch(file_list=file_list),
-                timeout=k.HOST_BUSY_TIMEOUT  # timeout per metadata batch
+            # 2) metadata extraction — NOW using printf (super fast)
+            remote_dir = filter_obj.data.get("file_path", k.DEFAULT_DATA_FOLDER)
+            pattern    = filter_obj._build_pattern()
+
+            last_dt = callBackGetLastDBDate(host_id)
+            newer_than = last_dt.strftime("%Y-%m-%d %H:%M:%S") if last_dt else None
+
+            metadata = self._get_metadata_printf(
+                remote_dir=remote_dir,
+                pattern=pattern,
+                newer_than=newer_than,
             )
 
-            # Remove empty metadata entries
             metadata = [m for m in metadata if m]
 
             if not metadata:
                 return []
 
-            # ----------------------------------------------------------
-            # 3) Metadata-level secondary filter (always fast)
-            # ----------------------------------------------------------
-            filter_obj = Filter(filter_raw=filter, log=self.log)
+            # 3) metadata-level filter (RANGE, LAST)
             metadata = filter_obj.evaluate_metadata(metadata)
 
             return metadata
 
-        except TimeoutError as te:
-            self.log.error(f"[get_metadata_files] TimeoutError: {te}")
-            return []
-
         except Exception as e:
             self.log.error(f"[get_metadata_files] Unexpected error: {e}")
             return []
+
 
 
     # ----------------------------------------------------------------------
@@ -1401,7 +1690,7 @@ class Filter:
             extension=None,
             file_name=None,
             file_path=k.DEFAULT_DATA_FOLDER,
-            agent="remote",
+            agent="local",
         )
 
     def _parse_and_validate(self) -> Dict[str, Any]:
@@ -1540,6 +1829,96 @@ class Filter:
         keep = active_fields.get(f["mode"], set())
         for key in all_fields - keep:
             f[key] = None
+
+    # ------------------------------------------------------------------
+    # Pattern Builder
+    # ------------------------------------------------------------------
+    def _build_pattern(self) -> str:
+        """
+        Safely construct a file matching pattern for discovery operations.
+
+        Resolves interactions between 'file_name' and 'extension' fields while
+        preventing malformed expressions such as '*.bin.bin'.
+
+        Rules:
+            - If file_name is provided:
+                - If file_name has an extension → use as-is.
+                - If file_name has no extension and extension exists → append it.
+                - Otherwise, use file_name unchanged.
+
+            - If file_name is not provided:
+                - FILE mode → return "*".
+                - Other modes:
+                    - If extension exists → "*.<ext>"
+                    - Otherwise           → "*"
+
+        Additional Behavior:
+            - Ensures wildcard '*' prefix if missing.
+            - Normalizes extension by adding a leading dot if needed.
+            - Strips stray quotes.
+        """
+
+        file_name = self.data.get("file_name")
+        extension = self.data.get("extension")
+        mode      = (self.data.get("mode") or "").upper()
+
+        # Normalize inputs
+        if file_name:
+            file_name = file_name.strip().replace('"', "").replace("'", "")
+        if extension:
+            extension = extension.strip().replace('"', "").replace("'", "")
+
+        # --------------------------------------------------------------
+        # FILE mode
+        # --------------------------------------------------------------
+        if mode == Filter.MODE_FILE:
+            if not file_name:
+                return "*"
+
+            # ensure wildcard prefix
+            if not any(file_name.startswith(p) for p in ("*", "?")):
+                file_name = "*" + file_name
+
+            base, ext_in_name = os.path.splitext(file_name)
+
+            if ext_in_name:
+                return file_name
+
+            if extension:
+                if not extension.startswith("."):
+                    extension = "." + extension
+                return file_name + extension
+
+            return file_name
+
+        # --------------------------------------------------------------
+        # Other modes
+        # --------------------------------------------------------------
+        if file_name:
+            if not any(file_name.startswith(p) for p in ("*", "?")):
+                file_name = "*" + file_name
+
+            base, ext_in_name = os.path.splitext(file_name)
+
+            if ext_in_name:
+                return file_name
+
+            if extension:
+                if not extension.startswith("."):
+                    extension = "." + extension
+                return file_name + extension
+
+            return file_name
+
+        # --------------------------------------------------------------
+        # No file_name
+        # --------------------------------------------------------------
+        if extension:
+            if not extension.startswith("."):
+                extension = "." + extension
+            return "*" + extension
+
+        return "*"
 
 
 
