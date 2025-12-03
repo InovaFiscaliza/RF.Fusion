@@ -97,7 +97,6 @@ def send_to_zabbix_trapper(hostname: str, json_data: str):
     Sends the JSON result to the Zabbix trapper item appCataloga.discovery.json
     using the zabbix_sender located in the same directory as this script.
     """
-    
 
     # Full path to this script's directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
