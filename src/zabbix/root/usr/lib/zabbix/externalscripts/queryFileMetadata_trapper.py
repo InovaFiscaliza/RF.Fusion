@@ -27,6 +27,7 @@ import socket
 import sys
 import json
 import re
+import os
 import subprocess
 
 sys.path.append(
@@ -93,18 +94,26 @@ ARGUMENTS = {
 
 def send_to_zabbix_trapper(hostname: str, json_data: str):
     """
-    Sends the JSON result to Zabbix trapper item appCataloga.discovery.json
+    Sends the JSON result to the Zabbix trapper item appCataloga.discovery.json
+    using the zabbix_sender located in the same directory as this script.
     """
+    
+
+    # Full path to this script's directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Use zabbix_sender located in the same directory
+    sender_path = os.path.join(script_dir, "zabbix_sender")
+
     try:
         subprocess.run([
-            "/usr/bin/zabbix_sender",
+            sender_path,
             "-z", "127.0.0.1",
             "-s", hostname,
             "-k", "appCataloga.discovery.json",
             "-o", json_data
         ], check=True)
     except Exception as e:
-        # This error is printed in the Zabbix item output, but does not stop the script
         print(f'{{"status_query":0,"message_query":"Zabbix sender error: {e}"}}')
 
 
