@@ -824,7 +824,16 @@ class dbHandlerBKP(DBHandlerBase):
             NU_TYPE=[k.HOST_TASK_CHECK_TYPE, k.HOST_TASK_PROCESSING_TYPE],
             FILTER=filter_json
             )
-            
+        
+        # Reactivate if found in ERROR or SUSPENDED state
+        if task and (task["NU_STATUS"] == k.TASK_ERROR or task["NU_STATUS"] == k.TASK_SUSPENDED):
+            # Reactivate existing task
+            self.host_task_update(
+                task_id=task["ID_HOST_TASK"],
+                NU_STATUS=k.TASK_PENDING,
+                DT_HOST_TASK=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                NA_MESSAGE=f"Reactivated HOST_TASK for host {host_id}",
+            )
         
         # If not found, create new HOST_TASK
         if not task:

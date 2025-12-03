@@ -117,8 +117,8 @@ NONE_FILTER = {
     "end_date"      : None,
     "last_n_files"  : None,
     "extension"     : None,
-    "file_name"     : None,
     "file_path"     : "/mnt/internal/data",
+    "file_name"     : None,
     "agent"         : "local"
 }
 #------------------------------------------
