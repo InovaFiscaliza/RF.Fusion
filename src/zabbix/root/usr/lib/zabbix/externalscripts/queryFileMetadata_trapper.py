@@ -161,7 +161,7 @@ def main():
         return
 
     try:
-        response = client_socket.recv(k.SMALL_BUFFER_SIZE)
+        response = client_socket.recv(4096)
         client_socket.close()
     except Exception as e:
         error_json = f'{{"status_query":0,"message_query":"Error: {e}; Error receiving data"}}'

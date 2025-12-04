@@ -65,6 +65,8 @@ class dbHandlerBKP(DBHandlerBase):
         "DT_LAST_CHECK",
         "DT_BUSY",
         # FILE TASK STATISTICS
+        "VL_PENDING_BACKUP_KB",
+        "VL_DONE_BACKUP_KB",
         "NU_PENDING_FILE_BACKUP_TASKS",
         "NU_DONE_FILE_BACKUP_TASKS",
         "NU_ERROR_FILE_BACKUP_TASKS",
@@ -619,16 +621,11 @@ class dbHandlerBKP(DBHandlerBase):
         and FILE_TASK_HISTORY.
 
         Rules:
-        • DONE counters      → overwrite (NOT incremental)
+        • DONE counters      → overwrite
         • PENDING counters   → INCREMENTAL
         • ERROR counters     → INCREMENTAL
         • Timestamps         → overwrite
-
-        Args:
-            host_id (int): The host whose statistics must be refreshed.
-
-        Returns:
-            None
+        • VL_*_BACKUP_KB     → overwrite (derived from FILE_TASK_HISTORY)
         """
 
         self._connect()
@@ -659,6 +656,32 @@ class dbHandlerBKP(DBHandlerBase):
             last_discovered  = hist.get("last_discovered")
             last_backup      = hist.get("last_backup")
             last_processed   = hist.get("last_processed")
+
+            # ==================================================================
+            # 1.1) New Metrics: BACKUP VOLUME (KB) from FILE_TASK_HISTORY
+            # ==================================================================
+            sql_backup_volume = """
+                SELECT
+                    SUM(CASE 
+                            WHEN DT_DISCOVERED IS NOT NULL AND DT_BACKUP IS NULL 
+                            THEN VL_FILE_SIZE_KB 
+                            ELSE 0 
+                        END) AS pending_kb,
+
+                    SUM(CASE 
+                            WHEN DT_DISCOVERED IS NOT NULL AND DT_BACKUP IS NOT NULL 
+                            THEN VL_FILE_SIZE_KB 
+                            ELSE 0 
+                        END) AS done_kb
+                FROM FILE_TASK_HISTORY
+                WHERE FK_HOST = %s;
+            """
+
+            row2 = self._select_raw(sql_backup_volume, (host_id,))
+            vol = row2[0] if row2 else {}
+
+            pending_kb = vol.get("pending_kb") or 0
+            done_kb    = vol.get("done_kb")    or 0
 
             # ==================================================================
             # 2) PENDING + ERROR counters from FILE_TASK
@@ -723,6 +746,10 @@ class dbHandlerBKP(DBHandlerBase):
                 "DT_LAST_DISCOVERY":  last_discovered,
                 "DT_LAST_BACKUP":     last_backup,
                 "DT_LAST_PROCESSING": last_processed,
+
+                # NEW METRICS → overwrite
+                "VL_PENDING_BACKUP_KB": pending_kb,
+                "VL_DONE_BACKUP_KB":    done_kb,
             }
 
             # ==================================================================
@@ -736,7 +763,6 @@ class dbHandlerBKP(DBHandlerBase):
 
         finally:
             self._disconnect()
-
 
                               
     # ======================================================================
@@ -826,14 +852,16 @@ class dbHandlerBKP(DBHandlerBase):
             )
         
         # Reactivate if found in ERROR or SUSPENDED state
-        if task and (task["NU_STATUS"] == k.TASK_ERROR or task["NU_STATUS"] == k.TASK_SUSPENDED):
-            # Reactivate existing task
-            self.host_task_update(
-                task_id=task["ID_HOST_TASK"],
-                NU_STATUS=k.TASK_PENDING,
-                DT_HOST_TASK=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                NA_MESSAGE=f"Reactivated HOST_TASK for host {host_id}",
-            )
+        if task :
+            # Reactivate existing task     
+            for t in task:
+                if t["HOST_TASK__NU_STATUS"] in (k.TASK_ERROR, k.TASK_SUSPENDED):
+                    self.host_task_update(
+                        task_id=t["HOST_TASK__ID_HOST_TASK"],
+                        NU_STATUS=k.TASK_PENDING,
+                        DT_HOST_TASK=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        NA_MESSAGE=f"Reactivated HOST_TASK for host {host_id}",
+                    )
         
         # If not found, create new HOST_TASK
         if not task:
@@ -845,6 +873,8 @@ class dbHandlerBKP(DBHandlerBase):
 
         # Fetch updated host statistics
         self.host_update_statistics(host_id=host_id)
+        self.host_update(host_id=host_id, DT_LAST_CHECK=datetime.now())
+        
         host_statistics = self.host_read_status(host_id)
         return host_statistics
     
