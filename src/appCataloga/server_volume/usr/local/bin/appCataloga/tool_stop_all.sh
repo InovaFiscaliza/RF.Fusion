@@ -1,53 +1,58 @@
 #!/bin/bash
-# This script stops all appCataloga services
+# =============================================================================
+# Script: tool_stop_all.sh
+# Purpose: Stop ALL appCataloga services (auxiliaries + CORE)
+#
+# Usage:
+#   ./tool_stop_all.sh
+# =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-splash_banner() {
-    terminal_width=$(tput cols 2>/dev/null || echo 80)
+banner() {
+    local w
+    w=$(tput cols 2>/dev/null || echo 80)
     echo
-    echo -e "\e[31m$(printf "%0.s~" $(seq 1 $terminal_width))\e[0m"
-    printf "\e[31m%*s\e[0m\n" $((($terminal_width + ${#1}) / 2)) "$1"
-    echo -e "\e[31m$(printf "%0.s~" $(seq 1 $terminal_width))\e[0m"
+    echo -e "\e[31m$(printf "%0.s~" $(seq 1 $w))\e[0m"
+    printf "\e[31m%*s\e[0m\n" $((($w + ${#1}) / 2)) "$1"
+    echo -e "\e[31m$(printf "%0.s~" $(seq 1 $w))\e[0m"
 }
 
-splash_banner "AppCataloga Service Stopper"
+banner "AppCataloga – STOP ALL SERVICES"
 
-read -p "All appCataloga services will be stopped. Do you want to continue? [y/N] " -n 1 -r
+read -p "All appCataloga services will be STOPPED. Continue? [y/N] " -n 1 -r
 echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "  - Operation canceled. Nothing was done."
-    exit 1
-fi
+[[ ! $REPLY =~ ^[Yy]$ ]] && echo "Operation canceled." && exit 1
 
-# Lista dos serviços (cada um tem um .sh correspondente no mesmo diretório)
-services=("appCataloga" "appCataloga_file_bkp" "appCataloga_file_bin_proces" "appCataloga_host_check" "appCataloga_discovery")
-#services=("appCataloga" "appCataloga_file_bkp" "appCataloga_file_bin_proces" "appCataloga_host_check" "appCataloga_pub_metadata")
+services=(
+  appCataloga_file_bkp
+  appCataloga_file_bin_proces
+  appCataloga_discovery
+  appCataloga_host_check
+  appCataloga
+)
 
-for i in "${services[@]}"; do
-    SCRIPT_PATH="$SCRIPT_DIR/${i}.sh"
-
-    if [ -x "$SCRIPT_PATH" ]; then
-        "$SCRIPT_PATH" stop
-        if [ $? -eq 0 ]; then
-            echo "  - $i stopped"
-        else
-            echo "  - ERROR: $i failed to stop"
-        fi
+for svc in "${services[@]}"; do
+    script="$SCRIPT_DIR/$svc.sh"
+    if [[ -x "$script" ]]; then
+        echo
+        echo ">>> Stopping $svc"
+        "$script" stop
     else
-        echo "  - Script $SCRIPT_PATH not found or not executable"
+        echo "[ERROR] Script not found or not executable: $script"
     fi
 done
 
-# Perguntar sobre remoção de log
+# Limpeza opcional de logs
 read -p "Remove all log files in /var/log/appCataloga? [y/N] " -n 1 -r
 echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "  - Log files not removed"
-else
+if [[ $REPLY =~ ^[Yy]$ ]]; then
     rm -f /var/log/appCataloga/*.log
-    echo "  - All log files removed"
+    echo "All log files removed."
+else
+    echo "Log files preserved."
 fi
 
 echo
+echo "All appCataloga services stopped."
 echo "bye"

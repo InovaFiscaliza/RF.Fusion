@@ -25,6 +25,7 @@ import signal
 import traceback
 import subprocess
 import paramiko
+import inspect
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -56,18 +57,75 @@ process_status = {"running": True}
 _DAEMON_REGISTRY: List[Any] = []
 
 
-# ======================================================================
-# Signal handling
-# ======================================================================
-def _handle_sigterm(sig, frame) -> None:
-    """Handle SIGTERM/SIGINT to stop the main loop gracefully."""
+# ============================================================
+# Signal Handling
+# ============================================================
+def release_busy_hosts_on_exit() -> None:
+    """
+    Release all HOST records marked as BUSY by this process PID.
+
+    This function is safe to call multiple times and should never
+    interrupt the shutdown flow, even if the database is unavailable.
+    """
+    try:
+        pid = os.getpid()
+        log.entry(f"[CLEANUP] Releasing BUSY hosts for PID={pid}")
+
+        # Create a fresh DB handler to avoid relying on partially
+        # initialized or corrupted state during shutdown
+        db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+
+        # Clear BUSY flag for all HOST rows locked by this PID
+        db.host_release_by_pid(pid)
+
+    except Exception as e:
+        # Cleanup must never break process termination
+        log.error(f"[CLEANUP] Failed to release BUSY hosts: {e}")
+
+
+def sigterm_handler(signal=None, frame=None) -> None:
+    """
+    Handle SIGTERM (graceful shutdown signal).
+
+    This signal is typically sent by:
+    - kill <pid>
+    - pkill
+    - service stop scripts
+    """
+    global process_status, log
+
+    current_function = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"SIGTERM received at: {current_function}()")
+
+    # Stop the main loop gracefully
     process_status["running"] = False
-    sys.exit(0)
 
-signal.signal(signal.SIGTERM, _handle_sigterm)
-signal.signal(signal.SIGINT, _handle_sigterm)
+    # Release any HOST records locked by this process
+    release_busy_hosts_on_exit()
 
 
+def sigint_handler(signal=None, frame=None) -> None:
+    """
+    Handle SIGINT (interactive interrupt signal).
+
+    This signal is typically sent by:
+    - Ctrl+C in an attached terminal
+    """
+    global process_status, log
+
+    current_function = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"SIGINT received at: {current_function}()")
+
+    # Stop the main loop gracefully
+    process_status["running"] = False
+
+    # Release any HOST records locked by this process
+    release_busy_hosts_on_exit()
+
+
+# Register signal handlers for graceful shutdown
+signal.signal(signal.SIGTERM, sigterm_handler)
+signal.signal(signal.SIGINT, sigint_handler)
 
 
 # ======================================================================

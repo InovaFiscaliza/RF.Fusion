@@ -804,7 +804,118 @@ class sftpConnection:
 
         return results
     
-    
+    def sftp_find_files_rev3(
+        self,
+        remote_path: str,
+        pattern: str,
+        recursive: bool = True,
+        newer_than: Optional[str] = None,
+    ):
+        """
+        Cross-platform remote file discovery.
+        Auto-detects OS (Linux or Windows) and applies correct discovery method.
+
+        Linux  → GNU find
+        Windows → PowerShell Get-ChildItem
+
+        Returns:
+            List[str]: absolute file paths.
+        """
+
+        # Normalize path
+        remote_path = remote_path.rstrip("/").rstrip("\\")
+
+        # sanitize pattern
+        pattern = pattern.strip().replace('"', "").replace("'", "")
+        if not pattern.startswith("*"):
+            pattern = "*" + pattern
+
+        # ===================================================================
+        # 1) Detect OS
+        # ===================================================================
+        def detect_remote_os():
+            try:
+                # Linux test
+                stdin, stdout, stderr = self.ssh_client.exec_command("uname -s", timeout=5)
+                uname = stdout.read().decode().strip().lower()
+                if "linux" in uname:
+                    return "linux"
+            except:
+                pass
+
+            try:
+                # Windows test (returns something like Microsoft Windows [Version ...])
+                stdin, stdout, stderr = self.ssh_client.exec_command("cmd /c ver", timeout=5)
+                ver = stdout.read().decode().lower()
+                if "windows" in ver:
+                    return "windows"
+            except:
+                pass
+
+            # Final fallback: assume Linux
+            return "linux"
+
+        os_type = detect_remote_os()
+        self.log.entry(f"[DEBUG] Remote OS detected: {os_type}")
+
+        # ===================================================================
+        # 2) Build command per OS
+        # ===================================================================
+
+        if os_type == "linux":
+            # GNU find mode
+            depth = "" if recursive else "-maxdepth 1"
+            newer = f'-newermt "{newer_than}"' if newer_than else ""
+
+            cmd = f"find {remote_path} {depth} -type f -iname '{pattern}' {newer}"
+            self.log.entry(f"[DEBUG] exec remote (linux): {cmd}")
+
+        else:
+            # Windows PowerShell mode
+            recurse = "-Recurse" if recursive else ""
+            date_filter = ""
+            if newer_than:
+                date_filter = (
+                    f'| Where-Object {{ $_.LastWriteTime -gt (Get-Date "{newer_than}") }}'
+                )
+
+            # PowerShell call
+            # -NoProfile evita lentidão
+            cmd = (
+                'powershell -NoProfile -Command '
+                f'"Get-ChildItem -Path \\"{remote_path}\\" -Filter \\"{pattern}\\" '
+                f'{recurse} {date_filter} | Select-Object -ExpandProperty FullName"'
+            )
+            self.log.entry(f"[DEBUG] exec remote (windows): {cmd}")
+
+        # ===================================================================
+        # 3) Execute command
+        # ===================================================================
+        try:
+            stdin, stdout, stderr = self.ssh_client.exec_command(cmd, timeout=180)
+
+            out = (
+                stdout.read()
+                .decode("utf-8", errors="ignore")
+                .splitlines()
+            )
+            err = stderr.read().decode("utf-8", errors="ignore").strip()
+
+            if err:
+                self.log.warning(f"[REMOTE STDERR] {err}")
+
+            # Remove linhas vazias e normaliza path em Windows
+            clean = []
+            for line in out:
+                if line.strip():
+                    clean.append(line.strip().replace("\\", "/"))
+
+            return clean
+
+        except Exception as e:
+            self.log.error(f"[ERROR] discovery failed on {os_type}: {e}")
+            return []
+
     def sftp_find_files_rev2(
         self,
         remote_path: str,
@@ -859,128 +970,6 @@ class sftpConnection:
             self.log.error(f"[ERROR] find failed: {e}")
             return []
 
-
-
-    def sftp_find_files_rev1(self, remote_path: str, pattern: str, recursive: bool = True) -> List[str]:
-        """
-        Optimized SFTP recursive file search with same signature and behavior.
-        """
-
-        matched_files = []
-        lower_pattern = pattern.lower()
-
-        # Manual stack avoids deep recursion (faster + safer)
-        stack = [remote_path]
-
-        while stack:
-            path = stack.pop()
-
-            # Try listing names only (MUCH faster than listdir_attr)
-            try:
-                names = self.sftp.listdir(path)
-            except Exception as e:
-                print(f"[WARN] Cannot list {path}: {e}")
-                continue
-
-            for name in names:
-                full_path = f"{path.rstrip('/')}/{name}"
-
-                # Use lstat ONLY when needed (about 3–10× faster)
-                try:
-                    attr = self.sftp.lstat(full_path)
-                except Exception as e:
-                    print(f"[WARN] Cannot stat {full_path}: {e}")
-                    continue
-
-                # Directory → go deeper
-                if stat.S_ISDIR(attr.st_mode):
-                    if recursive:
-                        stack.append(full_path)
-
-                else:
-                    # Case-insensitive match
-                    if fnmatch.fnmatch(name.lower(), lower_pattern):
-                        matched_files.append(full_path)
-
-        return matched_files
-
-
-    def sftp_find_files(self, remote_path: str, pattern: str, recursive: bool = True) -> List[str]:
-        """
-        Recursively search for remote files over SFTP matching a case-insensitive pattern.
-
-        This function lists the contents of a directory on a remote host using SFTP and
-        returns all files whose names match the given UNIX-style wildcard pattern
-        (e.g., "*.bin", "scan_*", "?abc.txt"). Matching is performed in a *case-insensitive*
-        manner, ensuring that patterns like "scan_*.bin" also match files such as
-        "SCAN_123.BIN" or "Scan_Test.bin".
-
-        If `recursive=True`, subdirectories are explored depth-first, and all matching
-        files from the entire subtree are returned. Directory entries are ignored in the
-        result; only full file paths are returned.
-
-        The returned list contains the *original, case-preserved paths* exactly as found
-        on the remote filesystem, even though comparison is performed in lowercase.
-
-        Args:
-            remote_path (str):
-                Base directory on the remote host where the search begins.
-
-            pattern (str):
-                Case-insensitive wildcard pattern used for matching filenames.
-                Supports UNIX wildcards: '*', '?', and character ranges.
-
-            recursive (bool, optional):
-                Whether to search inside subdirectories recursively.
-                Defaults to True.
-
-        Returns:
-            List[str]:
-                A list of full remote file paths matching the pattern. Paths are returned
-                with original casing and formatting as reported by the remote SFTP server.
-
-        Notes:
-            - If the directory cannot be listed (e.g., due to permission errors), the
-            function safely logs a warning and returns an empty list.
-            - Symbolic links are treated based on the underlying SFTP server's
-            representation—typically as files unless explicitly flagged as directories.
-            - The search behavior closely mimics shell-style globbing but without
-            requiring the remote filesystem to support glob operations.
-
-        """
-
-        matched_files = []
-
-        # Prepare pattern for case-insensitive comparison
-        lowercase_pattern = pattern.lower()
-
-        try:
-            entries = self.sftp.listdir_attr(remote_path)
-        except Exception as e:
-            print(f"[WARN] Cannot list {remote_path}: {e}")
-            return matched_files
-
-        for entry in entries:
-            full_path = os.path.join(remote_path, entry.filename).replace("\\", "/")
-
-            # Directory → recurse
-            if stat.S_ISDIR(entry.st_mode):
-                if recursive:
-                    try:
-                        matched_files.extend(
-                            self.sftp_find_files(full_path, pattern, recursive=True)
-                        )
-                    except Exception as e:
-                        print(f"[WARN] Skipped directory {full_path}: {e}")
-
-            else:
-                # ----------------------------------------
-                #  CASE-INSENSITIVE MATCH
-                # ----------------------------------------
-                if fnmatch.fnmatch(entry.filename.lower(), lowercase_pattern):
-                    matched_files.append(full_path)
-
-        return matched_files
 
 
 # =====================================================================
@@ -1399,7 +1388,7 @@ class hostDaemon:
         elif agent == "LOCAL":
             remote_dir = filter_obj.data.get("file_path", k.DEFAULT_DATA_FOLDER)
 
-            candidates = self.sftp_conn.sftp_find_files_rev2(
+            candidates = self.sftp_conn.sftp_find_files_rev3(
                 remote_path=remote_dir,
                 pattern=pattern,
                 recursive=True,

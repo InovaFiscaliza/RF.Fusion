@@ -1,94 +1,60 @@
 #!/bin/bash
+# =============================================================================
+# Script: appCataloga_file_bkp.sh
+# Purpose: Backup worker pool controller (MULTI-WORKER)
+# =============================================================================
 
-# Worker ID (default = 0)
-if [ -n "$2" ]; then
-    WORKER=$2
-else
-    WORKER="0"
-fi
+set -e
 
-# Caminhos principais
-APP_PATH="/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appCataloga_file_bkp.py"
+APP_NAME="appCataloga_file_bkp.py"
+APP_PATH="/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/$APP_NAME"
 PYTHON_BIN="/opt/conda/envs/appdata/bin/python"
 
-PID_FILE_PATH="/var/run/appCataloga"
-LOG_FILE="/var/log/appCataloga/appCataloga_file_bkp_$WORKER.log"
-PID_FILE="$PID_FILE_PATH/appCataloga_file_bkp_$WORKER.pid"
+LOG_DIR="/var/log/appCataloga"
+LOG_FILE="$LOG_DIR/appCataloga_file_bkp.log"
 
-# Garante pastas
-mkdir -p "$PID_FILE_PATH" /var/log/appCataloga
+mkdir -p "$LOG_DIR" /var/run/appCataloga
+
+banner() {
+    w=$(tput cols 2>/dev/null || echo 80)
+    echo -e "\e[33m$(printf "%0.s=" $(seq 1 $w))\e[0m"
+    printf "\e[33m%*s\e[0m\n" $((($w + ${#1}) / 2)) "$1"
+    echo -e "\e[33m$(printf "%0.s=" $(seq 1 $w))\e[0m"
+}
+
+check_env() {
+    [[ -x "$PYTHON_BIN" ]] || { echo "[ERROR] Python not found"; exit 1; }
+    [[ -f "$APP_PATH" ]] || { echo "[ERROR] Script not found"; exit 1; }
+}
 
 start() {
-    echo "[DEBUG] Starting appCataloga_file_bkp..."
-    echo "  WORKER=$WORKER"
-    echo "  APP_PATH=$APP_PATH"
-    echo "  PYTHON_BIN=$PYTHON_BIN"
-
-    # Verifica se o binário Python existe
-    if [ ! -f "$PYTHON_BIN" ]; then
-        echo "[ERROR] Python binary not found: $PYTHON_BIN"
-        exit 1
-    fi
-
-    # Verifica se o script Python existe
-    if [ ! -f "$APP_PATH" ]; then
-        echo "[ERROR] Application file not found: $APP_PATH"
-        exit 1
-    fi
-
-    if [ -f "$PID_FILE" ]; then
-        echo "Service already running with PID $(cat "$PID_FILE")."
-        exit 0
-    fi
-
-    # Ajusta diretório de trabalho
-    cd "$(dirname "$APP_PATH")" || exit 1
-
-    # Inicia processo com parâmetro worker
-    nohup "$PYTHON_BIN" "$APP_PATH" "worker=$WORKER" >> "$LOG_FILE" 2>&1 &
-    echo $! > "$PID_FILE"
-    echo "Service started with PID $(cat "$PID_FILE")."
+    banner "STARTING appCataloga_file_bkp (POOL)"
+    check_env
+    cd "$(dirname "$APP_PATH")"
+    nohup "$PYTHON_BIN" "$APP_PATH" >> "$LOG_FILE" 2>&1 &
+    echo "Worker pool started."
 }
 
 stop() {
-    if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE")
-        echo "Stopping service with PID $PID..."
-        if kill "$PID" > /dev/null 2>&1; then
-            rm -f "$PID_FILE"
-            echo "Service stopped."
-        else
-            echo "Failed to stop process $PID. Cleaning up stale PID file."
-            rm -f "$PID_FILE"
-        fi
-    else
-        echo "Service is not running."
-    fi
-}
-
-restart() {
-    stop
-    start
+    banner "STOPPING appCataloga_file_bkp (POOL)"
+    pkill -TERM -f "$APP_NAME" || true
+    sleep 2
+    pkill -KILL -f "$APP_NAME" 2>/dev/null || true
+    rm -f /var/run/appCataloga/appCataloga_file_bkp*.pid
+    echo "All workers stopped."
 }
 
 status() {
-    if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE")
-        if ps -p "$PID" > /dev/null 2>&1; then
-            echo "Service is running with PID $PID."
-        else
-            echo "PID file exists but process not running. Cleaning up."
-            rm -f "$PID_FILE"
-        fi
-    else
-        echo "Service not running."
-    fi
+    banner "STATUS appCataloga_file_bkp"
+    pgrep -af "$APP_NAME" || echo "No workers running."
 }
 
 case "$1" in
     start) start ;;
     stop) stop ;;
-    restart) restart ;;
+    restart) stop; start ;;
     status) status ;;
-    *) echo "Usage: $0 {start|stop|restart|status} [Worker #]" ;;
+    *) echo "Usage: $0 {start|stop|restart|status}" ;;
 esac
+
+echo "bye"

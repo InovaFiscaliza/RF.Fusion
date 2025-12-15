@@ -104,7 +104,7 @@ ARGUMENTS = {
     },
     "filter": {
         "set": False,
-        "value":'{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".bin", "file_path": "/mnt/internal", "file_name":null, "agent": "local"}',
+        "value":'{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".bin", "file_path": "C:\CelPlan\CellWireless RU\Spectrum\Completed", "file_name":null, "agent": "local"}',
         "message": "Backup request is {value}",
     },
 }

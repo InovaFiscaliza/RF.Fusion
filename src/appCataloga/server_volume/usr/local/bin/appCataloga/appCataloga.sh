@@ -1,86 +1,84 @@
 #!/bin/bash
+# =============================================================================
+# Script: appCataloga.sh
+# Purpose: Core appCataloga service (SINGLETON)
+# Role:
+#   - Core service for the appCataloga ecosystem
+#   - Must be running before auxiliary services
+#
+# Usage:
+#   ./appCataloga.sh {start|stop|restart|status}
+# =============================================================================
 
-# Caminhos principais
-APP_PATH="/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appCataloga.py"
+set -e
+
+APP_NAME="appCataloga.py"
+APP_PATH="/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/$APP_NAME"
 PYTHON_BIN="/opt/conda/envs/appdata/bin/python"
 
-PID_FILE_PATH="/var/run/appCataloga"
-LOG_FILE="/var/log/appCataloga/appCataloga.log"
-PID_FILE="$PID_FILE_PATH/appCataloga.pid"
+PID_DIR="/var/run/appCataloga"
+LOG_DIR="/var/log/appCataloga"
+LOG_FILE="$LOG_DIR/appCataloga.log"
 
-# Garante pastas
-mkdir -p "$PID_FILE_PATH" /var/log/appCataloga
+mkdir -p "$PID_DIR" "$LOG_DIR"
+
+banner() {
+    local w
+    w=$(tput cols 2>/dev/null || echo 80)
+    echo -e "\e[35m$(printf "%0.s=" $(seq 1 $w))\e[0m"
+    printf "\e[35m%*s\e[0m\n" $((($w + ${#1}) / 2)) "$1"
+    echo -e "\e[35m$(printf "%0.s=" $(seq 1 $w))\e[0m"
+}
+
+check_env() {
+    [[ -x "$PYTHON_BIN" ]] || { echo "[ERROR] Python binary not found: $PYTHON_BIN"; exit 1; }
+    [[ -f "$APP_PATH" ]]  || { echo "[ERROR] Application file not found: $APP_PATH"; exit 1; }
+}
 
 start() {
-    echo "[DEBUG] Starting appCataloga..."
-    echo "  APP_PATH=$APP_PATH"
-    echo "  PYTHON_BIN=$PYTHON_BIN"
+    banner "STARTING appCataloga (CORE)"
+    check_env
 
-    # Verifica se o binário Python existe
-    if [ ! -f "$PYTHON_BIN" ]; then
-        echo "[ERROR] Python binary not found: $PYTHON_BIN"
-        exit 1
-    fi
-
-    # Verifica se o script Python existe
-    if [ ! -f "$APP_PATH" ]; then
-        echo "[ERROR] Application file not found: $APP_PATH"
-        exit 1
-    fi
-
-    if [ -f "$PID_FILE" ]; then
-        echo "Service already running with PID $(cat "$PID_FILE")."
+    if pgrep -f "$APP_NAME" > /dev/null; then
+        echo "appCataloga is already running."
         exit 0
     fi
 
-    # Ajusta diretório de trabalho
-    cd "$(dirname "$APP_PATH")" || exit 1
-
-    # Inicia processo
+    cd "$(dirname "$APP_PATH")"
     nohup "$PYTHON_BIN" "$APP_PATH" >> "$LOG_FILE" 2>&1 &
-    echo $! > "$PID_FILE"
-    echo "Service started with PID $(cat "$PID_FILE")."
+
+    echo "appCataloga started."
 }
 
 stop() {
-    if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE")
-        echo "Stopping service with PID $PID..."
-        if kill "$PID" > /dev/null 2>&1; then
-            rm -f "$PID_FILE"
-            echo "Service stopped."
-        else
-            echo "Failed to stop process $PID. Cleaning up stale PID file."
-            rm -f "$PID_FILE"
-        fi
-    else
-        echo "The service is not running."
-    fi
-}
+    banner "STOPPING appCataloga (CORE)"
 
-restart() {
-    stop
-    start
+    if ! pgrep -f "$APP_NAME" > /dev/null; then
+        echo "appCataloga is not running."
+        exit 0
+    fi
+
+    pkill -TERM -f "$APP_NAME" || true
+    sleep 2
+    pkill -KILL -f "$APP_NAME" 2>/dev/null || true
+
+    echo "appCataloga stopped."
 }
 
 status() {
-    if [ -f "$PID_FILE" ]; then
-        PID=$(cat "$PID_FILE")
-        if ps -p "$PID" > /dev/null 2>&1; then
-            echo "Service is running with PID $PID."
-        else
-            echo "PID file exists but process not running. Cleaning up."
-            rm -f "$PID_FILE"
-        fi
-    else
-        echo "Service not running."
-    fi
+    banner "STATUS appCataloga (CORE)"
+    pgrep -af "$APP_NAME" || echo "appCataloga not running."
 }
 
 case "$1" in
-    start) start ;;
-    stop) stop ;;
-    restart) restart ;;
-    status) status ;;
-    *) echo "Usage: $0 {start|stop|restart|status}" ;;
+    start)   start ;;
+    stop)    stop ;;
+    restart) stop; start ;;
+    status)  status ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
 esac
+
+echo "bye"

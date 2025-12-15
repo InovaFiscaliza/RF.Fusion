@@ -46,25 +46,43 @@ log = sh.log(target_screen=False)
 
 process_status = {"running": True}
 
+def release_busy_hosts_on_exit() -> None:
+    """
+    Release all HOST records marked BUSY by this process PID.
+    """
+    try:
+        pid = os.getpid()
+        log.entry(f"[CLEANUP] Releasing BUSY hosts for PID={pid}")
 
-# Define a signal handler for SIGTERM (kill command )
+        db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+        db.host_release_by_pid(pid)
+
+    except Exception as e:
+        # Nunca deixar o handler quebrar o shutdown
+        log.error(f"[CLEANUP] Failed to release BUSY hosts: {e}")
+
 def sigterm_handler(signal=None, frame=None) -> None:
-    global process_status
-    global log
+    global process_status, log
 
     current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"Kill signal received at: {current_function}()")
+    log.entry(f"SIGTERM received at: {current_function}()")
+
     process_status["running"] = False
 
+    # Libera HOSTs presos por este PID
+    release_busy_hosts_on_exit()
 
-# Define a signal handler for SIGINT (Ctrl+C)
+
 def sigint_handler(signal=None, frame=None) -> None:
-    global process_status
-    global log
+    global process_status, log
 
     current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"Ctrl+C received at: {current_function}()")
+    log.entry(f"SIGINT received at: {current_function}()")
+
     process_status["running"] = False
+
+    # Libera HOSTs presos por este PID
+    release_busy_hosts_on_exit()
 
 
 # Register the signal handler function, to handle system kill commands
@@ -253,6 +271,7 @@ def main():
 
                 db_bp.file_task_update(
                     task_id=file_task_id,
+                    DT_FILE_TASK = datetime.now(),
                     NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
                     NU_STATUS=k.TASK_RUNNING,
                     NA_MESSAGE=f"Processing BIN: {filename}",
@@ -314,7 +333,21 @@ def main():
                     site = db_rfm.insert_site(data)
 
             except Exception as e:
-                err.set("Site/location processing failed", "SITE", e)
+                # Insert coordinates info in error message
+                try:
+                    coord_info = (
+                        f"lat={data.get('latitude')}, "
+                        f"lon={data.get('longitude')}, "
+                        f"alt={data.get('altitude')}"
+                    )
+                except Exception:
+                    coord_info = "coordinates unavailable"
+
+                err.set(
+                    f"Site/location processing failed [{coord_info}]",
+                    "SITE",
+                    e,
+                )
 
             if err.triggered:
                 continue
@@ -343,13 +376,28 @@ def main():
                 db_rfm.insert_equipment(receiver)
 
                 spectrum_lst = []
+
+                # Contexto mínimo para rastreabilidade de erro
+                current_spectrum_ctx = None
+
                 for spectrum in bin_data["spectrum"]:
-                    
+
+                    # Atualiza contexto ANTES de qualquer operação sensível
+                    current_spectrum_ctx = {
+                        "receiver": receiver,
+                        "processing": spectrum.processing,
+                        "dtype": spectrum.dtype,
+                        "freq_start": spectrum.start_mega,
+                        "freq_end": spectrum.stop_mega,
+                        "trace_len": spectrum.ndata,
+                    }
+
                     na_description = getattr(
-                            spectrum,
-                            "description",
-                            f"{spectrum.processing.upper()} — {spectrum.start_mega}–{spectrum.stop_mega} MHz ({spectrum.dtype})"
-                        )
+                        spectrum,
+                        "description",
+                        f"{spectrum.processing.upper()} — "
+                        f"{spectrum.start_mega}–{spectrum.stop_mega} MHz ({spectrum.dtype})"
+                    )
 
                     data.update({
                         "id_detector_type": db_rfm.insert_detector_type(k.DEFAULT_DETECTOR),
@@ -370,8 +418,9 @@ def main():
                         data["nu_rbw"] = spectrum.bw
                     except AttributeError:
                         data["nu_rbw"] = (
-                            data["nu_freq_end"] - data["nu_freq_start"]
-                        ) / data["nu_trace_length"]
+                            (data["nu_freq_end"] - data["nu_freq_start"])
+                            / data["nu_trace_length"]
+                        )
 
                     spectrum_lst.append({
                         "spectrum": db_rfm.insert_spectrum(data),
@@ -381,10 +430,28 @@ def main():
                 db_rfm.insert_bridge_spectrum_equipment(spectrum_lst)
 
             except Exception as e:
-                err.set("Spectrum processing failed", "SPECTRUM", e)
+                # Enriquecimento do erro com contexto do espectro
+                try:
+                    spectrum_info = (
+                        f"receiver={current_spectrum_ctx.get('receiver')}, "
+                        f"processing={current_spectrum_ctx.get('processing')}, "
+                        f"dtype={current_spectrum_ctx.get('dtype')}, "
+                        f"freq={current_spectrum_ctx.get('freq_start')}–"
+                        f"{current_spectrum_ctx.get('freq_end')} MHz, "
+                        f"trace_len={current_spectrum_ctx.get('trace_len')}"
+                    ) if current_spectrum_ctx else "spectrum context unavailable"
+                except Exception:
+                    spectrum_info = "spectrum context unavailable"
+
+                err.set(
+                    f"Spectrum processing failed [{spectrum_info}]",
+                    "SPECTRUM",
+                    e,
+                )
 
             if err.triggered:
                 continue
+
 
             # ===========================================================
             # ACT VII — MOVE FILE TO FINAL DESTINATION
@@ -442,7 +509,8 @@ def main():
                     db_bp.file_task_delete(task_id=file_task_id)
                     db_bp.file_history_update(
                         task_type=k.FILE_TASK_PROCESS_TYPE,
-                        file_name=file_data["filename"],
+                        file_name=server_name,
+                        NA_MESSAGE=sh._compose_message(k.FILE_TASK_PROCESS_TYPE, k.TASK_DONE),
                     )
                     db_bp.host_task_statistics_create(host_id=host_id)
                 except Exception as e:
@@ -463,6 +531,12 @@ def main():
                     db_bp.file_task_update(
                         task_id=file_task_id,
                         NU_STATUS=k.TASK_ERROR,
+                        NA_MESSAGE=err.msg,
+                    )
+                    
+                    db_bp.file_history_update(
+                        task_type=k.FILE_TASK_PROCESS_TYPE,
+                        file_name=server_name,
                         NA_MESSAGE=err.msg,
                     )
                 except Exception as e3:

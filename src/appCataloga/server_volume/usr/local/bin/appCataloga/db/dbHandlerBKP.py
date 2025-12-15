@@ -480,6 +480,24 @@ class dbHandlerBKP(DBHandlerBase):
         dt = rows[0].get("DT_LAST_DISCOVERY")
         return dt if dt else None
 
+    
+    def host_release_by_pid(self, pid: int) -> None:
+        """
+        Release all HOST rows locked by the given PID.
+        Safe to call multiple times.
+        """
+
+        self._update_row(
+            table="HOST",
+            data={
+                "IS_BUSY": False,
+                "NU_PID": 0,
+            },
+            where={
+                "NU_PID": pid,
+            },
+        )
+
 
     def host_update(
         self,
@@ -1103,8 +1121,6 @@ class dbHandlerBKP(DBHandlerBase):
             self._disconnect()
 
 
-
-
     def host_task_update(
         self,
         task_id: Optional[int] = None,
@@ -1185,8 +1201,6 @@ class dbHandlerBKP(DBHandlerBase):
             self.db_connection.rollback()
             self.log.error(f"[DB] Failed to update HOST_TASK ({task_id or where_dict}): {e}")
             raise
-
-
 
             
     def host_task_delete(self, task_id: int) -> bool:
@@ -1750,6 +1764,8 @@ class dbHandlerBKP(DBHandlerBase):
             mysql.connector.Error: On query failure.
         """
         valid_fields = self.VALID_FIELDS_FILE_TASK
+        
+        self._connect()
 
         # Validate and build WHERE clause
         where_clause = {}
@@ -1905,6 +1921,8 @@ class dbHandlerBKP(DBHandlerBase):
             mysql.connector.Error: On query failure.
         """
         valid_fields = self.VALID_FIELDS_FILE_HISTORY
+        
+        self._connect()
 
         # Validate and build WHERE clause
         where_clause = {}
