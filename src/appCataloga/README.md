@@ -60,7 +60,7 @@ Each daemon operates independently, focusing on a single function while interact
 Each `.py` file within the root directory implements one microservice with a specific responsibility in the data flow.
 
 <p align="center">
-  <img src="/RF.Fusion/docs/images/RFFusion-workflow.svg" width="700"/>
+  <img src="../../docs/images/RFFusion-workflow.svg" width="700"/>
 </p>
 
 
