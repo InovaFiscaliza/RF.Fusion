@@ -531,12 +531,14 @@ def main():
                     db_bp.file_task_update(
                         task_id=file_task_id,
                         NU_STATUS=k.TASK_ERROR,
+                        NA_SERVER_FILE_PATH = f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}",
                         NA_MESSAGE=err.msg,
                     )
                     
                     db_bp.file_history_update(
                         task_type=k.FILE_TASK_PROCESS_TYPE,
                         file_name=server_name,
+                        NA_SERVER_FILE_PATH = f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}",
                         NA_MESSAGE=err.msg,
                     )
                 except Exception as e3:

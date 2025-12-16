@@ -345,7 +345,15 @@ class sftpConnection:
         try:
             self.ssh_client = paramiko.SSHClient()
             self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            self.ssh_client.connect(hostname=host_addr, port=port, username=user, password=password)
+            self.ssh_client.connect(
+                hostname=host_addr, 
+                port=port, 
+                username=user, 
+                password=password,
+                timeout=k.SSH_CONNECT_TIMEOUT,
+                banner_timeout=k.SSH_BANNER_TIMEOUT,
+                auth_timeout=k.SSH_AUTH_TIMEOUT,
+                )
             self.sftp = self.ssh_client.open_sftp()
         except Exception as e:
             self.log.error(
@@ -501,6 +509,7 @@ class sftpConnection:
             self.log.error(f"Error writing cookie list '{filename}' to '{self.host_uid}'. {e}")
             raise
 
+    
     def transfer(self, remote_file: str, local_file: str) -> None:
         """Download a remote file to a local path.
 

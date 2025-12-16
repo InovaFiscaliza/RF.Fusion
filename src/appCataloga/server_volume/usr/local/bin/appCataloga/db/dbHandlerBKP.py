@@ -1602,42 +1602,53 @@ class dbHandlerBKP(DBHandlerBase):
         finally:
             self._disconnect()
             
+    
     def file_task_suspend_by_host(self, host_id: int, reason: str = None) -> None:
         """
-        Suspend all FILE_TASK entries for a specific host.
+        Suspend HOST-dependent FILE_TASK entries for a specific host.
 
-        This method updates all pending (TASK_PENDING) or running (TASK_RUNNING)
-        FILE_TASK records related to the specified host, setting their status
-        to TASK_SUSPENDED and updating NA_MESSAGE with a contextual description.
-
-        Args:
-            host_id (int): Unique identifier (ID_HOST) of the host whose file
-                tasks should be suspended.
-            reason (str, optional): Optional text message describing the reason
-                for suspension. If not provided, a default message is used.
-
-        Returns:
-            None
-
-        Raises:
-            Exception: Propagates any database access or SQL execution errors.
+        Only DISCOVERY and BACKUP tasks are suspended, since PROCESS tasks
+        operate exclusively on files already stored on the server and do
+        not depend on host connectivity.
         """
+
         try:
-            message = reason or "Host unreachable — file task suspended by host_check service"
+            message = (
+                reason
+                or "Host unreachable — HOST-dependent file task suspended by host_check service"
+            )
+
             affected = 0
 
             for status in (k.TASK_PENDING, k.TASK_RUNNING):
                 affected += self._update_row(
                     table="FILE_TASK",
-                    data={"NU_STATUS": k.TASK_SUSPENDED, "NA_MESSAGE": message},
-                    where={"FK_HOST": host_id, "NU_STATUS": status},
-                    commit=True
+                    data={
+                        "NU_STATUS": k.TASK_SUSPENDED,
+                        "NA_MESSAGE": message,
+                    },
+                    where={
+                        "FK_HOST": host_id,
+                        "NU_STATUS": status,
+                        "NU_TYPE__in": (
+                            k.FILE_TASK_DISCOVERY,
+                            k.FILE_TASK_BACKUP_TYPE,
+                        ),
+                    },
+                    commit=True,
                 )
 
             if affected:
-                self.log.entry(f"[DBHandlerBKP] Suspended {affected} FILE_TASK entries for host {host_id}.")
+                self.log.entry(
+                    f"[DBHandlerBKP] Suspended {affected} HOST-dependent FILE_TASK entries "
+                    f"for host {host_id}."
+                )
+
         except Exception as e:
-            self.log.error(f"[DBHandlerBKP] Failed to suspend FILE_TASK entries for host {host_id}: {e}")
+            self.log.error(
+                f"[DBHandlerBKP] Failed to suspend FILE_TASK entries for host {host_id}: {e}"
+            )
+
  
 
     def file_task_resume_by_host(
@@ -1687,7 +1698,7 @@ class dbHandlerBKP(DBHandlerBase):
             )
 
             # -----------------------------------------------------------------
-            # 2. Reactivate errored file tasks
+            # 2) Reactivate ERROR tasks (DISCOVERY and BACKUP only)
             # -----------------------------------------------------------------
             resumed_error = self._update_row(
                 table="FILE_TASK",
@@ -1700,6 +1711,10 @@ class dbHandlerBKP(DBHandlerBase):
                 where={
                     "FK_HOST": host_id,
                     "NU_STATUS": k.TASK_ERROR,
+                    "NU_TYPE__in": (
+                        k.FILE_TASK_DISCOVERY,
+                        k.FILE_TASK_BACKUP_TYPE,
+                    ),
                 },
                 commit=True,
             )

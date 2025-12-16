@@ -59,6 +59,11 @@ Each daemon operates independently, focusing on a single function while interact
 
 Each `.py` file within the root directory implements one microservice with a specific responsibility in the data flow.
 
+<p align="center">
+  <img src="/RFFusion/docs/images/RFFusion-workflow.svg" width="700"/>
+</p>
+
+
 ### **appCataloga.py**
 For each monitoring station (remote node) registered in **Zabbix**, a query string is sent through the socket interface on **port 5555**, typically originating from `queryCataloga.py`.  
 The microservice executes `shared.parse_socket_message()` to extract the transmitted information.  
@@ -84,8 +89,8 @@ The service continuously checks the `HOST_TASK` table for tasks with status `TAS
 It then establishes an SFTP connection to the remote host directories and retrieves file metadata, including `VL_FILE_SIZE_KB`, `DT_FILE_CREATED`, `DT_FILE_MODIFIED`, and `NA_EXTENSION`.  
 The discovery process behaves differently depending on the active filter mode:
 
-- **`ALL` / `NONE` / `RANGE` / `LAST`** – The service first verifies the `.file_backup_list` file in the remote node to identify files previously discovered or marked for backup.  
-- **`FILE` / `AGENT`** – In these modes, the server performs an on-demand discovery by scanning remote directories for files matching `file_name` patterns or by comparing discovered files with existing entries in the database.
+- **`ALL` / `NONE` / `RANGE` / `LAST`** – The service can operate in with two behaviours: `agent = local` and `agent = remote`. When local agent selected then the server searches files and compares with `FILE_TASK` and `FILE_TASK_HISTORY` database to check new files. On the other hand the `agent = remote` uses the indexerD application to find new files.
+- **`FILE`** – In this mode, the server performs an on-demand discovery by scanning remote directories for files matching `file_name` patterns or by comparing discovered files with existing entries in the database.
 
 After gathering metadata, the service applies the defined filter logic (through the `Filter` class) to the `FILE_TASK` backlog.  
 Each file that passes the filter is transitioned to the `FILE_TASK_BACKUP_TYPE` stage with a `TASK_PENDING` status, awaiting subsequent backup execution.
@@ -146,8 +151,11 @@ Handlers are structured hierarchically to separate generic SQL operations from d
 Located in [`shared.py`](shared.py), this module contains foundational classes and helpers shared by all daemons.
 
 - **`log` class** — Provides structured logging for console and file output with timestamps and process IDs.  
-- **`sftpConnection`** — Wrapper around Paramiko offering simplified SFTP operations (`read`, `write`, `append`) and retry logic.  
-- **`hostDaemon`** — Context manager ensuring thread-safe control over remote operations using the `HALT_FLAG` mechanism.  
+- **`sftpConnection` class** — Wrapper around Paramiko offering simplified SFTP operations (`read`, `write`, `append`) and retry logic.  
+- **`hostDaemon` class** — Context manager ensuring thread-safe control over remote operations using the `HALT_FLAG` mechanism.  
+- **`ErrorHandler` class** - Centralized error tracking helper for microservices
+- **`TimeoutError` class** - Manage Timeout Errors
+- **`Filter` class** - Unified handler for parsing, validating, and applying file filters.
 
 ## ⚙️ Filter Configuration Options
 The `Filter` class (defined in `shared.py`) provides a flexible, JSON-based mechanism to control file discovery and backup selection criteria. Filters are evaluated by the **Discovery** and **Backup** daemons to determine which files should be processed, according to logical and temporal rules. Each filter is represented as a JSON object, either stored in the database (`FILE_TASK` definition) or provided dynamically through configuration payloads.
@@ -155,44 +163,47 @@ The `Filter` class (defined in `shared.py`) provides a flexible, JSON-based mech
 ### **Available Parameters**
 | Parameter | Type | Description |
 |------------|------|-------------|
-| `mode` | `str` | Defines the filtering mode. Supported values include `"AGENT"`, `"RANGE"`, `"LAST"`, `"FILE"`, `"ALL"`, and `"NONE"`. |
+| `mode` | `str` | Defines the filtering mode. Supported values include  `"RANGE"`, `"LAST"`, `"FILE"`, `"ALL"`, and `"NONE"`. |
 | `start_date` | `str or null` | Lower bound for file creation/modification date in the format `YYYY-MM-DD HH:MM:SS`. |
 | `end_date` | `str or null` | Upper bound for file creation/modification date in the format `YYYY-MM-DD HH:MM:SS`. |
 | `last_n_files` | `int or null` | Limits selection to the last *N* discovered files per host. |
 | `extension` | `str or null` | File extension filter (e.g., `.bin`, `.csv`). This condition is applied as a logical **AND** with all active filtering criteria. If `null`, it is ignored. Automatically normalized to lowercase and always includes a leading dot. In `FILE` mode, if `file_name` already contains an extension (e.g., `SCAN*.bin`), the `extension` field is discarded. |
+| `file_path` | `str or null` | Wildcard or pattern for file path (e.g., `/mnt/internal/data`, default is `/mnt/internal`. |
 | `file_name` | `str or null` | Wildcard or pattern for file names (e.g., `*.bin`, `SCAN*`, `data_*_2025.bin`). |
-| `agent` | `str` | Select `AGENT` type it could be `REMOTE` for remote agent or `LOCAL` for local  agent
+| `agent` | `str` | Select `AGENT` type it could be `REMOTE` for remote agent or `LOCAL` for local  agent, default configuration is using `LOCAL` agent - in this case the server searches for files in remote node and compares with internal database to discover new files
 ---
 
 ### **Typical Use Cases**
 
-1. **Backup files starting from a specific date range mapped from a remote Agent**  
+1. **Backup files starting from a specific date range mapped from a local Agent with `.bin` extension in `/mnt/internal/data` folder**  
    ```json
    {
     "mode":"RANGE",
     "start_date":"2025-11-03 10:00:00",
     "end_date":null,
     "last_n_files":null,
-    "extension":null,
+    "extension":".bin",
+    "file_path":"/mnt/internal/data",
     "file_name":null,
-    "agent":"remote"
+    "agent":"local"
     }
    ```  
 
-2. **Backup files until a specific date range mapped from a remote Agent**  
+2. **Backup files until a specific date range mapped from a local Agent with `.bin` extension in `/mnt/internal/data` folder**  
    ```json
    {
     "mode":"RANGE",
     "start_date":null,
     "end_date":"2025-11-03 10:00:00",
     "last_n_files":null,
-    "extension":null,
+    "extension":".bin",
+    "file_path":"/mnt/internal/data",
     "file_name":null,
-    "agent":"remote"
+    "agent":"local"
     }
     ```  
 
-3. **Backup files within a defined date range mapped from a remote Agent**  
+3. **Backup files within a defined date range mapped from a local Agent with `.bin` extension in `/mnt/internal/data` folder**  
    *Note:* The `end_date` must be greater than the `start_date`.  
    
    ```json
@@ -201,49 +212,53 @@ The `Filter` class (defined in `shared.py`) provides a flexible, JSON-based mech
     "start_date":"2025-11-03 10:00:00",
     "end_date":"2025-11-03 10:30:00",
     "last_n_files":null,
-    "extension":null,
+    "extension":".bin",
+    "file_path":"/mnt/internal/data",
     "file_name":null,
-    "agent":"remote"
+    "agent":"local"
    }
    ``` 
 
-4. **Backup all files mapped from a remote Agent**  
+4. **Backup all files mapped from a local Agent with `.bin` extension in `/mnt/internal/data` folder**  
    ```json
    {
     "mode":"ALL",
     "start_date":null,
     "end_date":null,
     "last_n_files":null,
-    "extension":null,
+    "extension":".bin",
+    "file_path":"/mnt/internal/data",
     "file_name":null,
-    "agent":"remote"
+    "agent":"local"
     }
     ```  
 
 5. **Discovery-only operation**  
-   Discovers files from the remote node specified in `.file_backup_list` without performing backups. Used to refresh metadata from the remote Agent.  
+   Discovers files from a local Agent with `.bin` extension in `/mnt/internal/data` folder. This operation only returns the file metadata: `VL_FILE_SIZE_KB`, `DT_FILE_CREATED` and `DT_FILE_MODIFIED`.
    ```json
    {
     "mode":"NONE",
     "start_date":null,
     "end_date":null,
     "last_n_files":null,
-    "extension":null,
+    "extension":".bin",
+    "file_path":"/mnt/internal/data",
     "file_name":null,
-    "agent":"remote"
+    "agent":"local"
     }
     ```  
 
-6. **Backup only the last *N* files mapped from a remote Agent**  
+6. **Backup only the last *N* files mapped from a local Agent with `.bin` extension in `/mnt/internal/data` folder**  
    ```json
    {
     "mode":"LAST",
     "start_date":null,
     "end_date":null,
     "last_n_files":10,
-    "extension":null,
+    "extension":".bin",
+    "file_path":"/mnt/internal/data",
     "file_name":null,
-    "agent":"remote"
+    "agent":"local"
    }
    ```  
 
@@ -252,16 +267,19 @@ The `Filter` class (defined in `shared.py`) provides a flexible, JSON-based mech
    Examples:  
    - `"file_name": "*.bin"` → backs up all `.bin` files  
    - `"file_name": "*"` → backs up all files  
-   - `"file_name": "SCAN*"` → backs up all files starting with `"SCAN"`  
+   - `"file_name": "SCAN*"` → backs up all files starting with `"SCAN"` 
+
+   Also `FILE` mode can rebackup files and when `file_name` have embedded extension then `extension` field is ignored. 
    ```json
    {
     "mode":"FILE",
     "start_date":null,
     "end_date":null,
     "last_n_files":null,
-    "extension":null,
-    "file_name":"*.bin",
-    "agent":null
+    "extension":".bin",
+    "file_path":"/mnt/internal/data",
+    "file_name":"*",
+    "agent":"local"
     }
     ```  
 
@@ -278,20 +296,20 @@ The `Filter` class (defined in `shared.py`) provides a flexible, JSON-based mech
 
 ## 🧠 Functional Logic
 
-1. **Discovery Phase**  
+1. **Host Check Phase**  
+   - The `appCataloga_host_check` daemon verifies host connectivity.  
+   - If a host becomes unreachable, its tasks are suspended.  
+   - Once the host is reachable again, tasks are resumed automatically.
+
+2. **Discovery Phase**  
    - Each online host is scanned via SFTP.  
    - File metadata is compared to database records.  
    - New or modified files are added to `FILE_TASK` as pending backup tasks.
 
-2. **Backup Phase**  
+3. **Backup Phase**  
    - The `appCataloga_file_bkp` daemon transfers all pending tasks.  
    - Files are backed up securely to the local repository.  
    - Each transfer is logged in `FILE_TASK_HISTORY`.
-
-3. **Host Check Phase**  
-   - The `appCataloga_host_check` daemon verifies host connectivity.  
-   - If a host becomes unreachable, its tasks are suspended.  
-   - Once the host is reachable again, tasks are resumed automatically.
 
 4. **File Processing Phase**  
    - The `appCataloga_file_bin_proces` daemon reads binary content.  
@@ -319,10 +337,12 @@ The `Filter` class (defined in `shared.py`) provides a flexible, JSON-based mech
 ### Task Type
 | Constant | Description |
 |-----------|-------------|
-| `FILE_TASK_DISCOVERY_TYPE` | Task generated by the discovery daemon. |
-| `FILE_TASK_BACKUP_TYPE` | Task generated by the backup daemon. |
-| `FILE_TASK_PROCESS_TYPE` | Task generated by the discovery daemon. |
-| `HOST_TASK_TYPE` | Task generated by the discovery daemon. |
+| `FILE_TASK_DISCOVERY_TYPE` | Task that only discovery file metadata. |
+| `FILE_TASK_BACKUP_TYPE` | Task used to backup file from remote node to the server. |
+| `FILE_TASK_PROCESS_TYPE` | Task to process file from node inside the server. |
+| `HOST_TASK_CHECK_TYPE` | This task used to check host connectivity. |
+| `HOST_TASK_PROCESSING_TYPE` | Task to process host task - usually transform 1 `HOST_TASK` into n `FILE_TASK`. |
+| `HOST_TASK_UPDATE_STATISTICS_TYPE` | Task to update host statistcs. |
 ---
 
 

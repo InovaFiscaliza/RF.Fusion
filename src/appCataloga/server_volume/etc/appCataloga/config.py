@@ -45,6 +45,12 @@ BKP_DATABASE_NAME       = "BPDATA"
 DB_USER_NAME            = secret["DB_USER_NAME"]
 DB_PASSWORD             = secret["DB_PASSWORD"]
 #------------------------------------------
+# SSH LIMITS
+#------------------------------------------
+SSH_CONNECT_TIMEOUT    = 30
+SSH_BANNER_TIMEOUT     = 30
+SSH_AUTH_TIMEOUT       = 30
+#------------------------------------------
 # backup module configuration
 #------------------------------------------
 MAX_HOST_TASK_WAIT_TIME         = 10        # seconds to wait for a new task. Minimum half, maximum equal to this value
