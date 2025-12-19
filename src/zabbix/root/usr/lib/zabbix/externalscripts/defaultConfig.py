@@ -21,12 +21,12 @@ ACAT_SERVER_PORT = 5555
 ACAT_SERVER_TIMEOUT = 1000
 
 # appCataloga default arguments
-ACAT_DEFAULT_HOST_ID = "10529"
-ACAT_DEFAULT_HOST_UID = "RFEye002303"
-ACAT_DEFAULT_HOST_ADD = "rfeye002303.anatel.gov.br"
+ACAT_DEFAULT_HOST_ID = "10789"
+ACAT_DEFAULT_HOST_UID = "CWSM211001"
+ACAT_DEFAULT_HOST_ADD = "CWSM211001.anatel.gov.br"
 ACAT_DEFAULT_HOST_PORT = 2828
-ACAT_DEFAULT_USER = "root"  # user should have access to the host with rights to interact with the indexer daemon
-ACAT_DEFAULT_PASSWD = "anatel152"
+ACAT_DEFAULT_USER = "admin"  # user should have access to the host with rights to interact with the indexer daemon
+ACAT_DEFAULT_PASSWD = "C31p1@nusANATEL!"
 ACAT_DEFAULT_QUERY_TAG = "backup"
 ACAT_FILE_METADATA_QUERY_TAG ="fileMetadata"
 ACAT_DEFAULT_TIMEOUT = 2

@@ -174,7 +174,7 @@ def serve_client(client_socket: socket.socket) -> None:
         # ===============================================================
         # STAGE 1 — RECEIVE RAW MESSAGE
         # ===============================================================
-        raw_msg = client_socket.recv(256)
+        raw_msg = client_socket.recv(1024)
         if not raw_msg:
             err.set("Empty request", stage="READ")
             raise Exception("Empty request")

@@ -104,7 +104,7 @@ ARGUMENTS = {
     },
     "filter": {
         "set": False,
-        "value":'{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".bin", "file_path": "C:\CelPlan\CellWireless RU\Spectrum\Completed", "file_name":null, "agent": "local"}',
+        "value":'{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".dbm","file_path":"C:/CelPlan/CellWireless RU/Spectrum/Completed", "file_name":null, "agent": "local"}',
         "message": "Backup request is {value}",
     },
 }
@@ -154,6 +154,7 @@ def main():
         f'{arg.data["passwd"]["value"]} '
         f'{arg.data["filter"]["value"]} '
     )
+        print(requestS)
         request = bytes(requestS, encoding="utf-8")
         client_socket.sendall(request)
     except Exception as e:

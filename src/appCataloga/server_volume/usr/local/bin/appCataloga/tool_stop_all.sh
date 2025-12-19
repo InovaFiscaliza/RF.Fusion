@@ -43,7 +43,24 @@ for svc in "${services[@]}"; do
     fi
 done
 
-# Limpeza opcional de logs
+# -----------------------------------------------------------------------------
+# Safe shutdown cleanup (HOST + FILE_TASK)
+# -----------------------------------------------------------------------------
+echo
+echo ">>> Running safe shutdown cleanup (DB state reset)"
+
+SAFE_STOP_SCRIPT="$SCRIPT_DIR/safe_stop.py"
+
+if [[ -f "$SAFE_STOP_SCRIPT" ]]; then
+    /opt/conda/envs/appdata/bin/python "$SAFE_STOP_SCRIPT"
+    echo ">>> Safe shutdown cleanup completed."
+else
+    echo "[WARN] safe_stop.py not found. Skipping DB cleanup."
+fi
+
+# -----------------------------------------------------------------------------
+# Optional log cleanup
+# -----------------------------------------------------------------------------
 read -p "Remove all log files in /var/log/appCataloga? [y/N] " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then

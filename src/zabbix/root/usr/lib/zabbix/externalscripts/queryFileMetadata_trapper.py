@@ -139,6 +139,24 @@ def main():
     try:
         client_socket.connect((k.ACAT_SERVER_ADD, k.ACAT_SERVER_PORT))
 
+        # --------------------------------------------------------------
+        # 1) Detect host OS (simple heuristic)
+        # --------------------------------------------------------------
+        host_uid = arg.data["host_uid"]["value"]
+
+        is_windows = "CW" in host_uid   # ajuste aqui se o critério mudar
+
+        # --------------------------------------------------------------
+        # 2) Select correct filter (but always named "filter")
+        # --------------------------------------------------------------
+        if is_windows:
+            filter_value = arg.data["filter_win"]["value"]
+        else:
+            filter_value = arg.data["filter_lnx"]["value"]
+
+        # --------------------------------------------------------------
+        # 3) Build request string (single filter field)
+        # --------------------------------------------------------------
         requestS = (
             f'{arg.data["query_tag"]["value"]} '
             f'{arg.data["host_id"]["value"]} '
@@ -147,11 +165,15 @@ def main():
             f'{arg.data["host_port"]["value"]} '
             f'{arg.data["user"]["value"]} '
             f'{arg.data["passwd"]["value"]} '
-            f'{arg.data["filter"]["value"]} '
+            f'{filter_value} '
         )
 
-        request = bytes(requestS, encoding="utf-8")
+        # --------------------------------------------------------------
+        # 4) Send request
+        # --------------------------------------------------------------
+        request = requestS.encode("utf-8")
         client_socket.sendall(request)
+
 
     except Exception as e:
         error_json = f'{{"status_query":0,"message_query":"Error: {e}; Could not establish socket connection"}}'

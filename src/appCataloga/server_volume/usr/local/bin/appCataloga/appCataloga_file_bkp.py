@@ -65,8 +65,11 @@ def release_busy_hosts_on_exit() -> None:
         # initialized or corrupted state during shutdown
         db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
 
-        # Clear BUSY flag for all HOST rows locked by this PID
-        db.host_release_by_pid(pid)
+        try:
+            # Clear BUSY flag for all HOST rows locked by this PID
+            db.host_release_by_pid(pid)
+        except Exception as e:
+            pass
 
     except Exception as e:
         # Cleanup must never break process termination
@@ -90,8 +93,11 @@ def sigterm_handler(signal=None, frame=None) -> None:
     # Stop the main loop gracefully
     process_status["running"] = False
 
-    # Release any HOST records locked by this process
-    release_busy_hosts_on_exit()
+    try:
+        # Release any HOST records locked by this process
+        release_busy_hosts_on_exit()
+    except Exception as e:
+        pass
 
 
 def sigint_handler(signal=None, frame=None) -> None:
@@ -197,7 +203,8 @@ def ensure_worker_pool():
 
         while len(current_workers) < k.BKP_TASK_MAX_WORKERS:
             spawn_additional_worker(current_workers)
-            time.sleep(0.5)
+            #time.sleep(0.5)
+            sh._random_jitter_sleep()
             current_workers = list_running_workers(script_name)
 
     except Exception as e:
@@ -374,11 +381,14 @@ def main():
 
             if host_id:
                 try:
-                    db.host_update(
-                        host_id=host_id,
-                        IS_BUSY=False,
-                        NU_PID=0,
-                    )
+                    # Check if concurrent FILE_TASK was assigned:
+                    if db.host_check_free(host_id=host_id,
+                                          task_type=k.FILE_TASK_BACKUP_TYPE):
+                        db.host_update(
+                            host_id=host_id,
+                            IS_BUSY=False,
+                            NU_PID=0,
+                        )
                 except Exception:
                     pass
 

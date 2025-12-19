@@ -29,6 +29,7 @@ import posixpath
 import fnmatch
 import stat
 import random
+import ntpath
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Tuple, Optional, Union
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -813,6 +814,73 @@ class sftpConnection:
 
         return results
     
+    def detect_remote_os(self):
+        """
+        Detect the operating system of a remote host via SSH.
+
+        Detection strategy:
+            1) Attempt to identify a Unix/Linux system using `uname -s`.
+            This command is only available on Unix-like systems and
+            reliably returns "Linux" when executed successfully.
+
+            2) If the Linux test fails, attempt to identify a Windows system
+            using PowerShell. The command emits a deterministic string
+            ("windows") to STDOUT, which works reliably in non-interactive
+            SSH sessions (e.g. Paramiko).
+
+        Design considerations:
+            • Avoids using `cmd /c ver`, which is unreliable in SSH
+            non-interactive contexts and may write output to STDERR.
+            • Avoids parsing OS version strings or localized output.
+            • Uses deterministic output for robust detection.
+            • Safe for Windows Server, Windows 10/11, and Windows Embedded.
+
+        Returns:
+            str:
+                "linux"   → Remote host is a Linux/Unix system
+                "windows" → Remote host is a Windows system
+
+        Notes:
+            • If all detection methods fail, the caller should assume
+            a Linux-like environment as a conservative fallback.
+            • Any exception during command execution is silently ignored
+            to allow fallback detection paths.
+        """
+
+        # ---------------------------------------------------------------
+        # 1) Linux detection (uname exists only on Unix-like systems)
+        # ---------------------------------------------------------------
+        try:
+            stdin, stdout, stderr = self.ssh_client.exec_command(
+                "uname -s",
+                timeout=5
+            )
+            uname = stdout.read().decode(errors="ignore").strip().lower()
+            if "linux" in uname:
+                return "linux"
+        except Exception:
+            pass
+
+        # ---------------------------------------------------------------
+        # 2) Windows detection via PowerShell (robust and deterministic)
+        # ---------------------------------------------------------------
+        try:
+            stdin, stdout, stderr = self.ssh_client.exec_command(
+                "powershell -NoProfile -Command Write-Output windows",
+                timeout=5
+            )
+            out = stdout.read().decode(errors="ignore").strip().lower()
+            if out == "windows":
+                return "windows"
+        except Exception:
+            pass
+
+        # ---------------------------------------------------------------
+        # 3) Final fallback
+        # ---------------------------------------------------------------
+        return "linux"
+
+    
     def sftp_find_files_rev3(
         self,
         remote_path: str,
@@ -842,29 +910,8 @@ class sftpConnection:
         # ===================================================================
         # 1) Detect OS
         # ===================================================================
-        def detect_remote_os():
-            try:
-                # Linux test
-                stdin, stdout, stderr = self.ssh_client.exec_command("uname -s", timeout=5)
-                uname = stdout.read().decode().strip().lower()
-                if "linux" in uname:
-                    return "linux"
-            except:
-                pass
-
-            try:
-                # Windows test (returns something like Microsoft Windows [Version ...])
-                stdin, stdout, stderr = self.ssh_client.exec_command("cmd /c ver", timeout=5)
-                ver = stdout.read().decode().lower()
-                if "windows" in ver:
-                    return "windows"
-            except:
-                pass
-
-            # Final fallback: assume Linux
-            return "linux"
-
-        os_type = detect_remote_os()
+        
+        os_type = self.detect_remote_os()
         self.log.entry(f"[DEBUG] Remote OS detected: {os_type}")
 
         # ===================================================================
@@ -901,7 +948,7 @@ class sftpConnection:
         # 3) Execute command
         # ===================================================================
         try:
-            stdin, stdout, stderr = self.ssh_client.exec_command(cmd, timeout=180)
+            stdin, stdout, stderr = self.ssh_client.exec_command(cmd, timeout=k.HOST_BUSY_TIMEOUT)
 
             out = (
                 stdout.read()
@@ -978,7 +1025,6 @@ class sftpConnection:
         except Exception as e:
             self.log.error(f"[ERROR] find failed: {e}")
             return []
-
 
 
 # =====================================================================
@@ -1465,7 +1511,7 @@ class hostDaemon:
         )
 
         try:
-            stdin, stdout, stderr = self.sftp_conn.ssh_client.exec_command(cmd, timeout=120)
+            stdin, stdout, stderr = self.sftp_conn.ssh_client.exec_command(cmd, timeout=k.HOST_BUSY_TIMEOUT)
             output = stdout.read().decode().strip().splitlines()
 
             err = stderr.read().decode().strip()
@@ -1512,20 +1558,129 @@ class hostDaemon:
                 results.append({})
 
         return results
-
     
-    # ------------- public APIs preserved (call the unified implementation) ----
-    def get_metadata(self, filename: str) -> Dict[str, Any]:
-        """Get metadata for a single remote file (public API preserved).
-
-        Args:
-            filename (str): Absolute remote path to inspect.
-
-        Returns:
-            dict: Metadata mapping for the requested file, or empty dict if not found.
+    def _get_metadata_powershell(
+        self,
+        remote_dir: str,
+        pattern: str,
+        newer_than: Optional[str],
+    ):
         """
-        res = self.sftp_conn._get_metadata_batch([filename])
-        return res[0] if res else {}
+        Windows implementation of metadata extraction, fully aligned with
+        `_get_metadata_printf`.
+
+        Guarantees:
+        • Same keys and data types as Linux backend
+        • Naive local datetime objects
+        • Deterministic parsing (no delimiter collisions)
+        • Correct path splitting for Windows paths
+        """
+
+        # ------------------------------------------------------------------
+        # 1) Input normalization
+        # ------------------------------------------------------------------
+        remote_dir = remote_dir.rstrip("\\")
+        pattern = pattern.strip().replace('"', "").replace("'", "")
+        if not pattern.startswith("*"):
+            pattern = "*" + pattern
+
+        # Incremental filter equivalent to: find -newermt
+        date_filter = ""
+        if newer_than:
+            date_filter = (
+                f"| Where-Object {{ $_.LastWriteTime -gt (Get-Date '{newer_than}') }}"
+            )
+
+        # ------------------------------------------------------------------
+        # 2) Build PowerShell command
+        # ------------------------------------------------------------------
+        #
+        # Output format (pipe-delimited, SAFE):
+        #   FullPath|Size|Created|Modified|Accessed|Owner|Permissions
+        #
+        cmd = (
+            'powershell -NoProfile -Command '
+            '"Get-ChildItem -Path '
+            f'\\\"{remote_dir}\\\" -Filter \\\"{pattern}\\\" -Recurse '
+            f'{date_filter} | '
+            'ForEach-Object { '
+            '$owner = (Get-Acl $_.FullName).Owner; '
+            '[string]::Join(\'|\', '
+            '$_.FullName, '
+            '$_.Length, '
+            '$_.CreationTime.ToString(\'o\'), '
+            '$_.LastWriteTime.ToString(\'o\'), '
+            '$_.LastAccessTime.ToString(\'o\'), '
+            '$owner, '
+            '\'NTFS\') }"'
+        )
+
+        # ------------------------------------------------------------------
+        # 3) Execute remote command
+        # ------------------------------------------------------------------
+        try:
+            stdin, stdout, stderr = self.sftp_conn.ssh_client.exec_command(
+                cmd, timeout=k.HOST_BUSY_TIMEOUT
+            )
+
+            output = stdout.read().decode(errors="ignore").splitlines()
+            err = stderr.read().decode(errors="ignore").strip()
+
+            if err:
+                self.log.warning(f"[PS_META] STDERR: {err}")
+
+        except Exception as e:
+            self.log.error(f"[PS_META] Failed PowerShell metadata: {e}")
+            return []
+
+        # ------------------------------------------------------------------
+        # 4) Parse and normalize metadata (Linux-compatible)
+        # ------------------------------------------------------------------
+        results = []
+
+        for raw in output:
+            try:
+                (
+                    fullpath,
+                    size,
+                    c_at,
+                    m_at,
+                    a_at,
+                    owner,
+                    permissions,
+                ) = raw.split("|")
+
+                # IMPORTANT: use ntpath for Windows paths
+                filename = ntpath.basename(fullpath)
+                dirname = ntpath.dirname(fullpath)
+                _, ext = ntpath.splitext(filename)
+
+                size_kb = int(int(size) // 1024)
+
+                dt_created  = _parse_ps_iso(c_at)
+                dt_modified = _parse_ps_iso(m_at)
+                dt_accessed = _parse_ps_iso(a_at)
+
+                results.append({
+                    "NA_FULL_PATH": fullpath.replace("\\", "/"),
+                    "NA_PATH": dirname.replace("\\", "/"),
+                    "NA_FILE": filename,
+                    "NA_EXTENSION": ext,
+                    "VL_FILE_SIZE_KB": size_kb,
+                    "DT_FILE_CREATED": dt_created,
+                    "DT_FILE_MODIFIED": dt_modified,
+                    "DT_FILE_ACCESSED": dt_accessed,
+                    "NA_OWNER": owner or "",
+                    "NA_GROUP": "0",        # POSIX placeholder
+                    "NA_PERMISSIONS": permissions,
+                })
+
+            except Exception as e:
+                self.log.error(f"[PS_META] PARSE ERROR '{raw}': {e}")
+                results.append({})
+
+        return results
+
 
     def get_metadata_files(
         self,
@@ -1536,11 +1691,46 @@ class hostDaemon:
         callBackGetLastDBDate,
     ):
         """
-        Final discovery stage using ultra-fast find -printf metadata.
+        Final discovery stage responsible for extracting file metadata
+        from the remote host.
+
+        Workflow:
+            1) Resolve the list of mapped files based on discovery filters
+            and database state (incremental logic).
+            2) Determine the remote operating system.
+            3) Extract file metadata using the fastest method available
+            for the detected OS:
+                • Linux   → GNU find with -printf
+                • Windows → PowerShell Get-ChildItem
+            4) Apply metadata-level filters (RANGE, LAST, etc.).
+            5) Return normalized metadata ready for persistence.
+
+        This function is OS-aware and guarantees that metadata extraction
+        is performed using native and efficient mechanisms for each platform.
+
+        Args:
+            host_id (int):
+                Database identifier of the remote host.
+            filter_obj (Filter):
+                Parsed filter object containing discovery rules.
+            callBackFileTask:
+                Callback used to resolve FILE_TASK names.
+            callBackFileTaskHistory:
+                Callback used to resolve FILE_TASK_HISTORY names.
+            callBackGetLastDBDate:
+                Callback returning the last known file timestamp
+                stored in the database.
+
+        Returns:
+            List[dict]:
+                List of normalized metadata dictionaries ready to be
+                consumed by FILE_TASK / FILE_TASK_HISTORY pipelines.
         """
 
         try:
-            # 1) mapped file list (incremental filter)
+            # -----------------------------------------------------------
+            # 1) Resolve mapped file list (incremental discovery stage)
+            # -----------------------------------------------------------
             file_list = self._get_mapped_files(
                 filter_obj=filter_obj,
                 callBackFileTaskNames=callBackFileTask,
@@ -1552,33 +1742,68 @@ class hostDaemon:
             if not file_list:
                 return []
 
-            # 2) metadata extraction — NOW using printf (super fast)
-            remote_dir = filter_obj.data.get("file_path", k.DEFAULT_DATA_FOLDER)
-            pattern    = filter_obj._build_pattern()
+            # -----------------------------------------------------------
+            # 2) Prepare metadata extraction parameters
+            # -----------------------------------------------------------
+            remote_dir = filter_obj.data.get(
+                "file_path", k.DEFAULT_DATA_FOLDER
+            )
+            pattern = filter_obj._build_pattern()
 
             last_dt = callBackGetLastDBDate(host_id)
-            newer_than = last_dt.strftime("%Y-%m-%d %H:%M:%S") if last_dt else None
-
-            metadata = self._get_metadata_printf(
-                remote_dir=remote_dir,
-                pattern=pattern,
-                newer_than=newer_than,
+            newer_than = (
+                last_dt.strftime("%Y-%m-%d %H:%M:%S")
+                if last_dt
+                else None
             )
 
+            # -----------------------------------------------------------
+            # 3) Detect remote operating system
+            # -----------------------------------------------------------
+            system_os = self.sftp_conn.detect_remote_os()
+
+            # -----------------------------------------------------------
+            # 4) Extract metadata using OS-specific backend
+            # -----------------------------------------------------------
+            if system_os == "linux":
+                metadata = self._get_metadata_printf(
+                    remote_dir=remote_dir,
+                    pattern=pattern,
+                    newer_than=newer_than,
+                )
+
+            elif system_os == "windows":
+                metadata = self._get_metadata_powershell(
+                    remote_dir=remote_dir,
+                    pattern=pattern,
+                    newer_than=newer_than,
+                )
+
+            else:
+                self.log.error(
+                    f"[get_metadata_files] Unsupported OS '{system_os}' "
+                    "for metadata extraction."
+                )
+                return []
+
+            # Remove empty or invalid metadata entries
             metadata = [m for m in metadata if m]
 
             if not metadata:
                 return []
 
-            # 3) metadata-level filter (RANGE, LAST)
+            # -----------------------------------------------------------
+            # 5) Apply metadata-level filters (RANGE, LAST, etc.)
+            # -----------------------------------------------------------
             metadata = filter_obj.evaluate_metadata(metadata)
 
             return metadata
 
         except Exception as e:
-            self.log.error(f"[get_metadata_files] Unexpected error: {e}")
+            self.log.error(
+                f"[get_metadata_files] Unexpected error: {e}"
+            )
             return []
-
 
 
     # ----------------------------------------------------------------------
@@ -2576,3 +2801,33 @@ def _compose_message(
     name = name or ""
 
     return f"{prefix} of file {path}/{name}"
+    
+def _parse_ps_iso(ts: str) -> datetime:
+    """
+    Parse PowerShell ISO timestamp into naive local datetime.
+
+    PowerShell emits up to 7 fractional digits (ticks, 100ns),
+    which Python does not accept. This function:
+        • truncates to microseconds (6 digits)
+        • removes timezone information
+    """
+    if "." in ts:
+        head, tail = ts.split(".", 1)
+
+        # tail example: "4475322-03:00"
+        frac = tail[:6]  # microseconds
+        rest = tail[6:]
+
+        # remove timezone
+        if "+" in rest:
+            rest = rest.split("+", 1)[0]
+        elif "-" in rest:
+            rest = rest.split("-", 1)[0]
+
+        ts = f"{head}.{frac}"
+
+    else:
+        ts = ts.split("+", 1)[0].split("-", 1)[0]
+
+    return datetime.fromisoformat(ts)
+

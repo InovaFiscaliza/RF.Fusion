@@ -241,6 +241,7 @@ def main():
                 row, host_id, task_id = db_bp.read_file_task(
                     task_type=k.FILE_TASK_BACKUP_TYPE,
                     task_status=k.TASK_DONE,
+                    extension=".bin",
                     check_host_busy=False,
                 )
             except Exception as e:
@@ -274,6 +275,7 @@ def main():
                     DT_FILE_TASK = datetime.now(),
                     NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
                     NU_STATUS=k.TASK_RUNNING,
+                    NU_PID = os.getpid(),
                     NA_MESSAGE=f"Processing BIN: {filename}",
                 )
             except Exception as e:
@@ -510,6 +512,7 @@ def main():
                     db_bp.file_history_update(
                         task_type=k.FILE_TASK_PROCESS_TYPE,
                         file_name=server_name,
+                        NA_SERVER_FILE_PATH=new_path,
                         NA_MESSAGE=sh._compose_message(k.FILE_TASK_PROCESS_TYPE, k.TASK_DONE),
                     )
                     db_bp.host_task_statistics_create(host_id=host_id)

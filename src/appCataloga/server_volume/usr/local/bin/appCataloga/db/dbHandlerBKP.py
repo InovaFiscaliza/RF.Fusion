@@ -311,6 +311,34 @@ class dbHandlerBKP(DBHandlerBase):
 
         finally:
             self._disconnect()
+            
+    def host_check_free(self, host_id: int, task_type: int) -> bool:
+        """
+        Check if a host has NO RUNNING FILE_TASK of a given type.
+
+        Returns:
+            True  -> host is free (can be released)
+            False -> host still has running tasks
+        """
+        self._connect()
+        try:
+            rows = self._select_rows(
+                table="FILE_TASK",
+                where={
+                    "FK_HOST": host_id,
+                    "NU_STATUS": k.TASK_RUNNING,
+                    "NU_TYPE": task_type,
+                },
+                limit=1,
+                cols=["ID_FILE_TASK"],
+            )
+
+            # If no RUNNING task exists, host is free
+            return len(rows) == 0
+
+        finally:
+            self._disconnect()
+
     
     def host_read_access(self, host_id: int) -> Dict[str, Any]:
         """Read connection credentials and network parameters for a host.
@@ -486,7 +514,7 @@ class dbHandlerBKP(DBHandlerBase):
         Release all HOST rows locked by the given PID.
         Safe to call multiple times.
         """
-
+        self._connect()
         self._update_row(
             table="HOST",
             data={
@@ -497,6 +525,8 @@ class dbHandlerBKP(DBHandlerBase):
                 "NU_PID": pid,
             },
         )
+        
+        self._disconnect()
 
 
     def host_update(
@@ -508,6 +538,8 @@ class dbHandlerBKP(DBHandlerBase):
         **kwargs
     ) -> None:
 
+        # Connect to DB
+        self._connect()
         # ==========================================================
         # 1. Optional busy-timeout check
         # ==========================================================
@@ -625,10 +657,11 @@ class dbHandlerBKP(DBHandlerBase):
 
             self.db_connection.commit()
             self.log.entry(f"[DBHandlerBKP] HOST {host_id} updated successfully.")
-
+            self._disconnect()
         except Exception as e:
             self.db_connection.rollback()
             self.log.error(f"[DBHandlerBKP] host_update failed for HOST {host_id}: {e}")
+            self._disconnect()
             raise
 
     
@@ -1055,9 +1088,12 @@ class dbHandlerBKP(DBHandlerBase):
             return int(task_id)
 
         except Exception as e:
-            self.db_connection.rollback()
-            self.log.error(f"[DBHandlerBKP] Failed to create statistics HOST_TASK: {e}")
-            raise
+            self.log.error(
+                f"[DBHandlerBKP] Failed to create statistics HOST_TASK "
+                f"(host={host_id}): {e}"
+            )
+            return -1
+
 
         finally:
             self._disconnect()
@@ -1384,47 +1420,69 @@ class dbHandlerBKP(DBHandlerBase):
         task_status: Optional[int] = k.TASK_PENDING,
         task_type: Optional[int] = None,
         check_host_busy: bool = True,
+        extension: Optional[str] = None,
     ) -> Optional[tuple]:
         """
-        Returns ONE FILE_TASK (oldest or by ID), joined with HOST metadata.
+        Return a single FILE_TASK record joined with HOST metadata.
 
-        Single-task reader for worker scheduling.
-        Behavior mirrors host_task_read(), ensuring the DB layer is symmetrical.
+        This method is used by workers to fetch exactly one task
+        (either the oldest pending task or a task selected by ID).
+
+        Optional filters allow fine-grained task selection, including
+        filtering by file extension when applicable.
+
+        Args:
+            task_id (Optional[int]):
+                If provided, performs a direct lookup by FILE_TASK ID
+                and ignores all other filters.
+            task_status (Optional[int]):
+                Task status filter (e.g. PENDING, RUNNING).
+            task_type (Optional[int]):
+                Task type filter (e.g. BACKUP, DISCOVERY).
+            check_host_busy (bool):
+                If True, excludes tasks whose host is currently BUSY.
+            extension (Optional[str]):
+                If provided, filters tasks by file extension
+                (e.g. ".bin", ".dbm").
 
         Returns:
-            (row_dict, host_id, task_id)
-            or None
+            Optional[tuple]:
+                (row_dict, host_id, file_task_id) or None if no task matches.
         """
 
-        #--------------------------------------------------------------
-        # 0 ) Connect to DB
-        #--------------------------------------------------------------   
-        self._connect()  
-        
+        # --------------------------------------------------------------
+        # 0) Connect to database
+        # --------------------------------------------------------------
+        self._connect()
+
         # --------------------------------------------------------------
         # 1) WHERE clause construction
         # --------------------------------------------------------------
         where = {}
 
         if task_id:
-            # direct lookup → ignore all other filters
+            # Direct lookup → ignore all other filters
             where["FT.ID_FILE_TASK"] = task_id
 
         else:
-            # status filter
+            # Status filter
             if task_status is not None:
                 where["FT.NU_STATUS"] = task_status
 
-            # task type (e.g. BACKUP, DISCOVERY…)
+            # Task type filter (e.g. BACKUP, DISCOVERY)
             if task_type is not None:
                 where["FT.NU_TYPE"] = task_type
 
-            # skip BUSY hosts
+            # Optional file extension filter
+            if extension is not None:
+                where["FT.NA_EXTENSION"] = extension
+
+            # Exclude BUSY hosts if required
             if check_host_busy:
                 where["H.IS_BUSY"] = False
 
         # --------------------------------------------------------------
-        # 2) Execute via generic JOIN engine
+        # 2) Execute query using generic JOIN engine
         # --------------------------------------------------------------
         rows = self._select_custom(
             table="FILE_TASK FT",
@@ -1435,7 +1493,7 @@ class dbHandlerBKP(DBHandlerBase):
         )
 
         self._disconnect()
-        
+
         if not rows:
             return None
 
@@ -1445,6 +1503,7 @@ class dbHandlerBKP(DBHandlerBase):
         host_id = row["HOST__ID_HOST"]
 
         return row, host_id, file_task_id
+
 
     # -------------------------- Public APIs --------------------------------
     def file_task_create(
@@ -1550,6 +1609,8 @@ class dbHandlerBKP(DBHandlerBase):
         Returns:
             None
         """
+        
+        self._connect()
         if not kwargs:
             self.log.warning(f"[DBHandlerBKP] No fields provided for file_task_update (ID={task_id}).")
             return
@@ -1575,10 +1636,13 @@ class dbHandlerBKP(DBHandlerBase):
                 )
             else:
                 self.log.warning(f"[DBHandlerBKP] FILE_TASK {task_id} not found or not updated.")
+            
+            self._disconnect()
 
         except Exception as e:
             self.db_connection.rollback()
             self.log.error(f"[DBHandlerBKP] Failed to update FILE_TASK {task_id}: {e}")
+            self._disconnect()
             raise
 
 
@@ -2090,8 +2154,10 @@ class dbHandlerBKP(DBHandlerBase):
 
         Raises:
             ValueError: If no update fields are provided or if invalid fields are detected.
+            
         """
 
+        self._connect()
         valid_fields = getattr(self, "VALID_FIELDS_FILE_HISTORY", set())
 
         # --- Automatic timestamps based on task type ---
@@ -2143,9 +2209,11 @@ class dbHandlerBKP(DBHandlerBase):
                 "where_used": where_dict,
             }
 
+            self._disconnect()
         except Exception as e:
             self.db_connection.rollback()
             self.log.error(f"[DBHandlerBKP] Failed to update FILE_TASK_HISTORY ({where_dict}): {e}")
+            self._disconnect()
             raise
 
 
