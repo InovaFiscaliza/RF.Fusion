@@ -2611,50 +2611,61 @@ def parse_filter(filter_raw: Union[str, Dict[str, Any], None], log: Optional[Any
 # =====================================================================
 # Socket message parser (public API preserved)
 # =====================================================================
-def parse_socket_message(peername: Tuple[str, int], data: str, log: Optional[log] = None) -> Dict[str, Any]:
-    """Parse a single-line control message coming from a TCP socket.
-
-    Command Layout (space-separated tokens):
-        <MSG_TYPE> <HOST_ID> <HOST_UID> <HOST_ADDR> <HOST_PORT> <USER> <PASSWORD> <FILTER_JSON>
-
-    Args:
-        peername (tuple[str, int]): (ip, port) pair identifying the peer.
-        data (str): Raw message string (single line expected).
-        log (log|None): Optional logger instance for diagnostics.
-
-    Returns:
-        dict: Parsed message with fields:
-            - peer (dict): {'ip': str, 'port': int}
-            - command (str|None)
-            - host_id (int|None)
-            - host_uid (str|None)
-            - host_addr (str|None)
-            - host_port (int|None)
-            - user (str|None)
-            - password (str|None)
-            - filter (dict): Normalized filter mapping
-                (defaults to k.NONE_FILTER if parsing fails).
+def parse_socket_message(
+    peername: Tuple[str, int],
+    data: str,
+    log: Optional[log] = None,
+) -> Dict[str, Any]:
     """
+    Parse a control message coming from a TCP socket.
+
+    Expected payload (JSON):
+    {
+        "query_tag": str,
+        "host_id": int,
+        "host_uid": str,
+        "host_add": str,
+        "host_port": int,
+        "user": str,
+        "passwd": str,
+        "filter": dict | str (JSON string)
+    }
+    """
+
     peer_ip, peer_port = peername
 
     try:
-        parts = data.strip().split(" ", 7)
+        payload = json.loads(data)
 
-        msg_type = parts[0]
-        host_id = int(parts[1])
-        host_uid = parts[2]
-        host_addr = parts[3]
-        host_port = int(parts[4])
-        user = parts[5]
-        password = parts[6]
-        filter_raw = parts[7] if len(parts) > 7 else None
+        # --------------------------------------------------------------
+        # Mandatory fields
+        # --------------------------------------------------------------
+        command   = payload.get("query_tag")
+        host_id   = int(payload.get("host_id"))
+        host_uid  = payload.get("host_uid")
+        host_addr = payload.get("host_add")
+        host_port = int(payload.get("host_port"))
+        user      = payload.get("user")
+        password  = payload.get("passwd")
 
-        filter_dict = parse_filter(filter_raw, log)
+        # --------------------------------------------------------------
+        # Filter normalization
+        # --------------------------------------------------------------
+        filter_raw = payload.get("filter")
 
+        if isinstance(filter_raw, dict):
+            filter_dict = filter_raw
+        elif isinstance(filter_raw, str):
+            try:
+                filter_dict = json.loads(filter_raw)
+            except Exception:
+                filter_dict = getattr(k, "NONE_FILTER", {"mode": "NONE"})
+        else:
+            filter_dict = getattr(k, "NONE_FILTER", {"mode": "NONE"})
 
         return {
             "peer": {"ip": peer_ip, "port": peer_port},
-            "command": msg_type,
+            "command": command,
             "host_id": host_id,
             "host_uid": host_uid,
             "host_addr": host_addr,
@@ -2666,7 +2677,8 @@ def parse_socket_message(peername: Tuple[str, int], data: str, log: Optional[log
 
     except Exception as e:
         if log:
-            log.entry(f"Failed to parse socket message: {e} - raw data={data}")
+            log.entry(f"[parse_socket_message] JSON parse failed: {e} | raw={data}")
+
         return {
             "peer": {"ip": peer_ip, "port": peer_port},
             "command": None,

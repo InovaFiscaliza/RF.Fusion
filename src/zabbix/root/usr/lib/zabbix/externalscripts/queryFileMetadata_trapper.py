@@ -163,23 +163,22 @@ def main():
         # --------------------------------------------------------------
         # 3) Build request string (single filter field)
         # --------------------------------------------------------------
-        requestS = (
-            f'{arg.data["query_tag"]["value"]} '
-            f'{arg.data["host_id"]["value"]} '
-            f'{arg.data["host_uid"]["value"]} '
-            f'{arg.data["host_add"]["value"]} '
-            f'{arg.data["host_port"]["value"]} '
-            f'{arg.data["user"]["value"]} '
-            f'{arg.data["passwd"]["value"]} '
-            f'{filter_value} '
-        )
+        payload = {
+            "query_tag": arg.data["query_tag"]["value"],
+            "host_id": arg.data["host_id"]["value"],
+            "host_uid": arg.data["host_uid"]["value"],
+            "host_add": arg.data["host_add"]["value"],
+            "host_port": arg.data["host_port"]["value"],
+            "user": arg.data["user"]["value"],
+            "passwd": arg.data["passwd"]["value"],
+            "filter": filter_value,  # string JSON
+        }
         
-        print(requestS)
-
+        
         # --------------------------------------------------------------
         # 4) Send request
         # --------------------------------------------------------------
-        request = requestS.encode("utf-8")
+        request = json.dumps(payload).encode("utf-8")
         client_socket.sendall(request)
 
 
