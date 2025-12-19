@@ -85,11 +85,17 @@ ARGUMENTS = {
         "value": None,
         "message": "** Use queryCataloga host_id=<host_id> host_uid=<host_uid> host_add=<host_add> host_port=<host_port> user=<user> passwd=<passwd> query_tag=<query_tag> timeout=<timeout>. See code for details **",
     },
-    "filter": {
-        "set": False,
-        "value": '{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".bin", "file_path": "/mnt/internal", "file_name":null, "agent": "local"}',
-        "message": "Backup request is {value}",
+    "filter_lnx": {
+    "set": False,
+    "value": '{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".bin","file_path":"/mnt/internal","file_name":null,"agent":"local"}',
+    "message": "Using Linux filter",
     },
+    "filter_win": {
+        "set": False,
+        "value": '{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".bin","file_path":"C:/CelPlan/CellWireless RU/Spectrum/Completed","file_name":null,"agent":"local"}',
+        "message": "Using Windows filter",
+    },
+
 }
 
 def send_to_zabbix_trapper(hostname: str, json_data: str):
@@ -167,6 +173,8 @@ def main():
             f'{arg.data["passwd"]["value"]} '
             f'{filter_value} '
         )
+        
+        print(requestS)
 
         # --------------------------------------------------------------
         # 4) Send request

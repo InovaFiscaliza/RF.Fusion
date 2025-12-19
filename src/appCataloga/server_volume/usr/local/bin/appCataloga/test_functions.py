@@ -26,26 +26,9 @@ from db.dbHandlerBKP import dbHandlerBKP
 import config as k
 
 def main():
-    # -------------------------------------------------------
-    # INITIALIZE Databse
-    # -------------------------------------------------------
-    log = sh.log(target_screen=False)
-    try:
-        db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
-    except Exception as e:
-        log.error(f"[INIT] Database init failed: {e}")
-        sys.exit(1)
-
-    test = db.host_check_free(host_id=10510,
-                              task_type=k.FILE_TASK_BACKUP_TYPE
-                              )
+    host_uid = "CWSM211001"
+    is_windows = "CW" in host_uid
     
-    row = db.read_file_task(
-                task_status=k.TASK_PENDING,
-                task_type=k.FILE_TASK_BACKUP_TYPE,
-                check_host_busy=True,
-            )
-    
-    print(row)
+    print(is_windows)
 if __name__ == "__main__":
     main()
