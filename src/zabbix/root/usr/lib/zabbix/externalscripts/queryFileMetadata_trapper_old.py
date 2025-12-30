@@ -13,6 +13,7 @@ Returns:
 import socket
 import sys
 import json
+import re
 import os
 import subprocess
 from typing import Dict, Any
@@ -30,6 +31,7 @@ ARGUMENTS = {
         "set": False,
         "value": k.ACAT_DEFAULT_HOST_ID,
         "message": "Using default host id",
+        "types": ["warning", "default"],
     },
     "host_uid": {
         "set": False,
@@ -89,38 +91,6 @@ ARGUMENTS = {
 
 
 # ------------------------------------------------------------------------------
-# Utility
-# ------------------------------------------------------------------------------
-
-def normalize_json(value: str) -> Dict[str, Any]:
-    """
-    Normalize JSON received from Zabbix macros.
-    Handles escaped quotes and outer string wrapping.
-    """
-    if not isinstance(value, str):
-        return value
-
-    v = value.strip()
-
-    # Remove outer quotes if present
-    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
-        v = v[1:-1]
-
-    # Unescape quotes coming from Zabbix
-    v = v.replace('\\"', '"')
-
-    return json.loads(v)
-
-
-def hide_sensitive_data(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a copy of the payload with sensitive fields masked."""
-    safe = payload.copy()
-    if "passwd" in safe:
-        safe["passwd"] = "*****"
-    return safe
-
-
-# ------------------------------------------------------------------------------
 # Zabbix trapper sender
 # ------------------------------------------------------------------------------
 
@@ -151,6 +121,18 @@ def send_to_zabbix_trapper(hostname: str, json_data: str) -> None:
 
 
 # ------------------------------------------------------------------------------
+# Utility
+# ------------------------------------------------------------------------------
+
+def hide_sensitive_data(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of the payload with sensitive fields masked."""
+    safe = payload.copy()
+    if "passwd" in safe:
+        safe["passwd"] = "*****"
+    return safe
+
+
+# ------------------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------------------
 
@@ -163,27 +145,24 @@ def main():
     client_socket.settimeout(arg.data["timeout"]["value"])
 
     try:
-        # ------------------------------------------------------------------
-        # 1) Connect to appCataloga server
-        # ------------------------------------------------------------------
         client_socket.connect((k.ACAT_SERVER_ADD, k.ACAT_SERVER_PORT))
 
         # ------------------------------------------------------------------
-        # 2) Detect host OS (heuristic)
+        # 1) Detect host OS (heuristic)
         # ------------------------------------------------------------------
         host_uid = arg.data["host_uid"]["value"]
         is_windows = "CW" in host_uid  # documented heuristic
 
         # ------------------------------------------------------------------
-        # 3) Select and normalize filter (DICT, not string)
+        # 2) Select and normalize filter (DICT, not string)
         # ------------------------------------------------------------------
         if is_windows:
-            filter_value = normalize_json(arg.data["filter_win"]["value"])
+            filter_value = json.loads(arg.data["filter_win"]["value"])
         else:
-            filter_value = normalize_json(arg.data["filter_lnx"]["value"])
+            filter_value = json.loads(arg.data["filter_lnx"]["value"])
 
         # ------------------------------------------------------------------
-        # 4) Build JSON payload
+        # 3) Build JSON payload (final protocol)
         # ------------------------------------------------------------------
         payload = {
             "query_tag": arg.data["query_tag"]["value"],
@@ -196,7 +175,8 @@ def main():
             "filter": filter_value,
         }
 
-        client_socket.sendall(json.dumps(payload).encode("utf-8"))
+        request_bytes = json.dumps(payload).encode("utf-8")
+        client_socket.sendall(request_bytes)
 
     except Exception as e:
         error_json = json.dumps({
@@ -209,7 +189,7 @@ def main():
         return
 
     # ----------------------------------------------------------------------
-    # 5) Receive response
+    # 4) Receive response (robust TCP read)
     # ----------------------------------------------------------------------
     try:
         response_bytes = b""
@@ -232,7 +212,7 @@ def main():
         return
 
     # ----------------------------------------------------------------------
-    # 6) Extract JSON payload from server response
+    # 5) Extract JSON payload from server response
     # ----------------------------------------------------------------------
     start_index = response.lower().rfind(k.START_TAG.decode())
     end_index = response.lower().rfind(k.END_TAG.decode())
@@ -241,6 +221,7 @@ def main():
 
     try:
         dict_output = json.loads(json_output)
+
         dict_output["request"] = hide_sensitive_data(payload)
         dict_output["status_query"] = 1
         dict_output["message_query"] = wm.warning_msg
