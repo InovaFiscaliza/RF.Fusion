@@ -636,222 +636,7 @@ class sftpConnection:
         except Exception as e:
             self.log.error(f"Error closing SFTP/SSH for '{self.host_uid}'({self.host_add}). {e}")
 
-    # ----------------------------- metadata helpers ---------------------------
-    def _stat_to_metadata(self, attrs: Any, filename: str, created_ts: Optional[int]) -> Dict[str, Any]:
-        """Build a metadata mapping from SFTPAttributes and filename.
 
-        Args:
-            attrs (paramiko.SFTPAttributes): Attributes returned by SFTP.stat().
-            filename (str): Absolute remote path used for deriving name/path/ext.
-            created_ts (int|None): Creation time as epoch seconds if available,
-                otherwise None. When None or invalid, the modified time is reused.
-
-        Returns:
-            dict: Metadata fields expected by downstream consumers, including:
-                - NA_FILE (str): Basename.
-                - NA_PATH (str): Directory path.
-                - NA_EXTENSION (str): File extension (with dot).
-                - VL_FILE_SIZE_KB (int): Size rounded down to KB.
-                - DT_FILE_CREATED (datetime): Creation timestamp.
-                - DT_FILE_MODIFIED (datetime): Last modification timestamp.
-                - DT_FILE_ACCESSED (datetime): Last access timestamp.
-                - NA_OWNER (int): Numeric user owner.
-                - NA_GROUP (int): Numeric group owner.
-                - NA_PERMISSIONS (str): Symbolic permissions, e.g., '-rw-r--r--'.
-        """
-        size_kb = (attrs.st_size // 1024) if getattr(attrs, "st_size", 0) else 0
-
-        dt_modified = datetime.fromtimestamp(getattr(attrs, "st_mtime", 0) or int(time.time()))
-        dt_accessed = datetime.fromtimestamp(getattr(attrs, "st_atime", 0) or int(time.time()))
-        dt_created = dt_modified
-        try:
-            if created_ts and created_ts > 0:
-                dt_created = datetime.fromtimestamp(created_ts)
-        except Exception:
-            pass
-
-        permissions = stat.filemode(getattr(attrs, "st_mode", 0o100644))
-        _, ext = os.path.splitext(filename)
-
-        return {
-            "NA_FILE": os.path.basename(filename),
-            "NA_PATH": os.path.dirname(filename),
-            "NA_FULL_PATH": f"{os.path.dirname(filename)}/{os.path.basename(filename)}",
-            "NA_EXTENSION": ext,
-            "VL_FILE_SIZE_KB": size_kb,
-            "DT_FILE_CREATED": dt_created,
-            "DT_FILE_MODIFIED": dt_modified,
-            "DT_FILE_ACCESSED": dt_accessed,
-            "NA_OWNER": getattr(attrs, "st_uid", 0),
-            "NA_GROUP": getattr(attrs, "st_gid", 0),
-            "NA_PERMISSIONS": permissions,
-        }
-
-    def _get_metadata_batch_rev1(self, file_list: List[str]) -> List[Dict[str, Any]]:
-        """
-        REV3 — Fast, safe and RFeye-compatible metadata extraction.
-        Works with any file count (5k+), no xargs -0, no bash -lc,
-        no command-line overflow, no busybox incompatibilities.
-        """
-
-        if not file_list:
-            return []
-
-        results: List[Dict[str, Any]] = []
-
-        # Lista enviada por stdin (evita overflow de argumentos)
-        file_list_str = "\n".join(file_list)
-
-        # Comando compatível com Debian7 + BusyBox + Dash
-        # Executa 'stat' linha por linha, nunca estoura limite.
-        cmd = "while read f; do stat -c '%n|%s|%W|%Y|%X|%U|%G|%f' \"$f\"; done"
-
-        try:
-            stdin, stdout, stderr = self.ssh_client.exec_command(cmd)
-
-            # Envia a lista de arquivos como stdin
-            stdin.write(file_list_str)
-            stdin.channel.shutdown_write()
-
-            # Lê saída completa
-            output = stdout.read().decode().strip().splitlines()
-            err = stderr.read().decode().strip()
-            if err:
-                self.log.warning(f"[FAST_META] STDERR from stat: {err}")
-
-        except Exception as e:
-            self.log.error(f"[FAST_META] Failed batch stat on {self.host_uid}: {e}")
-            return []
-
-        # -------------------------
-        # Parse linha por linha
-        # -------------------------
-        for raw in output:
-            try:
-                fullpath, size, ctime, mtime, atime, uid, gid, hex_mode = raw.split("|")
-
-                size_bytes = int(size)
-                size_kb = size_bytes // 1024
-
-                mtime_ts = int(mtime)
-                atime_ts = int(atime)
-                ctime_ts = int(ctime)
-
-                dt_modified = datetime.fromtimestamp(mtime_ts)
-                dt_accessed = datetime.fromtimestamp(atime_ts)
-                dt_created = (
-                    datetime.fromtimestamp(ctime_ts)
-                    if ctime_ts > 0 else dt_modified
-                )
-
-                mode_int = int(hex_mode, 16)
-                permissions = stat.filemode(mode_int)
-
-                filename = os.path.basename(fullpath)
-                dirname = os.path.dirname(fullpath)
-                _, ext = os.path.splitext(filename)
-
-                metadata = {
-                    "NA_FILE": filename,
-                    "NA_PATH": dirname,
-                    "NA_FULL_PATH": f"{dirname}/{filename}",
-                    "NA_EXTENSION": ext,
-                    "VL_FILE_SIZE_KB": size_kb,
-                    "DT_FILE_CREATED": dt_created,
-                    "DT_FILE_MODIFIED": dt_modified,
-                    "DT_FILE_ACCESSED": dt_accessed,
-                    "NA_OWNER": str(uid),
-                    "NA_GROUP": str(gid),
-                    "NA_PERMISSIONS": permissions,
-                }
-
-                results.append(metadata)
-
-            except Exception as e:
-                self.log.error(f"[FAST_META] Failed to parse line '{raw}': {e}")
-                results.append({})
-
-        return results
-
-    def _get_metadata_batch(self, file_list: List[str]) -> List[Dict[str, Any]]:
-        """
-        Fast batch metadata retrieval using a single remote SSH command (Linux hosts only).
-        Output structure is identical to `_stat_to_metadata()`.
-        """
-        if not file_list:
-            return []
-
-        results: List[Dict[str, Any]] = []
-
-        # Prepare command using GNU stat format:
-        # %n = name, %s = size, %W = birth time, %Y = mtime, %X = atime, %U = uid, %G = gid, %a = octal perms
-        quoted_files = " ".join(f"'{f}'" for f in file_list)
-        cmd = (
-            "stat -c '%n|%s|%W|%Y|%X|%U|%G|%f' "  # %f = hex mode (we will convert to symbolic)
-            f"{quoted_files}"
-        )
-
-        try:
-            _, stdout, stderr = self.ssh_client.exec_command(cmd)
-            output = stdout.read().decode().strip().splitlines()
-
-        except Exception as e:
-            self.log.error(f"[FAST_META] Failed batch stat on {self.host_uid}: {e}")
-            raise
-
-        # Process each line returned
-        for raw in output:
-            try:
-                fullpath, size, ctime, mtime, atime, uid, gid, hex_mode = raw.split("|")
-
-                # Convert types
-                size_bytes = int(size)
-                size_kb = size_bytes // 1024
-
-                # Convert timestamps
-                mtime_ts = int(mtime)
-                atime_ts = int(atime)
-                ctime_ts = int(ctime)
-
-                dt_modified = datetime.fromtimestamp(mtime_ts)
-                dt_accessed = datetime.fromtimestamp(atime_ts)
-
-                # If no birth time available, reuse modified
-                dt_created = dt_modified
-                if ctime_ts > 0:
-                    dt_created = datetime.fromtimestamp(ctime_ts)
-
-                # Permissions: convert hex → int → symbolic
-                mode_int = int(hex_mode, 16)
-                permissions = stat.filemode(mode_int)
-
-                # Path components
-                filename = os.path.basename(fullpath)
-                dirname = os.path.dirname(fullpath)
-                _, ext = os.path.splitext(filename)
-
-                # Build metadata dict identical to _stat_to_metadata()
-                metadata = {
-                    "NA_FILE": filename,
-                    "NA_PATH": dirname,
-                    "NA_FULL_PATH": f"{dirname}/{filename}",
-                    "NA_EXTENSION": ext,
-                    "VL_FILE_SIZE_KB": size_kb,
-                    "DT_FILE_CREATED": dt_created,
-                    "DT_FILE_MODIFIED": dt_modified,
-                    "DT_FILE_ACCESSED": dt_accessed,
-                    "NA_OWNER": str(uid),
-                    "NA_GROUP": str(gid),
-                    "NA_PERMISSIONS": permissions,
-                }
-
-                results.append(metadata)
-
-            except Exception as e:
-                self.log.error(f"[FAST_META] Failed to parse line '{raw}': {e}")
-                results.append({})
-
-        return results
     
     def detect_remote_os(self):
         """
@@ -919,8 +704,8 @@ class sftpConnection:
         # ---------------------------------------------------------------
         return "linux"
 
-    
-    def sftp_find_files_rev3(
+
+    def sftp_find_files_with_metadata(
         self,
         remote_path: str,
         pattern: str,
@@ -928,153 +713,168 @@ class sftpConnection:
         newer_than: Optional[str] = None,
     ):
         """
-        Cross-platform remote file discovery.
-        Auto-detects OS (Linux or Windows) and applies correct discovery method.
-
-        Linux   → GNU find
-        Windows → PowerShell Get-ChildItem (optimized)
-
-        Returns:
-            List[str]: absolute file paths.
+        Cross-platform recursive filesystem traversal WITH metadata emission.
         """
 
-        # Normalize path
         remote_path = remote_path.rstrip("/").rstrip("\\")
 
-        # sanitize pattern
         pattern = pattern.strip().replace('"', "").replace("'", "")
         if not pattern.startswith("*"):
             pattern = "*" + pattern
 
-        # ===================================================================
-        # 1) Detect OS
-        # ===================================================================
         os_type = self.detect_remote_os()
-        self.log.entry(f"[DEBUG] Remote OS detected: {os_type}")
+        results: list[dict] = []
 
-        # ===================================================================
-        # 2) Build command per OS
-        # ===================================================================
+        # -----------------------------------------------------------
+        # Log operation start (high-level intent)
+        # -----------------------------------------------------------
+        self.log.entry(
+            f"[META] Traversal start | os={os_type} | "
+            f"path={remote_path} | pattern={pattern} | "
+            f"recursive={'yes' if recursive else 'no'} | "
+            f"incremental={'yes' if newer_than else 'no'}"
+        )
+
+        start = time.monotonic()
+
+        # ============================================================
+        # LINUX BACKEND
+        # ============================================================
         if os_type == "linux":
-            depth = "" if recursive else "-maxdepth 1"
+
             newer = f'-newermt "{newer_than}"' if newer_than else ""
 
-            cmd = f"find {remote_path} {depth} -type f -iname '{pattern}' {newer}"
-            self.log.entry(f"[DEBUG] exec remote (linux): {cmd}")
+            cmd = (
+                f"find {remote_path} -type f -iname '{pattern}' {newer} "
+                "-printf '%p|%s|%C@|%T@|%A@|%U|%G|%m\n'"
+            )
 
-        else:
-            # =========================
-            # Windows PowerShell (OPTIMIZED)
-            # =========================
-            recurse = "-Recurse" if recursive else ""
+            # Log the exact command executed (critical for debugging)
+            self.log.entry(f"[META][LINUX] exec: {cmd}")
 
-            date_filter = ""
-            if newer_than:
-                date_filter = (
-                    f"| Where-Object {{ $_.LastWriteTime -gt (Get-Date -Date '{newer_than}') }}"
+            try:
+                _, stdout, stderr = self.ssh_client.exec_command(
+                    cmd, timeout=k.HOST_BUSY_TIMEOUT
                 )
 
-            # Optimized PowerShell command:
-            # -File                     → avoids directory objects
-            # -ErrorAction SilentlyContinue → avoids ACL stalls
-            # ForEach-Object FullName   → lower overhead than Select-Object
-            cmd = (
-                'powershell -NoProfile -Command '
-                '"Get-ChildItem '
-                f'-Path \'{remote_path}\' '
-                f'-Filter \'{pattern}\' '
-                '-File '
-                f'{recurse} '
-                '-ErrorAction SilentlyContinue '
-                f'{date_filter} | '
-                'ForEach-Object { $_.FullName }"'
+                for raw in iter(stdout.readline, ""):
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+
+                    fullpath, size, c_at, m_at, a_at, uid, gid, mode = raw.split("|")
+
+                    filename = os.path.basename(fullpath)
+                    dirname  = os.path.dirname(fullpath)
+                    _, ext   = os.path.splitext(filename)
+
+                    results.append({
+                        "NA_FULL_PATH": fullpath,
+                        "NA_PATH": dirname,
+                        "NA_FILE": filename,
+                        "NA_EXTENSION": ext,
+                        "VL_FILE_SIZE_KB": int(int(size) // 1024),
+                        "DT_FILE_CREATED": datetime.fromtimestamp(float(c_at)),
+                        "DT_FILE_MODIFIED": datetime.fromtimestamp(float(m_at)),
+                        "DT_FILE_ACCESSED": datetime.fromtimestamp(float(a_at)),
+                        "NA_OWNER": str(uid),
+                        "NA_GROUP": str(gid),
+                        "NA_PERMISSIONS": stat.filemode(int(mode, 8)),
+                    })
+
+                err = stderr.read().decode("utf-8", errors="ignore").strip()
+                if err:
+                    self.log.warning(f"[META][LINUX] STDERR: {err}")
+
+            except Exception as e:
+                self.log.error(f"[META][LINUX] discovery failed: {e}")
+                return []
+
+        # ============================================================
+        # WINDOWS BACKEND
+        # ============================================================
+        elif os_type == "windows":
+
+            recurse = "-Recurse" if recursive else ""
+            date_guard = f"$cutoff = Get-Date '{newer_than}';" if newer_than else ""
+
+            ps_cmd = (
+                f"{date_guard}"
+                f"Get-ChildItem -Path '{remote_path}' "
+                f"-Filter '{pattern}' -File {recurse} "
+                f"-ErrorAction SilentlyContinue | "
+                f"{'Where-Object { $_.CreationTimeUtc -gt $cutoff } | ' if newer_than else ''}"
+                f"ForEach-Object {{ "
+                f"[string]::Join('|',"
+                f"$_.FullName,"
+                f"$_.Length,"
+                f"$_.CreationTimeUtc.ToString('o'),"
+                f"$_.LastWriteTimeUtc.ToString('o'),"
+                f"'NTFS'"
+                f") }}"
             )
 
-            self.log.entry(f"[DEBUG] exec remote (windows): {cmd}")
+            cmd = f'powershell -NoProfile -Command "{ps_cmd}"'
 
-        # ===================================================================
-        # 3) Execute command
-        # ===================================================================
-        try:
-            stdin, stdout, stderr = self.ssh_client.exec_command(
-                cmd, timeout=k.HOST_BUSY_TIMEOUT
-            )
+            # Log the exact command executed (critical for debugging)
+            self.log.entry(f"[META][WINDOWS] exec: {cmd}")
 
-            clean = []
+            try:
+                _, stdout, stderr = self.ssh_client.exec_command(
+                    cmd, timeout=k.HOST_BUSY_TIMEOUT
+                )
 
-            # Read stdout incrementally (non-blocking behavior)
-            for line in iter(stdout.readline, ""):
-                line = line.strip()
-                if line:
-                    clean.append(line.replace("\\", "/"))
+                for raw in iter(stdout.readline, ""):
+                    raw = raw.strip()
+                    if not raw:
+                        continue
 
-            # Read stderr AFTER stdout is fully consumed
-            err = stderr.read().decode("utf-8", errors="ignore").strip()
-            if err:
-                self.log.warning(f"[REMOTE STDERR] {err}")
+                    fullpath, size, c_at, m_at, perms = raw.split("|")
+                    fullpath = fullpath.replace("\\", "/")
 
-            return clean
+                    filename = os.path.basename(fullpath)
+                    dirname  = os.path.dirname(fullpath)
+                    _, ext   = os.path.splitext(filename)
 
+                    results.append({
+                        "NA_FULL_PATH": fullpath,
+                        "NA_PATH": dirname,
+                        "NA_FILE": filename,
+                        "NA_EXTENSION": ext,
+                        "VL_FILE_SIZE_KB": int(int(size) // 1024),
+                        "DT_FILE_CREATED": _parse_ps_iso(c_at),
+                        "DT_FILE_MODIFIED": _parse_ps_iso(m_at),
+                        "DT_FILE_ACCESSED": None,
+                        "NA_OWNER": "",
+                        "NA_GROUP": "0",
+                        "NA_PERMISSIONS": perms,
+                    })
 
-        except Exception as e:
-            self.log.error(f"[ERROR] discovery failed on {os_type}: {e}")
+                err = stderr.read().decode("utf-8", errors="ignore").strip()
+                if err:
+                    self.log.warning(f"[META][WINDOWS] STDERR: {err}")
+
+            except Exception as e:
+                self.log.error(f"[META][WINDOWS] discovery failed: {e}")
+                return []
+
+        else:
+            self.log.error(f"[META] Unsupported OS '{os_type}'")
             return []
 
+        elapsed = time.monotonic() - start
+
+        # -----------------------------------------------------------
+        # Log final summary (single authoritative line)
+        # -----------------------------------------------------------
+        self.log.entry(
+            f"[META] Traversal completed | os={os_type} | "
+            f"files={len(results)} | time={elapsed:.2f}s"
+        )
+
+        return results
 
 
-    def sftp_find_files_rev2(
-        self,
-        remote_path: str,
-        pattern: str,
-        recursive: bool = True,
-        newer_than: Optional[str] = None,
-    ):
-        """
-        Fast remote file discovery using GNU find (Debian 7 compatible).
-
-        Args:
-            remote_path (str): Base directory on the target host.
-            pattern (str): File matching pattern ('*.bin', etc.).
-            recursive (bool): Enable recursive search.
-            newer_than (Optional[str]): If provided, use -newermt "<timestamp>"
-                to perform incremental discovery on the remote host.
-
-        Returns:
-            List[str]: List of absolute file paths returned by the remote find.
-        """
-
-        remote_path = remote_path.rstrip("/")
-
-        # sanitize pattern
-        pattern = pattern.strip().replace('"', "").replace("'", "")
-        if not pattern.startswith("*"):
-            pattern = "*" + pattern
-
-        depth = "" if recursive else "-maxdepth 1"
-
-        # incremental part
-        newer = ""
-        if newer_than:
-            # Debian 7 supports -newermt syntax
-            newer = f'-newermt "{newer_than}"'
-
-        cmd = f"find {remote_path} {depth} -type f -iname '{pattern}' {newer}"
-
-        self.log.entry(f"[DEBUG] exec remote: {cmd}")
-
-        try:
-            stdin, stdout, stderr = self.ssh_client.exec_command(cmd, timeout=120)
-            out = stdout.read().decode().splitlines()
-            err = stderr.read().decode().strip()
-
-            if err:
-                self.log.warning(f"[FIND STDERR] {err}")
-
-            return out
-
-        except Exception as e:
-            self.log.error(f"[ERROR] find failed: {e}")
-            return []
 
 
 # =====================================================================
@@ -1420,428 +1220,6 @@ class hostDaemon:
         except Exception as e:
             self.log.warning(f"[HALT] release_halt_flag() encountered an unexpected error: {e}")
             
-    
-    def _get_mapped_files(
-        self,
-        filter_obj: Filter,
-        callBackFileTaskNames,           # ← new: bulk FILE_TASK fetch
-        callBackFileTaskHistoryNames,    # ← new: bulk FILE_TASK_HISTORY fetch
-        callBackGetLastDBDate,
-        host_id: int,
-    ):
-        """
-        Resolve candidate file paths for metadata discovery.
-
-        Responsibilities:
-            - LOCAL: perform fast remote FIND (with optional incremental filter)
-            - REMOTE: read DUE_BACKUP from the remote agent
-            - FILE mode: bypass DB filtering + incremental filtering
-            - ALL / NONE / RANGE / LAST: enable incremental discovery using
-            HOST.DT_LAST_DISCOVERY via callback
-            - Bulk DB filtering: avoid 10k+ SELECTs per discovery
-        """
-
-        # Normalize filter in case a dict was passed
-        if isinstance(filter_obj, dict):
-            filter_obj = Filter(filter_obj, log=self.log)
-
-        mode  = (filter_obj.data.get("mode")  or "").upper()
-        agent = (filter_obj.data.get("agent") or "").upper()
-
-        # --------------------------------------------------------------
-        # Build pattern '*.bin' or file_name override
-        # --------------------------------------------------------------
-        pattern = filter_obj._build_pattern()
-
-        # --------------------------------------------------------------
-        # Incremental discovery threshold (except FILE mode)
-        # --------------------------------------------------------------
-        newer_than = None
-        if mode != Filter.MODE_FILE:
-            try:
-                last_dt = callBackGetLastDBDate(host_id)
-                if last_dt:
-                    newer_than = last_dt.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception as e:
-                self.log.warning(f"[get_mapped_files] last discovery lookup failed: {e}")
-
-        # --------------------------------------------------------------
-        # REMOTE agent → read DUE_BACKUP
-        # --------------------------------------------------------------
-        if agent == "REMOTE":
-            try:
-                self.get_config()
-                raw = self.sftp_conn.read(self.config["DUE_BACKUP"], mode="r")
-                if not raw:
-                    return []
-
-                return [
-                    line.strip()
-                    for line in raw.decode("utf-8", errors="ignore")
-                            .replace("\x00", "")
-                            .splitlines()
-                    if line.strip()
-                ]
-
-            except Exception as e:
-                self.log.warning(f"[get_mapped_files] REMOTE read failed: {e}")
-                return []
-
-        # --------------------------------------------------------------
-        # LOCAL agent → fast find (with optional incremental)
-        # --------------------------------------------------------------
-        elif agent == "LOCAL":
-            remote_dir = filter_obj.data.get("file_path", k.DEFAULT_DATA_FOLDER)
-
-            candidates = self.sftp_conn.sftp_find_files_rev3(
-                remote_path=remote_dir,
-                pattern=pattern,
-                recursive=True,
-                newer_than=newer_than,
-            )
-
-        else:
-            self.log.error(f"[get_mapped_files] Invalid agent '{agent}'")
-            return []
-
-        # --------------------------------------------------------------
-        # FILE MODE → return raw file list (no DB filtering)
-        # --------------------------------------------------------------
-        if mode == Filter.MODE_FILE:
-            return candidates
-
-        # --------------------------------------------------------------
-        # Bulk DB filtering (super fast)
-        # --------------------------------------------------------------
-        try:
-            task_names       = set(callBackFileTaskNames(host_id))          # FILE_TASK
-            task_hist_names  = set(callBackFileTaskHistoryNames(host_id))   # FILE_TASK_HISTORY
-        except Exception as e:
-            self.log.error(f"[get_mapped_files] Failed bulk history load: {e}")
-            task_names = set()
-            task_hist_names = set()
-
-        # --------------------------------------------------------------
-        # Filter only files not seen in FILE_TASK or FILE_TASK_HISTORY
-        # --------------------------------------------------------------
-        filtered = []
-        for path in candidates:
-            name = os.path.basename(path)
-
-            if name in task_names:
-                continue
-            if name in task_hist_names:
-                continue
-
-            filtered.append(path)
-
-        return filtered
-
-
-    
-    def _get_metadata_printf(self, remote_dir: str, pattern: str, newer_than: Optional[str]):
-        """
-        Ultra-fast metadata extraction using GNU find -printf.
-        Compatible with Debian 7 findutils.
-        Extracts: fullpath, size, ctime, mtime, atime, uid, gid, mode.
-
-        Returns:
-            List[dict]: Unified metadata list ready for FILE_TASK/FILE_HISTORY.
-        """
-
-        remote_dir = remote_dir.rstrip("/")
-        newer = f'-newermt "{newer_than}"' if newer_than else ""
-        pattern = pattern.strip().replace('"', "").replace("'", "")
-        if not pattern.startswith("*"):
-            pattern = "*" + pattern
-
-        cmd = (
-            f"find {remote_dir} -type f -iname '{pattern}' {newer} "
-            "-printf '%p|%s|%C@|%T@|%A@|%U|%G|%m\n'"
-        )
-
-        try:
-            stdin, stdout, stderr = self.sftp_conn.ssh_client.exec_command(cmd, timeout=k.HOST_BUSY_TIMEOUT)
-            output = stdout.read().decode().strip().splitlines()
-
-            err = stderr.read().decode().strip()
-            if err:
-                self.log.warning(f"[PRINTF_META] STDERR from find: {err}")
-
-        except Exception as e:
-            self.log.error(f"[PRINTF_META] Failed find -printf: {e}")
-            return []
-
-        results = []
-        for raw in output:
-            try:
-                fullpath, size, c_at, m_at, a_at, uid, gid, mode = raw.split("|")
-
-                filename = os.path.basename(fullpath)
-                dirname = os.path.dirname(fullpath)
-                _, ext = os.path.splitext(filename)
-
-                size_kb = int(int(size) // 1024)
-
-                dt_created  = datetime.fromtimestamp(float(c_at))
-                dt_modified = datetime.fromtimestamp(float(m_at))
-                dt_accessed = datetime.fromtimestamp(float(a_at))
-
-                permissions = stat.filemode(int(mode, 8))  # mode already octal
-
-                results.append({
-                    "NA_FULL_PATH": fullpath,
-                    "NA_PATH": dirname,
-                    "NA_FILE": filename,
-                    "NA_EXTENSION": ext,
-                    "VL_FILE_SIZE_KB": size_kb,
-                    "DT_FILE_CREATED": dt_created,
-                    "DT_FILE_MODIFIED": dt_modified,
-                    "DT_FILE_ACCESSED": dt_accessed,
-                    "NA_OWNER": str(uid),
-                    "NA_GROUP": str(gid),
-                    "NA_PERMISSIONS": permissions,
-                })
-
-            except Exception as e:
-                self.log.error(f"[PRINTF_META] PARSE ERROR '{raw}': {e}")
-                results.append({})
-
-        return results
-    
-    def _get_metadata_powershell(
-        self,
-        file_list: list[str],
-        newer_than: str | None = None,
-    ):
-        """
-        Windows metadata extraction using PowerShell with:
-
-        • Adaptive batch sizing (AIMD)
-        • Command-line CHARACTER BUDGET control
-        • Index-based stdout (no FullPath returned)
-        • Incremental filter by CreationTimeUtc
-        • No STDIN, no ACL, no LastAccessTime
-        • One-liner PowerShell only
-
-        This version is stable against:
-        • Windows 8191-char command line limit
-        • Variable path lengths
-        • Oscillating batch sizes
-        """
-
-        if not file_list:
-            return []
-
-        import time
-
-        # ============================================================
-        # ADAPTIVE BATCH (AIMD) PARAMETERS
-        # ============================================================
-        PS_BATCH_MIN = 20
-        PS_BATCH_MAX = 100
-
-        batch_target = 30          # AIMD target (desired batch size)
-        stable_batches = 0
-
-        STABLE_THRESHOLD = 5       # batches before additive increase
-        MAX_BATCH_TIME = 1.2       # seconds
-
-        # ============================================================
-        # COMMAND LINE CHARACTER BUDGET
-        #
-        # Windows limit ≈ 8191 chars
-        # Use a conservative safety margin.
-        # ============================================================
-        MAX_CMD_CHARS = 7000
-
-        results: list[dict] = []
-
-        # ============================================================
-        # Helpers
-        # ============================================================
-        def _ps_quote(path: str) -> str:
-            # PowerShell-safe single-quoted literal
-            return "'" + path.replace("/", "\\").replace("'", "''") + "'"
-
-        total = len(file_list)
-        idx = 0
-        batch_idx = 0
-
-        # ============================================================
-        # Incremental cutoff (evaluated inside PowerShell)
-        # ============================================================
-        ps_date_guard = ""
-        if newer_than:
-            ps_date_guard = f"$cutoff = Get-Date '{newer_than}'; "
-
-        # ============================================================
-        # Static PowerShell overhead (everything except the paths)
-        # Used to compute character budget safely.
-        # ============================================================
-        ps_static = (
-            f"{ps_date_guard}"
-            f"$i = 0; "
-            f"foreach ($p in @()) {{ "
-            f"if (Test-Path -LiteralPath $p) {{ "
-            f"$item = Get-Item -LiteralPath $p; "
-            f"{'if ($item.CreationTimeUtc -le $cutoff) { $i++; continue } ' if newer_than else ''}"
-            f"[string]::Join('|',"
-            f"$i,"
-            f"$item.Length,"
-            f"$item.CreationTimeUtc.ToString('o'),"
-            f"$item.LastWriteTimeUtc.ToString('o'),"
-            f"'NTFS'"
-            f") "
-            f"}} "
-            f"$i++; "
-            f"}}"
-        )
-
-        # Base command overhead (powershell.exe + flags + script)
-        BASE_CMD_LEN = len(
-            f'powershell -NoProfile -Command "{ps_static}"'
-        )
-
-        # ============================================================
-        # MAIN LOOP
-        # ============================================================
-        while idx < total:
-
-            # --------------------------------------------------------
-            # Build batch constrained by:
-            #   1) AIMD target (batch_target)
-            #   2) Command-line character budget
-            # --------------------------------------------------------
-            batch = []
-            batch_chars = BASE_CMD_LEN
-
-            while idx < total and len(batch) < batch_target:
-                quoted = _ps_quote(file_list[idx])
-                extra = len(quoted) + 1  # +1 for comma
-
-                if batch_chars + extra > MAX_CMD_CHARS:
-                    break
-
-                batch.append(file_list[idx])
-                batch_chars += extra
-                idx += 1
-
-            if not batch:
-                # Extremely long single path fallback (process alone)
-                batch = [file_list[idx]]
-                idx += 1
-
-            batch_idx += 1
-
-            self.log.entry(
-                f"[PS_META] Batch {batch_idx} | "
-                f"{idx}/{total} files | "
-                f"batch_target={batch_target} | "
-                f"batch_real={len(batch)} | "
-                f"cmd_chars={batch_chars}"
-            )
-
-            paths_ps = ",".join(_ps_quote(p) for p in batch)
-
-            # --------------------------------------------------------
-            # PowerShell ONE-LINER (index-based output)
-            # --------------------------------------------------------
-            ps_cmd = (
-                f"{ps_date_guard}"
-                f"$i = 0; "
-                f"foreach ($p in @({paths_ps})) {{ "
-                f"if (Test-Path -LiteralPath $p) {{ "
-                f"$item = Get-Item -LiteralPath $p; "
-                f"{'if ($item.CreationTimeUtc -le $cutoff) { $i++; continue } ' if newer_than else ''}"
-                f"[string]::Join('|',"
-                f"$i,"
-                f"$item.Length,"
-                f"$item.CreationTimeUtc.ToString('o'),"
-                f"$item.LastWriteTimeUtc.ToString('o'),"
-                f"'NTFS'"
-                f") "
-                f"}} "
-                f"$i++; "
-                f"}}"
-            )
-
-            cmd = f'powershell -NoProfile -Command "{ps_cmd}"'
-
-            batch_ok = True
-            start = time.monotonic()
-
-            try:
-                stdin, stdout, stderr = self.sftp_conn.ssh_client.exec_command(
-                    cmd,
-                    timeout=k.HOST_BUSY_TIMEOUT,
-                )
-
-                # ----------------------------------------------------
-                # Read stdout (index-based)
-                # ----------------------------------------------------
-                while True:
-                    line = stdout.readline()
-                    if not line:
-                        break
-
-                    raw = line.strip()
-                    if not raw:
-                        continue
-
-                    try:
-                        idx_in_batch, size, c_at, m_at, permissions = raw.split("|")
-                        idx_in_batch = int(idx_in_batch)
-
-                        fullpath = batch[idx_in_batch]
-
-                        filename = ntpath.basename(fullpath)
-                        dirname = ntpath.dirname(fullpath)
-                        _, ext = ntpath.splitext(filename)
-
-                        results.append({
-                            "NA_FULL_PATH": fullpath.replace("\\", "/"),
-                            "NA_PATH": dirname.replace("\\", "/"),
-                            "NA_FILE": filename,
-                            "NA_EXTENSION": ext,
-                            "VL_FILE_SIZE_KB": int(int(size) // 1024),
-                            "DT_FILE_CREATED": _parse_ps_iso(c_at),
-                            "DT_FILE_MODIFIED": _parse_ps_iso(m_at),
-                            "NA_OWNER": "",
-                            "NA_GROUP": "0",
-                            "NA_PERMISSIONS": permissions,
-                        })
-
-                    except Exception as e:
-                        self.log.error(f"[PS_META] PARSE ERROR '{raw}': {e}")
-                        batch_ok = False
-
-                err = stderr.read().decode("utf-8", errors="ignore").strip()
-                if err:
-                    self.log.warning(f"[PS_META] STDERR: {err}")
-                    batch_ok = False
-
-            except Exception as e:
-                self.log.error(f"[PS_META] Batch {batch_idx} failed: {e}")
-                batch_ok = False
-
-            elapsed = time.monotonic() - start
-
-            # --------------------------------------------------------
-            # AIMD CONTROL
-            # --------------------------------------------------------
-            if batch_ok and elapsed <= MAX_BATCH_TIME:
-                stable_batches += 1
-            else:
-                batch_target = max(PS_BATCH_MIN, batch_target // 2)
-                stable_batches = 0
-
-            if stable_batches >= STABLE_THRESHOLD:
-                batch_target = min(PS_BATCH_MAX, batch_target + 5)
-                stable_batches = 0
-
-        return results
-
 
     def get_metadata_files(
         self,
@@ -1852,118 +1230,189 @@ class hostDaemon:
         callBackGetLastDBDate,
     ):
         """
-        Final discovery stage responsible for extracting file metadata
-        from the remote host.
+        High-level metadata discovery orchestrator.
 
-        Workflow:
-            1) Resolve the list of mapped files based on discovery filters
-            and database state (incremental logic).
-            2) Determine the remote operating system.
-            3) Extract file metadata using the fastest method available
-            for the detected OS:
-                • Linux   → GNU find with -printf
-                • Windows → PowerShell Get-ChildItem
-            4) Apply metadata-level filters (RANGE, LAST, etc.).
-            5) Return normalized metadata ready for persistence.
+        This function represents the FINAL stage of discovery and is responsible
+        for producing normalized file metadata ready for persistence.
 
-        This function is OS-aware and guarantees that metadata extraction
-        is performed using native and efficient mechanisms for each platform.
+        Design principles:
+            • Traversal-driven (metadata is collected during filesystem walk)
+            • OS-aware (Linux / Windows handled transparently)
+            • Incremental-first (avoids reprocessing historical data)
+            • DB-aware (deduplication is centralized in Python)
+            • Stateless on the remote host (no temp files, no caching)
 
-        Args:
-            host_id (int):
-                Database identifier of the remote host.
-            filter_obj (Filter):
-                Parsed filter object containing discovery rules.
-            callBackFileTask:
-                Callback used to resolve FILE_TASK names.
-            callBackFileTaskHistory:
-                Callback used to resolve FILE_TASK_HISTORY names.
-            callBackGetLastDBDate:
-                Callback returning the last known file timestamp
-                stored in the database.
+        Execution flow:
+            1) Resolve discovery parameters (path, pattern, incremental cutoff).
+            2) Perform recursive filesystem traversal WITH metadata emission.
+            3) Apply bulk DB deduplication using FILE_TASK and FILE_TASK_HISTORY.
+            4) Apply logical filters (FILE / RANGE / LAST / ALL).
+            5) Return clean metadata structures for downstream pipelines.
 
-        Returns:
-            List[dict]:
-                List of normalized metadata dictionaries ready to be
-                consumed by FILE_TASK / FILE_TASK_HISTORY pipelines.
+        Important:
+            • Remote side ONLY performs filesystem traversal.
+            • All business rules remain in Python.
+            • This guarantees identical semantics on Linux and Windows.
         """
 
         try:
             # -----------------------------------------------------------
-            # 1) Resolve mapped file list (incremental discovery stage)
+            # Normalize filter object
+            #
+            # Allows callers to pass either a Filter instance or a raw dict.
+            # Ensures a single, consistent interface downstream.
             # -----------------------------------------------------------
-            file_list = self._get_mapped_files(
-                filter_obj=filter_obj,
-                callBackFileTaskNames=callBackFileTask,
-                callBackFileTaskHistoryNames=callBackFileTaskHistory,
-                callBackGetLastDBDate=callBackGetLastDBDate,
-                host_id=host_id,
-            )
+            if isinstance(filter_obj, dict):
+                filter_obj = Filter(filter_obj, log=self.log)
 
-            if not file_list:
-                return []
+            mode  = (filter_obj.data.get("mode")  or "").upper()
+            agent = (filter_obj.data.get("agent") or "").upper()
 
             # -----------------------------------------------------------
-            # 2) Prepare metadata extraction parameters
+            # Resolve discovery scope
+            #
+            # remote_dir → root directory for traversal
+            # pattern    → filename glob (*.bin, override, etc.)
             # -----------------------------------------------------------
             remote_dir = filter_obj.data.get(
                 "file_path", k.DEFAULT_DATA_FOLDER
             )
             pattern = filter_obj._build_pattern()
 
-            last_dt = callBackGetLastDBDate(host_id)
-            newer_than = (
-                last_dt.strftime("%Y-%m-%d %H:%M:%S")
-                if last_dt
-                else None
+            # -----------------------------------------------------------
+            # Incremental discovery cutoff
+            #
+            # Used to avoid reprocessing files older than the last
+            # successful discovery (except in FILE mode).
+            # -----------------------------------------------------------
+            newer_than = None
+            if mode != Filter.MODE_FILE:
+                last_dt = callBackGetLastDBDate(host_id)
+                if last_dt:
+                    newer_than = last_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+            self.log.entry(
+                f"[META] Discovery start | host={host_id} | agent={agent} | "
+                f"mode={mode} | path={remote_dir} | pattern={pattern} | "
+                f"incremental={'yes' if newer_than else 'no'}"
             )
 
             # -----------------------------------------------------------
-            # 3) Detect remote operating system
+            # Metadata discovery backend
+            #
+            # REMOTE → legacy/special mode: read explicit file list
+            # LOCAL  → traversal-driven discovery with metadata emission
             # -----------------------------------------------------------
-            system_os = self.sftp_conn.detect_remote_os()
+            if agent == "REMOTE":
+                self.get_config()
+                raw = self.sftp_conn.read(self.config["DUE_BACKUP"], mode="r")
+                if not raw:
+                    return []
 
-            # -----------------------------------------------------------
-            # 4) Extract metadata using OS-specific backend
-            # -----------------------------------------------------------
-            if system_os == "linux":
-                metadata = self._get_metadata_printf(
-                    remote_dir=remote_dir,
+                # REMOTE mode does NOT collect real metadata.
+                # It only envelopes paths into a minimal structure.
+                metadata = []
+                for line in raw.decode("utf-8", errors="ignore") \
+                                .replace("\x00", "") \
+                                .splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    filename = os.path.basename(line)
+                    dirname  = os.path.dirname(line)
+                    _, ext   = os.path.splitext(filename)
+
+                    metadata.append({
+                        "NA_FULL_PATH": line.replace("\\", "/"),
+                        "NA_PATH": dirname.replace("\\", "/"),
+                        "NA_FILE": filename,
+                        "NA_EXTENSION": ext,
+                        "VL_FILE_SIZE_KB": 0,
+                        "DT_FILE_CREATED": None,
+                        "DT_FILE_MODIFIED": None,
+                        "DT_FILE_ACCESSED": None,
+                        "NA_OWNER": "",
+                        "NA_GROUP": "0",
+                        "NA_PERMISSIONS": "",
+                    })
+
+            elif agent == "LOCAL":
+                # Core path: recursive traversal with native OS backend
+                metadata = self.sftp_conn.sftp_find_files_with_metadata(
+                    remote_path=remote_dir,
                     pattern=pattern,
+                    recursive=True,
                     newer_than=newer_than,
                 )
-
-            elif system_os == "windows":
-                metadata = self._get_metadata_powershell(
-                    file_list=file_list,
-                    newer_than=newer_than,
-                )
-
             else:
-                self.log.error(
-                    f"[get_metadata_files] Unsupported OS '{system_os}' "
-                    "for metadata extraction."
-                )
+                self.log.error(f"[META] Invalid agent '{agent}'")
                 return []
-
-            # Remove empty or invalid metadata entries
-            metadata = [m for m in metadata if m]
 
             if not metadata:
+                self.log.entry("[META] No files discovered")
+                return []
+
+            self.log.entry(
+                f"[META] Discovery completed | files={len(metadata)}"
+            )
+
+            # -----------------------------------------------------------
+            # FILE mode shortcut
+            #
+            # In FILE mode, DB deduplication is intentionally bypassed.
+            # Caller explicitly controls the file list.
+            # -----------------------------------------------------------
+            if mode == Filter.MODE_FILE:
+                filtered = filter_obj.evaluate_metadata(metadata)
+                self.log.entry(
+                    f"[META] FILE mode | returned={len(filtered)}"
+                )
+                return filtered
+
+            # -----------------------------------------------------------
+            # Bulk DB deduplication
+            #
+            # Uses preloaded FILE_TASK and FILE_TASK_HISTORY sets.
+            # Avoids N database lookups and guarantees O(1) checks.
+            # -----------------------------------------------------------
+            task_names      = set(callBackFileTask(host_id))
+            task_hist_names = set(callBackFileTaskHistory(host_id))
+
+            before = len(metadata)
+
+            filtered = [
+                m for m in metadata
+                if m.get("NA_FILE") not in task_names
+                and m.get("NA_FILE") not in task_hist_names
+            ]
+
+            self.log.entry(
+                f"[META] Deduplication | before={before} | after={len(filtered)}"
+            )
+
+            if not filtered:
                 return []
 
             # -----------------------------------------------------------
-            # 5) Apply metadata-level filters (RANGE, LAST, etc.)
+            # Logical metadata filters
+            #
+            # Applies RANGE / LAST / ALL semantics using Filter rules.
             # -----------------------------------------------------------
-            metadata = filter_obj.evaluate_metadata(metadata)
+            final = filter_obj.evaluate_metadata(filtered)
 
-            return metadata
+            self.log.entry(
+                f"[META] Final result | returned={len(final)}"
+            )
+
+            return final
 
         except Exception as e:
-            self.log.error(
-                f"[get_metadata_files] Unexpected error: {e}"
-            )
+            # Catch-all guard: discovery must NEVER crash the worker
+            self.log.error(f"[META] Unexpected error: {e}")
             return []
+
+
 
 
     # ----------------------------------------------------------------------

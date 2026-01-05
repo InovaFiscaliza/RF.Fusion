@@ -864,3 +864,92 @@ class DBHandlerBase:
             self.db_connection.rollback()
             self.log.error(f"[DBHandlerBase] executemany failed: {e}")
             raise
+        
+    def _upsert_batch(
+        self,
+        *,
+        table: str,
+        rows: list[dict],
+        unique_keys: list[str],
+        touch_field: str | None = None,
+        batch_size: int = 1000,
+        commit: bool = True,
+    ) -> int:
+        """
+        Perform a batch UPSERT operation using
+        INSERT ... ON DUPLICATE KEY UPDATE.
+
+        This is a LOW-LEVEL primitive designed for high-throughput ingestion.
+        It must receive homogeneous rows and does not apply business logic.
+        """
+
+        if not rows:
+            return 0
+
+        self._connect()
+        processed = 0
+
+        try:
+            cursor = self.db_connection.cursor()
+
+            # ---------------------------------------------------------
+            # Validate homogeneous schema
+            # ---------------------------------------------------------
+            columns = list(rows[0].keys())
+            for r in rows:
+                if list(r.keys()) != columns:
+                    raise ValueError(
+                        "[DBHandlerBase] _upsert_batch requires homogeneous rows"
+                    )
+
+            cols_sql = ", ".join(columns)
+            placeholders = ", ".join(["%s"] * len(columns))
+
+            update_parts = [
+                f"{col}=VALUES({col})"
+                for col in columns
+                if col not in unique_keys
+            ]
+
+            if touch_field:
+                update_parts.append(f"{touch_field}=NOW()")
+
+            update_sql = ", ".join(update_parts)
+
+            sql = f"""
+                INSERT INTO {table} ({cols_sql})
+                VALUES ({placeholders})
+                ON DUPLICATE KEY UPDATE {update_sql}
+            """
+
+            batch: list[tuple] = []
+
+            for row in rows:
+                batch.append(tuple(row[col] for col in columns))
+
+                if len(batch) >= batch_size:
+                    cursor.executemany(sql, batch)
+                    processed += len(batch)
+                    batch.clear()
+
+            if batch:
+                cursor.executemany(sql, batch)
+                processed += len(batch)
+
+            if commit:
+                self.db_connection.commit()
+
+            self.log.entry(
+                f"[DB] Batch UPSERT | table={table} | rows={processed} | batch={batch_size}"
+            )
+
+            return processed
+
+        except Exception as e:
+            self.db_connection.rollback()
+            self.log.error(f"[DB] Batch UPSERT failed on {table}: {e}")
+            raise
+
+        finally:
+            self._disconnect()
+
