@@ -1,12 +1,13 @@
 #!/usr/bin/python3
 """
-Force cleanup of BUSY hosts and reset RUNNING FILE_TASKs to PENDING.
+Force cleanup of BUSY hosts and reset RUNNING FILE_TASKs and HOST_TASKs to PENDING.
 
 This script must be executed only after stopping all appCataloga workers.
 """
 
 from datetime import datetime
-import sys,os
+import sys, os
+
 # ----------------------------------------------------------------------
 # Load configuration and database modules
 # ----------------------------------------------------------------------
@@ -22,11 +23,10 @@ import shared as sh
 from db.dbHandlerBKP import dbHandlerBKP
 import config as k
 
-
 log = sh.log()
 
 def cleanup_hosts_and_tasks():
-    log.entry("[CLEANUP] Starting forced cleanup (HOST + FILE_TASK)")
+    log.entry("[CLEANUP] Starting forced cleanup (HOST + HOST_TASK + FILE_TASK)")
 
     db = None
     try:
@@ -63,7 +63,36 @@ def cleanup_hosts_and_tasks():
         log.entry(f"[CLEANUP] Reset {len(rows)} RUNNING FILE_TASKs")
 
         # ---------------------------------------------------------
-        # 2) Force release BUSY HOSTs
+        # 2) Reset RUNNING HOST_TASKs → PENDING   (NEW)
+        # ---------------------------------------------------------
+        host_tasks = db._select_rows(
+            table="HOST_TASK",
+            where={"NU_STATUS": k.TASK_RUNNING},
+            cols=["ID_HOST_TASK", "FK_HOST", "NU_PID"],
+        )
+
+        for row in host_tasks:
+            host_task_id = row["ID_HOST_TASK"]
+            host_id = row["FK_HOST"]
+            pid = row.get("NU_PID", 0)
+
+            log.warning(
+                f"[CLEANUP] Resetting HOST_TASK to PENDING "
+                f"(host_task={host_task_id}, host={host_id}, pid={pid})"
+            )
+
+            db.host_task_update(
+                task_id=host_task_id,
+                NU_STATUS=k.TASK_PENDING,
+                NU_PID=0,
+                DT_HOST_TASK=None,
+                NA_MESSAGE="Host task reset to PENDING due to controlled shutdown",
+            )
+
+        log.entry(f"[CLEANUP] Reset {len(host_tasks)} RUNNING HOST_TASKs")
+
+        # ---------------------------------------------------------
+        # 3) Force release BUSY HOSTs
         # ---------------------------------------------------------
         hosts = db._select_rows(
             table="HOST",

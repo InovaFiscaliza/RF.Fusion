@@ -186,6 +186,7 @@ def main() -> None:
                     task_id=task_id,
                     NU_STATUS=k.TASK_RUNNING,
                     NU_PID=os.getpid(),
+                    DT_HOST_TASK=datetime.now(),
                 )
 
             except Exception as e:

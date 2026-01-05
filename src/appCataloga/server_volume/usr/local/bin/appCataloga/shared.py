@@ -30,6 +30,7 @@ import fnmatch
 import stat
 import random
 import ntpath
+import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Tuple, Optional, Union
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -321,22 +322,20 @@ class sftpConnection:
         password: str,
         log: log,
     ) -> None:
-        """Initialize SSH and SFTP connections.
+        """Initialize SSH and SFTP connections with stability tuning.
 
         Args:
             host_uid (str): Unique host identifier (for logs).
-            host_addr (str): Hostname/IP address of the remote host.
+            host_addr (str): Hostname or IP address.
             port (int): SSH port number.
-            user (str): SSH user name.
+            user (str): SSH username.
             password (str): SSH password.
-            log (log): Logger instance to be used.
-
-        Returns:
-            None
+            log (log): Logger instance.
 
         Raises:
             Exception: When connection to remote host fails.
         """
+
         self.log = log
         self.host_uid = host_uid
         self.host_addr = host_addr
@@ -344,21 +343,61 @@ class sftpConnection:
         self.user = user
 
         try:
+            # -------------------------------------------------------------
+            # SSH CLIENT SETUP
+            # -------------------------------------------------------------
             self.ssh_client = paramiko.SSHClient()
-            self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.ssh_client.set_missing_host_key_policy(
+                paramiko.AutoAddPolicy()
+            )
+
+            # -------------------------------------------------------------
+            # CONNECT (timeouts apply ONLY to connection/auth phase)
+            # -------------------------------------------------------------
             self.ssh_client.connect(
-                hostname=host_addr, 
-                port=port, 
-                username=user, 
+                hostname=host_addr,
+                port=port,
+                username=user,
                 password=password,
                 timeout=k.SSH_CONNECT_TIMEOUT,
                 banner_timeout=k.SSH_BANNER_TIMEOUT,
                 auth_timeout=k.SSH_AUTH_TIMEOUT,
-                )
+                look_for_keys=False,
+                allow_agent=False,
+            )
+
+            # -------------------------------------------------------------
+            # TRANSPORT HARDENING
+            # Critical for long-running and high-volume commands
+            # -------------------------------------------------------------
+            transport = self.ssh_client.get_transport()
+            if not transport:
+                raise RuntimeError("SSH transport not available")
+
+            # Prevent idle disconnects (firewalls / OpenSSH)
+            transport.set_keepalive(30)
+
+            # Disable rekey during heavy stdout streaming
+            transport.packetizer.REKEY_BYTES = 2**40
+            transport.packetizer.REKEY_PACKETS = 2**40
+
+            # Increase SSH window size to avoid stdout backpressure
+            transport.window_size = 2**24  # 16 MB
+
+            # -------------------------------------------------------------
+            # SFTP SESSION
+            # -------------------------------------------------------------
             self.sftp = self.ssh_client.open_sftp()
+
+            self.log.entry(
+                f"[SSH] Connected to {self.host_uid} "
+                f"({self.host_addr}:{self.port}) as {self.user}"
+            )
+
         except Exception as e:
             self.log.error(
-                f"Error initializing SSH to '{self.host_uid}'({self.host_addr}). {e}"
+                f"[SSH] Error initializing SSH to "
+                f"'{self.host_uid}' ({self.host_addr}): {e}"
             )
             raise
 
@@ -892,8 +931,8 @@ class sftpConnection:
         Cross-platform remote file discovery.
         Auto-detects OS (Linux or Windows) and applies correct discovery method.
 
-        Linux  → GNU find
-        Windows → PowerShell Get-ChildItem
+        Linux   → GNU find
+        Windows → PowerShell Get-ChildItem (optimized)
 
         Returns:
             List[str]: absolute file paths.
@@ -910,16 +949,13 @@ class sftpConnection:
         # ===================================================================
         # 1) Detect OS
         # ===================================================================
-        
         os_type = self.detect_remote_os()
         self.log.entry(f"[DEBUG] Remote OS detected: {os_type}")
 
         # ===================================================================
         # 2) Build command per OS
         # ===================================================================
-
         if os_type == "linux":
-            # GNU find mode
             depth = "" if recursive else "-maxdepth 1"
             newer = f'-newermt "{newer_than}"' if newer_than else ""
 
@@ -927,50 +963,64 @@ class sftpConnection:
             self.log.entry(f"[DEBUG] exec remote (linux): {cmd}")
 
         else:
-            # Windows PowerShell mode
+            # =========================
+            # Windows PowerShell (OPTIMIZED)
+            # =========================
             recurse = "-Recurse" if recursive else ""
+
             date_filter = ""
             if newer_than:
                 date_filter = (
-                    f'| Where-Object {{ $_.LastWriteTime -gt (Get-Date "{newer_than}") }}'
+                    f"| Where-Object {{ $_.LastWriteTime -gt (Get-Date -Date '{newer_than}') }}"
                 )
 
-            # PowerShell call
-            # -NoProfile evita lentidão
+            # Optimized PowerShell command:
+            # -File                     → avoids directory objects
+            # -ErrorAction SilentlyContinue → avoids ACL stalls
+            # ForEach-Object FullName   → lower overhead than Select-Object
             cmd = (
                 'powershell -NoProfile -Command '
-                f'"Get-ChildItem -Path \\"{remote_path}\\" -Filter \\"{pattern}\\" '
-                f'{recurse} {date_filter} | Select-Object -ExpandProperty FullName"'
+                '"Get-ChildItem '
+                f'-Path \'{remote_path}\' '
+                f'-Filter \'{pattern}\' '
+                '-File '
+                f'{recurse} '
+                '-ErrorAction SilentlyContinue '
+                f'{date_filter} | '
+                'ForEach-Object { $_.FullName }"'
             )
+
             self.log.entry(f"[DEBUG] exec remote (windows): {cmd}")
 
         # ===================================================================
         # 3) Execute command
         # ===================================================================
         try:
-            stdin, stdout, stderr = self.ssh_client.exec_command(cmd, timeout=k.HOST_BUSY_TIMEOUT)
-
-            out = (
-                stdout.read()
-                .decode("utf-8", errors="ignore")
-                .splitlines()
+            stdin, stdout, stderr = self.ssh_client.exec_command(
+                cmd, timeout=k.HOST_BUSY_TIMEOUT
             )
-            err = stderr.read().decode("utf-8", errors="ignore").strip()
 
+            clean = []
+
+            # Read stdout incrementally (non-blocking behavior)
+            for line in iter(stdout.readline, ""):
+                line = line.strip()
+                if line:
+                    clean.append(line.replace("\\", "/"))
+
+            # Read stderr AFTER stdout is fully consumed
+            err = stderr.read().decode("utf-8", errors="ignore").strip()
             if err:
                 self.log.warning(f"[REMOTE STDERR] {err}")
 
-            # Remove linhas vazias e normaliza path em Windows
-            clean = []
-            for line in out:
-                if line.strip():
-                    clean.append(line.strip().replace("\\", "/"))
-
             return clean
+
 
         except Exception as e:
             self.log.error(f"[ERROR] discovery failed on {os_type}: {e}")
             return []
+
+
 
     def sftp_find_files_rev2(
         self,
@@ -1561,123 +1611,234 @@ class hostDaemon:
     
     def _get_metadata_powershell(
         self,
-        remote_dir: str,
-        pattern: str,
-        newer_than: Optional[str],
+        file_list: list[str],
+        newer_than: str | None = None,
     ):
         """
-        Windows implementation of metadata extraction, fully aligned with
-        `_get_metadata_printf`.
+        Windows metadata extraction using PowerShell with:
 
-        Guarantees:
-        • Same keys and data types as Linux backend
-        • Naive local datetime objects
-        • Deterministic parsing (no delimiter collisions)
-        • Correct path splitting for Windows paths
+        • Adaptive batch sizing (AIMD)
+        • Command-line CHARACTER BUDGET control
+        • Index-based stdout (no FullPath returned)
+        • Incremental filter by CreationTimeUtc
+        • No STDIN, no ACL, no LastAccessTime
+        • One-liner PowerShell only
+
+        This version is stable against:
+        • Windows 8191-char command line limit
+        • Variable path lengths
+        • Oscillating batch sizes
         """
 
-        # ------------------------------------------------------------------
-        # 1) Input normalization
-        # ------------------------------------------------------------------
-        remote_dir = remote_dir.rstrip("\\")
-        pattern = pattern.strip().replace('"', "").replace("'", "")
-        if not pattern.startswith("*"):
-            pattern = "*" + pattern
-
-        # Incremental filter equivalent to: find -newermt
-        date_filter = ""
-        if newer_than:
-            date_filter = (
-                f"| Where-Object {{ $_.LastWriteTime -gt (Get-Date '{newer_than}') }}"
-            )
-
-        # ------------------------------------------------------------------
-        # 2) Build PowerShell command
-        # ------------------------------------------------------------------
-        #
-        # Output format (pipe-delimited, SAFE):
-        #   FullPath|Size|Created|Modified|Accessed|Owner|Permissions
-        #
-        cmd = (
-            'powershell -NoProfile -Command '
-            '"Get-ChildItem -Path '
-            f'\\\"{remote_dir}\\\" -Filter \\\"{pattern}\\\" -Recurse '
-            f'{date_filter} | '
-            'ForEach-Object { '
-            '$owner = (Get-Acl $_.FullName).Owner; '
-            '[string]::Join(\'|\', '
-            '$_.FullName, '
-            '$_.Length, '
-            '$_.CreationTime.ToString(\'o\'), '
-            '$_.LastWriteTime.ToString(\'o\'), '
-            '$_.LastAccessTime.ToString(\'o\'), '
-            '$owner, '
-            '\'NTFS\') }"'
-        )
-
-        # ------------------------------------------------------------------
-        # 3) Execute remote command
-        # ------------------------------------------------------------------
-        try:
-            stdin, stdout, stderr = self.sftp_conn.ssh_client.exec_command(
-                cmd, timeout=k.HOST_BUSY_TIMEOUT
-            )
-
-            output = stdout.read().decode(errors="ignore").splitlines()
-            err = stderr.read().decode(errors="ignore").strip()
-
-            if err:
-                self.log.warning(f"[PS_META] STDERR: {err}")
-
-        except Exception as e:
-            self.log.error(f"[PS_META] Failed PowerShell metadata: {e}")
+        if not file_list:
             return []
 
-        # ------------------------------------------------------------------
-        # 4) Parse and normalize metadata (Linux-compatible)
-        # ------------------------------------------------------------------
-        results = []
+        import time
 
-        for raw in output:
+        # ============================================================
+        # ADAPTIVE BATCH (AIMD) PARAMETERS
+        # ============================================================
+        PS_BATCH_MIN = 20
+        PS_BATCH_MAX = 100
+
+        batch_target = 30          # AIMD target (desired batch size)
+        stable_batches = 0
+
+        STABLE_THRESHOLD = 5       # batches before additive increase
+        MAX_BATCH_TIME = 1.2       # seconds
+
+        # ============================================================
+        # COMMAND LINE CHARACTER BUDGET
+        #
+        # Windows limit ≈ 8191 chars
+        # Use a conservative safety margin.
+        # ============================================================
+        MAX_CMD_CHARS = 7000
+
+        results: list[dict] = []
+
+        # ============================================================
+        # Helpers
+        # ============================================================
+        def _ps_quote(path: str) -> str:
+            # PowerShell-safe single-quoted literal
+            return "'" + path.replace("/", "\\").replace("'", "''") + "'"
+
+        total = len(file_list)
+        idx = 0
+        batch_idx = 0
+
+        # ============================================================
+        # Incremental cutoff (evaluated inside PowerShell)
+        # ============================================================
+        ps_date_guard = ""
+        if newer_than:
+            ps_date_guard = f"$cutoff = Get-Date '{newer_than}'; "
+
+        # ============================================================
+        # Static PowerShell overhead (everything except the paths)
+        # Used to compute character budget safely.
+        # ============================================================
+        ps_static = (
+            f"{ps_date_guard}"
+            f"$i = 0; "
+            f"foreach ($p in @()) {{ "
+            f"if (Test-Path -LiteralPath $p) {{ "
+            f"$item = Get-Item -LiteralPath $p; "
+            f"{'if ($item.CreationTimeUtc -le $cutoff) { $i++; continue } ' if newer_than else ''}"
+            f"[string]::Join('|',"
+            f"$i,"
+            f"$item.Length,"
+            f"$item.CreationTimeUtc.ToString('o'),"
+            f"$item.LastWriteTimeUtc.ToString('o'),"
+            f"'NTFS'"
+            f") "
+            f"}} "
+            f"$i++; "
+            f"}}"
+        )
+
+        # Base command overhead (powershell.exe + flags + script)
+        BASE_CMD_LEN = len(
+            f'powershell -NoProfile -Command "{ps_static}"'
+        )
+
+        # ============================================================
+        # MAIN LOOP
+        # ============================================================
+        while idx < total:
+
+            # --------------------------------------------------------
+            # Build batch constrained by:
+            #   1) AIMD target (batch_target)
+            #   2) Command-line character budget
+            # --------------------------------------------------------
+            batch = []
+            batch_chars = BASE_CMD_LEN
+
+            while idx < total and len(batch) < batch_target:
+                quoted = _ps_quote(file_list[idx])
+                extra = len(quoted) + 1  # +1 for comma
+
+                if batch_chars + extra > MAX_CMD_CHARS:
+                    break
+
+                batch.append(file_list[idx])
+                batch_chars += extra
+                idx += 1
+
+            if not batch:
+                # Extremely long single path fallback (process alone)
+                batch = [file_list[idx]]
+                idx += 1
+
+            batch_idx += 1
+
+            self.log.entry(
+                f"[PS_META] Batch {batch_idx} | "
+                f"{idx}/{total} files | "
+                f"batch_target={batch_target} | "
+                f"batch_real={len(batch)} | "
+                f"cmd_chars={batch_chars}"
+            )
+
+            paths_ps = ",".join(_ps_quote(p) for p in batch)
+
+            # --------------------------------------------------------
+            # PowerShell ONE-LINER (index-based output)
+            # --------------------------------------------------------
+            ps_cmd = (
+                f"{ps_date_guard}"
+                f"$i = 0; "
+                f"foreach ($p in @({paths_ps})) {{ "
+                f"if (Test-Path -LiteralPath $p) {{ "
+                f"$item = Get-Item -LiteralPath $p; "
+                f"{'if ($item.CreationTimeUtc -le $cutoff) { $i++; continue } ' if newer_than else ''}"
+                f"[string]::Join('|',"
+                f"$i,"
+                f"$item.Length,"
+                f"$item.CreationTimeUtc.ToString('o'),"
+                f"$item.LastWriteTimeUtc.ToString('o'),"
+                f"'NTFS'"
+                f") "
+                f"}} "
+                f"$i++; "
+                f"}}"
+            )
+
+            cmd = f'powershell -NoProfile -Command "{ps_cmd}"'
+
+            batch_ok = True
+            start = time.monotonic()
+
             try:
-                (
-                    fullpath,
-                    size,
-                    c_at,
-                    m_at,
-                    a_at,
-                    owner,
-                    permissions,
-                ) = raw.split("|")
+                stdin, stdout, stderr = self.sftp_conn.ssh_client.exec_command(
+                    cmd,
+                    timeout=k.HOST_BUSY_TIMEOUT,
+                )
 
-                # IMPORTANT: use ntpath for Windows paths
-                filename = ntpath.basename(fullpath)
-                dirname = ntpath.dirname(fullpath)
-                _, ext = ntpath.splitext(filename)
+                # ----------------------------------------------------
+                # Read stdout (index-based)
+                # ----------------------------------------------------
+                while True:
+                    line = stdout.readline()
+                    if not line:
+                        break
 
-                size_kb = int(int(size) // 1024)
+                    raw = line.strip()
+                    if not raw:
+                        continue
 
-                dt_created  = _parse_ps_iso(c_at)
-                dt_modified = _parse_ps_iso(m_at)
-                dt_accessed = _parse_ps_iso(a_at)
+                    try:
+                        idx_in_batch, size, c_at, m_at, permissions = raw.split("|")
+                        idx_in_batch = int(idx_in_batch)
 
-                results.append({
-                    "NA_FULL_PATH": fullpath.replace("\\", "/"),
-                    "NA_PATH": dirname.replace("\\", "/"),
-                    "NA_FILE": filename,
-                    "NA_EXTENSION": ext,
-                    "VL_FILE_SIZE_KB": size_kb,
-                    "DT_FILE_CREATED": dt_created,
-                    "DT_FILE_MODIFIED": dt_modified,
-                    "DT_FILE_ACCESSED": dt_accessed,
-                    "NA_OWNER": owner or "",
-                    "NA_GROUP": "0",        # POSIX placeholder
-                    "NA_PERMISSIONS": permissions,
-                })
+                        fullpath = batch[idx_in_batch]
+
+                        filename = ntpath.basename(fullpath)
+                        dirname = ntpath.dirname(fullpath)
+                        _, ext = ntpath.splitext(filename)
+
+                        results.append({
+                            "NA_FULL_PATH": fullpath.replace("\\", "/"),
+                            "NA_PATH": dirname.replace("\\", "/"),
+                            "NA_FILE": filename,
+                            "NA_EXTENSION": ext,
+                            "VL_FILE_SIZE_KB": int(int(size) // 1024),
+                            "DT_FILE_CREATED": _parse_ps_iso(c_at),
+                            "DT_FILE_MODIFIED": _parse_ps_iso(m_at),
+                            "NA_OWNER": "",
+                            "NA_GROUP": "0",
+                            "NA_PERMISSIONS": permissions,
+                        })
+
+                    except Exception as e:
+                        self.log.error(f"[PS_META] PARSE ERROR '{raw}': {e}")
+                        batch_ok = False
+
+                err = stderr.read().decode("utf-8", errors="ignore").strip()
+                if err:
+                    self.log.warning(f"[PS_META] STDERR: {err}")
+                    batch_ok = False
 
             except Exception as e:
-                self.log.error(f"[PS_META] PARSE ERROR '{raw}': {e}")
-                results.append({})
+                self.log.error(f"[PS_META] Batch {batch_idx} failed: {e}")
+                batch_ok = False
+
+            elapsed = time.monotonic() - start
+
+            # --------------------------------------------------------
+            # AIMD CONTROL
+            # --------------------------------------------------------
+            if batch_ok and elapsed <= MAX_BATCH_TIME:
+                stable_batches += 1
+            else:
+                batch_target = max(PS_BATCH_MIN, batch_target // 2)
+                stable_batches = 0
+
+            if stable_batches >= STABLE_THRESHOLD:
+                batch_target = min(PS_BATCH_MAX, batch_target + 5)
+                stable_batches = 0
 
         return results
 
@@ -1774,8 +1935,7 @@ class hostDaemon:
 
             elif system_os == "windows":
                 metadata = self._get_metadata_powershell(
-                    remote_dir=remote_dir,
-                    pattern=pattern,
+                    file_list=file_list,
                     newer_than=newer_than,
                 )
 

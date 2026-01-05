@@ -64,7 +64,7 @@ fi
 read -p "Remove all log files in /var/log/appCataloga? [y/N] " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    rm -f /var/log/appCataloga/*.log
+    rm -f /var/log/appCataloga.log
     echo "All log files removed."
 else
     echo "Log files preserved."

@@ -690,8 +690,8 @@ class dbHandlerBKP(DBHandlerBase):
                     SUM(DT_BACKUP     IS NOT NULL) AS total_backup,
                     SUM(DT_PROCESSED  IS NOT NULL) AS total_processed,
 
-                    MAX(DT_DISCOVERED) AS last_discovered,
-                    MAX(DT_BACKUP)      AS last_backup,
+                    MAX(DT_FILE_CREATED)    AS last_discovered,
+                    MAX(DT_BACKUP)          AS last_backup,
                     MAX(DT_PROCESSED)   AS last_processed
                 FROM FILE_TASK_HISTORY
                 WHERE FK_HOST = %s;

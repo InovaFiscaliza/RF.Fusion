@@ -110,7 +110,7 @@ signal.signal(signal.SIGINT, sigint_handler)
 # ============================================================
 # Connectivity helper
 # ============================================================
-def is_host_online(host_addr: str, host_port: int, timeout: int = 3) -> bool:
+def is_host_online(host_addr: str, host_port: int, timeout: int = k.ICMP_TIMEOUT_SEC) -> bool:
     """Simple TCP check."""
     try:
         with socket.create_connection((host_addr, host_port), timeout=timeout):
