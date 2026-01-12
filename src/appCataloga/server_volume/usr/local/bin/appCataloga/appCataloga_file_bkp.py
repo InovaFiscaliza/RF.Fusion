@@ -339,6 +339,7 @@ def main():
                 file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
                 NA_SERVER_FILE_NAME=task["FILE_TASK__NA_HOST_FILE_NAME"],
                 NA_SERVER_FILE_PATH=local_path,
+                NU_STATUS_BACKUP=k.TASK_DONE,
                 NA_MESSAGE=sh._compose_message(
                     task_type=k.FILE_TASK_BACKUP_TYPE,
                     task_status=k.TASK_DONE,
@@ -352,7 +353,8 @@ def main():
             # ---------------------------------------------------
             db.file_task_update(
                 task_id=file_task_id,
-                NU_STATUS=k.TASK_DONE,
+                NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+                NU_STATUS=k.TASK_PENDING,
                 NA_SERVER_FILE_PATH=local_path,
                 NA_SERVER_FILE_NAME=task["FILE_TASK__NA_HOST_FILE_NAME"],
                 NA_MESSAGE=sh._compose_message(
@@ -366,11 +368,23 @@ def main():
         except Exception as e:
             log.error(f"[WORKER {worker_id}] {e}")
             if file_task_id:
+                
+                # Update File Task Error
                 db.file_task_update(
                     task_id=file_task_id,
                     NU_STATUS=k.TASK_ERROR,
                     NA_MESSAGE=str(e),
                 )
+                
+                # Update File History Error
+                db.file_history_update(
+                task_type=k.FILE_TASK_BACKUP_TYPE,
+                file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                NA_SERVER_FILE_NAME=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                NA_SERVER_FILE_PATH=local_path,
+                NU_STATUS_BACKUP=k.TASK_ERROR,
+                NA_MESSAGE=str(e),
+            )
 
         finally:
             try:

@@ -828,8 +828,17 @@ class sftpConnection:
                     raw = raw.strip()
                     if not raw:
                         continue
+                    
+                    # Split received powershell data
+                    parts = raw.split("|")
+                    if len(parts) != 5:
+                        self.log.debug(
+                            "[META][WINDOWS] noisy or invalid line ignored: %r", raw
+                        )
+                        continue
 
-                    fullpath, size, c_at, m_at, perms = raw.split("|")
+                    fullpath, size, c_at, m_at, perms = parts
+
                     fullpath = fullpath.replace("\\", "/")
 
                     filename = os.path.basename(fullpath)
@@ -2376,26 +2385,22 @@ def _compose_message(
     task_status: int,
     path: Optional[str] = None,
     name: Optional[str] = None,
+    error_msg: Optional[str] = None,
     *,
     prefix_only: bool = False
 ) -> str:
     """
-    Build a standardized NA_MESSAGE for FILE_TASK transitions.
+    Build a standardized NA_MESSAGE for FILE_TASK_HISTORY.
 
-    Args:
-        task_type (int): Destination NU_TYPE.
-        task_status (int): Destination NU_STATUS.
-        path (str|None): Remote directory path.
-        name (str|None): Remote filename.
-        prefix_only (bool): If True, returns only "<Type> <Status>".
-
-    Returns:
-        str: Either:
-            "Backup Pending"
-            "Backup Pending of file /dir/base.ext"
+    Rules:
+    - Success messages are short and deterministic
+    - Error messages preserve detailed context
+    - Path/name are optional and used only when relevant
     """
 
-    # ---- type message ----
+    # -------------------------------------------------
+    # Task type
+    # -------------------------------------------------
     if task_type == k.FILE_TASK_BACKUP_TYPE:
         type_msg = "Backup"
     elif task_type == k.FILE_TASK_DISCOVERY:
@@ -2403,25 +2408,41 @@ def _compose_message(
     else:
         type_msg = "Processing"
 
-    # ---- status message ----
-    status_msg = (
-        "Pending" if task_status == k.TASK_PENDING else
-        "Done"    if task_status == k.TASK_DONE else
-        "Running" if task_status == k.TASK_RUNNING else
-        "Error"   if task_status == k.TASK_ERROR else
-        "Refresh"
-    )
+    # -------------------------------------------------
+    # Status
+    # -------------------------------------------------
+    if task_status == k.TASK_PENDING:
+        status_msg = "Pending"
+    elif task_status == k.TASK_DONE:
+        status_msg = "Done"
+    elif task_status == k.TASK_RUNNING:
+        status_msg = "Running"
+    elif task_status == k.TASK_ERROR:
+        status_msg = "Error"
+    else:
+        status_msg = f"Status-{task_status}"
 
     prefix = f"{type_msg} {status_msg}"
 
     if prefix_only:
         return prefix
 
-    # When not prefix_only, *require* path and name to be present
-    path = path or ""
-    name = name or ""
+    # -------------------------------------------------
+    # ERROR → preserve full error context
+    # -------------------------------------------------
+    if task_status == k.TASK_ERROR:
+        if error_msg:
+            return f"{prefix} | {error_msg}"
+        return prefix
 
-    return f"{prefix} of file {path}/{name}"
+    # -------------------------------------------------
+    # SUCCESS / PENDING / RUNNING
+    # -------------------------------------------------
+    if path and name:
+        return f"{prefix} of file {path}/{name}"
+
+    return prefix
+
     
 def _parse_ps_iso(ts: str) -> datetime:
     """
@@ -2451,4 +2472,5 @@ def _parse_ps_iso(ts: str) -> datetime:
         ts = ts.split("+", 1)[0].split("-", 1)[0]
 
     return datetime.fromisoformat(ts)
+
 

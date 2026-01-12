@@ -113,13 +113,20 @@ class dbHandlerBKP(DBHandlerBase):
     VALID_FIELDS_FILE_HISTORY = {
         "ID_HISTORY",
         "FK_HOST",
+        "DT_DISCOVERED",
         "DT_BACKUP",
         "DT_PROCESSED",
+        "NU_STATUS_DISCOVERY",
+        "NU_STATUS_BACKUP",
+        "NU_STATUS_PROCESSING",
         "NA_HOST_FILE_PATH",
         "NA_HOST_FILE_NAME",
-        "VL_FILE_SIZE_KB",
         "NA_SERVER_FILE_PATH",
         "NA_SERVER_FILE_NAME",
+        "VL_FILE_SIZE_KB",
+        "DT_FILE_CREATED",
+        "DT_FILE_MODIFIED",
+        "NA_EXTENSION",
         "NA_MESSAGE",
     }
     
@@ -668,31 +675,39 @@ class dbHandlerBKP(DBHandlerBase):
     
     def host_update_statistics(self, host_id: int) -> None:
         """
-        Recalculate and update HOST statistics based on FILE_TASK
-        and FILE_TASK_HISTORY.
+        Recalculate and update HOST statistics based ONLY on FILE_TASK_HISTORY.
 
-        Rules:
-        • DONE counters      → overwrite
-        • PENDING counters   → INCREMENTAL
-        • ERROR counters     → INCREMENTAL
-        • Timestamps         → overwrite
-        • VL_*_BACKUP_KB     → overwrite (derived from FILE_TASK_HISTORY)
+        Status semantics:
+            1  → Pending
+            0  → Done
+        -1  → Error
         """
 
         self._connect()
         try:
-            # ==================================================================
-            # 1) DONE counters and LAST timestamps from FILE_TASK_HISTORY
-            # ==================================================================
+            # ==============================================================
+            # 1) Counters + timestamps
+            # ==============================================================
             sql_hist = """
                 SELECT
-                    SUM(DT_DISCOVERED IS NOT NULL) AS total_discovered,
-                    SUM(DT_BACKUP     IS NOT NULL) AS total_backup,
-                    SUM(DT_PROCESSED  IS NOT NULL) AS total_processed,
+                    -- DONE
+                    SUM(NU_STATUS_DISCOVERY  = 0) AS total_discovered,
+                    SUM(NU_STATUS_BACKUP     = 0) AS total_backup,
+                    SUM(NU_STATUS_PROCESSING = 0) AS total_processed,
 
-                    MAX(DT_FILE_CREATED)    AS last_discovered,
-                    MAX(DT_BACKUP)          AS last_backup,
-                    MAX(DT_PROCESSED)   AS last_processed
+                    -- PENDING
+                    SUM(NU_STATUS_BACKUP     = 1) AS pending_backup,
+                    SUM(NU_STATUS_PROCESSING = 1) AS pending_process,
+
+                    -- ERROR
+                    SUM(NU_STATUS_DISCOVERY  = -1) AS error_discovery,
+                    SUM(NU_STATUS_BACKUP     = -1) AS error_backup,
+                    SUM(NU_STATUS_PROCESSING = -1) AS error_process,
+
+                    -- TIMESTAMPS
+                    MAX(DT_DISCOVERED) AS last_discovered,
+                    MAX(DT_BACKUP)     AS last_backup,
+                    MAX(DT_PROCESSED)  AS last_processed
                 FROM FILE_TASK_HISTORY
                 WHERE FK_HOST = %s;
             """
@@ -700,120 +715,87 @@ class dbHandlerBKP(DBHandlerBase):
             row = self._select_raw(sql_hist, (host_id,))
             hist = row[0] if row else {}
 
+            # Safe defaults
             total_discovered = hist.get("total_discovered") or 0
             total_backup     = hist.get("total_backup")     or 0
             total_processed  = hist.get("total_processed")  or 0
+
+            pending_backup   = hist.get("pending_backup")   or 0
+            pending_process  = hist.get("pending_process")  or 0
+
+            error_discovery  = hist.get("error_discovery")  or 0
+            error_backup     = hist.get("error_backup")     or 0
+            error_process    = hist.get("error_process")    or 0
 
             last_discovered  = hist.get("last_discovered")
             last_backup      = hist.get("last_backup")
             last_processed   = hist.get("last_processed")
 
-            # ==================================================================
-            # 1.1) New Metrics: BACKUP VOLUME (KB) from FILE_TASK_HISTORY
-            # ==================================================================
-            sql_backup_volume = """
+            # ==============================================================
+            # 2) Backup volume (KB)
+            # ==============================================================
+            sql_volume = """
                 SELECT
-                    SUM(CASE 
-                            WHEN DT_DISCOVERED IS NOT NULL AND DT_BACKUP IS NULL 
-                            THEN VL_FILE_SIZE_KB 
-                            ELSE 0 
-                        END) AS pending_kb,
+                    SUM(
+                        CASE
+                            WHEN NU_STATUS_DISCOVERY = 0
+                            AND NU_STATUS_BACKUP = 1
+                            THEN VL_FILE_SIZE_KB
+                            ELSE 0
+                        END
+                    ) AS pending_kb,
 
-                    SUM(CASE 
-                            WHEN DT_DISCOVERED IS NOT NULL AND DT_BACKUP IS NOT NULL 
-                            THEN VL_FILE_SIZE_KB 
-                            ELSE 0 
-                        END) AS done_kb
+                    SUM(
+                        CASE
+                            WHEN NU_STATUS_BACKUP = 0
+                            THEN VL_FILE_SIZE_KB
+                            ELSE 0
+                        END
+                    ) AS done_kb
                 FROM FILE_TASK_HISTORY
                 WHERE FK_HOST = %s;
             """
 
-            row2 = self._select_raw(sql_backup_volume, (host_id,))
+            row2 = self._select_raw(sql_volume, (host_id,))
             vol = row2[0] if row2 else {}
 
             pending_kb = vol.get("pending_kb") or 0
             done_kb    = vol.get("done_kb")    or 0
 
-            # ==================================================================
-            # 2) PENDING + ERROR counters from FILE_TASK
-            # ==================================================================
-            sql_curr = """
-                SELECT 
-                    NU_TYPE,
-                    SUM(NU_STATUS = %s)                AS pending,
-                    SUM(NU_STATUS IN (%s, %s))         AS error
-                FROM FILE_TASK
-                WHERE FK_HOST = %s
-                GROUP BY NU_TYPE;
-            """
-
-            rows = self._select_raw(
-                sql_curr,
-                (k.TASK_PENDING, k.TASK_ERROR, k.TASK_SUSPENDED, host_id)
-            )
-
-            pending_backup   = 0
-            pending_process  = 0
-
-            error_discovery  = 0
-            error_backup     = 0
-            error_process    = 0
-
-            for r in rows:
-                t = r["NU_TYPE"]
-                p = r["pending"] or 0
-                e = r["error"]   or 0
-
-                if t == k.FILE_TASK_DISCOVERY:
-                    error_discovery = e
-
-                elif t == k.FILE_TASK_BACKUP_TYPE:
-                    pending_backup = p
-                    error_backup   = e
-
-                elif t == k.FILE_TASK_PROCESS_TYPE:
-                    pending_process = p
-                    error_process   = e
-
-            # ==================================================================
-            # 3) Build update dict for HOST table
-            # ==================================================================
-            update_fields = {
-                # DONE counters → overwrite
-                "NU_DONE_FILE_DISCOVERY_TASKS": total_discovered,
-                "NU_DONE_FILE_BACKUP_TASKS":    total_backup,
-                "NU_DONE_FILE_PROCESS_TASKS":   total_processed,
-
-                # PENDING counters → INCREMENTAL
-                "NU_PENDING_FILE_BACKUP_TASKS": pending_backup,
-                "NU_PENDING_FILE_PROCESS_TASKS": pending_process,
-
-                # ERROR counters → INCREMENTAL
-                "NU_ERROR_FILE_DISCOVERY_TASKS": error_discovery,
-                "NU_ERROR_FILE_BACKUP_TASKS":    error_backup,
-                "NU_ERROR_FILE_PROCESS_TASKS":   error_process,
-
-                # TIMESTAMPS → overwrite
-                "DT_LAST_DISCOVERY":  last_discovered,
-                "DT_LAST_BACKUP":     last_backup,
-                "DT_LAST_PROCESSING": last_processed,
-
-                # NEW METRICS → overwrite
-                "VL_PENDING_BACKUP_KB": pending_kb,
-                "VL_DONE_BACKUP_KB":    done_kb,
-            }
-
-            # ==================================================================
-            # 4) Commit to HOST table
-            # ==================================================================
+            # ==============================================================
+            # 3) Update HOST table
+            # ==============================================================
             self.host_update(
                 host_id=host_id,
                 reset=False,
-                **update_fields
+
+                # DONE
+                NU_DONE_FILE_DISCOVERY_TASKS=total_discovered,
+                NU_DONE_FILE_BACKUP_TASKS=total_backup,
+                NU_DONE_FILE_PROCESS_TASKS=total_processed,
+
+                # PENDING
+                NU_PENDING_FILE_BACKUP_TASKS=pending_backup,
+                NU_PENDING_FILE_PROCESS_TASKS=pending_process,
+
+                # ERROR
+                NU_ERROR_FILE_DISCOVERY_TASKS=error_discovery,
+                NU_ERROR_FILE_BACKUP_TASKS=error_backup,
+                NU_ERROR_FILE_PROCESS_TASKS=error_process,
+
+                # TIMESTAMPS
+                DT_LAST_DISCOVERY=last_discovered,
+                DT_LAST_BACKUP=last_backup,
+                DT_LAST_PROCESSING=last_processed,
+
+                # VOLUME
+                VL_PENDING_BACKUP_KB=pending_kb,
+                VL_DONE_BACKUP_KB=done_kb,
             )
 
         finally:
             self._disconnect()
+
 
                               
     # ======================================================================
@@ -1511,36 +1493,30 @@ class dbHandlerBKP(DBHandlerBase):
         host_id: int,
         task_type: int,
         task_status: int,
-        file_metadata: List[Dict[str, Any]],
+        file_metadata: list[dict],
     ) -> int:
         """
-        Create or update FILE_TASK entries (atomic upsert).
+        Create or update FILE_TASK entries.
 
-        Uses 'INSERT ... ON DUPLICATE KEY UPDATE' to ensure a single
-        operation handles both new and existing records.
-
-        Args:
-            host_id (int): Host identifier.
-            task_type (int): Task type (e.g., discovery, backup).
-            task_status (int): Task status.
-            file_metadata (List[Dict[str, Any]]): Metadata list per file.
-
-        Returns:
-            int: Total number of processed records (inserted or updated).
+        Supports both single-file and batch ingestion.
+        Automatically selects the optimal UPSERT strategy.
         """
+
+        if not file_metadata:
+            return 0
+
+        if isinstance(file_metadata, dict):
+            file_metadata = [file_metadata]
+
         self._connect()
         processed = 0
-        
-        try:
-            for file in file_metadata:
-                msg = _compose_message(
-                    task_type=task_type,
-                    task_status=task_status,
-                    path=file.get("NA_PATH"),
-                    name=file.get("NA_FILE"),
-                )
 
-                payload = {
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            rows: list[dict] = []
+
+            for file in file_metadata:
+                rows.append({
                     "FK_HOST": host_id,
                     "NA_HOST_FILE_PATH": file.get("NA_PATH"),
                     "NA_HOST_FILE_NAME": file.get("NA_FILE"),
@@ -1548,36 +1524,56 @@ class dbHandlerBKP(DBHandlerBase):
                     "VL_FILE_SIZE_KB": file.get("VL_FILE_SIZE_KB"),
                     "DT_FILE_CREATED": file.get("DT_FILE_CREATED"),
                     "DT_FILE_MODIFIED": file.get("DT_FILE_MODIFIED"),
-                    "NU_PID":os.getpid(),
+                    "NU_PID": os.getpid(),
                     "NU_TYPE": task_type,
                     "NU_STATUS": task_status,
-                    "DT_FILE_TASK": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "NA_MESSAGE": msg,
-                }
+                    "DT_FILE_TASK": now,
+                    "NA_MESSAGE": _compose_message(
+                        task_type=task_type,
+                        task_status=task_status,
+                        path=file.get("NA_PATH"),
+                        name=file.get("NA_FILE"),
+                    ),
+                })
 
-                # Perform atomic upsert (insert or update existing entry)
+            if len(rows) == 1:
                 self._upsert_row(
                     table="FILE_TASK",
-                    data=payload,
+                    data=rows[0],
                     unique_keys=["FK_HOST", "NA_HOST_FILE_NAME"],
                     commit=False,
                     touch_field="DT_FILE_TASK",
-                    log_each=False
+                    log_each=False,
+                )
+                processed = 1
+
+            else:
+                processed = self._upsert_batch(
+                    table="FILE_TASK",
+                    rows=rows,
+                    unique_keys=["FK_HOST", "NA_HOST_FILE_NAME"],
+                    touch_field="DT_FILE_TASK",
+                    batch_size=1000,
+                    commit=False,
                 )
 
-                processed += 1
-
             self.db_connection.commit()
-            self.log.entry(f"[file_task_create] Successfully upserted {processed} FILE_TASK entries for host {host_id}.")
+
+            self.log.entry(
+                f"[file_task_create] Upserted {processed} FILE_TASK entries "
+                f"for host {host_id}"
+            )
+
             return processed
 
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[dbHandlerBKP] file_task_create failed: {e}")
+            self.log.error(f"[file_task_create] failed: {e}")
             raise
 
         finally:
             self._disconnect()
+
 
 
     def file_task_update(self, task_id: int, **kwargs) -> None:
@@ -1823,6 +1819,65 @@ class dbHandlerBKP(DBHandlerBase):
                 f"[DBHandlerBKP] Failed to resume FILE_TASK entries for host {host_id}: {e}"
             )
 
+    def file_history_resume_by_host(
+        self,
+        host_id: int,
+    ) -> None:
+        """
+        Resume previously suspended, errored, or stale FILE_TASK entries for a given host.
+
+        Tasks are reactivated under three conditions:
+            1. NU_STATUS = TASK_SUSPENDED → host became reachable again.
+            2. NU_STATUS = TASK_ERROR     → retry.
+            3. NU_STATUS = TASK_RUNNING   → considered stale if DT_FILE_TASK is older than
+            (now - busy_timeout_seconds), assuming the worker crashed or was interrupted.
+
+        Args:
+            host_id (int):
+                Host identifier (FK_HOST) whose file-level tasks should be resumed.
+
+        Returns:
+            None
+        """
+        try:
+            total_resumed = 0
+
+            # -----------------------------------------------------------------
+            # 1. Reactivate suspended file tasks
+            # -----------------------------------------------------------------
+            resumed_suspended = self._update_row(
+                table="FILE_TASK_HISTORY",
+                data={
+                    "NU_STATUS": k.TASK_PENDING,
+                    "NA_MESSAGE": (
+                        "Host reachable again — suspended file task resumed automatically"
+                    ),
+                },
+                where={
+                    "FK_HOST": host_id,
+                    "NU_STATUS_BACKUP": k.TASK_ERROR,
+                },
+                commit=True,
+            )
+
+            # -----------------------------------------------------------------
+            # 4. Final log
+            # -----------------------------------------------------------------
+            total_resumed = resumed_suspended
+
+            if total_resumed > 0:
+                self.log.entry(
+                    f"[DBHandlerBKP] Resumed {total_resumed} FILE_TASK_HISTORY entries for host {host_id} "
+                )
+            else:
+                self.log.entry(
+                    f"[DBHandlerBKP] No FILE_TASK entries required resumption for host {host_id}."
+                )
+
+        except Exception as e:
+            self.log.error(
+                f"[DBHandlerBKP] Failed to resume FILE_TASK_HISTORY entries for host {host_id}: {e}"
+            )
 
             
     def check_file_task(self, **kwargs) -> list[dict]:
@@ -2037,41 +2092,33 @@ class dbHandlerBKP(DBHandlerBase):
         host_id: int,
         task_type: int,
         task_status: int,
-        file_metadata: List[Dict[str, Any]],
+        file_metadata: list[dict],
     ) -> int:
         """
         Insert or update FILE_TASK_HISTORY entries (UPSERT).
 
-        History is usually append-only, but we use UPSERT because the pipeline
-        has deterministic phases (DISCOVERY → BACKUP → PROCESS). Each phase
-        may update the same historical record for the same file in the same
-        pipeline cycle.
+        Unique keys:
+            (FK_HOST, NA_HOST_FILE_NAME, NU_TYPE)
 
-        Unique keys: (FK_HOST, NA_HOST_FILE_NAME, NU_TYPE)
-        This ensures:
-            - DISCOVERY creates the base history entry
-            - BACKUP updates DT_BACKUP for the same file
-            - PROCESS updates DT_PROCESSED for the same file
-            - No duplicated history rows are generated unintentionally
-
-        Args:
-            host_id (int): Host identifier.
-            task_type (int): Task type (e.g., discovery, backup).
-            task_status (int): Task status at the moment of recording.
-            file_metadata (List[Dict[str, Any]]): Metadata list per file.
-
-        Returns:
-            int: Number of history records inserted or updated.
+        NU_TYPE exists in the table and in the UNIQUE INDEX,
+        but is NOT part of the payload (same behavior as legacy code).
         """
+
+        if not file_metadata:
+            return 0
+
+        # Allow single dict or list
+        if isinstance(file_metadata, dict):
+            file_metadata = [file_metadata]
 
         self._connect()
         processed = 0
 
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            rows: list[dict] = []
 
             for file in file_metadata:
-
                 msg = _compose_message(
                     task_type=task_type,
                     task_status=task_status,
@@ -2079,7 +2126,7 @@ class dbHandlerBKP(DBHandlerBase):
                     name=file.get("NA_FILE"),
                 )
 
-                payload = {
+                rows.append({
                     "FK_HOST": host_id,
                     "NA_HOST_FILE_PATH": file.get("NA_PATH"),
                     "NA_HOST_FILE_NAME": file.get("NA_FILE"),
@@ -2088,38 +2135,56 @@ class dbHandlerBKP(DBHandlerBase):
                     "DT_FILE_CREATED": file.get("DT_FILE_CREATED"),
                     "DT_FILE_MODIFIED": file.get("DT_FILE_MODIFIED"),
 
-                    # Historical lifecycle timestamps:
-                    "DT_DISCOVERED": now,   # discovery timestamp
-                    "DT_BACKUP": None,      # reset due new pipeline cycle
-                    "DT_PROCESSED": None,   # reset due new pipeline cycle
-                    "NA_MESSAGE": msg,
-                }
+                    # lifecycle timestamps
+                    "DT_DISCOVERED": now,
+                    "DT_BACKUP": None,
+                    "DT_PROCESSED": None,
+                    "NU_STATUS_DISCOVERY":k.TASK_DONE,
 
-                # Ensures a single row per (host, filename, task_type)
+                    "NA_MESSAGE": msg,
+                })
+
+            # Single row → preserve old behavior
+            if len(rows) == 1:
                 self._upsert_row(
                     table="FILE_TASK_HISTORY",
-                    data=payload,
+                    data=rows[0],
                     unique_keys=["FK_HOST", "NA_HOST_FILE_NAME", "NU_TYPE"],
                     commit=False,
                     touch_field="DT_DISCOVERED",
-                    log_each=False
+                    log_each=False,
+                )
+                processed = 1
+
+            # Batch path
+            else:
+                processed = self._upsert_batch(
+                    table="FILE_TASK_HISTORY",
+                    rows=rows,
+                    unique_keys=["FK_HOST", "NA_HOST_FILE_NAME", "NU_TYPE"],
+                    touch_field="DT_DISCOVERED",
+                    batch_size=1000,
+                    commit=False,
                 )
 
-                processed += 1
-
             self.db_connection.commit()
+
             self.log.entry(
-                f"[file_history_create] Upserted {processed} FILE_TASK_HISTORY entries for host {host_id}."
+                f"[file_history_create] Upserted {processed} FILE_TASK_HISTORY entries "
+                f"for host {host_id}"
             )
+
             return processed
 
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[dbHandlerBKP] file_history_create failed: {e}")
+            self.log.error(f"[file_history_create] failed: {e}")
             raise
 
         finally:
             self._disconnect()
+
+
 
 
     def file_history_update(

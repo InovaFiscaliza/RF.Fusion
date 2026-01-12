@@ -1,34 +1,37 @@
-# ======================================================================
-# Imports
-# ======================================================================
-import sys
-import os
+import sys,os
+
+CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+sys.path.append(CONFIG_PATH)
+
+from rfpye.parser import parse_bin
+
+# Import libraries for file processing
 import time
+import random
+
+from geopy.geocoders import Nominatim  #  Processing of geographic data
+from geopy.exc import GeocoderTimedOut
+
+# Import modules for file processing
+import config as k
+from db.dbHandlerBKP import dbHandlerBKP
+from db.dbHandlerRFM import dbHandlerRFM
+import shared as sh
+import os
+
 import signal
 import inspect
-import subprocess
-import paramiko
 from datetime import datetime
 
-# ----------------------------------------------------------------------
-# Load configuration and database modules
-# ----------------------------------------------------------------------
-_CFG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
-if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
-    sys.path.append(_CFG_DIR)
-
-_DB_DIR = os.path.join(os.path.dirname(__file__), "db")
-if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
-    sys.path.append(_DB_DIR)
-
-import shared as sh
-from db.dbHandlerBKP import dbHandlerBKP
-import config as k
-
 def main():
-    host_uid = "CWSM211001"
-    is_windows = "CW" in host_uid
-    
-    print(is_windows)
+    filename = '/mnt/reposfi/2025/AL/2706703/58/rfeye002106_250109_T113352.bin'
+    try:
+        bin_data = parse_bin(filename)
+        print('Processamento completo')
+    except FileNotFoundError:
+        print('Arquivo nao encontrado.')
+    except Exception as e:
+        print(f"Error parsing file {filename}", "PARSE", e)
+        
 if __name__ == "__main__":
     main()

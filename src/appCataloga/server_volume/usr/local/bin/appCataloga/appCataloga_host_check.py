@@ -214,8 +214,10 @@ def main():
                                 DT_LAST_CHECK=now,
                             )
 
+                            # Resume suspended tasks
                             db.host_task_resume_by_host(host_id)
                             db.file_task_resume_by_host(host_id)
+                            db.file_history_resume_by_host(host_id)
 
                             # Promote CHECK → PROCESSING (discovery cycle)
                             db.host_task_update(

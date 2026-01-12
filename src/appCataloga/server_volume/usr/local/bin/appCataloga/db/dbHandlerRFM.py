@@ -21,6 +21,7 @@ comments**, keeping logic minimal and consistent with the project's architecture
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime
 import pandas as pd
@@ -36,7 +37,7 @@ class dbHandlerRFM(DBHandlerBase):
     This class exposes a focused API to manage spectrum ingestion and processing
     workflows. It delegates all low-level SQL operations to `DBHandlerBase`.
     """
-
+    
     # ======================================================================
     # Initialization
     # ======================================================================
@@ -50,40 +51,83 @@ class dbHandlerRFM(DBHandlerBase):
         super().__init__(database=database, log=log)
         self.log.entry(f"[dbHandlerRFM] Initialized for DB '{database}'")
         
+    
+    def begin_transaction(self) -> None:
+        """
+        Begin a database transaction.
+
+        Must be called by the service layer before performing
+        multiple dependent operations (e.g. processing one BIN file).
+        """
+        self._connect()
+        self.db_connection.autocommit = False
+        self.in_transaction = True
+
+
+    def commit(self) -> None:
+        """
+        Commit the current transaction.
+
+        Only effective if a transaction is active.
+        """
+        if self.in_transaction:
+            self.db_connection.commit()
+            self.in_transaction = False
+
+
+    def rollback(self) -> None:
+        """
+        Roll back the current transaction.
+
+        Used when any error occurs during a transactional workflow.
+        """
+        if self.in_transaction:
+            self.db_connection.rollback()
+            self.in_transaction = False
+            
+    def _ensure_transaction(self):
+        """
+        Ensure that the current connection is operating
+        with autocommit disabled.
+
+        This is required because dbHandlerBase._connect()
+        enforces autocommit=True.
+        """
+        if self.in_transaction:
+            try:
+                self.db_connection.autocommit = False
+            except Exception:
+                pass
+ 
+        
     # ======================================================================
     # SITE OPERATIONS
     # ======================================================================
-    def insert_site(
-        self,
-        data: dict = {
-            "latitude": 0,
-            "longitude": 0,
-            "altitude": 0,
-            "state": "state name",
-            "county": "city,town name",
-            "district": "suburb name",
-            "nu_gnss_measurements": 0,
-        },
-    ) -> int:
-        """Create a new site record in DIM_SPECTRUM_SITE.
+    def insert_site(self, data: dict) -> int:
+        """
+        Insert a new site into DIM_SPECTRUM_SITE.
 
-        This version preserves full compatibility with the existing _insert_row()
-        implementation by handling SQL expressions (ST_GeomFromText) manually.
+        The geographic point (GEO_POINT) is inserted using a raw SQL expression
+        (ST_GeomFromText), while all other fields use parameter binding.
 
-        Args:
-            data (dict): Geographic and positional attributes of the site.
-
-        Returns:
-            int: Newly inserted site ID.
+        This method is transaction-aware:
+        • If called inside an active transaction, commit is deferred
+        • If called standalone, changes are committed immediately
         """
 
+        if not isinstance(data, dict):
+            raise ValueError("data must be a dict")
+
         try:
-            # Resolve foreign keys
-            db_state_id, db_county_id, db_district_id = self._get_geographic_codes(data=data)
+            # --------------------------------------------------
+            # Resolve geographic foreign keys
+            # --------------------------------------------------
+            db_state_id, db_county_id, db_district_id = (
+                self._get_geographic_codes(data=data)
+            )
 
             self._connect()
 
-            # Fields handled by _insert_row
             insert_data = {
                 "NU_ALTITUDE": data["altitude"],
                 "NU_GNSS_MEASUREMENTS": data.get("nu_gnss_measurements", 0),
@@ -92,28 +136,41 @@ class dbHandlerRFM(DBHandlerBase):
                 "FK_DISTRICT": db_district_id,
             }
 
-            # Prepare SQL expression separately (since _insert_row cannot handle raw SQL)
-            geom_expr = f"ST_GeomFromText('POINT({data['longitude']} {data['latitude']})')"
-
-            # Build full query manually to include the geometry
-            cols = ", ".join(["GEO_POINT"] + list(insert_data.keys()))
-            vals = ", ".join(
-                [geom_expr] + ["%s"] * len(insert_data)
+            geom_expr = (
+                f"ST_GeomFromText("
+                f"'POINT({data['longitude']} {data['latitude']})'"
+                f")"
             )
-            sql = f"INSERT INTO DIM_SPECTRUM_SITE ({cols}) VALUES ({vals});"
 
-            # Execute manually using same transaction style as _insert_row
+            cols = ", ".join(["GEO_POINT"] + list(insert_data.keys()))
+            vals = ", ".join([geom_expr] + ["%s"] * len(insert_data))
+
+            sql = f"""
+                INSERT INTO DIM_SPECTRUM_SITE ({cols})
+                VALUES ({vals});
+            """
+
             self.cursor.execute(sql, tuple(insert_data.values()))
-            self.db_connection.commit()
 
-            db_site_id = int(self.cursor.lastrowid or 0)
+            # --------------------------------------------------
+            # Commit only if NOT inside a managed transaction
+            # --------------------------------------------------
+            if not self.in_transaction:
+                self.db_connection.commit()
 
-            self.log.entry(f"[DBHandlerRFM] Inserted new site (ID={db_site_id}) at "
-                        f"({data['latitude']}, {data['longitude']})")
+            site_id = int(self.cursor.lastrowid)
 
-            return db_site_id
+            if hasattr(self, "log"):
+                self.log.entry(
+                    f"[DBHandlerRFM] Inserted site ID={site_id} "
+                    f"({data['latitude']}, {data['longitude']})"
+                )
+
+            return site_id
 
         except Exception as e:
+            if self.in_transaction:
+                raise
             try:
                 self.db_connection.rollback()
             except Exception:
@@ -121,10 +178,13 @@ class dbHandlerRFM(DBHandlerBase):
             raise Exception(f"Error inserting site in DIM_SPECTRUM_SITE: {e}")
 
         finally:
-            try:
-                self._disconnect()
-            except Exception:
-                pass
+            if not self.in_transaction:
+                try:
+                    self._disconnect()
+                except Exception:
+                    pass
+
+
 
     def update_site(
         self,
@@ -133,25 +193,46 @@ class dbHandlerRFM(DBHandlerBase):
         latitude_raw: list[float],
         altitude_raw: list[float],
     ) -> None:
-        """Update site coordinates and GNSS statistics in DIM_SPECTRUM_SITE.
+        """
+        Update geographic coordinates and GNSS statistics of an existing site.
 
-        Applies incremental GNSS averaging if the current measurement count is
-        below the maximum defined in configuration constants.
+        The site location is updated using weighted averages based on previous
+        measurements stored in the database and new raw GNSS samples provided
+        by the current acquisition.
+
+        Updates are skipped when the configured maximum number of GNSS
+        measurements is reached.
 
         Args:
-            site (int): Target site ID.
-            longitude_raw (list[float]): List of measured longitude values (degrees).
-            latitude_raw (list[float]): List of measured latitude values (degrees).
-            altitude_raw (list[float]): List of measured altitude values (meters).
+            site (int):
+                ID_SITE of the record in DIM_SPECTRUM_SITE to be updated.
+
+            longitude_raw (list[float]):
+                List of longitude samples (in degrees) from the current BIN file.
+
+            latitude_raw (list[float]):
+                List of latitude samples (in degrees) from the current BIN file.
+
+            altitude_raw (list[float]):
+                List of altitude samples (in meters) from the current BIN file.
 
         Raises:
-            Exception: If site retrieval or update fails.
+            Exception:
+                If the site does not exist or if the update operation fails.
         """
+
         try:
-            # --- Step 1: open connection ---
+            # --------------------------------------------------
+            # 1) Open / reuse connection
+            # --------------------------------------------------
             self._connect()
 
-            # --- Step 2: get existing site data ---
+            # IMPORTANT: this is a WRITE-capable function
+            self._ensure_transaction()
+
+            # --------------------------------------------------
+            # 2) Read current site state
+            # --------------------------------------------------
             rows = self._select_rows(
                 table="DIM_SPECTRUM_SITE",
                 where={"ID_SITE": site},
@@ -173,7 +254,9 @@ class dbHandlerRFM(DBHandlerBase):
             db_altitude = float(site_data["NU_ALTITUDE"])
             db_nu_gnss = int(site_data["NU_GNSS_MEASUREMENTS"])
 
-            # --- Step 3: check limit before updating ---
+            # --------------------------------------------------
+            # 3) Check GNSS limit
+            # --------------------------------------------------
             if db_nu_gnss >= k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS:
                 if hasattr(self, "log"):
                     self.log.entry(
@@ -182,7 +265,9 @@ class dbHandlerRFM(DBHandlerBase):
                     )
                 return
 
-            # --- Step 4: compute weighted averages ---
+            # --------------------------------------------------
+            # 4) Compute weighted averages
+            # --------------------------------------------------
             lon_sum = sum(longitude_raw) + (db_longitude * db_nu_gnss)
             lat_sum = sum(latitude_raw) + (db_latitude * db_nu_gnss)
             alt_sum = sum(altitude_raw) + (db_altitude * db_nu_gnss)
@@ -192,38 +277,32 @@ class dbHandlerRFM(DBHandlerBase):
             new_latitude = lat_sum / nu_total
             new_altitude = alt_sum / nu_total
 
-            # --- Step 5: perform update ---
-            # Como o campo GEO_POINT requer uma função SQL (ST_GeomFromText),
-            # o update precisa ser feito manualmente via query direta.
+            # --------------------------------------------------
+            # 5) Perform UPDATE (NO COMMIT HERE)
+            # --------------------------------------------------
             sql = (
-                f"UPDATE DIM_SPECTRUM_SITE "
-                f"SET GEO_POINT = ST_GeomFromText('POINT({new_longitude} {new_latitude})'), "
-                f"    NU_ALTITUDE = %s, "
-                f"    NU_GNSS_MEASUREMENTS = %s "
-                f"WHERE ID_SITE = %s;"
+                "UPDATE DIM_SPECTRUM_SITE "
+                "SET GEO_POINT = ST_GeomFromText(%s), "
+                "    NU_ALTITUDE = %s, "
+                "    NU_GNSS_MEASUREMENTS = %s "
+                "WHERE ID_SITE = %s;"
             )
 
-            self.cursor.execute(sql, (new_altitude, nu_total, site))
-            self.db_connection.commit()
+            wkt_point = f"POINT({new_longitude} {new_latitude})"
+            self.cursor.execute(sql, (wkt_point, new_altitude, nu_total, site))
 
-            # --- Step 6: log success ---
             if hasattr(self, "log"):
                 self.log.entry(
-                    f"Updated site {site}: lat={new_latitude:.6f}, lon={new_longitude:.6f}, alt={new_altitude:.2f}"
+                    f"Updated site {site}: "
+                    f"lat={new_latitude:.6f}, "
+                    f"lon={new_longitude:.6f}, "
+                    f"alt={new_altitude:.2f}"
                 )
 
         except Exception as e:
-            try:
-                self.db_connection.rollback()
-            except Exception:
-                pass
+            # DO NOT rollback here – let caller decide
             raise Exception(f"Error updating site {site}: {e}")
 
-        finally:
-            try:
-                self._disconnect()
-            except Exception:
-                pass
 
     def get_site_id(self, data: dict) -> int | bool:
         """Get site database id based on the coordinates in the data dictionary.
@@ -433,84 +512,199 @@ class dbHandlerRFM(DBHandlerBase):
                 self._disconnect()
             except Exception:
                 pass
-    
-    def insert_file(self, filename: str, path: str, volume: str) -> int:
-        """Insert or retrieve a file entry in DIM_SPECTRUM_FILE.
+    def get_file_type_id_by_hostname(
+        self,
+        HOSTNAME: str,
+    ) -> int:
+        """
+        Resolve ID_TYPE_FILE from DIM_FILE_TYPE based on hostname matching.
 
-        If the file entry exists, returns its ID. Otherwise, inserts a new one.
+        Matching rule:
+            DIM_FILE_TYPE.NA_EQUIPMENT must be a substring of hostname (case-insensitive).
+
+        Example:
+            hostname = 'rfeye002106'
+            matches NA_EQUIPMENT = 'rfeye'
 
         Args:
-            filename (str): File name.
-            path (str): File path.
-            volume (str): Storage volume identifier.
-
-        Raises:
-            Exception: If file retrieval or insertion fails.
+            HOSTNAME (str):
+                Hostname of the equipment (e.g. 'rfeye002106').
 
         Returns:
-            int: ID of the file entry.
-        """
-        try:
-            self._connect()
+            int:
+                ID_TYPE_FILE
 
-            # Check if the file already exists
+        Raises:
+            Exception:
+                • If no file type matches hostname
+                • If more than one file type matches (ambiguous)
+        """
+
+        if not isinstance(HOSTNAME, str) or not HOSTNAME:
+            raise ValueError("HOSTNAME must be non-empty str")
+
+        hostname = HOSTNAME.lower()
+
+        self._connect()
+        try:
+            rows = self._select_rows(
+                table="DIM_FILE_TYPE",
+                cols=["ID_TYPE_FILE", "NA_TYPE_FILE", "NA_EQUIPMENT"],
+            )
+
+            matches = []
+
+            for r in rows:
+                na_equipment = str(r["NA_EQUIPMENT"]).lower()
+
+                if na_equipment and na_equipment in hostname:
+                    matches.append(r)
+
+            if not matches:
+                raise Exception(
+                    f"No matching file type found for hostname '{HOSTNAME}'"
+                )
+
+            if len(matches) > 1:
+                details = ", ".join(
+                    f"{m['NA_TYPE_FILE']}({m['NA_EQUIPMENT']})" for m in matches
+                )
+                raise Exception(
+                    f"Ambiguous file type for hostname '{HOSTNAME}': {details}"
+                )
+
+            return int(matches[0]["ID_TYPE_FILE"])
+
+        finally:
+            if not self.in_transaction:
+                self._disconnect()
+
+    def insert_file(
+        self,
+        hostname: str,
+        NA_PATH: str,
+        NA_FILE: str,
+        NA_VOLUME: str,
+        NA_EXTENSION: str | None = None,
+        VL_FILE_SIZE_KB: int | None = None,
+        DT_FILE_CREATED: datetime | None = None,
+        DT_FILE_MODIFIED: datetime | None = None,
+    ) -> int:
+        """
+        Insert or retrieve a file entry in DIM_SPECTRUM_FILE.
+
+        Uniqueness:
+            (NA_VOLUME, NA_PATH, NA_FILE)
+
+        Transaction behavior:
+            • If called inside an active transaction, insertion is deferred
+            • If called standalone, changes are committed immediately
+        """
+
+        # ------------------------------------------------------
+        # Validation
+        # ------------------------------------------------------
+        if not isinstance(hostname, str) or not hostname:
+            raise ValueError("hostname must be non-empty str")
+
+        if not isinstance(NA_VOLUME, str) or not NA_VOLUME:
+            raise ValueError("NA_VOLUME must be non-empty str")
+
+        if not isinstance(NA_PATH, str) or not NA_PATH:
+            raise ValueError("NA_PATH must be non-empty str")
+
+        if not isinstance(NA_FILE, str) or not NA_FILE:
+            raise ValueError("NA_FILE must be non-empty str")
+
+        self._connect()
+        try:
+            # --------------------------------------------------
+            # Resolve file type
+            # --------------------------------------------------
+            ID_TYPE_FILE = self.get_file_type_id_by_hostname(
+                HOSTNAME=hostname
+            )
+
+            # --------------------------------------------------
+            # Lookup existing file
+            # --------------------------------------------------
             rows = self._select_rows(
                 table="DIM_SPECTRUM_FILE",
                 where={
-                    "NA_FILE": filename,
-                    "NA_PATH": path,
-                    "NA_VOLUME": volume
+                    "NA_VOLUME": NA_VOLUME.lower(),
+                    "NA_PATH": NA_PATH,
+                    "NA_FILE": NA_FILE,
                 },
                 cols=["ID_FILE"],
-                limit=1
+                limit=1,
             )
 
             if rows:
                 return int(rows[0]["ID_FILE"])
 
-            # Insert new record using the existing general _insert_row()
+            # --------------------------------------------------
+            # Insert new file
+            # --------------------------------------------------
             file_id = self._insert_row(
                 table="DIM_SPECTRUM_FILE",
                 data={
-                    "NA_FILE": filename,
-                    "NA_PATH": path,
-                    "NA_VOLUME": volume
-                }
+                    "ID_TYPE_FILE": ID_TYPE_FILE,
+                    "NA_VOLUME": NA_VOLUME.lower(),
+                    "NA_PATH": NA_PATH,
+                    "NA_FILE": NA_FILE,
+                    "NA_EXTENSION": NA_EXTENSION,
+                    "VL_FILE_SIZE_KB": VL_FILE_SIZE_KB,
+                    "DT_FILE_CREATED": DT_FILE_CREATED,
+                    "DT_FILE_MODIFIED": DT_FILE_MODIFIED,
+                },
             )
 
-            return file_id
+            # --------------------------------------------------
+            # Commit only if not in a managed transaction
+            # --------------------------------------------------
+            if not self.in_transaction:
+                self.db_connection.commit()
+
+            return int(file_id)
 
         except Exception as e:
-            raise Exception(f"Error inserting or retrieving file '{filename}': {e}")
+            if not self.in_transaction:
+                try:
+                    self.db_connection.rollback()
+                except Exception:
+                    pass
+            raise Exception(
+                f"insert_file failed for file '{NA_FILE}' in '{NA_PATH}': {e}"
+            )
 
         finally:
-            try:
+            if not self.in_transaction:
                 self._disconnect()
-            except Exception:
-                pass
+
+
 
     # ======================================================================
     # PROCEDURE OPERATIONS
     # ======================================================================
     def insert_procedure(self, procedure_name: str) -> int:
-        """Insert or retrieve a procedure entry in DIM_SPECTRUM_PROCEDURE.
-
-        If the procedure entry exists, returns its ID. Otherwise, inserts a new one.
+        """
+        Insert or retrieve a procedure entry in DIM_SPECTRUM_PROCEDURE.
 
         Args:
-            procedure_name (str): Procedure name.
-
-        Raises:
-            Exception: If retrieval or insertion fails.
+            procedure_name (str): Name of the acquisition or processing procedure.
 
         Returns:
-            int: ID of the procedure entry.
+            int: ID_PROCEDURE
         """
-        try:
-            # --- Step 1: open connection ---
-            self._connect()
 
-            # --- Step 2: check if procedure already exists ---
+        if not isinstance(procedure_name, str) or not procedure_name.strip():
+            raise ValueError("procedure_name must be a non-empty str")
+
+        self._connect()
+        try:
+            # --------------------------------------------------
+            # Lookup existing procedure
+            # --------------------------------------------------
             rows = self._select_rows(
                 table="DIM_SPECTRUM_PROCEDURE",
                 where={"NA_PROCEDURE": procedure_name},
@@ -521,329 +715,578 @@ class dbHandlerRFM(DBHandlerBase):
             if rows:
                 return int(rows[0]["ID_PROCEDURE"])
 
-            # --- Step 3: insert new procedure entry ---
+            # --------------------------------------------------
+            # Insert new procedure
+            # --------------------------------------------------
             procedure_id = self._insert_row(
                 table="DIM_SPECTRUM_PROCEDURE",
                 data={"NA_PROCEDURE": procedure_name},
             )
 
-            return procedure_id
+            # Commit only if not inside a managed transaction
+            if not self.in_transaction:
+                self.db_connection.commit()
+
+            return int(procedure_id)
 
         except Exception as e:
-            try:
-                self.db_connection.rollback()
-            except Exception:
-                pass
-            raise Exception(f"Error inserting or retrieving procedure '{procedure_name}': {e}")
+            if not self.in_transaction:
+                try:
+                    self.db_connection.rollback()
+                except Exception:
+                    pass
+            raise Exception(
+                f"insert_procedure failed for '{procedure_name}': {e}"
+            )
 
         finally:
-            try:
+            if not self.in_transaction:
                 self._disconnect()
-            except Exception:
-                pass
+
     
     # ======================================================================
     # EQUIPMENT OPERATIONS
     # ======================================================================
     
     def _get_equipment_types(self) -> dict:
-        """Load all equipment types and return {equipment_type_uid: equipment_type_id}."""
+        """
+        Load all equipment types.
+
+        Returns:
+            dict:
+                {
+                    "rfeye": {
+                        "id": 1
+                    },
+                    "etm": {
+                        "id": 2
+                    },
+                    ...
+                }
+        """
         try:
             self._connect()
+
             rows = self._select_rows(
                 table="DIM_EQUIPMENT_TYPE",
-                cols=["ID_EQUIPMENT_TYPE", "NA_EQUIPMENT_TYPE_UID"]
+                cols=[
+                    "ID_EQUIPMENT_TYPE",
+                    "NA_EQUIPMENT_TYPE_UID",
+                ],
             )
 
-            equipment_types_dict = {
-                str(r["NA_EQUIPMENT_TYPE_UID"]).strip(): int(r["ID_EQUIPMENT_TYPE"])
+            equipment_types = {
+                str(r["NA_EQUIPMENT_TYPE_UID"]).strip().lower(): {
+                    "id": int(r["ID_EQUIPMENT_TYPE"]),
+                }
                 for r in rows
             }
-            return equipment_types_dict
+
+            return equipment_types
 
         except Exception as e:
-            raise Exception(f"Error retrieving equipment types from database: {e}")
+            raise Exception(f"Error retrieving equipment types: {e}")
 
         finally:
-            try:
+            if not self.in_transaction:
                 self._disconnect()
-            except Exception:
-                pass
+
     
-    def insert_equipment(self, equipment: Union[str, List[str]]) -> dict:
-        """Insert or retrieve equipment entries in DIM_SPECTRUM_EQUIPMENT."""
+    def get_or_create_spectrum_equipment(
+        self,
+        equipment_name: str
+    ) -> int:
+        """
+        Retrieve or create a spectrum equipment in DIM_SPECTRUM_EQUIPMENT.
+
+        Model:
+            • One row per physical equipment
+            • No ports or sub-entities
+
+        Args:
+            equipment_name (str):
+                Logical equipment name (e.g. 'rfeye002106').
+
+        Returns:
+            int:
+                ID_EQUIPMENT
+        """
+
+        if not isinstance(equipment_name, str) or not equipment_name.strip():
+            raise ValueError("equipment_name must be a non-empty str")
+
+        name = equipment_name.lower().strip()
+        self._connect()
+
         try:
-            if isinstance(equipment, str):
-                equipment_names = [equipment]
-            elif isinstance(equipment, list):
-                equipment_names = equipment
-            else:
-                raise Exception("Invalid input. Expected a string or list of strings.")
-
+            # --------------------------------------------------
+            # 1) Resolve equipment type
+            # --------------------------------------------------
             equipment_types = self._get_equipment_types()
-            equipment_ids = {}
+            eq_type = None
 
-            self._connect()
-            for name in equipment_names:
-                name_lower = name.lower()
-                equipment_type_id = None
+            for uid, meta in equipment_types.items():
+                if uid in name:
+                    eq_type = meta
+                    break
 
-                # detect type by substring
-                for type_uid, type_id in equipment_types.items():
-                    if type_uid.rstrip("\r").lower() in name_lower:
-                        equipment_type_id = type_id
-                        break
-
-                if not equipment_type_id:
-                    raise Exception(f"Error retrieving equipment type for {name}")
-
-                # check existing
-                rows = self._select_rows(
-                    table="DIM_SPECTRUM_EQUIPMENT",
-                    where={"NA_EQUIPMENT": name_lower},
-                    cols=["ID_EQUIPMENT"],
-                    limit=1
+            if not eq_type:
+                raise Exception(
+                    f"Unable to infer equipment type for '{equipment_name}'"
                 )
 
-                if rows:
-                    equipment_ids[name] = int(rows[0]["ID_EQUIPMENT"])
-                    continue
+            equipment_type_id = eq_type["id"]
 
-                # insert new
-                eq_id = self._insert_row(
-                    table="DIM_SPECTRUM_EQUIPMENT",
-                    data={
-                        "NA_EQUIPMENT": name,
-                        "FK_EQUIPMENT_TYPE": equipment_type_id
-                    }
-                )
-                equipment_ids[name] = eq_id
+            # --------------------------------------------------
+            # 2) Lookup existing equipment
+            # --------------------------------------------------
+            rows = self._select_rows(
+                table="DIM_SPECTRUM_EQUIPMENT",
+                where={"NA_EQUIPMENT": name},
+                cols=["ID_EQUIPMENT"],
+                limit=1,
+            )
 
-            return equipment_ids
+            if rows:
+                return int(rows[0]["ID_EQUIPMENT"])
+
+            # --------------------------------------------------
+            # 3) Insert new equipment
+            # --------------------------------------------------
+            equipment_id = self._insert_row(
+                table="DIM_SPECTRUM_EQUIPMENT",
+                data={
+                    "FK_EQUIPMENT_TYPE": equipment_type_id,
+                    "NA_EQUIPMENT": name,
+                },
+            )
+
+            # Commit only if not part of a larger transaction
+            if not self.in_transaction:
+                self.db_connection.commit()
+
+            return int(equipment_id)
 
         except Exception as e:
-            try:
-                self.db_connection.rollback()
-            except Exception:
-                pass
-            raise Exception(f"Error inserting equipment: {e}")
+            if not self.in_transaction:
+                try:
+                    self.db_connection.rollback()
+                except Exception:
+                    pass
+            raise Exception(
+                f"get_or_create_spectrum_equipment failed for '{equipment_name}': {e}"
+            )
 
         finally:
-            try:
+            if not self.in_transaction:
                 self._disconnect()
-            except Exception:
-                pass
+
+
 
     # ======================================================================
     # DETECTOR OPERATIONS
     # ======================================================================
     def insert_detector_type(self, detector: str) -> int:
-        """Insert or retrieve detector entry in DIM_SPECTRUM_DETECTOR."""
+        """
+        Insert or retrieve a detector type in DIM_SPECTRUM_DETECTOR.
+
+        Args:
+            detector (str):
+                Detector name (e.g. 'PMEC').
+
+        Returns:
+            int:
+                ID_DETECTOR
+        """
+
+        if not isinstance(detector, str) or not detector.strip():
+            raise ValueError("detector must be a non-empty str")
+
+        detector = detector.strip()
+        self._connect()
+
         try:
-            self._connect()
+            # --------------------------------------------------
+            # 1) Lookup existing detector
+            # --------------------------------------------------
             rows = self._select_rows(
                 table="DIM_SPECTRUM_DETECTOR",
                 where={"NA_DETECTOR": detector},
                 cols=["ID_DETECTOR"],
-                limit=1
+                limit=1,
             )
 
             if rows:
                 return int(rows[0]["ID_DETECTOR"])
 
-            return self._insert_row(
+            # --------------------------------------------------
+            # 2) Insert new detector
+            # --------------------------------------------------
+            detector_id = self._insert_row(
                 table="DIM_SPECTRUM_DETECTOR",
-                data={"NA_DETECTOR": detector}
+                data={"NA_DETECTOR": detector},
             )
+
+            # Commit only if standalone
+            if not self.in_transaction:
+                self.db_connection.commit()
+
+            return int(detector_id)
 
         except Exception as e:
-            raise Exception(f"Error inserting or retrieving detector '{detector}': {e}")
-
-        finally:
-            try:
-                self._disconnect()
-            except Exception:
-                pass
-    
-    # ======================================================================
-    # TRACE OPERATIONS
-    # ======================================================================
-    def insert_trace_type(self, trace_name: str) -> int:
-        """Insert or retrieve trace type in DIM_SPECTRUM_TRACE_TYPE."""
-        try:
-            self._connect()
-            rows = self._select_rows(
-                table="DIM_SPECTRUM_TRACE_TYPE",
-                where={"NA_TRACE_TYPE": trace_name},
-                cols=["ID_TRACE_TYPE"],
-                limit=1
+            if not self.in_transaction:
+                try:
+                    self.db_connection.rollback()
+                except Exception:
+                    pass
+            raise Exception(
+                f"insert_detector_type failed for '{detector}': {e}"
             )
 
-            if rows:
-                return int(rows[0]["ID_TRACE_TYPE"])
-
-            return self._insert_row(
-                table="DIM_SPECTRUM_TRACE_TYPE",
-                data={"NA_TRACE_TYPE": trace_name}
-            )
-
-        except Exception as e:
-            raise Exception(f"Error inserting or retrieving trace type '{trace_name}': {e}")
-
         finally:
-            try:
+            if not self.in_transaction:
                 self._disconnect()
-            except Exception:
-                pass
+
     
     # ======================================================================
     # MEASUREMENTS OPERATIONS
     # ======================================================================
     def insert_measure_unit(self, unit_name: str) -> int:
-        """Insert or retrieve measure unit in DIM_SPECTRUM_UNIT."""
+        """
+        Insert or retrieve a measurement unit in DIM_SPECTRUM_UNIT.
+
+        Args:
+            unit_name (str):
+                Measurement unit (e.g. 'dBm').
+
+        Returns:
+            int:
+                ID_MEASURE_UNIT
+        """
+
+        if not isinstance(unit_name, str) or not unit_name.strip():
+            raise ValueError("unit_name must be a non-empty str")
+
+        unit_name = unit_name.strip()
+        self._connect()
+
         try:
-            self._connect()
+            # --------------------------------------------------
+            # 1) Lookup existing measurement unit
+            # --------------------------------------------------
             rows = self._select_rows(
                 table="DIM_SPECTRUM_UNIT",
                 where={"NA_MEASURE_UNIT": unit_name},
                 cols=["ID_MEASURE_UNIT"],
-                limit=1
+                limit=1,
             )
 
             if rows:
                 return int(rows[0]["ID_MEASURE_UNIT"])
 
-            return self._insert_row(
+            # --------------------------------------------------
+            # 2) Insert new measurement unit
+            # --------------------------------------------------
+            unit_id = self._insert_row(
                 table="DIM_SPECTRUM_UNIT",
-                data={"NA_MEASURE_UNIT": unit_name}
+                data={"NA_MEASURE_UNIT": unit_name},
             )
 
+            # Commit only if standalone
+            if not self.in_transaction:
+                self.db_connection.commit()
+
+            return int(unit_id)
+
         except Exception as e:
-            raise Exception(f"Error inserting or retrieving measure unit '{unit_name}': {e}")
+            if not self.in_transaction:
+                try:
+                    self.db_connection.rollback()
+                except Exception:
+                    pass
+            raise Exception(
+                f"insert_measure_unit failed for '{unit_name}': {e}"
+            )
 
         finally:
-            try:
+            if not self.in_transaction:
                 self._disconnect()
-            except Exception:
-                pass
+
     
     # ======================================================================
     # SPECTRUM OPERATIONS
     # ======================================================================
     def insert_spectrum(self, data: dict) -> int:
-        """Insert or retrieve a spectrum entry in FACT_SPECTRUM."""
-        try:
-            self._connect()
-            where = {
-                "FK_SITE": data["id_site"],
-                "FK_TRACE_TYPE": data["id_trace_type"],
-                "NU_FREQ_START": data["nu_freq_start"],
-                "NU_FREQ_END": data["nu_freq_end"],
-                "DT_TIME_START": data["dt_time_start"],
-                "DT_TIME_END": data["dt_time_end"],
-                "NU_TRACE_COUNT": data["nu_trace_count"],
-                "NU_TRACE_LENGTH": data["nu_trace_length"],
-            }
+        """
+        Insert or retrieve a spectrum entry in FACT_SPECTRUM.
 
+        Uniqueness is based on site, equipment, procedure,
+        temporal window and spectral range to avoid duplicates
+        during retries.
+
+        Args:
+            data (dict):
+                Fully resolved foreign keys and spectrum metadata.
+
+        Returns:
+            int:
+                ID_SPECTRUM
+        """
+
+        required_keys = (
+            "id_site",
+            "id_equipment",
+            "id_procedure",
+            "id_detector_type",
+            "id_trace_type",
+            "id_measure_unit",
+            "nu_freq_start",
+            "nu_freq_end",
+            "dt_time_start",
+            "dt_time_end",
+            "nu_trace_length",
+        )
+
+        for k in required_keys:
+            if k not in data:
+                raise ValueError(f"insert_spectrum missing required key: {k}")
+
+        self._connect()
+        try:
+            # --------------------------------------------------
+            # 1) Lookup existing spectrum (idempotency)
+            # --------------------------------------------------
             rows = self._select_rows(
                 table="FACT_SPECTRUM",
-                where=where,
+                where={
+                    "FK_SITE": data["id_site"],
+                    "FK_EQUIPMENT": data["id_equipment"],
+                    "FK_PROCEDURE": data["id_procedure"],
+                    "FK_TRACE_TYPE": data["id_trace_type"],
+                    "NU_FREQ_START": data["nu_freq_start"],
+                    "NU_FREQ_END": data["nu_freq_end"],
+                    "DT_TIME_START": data["dt_time_start"],
+                    "DT_TIME_END": data["dt_time_end"],
+                    "NU_TRACE_LENGTH": data["nu_trace_length"],
+                },
                 cols=["ID_SPECTRUM"],
-                limit=1
+                limit=1,
             )
 
             if rows:
                 return int(rows[0]["ID_SPECTRUM"])
 
-            return self._insert_row(
+            # --------------------------------------------------
+            # 2) Normalize JSON metadata
+            # --------------------------------------------------
+            js_metadata = data.get("js_metadata")
+            if isinstance(js_metadata, dict):
+                js_metadata = json.dumps(js_metadata)
+
+            # --------------------------------------------------
+            # 3) Insert new spectrum
+            # --------------------------------------------------
+            spectrum_id = self._insert_row(
                 table="FACT_SPECTRUM",
                 data={
                     "FK_SITE": data["id_site"],
+                    "FK_EQUIPMENT": data["id_equipment"],
                     "FK_PROCEDURE": data["id_procedure"],
                     "FK_DETECTOR": data["id_detector_type"],
                     "FK_TRACE_TYPE": data["id_trace_type"],
                     "FK_MEASURE_UNIT": data["id_measure_unit"],
-                    "NA_DESCRIPTION": data["na_description"],
+                    "NA_DESCRIPTION": data.get("na_description"),
                     "NU_FREQ_START": data["nu_freq_start"],
                     "NU_FREQ_END": data["nu_freq_end"],
                     "DT_TIME_START": data["dt_time_start"],
                     "DT_TIME_END": data["dt_time_end"],
-                    "NU_SAMPLE_DURATION": data["nu_sample_duration"],
-                    "NU_TRACE_COUNT": data["nu_trace_count"],
+                    "NU_SAMPLE_DURATION": data.get("nu_sample_duration"),
+                    "NU_TRACE_COUNT": data.get("nu_trace_count"),
                     "NU_TRACE_LENGTH": data["nu_trace_length"],
-                    "NU_RBW": data["nu_rbw"],
-                    "NU_ATT_GAIN": data["nu_att_gain"],
-                }
+                    "NU_RBW": data.get("nu_rbw"),
+                    "NU_VBW": data.get("nu_vbw"),
+                    "NU_ATT_GAIN": data.get("nu_att_gain"),
+                    "JS_METADATA": js_metadata,
+                },
             )
 
+            # Commit only if standalone
+            if not self.in_transaction:
+                self.db_connection.commit()
+
+            return int(spectrum_id)
+
         except Exception as e:
-            raise Exception(f"Error inserting or retrieving spectrum: {e}")
+            if not self.in_transaction:
+                try:
+                    self.db_connection.rollback()
+                except Exception:
+                    pass
+            raise Exception(f"insert_spectrum failed: {e}")
 
         finally:
-            try:
+            if not self.in_transaction:
                 self._disconnect()
-            except Exception:
-                pass
+
+    
+    def insert_trace_type(self, trace_name: str) -> int:
+        """
+        Insert or retrieve a trace type in DIM_SPECTRUM_TRACE_TYPE.
+
+        Args:
+            trace_name (str):
+                Trace type name (e.g. 'peak').
+
+        Returns:
+            int:
+                ID_TRACE_TYPE
+        """
+
+        if not isinstance(trace_name, str) or not trace_name.strip():
+            raise ValueError("trace_name must be a non-empty str")
+
+        trace_name = trace_name.strip()
+        self._connect()
+
+        try:
+            # --------------------------------------------------
+            # 1) Lookup existing trace type
+            # --------------------------------------------------
+            rows = self._select_rows(
+                table="DIM_SPECTRUM_TRACE_TYPE",
+                where={"NA_TRACE_TYPE": trace_name},
+                cols=["ID_TRACE_TYPE"],
+                limit=1,
+            )
+
+            if rows:
+                return int(rows[0]["ID_TRACE_TYPE"])
+
+            # --------------------------------------------------
+            # 2) Insert new trace type
+            # --------------------------------------------------
+            trace_id = self._insert_row(
+                table="DIM_SPECTRUM_TRACE_TYPE",
+                data={"NA_TRACE_TYPE": trace_name},
+            )
+
+            # Commit only if standalone
+            if not self.in_transaction:
+                self.db_connection.commit()
+
+            return int(trace_id)
+
+        except Exception as e:
+            if not self.in_transaction:
+                try:
+                    self.db_connection.rollback()
+                except Exception:
+                    pass
+            raise Exception(
+                f"insert_trace_type failed for '{trace_name}': {e}"
+            )
+
+        finally:
+            if not self.in_transaction:
+                self._disconnect()
 
     # ======================================================================
     # BRIDGE SPECTRUM OPERATIONS
     # ======================================================================
     def insert_bridge_spectrum_equipment(self, spectrum_lst: list) -> None:
-        """Insert N:N relationships between spectrum and equipment."""
-        try:
-            self._connect()
-            for entry in spectrum_lst:
-                for equipment in entry["equipment"]:
-                    sql = (
-                        "INSERT IGNORE INTO BRIDGE_SPECTRUM_EQUIPMENT "
-                        "(FK_SPECTRUM, FK_EQUIPMENT) VALUES (%s, %s);"
-                    )
-                    self.cursor.execute(sql, (entry["spectrum"], equipment))
+        """
+        Insert N:N relationships between spectrum and spectrum-equipment (antenna port).
 
-            self.db_connection.commit()
+        Expected input:
+            spectrum_lst = [
+                {
+                    "spectrum": <ID_SPECTRUM>,
+                    "equipment": <ID_DIM_SPECTRUM_EQUIPMENT>
+                },
+                ...
+            ]
+
+        Transaction control:
+            - No commit
+            - No rollback
+            - Managed by caller
+        """
+
+        self._connect()
+
+        try:
+            for entry in spectrum_lst:
+                spectrum_id = entry["spectrum"]
+                dim_equipment_id = entry["equipment"]
+
+                self.cursor.execute(
+                    "INSERT IGNORE INTO BRIDGE_SPECTRUM_EQUIPMENT "
+                    "(FK_SPECTRUM, FK_EQUIPMENT) VALUES (%s, %s);",
+                    (spectrum_id, dim_equipment_id),
+                )
 
         except Exception as e:
-            try:
-                self.db_connection.rollback()
-            except Exception:
-                pass
-            raise Exception(f"Error linking spectrum and equipment: {e}")
+            raise Exception(f"insert_bridge_spectrum_equipment failed: {e}")
 
         finally:
-            try:
+            if not self.in_transaction:
                 self._disconnect()
-            except Exception:
-                pass
+
 
     # ======================================================================
     # BRIDGE SPECTRUM FILE OPERATIONS
     # ======================================================================
-    def insert_bridge_spectrum_file(self, spectrum_lst: list, file_lst: list) -> None:
-        """Insert N:N relationships between spectrum and files."""
-        try:
-            self._connect()
-            for entry in spectrum_lst:
-                for file_id in file_lst:
-                    sql = (
-                        "INSERT IGNORE INTO BRIDGE_SPECTRUM_FILE "
-                        "(FK_SPECTRUM, FK_FILE) VALUES (%s, %s);"
-                    )
-                    self.cursor.execute(sql, (entry["spectrum"], file_id))
+    def insert_bridge_spectrum_file(
+        self,
+        spectrum_ids: list[int],
+        file_ids: list[int],
+    ) -> None:
+        """
+        Insert N:N relationships between spectra and files.
 
-            self.db_connection.commit()
+        Model:
+            • One file may contain multiple spectra
+            • One spectrum may be linked to multiple files (reprocessing)
+
+        Args:
+            spectrum_ids (list[int]):
+                List of ID_SPECTRUM values.
+            file_ids (list[int]):
+                List of ID_FILE values.
+        """
+
+        if not spectrum_ids or not file_ids:
+            return  # nothing to do
+
+        self._connect()
+        try:
+            for spectrum_id in spectrum_ids:
+                for file_id in file_ids:
+                    self.cursor.execute(
+                        """
+                        INSERT IGNORE INTO BRIDGE_SPECTRUM_FILE
+                            (FK_SPECTRUM, FK_FILE)
+                        VALUES (%s, %s);
+                        """,
+                        (spectrum_id, file_id),
+                    )
+
+            # Commit only if standalone
+            if not self.in_transaction:
+                self.db_connection.commit()
 
         except Exception as e:
-            try:
-                self.db_connection.rollback()
-            except Exception:
-                pass
-            raise Exception(f"Error linking spectrum and file: {e}")
+            if not self.in_transaction:
+                try:
+                    self.db_connection.rollback()
+                except Exception:
+                    pass
+            raise Exception(f"insert_bridge_spectrum_file failed: {e}")
 
         finally:
-            try:
+            if not self.in_transaction:
                 self._disconnect()
-            except Exception:
-                pass
+
     
     # ======================================================================
     # PARQUET OPERATIONS
