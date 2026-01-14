@@ -11,8 +11,8 @@ set -Eeuo pipefail
 # ------------------------------
 ContainerName="debian12-python"
 ImageName="debian12-python"
-NetworkName="rffusion-net"
-IPAddress="10.99.0.2"
+NetworkName="podman"            # Rede válida e ativa
+IPAddress="10.88.0.2"
 SSHPassword="changeme"
 HostSSHPort="2828"
 HostAppPort="5555"
@@ -84,6 +84,13 @@ args=(
     --hostname "$ContainerName"
     --network "$NetworkName"
     --ip "$IPAddress"
+
+    # === LIMITES DE RECURSOS ===
+    --cpus=2
+    --memory=2g
+    --memory-swap=2g
+    --pids-limit=2048
+
     --cap-add=NET_RAW
     --cap-add=NET_ADMIN
     --restart=always
