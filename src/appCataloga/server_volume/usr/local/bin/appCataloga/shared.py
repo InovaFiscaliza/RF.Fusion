@@ -1299,6 +1299,8 @@ class hostDaemon:
                 last_dt = callBackGetLastDBDate(host_id)
                 if last_dt:
                     newer_than = last_dt.strftime("%Y-%m-%d %H:%M:%S")
+            if mode == Filter.MODE_REDISCOVERY:
+                newer_than = None  # Explicit override for full scan
 
             self.log.entry(
                 f"[META] Discovery start | host={host_id} | agent={agent} | "
@@ -1493,6 +1495,7 @@ class Filter:
     MODE_FILE = "FILE"
     MODE_RANGE = "RANGE"
     MODE_LAST = "LAST"
+    MODE_REDISCOVERY = "REDISCOVERY"  # reserved for future use
 
     VALID_MODES = (
         MODE_NONE,
@@ -1500,6 +1503,7 @@ class Filter:
         MODE_FILE,
         MODE_RANGE,
         MODE_LAST,
+        MODE_REDISCOVERY,
     )
 
     def __init__(self, filter_raw: Union[str, Dict[str, Any], None] = None, log: Optional[Any] = None):
@@ -1642,6 +1646,7 @@ class Filter:
                 f["last_n_files"] = max(1, int(f["last_n_files"]))
             except Exception:
                 f["last_n_files"] = None
+                
 
         # --- Extension normalization (all modes) ---
         ext = f.get("extension")
@@ -1658,11 +1663,12 @@ class Filter:
 
         # --- Define active fields ---
         active_fields = {
-            Filter.MODE_RANGE: {"start_date", "end_date", "extension", "agent", "file_path"},
-            Filter.MODE_FILE: {"file_name", "extension", "agent","file_path"},
-            Filter.MODE_LAST: {"last_n_files", "extension", "agent","file_path"},
-            Filter.MODE_ALL: {"extension", "agent","file_path"},
-            Filter.MODE_NONE: {"extension", "agent","file_path"},
+            Filter.MODE_RANGE:          {"start_date", "end_date", "extension", "agent", "file_path"},
+            Filter.MODE_FILE:           {"file_name", "extension", "agent","file_path"},
+            Filter.MODE_LAST:           {"last_n_files", "extension", "agent","file_path"},
+            Filter.MODE_ALL:            {"extension", "agent","file_path"},
+            Filter.MODE_NONE:           {"extension", "agent","file_path"},
+            Filter.MODE_REDISCOVERY:    {"extension", "agent","file_path"},
         }
 
         # --- Nullify unused fields ---
@@ -1851,7 +1857,7 @@ class Filter:
         # ============================================================
         # MODE = NONE
         # ============================================================
-        if mode == Filter.MODE_NONE:
+        if mode == Filter.MODE_NONE or mode==Filter.MODE_REDISCOVERY:
             return {"where": None, "extra_sql": "", "msg_prefix": None}
 
         # ============================================================
@@ -2114,6 +2120,12 @@ class Filter:
         return metadata_list
 
 
+class BinValidationError(ValueError):
+    """
+    Raised when BIN semantic validation fails.
+    Domain-level error (fatal validation).
+    """
+    pass
 
 class ErrorHandler:
     """
@@ -2172,6 +2184,29 @@ class ErrorHandler:
             parts.append(f"Exception: {repr(self.exc)}")
 
         self.logger.error(" ".join(parts))
+        
+    def format_error(self) -> str:
+        """
+        Return a compact, structured error string
+        suitable for persistence (DB, history, audit).
+        """
+        if not self.triggered:
+            return ""
+
+        exc_type = type(self.exc).__name__ if self.exc else "Unknown"
+
+        parts = ["[ERROR]"]
+
+        if self.stage:
+            parts.append(f"[stage={self.stage}]")
+
+        parts.append(f"[type={exc_type}]")
+
+        if self.reason:
+            parts.append(self.reason)
+
+        return " ".join(parts)
+
 
 
 class TimeoutError(Exception):
@@ -2385,7 +2420,6 @@ def _compose_message(
     task_status: int,
     path: Optional[str] = None,
     name: Optional[str] = None,
-    error_msg: Optional[str] = None,
     *,
     prefix_only: bool = False
 ) -> str:
@@ -2393,8 +2427,9 @@ def _compose_message(
     Build a standardized NA_MESSAGE for FILE_TASK_HISTORY.
 
     Rules:
-    - Success messages are short and deterministic
-    - Error messages preserve detailed context
+    - Messages describe ONLY task state transitions
+    - Deterministic and short
+    - Error details are handled externally (ErrorHandler)
     - Path/name are optional and used only when relevant
     """
 
@@ -2428,20 +2463,13 @@ def _compose_message(
         return prefix
 
     # -------------------------------------------------
-    # ERROR → preserve full error context
-    # -------------------------------------------------
-    if task_status == k.TASK_ERROR:
-        if error_msg:
-            return f"{prefix} | {error_msg}"
-        return prefix
-
-    # -------------------------------------------------
-    # SUCCESS / PENDING / RUNNING
+    # SUCCESS / PENDING / RUNNING / ERROR (state only)
     # -------------------------------------------------
     if path and name:
         return f"{prefix} of file {path}/{name}"
 
     return prefix
+
 
     
 def _parse_ps_iso(ts: str) -> datetime:

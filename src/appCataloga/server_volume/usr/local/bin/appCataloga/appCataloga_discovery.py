@@ -304,6 +304,12 @@ def main() -> None:
             # Handle TASK error state
             if err.triggered and task_id:
                 err.log_error(host_id=host_id, task_id=task_id)
+                
+                # Remove Ghost HOST TASK to avoid loops
+                try:
+                    db.host_task_delete(task_id=task_id)
+                except Exception:
+                    pass
 
                 try:
                     db.host_task_update(

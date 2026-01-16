@@ -24,7 +24,7 @@ CREATE TABLE DIM_EQUIPMENT_TYPE (
     PRIMARY KEY (ID_EQUIPMENT_TYPE)
 ) CHARACTER SET utf8mb4;
 
-LOAD DATA INFILE '/server_volume/tmp/appCataloga/equipmentType.csv'
+LOAD DATA INFILE '/RFFusion/src/mariadb/scripts/equipmentType.csv'
     INTO TABLE DIM_EQUIPMENT_TYPE
     FIELDS TERMINATED BY ','
     LINES TERMINATED BY '\n'
@@ -54,7 +54,7 @@ CREATE TABLE DIM_SITE_STATE (
     FULLTEXT (NA_STATE)
 ) CHARACTER SET utf8mb4;
 
-LOAD DATA INFILE '/server_volume/tmp/appCataloga/IBGE-BR_UF_2020_BULKLOAD.csv'
+LOAD DATA INFILE '/RFFusion/src/mariadb/scripts/IBGE-BR_UF_2020_BULKLOAD.csv'
     INTO TABLE DIM_SITE_STATE
     FIELDS TERMINATED BY ','
     LINES TERMINATED BY '\n'
@@ -73,7 +73,7 @@ CREATE TABLE DIM_SITE_COUNTY (
     FULLTEXT (NA_COUNTY)
 ) CHARACTER SET utf8mb4;
 
-LOAD DATA INFILE '/server_volume/tmp/appCataloga/IBGE-BR_Municipios_2020_BULKLOAD.csv'
+LOAD DATA INFILE '/RFFusion/src/mariadb/scripts/IBGE-BR_Municipios_2020_BULKLOAD.csv'
     INTO TABLE DIM_SITE_COUNTY
     FIELDS TERMINATED BY ','
     LINES TERMINATED BY '\n'
@@ -151,7 +151,7 @@ CREATE TABLE DIM_FILE_TYPE (
     PRIMARY KEY (ID_TYPE_FILE)
 ) CHARACTER SET utf8mb4;
 
-LOAD DATA INFILE '/server_volume/tmp/appCataloga/fileType.csv'
+LOAD DATA INFILE '/RFFusion/src/mariadb/scripts/fileType.csv'
     INTO TABLE DIM_FILE_TYPE
     FIELDS TERMINATED BY ','
     LINES TERMINATED BY '\n'
@@ -198,7 +198,7 @@ CREATE TABLE DIM_SPECTRUM_UNIT (
     PRIMARY KEY (ID_MEASURE_UNIT)
 ) CHARACTER SET utf8mb4;
 
-LOAD DATA INFILE '/server_volume/tmp/appCataloga/measurementUnit.csv'
+LOAD DATA INFILE '/RFFusion/src/mariadb/scripts/measurementUnit.csv'
     INTO TABLE DIM_SPECTRUM_UNIT
     FIELDS TERMINATED BY ','
     LINES TERMINATED BY '\n'

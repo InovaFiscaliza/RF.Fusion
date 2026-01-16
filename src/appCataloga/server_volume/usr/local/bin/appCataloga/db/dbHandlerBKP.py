@@ -1919,6 +1919,8 @@ class dbHandlerBKP(DBHandlerBase):
                 "DT_FILE_TASK",
                 "NA_HOST_FILE_PATH",
                 "NA_HOST_FILE_NAME",
+                "NU_TYPE",
+                "NU_STATUS",
                 "VL_FILE_SIZE_KB",
                 "NA_SERVER_FILE_PATH",
                 "NA_SERVER_FILE_NAME",

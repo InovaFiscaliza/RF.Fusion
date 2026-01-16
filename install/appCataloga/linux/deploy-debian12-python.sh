@@ -11,7 +11,7 @@ set -Eeuo pipefail
 # ------------------------------
 ContainerName="debian12-python"
 ImageName="debian12-python"
-NetworkName="podman"            # Rede válida e ativa
+NetworkName="podman"            # Rede padrão do Podman
 IPAddress="10.88.0.2"
 SSHPassword="changeme"
 HostSSHPort="2828"
@@ -30,29 +30,13 @@ volumes=(
   "/mnt/reposfi:/mnt/reposfi"
 )
 
-echo "=== [1/6] Switching Podman context ==="
+echo "=== [1/5] Switching Podman context ==="
 podman context use podman-machine-default-root >/dev/null 2>&1 || true
 
 # =======================================================================
-# 2. Garantir rede "rffusion-net"
+# 2. Build da imagem
 # =======================================================================
-echo "=== [2/6] Checking network environment ==="
-networkScript="${projectRoot}/setup-network.sh"
-
-if [[ -f "$networkScript" ]]; then
-    echo "Running setup-network.sh to validate or create network..."
-    bash "$networkScript" || {
-        echo "❌ ERROR: setup-network.sh failed to ensure network configuration."
-        exit 1
-    }
-else
-    echo "⚠️  WARNING: setup-network.sh not found in $projectRoot. Skipping network setup."
-fi
-
-# =======================================================================
-# 3. Build da imagem
-# =======================================================================
-echo "=== [3/6] Validating required files ==="
+echo "=== [2/5] Validating required files ==="
 requiredFiles=("Containerfile" "docker-entrypoint.sh" "environment.yml")
 for file in "${requiredFiles[@]}"; do
     if [[ ! -f "${projectRoot}/${file}" ]]; then
@@ -70,9 +54,9 @@ if [[ $? -ne 0 ]]; then
 fi
 
 # =======================================================================
-# 4. Deploy do container
+# 3. Deploy do container
 # =======================================================================
-echo "=== [4/6] Deploying container ${ContainerName} ==="
+echo "=== [3/5] Deploying container ${ContainerName} ==="
 if podman ps -a --format '{{.Names}}' | grep -q "^${ContainerName}$"; then
     echo "Container ${ContainerName} found. Removing..."
     podman rm -f "$ContainerName" >/dev/null 2>&1 || true
@@ -116,7 +100,7 @@ podman "${args[@]}" >/dev/null
 sleep 5
 
 # =======================================================================
-# 5. Verificação
+# 4. Verificação
 # =======================================================================
 if podman ps --format '{{.Names}}' | grep -q "^${ContainerName}$"; then
     echo "✅ Container ${ContainerName} is running at ${IPAddress}"
@@ -129,6 +113,6 @@ else
 fi
 
 # =======================================================================
-# 6. Conclusão
+# 5. Conclusão
 # =======================================================================
 echo "=== ✅ Deployment completed successfully ==="

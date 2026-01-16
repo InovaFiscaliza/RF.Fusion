@@ -50,6 +50,7 @@ class dbHandlerRFM(DBHandlerBase):
         """
         super().__init__(database=database, log=log)
         self.log.entry(f"[dbHandlerRFM] Initialized for DB '{database}'")
+        self.in_transaction: bool = False
         
     
     def begin_transaction(self) -> None:
@@ -70,8 +71,14 @@ class dbHandlerRFM(DBHandlerBase):
 
         Only effective if a transaction is active.
         """
-        if self.in_transaction:
+        if not self.in_transaction:
+            return
+
+        try:
             self.db_connection.commit()
+        finally:
+            # Always restore connection state
+            self.db_connection.autocommit = True
             self.in_transaction = False
 
 
@@ -81,8 +88,14 @@ class dbHandlerRFM(DBHandlerBase):
 
         Used when any error occurs during a transactional workflow.
         """
-        if self.in_transaction:
+        if not self.in_transaction:
+            return
+
+        try:
             self.db_connection.rollback()
+        finally:
+            # Always restore connection state
+            self.db_connection.autocommit = True
             self.in_transaction = False
             
     def _ensure_transaction(self):
