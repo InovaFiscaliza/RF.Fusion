@@ -202,8 +202,13 @@ def main():
                             db.host_task_suspend_by_host(host_id)
                             db.file_task_suspend_by_host(host_id)
 
-                            # Delete failed task to avoid endless retries
-                            db.host_task_delete(task_id=task_id)
+                            # Persist error instead of deleting
+                            db.host_task_update(
+                                task_id=task_id,
+                                NU_STATUS=k.TASK_ERROR,
+                                NA_MESSAGE="Host unreachable (connectivity check failed)",
+                                DT_HOST_TASK=now,
+                            )
 
                         else:
                             # Host reachable → reset flags, resume tasks
@@ -252,15 +257,19 @@ def main():
                 err.log_error(host_id=host_id, task_id=task_id)
 
                 try:
-                    
-                    # Remove the failed task (avoid loops)
-                    db.host_task_delete(task_id=task_id)
-
+                    # Persist error state instead of deleting the task
+                    db.host_task_update(
+                        task_id=task_id,
+                        NU_STATUS=k.TASK_ERROR,
+                        NA_MESSAGE=err.msg,
+                        DT_HOST_TASK=datetime.now(),
+                    )
                 except Exception as e2:
-                    log.error(f"[DB-ERROR] Failed to update DB after error: {e2}")
+                    log.error(f"[DB-ERROR] Failed to persist HOST_TASK error: {e2}")
 
                 sh._random_jitter_sleep()
                 continue
+
 
             # ====================================================
             # Normal idle jitter

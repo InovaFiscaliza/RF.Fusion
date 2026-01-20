@@ -305,17 +305,13 @@ def main() -> None:
             if err.triggered and task_id:
                 err.log_error(host_id=host_id, task_id=task_id)
                 
-                # Remove Ghost HOST TASK to avoid loops
-                try:
-                    db.host_task_delete(task_id=task_id)
-                except Exception:
-                    pass
-
+                # Persist error state for observability and retry
                 try:
                     db.host_task_update(
                         task_id=task_id,
                         NU_STATUS=k.TASK_ERROR,
                         NA_MESSAGE=err.msg,
+                        DT_HOST_TASK=datetime.now(),
                     )
                 except Exception:
                     pass

@@ -33,9 +33,10 @@ import config as k
 # ======================================================================
 
 ALLOWED_ROOTS = [
-    "/mnt/reposfi/RF.Fusion_Legado",
-    #"/mnt/reposfi/trash",
+    "/mnt/reposfi/RF.Fusion_Processado",
+    "/mnt/reposfi/trash",
 ]
+
 
 TMP_ROOT = os.path.join(k.REPO_FOLDER, k.TMP_FOLDER)
 
@@ -183,13 +184,13 @@ def migrate():
                 try:
                     db.file_task_update(
                         task_id=task["ID_FILE_TASK"],
-                        NU_TYPE=k.FILE_TASK_BACKUP_TYPE,
-                        NU_STATUS=k.TASK_DONE,
+                        NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+                        NU_STATUS=k.TASK_PENDING,
                         NA_SERVER_FILE_PATH=local_path,
                         NA_SERVER_FILE_NAME=new_server_name,
                         NA_MESSAGE=sh._compose_message(
-                            task_type=k.FILE_TASK_BACKUP_TYPE,
-                            task_status=k.TASK_DONE,
+                            task_type=k.FILE_TASK_PROCESS_TYPE,
+                            task_status=k.TASK_PENDING,
                             path=task["NA_HOST_FILE_PATH"],
                             name=original_name,
                         ),
@@ -203,7 +204,7 @@ def migrate():
                 try:
                     db.file_history_update(
                         task_type=k.FILE_TASK_BACKUP_TYPE,
-                        file_name=original_name,
+                        host_file_name=original_name,
                         host_id=host_id,
                         NA_SERVER_FILE_PATH=local_path,
                         NA_SERVER_FILE_NAME=new_server_name,

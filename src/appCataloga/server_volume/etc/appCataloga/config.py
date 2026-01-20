@@ -57,7 +57,7 @@ ICMP_TIMEOUT_SEC = 10
 #------------------------------------------
 # backup module configuration
 #------------------------------------------
-MAX_HOST_TASK_WAIT_TIME         = 10        # seconds to wait for a new task. Minimum half, maximum equal to this value
+MAX_HOST_TASK_WAIT_TIME         = 2         # seconds to wait for a new task. Minimum half, maximum equal to this value
 MAX_FILE_TASK_WAIT_TIME         = 30        # seconds to wait for a new task. Minimum half, maximum equal to this value
 HOST_TASK_REQUEST_WAIT_TIME     = 1800      # seconds to wait for the HALT_FLAG release before aborting the task
 HALT_FLAG_CHECK_CYCLES          = 6         # number of cycles to check for HALT_FLAG (6 x 300s = 30 minutes)

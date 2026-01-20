@@ -35,13 +35,16 @@ class Station(ABC):
     # Level semantics (generic)
     # -------------------------------------------------
     OCCUPANCY_MAX_PERCENT = 100
-    OCCUPANCY_ZERO_RATIO_THRESHOLD = 0.05
+    OCCUPANCY_MAX_RANGE = 100.0
+    OCCUPANCY_ZERO_RATIO_THRESHOLD = 0.1
 
-    POWER_MAX_DBM = 50
-    POWER_MIN_RANGE_DB = 10
+    # Power level (dBm) 
+    POWER_CENTER_MAX_DBM = -20.0
+    POWER_MAX_DBM = 20.0
 
-    FIELD_STRENGTH_MIN_DB = -20
-    FIELD_STRENGTH_MAX_DB = 40
+    # Field strength (dBµV/m)
+    FIELD_STRENGTH_MIN_DB = -20.0
+    FIELD_STRENGTH_MAX_DB = 120.0
 
     # -------------------------------------------------
     # Method defaults (generic)
@@ -56,6 +59,7 @@ class Station(ABC):
     LEVEL_TYPE_POWER = "power"
     LEVEL_TYPE_FIELD_STRENGTH = "field_strength"
     LEVEL_TYPE_UNKNOWN = "unknown"
+    LEVEL_UNIT_UNKNOWN = "unknown"
 
     LEVEL_UNIT_PERCENT = "percent"
     LEVEL_UNIT_DBM = "dBm"

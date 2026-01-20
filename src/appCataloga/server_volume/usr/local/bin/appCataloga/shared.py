@@ -62,6 +62,27 @@ _TIMEOUT_EXECUTOR = ThreadPoolExecutor(
     max_workers=8,  # você pode ajustar entre 4–16 dependendo do hardware
     thread_name_prefix="timeout-worker"
 )
+
+
+# =====================================================================
+# Used to insert Null values in DB updates
+# =====================================================================
+class _ExplicitNull:
+    """
+    Sentinel object used to explicitly request a database field
+    to be updated to NULL.
+
+    This is different from passing None, which means:
+    'do not update this field'.
+    """
+    __slots__ = ()
+
+    def __repr__(self):
+        return "<SET_NULL>"
+
+
+SET_NULL = _ExplicitNull()
+
 # =====================================================================
 # HaltFlag class to manage objects
 # =====================================================================
@@ -70,7 +91,6 @@ class HaltFlagState(Enum):
     OWN_FLAG = 1
     FOREIGN_FLAG = 2
     STALE_FLAG = 3  # flag existe, mas está vencido (tempo excedido)
-
 
 
 # =====================================================================
@@ -2421,16 +2441,40 @@ def _compose_message(
     path: Optional[str] = None,
     name: Optional[str] = None,
     *,
+    error: Optional[str] = None,
     prefix_only: bool = False
 ) -> str:
     """
     Build a standardized NA_MESSAGE for FILE_TASK_HISTORY.
 
     Rules:
-    - Messages describe ONLY task state transitions
-    - Deterministic and short
-    - Error details are handled externally (ErrorHandler)
+    - Messages describe task state transitions deterministically
+    - Error details are appended only if explicitly provided
     - Path/name are optional and used only when relevant
+    - This function NEVER inspects ErrorHandler directly
+
+    Args:
+        task_type (int):
+            FILE_TASK_* constant (BACKUP, DISCOVERY, PROCESS)
+
+        task_status (int):
+            TASK_* constant (PENDING, RUNNING, DONE, ERROR)
+
+        path (Optional[str]):
+            Final file path (only for successful processing)
+
+        name (Optional[str]):
+            Final file name (only for successful processing)
+
+        error (Optional[str]):
+            Pre-formatted error message (e.g., ErrorHandler.format_error()).
+            If provided, it is appended to the message.
+
+        prefix_only (bool):
+            If True, return only "<Type> <Status>" without details.
+
+    Returns:
+        str: Deterministic, audit-friendly message.
     """
 
     # -------------------------------------------------
@@ -2463,13 +2507,20 @@ def _compose_message(
         return prefix
 
     # -------------------------------------------------
-    # SUCCESS / PENDING / RUNNING / ERROR (state only)
+    # Base message (state only)
     # -------------------------------------------------
     if path and name:
-        return f"{prefix} of file {path}/{name}"
+        message = f"{prefix} of file {path}/{name}"
+    else:
+        message = prefix
 
-    return prefix
+    # -------------------------------------------------
+    # Optional error enrichment
+    # -------------------------------------------------
+    if error:
+        message = f"{message} | {error}"
 
+    return message
 
     
 def _parse_ps_iso(ts: str) -> datetime:

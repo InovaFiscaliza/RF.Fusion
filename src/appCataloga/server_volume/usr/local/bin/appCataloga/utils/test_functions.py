@@ -100,12 +100,15 @@ filename10 = "/mnt/reposfi/tmp/RFEye002300/rfeye002223_FM_occ15min_190410_112017
 # Hostnames invertidos por troca de HD
 filename11 = "/mnt/reposfi/tmp/RFEye002300/p-fb5f8813--rfeye_file_rfeye002223_180228_235555.bin"
 
+# Arquivo Grande porém sem fluxo de espectro achei estranho
+filename12 = "/mnt/reposfi/trash/p-79f11459--rfeye002073_220309_T141857_MaskBroken.bin"
+
 # =================================================
 # RAW PARSE
 # =================================================
 
 try:
-    bin_data  = parse_bin(filename6)
+    bin_data  = parse_bin(filename12)
     bin_data_antigo = copy.deepcopy(bin_data)
     # t0 = time.time()
     # size_mb = asizeof.asizeof(bin_data0) / 1024 / 1024

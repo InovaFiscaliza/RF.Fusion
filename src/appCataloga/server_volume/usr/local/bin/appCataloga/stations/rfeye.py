@@ -273,32 +273,19 @@ class RFEyeStation(Station):
         """
         Validate GPS metadata for RF.Fusion ingestion.
 
-        CONTRACT:
-        RF.Fusion requires every BIN to have a valid and usable
-        geographic position. GNSS-unavailable sentinel values
-        (e.g. latitude = longitude = altitude = -1) are NOT accepted
-        and must invalidate the entire BIN.
+        RF.Fusion requires a usable geographic position for regional
+        attribution only. GNSS precision, fix quality and satellite
+        count are NOT enforced.
 
-        Accepted:
-            - latitude  ∈ [-90, 90]
-            - longitude ∈ [-180, 180]
-            - altitude  ∈ ℝ
-            - num_satellites >= 0
-
-        Rejected (fatal):
-            - Missing GPS attributes
-            - Non-numeric coordinate values
-            - Coordinates outside valid ranges
-            - Sentinel values indicating GNSS unavailability
-            - Negative satellite count
+        Fatal condition:
+            - GNSS unavailable sentinel values (lat=lon=alt=-1)
         """
 
         gps = self.bin_data.get("gps")
-
         if gps is None:
             raise sh.BinValidationError("GPS metadata missing")
 
-        # ---- attribute presence ----
+        # ---- required attributes ----
         for attr in ("latitude", "longitude", "altitude"):
             if not hasattr(gps, attr):
                 raise sh.BinValidationError(f"GPS missing attribute: {attr}")
@@ -306,38 +293,33 @@ class RFEyeStation(Station):
         lat = gps.latitude
         lon = gps.longitude
         alt = gps.altitude
-        sats = getattr(gps, "num_satellites", None)
 
-        # ---- type validation ----
+        # ---- numeric validation ----
         for name, val in (("latitude", lat), ("longitude", lon), ("altitude", alt)):
-            if not isinstance(val, (int, float)):
+            if not isinstance(val, (int, float, np.integer, np.floating)):
                 raise sh.BinValidationError(f"GPS invalid {name} type")
 
-        # ---- sentinel check (GNSS unavailable) ----
+        # ---- sentinel check (RFeye default GNSS unavailable) ----
         if (
             lat == self.GPS_SENTINEL_VALUE
             and lon == self.GPS_SENTINEL_VALUE
             and alt == self.GPS_SENTINEL_VALUE
         ):
             raise sh.BinValidationError(
-                "GPS indicates GNSS unavailable (sentinel values not accepted)"
+                "Invalid GPS reading: lat=lon=alt=-1 (GNSS unavailable sentinel)"
             )
 
-        # ---- range validation ----
-        if not (self.GPS_LAT_RANGE[0] <= lat <= self.GPS_LAT_RANGE[1]):
+        # ---- physical range validation (coarse) ----
+        if not (-90.0 <= lat <= 90.0):
             raise sh.BinValidationError("GPS invalid latitude range")
 
-        if not (self.GPS_LON_RANGE[0] <= lon <= self.GPS_LON_RANGE[1]):
+        if not (-180.0 <= lon <= 180.0):
             raise sh.BinValidationError("GPS invalid longitude range")
 
-        # ---- satellite count ----
-        if sats is not None:
-            if not isinstance(sats, (int, float, np.integer, np.floating)):
-                raise sh.BinValidationError("GPS invalid satellite count type")
+        # ---- satellite count intentionally ignored ----
+        # num_satellites may be missing, fractional or aggregated.
+        # It does not impact RF.Fusion spatial semantics.
 
-        # semantic integer check (e.g. 5.0 is OK, 5.3 is not)
-        if sats < 0 or int(sats) != sats:
-            raise sh.BinValidationError("GPS invalid satellite count value")
 
 
     def _validate_spectrum_container(self):
@@ -378,13 +360,16 @@ class RFEyeStation(Station):
         Any failure here discards ONLY the spectrum, not the entire BIN.
 
         CONTRACT:
-        - Mandatory spectrum attributes must exist and be semantically valid.
-        - Structural consistency between levels, frequencies and timestamps
-        must be guaranteed.
-        - Timestamp is the authoritative temporal source.
-        - start_dateidx and stop_dateidx are derived metadata and may be inferred.
-        - After successful execution, the spectrum is fully insertable
-        into RF.Fusion without further validation.
+            - Mandatory structural spectrum attributes must exist and be
+            semantically valid.
+            - Structural consistency between levels, frequencies and timestamps
+            must be guaranteed.
+            - Timestamp is the authoritative temporal source.
+            - start_dateidx and stop_dateidx are derived metadata and may be inferred.
+            - Operational and descriptive metadata (e.g. antuid, processing,
+            description) may be normalized to safe defaults when missing or invalid.
+            - After successful execution, the spectrum is fully insertable
+            into RF.Fusion without further validation.
 
         Args:
             s: Spectrum object extracted from the BIN.
@@ -399,7 +384,7 @@ class RFEyeStation(Station):
         ctx = f"spectrum[{idx}]"
 
         # =================================================
-        # Basic spectrum metadata (mandatory fields)
+        # Basic spectrum metadata (STRUCTURAL — mandatory)
         # =================================================
 
         # ---- frequency range ----
@@ -416,23 +401,21 @@ class RFEyeStation(Station):
         if not isinstance(s.ndata, int) or s.ndata < self.MIN_NDATA:
             raise SpectrumValidationError(f"{ctx}: invalid ndata")
 
+        # =================================================
+        # Operational metadata (NON-FATAL normalization)
+        # =================================================
+
         # ---- antenna UID ----
-        if not hasattr(s, "antuid"):
-            raise SpectrumValidationError(f"{ctx}: missing antuid")
-
-        if not isinstance(s.antuid, int) or s.antuid < 0:
-            raise SpectrumValidationError(f"{ctx}: invalid antuid")
-
-        # ---- processing ----
-        # Mandatory for trace classification and downstream insertion
-        if not hasattr(s, "processing"):
-            raise SpectrumValidationError(f"{ctx}: missing processing")
-
-        if not isinstance(s.processing, str) or not s.processing.strip():
-            raise SpectrumValidationError(f"{ctx}: invalid processing")
+        # Operational metadata used for antenna association.
+        # Absence or invalid values are normalized to a safe default (0).
+        if not hasattr(s, "antuid") or not isinstance(s.antuid, int) or s.antuid < 0:
+            s.antuid = 0
+            s.antuid_source = "default"
+        else:
+            s.antuid_source = "native"
 
         # =================================================
-        # Levels / Frequencies / Timestamp structural validation
+        # Levels / Frequencies / Timestamp (STRUCTURAL)
         # =================================================
 
         # ---- levels ----
@@ -484,34 +467,57 @@ class RFEyeStation(Station):
             )
 
         # =================================================
-        # Temporal metadata resolution (derived from timestamp)
+        # Temporal metadata resolution (DERIVED)
         # =================================================
 
-        # Timestamp defines the real acquisition interval
         ts_start = ts[0]
         ts_stop = ts[-1]
 
-        # Infer or correct start_dateidx
         if not hasattr(s, "start_dateidx") or s.start_dateidx != ts_start:
             s.start_dateidx = ts_start
             s.start_dateidx_source = "inferred_from_timestamp"
 
-        # Infer or correct stop_dateidx
         if not hasattr(s, "stop_dateidx") or s.stop_dateidx != ts_stop:
             s.stop_dateidx = ts_stop
             s.stop_dateidx_source = "inferred_from_timestamp"
 
-        # Temporal interval must be strictly increasing
-        # Instantaneous or inverted spectra are analytically invalid
         if s.start_dateidx >= s.stop_dateidx:
             raise SpectrumValidationError(f"{ctx}: invalid temporal span")
 
         # =================================================
-        # Enrichment (safe after full validation)
+        # Descriptive metadata normalization (NON-FATAL)
         # =================================================
 
-        # From this point on, the spectrum is structurally
-        # and semantically consistent.
+        # ---- processing ----
+        if not hasattr(s, "processing") or not isinstance(s.processing, str) or not s.processing.strip():
+            s.processing = "unknown"
+            s.processing_source = "default"
+        else:
+            s.processing = s.processing.strip()
+            s.processing_source = "native"
+
+        # ---- description ----
+        if not hasattr(s, "description") or not isinstance(s.description, str) or not s.description.strip():
+            try:
+                f_start = float(freqs[0])
+                f_stop = float(freqs[-1])
+
+                s.description = (
+                    f"Descrição automática - {s.processing} "
+                    f"na faixa de {f_start} até {f_stop} MHz"
+                )
+                s.description_source = "inferred_from_frequencies"
+            except Exception:
+                s.description = "Descrição automática"
+                s.description_source = "default"
+        else:
+            s.description = s.description.strip()
+            s.description_source = "native"
+
+        # =================================================
+        # Enrichment (SAFE AFTER FULL VALIDATION)
+        # =================================================
+
         self._infer_bw(s)
         self._infer_level_semantics(s)
         self._normalize_method(s)
@@ -594,66 +600,98 @@ class RFEyeStation(Station):
         return cls.RBW_LOOKUP_TABLE[-1][1]
 
 
-    # =================================================
-    # Level semantic inference
-    # =================================================
     def _infer_level_semantics(self, s):
         """
-        Infer the semantic type and unit of spectrum level data.
+        Infer the semantic meaning and unit of spectrum level data.
 
-        This method classifies the numeric values contained in the
-        spectrum 'levels' matrix into a semantic measurement type,
-        based solely on value distribution and magnitude.
+        This method classifies the numeric values contained in the spectrum
+        `levels` matrix into a semantic measurement type based exclusively
+        on the statistical distribution of the values.
 
-        Supported inferred level types:
-            - Occupancy      (percent)
-            - Power          (dBm)
-            - Field strength (dBµV/m)
-            - Unknown        (fallback)
+        ARCHITECTURAL CONTRACT
+        ----------------------
+        • Inference is deterministic and rule-based.
+        • No producer metadata (e.g. dtype, unit labels) is trusted for inference.
+        Such metadata may be incorrect, generic, or misleading.
+        • Only numeric value distribution is used.
+        • The method MUST NOT raise exceptions.
+        • Exactly one semantic type is selected, or UNKNOWN is assigned.
+        • Weak signals and noise-floor measurements are considered valid data.
 
-        CONTRACT:
-            - This method operates only on spectra that are already
-            structurally and semantically valid.
-            - Classification is deterministic and rule-based.
-            - No probabilistic, heuristic, or metadata-based inference
-            is performed.
-            - Exactly one classification is selected, or the spectrum
-            is marked as UNKNOWN.
-            - The method MUST NOT raise exceptions.
+        SEMANTIC GOAL
+        -------------
+        RF.Fusion does not need laboratory-grade precision. It needs to
+        understand WHAT a spectrum represents, not how accurate it is.
 
-        Args:
-            s: Spectrum object assumed to be fully validated.
+        Supported semantic types:
+            - Occupancy      : channel usage percentage (0–100%)
+            - Power          : received power in dBm (including noise floor)
+            - Field Strength : electric field strength in dBµV/m
+            - Unknown        : structurally valid but semantically ambiguous data
         """
 
         # -------------------------------------------------
         # Flatten level matrix for global statistical analysis
+        #
+        # The original matrix shape (time x frequency, etc.)
+        # is irrelevant for semantic inference.
         # -------------------------------------------------
         levels = np.asarray(s.levels, dtype=float)
         flat = levels.ravel()
 
         # -------------------------------------------------
-        # Basic distribution metrics used for classification
+        # Defensive fallback
+        #
+        # An empty or malformed level matrix cannot be
+        # semantically classified.
         # -------------------------------------------------
-        vmin = float(flat.min())
-        vmax = float(flat.max())
-        vrange = vmax - vmin
-        zero_ratio = float(np.mean(flat == 0))
+        if flat.size == 0:
+            s.level_type = self.LEVEL_TYPE_UNKNOWN
+            s.level_unit = self.LEVEL_UNIT_UNKNOWN
+            s.level_source = self.LEVEL_SOURCE_UNCLASSIFIED
+            return
 
-        # Preserve any user-provided dtype for traceability
+        # -------------------------------------------------
+        # Preserve producer-declared dtype (audit only)
+        #
+        # This value is NEVER trusted for inference, but is
+        # kept for traceability and debugging.
+        # -------------------------------------------------
         s.user_dtype = getattr(s, "dtype", None)
 
         # -------------------------------------------------
-        # Occupancy detection (percentage-based levels)
+        # Robust distribution metrics
+        #
+        # Percentiles are preferred over min/max to avoid
+        # single-bin outliers, clipping artifacts, or invalid
+        # samples dominating the inference logic.
         # -------------------------------------------------
-        # Characteristics:
-        #   - Values are non-negative
-        #   - Upper bound constrained to percentage scale
-        #   - Significant proportion of zero values
-        #   - Limited dynamic range
+        p01 = float(np.percentile(flat, 1))    # robust lower bound
+        p50 = float(np.percentile(flat, 50))   # median (distribution center)
+        p95 = float(np.percentile(flat, 95))   # robust upper bound
+        p99 = float(np.percentile(flat, 99))   # extreme upper tail
+
+        # Dominant dynamic range of the spectrum
+        vrange = p99 - p01
+
+        # Ratio of exact zero values (key discriminator for occupancy)
+        zero_ratio = float(np.mean(flat == 0))
+
+        # =================================================
+        # Occupancy detection (percentage)
+        # =================================================
+        # Occupancy spectra represent channel usage over time.
+        #
+        # Typical characteristics:
+        #   • Values are non-negative
+        #   • Upper bound constrained to 100%
+        #   • Large proportion of exact zeros (idle channels)
+        #   • Limited dynamic range
+        # =================================================
         if (
-            vmin >= 0
-            and vmax <= self.OCCUPANCY_MAX_PERCENT
-            and zero_ratio > self.OCCUPANCY_ZERO_RATIO_THRESHOLD
+            p01 >= 0
+            and p99 <= self.OCCUPANCY_MAX_PERCENT
+            and zero_ratio >= self.OCCUPANCY_ZERO_RATIO_THRESHOLD
             and vrange <= self.OCCUPANCY_MAX_RANGE
         ):
             s.level_type = self.LEVEL_TYPE_OCCUPANCY
@@ -661,44 +699,59 @@ class RFEyeStation(Station):
             s.level_source = self.LEVEL_SOURCE_INFERRED
             return
 
-        # -------------------------------------------------
+        # =================================================
         # Power detection (dBm)
-        # -------------------------------------------------
-        # Characteristics:
-        #   - Negative values are present
-        #   - Upper bound below typical RF saturation levels
-        #   - Sufficient dynamic range to represent power variation
+        # =================================================
+        # Power spectra represent received power levels.
+        #
+        # Important notes:
+        #   • Power values are typically centered well below 0 dB.
+        #   • Noise floor measurements are still valid power data.
+        #   • Dynamic range may be small (quiet band) or large (active band).
+        #
+        # Range is NOT used as a discriminator here.
+        # =================================================
         if (
-            vmin < 0
-            and vmax < self.POWER_MAX_DBM
-            and vrange > self.POWER_MIN_RANGE_DB
+            p50 <= self.POWER_CENTER_MAX_DBM
+            and p95 <= self.POWER_MAX_DBM
         ):
             s.level_type = self.LEVEL_TYPE_POWER
             s.level_unit = self.LEVEL_UNIT_DBM
             s.level_source = self.LEVEL_SOURCE_INFERRED
             return
 
-        # -------------------------------------------------
-        # Field strength detection (dBµV/m)
-        # -------------------------------------------------
-        # Characteristics:
-        #   - Values strictly positive
-        #   - Magnitudes exceed typical power scale
+        # =================================================
+        # Field Strength detection (dBµV/m)
+        # =================================================
+        # Field strength represents electric field intensity.
+        #
+        # Critical design decision:
+        #   • Field strength may be strong or weak.
+        #   • Near-noise-floor or even negative dBµV/m values are valid.
+        #   • Wideband spectra with both noise and strong emitters are valid.
+        #
+        # Dynamic range is NOT a disqualifier.
+        # =================================================
         if (
-            vmax > self.FIELD_STRENGTH_MAX_DB
-            and vmin > self.FIELD_STRENGTH_MIN_DB
+            self.FIELD_STRENGTH_MIN_DB <= p50 <= self.FIELD_STRENGTH_MAX_DB
+            and p95 <= self.FIELD_STRENGTH_MAX_DB
         ):
             s.level_type = self.LEVEL_TYPE_FIELD_STRENGTH
             s.level_unit = self.LEVEL_UNIT_DBUVM
             s.level_source = self.LEVEL_SOURCE_INFERRED
             return
 
-        # -------------------------------------------------
-        # Fallback: unknown or unsupported level semantics
-        # -------------------------------------------------
+        # =================================================
+        # Fallback: unknown semantic meaning
+        #
+        # The spectrum is structurally valid but does not
+        # match any known semantic model with sufficient
+        # confidence.
+        # =================================================
         s.level_type = self.LEVEL_TYPE_UNKNOWN
-        s.level_unit = None
+        s.level_unit = self.LEVEL_UNIT_UNKNOWN
         s.level_source = self.LEVEL_SOURCE_UNCLASSIFIED
+
 
 
     # =================================================

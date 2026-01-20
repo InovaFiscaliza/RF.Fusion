@@ -26,6 +26,7 @@ from .dbHandlerBase import DBHandlerBase
 from datetime import datetime as _dt
 from shared import Filter
 from shared import _compose_message
+import shared as sh
 
 
 class dbHandlerBKP(DBHandlerBase):
@@ -803,25 +804,17 @@ class dbHandlerBKP(DBHandlerBase):
     # ======================================================================
     def check_host_task(self, **kwargs) -> list[dict]:
         """
-        Query HOST_TASK using dynamic filters based on provided keyword arguments.
+        Query HOST_TASK using dynamic filters.
 
-        Supports:
-            - Scalar filters      → NU_TYPE=1
-            - List filters        → NU_TYPE=[1,2]
-            - Full set of operators from _select_custom()
-            - Raw SQL via '#CUSTOM#'
-
-        Only valid field names in VALID_FIELDS_HOST_TASK are accepted.
+        IMPORTANT:
+        This function is intentionally generic. Callers MUST explicitly
+        decide which task states are relevant (e.g. ACTIVE vs TERMINAL).
 
         Returns:
-            list[dict]: Matching HOST_TASK rows (empty list if none).
+            list[dict]: Matching HOST_TASK rows (may be empty).
         """
 
         valid_fields = self.VALID_FIELDS_HOST_TASK
-
-        # ------------------------------------------------------------------
-        # Build WHERE clause in the format expected by _select_custom()
-        # ------------------------------------------------------------------
         where_clause = {}
 
         for key, value in kwargs.items():
@@ -829,28 +822,22 @@ class dbHandlerBKP(DBHandlerBase):
             # Validate field name
             if key not in valid_fields:
                 raise ValueError(
-                    f"Invalid field in check_host_task(): '{key}' is not a valid column."
+                    f"Invalid field in check_host_task(): '{key}'"
                 )
 
             # List → IN operator
             if isinstance(value, (list, tuple, set)):
                 where_clause[key] = ("IN", list(value))
-                continue
+            else:
+                where_clause[key] = value
 
-            # Otherwise → default equality
-            where_clause[key] = value
-
-        # ------------------------------------------------------------------
-        # Execute SELECT using _select_custom() with proper alias handling
-        # ------------------------------------------------------------------
         rows = self._select_custom(
-            table="HOST_TASK ht",   # requires alias
+            table="HOST_TASK ht",
             where=where_clause,
             order_by="ht.ID_HOST_TASK DESC",
         )
 
         return rows or []
-
 
     
     def queue_host_task(
@@ -860,56 +847,60 @@ class dbHandlerBKP(DBHandlerBase):
         task_status: int,
         filter_dict: dict,
     ) -> dict:
-        """Queue a new backup discovery task for a given host.
-
-        If the host does not exist, create it in the HOST table.
-        Then enqueue a discovery-type task in HOST_TASK, and
-        return the current host status summary.
-
-        Args:
-            host_id (int): Host primary key ID.
-            host_uid (str): Unique host UID string.
-            filter_dict (dict): JSON-style dictionary for filtering.
-
-        Returns:
-            dict: Host status dictionary from host_read_status().
         """
-        # Build json Filter structure
+        Deterministically enqueue or refresh an operational HOST_TASK
+        (CHECK or PROCESSING) for a given host.
+
+        Guarantees:
+            - At most ONE CHECK/PROCESSING task per host
+            - No statistics task is created here
+        """
+
         filter_json = json.dumps(filter_dict)
-        
-        # Check if existing pending Task
-        task = self.check_host_task(
+
+        # Fetch existing operational task (CHECK / PROCESSING)
+        tasks = self.check_host_task(
             FK_HOST=host_id,
-            NU_TYPE=[k.HOST_TASK_CHECK_TYPE, k.HOST_TASK_PROCESSING_TYPE],
-            FILTER=filter_json
-            )
-        
-        # Reactivate if found in ERROR or SUSPENDED state
-        if task :
-            # Reactivate existing task     
-            for t in task:
-                if t["HOST_TASK__NU_STATUS"] in (k.TASK_ERROR, k.TASK_SUSPENDED):
-                    self.host_task_update(
-                        task_id=t["HOST_TASK__ID_HOST_TASK"],
-                        NU_STATUS=k.TASK_PENDING,
-                        DT_HOST_TASK=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        NA_MESSAGE=f"Reactivated HOST_TASK for host {host_id}",
-                    )
-        
-        # If not found, create new HOST_TASK
-        if not task:
+            NU_TYPE=[
+                k.HOST_TASK_CHECK_TYPE,
+                k.HOST_TASK_PROCESSING_TYPE,
+            ],
+            FILTER=filter_json,
+        )
+
+        existing = tasks[0] if tasks else None
+
+        if existing:
+            status = existing["HOST_TASK__NU_STATUS"]
+
+            # ACTIVE task → do nothing
+            if status in (k.TASK_PENDING, k.TASK_RUNNING):
+                pass
+
+            # TERMINAL task → refresh
+            elif status in (k.TASK_ERROR, k.TASK_SUSPENDED):
+                self.host_task_update(
+                    task_id=existing["HOST_TASK__ID_HOST_TASK"],
+                    NU_STATUS=k.TASK_PENDING,
+                    DT_HOST_TASK=datetime.now(),
+                    NA_MESSAGE=(
+                        "Operational HOST_TASK refreshed by queue_host_task "
+                        f"(previous status={status})"
+                    ),
+                )
+
+        else:
+            # No operational task exists → create new
             self.host_task_create(
                 NU_TYPE=task_type,
+                NU_STATUS=task_status,
                 FK_HOST=host_id,
                 FILTER=filter_dict,
             )
 
-        # Fetch updated host statistics
-        self.host_update_statistics(host_id=host_id)
-        self.host_update(host_id=host_id, DT_LAST_CHECK=datetime.now())
-        
-        host_statistics = self.host_read_status(host_id)
-        return host_statistics
+        # Return current host status snapshot
+        return self.host_read_status(host_id)
+
     
     def host_task_create(self, **kwargs) -> int:
         """
@@ -1036,7 +1027,7 @@ class dbHandlerBKP(DBHandlerBase):
 
             if rows:
                 existing = rows[0]
-                tid = int(existing["ID_HOST_TASK"])
+                tid = int(existing["HOST_TASK__ID_HOST_TASK"])
                 status = existing.get("NU_STATUS", k.TASK_PENDING)
 
                 if status == k.TASK_PENDING:
@@ -1824,33 +1815,41 @@ class dbHandlerBKP(DBHandlerBase):
         host_id: int,
     ) -> None:
         """
-        Resume previously suspended, errored, or stale FILE_TASK entries for a given host.
+        Resume suspended or errored DISCOVERY and BACKUP phases
+        for FILE_TASK_HISTORY entries when a host becomes reachable again.
 
-        Tasks are reactivated under three conditions:
-            1. NU_STATUS = TASK_SUSPENDED → host became reachable again.
-            2. NU_STATUS = TASK_ERROR     → retry.
-            3. NU_STATUS = TASK_RUNNING   → considered stale if DT_FILE_TASK is older than
-            (now - busy_timeout_seconds), assuming the worker crashed or was interrupted.
-
-        Args:
-            host_id (int):
-                Host identifier (FK_HOST) whose file-level tasks should be resumed.
-
-        Returns:
-            None
+        Processing phase is NOT resumed by design.
         """
         try:
             total_resumed = 0
 
-            # -----------------------------------------------------------------
-            # 1. Reactivate suspended file tasks
-            # -----------------------------------------------------------------
-            resumed_suspended = self._update_row(
+            # -------------------------------------------------------------
+            # 1) Resume DISCOVERY phase (host-dependent)
+            # -------------------------------------------------------------
+            resumed_discovery = self._update_row(
                 table="FILE_TASK_HISTORY",
                 data={
-                    "NU_STATUS": k.TASK_PENDING,
+                    "NU_STATUS_DISCOVERY": k.TASK_PENDING,
                     "NA_MESSAGE": (
-                        "Host reachable again — suspended file task resumed automatically"
+                        "Host reachable again — discovery resumed automatically"
+                    ),
+                },
+                where={
+                    "FK_HOST": host_id,
+                    "NU_STATUS_DISCOVERY": k.TASK_ERROR,
+                },
+                commit=True,
+            )
+
+            # -------------------------------------------------------------
+            # 2) Resume BACKUP phase (host-dependent)
+            # -------------------------------------------------------------
+            resumed_backup = self._update_row(
+                table="FILE_TASK_HISTORY",
+                data={
+                    "NU_STATUS_BACKUP": k.TASK_PENDING,
+                    "NA_MESSAGE": (
+                        "Host reachable again — backup resumed automatically"
                     ),
                 },
                 where={
@@ -1860,24 +1859,26 @@ class dbHandlerBKP(DBHandlerBase):
                 commit=True,
             )
 
-            # -----------------------------------------------------------------
-            # 4. Final log
-            # -----------------------------------------------------------------
-            total_resumed = resumed_suspended
+            total_resumed = resumed_discovery + resumed_backup
 
+            # -------------------------------------------------------------
+            # 3) Final log
+            # -------------------------------------------------------------
             if total_resumed > 0:
                 self.log.entry(
-                    f"[DBHandlerBKP] Resumed {total_resumed} FILE_TASK_HISTORY entries for host {host_id} "
+                    f"[DBHandlerBKP] Resumed {total_resumed} FILE_TASK_HISTORY entries "
+                    f"(discovery + backup) for host {host_id}"
                 )
             else:
                 self.log.entry(
-                    f"[DBHandlerBKP] No FILE_TASK entries required resumption for host {host_id}."
+                    f"[DBHandlerBKP] No FILE_TASK_HISTORY entries required resumption for host {host_id}."
                 )
 
         except Exception as e:
             self.log.error(
                 f"[DBHandlerBKP] Failed to resume FILE_TASK_HISTORY entries for host {host_id}: {e}"
             )
+
 
             
     def check_file_task(self, **kwargs) -> list[dict]:
@@ -2187,101 +2188,133 @@ class dbHandlerBKP(DBHandlerBase):
             self._disconnect()
 
 
-
-
     def file_history_update(
         self,
         task_type: int,
-        file_name: Optional[str] = None,
         *,
+        host_file_name: Optional[str] = None,
+        server_file_name: Optional[str] = None,
         task_id: Optional[int] = None,
         host_id: Optional[int] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """
-        Update an existing entry in FILE_TASK_HISTORY using NA_HOST_FILE_NAME as the primary key.
+        Update an existing FILE_TASK_HISTORY entry.
 
-        This method updates the specified FILE_TASK_HISTORY record identified by its
-        NA_HOST_FILE_NAME (or ID_HISTORY as a fallback) with the provided field values.
+        Identification (WHERE):
+            - ID_HISTORY (task_id)
+            - NA_HOST_FILE_NAME
+            - NA_SERVER_FILE_NAME
+            - FK_HOST (optional)
 
-        Args:
-            task_type (int): The FILE_TASK_* constant indicating task type (e.g., BACKUP or PROCESS).
-            file_name (Optional[str]): The name of the host file to match in FILE_TASK_HISTORY.
-            task_id (Optional[int]): Fallback unique ID (ID_HISTORY) if file_name is not provided.
-            host_id (Optional[int]): Optional host filter for disambiguation (FK_HOST).
-            **kwargs: Column values to update.
-
-        Returns:
-            Dict[str, Any]: {
-                "success": bool,
-                "rows_affected": int,
-                "updated_fields": Dict[str, Any],
-                "where_used": Dict[str, Any]
-            }
-
-        Raises:
-            ValueError: If no update fields are provided or if invalid fields are detected.
-            
+        Update semantics:
+            - Field omitted      -> not updated
+            - Field=None         -> not updated
+            - Field=SET_NULL     -> explicitly updated to NULL
+            - Field=value        -> updated to value
         """
 
         self._connect()
         valid_fields = getattr(self, "VALID_FIELDS_FILE_HISTORY", set())
 
-        # --- Automatic timestamps based on task type ---
+        # -------------------------------------------------
+        # Automatic timestamps
+        # -------------------------------------------------
         if task_type == k.FILE_TASK_BACKUP_TYPE and not kwargs.get("DT_BACKUP"):
             kwargs["DT_BACKUP"] = datetime.now()
+
         elif task_type == k.FILE_TASK_PROCESS_TYPE and not kwargs.get("DT_PROCESSED"):
             kwargs["DT_PROCESSED"] = datetime.now()
 
-        # --- Validate fields ---
+        # -------------------------------------------------
+        # Validate fields
+        # -------------------------------------------------
         if not kwargs:
-            raise ValueError("No fields provided for update in FILE_TASK_HISTORY.")
-        for key in kwargs.keys():
+            raise ValueError("No fields provided for FILE_TASK_HISTORY update.")
+
+        for key in kwargs:
             if key not in valid_fields:
                 raise ValueError(f"Invalid field '{key}' for FILE_TASK_HISTORY.")
 
-        # --- Determine WHERE condition ---
-        if file_name:
-            where_dict = {"NA_HOST_FILE_NAME": file_name}
-            if host_id:
-                where_dict["FK_HOST"] = host_id
-        elif task_id is not None:
-            where_dict = {"ID_HISTORY": task_id}
-        else:
-            raise ValueError("Either 'file_name' or 'task_id' must be provided for update.")
+        # -------------------------------------------------
+        # WHERE clause
+        # -------------------------------------------------
+        where_dict: Dict[str, Any] = {}
 
-        # --- Perform update ---
+        if task_id is not None:
+            where_dict["ID_HISTORY"] = task_id
+
+        if host_file_name:
+            where_dict["NA_HOST_FILE_NAME"] = host_file_name
+
+        if server_file_name:
+            where_dict["NA_SERVER_FILE_NAME"] = server_file_name
+
+        if host_id:
+            where_dict["FK_HOST"] = host_id
+
+        if not where_dict:
+            raise ValueError(
+                "At least one identifier must be provided "
+                "(task_id, host_file_name, server_file_name)."
+            )
+
+        # -------------------------------------------------
+        # Build UPDATE payload with explicit NULL semantics
+        # -------------------------------------------------
+        update_data: Dict[str, Any] = {}
+
+        for key, value in kwargs.items():
+            if value is None:
+                continue
+
+            if value is sh.SET_NULL:
+                update_data[key] = None
+            else:
+                update_data[key] = value
+
+        if not update_data:
+            self.log.warning(
+                "[DBHandlerBKP] No effective fields to update in FILE_TASK_HISTORY."
+            )
+            self._disconnect()
+            return {
+                "success": True,
+                "rows_affected": 0,
+                "updated_fields": {},
+                "where_used": where_dict,
+            }
+
+        # -------------------------------------------------
+        # Execute UPDATE
+        # -------------------------------------------------
         try:
             affected_rows = self._update_row(
                 table="FILE_TASK_HISTORY",
-                data=kwargs,
+                data=update_data,
                 where=where_dict,
                 commit=True,
             )
 
-            if affected_rows:
-                self.log.entry(
-                    f"[DBHandlerBKP] Updated FILE_TASK_HISTORY ({where_dict}) "
-                    f"with fields: {', '.join(kwargs.keys())}."
-                )
-            else:
-                self.log.warning(
-                    f"[DBHandlerBKP] No FILE_TASK_HISTORY entry found for {where_dict}. Nothing updated."
-                )
-
             return {
                 "success": True,
                 "rows_affected": affected_rows,
-                "updated_fields": kwargs,
+                "updated_fields": update_data,
                 "where_used": where_dict,
             }
 
-            self._disconnect()
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[DBHandlerBKP] Failed to update FILE_TASK_HISTORY ({where_dict}): {e}")
-            self._disconnect()
+            self.log.error(
+                f"[DBHandlerBKP] Failed to update FILE_TASK_HISTORY "
+                f"({where_dict}): {e}"
+            )
             raise
+
+        finally:
+            self._disconnect()
+
+
 
 
 

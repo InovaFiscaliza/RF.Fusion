@@ -401,7 +401,7 @@ def main() -> None:
             # ---------------------------------------------------
             db.file_history_update(
                 task_type=k.FILE_TASK_BACKUP_TYPE,
-                file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
                 NA_SERVER_FILE_NAME=server_filename,
                 NA_SERVER_FILE_PATH=server_file_path,
                 NU_STATUS_BACKUP=k.TASK_DONE,
@@ -452,7 +452,7 @@ def main() -> None:
 
                 db.file_history_update(
                     task_type=k.FILE_TASK_BACKUP_TYPE,
-                    file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                    host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
                     NA_SERVER_FILE_NAME=server_filename,
                     NA_SERVER_FILE_PATH=server_file_path,
                     NU_STATUS_BACKUP=k.TASK_ERROR,
