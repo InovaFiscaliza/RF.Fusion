@@ -161,7 +161,7 @@ def main():
         # ------------------------------------------------------------------
         # 1) Connect to appCataloga server
         # ------------------------------------------------------------------
-        #client_socket.connect((k.ACAT_SERVER_ADD, k.ACAT_SERVER_PORT))
+        client_socket.connect((k.ACAT_SERVER_ADD, k.ACAT_SERVER_PORT))
 
         # ------------------------------------------------------------------
         # 2) Detect host OS (heuristic)
