@@ -69,19 +69,14 @@ ARGUMENTS = {
     "filter_lnx": {
         "set": False,
         "value": (
-            '{"mode":"NONE","start_date":null,"end_date":null,'
-            '"last_n_files":null,"extension":".bin",'
-            '"file_path":"/mnt/internal","file_name":null,"agent":"local"}'
+            '{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".bin","file_path":"/mnt/internal","file_name":null,"agent":"local"}'
         ),
         "message": "Using Linux filter",
     },
     "filter_win": {
         "set": False,
         "value": (
-            '{"mode":"NONE","start_date":null,"end_date":null,'
-            '"last_n_files":null,"extension":".bin",'
-            '"file_path":"C:/CelPlan/CellWireless RU/Spectrum/Completed",'
-            '"file_name":null,"agent":"local"}'
+            '{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".dbm","file_path":"C:/CelPlan/CellWireless RU/Spectrum/Completed","file_name":null,"agent":"local"}'
         ),
         "message": "Using Windows filter",
     },
@@ -166,13 +161,16 @@ def main():
         # ------------------------------------------------------------------
         # 1) Connect to appCataloga server
         # ------------------------------------------------------------------
-        client_socket.connect((k.ACAT_SERVER_ADD, k.ACAT_SERVER_PORT))
+        #client_socket.connect((k.ACAT_SERVER_ADD, k.ACAT_SERVER_PORT))
 
         # ------------------------------------------------------------------
         # 2) Detect host OS (heuristic)
         # ------------------------------------------------------------------
         host_uid = arg.data["host_uid"]["value"]
         is_windows = "CW" in host_uid  # documented heuristic
+        
+        print('Debug message /n')
+        print(arg.data)
 
         # ------------------------------------------------------------------
         # 3) Select and normalize filter (DICT, not string)

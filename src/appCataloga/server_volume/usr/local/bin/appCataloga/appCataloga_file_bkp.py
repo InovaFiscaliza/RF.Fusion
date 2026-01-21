@@ -378,11 +378,16 @@ def main() -> None:
             # ---------------------------------------------------
             # Build deterministic server filename
             # ---------------------------------------------------
-            server_filename = build_server_filename(
-                host_uid=host["host_uid"],
-                remote_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
-                filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
-            )
+            # Celplan RMU has in filename specific data that doesn't could be changed
+            # Also RMU has timestamp in filename and in theoric cenario never be repetead
+            if "CW" in host["host_uid"]:
+                server_filename = task["FILE_TASK__NA_HOST_FILE_NAME"]
+            else:
+                server_filename = build_server_filename(
+                    host_uid=host["host_uid"],
+                    remote_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                    filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                )
 
             # ---------------------------------------------------
             # Transfer file
