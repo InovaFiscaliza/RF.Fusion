@@ -169,8 +169,6 @@ def main():
         host_uid = arg.data["host_uid"]["value"]
         is_windows = "CW" in host_uid  # documented heuristic
         
-        print('Debug message /n')
-        print(arg.data)
 
         # ------------------------------------------------------------------
         # 3) Select and normalize filter (DICT, not string)
