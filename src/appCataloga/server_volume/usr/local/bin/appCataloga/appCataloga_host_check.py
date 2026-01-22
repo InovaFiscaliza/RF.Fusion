@@ -15,24 +15,40 @@ import inspect
 import signal
 from datetime import datetime
 
-# Add config + db folders
-_CFG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+# =================================================
+# PROJECT ROOT (shared/, db/, stations/)
+# =================================================
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# =================================================
+# Config directory (etc/appCataloga)
+# =================================================
+_CFG_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga")
+)
 if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
     sys.path.append(_CFG_DIR)
 
-_DB_DIR = os.path.join(os.path.dirname(__file__), "db")
+# =================================================
+# DB directory
+# =================================================
+_DB_DIR = os.path.join(PROJECT_ROOT, "db")
 if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
     sys.path.append(_DB_DIR)
 
-import shared as sh
+# Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
+from shared import errors, legacy, logging_utils
 import config as k
 
 
 # ============================================================
 # Globals
 # ============================================================
-log = sh.log()
+log = logging_utils.log()
 process_status = {"running": True}
 
 
@@ -133,7 +149,7 @@ def main():
 
     while process_status["running"]:
 
-        err = sh.ErrorHandler(log)
+        err = errors.ErrorHandler(log)
 
         try:
             # ====================================================
@@ -145,7 +161,7 @@ def main():
             )
 
             if not task:
-                sh._random_jitter_sleep()
+                legacy._random_jitter_sleep()
                 continue
             
             # Tasks contents
@@ -267,18 +283,18 @@ def main():
                 except Exception as e2:
                     log.error(f"[DB-ERROR] Failed to persist HOST_TASK error: {e2}")
 
-                sh._random_jitter_sleep()
+                legacy._random_jitter_sleep()
                 continue
 
 
             # ====================================================
             # Normal idle jitter
             # ====================================================
-            sh._random_jitter_sleep()
+            legacy._random_jitter_sleep()
 
         except Exception as e:
             log.error(f"[MAIN] Unexpected: {e}")
-            sh._random_jitter_sleep()
+            legacy._random_jitter_sleep()
 
     log.entry("[STOP] Host check microservice stopped.")
 

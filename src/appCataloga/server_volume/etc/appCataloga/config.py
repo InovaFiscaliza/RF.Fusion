@@ -41,7 +41,7 @@ ZABBIX_ADDRESS          = "172.24.0.13"
 SERVER_NAME             = r"10.88.0.33"
 DB_PORT                 = 3306
 RFM_DATABASE_NAME       = "RFDATA"
-BKP_DATABASE_NAME       = "BPDATA"
+BKP_DATABASE_NAME       = "BPDATA_TEST"
 DB_USER_NAME            = secret["DB_USER_NAME"]
 DB_PASSWORD             = secret["DB_PASSWORD"]
 #------------------------------------------
@@ -80,6 +80,7 @@ SECONDS_IN_MINUTE = 60
 #------------------------------------------
 DEFAULT_DATA_FOLDER = "/mnt/internal"
 DAEMON_CFG_FILE = "/etc/node/indexerD.cfg"
+DISCOVERY_BATCH_SIZE = 1000
 LOCAL_INDEXERD  = {
     "LOCAL_REPO"            : "/mnt/internal/data",
     "INDEXERD_FOLDER"       : "/mnt/internal/.indexerD",

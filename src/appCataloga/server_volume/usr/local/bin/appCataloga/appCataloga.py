@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-appCataloga - Host Backup Orchestrator Daemon
-
-This daemon listens for socket commands to enqueue backup tasks for remote hosts,
-interacts with the database layer (dbHandlerBKP), and handles graceful shutdown.
-It is designed to run in Linux environments without relying on systemd; shutdown
-is implemented by locating PIDs for this script and sending POSIX signals.
-"""
-
 import os
 import sys
 import json
@@ -19,18 +8,35 @@ import subprocess
 from datetime import datetime
 from selectors import DefaultSelector, EVENT_READ
 
-# load Config and Database folders
-_CFG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+# =================================================
+# PROJECT ROOT (shared/, db/, stations/)
+# =================================================
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# =================================================
+# Config directory (etc/appCataloga)
+# =================================================
+_CFG_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga")
+)
 if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
     sys.path.append(_CFG_DIR)
-_DB_DIR = os.path.join(os.path.dirname(__file__), "db")
+
+# =================================================
+# DB directory
+# =================================================
+_DB_DIR = os.path.join(PROJECT_ROOT, "db")
 if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
     sys.path.append(_DB_DIR)
 
-# Import customized libraries
+# Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
-import shared as sh
+from shared import errors, legacy, logging_utils
 import config as k
+
 
 
 # ======================================================================
@@ -42,7 +48,7 @@ process_status = {"running": True}
 r_pipe, w_pipe = os.pipe()
 
 # Logger using shared.py implementation (configured via config.py by default)
-log = sh.log()
+log = logging_utils.log()
 
 
 # ======================================================================
@@ -165,7 +171,7 @@ def serve_client(client_socket: socket.socket) -> None:
     except Exception:
         pass
 
-    err = sh.ErrorHandler(log)
+    err = errors.ErrorHandler(log)
     response_payload = {"status": 0, "message": "Unexpected error"}
     host = None
     host_id = None
@@ -182,7 +188,7 @@ def serve_client(client_socket: socket.socket) -> None:
         # ===============================================================
         # STAGE 2 — PARSE MESSAGE
         # ===============================================================
-        host = sh.parse_socket_message(
+        host = legacy.parse_socket_message(
             data=raw_msg.decode(),
             peername=client_socket.getpeername(),
             log=log,

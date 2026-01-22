@@ -17,7 +17,7 @@ sys.path.append(CONFIG_PATH)
 
 # Import appCataloga modules
 import config as k
-import shared as sh
+from shared import errors, legacy, logging_utils, tools
 from db.dbHandlerRFM import dbHandlerRFM
 
 import signal
@@ -27,7 +27,7 @@ import time
 import random
 
 # define global variables for log and general use
-log = sh.log()
+log = logging_utils.log()
 
 process_status = {"running": True}
 

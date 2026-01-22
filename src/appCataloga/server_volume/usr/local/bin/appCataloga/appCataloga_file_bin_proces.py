@@ -35,10 +35,26 @@ from datetime import datetime
 # ---------------------------------------------------------------
 # Configuration path (shared config and handlers)
 # ---------------------------------------------------------------
-CONFIG_PATH = os.path.abspath(
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# =================================================
+# Config directory (etc/appCataloga)
+# =================================================
+_CFG_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga")
 )
-sys.path.append(CONFIG_PATH)
+if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
+    sys.path.append(_CFG_DIR)
+
+# =================================================
+# DB directory
+# =================================================
+_DB_DIR = os.path.join(PROJECT_ROOT, "db")
+if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
+    sys.path.append(_DB_DIR)
 
 # ---------------------------------------------------------------
 # External libraries
@@ -51,7 +67,7 @@ from geopy.exc import GeocoderTimedOut
 # Internal modules
 # ---------------------------------------------------------------
 import config as k
-import shared as sh
+from shared import errors, legacy, logging_utils, tools
 
 from db.dbHandlerBKP import dbHandlerBKP
 from db.dbHandlerRFM import dbHandlerRFM
@@ -61,7 +77,7 @@ from stations import station_factory
 # ===============================================================
 # GLOBAL STATE
 # ===============================================================
-log = sh.log(target_screen=False)
+log = logging_utils.log(target_screen=False)
 process_status = {"running": True}
 
 
@@ -159,7 +175,7 @@ def main():
     db_rfm = dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)
 
     while process_status["running"]:
-        err = sh.ErrorHandler(log)
+        err = errors.ErrorHandler(log)
 
         file_task_id = None
         file_was_processed = False
@@ -178,7 +194,7 @@ def main():
             )
 
             if not result:
-                sh._random_jitter_sleep()
+                legacy._random_jitter_sleep()
                 continue
 
             row, host_id, _ = result
@@ -222,7 +238,7 @@ def main():
                 ).process()
                 
                 hostname_bin = bin_data["hostname"]
-            except sh.BinValidationError as e:
+            except errors.BinValidationError as e:
                 err.set(reason=str(e), stage="PROCESS", exc=e)
                 raise
             except Exception as e:
@@ -383,7 +399,7 @@ def main():
             status = k.TASK_DONE if file_was_processed else k.TASK_ERROR
 
             # Build NA_MESSAGE
-            NA_MESSAGE = sh._compose_message(
+            NA_MESSAGE = tools.compose_message(
                 task_type=k.FILE_TASK_PROCESS_TYPE,
                 task_status=status,
                 path=new_path if file_was_processed else None,

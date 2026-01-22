@@ -18,15 +18,29 @@ refactored versions.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime, timedelta
 import json
+
+# =================================================
+# PROJECT ROOT (shared/, db/, stations/)
+# =================================================
+PROJECT_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..")
+)
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# =================================================
+# Imports internos do projeto
+# =================================================
 import config as k
 from .dbHandlerBase import DBHandlerBase
+from shared import filter, legacy, constants, tools
+from shared.file_metadata import FileMetadata
 from datetime import datetime as _dt
-from shared import Filter
-from shared import _compose_message
-import shared as sh
 
 
 class dbHandlerBKP(DBHandlerBase):
@@ -1484,20 +1498,22 @@ class dbHandlerBKP(DBHandlerBase):
         host_id: int,
         task_type: int,
         task_status: int,
-        file_metadata: list[dict],
+        file_metadata: list,
     ) -> int:
         """
-        Create or update FILE_TASK entries.
+        Create or update FILE_TASK entries using FileMetadata objects.
 
-        Supports both single-file and batch ingestion.
-        Automatically selects the optimal UPSERT strategy.
+        This method supports both single-file and batch ingestion and automatically
+        selects the optimal UPSERT strategy.
+
+        IMPORTANT:
+            • file_metadata MUST be a list of FileMetadata objects.
+            • This method intentionally performs full materialization of rows
+            before database interaction.
         """
 
         if not file_metadata:
             return 0
-
-        if isinstance(file_metadata, dict):
-            file_metadata = [file_metadata]
 
         self._connect()
         processed = 0
@@ -1509,24 +1525,27 @@ class dbHandlerBKP(DBHandlerBase):
             for file in file_metadata:
                 rows.append({
                     "FK_HOST": host_id,
-                    "NA_HOST_FILE_PATH": file.get("NA_PATH"),
-                    "NA_HOST_FILE_NAME": file.get("NA_FILE"),
-                    "NA_EXTENSION": file.get("NA_EXTENSION"),
-                    "VL_FILE_SIZE_KB": file.get("VL_FILE_SIZE_KB"),
-                    "DT_FILE_CREATED": file.get("DT_FILE_CREATED"),
-                    "DT_FILE_MODIFIED": file.get("DT_FILE_MODIFIED"),
+                    "NA_HOST_FILE_PATH": file.NA_PATH,
+                    "NA_HOST_FILE_NAME": file.NA_FILE,
+                    "NA_EXTENSION": file.NA_EXTENSION,
+                    "VL_FILE_SIZE_KB": file.VL_FILE_SIZE_KB,
+                    "DT_FILE_CREATED": file.DT_FILE_CREATED,
+                    "DT_FILE_MODIFIED": file.DT_FILE_MODIFIED,
                     "NU_PID": os.getpid(),
                     "NU_TYPE": task_type,
                     "NU_STATUS": task_status,
                     "DT_FILE_TASK": now,
-                    "NA_MESSAGE": _compose_message(
+                    "NA_MESSAGE": tools.compose_message(
                         task_type=task_type,
                         task_status=task_status,
-                        path=file.get("NA_PATH"),
-                        name=file.get("NA_FILE"),
+                        path=file.NA_PATH,
+                        name=file.NA_FILE,
                     ),
                 })
 
+            # --------------------------------------------------------------
+            # Single-row UPSERT (preserves legacy behavior)
+            # --------------------------------------------------------------
             if len(rows) == 1:
                 self._upsert_row(
                     table="FILE_TASK",
@@ -1538,6 +1557,9 @@ class dbHandlerBKP(DBHandlerBase):
                 )
                 processed = 1
 
+            # --------------------------------------------------------------
+            # Batch UPSERT path
+            # --------------------------------------------------------------
             else:
                 processed = self._upsert_batch(
                     table="FILE_TASK",
@@ -1564,6 +1586,7 @@ class dbHandlerBKP(DBHandlerBase):
 
         finally:
             self._disconnect()
+
 
 
 
@@ -1948,6 +1971,7 @@ class dbHandlerBKP(DBHandlerBase):
     # BACKLOG MANAGEMENT
     # ======================================================================
 
+
     def update_backlog_by_filter(
         self,
         host_id: int,
@@ -1957,8 +1981,28 @@ class dbHandlerBKP(DBHandlerBase):
         search_status: Union[int, List[int]],
         new_type: int,
         new_status: int,
-        candidate_paths: Optional[List[str]] = None,
     ) -> Dict[str, int]:
+        """
+        Update FILE_TASK backlog entries based on a Filter definition.
+
+        This method performs a single SQL UPDATE on FILE_TASK, transitioning
+        tasks from one type/status to another (e.g. DISCOVERY → BACKUP).
+
+        Architectural contract:
+            • This method is DB-driven only.
+            • No filesystem inspection.
+            • No file lists or per-file decisions.
+            • MODE_FILE is resolved via SQL patterns (LIKE), not explicit names.
+            • Safe for very large backlogs (Celplan-scale).
+
+        Returns:
+            dict with counters:
+                {
+                    "rows_updated": int,
+                    "moved_to_backup": int,
+                    "moved_to_discovery": int,
+                }
+        """
 
         summary = {
             "rows_updated": 0,
@@ -1970,25 +2014,29 @@ class dbHandlerBKP(DBHandlerBase):
 
         try:
             # -----------------------------------------------------
-            # Generate WHERE, ORDER BY, LIMIT and message prefix
+            # Build SQL filtering metadata (WHERE / ORDER / LIMIT)
             # -----------------------------------------------------
-            filter_obj = Filter(task_filter, log=self.log)
+            filter_obj = filter.Filter(task_filter, log=self.log)
+
             meta = filter_obj.evaluate_database(
                 host_id=host_id,
                 search_type=search_type,
                 search_status=search_status,
-                file_list=candidate_paths
             )
 
             where = meta.get("where")
             extra_sql = meta.get("extra_sql", "")
             msg_prefix = meta.get("msg_prefix")
 
+            # Filter resolved to a no-op
             if not where:
+                self.log.entry(
+                    "[update_backlog_by_filter] Filter resolved to no-op. Skipping UPDATE."
+                )
                 return summary
 
             # -----------------------------------------------------
-            # UPDATE FILE_TASK based on filter
+            # Execute UPDATE on FILE_TASK
             # -----------------------------------------------------
             sql_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -2001,16 +2049,24 @@ class dbHandlerBKP(DBHandlerBase):
                     "NA_MESSAGE__expr": (
                         f"CONCAT('{msg_prefix} of file ', "
                         f"NA_HOST_FILE_PATH, '/', NA_HOST_FILE_NAME)"
-                    )
+                    ),
                 },
                 where=where,
                 extra_sql=extra_sql,
-                commit=True
+                commit=True,
             )
 
             summary["rows_updated"] = rows_updated
-            summary["moved_to_backup"] = rows_updated if new_type == k.FILE_TASK_BACKUP_TYPE else 0
-            summary["moved_to_discovery"] = rows_updated if new_type == k.FILE_TASK_DISCOVERY else 0
+
+            if new_type == k.FILE_TASK_BACKUP_TYPE:
+                summary["moved_to_backup"] = rows_updated
+            elif new_type == k.FILE_TASK_DISCOVERY:
+                summary["moved_to_discovery"] = rows_updated
+
+            self.log.entry(
+                f"[update_backlog_by_filter] Updated {rows_updated} FILE_TASK rows "
+                f"(new_type={new_type}, new_status={new_status}) for host {host_id}"
+            )
 
             return summary
 
@@ -2095,24 +2151,22 @@ class dbHandlerBKP(DBHandlerBase):
         host_id: int,
         task_type: int,
         task_status: int,
-        file_metadata: list[dict],
+        file_metadata: list,
     ) -> int:
         """
-        Insert or update FILE_TASK_HISTORY entries (UPSERT).
+        Insert or update FILE_TASK_HISTORY entries using FileMetadata objects.
 
         Unique keys:
             (FK_HOST, NA_HOST_FILE_NAME, NU_TYPE)
 
-        NU_TYPE exists in the table and in the UNIQUE INDEX,
-        but is NOT part of the payload (same behavior as legacy code).
+        IMPORTANT:
+            • file_metadata MUST be a list of FileMetadata objects.
+            • NU_TYPE is part of the UNIQUE INDEX but is not explicitly
+            stored in the payload (legacy behavior preserved).
         """
 
         if not file_metadata:
             return 0
-
-        # Allow single dict or list
-        if isinstance(file_metadata, dict):
-            file_metadata = [file_metadata]
 
         self._connect()
         processed = 0
@@ -2122,32 +2176,34 @@ class dbHandlerBKP(DBHandlerBase):
             rows: list[dict] = []
 
             for file in file_metadata:
-                msg = _compose_message(
+                msg = tools.compose_message(
                     task_type=task_type,
                     task_status=task_status,
-                    path=file.get("NA_PATH"),
-                    name=file.get("NA_FILE"),
+                    path=file.NA_PATH,
+                    name=file.NA_FILE,
                 )
 
                 rows.append({
                     "FK_HOST": host_id,
-                    "NA_HOST_FILE_PATH": file.get("NA_PATH"),
-                    "NA_HOST_FILE_NAME": file.get("NA_FILE"),
-                    "NA_EXTENSION": file.get("NA_EXTENSION"),
-                    "VL_FILE_SIZE_KB": file.get("VL_FILE_SIZE_KB"),
-                    "DT_FILE_CREATED": file.get("DT_FILE_CREATED"),
-                    "DT_FILE_MODIFIED": file.get("DT_FILE_MODIFIED"),
+                    "NA_HOST_FILE_PATH": file.NA_PATH,
+                    "NA_HOST_FILE_NAME": file.NA_FILE,
+                    "NA_EXTENSION": file.NA_EXTENSION,
+                    "VL_FILE_SIZE_KB": file.VL_FILE_SIZE_KB,
+                    "DT_FILE_CREATED": file.DT_FILE_CREATED,
+                    "DT_FILE_MODIFIED": file.DT_FILE_MODIFIED,
 
                     # lifecycle timestamps
                     "DT_DISCOVERED": now,
                     "DT_BACKUP": None,
                     "DT_PROCESSED": None,
-                    "NU_STATUS_DISCOVERY":k.TASK_DONE,
+                    "NU_STATUS_DISCOVERY": k.TASK_DONE,
 
                     "NA_MESSAGE": msg,
                 })
 
-            # Single row → preserve old behavior
+            # --------------------------------------------------------------
+            # Single-row UPSERT
+            # --------------------------------------------------------------
             if len(rows) == 1:
                 self._upsert_row(
                     table="FILE_TASK_HISTORY",
@@ -2159,7 +2215,9 @@ class dbHandlerBKP(DBHandlerBase):
                 )
                 processed = 1
 
-            # Batch path
+            # --------------------------------------------------------------
+            # Batch UPSERT path
+            # --------------------------------------------------------------
             else:
                 processed = self._upsert_batch(
                     table="FILE_TASK_HISTORY",
@@ -2186,6 +2244,7 @@ class dbHandlerBKP(DBHandlerBase):
 
         finally:
             self._disconnect()
+
 
 
     def file_history_update(
@@ -2268,7 +2327,7 @@ class dbHandlerBKP(DBHandlerBase):
             if value is None:
                 continue
 
-            if value is sh.SET_NULL:
+            if value is constants.SET_NULL:
                 update_data[key] = None
             else:
                 update_data[key] = value

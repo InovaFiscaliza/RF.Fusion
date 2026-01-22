@@ -36,25 +36,37 @@ from datetime import datetime
 # ----------------------------------------------------------------------
 # Load configuration and database modules
 # ----------------------------------------------------------------------
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# =================================================
+# Config directory (etc/appCataloga)
+# =================================================
 _CFG_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga")
 )
 if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
     sys.path.append(_CFG_DIR)
 
-_DB_DIR = os.path.join(os.path.dirname(__file__), "db")
+# =================================================
+# DB directory
+# =================================================
+_DB_DIR = os.path.join(PROJECT_ROOT, "db")
 if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
     sys.path.append(_DB_DIR)
 
-import shared as sh
+# Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
+from shared import errors, legacy, logging_utils,timeout_utils, tools
 import config as k
 
 
 # ======================================================================
 # Globals
 # ======================================================================
-log = sh.log()
+log = logging_utils.log()
 process_status = {
     "worker": 0,
     "running": True,
@@ -241,7 +253,7 @@ def ensure_worker_pool() -> None:
 
         while len(current_workers) < k.BKP_TASK_MAX_WORKERS:
             spawn_additional_worker(current_workers)
-            sh._random_jitter_sleep()
+            legacy._random_jitter_sleep()
             current_workers = list_running_workers(script_name)
 
     except Exception as e:
@@ -277,7 +289,7 @@ def transfer_file_task(
     if not sftp.test(remote_path):
         raise FileNotFoundError(f"Remote file '{remote_path}' not found.")
 
-    sh.run_with_timeout(
+    timeout_utils.run_with_timeout(
         lambda: sftp.transfer(remote_path, local_file),
         timeout=k.HOST_BUSY_TIMEOUT,
     )
@@ -313,7 +325,7 @@ def main() -> None:
 
         sftp_conn = None
         host = None
-        err = sh.ErrorHandler(log)
+        err = errors.ErrorHandler(log)
         file_was_transferred = False
 
         task = None
@@ -333,7 +345,7 @@ def main() -> None:
             )
 
             if not row:
-                sh._random_jitter_sleep()
+                legacy._random_jitter_sleep()
                 continue
 
             task, host_id, file_task_id = row
@@ -353,7 +365,7 @@ def main() -> None:
                 DT_FILE_TASK=datetime.now(),
                 NU_STATUS=k.TASK_RUNNING,
                 NU_PID=os.getpid(),
-                NA_MESSAGE=sh._compose_message(
+                NA_MESSAGE=tools.compose_message(
                     task_type=k.FILE_TASK_BACKUP_TYPE,
                     task_status=k.TASK_RUNNING,
                     path=task["FILE_TASK__NA_HOST_FILE_PATH"],
@@ -365,7 +377,7 @@ def main() -> None:
             # Init SSH/SFTP
             # ---------------------------------------------------
             host = db.host_read_access(host_id)
-            sftp_conn, _ = sh.init_host_context(task, log)
+            sftp_conn, _ = legacy.init_host_context(task, log)
 
             # ---------------------------------------------------
             # Prepare local server path
@@ -410,7 +422,7 @@ def main() -> None:
                 NA_SERVER_FILE_NAME=server_filename,
                 NA_SERVER_FILE_PATH=server_file_path,
                 NU_STATUS_BACKUP=k.TASK_DONE,
-                NA_MESSAGE=sh._compose_message(
+                NA_MESSAGE=tools.compose_message(
                     task_type=k.FILE_TASK_BACKUP_TYPE,
                     task_status=k.TASK_DONE,
                     path=task["FILE_TASK__NA_HOST_FILE_PATH"],
@@ -427,7 +439,7 @@ def main() -> None:
                 NU_STATUS=k.TASK_PENDING,
                 NA_SERVER_FILE_PATH=server_file_path,
                 NA_SERVER_FILE_NAME=server_filename,
-                NA_MESSAGE=sh._compose_message(
+                NA_MESSAGE=tools.compose_message(
                     task_type=k.FILE_TASK_BACKUP_TYPE,
                     task_status=k.TASK_DONE,
                     path=task["FILE_TASK__NA_HOST_FILE_PATH"],
@@ -441,7 +453,7 @@ def main() -> None:
             err.log_error(host_id=host_id, task_id=file_task_id)
 
             if file_task_id:
-                NA_MESSAGE = sh._compose_message(
+                NA_MESSAGE = tools.compose_message(
                     task_type=k.FILE_TASK_BACKUP_TYPE,
                     task_status=k.TASK_ERROR,
                 )
@@ -491,7 +503,7 @@ def main() -> None:
                     except Exception:
                         pass
 
-            sh._random_jitter_sleep()
+            legacy._random_jitter_sleep()
 
     log.entry(f"Backup worker {worker_id} shutting down.")
 

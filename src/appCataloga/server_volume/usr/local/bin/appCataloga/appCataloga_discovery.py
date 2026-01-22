@@ -29,30 +29,41 @@ import inspect
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-# ----------------------------------------------------------------------
-# Path setup
-# ----------------------------------------------------------------------
-_CFG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+
+# =================================================
+# PROJECT ROOT (shared/, db/, stations/)
+# =================================================
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# =================================================
+# Config directory (etc/appCataloga)
+# =================================================
+_CFG_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga")
+)
 if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
     sys.path.append(_CFG_DIR)
 
-_DB_DIR = os.path.join(os.path.dirname(__file__), "db")
+# =================================================
+# DB directory
+# =================================================
+_DB_DIR = os.path.join(PROJECT_ROOT, "db")
 if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
     sys.path.append(_DB_DIR)
 
-# ----------------------------------------------------------------------
-# Local imports
-# ----------------------------------------------------------------------
-import shared as sh
-from shared import Filter
+# Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
+from shared import errors, legacy, logging_utils,filter
 import config as k
 
 
 # ======================================================================
 # Globals
 # ======================================================================
-log = sh.log()
+log = logging_utils.log()
 process_status = {"running": True}
 _DAEMON_REGISTRY: List[Any] = []
 
@@ -149,7 +160,7 @@ def main() -> None:
 
         daemon = None
         sftp = None
-        err = sh.ErrorHandler(log)
+        err = errors.ErrorHandler(log)
         task = None
         host_id = None
         task_id = None
@@ -166,7 +177,7 @@ def main() -> None:
             )
 
             if not task:
-                sh._random_jitter_sleep()
+                legacy._random_jitter_sleep()
                 continue
 
             host_id = task["HOST__ID_HOST"]
@@ -203,7 +214,7 @@ def main() -> None:
             # ==========================================================
             if not err.triggered:
                 try:
-                    sftp, daemon = sh.init_host_context(task, log)
+                    sftp, daemon = legacy.init_host_context(task, log)
 
                 except paramiko.AuthenticationException as e:
                     err.set("Authentication failed (bad credentials)", "AUTH", e)
@@ -223,38 +234,34 @@ def main() -> None:
             # ==========================================================
             if not err.triggered:
                 try:
-                    host_filter = Filter(task["host_filter"], log=log)
+                    host_filter = filter.Filter(task["host_filter"], log=log)
+                    
+                    processed = 0
 
-                    file_metadata = daemon.get_metadata_files(
-                        filter_obj=host_filter,
+                    for batch in daemon.iter_metadata_files(
                         host_id=host_id,
+                        filter_obj=host_filter,
                         callBackFileTask=db.get_all_filetask_names,
                         callBackFileTaskHistory=db.get_all_filetaskhistory_names,
-                        callBackGetLastDBDate=db.get_last_discovery
-                    )
-
-                    if file_metadata:
-                        # Create FILE_TASK entries
+                        callBackGetLastDBDate=db.get_last_discovery,
+                        batch_size=k.DISCOVERY_BATCH_SIZE,
+                    ):
                         db.file_task_create(
                             host_id=host_id,
-                            file_metadata=file_metadata,
+                            file_metadata=batch,
                             task_type=k.FILE_TASK_DISCOVERY,
                             task_status=k.TASK_DONE,
                         )
 
-                        # Create FILE_TASK_HISTORY entries
                         db.file_history_create(
                             host_id=host_id,
-                            file_metadata=file_metadata,
+                            file_metadata=batch,
                             task_type=k.FILE_TASK_DISCOVERY,
                             task_status=k.TASK_DONE,
                         )
 
-                        log.entry(
-                            f"[DISCOVERY] {len(file_metadata)} FILE_TASK(s) created for host {host_id}"
-                        )
-                    else:
-                        log.entry(f"[DISCOVERY] Host {host_id}: no files found")
+                        processed += len(batch)
+                        log.entry(f"[DISCOVERY] Host {host_id}: {processed} files processed")
 
                 except Exception as e:
                     err.set("Discovery failed", "DISCOVERY", e)
@@ -274,7 +281,6 @@ def main() -> None:
                         search_status=k.TASK_DONE,
                         new_type=k.FILE_TASK_BACKUP_TYPE,
                         new_status=k.TASK_PENDING,
-                        candidate_paths=file_metadata,
                     )
 
                     log.entry(
@@ -330,7 +336,7 @@ def main() -> None:
                 # Create statistics update task only when successful operations occurred
                 try:
                     if (not err.triggered) and (
-                        n.get("rows_updated", 0) > 0 or len(file_metadata) > 0
+                        n.get("rows_updated", 0) > 0 or processed > 0
                     ):
                         db.host_task_statistics_create(host_id=host_id)
                 except Exception as e:
@@ -345,10 +351,10 @@ def main() -> None:
 
             # If a fatal error occurred, skip to next iteration
             if fatal_error:
-                sh._random_jitter_sleep()
+                legacy._random_jitter_sleep()
                 continue
 
-            sh._random_jitter_sleep()
+            legacy._random_jitter_sleep()
 
 
 
