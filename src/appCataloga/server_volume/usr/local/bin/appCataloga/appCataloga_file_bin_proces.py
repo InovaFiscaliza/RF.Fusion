@@ -230,20 +230,38 @@ def main():
             # ===================================================
             # ACT III — Parse and validate BIN (semantic, fatal)
             # ===================================================
-            try:
-                bin_data = parse_bin(filename)
-                bin_data = station_factory(
-                    bin_data=bin_data,
-                    host_uid=hostname_db
-                ).process()
-                
-                hostname_bin = bin_data["hostname"]
-            except errors.BinValidationError as e:
-                err.set(reason=str(e), stage="PROCESS", exc=e)
-                raise
-            except Exception as e:
-                err.set(reason=str(e), stage="PROCESS", exc=e)
-                raise
+            if 'rfeye' in host_id.lower():
+                try:
+                    # Process RFeye stations via direct parsing
+                    bin_data = parse_bin(filename)
+                    bin_data = station_factory(
+                        bin_data=bin_data,
+                        host_uid=hostname_db
+                    ).process()
+                    
+                    hostname_bin = bin_data["hostname"]
+                except errors.BinValidationError as e:
+                    err.set(reason=str(e), stage="PROCESS", exc=e)
+                    raise
+                except Exception as e:
+                    err.set(reason=str(e), stage="PROCESS", exc=e)
+                    raise
+            else:
+                # Process Celplan stations via APP_ANALISE service
+                try:
+                    bin_data = station_factory(
+                        bin_data=None,
+                        host_uid=hostname_db
+                    ).process(
+                        file_path=server_path,
+                        file_name=server_name
+                    )
+                except errors.BinValidationError as e:
+                    print(json.dumps({
+                        "status_query": 0,
+                        "message_query": str(e)
+                    }, ensure_ascii=False, indent=2))
+                    return
 
             # ===================================================
             # ACT IV — Begin DB transaction

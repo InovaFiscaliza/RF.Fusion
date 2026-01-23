@@ -41,9 +41,18 @@ ZABBIX_ADDRESS          = "172.24.0.13"
 SERVER_NAME             = r"10.88.0.33"
 DB_PORT                 = 3306
 RFM_DATABASE_NAME       = "RFDATA"
-BKP_DATABASE_NAME       = "BPDATA_TEST"
+BKP_DATABASE_NAME       = "BPDATA"
 DB_USER_NAME            = secret["DB_USER_NAME"]
 DB_PASSWORD             = secret["DB_PASSWORD"]
+# =================================================
+# APP_ANALISE remote processing service
+# =================================================
+APP_ANALISE_HOST_ADD        = "192.168.104.100"
+APP_ANALISE_HOST_PORT       = 8910
+APP_ANALISE_SOCKET_TIMEOUT  = 10
+APP_ANALISE_BUFFER_SIZE     = 4096
+APP_ANALISE_KEY = "123456"
+APP_ANALISE_CLIENT_NAME = "Matlab"
 #------------------------------------------
 # SSH LIMITS
 #------------------------------------------
@@ -63,7 +72,7 @@ HOST_TASK_REQUEST_WAIT_TIME     = 1800      # seconds to wait for the HALT_FLAG 
 HALT_FLAG_CHECK_CYCLES          = 6         # number of cycles to check for HALT_FLAG (6 x 300s = 30 minutes)
 BKP_HOST_ALLOTED_TIME_FRACTION  = 0.8
 HOST_BUSY_TIMEOUT               = 18000     # 18000 seconds or 5 hours
-BKP_TASK_MAX_WORKERS            = 10
+BKP_TASK_MAX_WORKERS            = 5
 BKP_TASK_WORKER_SERVICE         = "usr/local/bin/appCataloga/appCataloga_file_bkp@"
 MIN_FILE_SIZE_KB                = 1         # minimum file size to be backed up in KB
 MIN_FILE_AGE_MINUTES            = 30        # minimum file age to be backed up in minutes

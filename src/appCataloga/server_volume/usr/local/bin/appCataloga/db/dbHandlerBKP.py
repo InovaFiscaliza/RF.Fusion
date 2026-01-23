@@ -513,6 +513,7 @@ class dbHandlerBKP(DBHandlerBase):
         Uses _select_rows(), which returns a list of dicts.
         """
 
+        self._connect()
         try:
             rows = self._select_rows(
                 table="HOST",
@@ -2372,12 +2373,103 @@ class dbHandlerBKP(DBHandlerBase):
 
         finally:
             self._disconnect()
+            
+    def filter_existing_file_batch(
+        self,
+        host_id: int,
+        batch: List["FileMetadata"],
+        *,
+        batch_size: int,
+    ) -> List["FileMetadata"]:
+        """
+        Filter out FileMetadata objects that already exist in the database.
 
+        Deduplication key (probabilistic, controlled):
+            (FK_HOST, NA_HOST_FILE_NAME, DT_FILE_CREATED, VL_FILE_SIZE_KB)
 
+        Architectural decision:
+            • FILE_TASK_HISTORY is the single source of truth for deduplication
+            • FILE_TASK is ephemeral and intentionally ignored here
 
+        This method:
+            • Operates strictly on FileMetadata objects
+            • Preserves object identity (no reconstruction)
+            • Performs a single batched DB query
+            • Uses DBHandlerBase._select_raw for SQL execution
+            • Relies on the internal connection manager (_connect)
 
+        Args:
+            host_id (int):
+                Host identifier.
+            batch (List[FileMetadata]):
+                Batch produced by iter_find_files_with_metadata.
+            batch_size (int):
+                Maximum allowed batch size (defensive validation).
 
+        Returns:
+            List[FileMetadata]:
+                Only FileMetadata objects that do NOT exist in FILE_TASK_HISTORY.
+        """
 
+        if not batch:
+            return []
 
-        
-    
+        if len(batch) > batch_size:
+            raise ValueError(
+                f"Batch size exceeded: {len(batch)} > {batch_size}"
+            )
+
+        # ------------------------------------------------------------
+        # Build derived table (UNION ALL) from FileMetadata batch
+        # ------------------------------------------------------------
+        row_sql = "SELECT %s AS name, %s AS created, %s AS size"
+        union_sql = " UNION ALL ".join([row_sql] * len(batch))
+
+        sql = f"""
+            SELECT f.name, f.created, f.size
+            FROM (
+                {union_sql}
+            ) AS f
+            JOIN FILE_TASK_HISTORY h
+              ON h.FK_HOST = %s
+             AND h.NA_HOST_FILE_NAME = f.name
+             AND h.DT_FILE_CREATED = f.created
+             AND h.VL_FILE_SIZE_KB = f.size
+        """
+
+        # ------------------------------------------------------------
+        # Bind parameters
+        # ------------------------------------------------------------
+        params: list[object] = []
+
+        for m in batch:
+            params.extend([
+                m.NA_FILE,
+                m.DT_FILE_CREATED,
+                m.VL_FILE_SIZE_KB,
+            ])
+
+        params.append(host_id)
+
+        # ------------------------------------------------------------
+        # Execute query using DBHandlerBase helper
+        # ------------------------------------------------------------
+        self._connect()
+        rows = self._select_raw(sql, tuple(params))
+
+        # ------------------------------------------------------------
+        # Build lookup set of existing keys
+        # ------------------------------------------------------------
+        existing_keys = {
+            (row["name"], row["created"], row["size"])
+            for row in rows
+        }
+
+        # ------------------------------------------------------------
+        # Filter original batch (preserve FileMetadata objects)
+        # ------------------------------------------------------------
+        return [
+            m for m in batch
+            if (m.NA_FILE, m.DT_FILE_CREATED, m.VL_FILE_SIZE_KB)
+            not in existing_keys
+        ]

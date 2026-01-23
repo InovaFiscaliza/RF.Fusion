@@ -666,8 +666,7 @@ class hostDaemon:
         self,
         host_id: int,
         filter_obj: Filter,
-        callBackFileTask,
-        callBackFileTaskHistory,
+        callBackCheckFile,
         callBackGetLastDBDate,
         *,
         batch_size: int = 1000,
@@ -675,104 +674,87 @@ class hostDaemon:
         """
         High-level metadata discovery orchestrator.
 
-        This generator function is responsible for coordinating the *entire*
-        metadata discovery lifecycle for a given host. It does NOT persist data
-        and does NOT mutate external state — its sole responsibility is to
-        discover, normalize, filter, deduplicate, and yield batches of
-        FileMetadata objects that are eligible for downstream persistence.
+        This generator coordinates the complete metadata discovery lifecycle
+        for a given host. It is intentionally DATABASE-AGNOSTIC and relies on
+        callbacks to delegate persistence-aware decisions.
 
-        Core responsibilities:
-            • Normalize the filter object (dict → Filter)
-            • Resolve discovery mode and agent semantics
-            • Apply incremental discovery rules based on database state
-            • Prevent rediscovery of files already known by the system
-            • Enforce Filter rules over discovered metadata
-            • Yield bounded batches suitable for bulk inserts
+        Responsibilities:
+            • Discover filesystem metadata remotely
+            • Apply incremental discovery rules
+            • Delegate deduplication to an external callback
+            • Enforce semantic Filter rules
+            • Yield bounded batches of FileMetadata eligible for persistence
 
-        Architectural characteristics:
-            • Stateless across iterations (generator-based)
-            • Deterministic behavior given the same inputs and callbacks
-            • Database-agnostic (relies exclusively on callbacks)
-            • Does NOT assume local filesystem access — delegates to SFTP layer
-            • Safe to interrupt or resume without side effects
+        Architectural guarantees:
+            • Does NOT know database schema or tables
+            • Does NOT perform SQL or persistence logic
+            • Uses callbacks to externalize stateful decisions
+            • Memory usage is strictly bounded by `batch_size`
+            • Safe for reuse, testing, and mocking
 
         Discovery modes (derived from Filter):
             - NONE / DEFAULT:
-                Incremental discovery based on last known DB timestamp
+                Incremental discovery using last DB timestamp
             - FILE:
-                Explicit file-based discovery (timestamp ignored)
+                Explicit file discovery (timestamp ignored)
             - REDISCOVERY:
                 Full rescan of the remote path (timestamp ignored)
 
         Deduplication strategy:
-            • Excludes files already present in FILE_TASK
-            • Excludes files already present in FILE_TASK_HISTORY
-            • Ensures idempotent discovery even across repeated executions
+            • Entirely delegated to `callBackCheckFile`
+            • Callback must accept and return List[FileMetadata]
+            • Callback may use database, cache, or other mechanisms
+
+        Args:
+            host_id (int):
+                Host identifier.
+            filter_obj (Filter | dict):
+                Discovery filter definition.
+            callBackCheckFile (callable):
+                Callback responsible for filtering out existing files.
+            callBackGetLastDBDate (callable):
+                Callback returning last discovery timestamp for incremental mode.
+            batch_size (int):
+                Maximum batch size and memory bound.
 
         Yields:
             List[FileMetadata]:
-                Filtered, deduplicated batches of metadata, each batch
-                bounded by `batch_size`.
-
-        Early termination:
-            • Unsupported agent values are logged and abort execution
+                Filtered and deduplicated batches of metadata.
         """
 
         # ------------------------------------------------------------
         # Normalize filter input
         # ------------------------------------------------------------
-        # Accepts either a raw dict or a Filter instance. Dicts are
-        # upgraded into Filter objects to ensure uniform behavior.
         if isinstance(filter_obj, dict):
             filter_obj = Filter(filter_obj, log=self.log)
 
         # ------------------------------------------------------------
         # Resolve discovery semantics
         # ------------------------------------------------------------
-        # Mode defines incremental / full / file-based behavior.
-        # Agent defines how files are accessed (currently only LOCAL).
         mode = (filter_obj.data.get("mode") or "").upper()
         agent = (filter_obj.data.get("agent") or "").upper()
 
         # ------------------------------------------------------------
         # Resolve remote scan parameters
         # ------------------------------------------------------------
-        # Target directory defaults to the system data folder if not
-        # explicitly provided by the filter.
         remote_dir = filter_obj.data.get("file_path", k.DEFAULT_DATA_FOLDER)
-
-        # Build filename matching pattern (extension, name, wildcards).
         pattern = filter_obj._build_pattern()
 
         # ------------------------------------------------------------
         # Incremental discovery cutoff
         # ------------------------------------------------------------
-        # For incremental modes, retrieve the latest known timestamp
-        # from the database via callback and convert it into a string
-        # format compatible with the SFTP layer.
         newer_than = None
         if mode != Filter.MODE_FILE:
             last_dt = callBackGetLastDBDate(host_id)
             if last_dt:
                 newer_than = last_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        # REDISCOVERY mode explicitly disables any timestamp cutoff.
         if mode == Filter.MODE_REDISCOVERY:
             newer_than = None
 
         # ------------------------------------------------------------
-        # Load deduplication indexes
-        # ------------------------------------------------------------
-        # Files already registered as tasks or historical records must
-        # never be rediscovered to preserve idempotency.
-        task_names = set(callBackFileTask(host_id))
-        task_hist_names = set(callBackFileTaskHistory(host_id))
-
-        # ------------------------------------------------------------
         # Agent validation
         # ------------------------------------------------------------
-        # Currently, only LOCAL agent discovery is supported.
-        # Any other agent value is considered a configuration error.
         if agent != "LOCAL":
             self.log.error(f"[META] Unsupported agent '{agent}'")
             return
@@ -780,8 +762,6 @@ class hostDaemon:
         # ------------------------------------------------------------
         # Remote metadata discovery loop
         # ------------------------------------------------------------
-        # Delegates actual filesystem traversal to the SFTP connection,
-        # which yields bounded batches of FileMetadata objects.
         for batch in self.sftp_conn.iter_find_files_with_metadata(
             remote_path=remote_dir,
             pattern=pattern,
@@ -789,28 +769,24 @@ class hostDaemon:
             batch_size=batch_size,
         ):
             # --------------------------------------------
-            # Deduplication phase
+            # Delegated deduplication phase
             # --------------------------------------------
-            # Remove any file that already exists either as:
-            #   • an active FILE_TASK
-            #   • a historical FILE_TASK_HISTORY entry
-            batch = [
-                m for m in batch
-                if m.NA_FILE not in task_names
-                and m.NA_FILE not in task_hist_names
-            ]
+            # The iterator does NOT know how deduplication is done.
+            # It only trusts the callback contract.
+            batch = callBackCheckFile(
+                host_id=host_id,
+                batch=batch,
+                batch_size=batch_size,
+            )
 
-            # Skip empty batches early to avoid unnecessary processing.
             if not batch:
                 continue
 
             # --------------------------------------------
             # Filter evaluation phase
             # --------------------------------------------
-            # Apply all semantic and structural filter rules
-            # (extension, name, date, limits, etc.).
             batch = filter_obj.evaluate_metadata(batch)
 
-            # Yield only non-empty, fully validated batches.
             if batch:
                 yield batch
+

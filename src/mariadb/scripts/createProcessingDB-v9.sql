@@ -85,6 +85,7 @@ CREATE TABLE FILE_TASK (
     CONSTRAINT FK_FILE_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
 );
 
+
 -- ==========================================================
 -- FILE_TASK_HISTORY (AUDIT TRAIL)
 -- ==========================================================
@@ -107,4 +108,13 @@ CREATE TABLE FILE_TASK_HISTORY (
 	NA_EXTENSION VARCHAR(20) COMMENT 'File extension (.txt, .csv, .log, etc.)',
     NA_MESSAGE TEXT COMMENT 'Optional message',
     CONSTRAINT FK_HISTORY_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST(ID_HOST)
+);
+-- CREATE INDEX TO SEARCH
+USE BPDATA;
+CREATE INDEX idx_fth_dedup_soft
+ON FILE_TASK_HISTORY (
+    FK_HOST,
+    NA_HOST_FILE_NAME,
+    DT_FILE_CREATED,
+    VL_FILE_SIZE_KB
 );

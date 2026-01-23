@@ -232,20 +232,37 @@ def main() -> None:
             # ==========================================================
             # ACT IV — Discovery
             # ==========================================================
+            # ------------------------------------------------------------
+            # Discovery execution
+            # ------------------------------------------------------------
+            # Executes metadata discovery for the host only if no fatal
+            # error has been previously triggered.
+            #
             if not err.triggered:
                 try:
+                    # Build the discovery Filter from HOST_TASK definition
                     host_filter = filter.Filter(task["host_filter"], log=log)
-                    
+
+                    # Counter used only for progress logging
                     processed = 0
 
+                    # ----------------------------------------------------
+                    # Metadata discovery pipeline
+                    # ----------------------------------------------------
+                    # iter_metadata_files:
+                    #   • Streams remote filesystem metadata
+                    #   • Yields bounded batches of FileMetadata
+                    #   • Delegates deduplication via callback
+                    #   • Guarantees memory bounded by batch_size
+                    #
                     for batch in daemon.iter_metadata_files(
                         host_id=host_id,
                         filter_obj=host_filter,
-                        callBackFileTask=db.get_all_filetask_names,
-                        callBackFileTaskHistory=db.get_all_filetaskhistory_names,
+                        callBackCheckFile=db.filter_existing_file_batch,
                         callBackGetLastDBDate=db.get_last_discovery,
                         batch_size=k.DISCOVERY_BATCH_SIZE,
                     ):
+                        # Persist discovered files as pipeline tasks
                         db.file_task_create(
                             host_id=host_id,
                             file_metadata=batch,
@@ -253,6 +270,7 @@ def main() -> None:
                             task_status=k.TASK_DONE,
                         )
 
+                        # Append discovery records to immutable history
                         db.file_history_create(
                             host_id=host_id,
                             file_metadata=batch,
@@ -260,11 +278,16 @@ def main() -> None:
                             task_status=k.TASK_DONE,
                         )
 
+                        # Log progress (already deduplicated files)
                         processed += len(batch)
-                        log.entry(f"[DISCOVERY] Host {host_id}: {processed} files processed")
+                        log.entry(
+                            f"[DISCOVERY] Host {host_id}: {processed} files processed"
+                        )
 
                 except Exception as e:
+                    # Any exception here aborts discovery deterministically
                     err.set("Discovery failed", "DISCOVERY", e)
+
 
             if err.triggered:
                 fatal_error = True
@@ -338,7 +361,7 @@ def main() -> None:
                     if (not err.triggered) and (
                         n.get("rows_updated", 0) > 0 or processed > 0
                     ):
-                        db.host_task_statistics_create(host_id=host_id)
+                        db.host_update_statistics(host_id=host_id)
                 except Exception as e:
                     log.warning(f"[FINALIZE] Failed to create statistics task: {e}")
 

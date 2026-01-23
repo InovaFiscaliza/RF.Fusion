@@ -6,7 +6,7 @@ from collections.abc import Iterable
 import numpy as np
 
 from .base import Station
-import shared as sh
+from shared import errors
 import re
 
 
@@ -63,7 +63,7 @@ class RFEyeStation(Station):
             - If this method returns successfully, the BIN is guaranteed
             to be fully insertable into RF.Fusion without further checks.
             - Any fatal inconsistency at BIN level results in
-            sh.BinValidationError and discards the entire BIN.
+            errors.BinValidationError and discards the entire BIN.
             - Spectrum-level inconsistencies discard only the affected
             spectrum entry.
 
@@ -127,7 +127,7 @@ class RFEyeStation(Station):
 
         # If no valid spectra remain, the BIN is semantically useless.
         if not valid_spectra:
-            raise sh.BinValidationError(
+            raise errors.BinValidationError(
                 "BIN discarded: no valid spectra after validation"
             )
 
@@ -207,7 +207,7 @@ class RFEyeStation(Station):
             - No heuristics beyond the explicit rules above are allowed.
 
         Raises:
-            sh.BinValidationError:
+            errors.BinValidationError:
                 If neither BIN hostname nor host_uid are valid.
         """
 
@@ -222,7 +222,7 @@ class RFEyeStation(Station):
         # → global corruption, BIN must be discarded
         # -------------------------------------------------
         if not hostname_valid and not host_uid_valid:
-            raise sh.BinValidationError(
+            raise errors.BinValidationError(
                 "Hostname resolution failed: BIN hostname and host_uid are both invalid"
             )
 
@@ -257,13 +257,13 @@ class RFEyeStation(Station):
         against future regressions or incorrect mutations.
 
         Raises:
-            sh.BinValidationError:
+            errors.BinValidationError:
                 If hostname is missing or not a string.
         """
         hostname = self.bin_data.get("hostname")
 
         if not isinstance(hostname, str) or not hostname.strip():
-            raise sh.BinValidationError("Hostname missing or invalid")
+            raise errors.BinValidationError("Hostname missing or invalid")
 
 
     # =================================================
@@ -283,12 +283,12 @@ class RFEyeStation(Station):
 
         gps = self.bin_data.get("gps")
         if gps is None:
-            raise sh.BinValidationError("GPS metadata missing")
+            raise errors.BinValidationError("GPS metadata missing")
 
         # ---- required attributes ----
         for attr in ("latitude", "longitude", "altitude"):
             if not hasattr(gps, attr):
-                raise sh.BinValidationError(f"GPS missing attribute: {attr}")
+                raise errors.BinValidationError(f"GPS missing attribute: {attr}")
 
         lat = gps.latitude
         lon = gps.longitude
@@ -297,7 +297,7 @@ class RFEyeStation(Station):
         # ---- numeric validation ----
         for name, val in (("latitude", lat), ("longitude", lon), ("altitude", alt)):
             if not isinstance(val, (int, float, np.integer, np.floating)):
-                raise sh.BinValidationError(f"GPS invalid {name} type")
+                raise errors.BinValidationError(f"GPS invalid {name} type")
 
         # ---- sentinel check (RFeye default GNSS unavailable) ----
         if (
@@ -305,16 +305,16 @@ class RFEyeStation(Station):
             and lon == self.GPS_SENTINEL_VALUE
             and alt == self.GPS_SENTINEL_VALUE
         ):
-            raise sh.BinValidationError(
+            raise errors.BinValidationError(
                 "Invalid GPS reading: lat=lon=alt=-1 (GNSS unavailable sentinel)"
             )
 
         # ---- physical range validation (coarse) ----
         if not (-90.0 <= lat <= 90.0):
-            raise sh.BinValidationError("GPS invalid latitude range")
+            raise errors.BinValidationError("GPS invalid latitude range")
 
         if not (-180.0 <= lon <= 180.0):
-            raise sh.BinValidationError("GPS invalid longitude range")
+            raise errors.BinValidationError("GPS invalid longitude range")
 
         # ---- satellite count intentionally ignored ----
         # num_satellites may be missing, fractional or aggregated.
@@ -342,11 +342,11 @@ class RFEyeStation(Station):
 
         # The spectrum container must be iterable (e.g. list, tuple)
         if not isinstance(spectra, Iterable):
-            raise sh.BinValidationError("Spectrum is not iterable")
+            raise errors.BinValidationError("Spectrum is not iterable")
 
         # An empty spectrum list means there is no spectral data to ingest
         if not spectra:
-            raise sh.BinValidationError("Spectrum list is empty")
+            raise errors.BinValidationError("Spectrum list is empty")
 
 
     # =================================================
@@ -423,7 +423,7 @@ class RFEyeStation(Station):
             raise SpectrumValidationError(f"{ctx}: missing levels")
 
         try:
-            levels = np.asarray(s.levels)
+            levels = s.levels
         except Exception:
             raise SpectrumValidationError(f"{ctx}: levels not array-like")
 
@@ -440,7 +440,7 @@ class RFEyeStation(Station):
             raise SpectrumValidationError(f"{ctx}: missing frequencies")
 
         try:
-            freqs = np.asarray(s.frequencies)
+            freqs = s.frequencies
         except Exception:
             raise SpectrumValidationError(f"{ctx}: frequencies not array-like")
 
@@ -453,18 +453,15 @@ class RFEyeStation(Station):
             )
 
         # ---- timestamp (authoritative temporal source) ----
-        if not hasattr(s, "timestamp"):
-            raise SpectrumValidationError(f"{ctx}: missing timestamp")
+        if not isinstance(s.timestamp, np.ndarray):
+            try:
+                s.timestamp = np.asarray(s.timestamp.items)
+            except Exception:
+                raise SpectrumValidationError(f"{ctx}: timestamp not array-like")
 
-        try:
-            ts = np.asarray(s.timestamp)
-        except Exception:
-            raise SpectrumValidationError(f"{ctx}: timestamp not array-like")
+        ts = s.timestamp
 
-        if ts.ndim != 1 or ts.size != n_traces:
-            raise SpectrumValidationError(
-                f"{ctx}: timestamp size ({ts.size}) != levels traces ({n_traces})"
-            )
+
 
         # =================================================
         # Temporal metadata resolution (DERIVED)
@@ -519,7 +516,8 @@ class RFEyeStation(Station):
         # =================================================
 
         self._infer_bw(s)
-        self._infer_level_semantics(s)
+        #self._infer_level_semantics(s)
+        self._infer_level_semantics_light(s)
         self._normalize_method(s)
 
 
@@ -636,7 +634,7 @@ class RFEyeStation(Station):
         # The original matrix shape (time x frequency, etc.)
         # is irrelevant for semantic inference.
         # -------------------------------------------------
-        levels = np.asarray(s.levels, dtype=float)
+        levels = s.levels
         flat = levels.ravel()
 
         # -------------------------------------------------
@@ -751,6 +749,30 @@ class RFEyeStation(Station):
         s.level_type = self.LEVEL_TYPE_UNKNOWN
         s.level_unit = self.LEVEL_UNIT_UNKNOWN
         s.level_source = self.LEVEL_SOURCE_UNCLASSIFIED
+
+    def _infer_level_semantics_light(self, s):
+
+        # Fast C-level scan
+        levels = s.levels  # ndarray
+        min_val = float(levels.min())
+        max_val = float(levels.max())
+
+
+        if min_val < -50:
+            s.level_type = self.LEVEL_TYPE_POWER
+            s.level_unit = self.LEVEL_UNIT_DBM
+            s.level_source = self.LEVEL_SOURCE_INFERRED
+            return
+
+        if min_val >= 0 and max_val <= 100:
+            s.level_type = self.LEVEL_TYPE_OCCUPANCY
+            s.level_unit = self.LEVEL_UNIT_PERCENT
+            s.level_source = self.LEVEL_SOURCE_INFERRED
+            return
+
+        s.level_type = self.LEVEL_TYPE_FIELD_STRENGTH
+        s.level_unit = self.LEVEL_UNIT_DBUVM
+        s.level_source = self.LEVEL_SOURCE_INFERRED
 
 
 
