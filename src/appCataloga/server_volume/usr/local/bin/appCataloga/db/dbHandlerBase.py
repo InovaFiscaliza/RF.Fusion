@@ -71,20 +71,8 @@ class DBHandlerBase:
         - Automatic reconnection if the connection has dropped
         - Cleanup of any unread result sets (“Unread result found” protection)
         - Creation of a fresh connection if none is valid
-        - Enforcement of AUTOCOMMIT=True to ensure that all SELECT operations
-        always see the latest committed state of the database, including changes
-        applied externally (e.g., via DBeaver/MySQL Workbench)
-
-        Rationale:
-            Without autocommit, MariaDB/MySQL may keep the cursor inside an
-            implicit transaction, causing SELECT to return stale snapshots and
-            ignore updates performed outside the current Python session.
-
-            Explicit commit/rollback logic inside write operations remains intact.
-            Autocommit only disables implicit transaction snapshots for reads.
-
-        Raises:
-            Error: If the database connection cannot be established or reused.
+        - Enforcement of AUTOCOMMIT=True for read freshness,
+        EXCEPT when an explicit transaction is active
         """
 
         try:
@@ -94,11 +82,14 @@ class DBHandlerBase:
             if hasattr(self, "db_connection") and self.db_connection:
                 if self.db_connection.is_connected():
 
-                    # Ensure autocommit is always active (avoids stale snapshots)
-                    try:
-                        self.db_connection.autocommit = True
-                    except Exception:
-                        pass
+                    # --------------------------------------------------
+                    # Enforce autocommit ONLY if not in explicit TX
+                    # --------------------------------------------------
+                    if not getattr(self, "in_transaction", False):
+                        try:
+                            self.db_connection.autocommit = True
+                        except Exception:
+                            pass
 
                     # ----------------------------------------------
                     # Validate the existing cursor with 'SELECT 1'
@@ -165,11 +156,12 @@ class DBHandlerBase:
                 try:
                     self.db_connection.reconnect(attempts=3, delay=2)
 
-                    # Re-assert autocommit
-                    try:
-                        self.db_connection.autocommit = True
-                    except Exception:
-                        pass
+                    # Re-assert autocommit ONLY if not in TX
+                    if not getattr(self, "in_transaction", False):
+                        try:
+                            self.db_connection.autocommit = True
+                        except Exception:
+                            pass
 
                     self.cursor = self.db_connection.cursor()
                     self.log.entry("Database reconnected successfully.")
@@ -200,8 +192,12 @@ class DBHandlerBase:
             cfg = self._get_db_config()
             self.db_connection = mysql.connector.connect(**cfg)
 
-            # Always operate in autocommit mode
-            self.db_connection.autocommit = True
+            # Autocommit default ONLY if not in TX
+            if not getattr(self, "in_transaction", False):
+                try:
+                    self.db_connection.autocommit = True
+                except Exception:
+                    pass
 
             self.cursor = self.db_connection.cursor()
             self.log.entry("Database connection established successfully.")
@@ -222,6 +218,7 @@ class DBHandlerBase:
         except Error as e:
             self.log.error(f"Error connecting to database: {e}")
             raise
+
 
 
     def _disconnect(self, force: bool = False, verbose: bool = False) -> None:

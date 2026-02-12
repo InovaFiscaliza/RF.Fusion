@@ -70,10 +70,10 @@ CREATE TABLE FILE_TASK (
     DT_FILE_TASK DATETIME COMMENT 'Date and time of the file task creation',
     NU_TYPE TINYINT DEFAULT 0 COMMENT 'File Task Type: 0=Not set; 1=Backup; 2=Processing; 3=Metadata',
     NA_HOST_FILE_PATH VARCHAR(3000) COMMENT 'Path to the file in the host',
-    NA_HOST_FILE_NAME VARCHAR(100) COMMENT 'Name of the file in the host',
+    NA_HOST_FILE_NAME VARCHAR(512) COMMENT 'Name of the file in the host',
     NU_HOST_FILE_MD5 VARCHAR(32) COMMENT 'MD5 hash of the file in the host',
     NA_SERVER_FILE_PATH VARCHAR(3000) COMMENT 'Path to the file in the server',
-    NA_SERVER_FILE_NAME VARCHAR(100) COMMENT 'Name of the file in the server',
+    NA_SERVER_FILE_NAME VARCHAR(512) COMMENT 'Name of the file in the server',
     NA_SERVER_FILE_MD5 VARCHAR(32) COMMENT 'MD5 hash of the file in the server',
     NU_STATUS TINYINT DEFAULT 0 COMMENT 'Status flag: -1=Error, 0=Nothing to do, 1=Pending action, 2=Under execution',
     NU_PID INT COMMENT 'Process ID of the task when under execution',
@@ -99,9 +99,9 @@ CREATE TABLE FILE_TASK_HISTORY (
 	NU_STATUS_BACKUP INT DEFAULT 1 COMMENT 'Status flag - 1 - Pending, 0 - Done, -1 - Error',
 	NU_STATUS_PROCESSING INT DEFAULT 1 COMMENT 'Status flag - 1 - Pending, 0 - Done, -1 - Error',
     NA_HOST_FILE_PATH VARCHAR(3000),
-    NA_HOST_FILE_NAME VARCHAR(100),
+    NA_HOST_FILE_NAME VARCHAR(512),
 	NA_SERVER_FILE_PATH VARCHAR(3000),
-    NA_SERVER_FILE_NAME VARCHAR(100),
+    NA_SERVER_FILE_NAME VARCHAR(512),
     VL_FILE_SIZE_KB BIGINT,
 	DT_FILE_CREATED DATETIME COMMENT 'File creation timestamp',
     DT_FILE_MODIFIED DATETIME COMMENT 'File last modification timestamp',
@@ -109,7 +109,7 @@ CREATE TABLE FILE_TASK_HISTORY (
     NA_MESSAGE TEXT COMMENT 'Optional message',
     CONSTRAINT FK_HISTORY_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST(ID_HOST)
 );
--- CREATE INDEX TO SEARCH
+-- CREATE INDEX TO
 USE BPDATA;
 CREATE INDEX idx_fth_dedup_soft
 ON FILE_TASK_HISTORY (

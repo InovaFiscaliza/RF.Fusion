@@ -664,6 +664,7 @@ class hostDaemon:
     
     def iter_metadata_files(
         self,
+        hostname: str,
         host_id: int,
         filter_obj: Filter,
         callBackCheckFile,
@@ -738,7 +739,7 @@ class hostDaemon:
         # Resolve remote scan parameters
         # ------------------------------------------------------------
         remote_dir = filter_obj.data.get("file_path", k.DEFAULT_DATA_FOLDER)
-        pattern = filter_obj._build_pattern()
+        pattern = filter_obj._build_pattern(hostname=hostname)
 
         # ------------------------------------------------------------
         # Incremental discovery cutoff

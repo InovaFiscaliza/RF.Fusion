@@ -11,19 +11,33 @@ import sys, os
 # ----------------------------------------------------------------------
 # Load configuration and database modules
 # ----------------------------------------------------------------------
-_CFG_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# =================================================
+# Config directory (etc/appCataloga)
+# =================================================
+_CFG_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga")
+)
 if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
     sys.path.append(_CFG_DIR)
 
-_DB_DIR = os.path.join(os.path.dirname(__file__), "db")
+# =================================================
+# DB directory
+# =================================================
+_DB_DIR = os.path.join(PROJECT_ROOT, "db")
 if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
     sys.path.append(_DB_DIR)
 
-import shared as sh
+# Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
+from shared import  logging_utils
 import config as k
 
-log = sh.log()
+log = logging_utils.log()
 
 def cleanup_hosts_and_tasks():
     log.entry("[CLEANUP] Starting forced cleanup (HOST + HOST_TASK + FILE_TASK)")

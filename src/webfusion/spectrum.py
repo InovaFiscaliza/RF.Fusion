@@ -143,17 +143,15 @@ def register_spectrum(app):
         with conn.cursor() as cur:
 
             # ------------------------------------------------------------
-            # Combobox: somente equipamentos com spectrum associado
+            # Combobox: equipamentos que possuem spectrum associado
             # ------------------------------------------------------------
             cur.execute("""
                 SELECT DISTINCT
                     e.ID_EQUIPMENT,
                     e.NA_EQUIPMENT
                 FROM DIM_SPECTRUM_EQUIPMENT e
-                JOIN BRIDGE_SPECTRUM_EQUIPMENT b
-                  ON b.FK_EQUIPMENT = e.ID_EQUIPMENT
                 JOIN FACT_SPECTRUM f
-                  ON f.ID_SPECTRUM = b.FK_SPECTRUM
+                  ON f.FK_EQUIPMENT = e.ID_EQUIPMENT
                 ORDER BY e.NA_EQUIPMENT
             """)
             equipments = cur.fetchall()
@@ -189,11 +187,9 @@ def register_spectrum(app):
                         f.NU_ATT_GAIN,
                         e.NA_EQUIPMENT
                     FROM FACT_SPECTRUM f
-                    JOIN BRIDGE_SPECTRUM_EQUIPMENT b
-                      ON b.FK_SPECTRUM = f.ID_SPECTRUM
                     JOIN DIM_SPECTRUM_EQUIPMENT e
-                      ON e.ID_EQUIPMENT = b.FK_EQUIPMENT
-                    WHERE e.ID_EQUIPMENT = %s
+                      ON e.ID_EQUIPMENT = f.FK_EQUIPMENT
+                    WHERE f.FK_EQUIPMENT = %s
                       AND f.DT_TIME_END >= %s
                 """
 

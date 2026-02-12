@@ -207,7 +207,68 @@ class sftpConnection:
                 f"'{self.host_uid}'({self.host_addr}). {e}"
             )
             raise
+    
+    def read_cookie_list(self, filename: str) -> List[str]:
+        """Read a 'list cookie' file (one item per line) from remote host.
 
+        Args:
+            filename (str): Absolute remote path of the cookie file.
+
+        Returns:
+            list[str]: List of non-empty, stripped lines. Empty list if missing.
+        """
+        try:
+            data = self.read(filename, "r")
+            if not data:
+                return []
+            return [ln.strip() for ln in str(data).splitlines() if ln.strip()]
+        except Exception as e:
+            self.log.error(f"Error reading cookie list '{filename}' from '{self.host_uid}'. {e}")
+            return []
+
+    def write_cookie_list(self, filename: str, lines: List[str]) -> None:
+        """Write a 'list cookie' file (one item per line) to remote host.
+
+        Args:
+            filename (str): Absolute remote path of the cookie file.
+            lines (list[str]): Lines to write; will be joined by newline.
+
+        Returns:
+            None
+
+        Raises:
+            Exception: On SFTP I/O errors.
+        """
+        try:
+            content = "\n".join(lines) + "\n" if lines else ""
+            self.write(filename, content)
+        except Exception as e:
+            self.log.error(f"Error writing cookie list '{filename}' to '{self.host_uid}'. {e}")
+            raise
+
+    
+    def transfer(self, remote_file: str, local_file: str) -> None:
+        """Download a remote file to a local path.
+
+        Args:
+            remote_file (str): Absolute remote path of the file.
+            local_file (str): Local filesystem destination path.
+
+        Returns:
+            None
+
+        Raises:
+            Exception: On SFTP I/O errors (e.g., permissions, network).
+        """
+        try:
+            self.sftp.get(remote_file, local_file)
+        except Exception as e:
+            self.log.error(
+                f"Error transferring '{remote_file}' from '{self.host_uid}'({self.host_addr}) to '{local_file}'. {e}"
+            )
+            raise
+    
+    
     def remove(self, filename: str) -> None:
         """Remove a remote file if it exists."""
         try:

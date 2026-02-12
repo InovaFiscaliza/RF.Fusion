@@ -231,7 +231,7 @@ class Filter:
     # ------------------------------------------------------------------
     # Pattern Builder
     # ------------------------------------------------------------------
-    def _build_pattern(self) -> str:
+    def _build_pattern(self, hostname: str = None) -> str:
         """
         Safely construct a file matching pattern for discovery operations.
 
@@ -314,7 +314,20 @@ class Filter:
         if extension:
             if not extension.startswith("."):
                 extension = "." + extension
-            return "*" + extension
+
+            pattern = "*" + extension
+
+            # ----------------------------------------------------------
+            # Celplan override (hostname-based)
+            # ----------------------------------------------------------
+            if (
+                hostname
+                and k.CELPLAN_HOST_TAG.lower() in hostname.lower()
+                and extension.lower() == ".zip"
+            ):
+                pattern = f"*{k.CELPLAN_ZIP_TAG}{extension}"
+
+            return pattern
 
         return "*"
 

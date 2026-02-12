@@ -25,7 +25,8 @@ import json
 from typing import Any, Dict, List, Optional, Tuple, Union
 from datetime import datetime
 import pandas as pd
-
+import unicodedata
+import re
 
 import config as k
 from .dbHandlerBase import DBHandlerBase
@@ -60,9 +61,10 @@ class dbHandlerRFM(DBHandlerBase):
         Must be called by the service layer before performing
         multiple dependent operations (e.g. processing one BIN file).
         """
+        self.in_transaction = True
         self._connect()
         self.db_connection.autocommit = False
-        self.in_transaction = True
+
 
 
     def commit(self) -> None:
@@ -116,6 +118,108 @@ class dbHandlerRFM(DBHandlerBase):
     # ======================================================================
     # SITE OPERATIONS
     # ======================================================================
+    def _normalize_site_data(self, data: dict) -> dict:
+        """
+        Normalize and minimally enrich site data before persistence.
+
+        Responsibilities:
+        - Trim geographic strings.
+        - Remove redundant district equal to county.
+        - Infer missing state via authoritative county lookup.
+
+        This method MAY perform DB lookups.
+        It guarantees connection safety and respects active transactions.
+        """
+
+        # --------------------------------------------------
+        # Track connection state
+        # --------------------------------------------------
+        connection_was_open = self.db_connection is not None
+
+        try:
+            if not connection_was_open:
+                self._connect()
+
+            # --------------------------------------------------
+            # Basic string cleanup
+            # --------------------------------------------------
+            for key in ["state", "county", "district"]:
+                if data.get(key):
+                    data[key] = data[key].strip()
+
+            # --------------------------------------------------
+            # Remove district if identical to county
+            # OSM often duplicates municipality as suburb
+            # --------------------------------------------------
+            if data.get("district") and data.get("county"):
+                if data["district"].strip().lower() == data["county"].strip().lower():
+                    data["district"] = None
+
+            # --------------------------------------------------
+            # Infer state via county if missing (DB authoritative)
+            # --------------------------------------------------
+            if not data.get("state") and data.get("county"):
+                try:
+                    rows = self._select_rows(
+                        table="DIM_SITE_COUNTY",
+                        where={"NA_COUNTY": data["county"]},
+                        cols=["FK_STATE"],
+                        limit=1,
+                    )
+
+                    if rows:
+                        state_row = self._select_rows(
+                            table="DIM_SITE_STATE",
+                            where={"ID_STATE": rows[0]["FK_STATE"]},
+                            cols=["NA_STATE"],
+                            limit=1,
+                        )
+
+                        if state_row:
+                            data["state"] = state_row[0]["NA_STATE"]
+
+                except Exception:
+                    # Silent fallback — let _get_geographic_codes handle failure
+                    pass
+
+            return data
+
+        finally:
+            # --------------------------------------------------
+            # Close connection only if we opened it
+            # --------------------------------------------------
+            if not connection_was_open and not self.in_transaction:
+                try:
+                    self._disconnect()
+                except Exception:
+                    pass
+
+    
+
+    def _normalize_string(self, value: str) -> str:
+        """
+        Normalize Brazilian geographic names for safe comparison.
+        Removes accents, apostrophes and normalizes spacing.
+        """
+        if not value:
+            return None
+
+        value = value.strip().lower()
+
+        # Remove accents
+        value = unicodedata.normalize("NFKD", value)
+        value = "".join(c for c in value if not unicodedata.combining(c))
+
+        # Remove apostrophes
+        value = re.sub(r"[’'`]", "", value)
+
+        # Normalize spaces
+        value = re.sub(r"\s+", " ", value)
+
+        return value
+
+
+
     def insert_site(self, data: dict) -> int:
         """
         Insert a new site into DIM_SPECTRUM_SITE.
@@ -132,6 +236,11 @@ class dbHandlerRFM(DBHandlerBase):
             raise ValueError("data must be a dict")
 
         try:
+            # --------------------------------------------------
+            # Normalize site data (no external queries here)
+            # --------------------------------------------------
+            data = self._normalize_site_data(data)
+            
             # --------------------------------------------------
             # Resolve geographic foreign keys
             # --------------------------------------------------
@@ -385,89 +494,177 @@ class dbHandlerRFM(DBHandlerBase):
 
 
     def _get_geographic_codes(self, data: dict) -> Tuple[int, int, int]:
-        """Retrieve or create DB keys for state, county, and district based on input data.
+        """
+        Resolve and return foreign keys for STATE, COUNTY and DISTRICT
+        based on human-readable geographic names.
 
-        Uses dbHandlerBase-style _select_rows and _insert_row for consistent access.
+        This method performs robust normalization to safely match
+        Nominatim-derived values against authoritative IBGE-based tables.
 
-        Args:
-            data (dict): Dictionary with region names.
-                Example:
-                    {
-                        "state": "Distrito Federal",
-                        "county": "Brasília",
-                        "district": "Asa Sul"
-                    }
+        Resolution Strategy
+        -------------------
+        1. STATE:
+        - Attempt direct match.
+        - If not found, perform normalized comparison
+            (accent-insensitive, apostrophe-insensitive).
 
-        Raises:
-            Exception: If state or county lookup fails.
+        2. COUNTY:
+        - Restricted to the resolved state.
+        - Uses normalized comparison.
+        - Applies a very small, controlled exception map
+            for known orthographic divergences (e.g. Assu → Açu).
 
-        Returns:
-            Tuple[int, int, int]: (db_state_id, db_county_id, db_district_id)
+        3. DISTRICT:
+        - Optional.
+        - If present, attempts normalized lookup within county.
+        - Inserts new district only if not found.
+
+        Design Guarantees
+        -----------------
+        - No fuzzy matching.
+        - No phonetic heuristics.
+        - Deterministic resolution.
+        - Authoritative tables (DIM_SITE_STATE / DIM_SITE_COUNTY)
+        are treated as ground truth.
+        - Safe to call inside transactions.
+
+        Parameters
+        ----------
+        data : dict
+            Must contain at least:
+                {
+                    "state": str,
+                    "county": str,
+                    "district": Optional[str]
+                }
+
+        Returns
+        -------
+        Tuple[int, int, int]
+            (db_state_id, db_county_id, db_district_id)
+
+        Raises
+        ------
+        Exception
+            If state or county cannot be resolved.
         """
 
         try:
             self._connect()
 
-            # -----------------------------------------------------------
-            # 1️) Lookup STATE
-            # -----------------------------------------------------------
+            # ===========================================================
+            # 1️⃣ STATE RESOLUTION
+            # ===========================================================
+            # First attempt strict match (fast path)
             rows = self._select_rows(
                 table="DIM_SITE_STATE",
                 where={"NA_STATE": data["state"]},
-                cols=["ID_STATE"],
+                cols=["ID_STATE", "NA_STATE"],
                 limit=1,
             )
 
             if not rows:
-                raise Exception(f"State '{data['state']}' not found in DIM_SITE_STATE")
-
-            db_state_id = int(rows[0]["ID_STATE"])
-
-            # -----------------------------------------------------------
-            # 2️) Lookup COUNTY
-            # -----------------------------------------------------------
-            if db_state_id == 53:
-                # Special case: Federal District (no counties)
-                db_county_id = 5300108
-            else:
-                rows = self._select_rows(
-                    table="DIM_SITE_COUNTY",
-                    where={"NA_COUNTY": data["county"], "FK_STATE": db_state_id},
-                    cols=["ID_COUNTY"],
-                    limit=1,
+                # -------------------------------------------------------
+                # Fallback: normalized comparison
+                # (handles accent differences such as:
+                #  "Sao Paulo" vs "São Paulo")
+                # -------------------------------------------------------
+                all_states = self._select_rows(
+                    table="DIM_SITE_STATE",
+                    cols=["ID_STATE", "NA_STATE"],
                 )
 
-                if not rows:
+                normalized_input = self._normalize_string(data["state"])
+                db_state_id = None
+
+                for row in all_states:
+                    if self._normalize_string(row["NA_STATE"]) == normalized_input:
+                        db_state_id = int(row["ID_STATE"])
+                        break
+
+                if not db_state_id:
+                    raise Exception(
+                        f"State '{data['state']}' not found in DIM_SITE_STATE"
+                    )
+            else:
+                db_state_id = int(rows[0]["ID_STATE"])
+
+            # ===========================================================
+            # 2️⃣ COUNTY RESOLUTION
+            # ===========================================================
+            # Special case: Federal District
+            if db_state_id == 53:
+                db_county_id = 5300108
+            else:
+                normalized_input = self._normalize_string(data["county"])
+
+                # -------------------------------------------------------
+                # Controlled orthographic exceptions
+                # These handle known historical/OSM divergences
+                # without enabling fuzzy matching.
+                # -------------------------------------------------------
+                COUNTY_EXCEPTIONS = {
+                    "assu": "acu",        # Assu (OSM) → Açu (IBGE)
+                    "iguassu": "iguacu",  # Iguassu → Iguaçu
+                }
+
+                if normalized_input in COUNTY_EXCEPTIONS:
+                    normalized_input = COUNTY_EXCEPTIONS[normalized_input]
+
+                rows = self._select_rows(
+                    table="DIM_SITE_COUNTY",
+                    where={"FK_STATE": db_state_id},
+                    cols=["ID_COUNTY", "NA_COUNTY"],
+                )
+
+                db_county_id = None
+
+                for row in rows:
+                    normalized_db = self._normalize_string(row["NA_COUNTY"])
+                    if normalized_db == normalized_input:
+                        db_county_id = int(row["ID_COUNTY"])
+                        break
+
+                if not db_county_id:
                     raise Exception(
                         f"County '{data['county']}' not found for state ID {db_state_id}"
                     )
 
-                db_county_id = int(rows[0]["ID_COUNTY"])
+            # ===========================================================
+            # 3️⃣ DISTRICT RESOLUTION (OPTIONAL)
+            # ===========================================================
+            db_district_id = None
 
-            # -----------------------------------------------------------
-            # 3️) Lookup or Insert DISTRICT
-            # -----------------------------------------------------------
-            rows = self._select_rows(
-                table="DIM_SITE_DISTRICT",
-                where={"NA_DISTRICT": data["district"], "FK_COUNTY": db_county_id},
-                cols=["ID_DISTRICT"],
-                limit=1,
-            )
+            if data.get("district"):
+                normalized_input = self._normalize_string(data["district"])
 
-            if rows:
-                db_district_id = int(rows[0]["ID_DISTRICT"])
-            else:
-                db_district_id = self._insert_row(
+                rows = self._select_rows(
                     table="DIM_SITE_DISTRICT",
-                    data={
-                        "FK_COUNTY": db_county_id,
-                        "NA_DISTRICT": data["district"],
-                    },
+                    where={"FK_COUNTY": db_county_id},
+                    cols=["ID_DISTRICT", "NA_DISTRICT"],
                 )
 
-            # -----------------------------------------------------------
-            # 4) Return collected keys
-            # -----------------------------------------------------------
+                for row in rows:
+                    if self._normalize_string(row["NA_DISTRICT"]) == normalized_input:
+                        db_district_id = int(row["ID_DISTRICT"])
+                        break
+
+                # -------------------------------------------------------
+                # Insert new district only if not found.
+                # This keeps district growth controlled per county.
+                # -------------------------------------------------------
+                if not db_district_id:
+                    db_district_id = self._insert_row(
+                        table="DIM_SITE_DISTRICT",
+                        data={
+                            "FK_COUNTY": db_county_id,
+                            "NA_DISTRICT": data["district"],
+                        },
+                    )
+
+            # ===========================================================
+            # Return resolved keys
+            # ===========================================================
             return db_state_id, db_county_id, db_district_id
 
         except Exception as e:
@@ -478,6 +675,7 @@ class dbHandlerRFM(DBHandlerBase):
                 self._disconnect()
             except Exception:
                 pass
+
 
     # ======================================================================
     # FILE OPERATIONS

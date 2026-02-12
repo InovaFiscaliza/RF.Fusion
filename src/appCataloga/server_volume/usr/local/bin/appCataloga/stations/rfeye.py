@@ -3,7 +3,9 @@ RFeye station validation and enrichment logic.
 """
 
 from collections.abc import Iterable
+import gc
 import numpy as np
+import copy
 
 from .base import Station
 from shared import errors
@@ -62,80 +64,82 @@ class RFEyeStation(Station):
         CONTRACT:
             - If this method returns successfully, the BIN is guaranteed
             to be fully insertable into RF.Fusion without further checks.
-            - Any fatal inconsistency at BIN level results in
-            errors.BinValidationError and discards the entire BIN.
-            - Spectrum-level inconsistencies discard only the affected
-            spectrum entry.
-
-        Validation model:
-            - Global metadata is resolved and validated first (fatal).
-            - Spectrum container integrity is validated next (fatal).
-            - Individual spectra are then validated and enriched
-            independently (non-fatal per spectrum).
+            - Any fatal inconsistency at BIN level discards the entire BIN.
+            - Spectrum-level inconsistencies discard only the affected spectrum.
         """
 
         # -------------------------------------------------
         # Operate IN-PLACE on the raw BIN data
-        # (allowed by Station contract)
         # -------------------------------------------------
-        self.bin_data = self._bin_data_raw
+        self.bin_data = copy.deepcopy(self._bin_data_raw)
+
 
         # -------------------------------------------------
         # Global metadata resolution and validation (FATAL)
         # -------------------------------------------------
-
-        # Resolve and normalize hostname deterministically.
-        # This step is authoritative and may discard the BIN
-        # if hostname resolution is impossible.
         self._normalize_hostname()
-
-        # Defensive assertion: hostname must be present and valid
-        # after successful normalization.
+        self._normalize_method()
         self._validate_hostname()
-
-        # Validate GPS metadata according to RF.Fusion requirements.
-        # Any failure here invalidates the entire BIN.
         self._validate_gps()
 
         # -------------------------------------------------
         # Spectrum container validation (FATAL)
         # -------------------------------------------------
-
-        # Ensure the BIN contains a non-empty iterable of spectra.
         self._validate_spectrum_container()
 
         # -------------------------------------------------
         # Per-spectrum validation and enrichment (NON-FATAL)
+        # In-place compaction WITHOUT destroying NumPy arrays
         # -------------------------------------------------
-        valid_spectra: list = []
+        spectra = self.bin_data["spectrum"]
         discarded: list[str] = []
 
-        for idx, spectrum in enumerate(self.bin_data["spectrum"], start=1):
+        write_idx = 0
+
+        for read_idx, spectrum in enumerate(spectra, start=1):
             try:
-                # Validate and enrich a single spectrum entry.
-                # Any failure here discards only this spectrum.
-                self._validate_and_enrich_spectrum(spectrum, idx)
-                valid_spectra.append(spectrum)
+                # Validate and enrich spectrum in-place
+                self._validate_and_enrich_spectrum(spectrum, read_idx)
+
+                # Keep valid spectrum (compact in-place)
+                spectra[write_idx] = spectrum
+                write_idx += 1
 
             except SpectrumValidationError as e:
-                # Local corruption: keep processing remaining spectra.
+                # Local corruption: discard only this spectrum
                 discarded.append(str(e))
                 continue
 
-        # Replace original spectrum list with only valid spectra.
-        self.bin_data["spectrum"] = valid_spectra
+        # -------------------------------------------------
+        # Drop invalid spectra from the tail
+        # -------------------------------------------------
+        del spectra[write_idx:]
 
-        # If no valid spectra remain, the BIN is semantically useless.
-        if not valid_spectra:
+        # -------------------------------------------------
+        # If nothing valid remains, discard BIN
+        # -------------------------------------------------
+        if not spectra:
             raise errors.BinValidationError(
                 "BIN discarded: no valid spectra after validation"
             )
 
-        # Preserve diagnostics about discarded spectra, if any.
+        # -------------------------------------------------
+        # OPTIONAL: strip heavy payload AFTER validation
+        # (safe point – executed once per BIN, not per spectrum)
+        # -------------------------------------------------
+        for spectrum in spectra:
+            spectrum.levels = None
+            spectrum.frequencies = None
+            spectrum.timestamp = None
+
+        # -------------------------------------------------
+        # Preserve diagnostics about discarded spectra
+        # -------------------------------------------------
         if discarded:
             self.bin_data["_discarded_spectra"] = discarded
 
         return self.bin_data
+
 
 
     # =================================================
@@ -362,6 +366,8 @@ class RFEyeStation(Station):
         CONTRACT:
             - Mandatory structural spectrum attributes must exist and be
             semantically valid.
+            - Legacy CRFS files may omit RBW; in this case, bandwidth MUST be
+            inferred (_infer_bw) before any frequency vector generation.
             - Structural consistency between levels, frequencies and timestamps
             must be guaranteed.
             - Timestamp is the authoritative temporal source.
@@ -415,6 +421,14 @@ class RFEyeStation(Station):
             s.antuid_source = "native"
 
         # =================================================
+        # Enrichment prerequisite (CRITICAL FOR LEGACY FILES)
+        # =================================================
+        # Legacy CRFS spectra may not provide RBW explicitly.
+        # Bandwidth MUST be inferred before any frequency vector generation
+        # to avoid invalid NumPy allocations (heap corruption).
+        self._infer_bw(s)
+
+        # =================================================
         # Levels / Frequencies / Timestamp (STRUCTURAL)
         # =================================================
 
@@ -427,8 +441,8 @@ class RFEyeStation(Station):
         except Exception:
             raise SpectrumValidationError(f"{ctx}: levels not array-like")
 
-        if levels.ndim != 2:
-            raise SpectrumValidationError(f"{ctx}: levels must be 2D")
+        if not isinstance(levels, np.ndarray) or levels.ndim != 2:
+            raise SpectrumValidationError(f"{ctx}: levels must be 2D ndarray")
 
         n_traces, n_bins = levels.shape
 
@@ -441,11 +455,11 @@ class RFEyeStation(Station):
 
         try:
             freqs = s.frequencies
-        except Exception:
-            raise SpectrumValidationError(f"{ctx}: frequencies not array-like")
+        except Exception as e:
+            raise SpectrumValidationError(f"{ctx}: failed to generate frequencies: {e}")
 
-        if freqs.ndim != 1:
-            raise SpectrumValidationError(f"{ctx}: frequencies must be 1D")
+        if not isinstance(freqs, np.ndarray) or freqs.ndim != 1:
+            raise SpectrumValidationError(f"{ctx}: frequencies must be 1D ndarray")
 
         if freqs.size != n_bins:
             raise SpectrumValidationError(
@@ -461,6 +475,21 @@ class RFEyeStation(Station):
 
         ts = s.timestamp
 
+        if ts.ndim != 1 or ts.size == 0:
+            raise SpectrumValidationError(f"{ctx}: invalid timestamp array")
+
+        # =================================================
+        # Trace length (DERIVED — STRUCTURAL CONTRACT)
+        # =================================================
+        trace_length = ts.size  # O(1), zero cópia, fonte autoritativa
+
+        if trace_length != n_traces:
+            raise SpectrumValidationError(
+                f"{ctx}: trace_length ({trace_length}) != levels traces ({n_traces})"
+            )
+
+        s.trace_length = trace_length
+        s.trace_length_source = "derived_from_timestamp"
 
 
         # =================================================
@@ -470,6 +499,19 @@ class RFEyeStation(Station):
         ts_start = ts[0]
         ts_stop = ts[-1]
 
+        # -------------------------------------------------
+        # Convert numpy.datetime64 → native Python datetime
+        # This prevents numpy types from leaking to DB layer
+        # -------------------------------------------------
+        if isinstance(ts_start, np.datetime64):
+            ts_start = ts_start.astype("datetime64[ms]").item()
+
+        if isinstance(ts_stop, np.datetime64):
+            ts_stop = ts_stop.astype("datetime64[ms]").item()
+
+        # -------------------------------------------------
+        # Assign normalized temporal metadata
+        # -------------------------------------------------
         if not hasattr(s, "start_dateidx") or s.start_dateidx != ts_start:
             s.start_dateidx = ts_start
             s.start_dateidx_source = "inferred_from_timestamp"
@@ -478,8 +520,12 @@ class RFEyeStation(Station):
             s.stop_dateidx = ts_stop
             s.stop_dateidx_source = "inferred_from_timestamp"
 
+        # -------------------------------------------------
+        # Final temporal integrity check
+        # -------------------------------------------------
         if s.start_dateidx >= s.stop_dateidx:
             raise SpectrumValidationError(f"{ctx}: invalid temporal span")
+
 
         # =================================================
         # Descriptive metadata normalization (NON-FATAL)
@@ -512,14 +558,11 @@ class RFEyeStation(Station):
             s.description_source = "native"
 
         # =================================================
-        # Enrichment (SAFE AFTER FULL VALIDATION)
+        # Final enrichment (SAFE AFTER FULL VALIDATION)
         # =================================================
 
-        self._infer_bw(s)
-        #self._infer_level_semantics(s)
+        # Semantic interpretation of levels 
         self._infer_level_semantics_light(s)
-        self._normalize_method(s)
-
 
         
     # =================================================
@@ -751,65 +794,66 @@ class RFEyeStation(Station):
         s.level_source = self.LEVEL_SOURCE_UNCLASSIFIED
 
     def _infer_level_semantics_light(self, s):
+        """
+        Infer the semantic meaning and unit of spectrum level data
+        by inspecting a single representative sweep.
 
-        # Fast C-level scan
-        levels = s.levels  # ndarray
-        min_val = float(levels.min())
-        max_val = float(levels.max())
+        RFeye produces spectra where all sweeps share the same
+        measurement unit. Therefore, inspecting one sweep is
+        sufficient and avoids unnecessary full-matrix scans.
+        """
 
+        levels = s.levels  # shape: (n_traces, n_bins)
 
+        # Use the first sweep as representative
+        sweep = levels[0]
+
+        min_val = float(sweep.min())
+        max_val = float(sweep.max())
+
+        # Power (dBm): negative values are expected
         if min_val < -50:
             s.level_type = self.LEVEL_TYPE_POWER
             s.level_unit = self.LEVEL_UNIT_DBM
             s.level_source = self.LEVEL_SOURCE_INFERRED
             return
 
+        # Occupancy (%): bounded to [0, 100]
         if min_val >= 0 and max_val <= 100:
             s.level_type = self.LEVEL_TYPE_OCCUPANCY
             s.level_unit = self.LEVEL_UNIT_PERCENT
             s.level_source = self.LEVEL_SOURCE_INFERRED
             return
 
+        # Field strength (dBµV/m): fallback
         s.level_type = self.LEVEL_TYPE_FIELD_STRENGTH
         s.level_unit = self.LEVEL_UNIT_DBUVM
         s.level_source = self.LEVEL_SOURCE_INFERRED
 
 
 
-    # =================================================
-    # Method normalization
-    # =================================================
-    def _normalize_method(self, s):
-        """
-        Normalize the processing method metadata for a spectrum.
 
-        This method ensures that every spectrum has a valid and
-        explicitly classified processing method, which is required
-        for downstream traceability and insertion into RF.Fusion.
+    # =================================================
+    # BIN-level method normalization
+    # =================================================
+    def _normalize_method(self):
+        """
+        Normalize the BIN-level processing method.
 
         CONTRACT:
-            - If the spectrum provides a native 'method' attribute,
-            it is preserved and marked as native.
-            - If 'method' is missing or empty, a deterministic default
-            method is assigned.
-            - This method MUST NOT raise exceptions.
-            - On return, both 'method' and 'method_source' are guaranteed
-            to be present.
-
-        Args:
-            s: Spectrum object assumed to be fully validated.
+            - Ensures bin_data always contains a valid 'method' field.
+            - If missing or invalid, assigns DEFAULT_METHOD_NAME.
+            - Must NOT raise exceptions.
+            - Guarantees deterministic behavior for DB insertion.
         """
 
-        # -------------------------------------------------
-        # Assign default method when none is provided
-        # -------------------------------------------------
-        if not getattr(s, "method", None):
-            s.method = self.DEFAULT_METHOD_NAME
-            s.method_source = self.DEFAULT_METHOD_SOURCE
+        method = self.bin_data.get("method")
 
-        # -------------------------------------------------
-        # Preserve native method and mark its origin
-        # -------------------------------------------------
+        if not isinstance(method, str) or not method.strip():
+            self.bin_data["method"] = self.DEFAULT_METHOD_NAME
+            self.bin_data["method_source"] = "default"
         else:
-            s.method_source = self.NATIVE_METHOD_SOURCE
+            self.bin_data["method"] = method.strip()
+            self.bin_data["method_source"] = "native"
+
 

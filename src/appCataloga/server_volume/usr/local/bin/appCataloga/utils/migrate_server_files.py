@@ -14,6 +14,7 @@ Rules:
 
 import os
 import sys
+from pathlib import Path
 import shutil
 import hashlib
 import re
@@ -21,20 +22,65 @@ from datetime import datetime
 from pathlib import Path
 import signal
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.pathinsert = sys.path.insert(0, str(ROOT))
+# =================================================
+# Resolve paths robustly (no hardcoded parents)
+# =================================================
 
-import shared as sh
-from db.dbHandlerBKP import dbHandlerBKP
+SCRIPT_PATH = Path(__file__).resolve()
+
+# Find server_volume by walking parents
+SERVER_VOLUME = None
+for p in SCRIPT_PATH.parents:
+    if p.name == "server_volume":
+        SERVER_VOLUME = p
+        break
+
+if SERVER_VOLUME is None:
+    raise RuntimeError("server_volume directory not found in path hierarchy")
+
+# Code root
+APP_ROOT = SERVER_VOLUME / "usr" / "local" / "bin" / "appCataloga"
+
+# Explicit submodules
+DB_ROOT = APP_ROOT / "db"
+SHARED_ROOT = APP_ROOT / "shared"
+
+# Config root
+ETC_ROOT = SERVER_VOLUME / "etc" / "appCataloga"
+
+# =================================================
+# Inject into PYTHONPATH
+# =================================================
+
+for path in (ETC_ROOT, APP_ROOT, DB_ROOT, SHARED_ROOT):
+    p = str(path)
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+# =================================================
+# Debug
+# =================================================
+print("PYTHONPATH:")
+for p in sys.path:
+    print(" ", p)
+
+
+# =================================================
+# Imports internos do projeto
+# =================================================
 import config as k
+
+from shared import  logging_utils, tools
+from db.dbHandlerBKP import dbHandlerBKP
+
 
 # ======================================================================
 # Directories
 # ======================================================================
 
 ALLOWED_ROOTS = [
-    "/mnt/reposfi/RF.Fusion_Processado",
     "/mnt/reposfi/trash",
+    "/mnt/reposfi/RF.Fusion_Processado"
 ]
 
 
@@ -90,7 +136,7 @@ signal.signal(signal.SIGINT, _handle_sigterm)
 # ======================================================================
 
 def migrate():
-    log = sh.log("migrate")
+    log = logging_utils.log("migrate")
 
     try:
         db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
@@ -135,9 +181,11 @@ def migrate():
 
                 if not rows or len(rows) != 1:
                     continue
-
+                
+                
                 task = rows[0]
                 host_id = task["FK_HOST"]
+                
 
                 # -------------------------------------------------
                 # Load host
@@ -188,7 +236,7 @@ def migrate():
                         NU_STATUS=k.TASK_PENDING,
                         NA_SERVER_FILE_PATH=local_path,
                         NA_SERVER_FILE_NAME=new_server_name,
-                        NA_MESSAGE=sh._compose_message(
+                        NA_MESSAGE=tools.compose_message(
                             task_type=k.FILE_TASK_PROCESS_TYPE,
                             task_status=k.TASK_PENDING,
                             path=task["NA_HOST_FILE_PATH"],
@@ -210,7 +258,7 @@ def migrate():
                         NA_SERVER_FILE_NAME=new_server_name,
                         DT_BACKUP=datetime.now(),
                         NU_STATUS_BACKUP=k.TASK_DONE,
-                        NA_MESSAGE=sh._compose_message(
+                        NA_MESSAGE=tools.compose_message(
                             task_type=k.FILE_TASK_BACKUP_TYPE,
                             task_status=k.TASK_DONE,
                             path=task["NA_HOST_FILE_PATH"],

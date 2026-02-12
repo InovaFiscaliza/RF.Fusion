@@ -72,7 +72,7 @@ HOST_TASK_REQUEST_WAIT_TIME     = 1800      # seconds to wait for the HALT_FLAG 
 HALT_FLAG_CHECK_CYCLES          = 6         # number of cycles to check for HALT_FLAG (6 x 300s = 30 minutes)
 BKP_HOST_ALLOTED_TIME_FRACTION  = 0.8
 HOST_BUSY_TIMEOUT               = 18000     # 18000 seconds or 5 hours
-BKP_TASK_MAX_WORKERS            = 5
+BKP_TASK_MAX_WORKERS            = 10
 BKP_TASK_WORKER_SERVICE         = "usr/local/bin/appCataloga/appCataloga_file_bkp@"
 MIN_FILE_SIZE_KB                = 1         # minimum file size to be backed up in KB
 MIN_FILE_AGE_MINUTES            = 30        # minimum file age to be backed up in minutes
@@ -117,9 +117,19 @@ MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS = 1000
 #------------------------------------------
 NOMINATIM_USER = "9272749a.anatel.gov.br@amer.teams.ms"
 REQUIRED_ADDRESS_FIELD = {
-    "state"     : ["state"],
-    "county"    : ["city", "town"],
-    "district"  : ["suburb"],
+    "state": [
+        "state",              # Official state name (ideal case)
+    ],
+    "county": [
+        "city",               # Municipality (urban areas)
+        "town",               # Municipality (smaller towns)
+        "village",            # Common for airports, rural and technical areas
+    ],
+    "district": [
+        "suburb",             # Neighborhood
+        "city_district",      # Administrative district (POIs / institutions)
+        "neighbourhood",      # Generic fallback
+    ],
 }
 #------------------------------------------
 # Default values for CRFS Bin File Translation/Processing
@@ -159,3 +169,9 @@ TASK_DONE               = 0         # Task completed successfully
 TASK_PENDING            = 1         # Task pending execution
 TASK_RUNNING            = 2         # Task running
 
+#------------------------------------------
+# Station Constants
+#------------------------------------------
+CELPLAN_HOST_TAG = "CWSM"
+CELPLAN_ZIP_TAG = "_DONE"
+RFEYE_HOST_TAG = "RFEye"

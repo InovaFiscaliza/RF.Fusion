@@ -7,14 +7,14 @@ Worker responsible for processing BIN files produced by monitoring stations
 
 Pipeline (deterministic):
 
-    ACT I   - Fetch FILE_TASK
-    ACT II  - Mark task as RUNNING
-    ACT III - Parse and semantically validate BIN (fatal)
-    ACT IV  - Begin DB transaction
-    ACT V   - SITE / GEO enrichment (only for validated BINs)
-    ACT VI  - Insert spectrum and metadata into RFDATA
-    ACT VII - Filesystem move + server file registration
-    FINALLY - Global resolution (trash on error, history update, cleanup)
+    ACT I       - Fetch FILE_TASK
+    ACT II      - Mark task as RUNNING
+    ACT III     - Parse and semantically validate BIN (fatal)
+    ACT IV      - SITE / GEO enrichment (only for validated BINs)
+    ACT V       - Begin DB transaction
+    ACT VI      - Insert spectrum and metadata into RFDATA
+    ACT VII     - Filesystem move + server file registration
+    FINALLY     - Global resolution (trash on error, history update, cleanup)
 
 Design principles:
 - BIN semantic validation is exclusive responsibility of Station classes
@@ -30,6 +30,7 @@ import time
 import signal
 import inspect
 import json
+import gc
 from datetime import datetime
 
 # ---------------------------------------------------------------
@@ -137,13 +138,59 @@ def map_location_to_data(location, data):
     """
     Map Nominatim address fields into internal SITE structure.
     """
+    address = location.raw.get("address", {})
+
+    # --------------------------------------------------
+    # Primary mapping via REQUIRED_ADDRESS_FIELD
+    # --------------------------------------------------
     for field, candidates in k.REQUIRED_ADDRESS_FIELD.items():
         data[field] = None
         for c in candidates:
-            if c in location.raw.get("address", {}):
-                data[field] = location.raw["address"][c]
+            if c in address:
+                data[field] = address[c]
                 break
+
+    # --------------------------------------------------
+    # Fallback: infer Brazilian state name when missing
+    # --------------------------------------------------
+    if not data.get("state"):
+        iso = address.get("ISO3166-2-lvl4")
+
+        if iso and iso.startswith("BR-"):
+            UF_TO_STATE = {
+                "RO": "Rondônia",
+                "AC": "Acre",
+                "AM": "Amazonas",
+                "RR": "Roraima",
+                "PA": "Pará",
+                "AP": "Amapá",
+                "TO": "Tocantins",
+                "MA": "Maranhão",
+                "PI": "Piauí",
+                "CE": "Ceará",
+                "RN": "Rio Grande do Norte",
+                "PB": "Paraíba",
+                "PE": "Pernambuco",
+                "AL": "Alagoas",
+                "SE": "Sergipe",
+                "BA": "Bahia",
+                "MG": "Minas Gerais",
+                "ES": "Espírito Santo",
+                "RJ": "Rio de Janeiro",
+                "SP": "São Paulo",
+                "PR": "Paraná",
+                "SC": "Santa Catarina",
+                "RS": "Rio Grande do Sul",
+                "MS": "Mato Grosso do Sul",
+                "MT": "Mato Grosso",
+                "GO": "Goiás",
+                "DF": "Distrito Federal",
+            }
+
+            data["state"] = UF_TO_STATE.get(iso[3:])
+
     return data
+
 
 
 # ===============================================================
@@ -219,6 +266,7 @@ def main():
                 db_bp.file_task_update(
                     task_id=file_task_id,
                     NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+                    DT_FILE_TASK=datetime.now(),
                     NU_STATUS=k.TASK_RUNNING,
                     NU_PID=os.getpid(),
                     NA_MESSAGE=f"Processing BIN: {filename}",
@@ -230,15 +278,16 @@ def main():
             # ===================================================
             # ACT III — Parse and validate BIN (semantic, fatal)
             # ===================================================
-            if 'rfeye' in host_id.lower():
+            if 'rfeye' in hostname_db.lower():
                 try:
                     # Process RFeye stations via direct parsing
-                    bin_data = parse_bin(filename)
-                    bin_data = station_factory(
-                        bin_data=bin_data,
+                    bin_data_raw = parse_bin(filename)
+                    station = station_factory(
+                        bin_data=bin_data_raw,
                         host_uid=hostname_db
-                    ).process()
-                    
+                    )
+                    bin_data = station.process()
+                                        
                     hostname_bin = bin_data["hostname"]
                 except errors.BinValidationError as e:
                     err.set(reason=str(e), stage="PROCESS", exc=e)
@@ -263,17 +312,9 @@ def main():
                     }, ensure_ascii=False, indent=2))
                     return
 
+            
             # ===================================================
-            # ACT IV — Begin DB transaction
-            # ===================================================
-            try:
-                db_rfm.begin_transaction()
-            except Exception as e:
-                err.set(reason=str(e), stage="DB", exc=e)
-                raise
-
-            # ===================================================
-            # ACT V — SITE / GEO enrichment
+            # ACT IV — SITE / GEO enrichment
             # ===================================================
             try:
                 gps = bin_data["gps"]
@@ -302,7 +343,16 @@ def main():
             except Exception as e:
                 err.set(reason=str(e), stage="SITE", exc=e)
                 raise
-
+            
+            # ===================================================
+            # ACT V — Begin DB transaction
+            # ===================================================
+            try:
+                db_rfm.begin_transaction()
+            except Exception as e:
+                err.set(reason=str(e), stage="DB", exc=e)
+                raise
+            
             # ===================================================
             # ACT VI — Insert spectrum and metadata (DB)
             # ===================================================
@@ -339,7 +389,7 @@ def main():
                                 "dt_time_start": s.start_dateidx,
                                 "dt_time_end": s.stop_dateidx,
                                 "nu_sample_duration": k.DEFAULT_SAMPLE_DURATION,
-                                "nu_trace_count": len(s.timestamp),
+                                "nu_trace_count": s.trace_length,
                                 "nu_trace_length": s.ndata,
                                 "nu_rbw": getattr(s, "bw", None),
                                 "nu_att_gain": k.DEFAULT_ATTENUATION_GAIN,
@@ -381,12 +431,14 @@ def main():
 
                 file_was_processed = True
                 log.entry(f"[DONE] {filename}")
+                
 
             except Exception as e:
                 err.set(reason=str(e), stage="FS", exc=e)
                 raise
 
         except Exception:
+            log.error(f"[PROCESS ERROR] {err.format_error()}")
             if db_rfm.in_transaction:
                 db_rfm.rollback()
 
@@ -440,6 +492,8 @@ def main():
 
 
             db_bp.host_task_statistics_create(host_id=host_id)
+            
+            
 
 
 if __name__ == "__main__":

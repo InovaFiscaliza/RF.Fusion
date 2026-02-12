@@ -182,6 +182,7 @@ def main() -> None:
 
             host_id = task["HOST__ID_HOST"]
             task_id = task["HOST_TASK__ID_HOST_TASK"]
+            hostname = task["HOST__NA_HOST_NAME"]
 
             # ==========================================================
             # ACT II — Lock HOST and TASK
@@ -257,6 +258,7 @@ def main() -> None:
                     #
                     for batch in daemon.iter_metadata_files(
                         host_id=host_id,
+                        hostname=hostname,
                         filter_obj=host_filter,
                         callBackCheckFile=db.filter_existing_file_batch,
                         callBackGetLastDBDate=db.get_last_discovery,
