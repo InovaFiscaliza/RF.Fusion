@@ -48,7 +48,7 @@ The modules are designed to be used in a distributed network, where each monitor
 
 General workflow is depicted in the following figure:
 
-![General Workflow for the Spectrum Monitoring Network](./docs/images/system_workflow.svg)
+![General Workflow for the Spectrum Monitoring Network](./docs/images/HLD-RFFusion.svg)
 
 Modules were constructed with the idea of maximizing code reuse by employing standard open source tools to perform core tasks and dedicated modules to perform equipment specific data integrations.
 

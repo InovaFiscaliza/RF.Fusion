@@ -8,7 +8,7 @@ Some constants are envorinment specific and should be changed to match the local
 # shared constants (used by: queryCataloga.py, queryLogger
 START_TAG = b"<json>" # used by queryLoggerUDP.py, queryCataloga.py
 END_TAG = b"</json>" # used by queryLoggerUDP.py, queryCataloga.py
-SMALL_BUFFER_SIZE = 1024 # used by queryCataloga.py, queryDigitizer.py
+SMALL_BUFFER_SIZE = 2048 # used by queryCataloga.py, queryDigitizer.py
 MID_BUFFER_SIZE = 16384 # used by queryappColeta.py
 LARGE_BUFFER_SIZE = 65536 # used by queryLoggerUDP.py
 TIMEOUT_BUFFER = 1 # used by queryLoggerUDP.py and quryDigitizer.py. Additional time after timeout to wait for data to be received
@@ -16,18 +16,19 @@ UTF_ENCODING = "utf-8" # used by queryCataloga.py
 ISO_ENCODING = "ISO-8859-1" # used by queryappColeta.py
 
 # appCataloga constants
-ACAT_SERVER_ADD = "172.21.48.36"  # Change this to the server's hostname or IP address
+ACAT_SERVER_ADD = "10.88.0.2"  # Change this to the server's hostname or IP address
 ACAT_SERVER_PORT = 5555
 ACAT_SERVER_TIMEOUT = 1000
 
 # appCataloga default arguments
-ACAT_DEFAULT_HOST_ID = "10367"
-ACAT_DEFAULT_HOST_UID = "RFEye002080"
-ACAT_DEFAULT_HOST_ADD = "172.21.48.35"
-ACAT_DEFAULT_HOST_PORT = 22
-ACAT_DEFAULT_USER = "root"  # user should have access to the host with rights to interact with the indexer daemon
-ACAT_DEFAULT_PASSWD = "changeme"
+ACAT_DEFAULT_HOST_ID = "10789"
+ACAT_DEFAULT_HOST_UID = "CWSM211001"
+ACAT_DEFAULT_HOST_ADD = "CWSM211001.anatel.gov.br"
+ACAT_DEFAULT_HOST_PORT = 2828
+ACAT_DEFAULT_USER = "admin"  # user should have access to the host with rights to interact with the indexer daemon
+ACAT_DEFAULT_PASSWD = "C31p1@nusANATEL!"
 ACAT_DEFAULT_QUERY_TAG = "backup"
+ACAT_FILE_METADATA_QUERY_TAG ="fileMetadata"
 ACAT_DEFAULT_TIMEOUT = 2
 
 # appColeta constants

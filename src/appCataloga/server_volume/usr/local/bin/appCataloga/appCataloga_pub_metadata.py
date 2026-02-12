@@ -17,8 +17,8 @@ sys.path.append(CONFIG_PATH)
 
 # Import appCataloga modules
 import config as k
-import shared as sh
-import db_handler as dbh
+from shared import errors, legacy, logging_utils, tools
+from db.dbHandlerRFM import dbHandlerRFM
 
 import signal
 import inspect
@@ -27,7 +27,7 @@ import time
 import random
 
 # define global variables for log and general use
-log = sh.log()
+log = logging_utils.log()
 
 process_status = {"running": True}
 
@@ -119,7 +119,7 @@ def main():
 
     try:
         # create db object using databaseHandler class for the backup and processing database
-        rfdb = dbh.dbHandler(database=k.RFM_DATABASE_NAME, log=log)
+        rfdb = dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)
     except Exception as e:
         log.error(f"Error initializing database: {e}")
         exit(1)

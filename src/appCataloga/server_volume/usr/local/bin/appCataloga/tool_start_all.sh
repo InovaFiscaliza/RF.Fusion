@@ -1,45 +1,48 @@
 #!/bin/bash
-# This script starts all appCataloga services
+# =============================================================================
+# Script: tool_start_all.sh
+# Purpose: Start ALL appCataloga services (CORE + auxiliaries)
+#
+# Usage:
+#   ./tool_start_all.sh
+# =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-splash_banner() {
-    terminal_width=$(tput cols 2>/dev/null || echo 80)
-
+banner() {
+    local w
+    w=$(tput cols 2>/dev/null || echo 80)
     echo
-    echo -e "\e[32m$(printf "%0.s~" $(seq 1 $terminal_width))\e[0m"
-    printf "\e[32m%*s\e[0m\n" $((($terminal_width + ${#1}) / 2)) "$1"
-    echo -e "\e[32m$(printf "%0.s~" $(seq 1 $terminal_width))\e[0m"
+    echo -e "\e[32m$(printf "%0.s~" $(seq 1 $w))\e[0m"
+    printf "\e[32m%*s\e[0m\n" $((($w + ${#1}) / 2)) "$1"
+    echo -e "\e[32m$(printf "%0.s~" $(seq 1 $w))\e[0m"
 }
 
-splash_banner "AppCataloga Service Starter"
+banner "AppCataloga – START ALL SERVICES"
 
-read -p "All appCataloga services will be started. Do you want to continue? [y/N] " -n 1 -r
+read -p "All appCataloga services will be STARTED. Continue? [y/N] " -n 1 -r
 echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "  - Operation canceled. Nothing was done."
-    exit 1
-fi
+[[ ! $REPLY =~ ^[Yy]$ ]] && echo "Operation canceled." && exit 1
 
-services=("appCataloga" "appCataloga_file_bkp" "appCataloga_file_bin_proces" "appCataloga_host_check" "appCataloga_pub_metadata")
+services=(
+  appCataloga
+  appCataloga_host_check
+  appCataloga_discovery
+  appCataloga_file_bin_proces
+  appCataloga_file_bkp
+)
 
-# Uso esta linha caso queira desativar algum servico e depurar via terminal
-#services=("appCataloga" "appCataloga_file_bkp" "appCataloga_host_check" "appCataloga_pub_metadata")
-
-for i in "${services[@]}"; do
-    SCRIPT_PATH="$SCRIPT_DIR/${i}.sh"
-
-    if [ -x "$SCRIPT_PATH" ]; then
-        "$SCRIPT_PATH" start
-        if [ $? -eq 0 ]; then
-            echo "  - $i started"
-        else
-            echo "  - ERROR: $i failed to start"
-        fi
+for svc in "${services[@]}"; do
+    script="$SCRIPT_DIR/$svc.sh"
+    if [[ -x "$script" ]]; then
+        echo
+        echo ">>> Starting $svc"
+        "$script" start
     else
-        echo "  - Script $SCRIPT_PATH not found or not executable"
+        echo "[ERROR] Script not found or not executable: $script"
     fi
 done
 
 echo
+echo "All appCataloga services started."
 echo "bye"

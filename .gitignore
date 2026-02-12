@@ -90,6 +90,11 @@ _build/
 # python-dotenv
 .env
 
+# Logs e artefatos gerados
+*.log
+*.log.*
+*.zip
+
 # credential files
 .reposfi
 f2073b.csv

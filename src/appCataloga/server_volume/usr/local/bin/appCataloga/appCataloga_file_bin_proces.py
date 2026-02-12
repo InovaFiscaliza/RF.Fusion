@@ -1,393 +1,499 @@
 #!/usr/bin/python3
-"""Get file tasks in the control database and perform processing and cataloging.
+"""
+appCataloga_file_bin_process
 
-Args:   Arguments passed from the command line should present in the format: "key=value"
+Worker responsible for processing BIN files produced by monitoring stations
+(e.g., RFeye).
 
-        Where the possible keys are:
+Pipeline (deterministic):
 
-            "worker": int, Serial index of the worker process. Default is 0.
+    ACT I       - Fetch FILE_TASK
+    ACT II      - Mark task as RUNNING
+    ACT III     - Parse and semantically validate BIN (fatal)
+    ACT IV      - SITE / GEO enrichment (only for validated BINs)
+    ACT V       - Begin DB transaction
+    ACT VI      - Insert spectrum and metadata into RFDATA
+    ACT VII     - Filesystem move + server file registration
+    FINALLY     - Global resolution (trash on error, history update, cleanup)
 
-        (stdin): ctrl+c will soft stop the process similar to kill or systemd stop <service>. kill -9 will hard stop.
-
-Returns (stdout): As log messages, if target_screen in log is set to True.
-
-Raises:
-    Exception: If any error occurs, the exception is raised with a message describing the error.
+Design principles:
+- BIN semantic validation is exclusive responsibility of Station classes
+- No DB operation occurs before successful BIN validation
+- FILE_TASK is always transient
+- FILE_TASK_HISTORY is the single source of truth
+- Error handling is centralized via ErrorHandler + finally
 """
 
-# Set system path to include modules from /etc/appCataloga
-import sys,os
-
-CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
-sys.path.append(CONFIG_PATH)
-
-from rfpye.parser import parse_bin
-
-# Import libraries for file processing
-import time
-import random
-
-from geopy.geocoders import Nominatim  #  Processing of geographic data
-from geopy.exc import GeocoderTimedOut
-
-# Import modules for file processing
-import config as k
-import db_handler as dbh
-import shared as sh
+import sys
 import os
-
+import time
 import signal
 import inspect
+import json
+import gc
+from datetime import datetime
 
-# create a warning message object
-log = sh.log(target_screen=False)
+# ---------------------------------------------------------------
+# Configuration path (shared config and handlers)
+# ---------------------------------------------------------------
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# =================================================
+# Config directory (etc/appCataloga)
+# =================================================
+_CFG_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga")
+)
+if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
+    sys.path.append(_CFG_DIR)
+
+# =================================================
+# DB directory
+# =================================================
+_DB_DIR = os.path.join(PROJECT_ROOT, "db")
+if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
+    sys.path.append(_DB_DIR)
+
+# ---------------------------------------------------------------
+# External libraries
+# ---------------------------------------------------------------
+from rfpye.parser import parse_bin
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut
+
+# ---------------------------------------------------------------
+# Internal modules
+# ---------------------------------------------------------------
+import config as k
+from shared import errors, legacy, logging_utils, tools
+
+from db.dbHandlerBKP import dbHandlerBKP
+from db.dbHandlerRFM import dbHandlerRFM
+from stations import station_factory
+
+
+# ===============================================================
+# GLOBAL STATE
+# ===============================================================
+log = logging_utils.log(target_screen=False)
 process_status = {"running": True}
 
 
-# Define a signal handler for SIGTERM (kill command )
-def sigterm_handler(signal=None, frame=None) -> None:
-    global process_status
-    global log
+# ===============================================================
+# SIGNAL HANDLING
+# ===============================================================
 
-    current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"Kill signal received at: {current_function}()")
-    process_status["running"] = False
-
-
-# Define a signal handler for SIGINT (Ctrl+C)
-def sigint_handler(signal=None, frame=None) -> None:
-    global process_status
-    global log
-
-    current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"Ctrl+C received at: {current_function}()")
-    process_status["running"] = False
-
-
-# Register the signal handler function, to handle system kill commands
-signal.signal(signal.SIGTERM, sigterm_handler)
-signal.signal(signal.SIGINT, sigint_handler)
-
-
-# recursive function to perform several tries in geocoding before final time out.
-def do_revese_geocode(data: dict, attempt=1, max_attempts=10) -> dict:
-    """Perform reverse geocoding using Nominatim service with timeout and attempts
-
-    Args:
-        data (dict): {"latitude":0,"longitude":0}
-        attempt (int, optional): Number of attempts. Defaults to 1.
-        max_attempts (int, optional): _description_. Defaults to 10.
-        log (obj): Log object.
-
-    Raises:
-        Exception: Geocoder Timed Out
-        Exception: Error in geocoding
-
-    Returns:
-        location: nominatim location object
+def release_busy_hosts_on_exit():
     """
-    global log
+    Release BUSY hosts held by this worker PID.
+    """
+    try:
+        pid = os.getpid()
+        db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+        db.host_release_by_pid(pid)
+    except Exception as e:
+        log.error(f"[CLEANUP] Failed to release BUSY hosts: {e}")
 
+
+def _signal_handler(signal=None, frame=None):
+    """
+    Handle SIGTERM / SIGINT gracefully.
+    """
+    fn = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"SIGNAL received at {fn}()")
+    process_status["running"] = False
+    release_busy_hosts_on_exit()
+
+
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
+
+
+# ===============================================================
+# GEOLOCATION HELPERS
+# ===============================================================
+
+def do_reverse_geocode(data, attempt=1, max_attempts=10):
+    """
+    Perform reverse geocoding using Nominatim with retry logic.
+
+    This function must only be executed after BIN semantic validation.
+    """
     point = (data["latitude"], data["longitude"])
+    geocoding = Nominatim(user_agent=k.NOMINATIM_USER, timeout=5)
 
-    geocodingService = Nominatim(user_agent=k.NOMINATIM_USER, timeout=5)
-
-    attempt = 1
-    not_geocoded = True
-    while not_geocoded:
-        try:
-            location = geocodingService.reverse(
-                point, timeout=5 + attempt, language="pt"
-            )
-            not_geocoded = False
-        except GeocoderTimedOut:
-            if attempt <= max_attempts:
-                time.sleep(2)
-                location = do_revese_geocode(data, attempt=attempt + 1)
-                not_geocoded = False
-            else:
-                message = f"Geocoder timed out: {point}"
-                log.error(message)
-                raise Exception(message)
-        except Exception as e:
-            message = f"Error in geocoding: {e}"
-            log.error(message)
-            raise Exception(message)
-
-    return location
+    try:
+        return geocoding.reverse(point, timeout=5 + attempt, language="pt")
+    except GeocoderTimedOut:
+        if attempt < max_attempts:
+            time.sleep(2)
+            return do_reverse_geocode(data, attempt + 1)
+        raise
 
 
-def map_location_to_data(location: dict, data: dict) -> dict:
-    """Map location data to data dictionary
-
-    Args:
-        location (dict): location data dictionary
-        data (dict): data dictionary
-        log (obj): Log object.
-
-    Returns:
-        dict: data dictionary
+def map_location_to_data(location, data):
     """
-    global log
+    Map Nominatim address fields into internal SITE structure.
+    """
+    address = location.raw.get("address", {})
 
-    # TODO: #8 Insert site name
-    for field_name, nominatim_semantic_lst in k.REQUIRED_ADDRESS_FIELD.items():
-        data[field_name] = None
-        unfilled_field = True
-        for nominatimField in nominatim_semantic_lst:
-            try:
-                data[field_name] = location.raw["address"][nominatimField]
-                unfilled_field = False
-            except KeyError:
-                pass
-        if unfilled_field:
-            message = f"Field {nominatimField} not found in: {location.raw['address']}"
-            log.warning(message)
+    # --------------------------------------------------
+    # Primary mapping via REQUIRED_ADDRESS_FIELD
+    # --------------------------------------------------
+    for field, candidates in k.REQUIRED_ADDRESS_FIELD.items():
+        data[field] = None
+        for c in candidates:
+            if c in address:
+                data[field] = address[c]
+                break
+
+    # --------------------------------------------------
+    # Fallback: infer Brazilian state name when missing
+    # --------------------------------------------------
+    if not data.get("state"):
+        iso = address.get("ISO3166-2-lvl4")
+
+        if iso and iso.startswith("BR-"):
+            UF_TO_STATE = {
+                "RO": "Rondônia",
+                "AC": "Acre",
+                "AM": "Amazonas",
+                "RR": "Roraima",
+                "PA": "Pará",
+                "AP": "Amapá",
+                "TO": "Tocantins",
+                "MA": "Maranhão",
+                "PI": "Piauí",
+                "CE": "Ceará",
+                "RN": "Rio Grande do Norte",
+                "PB": "Paraíba",
+                "PE": "Pernambuco",
+                "AL": "Alagoas",
+                "SE": "Sergipe",
+                "BA": "Bahia",
+                "MG": "Minas Gerais",
+                "ES": "Espírito Santo",
+                "RJ": "Rio de Janeiro",
+                "SP": "São Paulo",
+                "PR": "Paraná",
+                "SC": "Santa Catarina",
+                "RS": "Rio Grande do Sul",
+                "MS": "Mato Grosso do Sul",
+                "MT": "Mato Grosso",
+                "GO": "Goiás",
+                "DF": "Distrito Federal",
+            }
+
+            data["state"] = UF_TO_STATE.get(iso[3:])
 
     return data
 
 
-# function that performs the file processing
-def file_move(filename: str, path: str, new_path: str) -> dict:
-    """Move file to new path
 
-    Args:
-        file (str): source file name
-        path (str): source file path
-        new_path (str): target file path
+# ===============================================================
+# FILE OPERATIONS
+# ===============================================================
 
-    Raises:
-        Exception: Error moving file
-
-    Returns:
-        dict: Dict with target {'file':str,'path':str,'volume':str}
+def file_move(filename, path, new_path):
     """
+    Move a file from (path/filename) to (new_path/filename),
+    creating intermediate directories if necessary.
+    """
+    source = f"{path}/{filename}"
+    target = f"{new_path}/{filename}"
+    os.renames(source, target)
+    return {"filename": filename, "path": new_path}
 
-    # Construct the source file path
-    source_file = f"{path}/{filename}"
 
-    # Construct the target file path
-    target_file = f"{new_path}/{filename}"
-
-    # Move the file to the new path
-    try:
-        os.renames(source_file, target_file)
-    except Exception as e:
-        raise Exception(f"Error moving file {source_file} to {target_file}: {e}")
-
-    # Return the target file information
-    return {"filename": filename, "path": new_path, "volume": k.REPO_UID}
-
+# ===============================================================
+# MAIN LOOP
+# ===============================================================
 
 def main():
-    global process_status
-    global log
+    """
+    Main worker loop.
+    """
+    log.entry("[INIT] appCataloga_file_bin_process started")
 
-    log.entry("Starting....")
-
-    try:
-        # create db object using databaseHandler class for the backup and processing database
-        db_bp = dbh.dbHandler(database=k.BKP_DATABASE_NAME, log=log)
-        db_rfm = dbh.dbHandler(database=k.RFM_DATABASE_NAME, log=log)
-    except Exception as e:
-        log.error("Error initializing database: {e}")
-        raise Exception(f"Error initializing database: {e}")
+    db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+    db_rfm = dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)
 
     while process_status["running"]:
+        err = errors.ErrorHandler(log)
+
+        file_task_id = None
+        file_was_processed = False
+        new_path = None
+        host_id = None
+
         try:
-            # Get one backup task from the queue in the database
-            task = None
+            # ===================================================
+            # ACT I — Fetch FILE_TASK
+            # ===================================================
+            result = db_bp.read_file_task(
+                task_type=k.FILE_TASK_PROCESS_TYPE,
+                task_status=k.TASK_PENDING,
+                extension=".bin",
+                check_host_busy=False,
+            )
 
-            task = db_bp.file_task_read_one(task_type=db_bp.FILE_TASK_PROCESS_TYPE)
+            if not result:
+                legacy._random_jitter_sleep()
+                continue
 
-            # if there is a task in the database
-            if task:
-                # get metadata from bin file
-                filename = f"{task['server path']}/{task['server file']}"
+            row, host_id, _ = result
 
+            file_task_id    = row["FILE_TASK__ID_FILE_TASK"]
+            server_path     = row["FILE_TASK__NA_SERVER_FILE_PATH"]
+            server_name     = row["FILE_TASK__NA_SERVER_FILE_NAME"]
+            host_path       = row["FILE_TASK__NA_HOST_FILE_PATH"]
+            host_file_name  = row["FILE_TASK__NA_HOST_FILE_NAME"]
+            hostname_db     = row["HOST__NA_HOST_NAME"]
+            extension       = row["FILE_TASK__NA_EXTENSION"]
+            dt_created      = row["FILE_TASK__DT_FILE_CREATED"]
+            dt_modified     = row["FILE_TASK__DT_FILE_MODIFIED"]
+            vl_file_size_kb = row["FILE_TASK__VL_FILE_SIZE_KB"]
+
+            filename = f"{server_path}/{server_name}"
+
+            # ===================================================
+            # ACT II — Mark task as RUNNING
+            # ===================================================
+            try:
                 db_bp.file_task_update(
-                    task_id=task["task_id"], status=db_bp.TASK_RUNNING
+                    task_id=file_task_id,
+                    NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+                    DT_FILE_TASK=datetime.now(),
+                    NU_STATUS=k.TASK_RUNNING,
+                    NU_PID=os.getpid(),
+                    NA_MESSAGE=f"Processing BIN: {filename}",
                 )
+            except Exception as e:
+                err.set(reason=str(e), stage="PROCESS", exc=e)
+                raise
 
-                log.entry(f"Start processing '{filename}'.")
-
-                # store reference information to the file
+            # ===================================================
+            # ACT III — Parse and validate BIN (semantic, fatal)
+            # ===================================================
+            if 'rfeye' in hostname_db.lower():
                 try:
-                    bin_data = parse_bin(filename)
+                    # Process RFeye stations via direct parsing
+                    bin_data_raw = parse_bin(filename)
+                    station = station_factory(
+                        bin_data=bin_data_raw,
+                        host_uid=hostname_db
+                    )
+                    bin_data = station.process()
+                                        
+                    hostname_bin = bin_data["hostname"]
+                except errors.BinValidationError as e:
+                    err.set(reason=str(e), stage="PROCESS", exc=e)
+                    raise
                 except Exception as e:
-                    raise Exception(f"Error parsing file {filename}: {e}")
+                    err.set(reason=str(e), stage="PROCESS", exc=e)
+                    raise
+            else:
+                # Process Celplan stations via APP_ANALISE service
+                try:
+                    bin_data = station_factory(
+                        bin_data=None,
+                        host_uid=hostname_db
+                    ).process(
+                        file_path=server_path,
+                        file_name=server_name
+                    )
+                except errors.BinValidationError as e:
+                    print(json.dumps({
+                        "status_query": 0,
+                        "message_query": str(e)
+                    }, ensure_ascii=False, indent=2))
+                    return
 
-                # TODO: #9 check site type processing the raw gps data and set the data dictionary used by get_site_id method
-                # start arranging the site data
-                data = {
-                    "longitude": bin_data["gps"].longitude,
-                    "latitude": bin_data["gps"].latitude,
-                    "altitude": bin_data["gps"].altitude,
-                    "nu_gnss_measurements": len(bin_data["gps"]._longitude),
+            
+            # ===================================================
+            # ACT IV — SITE / GEO enrichment
+            # ===================================================
+            try:
+                gps = bin_data["gps"]
+
+                site_data = {
+                    "longitude": gps.longitude,
+                    "latitude": gps.latitude,
+                    "altitude": gps.altitude,
+                    "nu_gnss_measurements": len(gps._longitude),
                 }
 
-                site = db_rfm.get_site_id(data)
+                site_id = db_rfm.get_site_id(site_data)
 
-                if site:
-                    data["id_site"] = site
+                if site_id:
                     db_rfm.update_site(
-                        site=site,
-                        longitude_raw=bin_data["gps"]._longitude,
-                        latitude_raw=bin_data["gps"]._latitude,
-                        altitude_raw=bin_data["gps"]._altitude,
+                        site=site_id,
+                        longitude_raw=gps._longitude,
+                        latitude_raw=gps._latitude,
+                        altitude_raw=gps._altitude,
                     )
                 else:
-                    location = do_revese_geocode(data=data)
-                    data = map_location_to_data(location=location, data=data)
-                    site = db_rfm.insert_site(data)
+                    location = do_reverse_geocode(site_data)
+                    site_data = map_location_to_data(location, site_data)
+                    site_id = db_rfm.insert_site(site_data)
 
-                # update data dictionary with data associated with the entire file scope
-                file_id = db_rfm.insert_file(
-                    filename=task["host file"],
-                    path=task["host path"],
-                    volume=task["host_uid"],
+            except Exception as e:
+                err.set(reason=str(e), stage="SITE", exc=e)
+                raise
+            
+            # ===================================================
+            # ACT V — Begin DB transaction
+            # ===================================================
+            try:
+                db_rfm.begin_transaction()
+            except Exception as e:
+                err.set(reason=str(e), stage="DB", exc=e)
+                raise
+            
+            # ===================================================
+            # ACT VI — Insert spectrum and metadata (DB)
+            # ===================================================
+            try:
+                host_file_id = db_rfm.insert_file(
+                    hostname=hostname_bin,
+                    NA_VOLUME=hostname_db,
+                    NA_PATH=host_path,
+                    NA_FILE=host_file_name,
+                    NA_EXTENSION=extension,
+                    VL_FILE_SIZE_KB=vl_file_size_kb,
+                    DT_FILE_CREATED=dt_created,
+                    DT_FILE_MODIFIED=dt_modified,
                 )
 
-                data["id_procedure"] = db_rfm.insert_procedure(bin_data["method"])
+                procedure_id = db_rfm.insert_procedure(bin_data["method"])
+                dim_eq = db_rfm.get_or_create_spectrum_equipment(hostname_bin.lower())
 
-                # ! WORK ONLY FOR RFEYE######  TODO: #10 refactor to a more generic solution that works for all equipment
-                # Create a list of the equipment that may be present in the file, the four antennas and the receiver
-                receiver = bin_data["hostname"].lower()
-                rec_serial = receiver[5:]
-                equipment_lst = [
-                    f"rfeye[0]_{rec_serial}",
-                    f"rfeye[1]_{rec_serial}",
-                    f"rfeye[2]_{rec_serial}",
-                    f"rfeye[3]_{rec_serial}",
-                    receiver,
-                ]
+                spectrum_ids = []
 
-                # insert the equipment in the database and/or get the ids if the equipment already exists
-                equipment_ids = db_rfm.insert_equipment(equipment_lst)
-
-                spectrum_lst = []
-                for spectrum in bin_data["spectrum"]:
-                    data["id_detector_type"] = db_rfm.insert_detector_type(
-                        k.DEFAULT_DETECTOR
-                    )
-                    data["id_trace_type"] = db_rfm.insert_trace_type(
-                        spectrum.processing
-                    )
-                    data["id_measure_unit"] = db_rfm.insert_measure_unit(spectrum.dtype)
-                    data["na_description"] = spectrum.description
-                    data["nu_freq_start"] = spectrum.start_mega
-                    data["nu_freq_end"] = spectrum.stop_mega
-                    data["dt_time_start"] = spectrum.start_dateidx.strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    )
-                    data["dt_time_end"] = spectrum.stop_dateidx.strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    )
-                    data["nu_sample_duration"] = k.DEFAULT_SAMPLE_DURATION
-                    data["nu_trace_count"] = len(spectrum.timestamp)
-                    data["nu_trace_length"] = spectrum.ndata
-                    try:
-                        data["nu_rbw"] = spectrum.bw
-                    except AttributeError:
-                        data["nu_rbw"] = (
-                            data["nu_freq_end"] - data["nu_freq_start"]
-                        ) / data["nu_trace_length"]
-
-                    data["nu_att_gain"] = k.DEFAULT_ATTENUATION_GAIN
-
-                    # create a list of equipment associated with the spectrum measurement
-                    equipment = [
-                        equipment_ids[receiver],
-                        equipment_ids[f"rfeye[{spectrum.antuid}]_{rec_serial}"],
-                    ]
-                    spectrum_lst.append(
-                        {
-                            "spectrum": db_rfm.insert_spectrum(data),
-                            "equipment": equipment,
-                        }
+                for s in bin_data["spectrum"]:
+                    spectrum_ids.append(
+                        db_rfm.insert_spectrum(
+                            {
+                                "id_site": site_id,
+                                "id_procedure": procedure_id,
+                                "id_detector_type": db_rfm.insert_detector_type(k.DEFAULT_DETECTOR),
+                                "id_trace_type": db_rfm.insert_trace_type(s.processing),
+                                "id_equipment": dim_eq,
+                                "id_measure_unit": db_rfm.insert_measure_unit(s.level_unit),
+                                "na_description": getattr(s, "description", None),
+                                "nu_freq_start": s.start_mega,
+                                "nu_freq_end": s.stop_mega,
+                                "dt_time_start": s.start_dateidx,
+                                "dt_time_end": s.stop_dateidx,
+                                "nu_sample_duration": k.DEFAULT_SAMPLE_DURATION,
+                                "nu_trace_count": s.trace_length,
+                                "nu_trace_length": s.ndata,
+                                "nu_rbw": getattr(s, "bw", None),
+                                "nu_att_gain": k.DEFAULT_ATTENUATION_GAIN,
+                                "js_metadata": json.dumps(
+                                    s.metadata if hasattr(s, "metadata") else {"antuid": s.antuid}
+                                ),
+                            }
+                        )
                     )
 
-                db_rfm.insert_bridge_spectrum_equipment(spectrum_lst)
+                db_rfm.insert_bridge_spectrum_file(spectrum_ids, [host_file_id])
+                db_rfm.commit()
 
-                new_path = db_rfm.build_path(site_id=data["id_site"])
-                new_path = f"{k.REPO_FOLDER}/{spectrum.stop_dateidx.year}/{new_path}"
+            except Exception as e:
+                err.set(reason=str(e), stage="DB", exc=e)
+                raise
 
-                file_data = file_move(
-                    filename=task["server file"],
-                    path=task["server path"],
-                    new_path=new_path,
+            # ===================================================
+            # ACT VII — Filesystem move + server file registration
+            # ===================================================
+            try:
+                year = bin_data["spectrum"][0].start_dateidx.year
+                new_path = f"{k.REPO_FOLDER}/{year}/{db_rfm.build_path(site_id)}"
+
+                file_move(server_name, server_path, new_path)
+
+                server_file_id = db_rfm.insert_file(
+                    hostname=hostname_bin,
+                    NA_VOLUME="reposfi",
+                    NA_PATH=new_path,
+                    NA_FILE=server_name,
+                    NA_EXTENSION=extension,
+                    VL_FILE_SIZE_KB=vl_file_size_kb,
+                    DT_FILE_CREATED=dt_created,
+                    DT_FILE_MODIFIED=dt_modified,
                 )
 
-                new_file_id = db_rfm.insert_file(**file_data)
-                db_rfm.insert_bridge_spectrum_file(spectrum_lst, [file_id, new_file_id])
+                db_rfm.insert_bridge_spectrum_file(spectrum_ids, [server_file_id])
 
-                db_bp.file_task_delete(task_id=task["task_id"])
+                file_was_processed = True
+                log.entry(f"[DONE] {filename}")
+                
 
-                log.entry(f"Finished processing '{filename}'.")
+            except Exception as e:
+                err.set(reason=str(e), stage="FS", exc=e)
+                raise
 
-            else:
-                time_to_wait = int(
-                    (
-                        k.MAX_FILE_TASK_WAIT_TIME
-                        + k.MAX_FILE_TASK_WAIT_TIME * random.random()
-                    )
-                    / 2
-                )
+        except Exception:
+            log.error(f"[PROCESS ERROR] {err.format_error()}")
+            if db_rfm.in_transaction:
+                db_rfm.rollback()
 
-                log.entry(f"Waiting {time_to_wait} seconds for new tasks.")
-                # wait for a task to be posted
-                time.sleep(time_to_wait)
-
-        except Exception as e:
-            if not task:
-                log.error(f"Error in appCataloga_file_bin_proces: {e}")
+        finally:
+            if not file_task_id:
                 continue
-            else:
+
+            # ---------------------------------------------------
+            # Global resolution (single exit point)
+            # ---------------------------------------------------
+
+            # Move file to trash if processing failed
+            if not file_was_processed and new_path is None:
                 try:
                     file_data = file_move(
-                        filename=task["server file"],
-                        path=task["server path"],
+                        filename=server_name,
+                        path=server_path,
                         new_path=f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}",
                     )
+                    new_path = file_data["path"]
+                except Exception as fs_err:
+                    log.error(f"[TRASH] Failed to move file to trash: {fs_err}")
 
-                    task["server path"] = file_data["path"]
+            # Remove transient FILE_TASK
+            db_bp.file_task_delete(task_id=file_task_id)
 
-                    message = f"Error processing task: {e}"
+            # Update FILE_TASK_HISTORY
+            status = k.TASK_DONE if file_was_processed else k.TASK_ERROR
 
-                    log.error(message)
-                except Exception as second_e:
-                    message = f"Error moving file to trash: First: {e}; raised another exception: {second_e}"
-                    log.error(message)
-                    pass
+            # Build NA_MESSAGE
+            NA_MESSAGE = tools.compose_message(
+                task_type=k.FILE_TASK_PROCESS_TYPE,
+                task_status=status,
+                path=new_path if file_was_processed else None,
+                name=server_name if file_was_processed else None,
+                error=err.format_error() if err.triggered else None,
+            )
 
-                try:
-                    task["message"] = message
+            # Update File History
+            # Internally insert DT_PROCESSED timestamp
+            db_bp.file_history_update(
+                task_type=k.FILE_TASK_PROCESS_TYPE,
+                host_file_name=host_file_name,
+                server_file_name=server_name,
+                host_id=host_id,
+                NA_SERVER_FILE_NAME=server_name,
+                NA_SERVER_FILE_PATH=new_path,   
+                NU_STATUS_PROCESSING=status,
+                NA_MESSAGE=NA_MESSAGE,
+            )
 
-                    db_bp.file_task_update(
-                        task_id=task["task_id"],
-                        status=db_bp.TASK_ERROR,
-                        message=message,
-                    )
 
-                    db_bp.host_update(
-                        host_id=task["host_id"],
-                        pending_processing=-1,
-                        processing_error=1,
-                    )
-                except Exception as second_e:
-                    log.error(
-                        f"Error removing processing task: First: {e}; raised another exception: {second_e}"
-                    )
-
-                    # raise a fatal error excpetion to stop the program
-                    raise Exception(
-                        f"Exception: {e}; raised another exception: {second_e}"
-                    )
-
-            pass
-
-    log.entry("Shutting down....")
+            db_bp.host_task_statistics_create(host_id=host_id)
+            
+            
 
 
 if __name__ == "__main__":
