@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %}RF.Fusion{% endblock %}</title>
+
+    <!-- CSS INSTITUCIONAL -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/_Basic.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/OutSystemsReactWidgets.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/AnatelReactiveTheme.AnatelReactiveTheme.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/AnatelReactiveTheme.AnatelReactiveTheme.extra.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/Desempenho_CW.Desempenho.css') }}">
+
+    <style>
+        .header { width: 100%; }
+        .main-content {
+            padding-top: 40px;
+            padding-bottom: 80px;
+        }
+    </style>
+
+    {% block extra_css %}{% endblock %}
+</head>
+
+<body class="desktop">
+
+<div class="layout layout-top fixed-header">
+
+    <!-- HEADER INSTITUCIONAL -->
+    <header class="header background-primary text-neutral-0">
+        <div class="ThemeGrid_Container">
+            <div class="display-flex align-items-center justify-content-space-between padding-y-s">
+
+                <div class="display-flex align-items-center gap-s">
+                    <i class="fa fa-signal"></i>
+                    <span class="font-semi-bold font-size-h5">
+                        RF.Fusion
+                    </span>
+                </div>
+
+                <div class="display-flex align-items-center gap-s font-size-s">
+                    <i class="fa fa-user"></i>
+                    <span>{{ usuario or "Usuário" }}</span>
+                </div>
+
+            </div>
+        </div>
+    </header>
+
+    <!-- CONTEÚDO DINÂMICO -->
+    <div class="main-content ThemeGrid_Container">
+        {% block content %}{% endblock %}
+    </div>
+
+</div>
+
+{% block extra_js %}{% endblock %}
+
+</body>
+</html>

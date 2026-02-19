@@ -1,0 +1,34 @@
+﻿.tag.tag-environment{
+    position: absolute;
+    top: calc((var(--header-size) - 24px) / 2);
+    min-width: 2ch;
+    font-weight: var(--font-intermediate);
+    /* opacity: .8; */
+    /* max-width: 8vw; */
+    overflow: hidden;
+    justify-content: flex-start;
+    letter-spacing: .05em;
+    border: solid 1px currentColor;
+    padding: var(--space-none) var(--space-s);
+    height: 24px;
+    line-height: unset;
+    left: 1em;
+}
+
+/*.desktop .header .tag-environment{
+    left: 1em;
+}
+.desktop:not(.desktop-big):not(.desktop-small) .tag-environment{
+    max-width: 8vw;
+}
+.desktop.desktop-small .tag-environment{
+    max-width: 4vw;
+}
+*/
+
+.desktop.desktop-small .tag-environment,
+.tablet .header .tag-environment,
+.phone .header .tag-environment{
+    /*right: 1em;*/
+    top: var(--header-size);
+}

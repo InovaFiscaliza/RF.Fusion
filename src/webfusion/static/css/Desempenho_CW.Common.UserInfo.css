@@ -1,0 +1,21 @@
+﻿
+
+.card-perfil{
+    display:none;
+    opacity: 0;
+    position: absolute;
+    z-index: 999;
+    background-color: var(--color-blue-lightest);
+    border: solid var(--border-size-m) var(--color-blue-lighter);
+    top: 50px;
+    right: 20%;
+    padding: var(--space-xs);
+    border-radius: 10px;
+    color: var(--color-primary);
+   
+}
+
+.showhim:hover .card-perfil {
+  display: block;
+  opacity: 1;
+}

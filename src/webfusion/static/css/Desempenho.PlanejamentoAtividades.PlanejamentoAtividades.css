@@ -1,0 +1,11 @@
+﻿.desempenho.tag.tag-small {
+    --yellow-vivid-5: #FFF5C2;
+    --yellow-vivid-20: #FFCD07;
+    --color-yellow-lightest: var(--yellow-vivid-5);
+    height: 15px;
+    width: 100%;
+}
+
+.desempenho.tag.tag-small:not([class*="text-"]) {
+    border-color: rgba(0, 0, 0, 0.5);
+}

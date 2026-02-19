@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+
+{% block title %}Consulta Spectrum{% endblock %}
+
+{% block extra_css %}
+<style>
+
+    /* ===== CARD ===== */
+    .card {
+        box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+    }
+
+    /* ===== FORM ===== */
+    label {
+        display: block;
+        margin-bottom: 6px;
+        font-weight: 600;
+    }
+
+    .form-control {
+        height: 36px;
+        padding: 6px 10px;
+        box-sizing: border-box;
+    }
+
+    /* ===== BOTÃO ===== */
+    .btn-pesquisar {
+        background-color: #007A33;
+        color: #ffffff;
+        border: 1px solid #007A33;
+        border-radius: 6px;
+        padding: 8px 18px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background-color 0.2s ease;
+    }
+
+    .btn-pesquisar:hover {
+        background-color: #006128;
+        border-color: #006128;
+    }
+
+    /* ===== WRAPPER HORIZONTAL ===== */
+    .table-wrapper {
+        width: 100%;
+        overflow-x: auto; /* SCROLL HORIZONTAL */
+    }
+
+    /* ===== SCROLL VERTICAL ===== */
+    .table-scroll {
+        max-height: 420px;
+        overflow-y: auto;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+    }
+
+    /* ===== TABELA ===== */
+    .table-scroll table {
+        min-width: 1100px; /* força aparecer scroll horizontal */
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+
+    .table-scroll th,
+    .table-scroll td {
+        padding: 4px 8px;
+        white-space: nowrap;
+        text-align: left;
+    }
+
+    .table-scroll thead th {
+        position: sticky;
+        top: 0;
+        background: #f3f4f6;
+        z-index: 2;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .table-scroll tbody tr:hover {
+        background-color: #f6f8fb;
+    }
+
+</style>
+{% endblock %}
+
+{% block content %}
+
+<div class="margin-bottom-s text-neutral-7 font-size-s">
+    Consulta > Spectrum
+</div>
+
+<h1 class="margin-bottom-l">
+    Consulta de Espectros
+</h1>
+
+<div class="card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+
+    <div class="font-semi-bold margin-bottom-m">
+        Parâmetros de Pesquisa
+    </div>
+
+    <form method="get">
+
+        <div class="ThemeGrid_Row">
+
+            <div class="ThemeGrid_Width3">
+                <label>Equipamento</label>
+                <select name="equipment_id" class="form-control" required>
+                    <option value="">-- selecione --</option>
+                    {% for e in equipments %}
+                    <option value="{{ e.ID_EQUIPMENT }}"
+                        {% if e.ID_EQUIPMENT|string == equipment_id %}selected{% endif %}>
+                        {{ e.NA_EQUIPMENT }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="ThemeGrid_Width3">
+                <label>Período Inicial</label>
+                <input type="date"
+                       name="start_date"
+                       value="{{ start_date }}"
+                       class="form-control"
+                       required>
+            </div>
+
+            <div class="ThemeGrid_Width3">
+                <label>Período Final</label>
+                <input type="date"
+                       name="end_date"
+                       value="{{ end_date }}"
+                       class="form-control">
+            </div>
+
+            <div class="ThemeGrid_Width3 display-flex align-items-end">
+                <button type="submit" class="btn-pesquisar width-full">
+                    Pesquisar
+                </button>
+            </div>
+
+        </div>
+
+    </form>
+
+</div>
+
+{% if rows %}
+<div class="card background-neutral-0 padding-l border-radius-m">
+
+    <div class="table-wrapper">
+        <div class="table-scroll">
+
+
+        <table class="table">
+
+            <thead>
+            <tr>
+                <th>ID</th>
+                <th>Plano</th>
+                <th>Equipamento</th>
+                <th>Faixa (MHz)</th>
+                <th>Início</th>
+                <th>Fim</th>
+                <th>RBW</th>
+                <th>Traces</th>
+                <th>Arquivo Oficial</th>
+            </tr>
+            </thead>
+
+
+            <tbody>
+            {% for r in rows %}
+            <tr>
+                <td>{{ r.ID_SPECTRUM }}</td>
+
+                <td>{{ r.NA_DESCRIPTION }}</td>
+
+                <td>{{ r.NA_EQUIPMENT }}</td>
+
+                <td>
+                    {{ r.NU_FREQ_START }} – {{ r.NU_FREQ_END }}
+                </td>
+
+                <td>{{ r.DT_TIME_START }}</td>
+
+                <td>{{ r.DT_TIME_END }}</td>
+
+                <td>{{ r.NU_RBW }}</td>
+
+                <td>{{ r.NU_TRACE_COUNT }}</td>
+
+                <td>
+                    {% if r.NA_PATH %}
+                        {{ r.NA_PATH }}/{{ r.NA_FILE }}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+
+        </table>
+
+        </div>
+        </div>
+
+</div>
+
+
+{% endif %}
+
+{% endblock %}

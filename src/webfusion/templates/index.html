@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}RF.Fusion - Módulos{% endblock %}
+
+{% block extra_css %}
+<style>
+    .module-card {
+        transition: 0.15s ease-in-out;
+        cursor: pointer;
+    }
+
+    .module-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 10px rgba(0,0,0,0.06);
+    }
+
+    .module-icon {
+        font-size: 28px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<h1 class="margin-bottom-l">
+    Módulos do Sistema
+</h1>
+
+<div class="ThemeGrid_Row">
+
+    <div class="ThemeGrid_Width4">
+        <a href="{{ url_for('spectrum.spectrum') }}" style="text-decoration:none;">
+            <div class="card background-neutral-0 padding-l border-radius-m module-card">
+
+                <div class="display-flex align-items-center gap-m">
+
+                    <div class="module-icon text-primary">
+                        <i class="fa fa-search"></i>
+                    </div>
+
+                    <div>
+                        <div class="font-semi-bold">
+                            Consulta de Binários
+                        </div>
+                        <div class="font-size-s text-neutral-6 margin-top-xs">
+                            Pesquisa e download de espectros coletados.
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+        </a>
+    </div>
+
+</div>
+
+{% endblock %}

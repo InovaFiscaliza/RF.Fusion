@@ -69,3 +69,35 @@
 | ------------------------ | ---------------------------------------- |
 | Verbose capture of any interface | `tcpdump -eni any -vv \| grep 172.24` |
 | Capture ICMP packages from tun0 interface | `tcpdump -eni tun0 icmp` |
+
+## Mount the repository
+
+Create a credential file for the user that has accces to the repository. It will be different from the user created if a network storage is used
+
+```shell
+printf "username=mnt.sfi.sensores.pd\npassword=<PASSWORD>\n" > /root/.reposfi
+
+chmod 600 /root/.reposfi
+```
+
+Create a mount point folder and mount the volume using the credential file, UID and GID
+
+```shell
+mkdir /mnt/reposfi
+
+mount -t cifs -o credentials=/root/.reposfi,uid=987,gid=983,file_mode=0666,dir_mode=0777 //reposfi/sfi$/SENSORES  /mnt/reposfi
+```
+
+One may also yse the following command to mount the volume
+
+```shell
+mount -t cifs -o credentials=/root/.reposfi,noperm //reposfi/sfi$/SENSORES  /mnt/reposfi
+```
+
+Once the mount is complete with success, one may make it permanent by adding the following line to `/etc/fstab`
+
+```shell
+//reposfi/sfi$/SENSORES  /mnt/reposfi  cifs  credentials=/root/.reposfi,uid=987,gid=983,file_mode=0666,dir_mode=0777  0  0
+
+systemctl daemon-reload
+```
