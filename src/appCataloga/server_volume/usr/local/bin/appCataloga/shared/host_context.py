@@ -774,10 +774,16 @@ class hostDaemon:
             # --------------------------------------------
             # The iterator does NOT know how deduplication is done.
             # It only trusts the callback contract.
-            batch = callBackCheckFile(
-                host_id=host_id,
-                batch=batch,
-                batch_size=batch_size,
+            # Only available for modes except FILE
+            if mode != Filter.MODE_FILE:
+                batch = callBackCheckFile(
+                    host_id=host_id,
+                    batch=batch,
+                    batch_size=batch_size,
+                )
+            else:
+                self.log.entry(
+                    f"[META] MODE_FILE active — skipping deduplication for host {host_id}"
             )
 
             if not batch:

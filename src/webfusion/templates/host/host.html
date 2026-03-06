@@ -1,0 +1,342 @@
+{% extends "base.html" %}
+{% block title %}Consulta Host{% endblock %}
+
+{% block breadcrumb %}
+<div class="breadcrumb">
+    <a href="{{ url_for('index') }}">Consulta</a>
+    <span class="breadcrumb-separator">›</span>
+    <span>Host</span>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* RESET TOTAL DO CHECKBOX */
+    #online_only {
+        all: revert !important;
+        appearance: auto !important;
+        -webkit-appearance: checkbox !important;
+        display: inline-block !important;
+        position: static !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+        width: 16px !important;
+        height: 16px !important;
+    }
+
+    .card {
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+    }
+
+    label {
+        display: block;
+        margin-bottom: 6px;
+        font-weight: 600;
+    }
+
+    .form-control {
+        height: 36px;
+        padding: 6px 10px;
+        box-sizing: border-box;
+    }
+
+    .btn-search {
+        background-color: #1f4f8b;
+        color: #ffffff;
+        border: 1px solid #1f4f8b;
+        border-radius: 6px;
+        padding: 8px 18px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background-color 0.2s ease;
+    }
+
+    .btn-search:hover {
+        background-color: #163a66;
+        border-color: #163a66;
+    }
+
+    .section-title {
+        font-weight: 600;
+        margin-top: 32px;
+        margin-bottom: 16px;
+        border-bottom: 1px solid #e5e7eb;
+        padding-bottom: 6px;
+        font-size: 15px;
+    }
+
+    .stats-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+
+    .stats-table th,
+    .stats-table td {
+        padding: 10px 12px;
+    }
+
+    .stats-table th {
+        text-align: left;
+        width: 280px;
+        font-weight: 600;
+        color: #374151;
+    }
+
+    .stats-table td {
+        color: #111827;
+    }
+
+    .stats-table tr:not(:last-child) {
+        border-bottom: 1px solid #f1f5f9;
+    }
+
+    .status-badge {
+        display: inline-block;
+        padding: 3px 10px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .status-online {
+        background: #dcfce7;
+        color: #166534;
+    }
+
+    .status-offline {
+        background: #fee2e2;
+        color: #991b1b;
+    }
+
+    .status-busy {
+        background: #fef3c7;
+        color: #92400e;
+    }
+
+    .status-idle {
+        background: #dbeafe;
+        color: #1e40af;
+    }
+
+    .host-stats-scroll {
+        max-height: 72vh;
+        overflow-y: auto;
+        padding-right: 8px;
+    }
+
+    .host-stats-scroll::-webkit-scrollbar {
+        width: 8px;
+    }
+
+    .host-stats-scroll::-webkit-scrollbar-thumb {
+        background: #cbd5e1;
+        border-radius: 6px;
+    }
+
+    .host-stats-scroll::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<h1 class="margin-bottom-l">
+    Estatísticas do Host
+</h1>
+
+<div class="card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+
+    <form method="get">
+
+        <div class="ThemeGrid_Row">
+
+            <!-- HOST -->
+            <div class="ThemeGrid_Width3">
+                <label>Host</label>
+                <select name="host_id" class="form-control" required>
+                    <option value="">-- selecione --</option>
+                    {% for h in hosts %}
+                    <option value="{{ h.ID_HOST }}" {% if h.ID_HOST|string==selected_host %}selected{% endif %}>
+                        {{ h.NA_HOST_NAME }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <!-- BOTÃO -->
+            <div class="ThemeGrid_Width3">
+                <div style="margin-top:22px;">
+                    <button type="submit" class="btn-search width-full">
+                        Pesquisar
+                    </button>
+                </div>
+            </div>
+
+            <!-- CHECKBOX FUNCIONAL -->
+            <div class="ThemeGrid_Width3">
+                <div style="margin-top:22px; display:flex; align-items:center; gap:16px;">
+                    <label
+                        style="display:flex; align-items:center; gap:6px; cursor:pointer; font-weight:500; margin:0;">
+                        <input type="checkbox" id="online_only" name="online_only" value="1"
+                            onchange="this.form.submit()" {% if online_only %}checked{% endif %}>
+                        Apenas ONLINE
+                    </label>
+
+                </div>
+            </div>
+
+        </div>
+
+    </form>
+
+</div>
+
+{% if stats %}
+
+<div class="card background-neutral-0 padding-l border-radius-m">
+
+    <div class="host-stats-scroll">
+
+        <!-- IDENTIFICAÇÃO -->
+        <div class="section-title">Identificação</div>
+        <table class="stats-table">
+            <tr>
+                <th>Nome</th>
+                <td>{{ stats.NA_HOST_NAME }}</td>
+            </tr>
+            <tr>
+                <th>Endereço</th>
+                <td>{{ stats.NA_HOST_ADDRESS }}:{{ stats.NA_HOST_PORT }}</td>
+            </tr>
+        </table>
+
+        <!-- STATUS OPERACIONAL -->
+        <div class="section-title">Status Operacional</div>
+        <table class="stats-table">
+            <tr>
+                <th>Status</th>
+                <td>
+                    {% if stats.IS_OFFLINE %}
+                    <span class="status-badge status-offline">Offline</span>
+                    {% else %}
+                    <span class="status-badge status-online">Online</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th>Execução</th>
+                <td>
+                    {% if stats.IS_BUSY %}
+                    <span class="status-badge status-busy">Busy</span>
+                    {% else %}
+                    <span class="status-badge status-idle">Idle</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <th>PID</th>
+                <td>{{ stats.NU_PID }}</td>
+            </tr>
+            <tr>
+                <th>Desde (Busy)</th>
+                <td>{{ stats.DT_BUSY }}</td>
+            </tr>
+            <tr>
+                <th>Último Check</th>
+                <td>{{ stats.DT_LAST_CHECK }}</td>
+            </tr>
+            <tr>
+                <th>Último Fail</th>
+                <td>{{ stats.DT_LAST_FAIL }}</td>
+            </tr>
+            <tr>
+                <th>Erros de Check</th>
+                <td>{{ stats.NU_HOST_CHECK_ERROR }}</td>
+            </tr>
+        </table>
+
+        <!-- DISCOVERY -->
+        <div class="section-title">Discovery</div>
+        <table class="stats-table">
+            <tr>
+                <th>Último Discovery</th>
+                <td>{{ stats.DT_LAST_DISCOVERY }}</td>
+            </tr>
+            <tr>
+                <th>Discovery OK</th>
+                <td>{{ stats.NU_DONE_FILE_DISCOVERY_TASKS }}</td>
+            </tr>
+            <tr>
+                <th>Discovery Erro</th>
+                <td>{{ stats.NU_ERROR_FILE_DISCOVERY_TASKS }}</td>
+            </tr>
+        </table>
+
+        <!-- BACKUP -->
+        <div class="section-title">Backup</div>
+        <table class="stats-table">
+            <tr>
+                <th>Último Backup</th>
+                <td>{{ stats.DT_LAST_BACKUP }}</td>
+            </tr>
+            <tr>
+                <th>Backup Pendente</th>
+                <td>{{ stats.NU_PENDING_FILE_BACKUP_TASKS }}</td>
+            </tr>
+            <tr>
+                <th>Backup OK</th>
+                <td>{{ stats.NU_DONE_FILE_BACKUP_TASKS }}</td>
+            </tr>
+            <tr>
+                <th>Backup Erro</th>
+                <td>{{ stats.NU_ERROR_FILE_BACKUP_TASKS }}</td>
+            </tr>
+            <tr>
+                <th>Volume Pendente (GB)</th>
+                <td>{{ stats.PENDING_GB }}</td>
+            </tr>
+            <tr>
+                <th>Volume Processado (GB)</th>
+                <td>{{ stats.DONE_GB }}</td>
+            </tr>
+        </table>
+
+        <!-- PROCESSAMENTO -->
+        <div class="section-title">Processamento</div>
+        <table class="stats-table">
+            <tr>
+                <th>Último Processamento</th>
+                <td>{{ stats.DT_LAST_PROCESSING }}</td>
+            </tr>
+            <tr>
+                <th>Processamento Pendente</th>
+                <td>{{ stats.NU_PENDING_FILE_PROCESS_TASKS }}</td>
+            </tr>
+            <tr>
+                <th>Processamento OK</th>
+                <td>{{ stats.NU_DONE_FILE_PROCESS_TASKS }}</td>
+            </tr>
+            <tr>
+                <th>Processamento Erro</th>
+                <td>{{ stats.NU_ERROR_FILE_PROCESS_TASKS }}</td>
+            </tr>
+        </table>
+
+        <!-- ARQUIVOS -->
+        <div class="section-title">Arquivos Locais</div>
+        <table class="stats-table">
+            <tr>
+                <th>Total Arquivos no Host</th>
+                <td>{{ stats.NU_HOST_FILES }}</td>
+            </tr>
+        </table>
+
+    </div>
+
+</div>
+
+{% endif %}
+
+{% endblock %}

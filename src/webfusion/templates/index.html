@@ -7,6 +7,7 @@
     .module-card {
         transition: 0.15s ease-in-out;
         cursor: pointer;
+        height: 100%;
     }
 
     .module-card:hover {
@@ -16,6 +17,10 @@
 
     .module-icon {
         font-size: 28px;
+    }
+
+    .module-description {
+        min-height: 40px;
     }
 </style>
 {% endblock %}
@@ -28,6 +33,7 @@
 
 <div class="ThemeGrid_Row">
 
+    <!-- ======================= SPECTRUM ======================= -->
     <div class="ThemeGrid_Width4">
         <a href="{{ url_for('spectrum.spectrum') }}" style="text-decoration:none;">
             <div class="card background-neutral-0 padding-l border-radius-m module-card">
@@ -42,8 +48,60 @@
                         <div class="font-semi-bold">
                             Consulta de Binários
                         </div>
-                        <div class="font-size-s text-neutral-6 margin-top-xs">
-                            Pesquisa e download de espectros coletados.
+                        <div class="font-size-s text-neutral-6 margin-top-xs module-description">
+                            Pesquisa, paginação e download de espectros coletados.
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+        </a>
+    </div>
+
+    <!-- ======================= HOST ======================= -->
+    <div class="ThemeGrid_Width4">
+        <a href="{{ url_for('host.host') }}" style="text-decoration:none;">
+            <div class="card background-neutral-0 padding-l border-radius-m module-card">
+
+                <div class="display-flex align-items-center gap-m">
+
+                    <div class="module-icon text-primary">
+                        <i class="fa fa-server"></i>
+                    </div>
+
+                    <div>
+                        <div class="font-semi-bold">
+                            Consulta Host
+                        </div>
+                        <div class="font-size-s text-neutral-6 margin-top-xs module-description">
+                            Estatísticas operacionais e estado dos nós RF.Fusion.
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+        </a>
+    </div>
+
+    <!-- ======================= TASK ======================= -->
+    <div class="ThemeGrid_Width4">
+        <a href="{{ url_for('task.task_builder') }}" style="text-decoration:none;">
+            <div class="card background-neutral-0 padding-l border-radius-m module-card">
+
+                <div class="display-flex align-items-center gap-m">
+
+                    <div class="module-icon text-primary">
+                        <i class="fa fa-cogs"></i>
+                    </div>
+
+                    <div>
+                        <div class="font-semi-bold">
+                            Criar Tarefa
+                        </div>
+                        <div class="font-size-s text-neutral-6 margin-top-xs module-description">
+                            Criação manual de tarefas para execução nos hosts.
                         </div>
                     </div>
 

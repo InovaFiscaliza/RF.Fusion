@@ -2,97 +2,172 @@
 
 {% block title %}Consulta Spectrum{% endblock %}
 
+{% block breadcrumb %}
+<div class="breadcrumb">
+    <a href="{{ url_for('index') }}">Consulta</a>
+    <span class="breadcrumb-separator">›</span>
+    <span>Spectrum</span>
+</div>
+{% endblock %}
+
 {% block extra_css %}
 <style>
 
-    /* ===== CARD ===== */
-    .card {
-        box-shadow: 0 2px 6px rgba(0,0,0,0.04);
-    }
+/* ===================== CARD ===================== */
 
-    /* ===== FORM ===== */
-    label {
-        display: block;
-        margin-bottom: 6px;
-        font-weight: 600;
-    }
+.card {
+    box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+}
 
-    .form-control {
-        height: 36px;
-        padding: 6px 10px;
-        box-sizing: border-box;
-    }
+/* ===================== FORM ===================== */
 
-    /* ===== BOTÃO ===== */
-    .btn-pesquisar {
-        background-color: #007A33;
-        color: #ffffff;
-        border: 1px solid #007A33;
-        border-radius: 6px;
-        padding: 8px 18px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: background-color 0.2s ease;
-    }
+label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 600;
+}
 
-    .btn-pesquisar:hover {
-        background-color: #006128;
-        border-color: #006128;
-    }
+.form-control {
+    height: 36px;
+    padding: 6px 10px;
+    box-sizing: border-box;
+}
 
-    /* ===== WRAPPER HORIZONTAL ===== */
-    .table-wrapper {
-        width: 100%;
-        overflow-x: auto; /* SCROLL HORIZONTAL */
-    }
+/* ===================== BOTÃO ===================== */
 
-    /* ===== SCROLL VERTICAL ===== */
-    .table-scroll {
-        max-height: 420px;
-        overflow-y: auto;
-        border: 1px solid #e5e7eb;
-        border-radius: 6px;
-    }
+.btn-search {
+    background-color: #1f4f8b;
+    color: #ffffff;
+    border: 1px solid #1f4f8b;
+    border-radius: 6px;
+    padding: 8px 18px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
 
-    /* ===== TABELA ===== */
-    .table-scroll table {
-        min-width: 1100px; /* força aparecer scroll horizontal */
-        border-collapse: collapse;
-        font-size: 13px;
-    }
+.btn-search:hover {
+    background-color: #163a66;
+    border-color: #163a66;
+}
 
-    .table-scroll th,
-    .table-scroll td {
-        padding: 4px 8px;
-        white-space: nowrap;
-        text-align: left;
-    }
+/* ===================== TABELA ===================== */
 
-    .table-scroll thead th {
-        position: sticky;
-        top: 0;
-        background: #f3f4f6;
-        z-index: 2;
-        font-size: 12px;
-        font-weight: 600;
-    }
+.table-wrapper {
+    width: 100%;
+    overflow-x: auto;
+}
 
-    .table-scroll tbody tr:hover {
-        background-color: #f6f8fb;
-    }
+.table-scroll {
+    max-height: 440px;
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+}
+
+.table-scroll table {
+    min-width: 1100px;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.table-scroll th,
+.table-scroll td {
+    padding: 6px 10px;
+    white-space: nowrap;
+    text-align: left;
+}
+
+.table-scroll thead th {
+    position: sticky;
+    top: 0;
+    background: #f3f4f6;
+    z-index: 2;
+    font-size: 12px;
+    font-weight: 600;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.table-scroll tbody tr {
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.table-scroll tbody tr:hover {
+    background-color: #f6f8fb;
+}
+
+.sort-link {
+    text-decoration: none;
+    color: inherit;
+}
+
+/* ===================== PAGINAÇÃO ===================== */
+
+.pagination-container {
+    margin: 16px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.pagination-buttons {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.btn-page {
+    background-color: #1f4f8b;
+    color: #ffffff;
+    border: 1px solid #1f4f8b;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    font-size: 12px;
+    min-width: 32px;
+    text-align: center;
+}
+
+.btn-page:hover {
+    background-color: #163a66;
+    border-color: #163a66;
+}
+
+.btn-page-active {
+    background-color: #0f2a4d;
+    border-color: #0f2a4d;
+}
+
+/* ===================== LINK DOWNLOAD ===================== */
+
+.file-link {
+    color: #1f4f8b;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.file-link:hover {
+    text-decoration: underline;
+}
+
+.file-size {
+    color: #6b7280;
+    font-size: 11px;
+    margin-left: 4px;
+}
 
 </style>
 {% endblock %}
 
 {% block content %}
 
-<div class="margin-bottom-s text-neutral-7 font-size-s">
-    Consulta > Spectrum
-</div>
-
 <h1 class="margin-bottom-l">
     Consulta de Espectros
 </h1>
+
+<!-- ====================== FILTROS ====================== -->
 
 <div class="card background-neutral-0 padding-l border-radius-m margin-bottom-l">
 
@@ -135,7 +210,7 @@
             </div>
 
             <div class="ThemeGrid_Width3 display-flex align-items-end">
-                <button type="submit" class="btn-pesquisar width-full">
+                <button type="submit" class="btn-search width-full">
                     Pesquisar
                 </button>
             </div>
@@ -146,69 +221,109 @@
 
 </div>
 
+<!-- ====================== RESULTADOS ====================== -->
+
 {% if rows %}
+
 <div class="card background-neutral-0 padding-l border-radius-m">
+
+    <div class="margin-bottom-s text-neutral-7 font-size-s">
+        Exibindo {{ (page-1)*50 + 1 }} –
+        {{ (page-1)*50 + rows|length }}
+        de {{ total }} registros
+    </div>
+
+    <div class="pagination-container">
+        <div class="text-neutral-7 font-size-s">
+            Página {{ page }} de {{ total_pages }}
+        </div>
+
+        <div class="pagination-buttons">
+            {% if page > 1 %}
+                <a class="btn-page"
+                   href="?equipment_id={{ equipment_id }}&start_date={{ start_date }}&end_date={{ end_date }}&sort_by={{ sort_by }}&sort_order={{ sort_order }}&page=1">«</a>
+
+                <a class="btn-page"
+                   href="?equipment_id={{ equipment_id }}&start_date={{ start_date }}&end_date={{ end_date }}&sort_by={{ sort_by }}&sort_order={{ sort_order }}&page={{ page-1 }}">‹</a>
+            {% endif %}
+
+            {% for p in visible_pages %}
+                {% if p == page %}
+                    <span class="btn-page btn-page-active">{{ p }}</span>
+                {% else %}
+                    <a class="btn-page"
+                       href="?equipment_id={{ equipment_id }}&start_date={{ start_date }}&end_date={{ end_date }}&sort_by={{ sort_by }}&sort_order={{ sort_order }}&page={{ p }}">{{ p }}</a>
+                {% endif %}
+            {% endfor %}
+
+            {% if page < total_pages %}
+                <a class="btn-page"
+                   href="?equipment_id={{ equipment_id }}&start_date={{ start_date }}&end_date={{ end_date }}&sort_by={{ sort_by }}&sort_order={{ sort_order }}&page={{ page+1 }}">›</a>
+
+                <a class="btn-page"
+                   href="?equipment_id={{ equipment_id }}&start_date={{ start_date }}&end_date={{ end_date }}&sort_by={{ sort_by }}&sort_order={{ sort_order }}&page={{ total_pages }}">»</a>
+            {% endif %}
+        </div>
+    </div>
 
     <div class="table-wrapper">
         <div class="table-scroll">
 
+            <table>
+                <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Plano</th>
+                    <th>Equipamento</th>
+                    <th>Faixa (MHz)</th>
+                    <th>Início</th>
+                    <th>Fim</th>
+                    <th>RBW</th>
+                    <th>Traces</th>
+                    <th>Arquivo Oficial</th>
+                </tr>
+                </thead>
 
-        <table class="table">
+                <tbody>
+                {% for r in rows %}
+                <tr>
+                    <td>{{ r.ID_SPECTRUM }}</td>
+                    <td>{{ r.NA_DESCRIPTION }}</td>
+                    <td>{{ r.NA_EQUIPMENT }}</td>
+                    <td>{{ r.NU_FREQ_START }} – {{ r.NU_FREQ_END }}</td>
+                    <td>{{ r.DT_TIME_START }}</td>
+                    <td>{{ r.DT_TIME_END }}</td>
+                    <td>{{ r.NU_RBW }}</td>
+                    <td>{{ r.NU_TRACE_COUNT }}</td>
+                    <td>
+                        {% if r.NA_FILE %}
+                            <a href="{{ url_for('spectrum.download_spectrum', spectrum_id=r.ID_SPECTRUM) }}"
+                               class="file-link">
+                                {{ r.NA_FILE }}
+                            </a>
+                            <span class="file-size">
+                                ({{ r.VL_FILE_SIZE_KB }} KB)
+                            </span>
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
 
-            <thead>
-            <tr>
-                <th>ID</th>
-                <th>Plano</th>
-                <th>Equipamento</th>
-                <th>Faixa (MHz)</th>
-                <th>Início</th>
-                <th>Fim</th>
-                <th>RBW</th>
-                <th>Traces</th>
-                <th>Arquivo Oficial</th>
-            </tr>
-            </thead>
-
-
-            <tbody>
-            {% for r in rows %}
-            <tr>
-                <td>{{ r.ID_SPECTRUM }}</td>
-
-                <td>{{ r.NA_DESCRIPTION }}</td>
-
-                <td>{{ r.NA_EQUIPMENT }}</td>
-
-                <td>
-                    {{ r.NU_FREQ_START }} – {{ r.NU_FREQ_END }}
-                </td>
-
-                <td>{{ r.DT_TIME_START }}</td>
-
-                <td>{{ r.DT_TIME_END }}</td>
-
-                <td>{{ r.NU_RBW }}</td>
-
-                <td>{{ r.NU_TRACE_COUNT }}</td>
-
-                <td>
-                    {% if r.NA_PATH %}
-                        {{ r.NA_PATH }}/{{ r.NA_FILE }}
-                    {% else %}
-                        —
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-            </tbody>
-
-        </table>
+            </table>
 
         </div>
-        </div>
+    </div>
 
 </div>
 
+{% elif equipment_id and start_date %}
+
+<div class="card background-neutral-0 padding-l border-radius-m">
+    Nenhum registro encontrado para os filtros informados.
+</div>
 
 {% endif %}
 

@@ -480,16 +480,15 @@ def main():
             # Update File History
             # Internally insert DT_PROCESSED timestamp
             db_bp.file_history_update(
+                host_id=host_id,
                 task_type=k.FILE_TASK_PROCESS_TYPE,
                 host_file_name=host_file_name,
-                server_file_name=server_name,
-                host_id=host_id,
+                host_file_path=host_path,
                 NA_SERVER_FILE_NAME=server_name,
                 NA_SERVER_FILE_PATH=new_path,   
                 NU_STATUS_PROCESSING=status,
                 NA_MESSAGE=NA_MESSAGE,
             )
-
 
             db_bp.host_task_statistics_create(host_id=host_id)
             

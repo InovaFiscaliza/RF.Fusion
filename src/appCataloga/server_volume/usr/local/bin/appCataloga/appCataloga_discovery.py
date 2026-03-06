@@ -218,13 +218,13 @@ def main() -> None:
                     sftp, daemon = legacy.init_host_context(task, log)
 
                 except paramiko.AuthenticationException as e:
-                    err.set("Authentication failed (bad credentials)", "AUTH", e)
+                    err.set("Authentication failed (bad credentials)", stage="AUTH", exc=e)
 
                 except paramiko.SSHException as e:
-                    err.set("SSH negotiation failed", "SSH", e)
+                    err.set("SSH negotiation failed", stage="SSH", exc=e)
 
                 except Exception as e:
-                    err.set("Host initialization failed", "INIT", e)
+                    err.set("SSH/SFTP initialization failed", stage="CONNECT", exc=e)
 
             # Do not allow the pipeline to proceed after any failure
             if err.triggered:
@@ -346,6 +346,16 @@ def main() -> None:
                     )
                 except Exception:
                     pass
+                
+                # Host check tasks should be re-queued on connection 
+                # errors to allow for retries after transient issues are resolved
+                if err.stage == "CONNECT":
+                    db.queue_host_task(
+                        host_id=host_id,
+                        task_type=k.HOST_TASK_CHECK_TYPE,
+                        task_status=k.TASK_PENDING,
+                        filter_dict=k.NONE_FILTER,
+                    )
 
             # Always unlock host regardless of errors
             if host_id is not None:
@@ -369,8 +379,11 @@ def main() -> None:
 
             # Close SFTP safely
             try:
-                if daemon and daemon.sftp_conn.is_connected():
-                    sftp.close()
+                if sftp:
+                    try:
+                        sftp.close()
+                    except Exception:
+                        pass
             except Exception as e:
                 log.warning(f"[CLEANUP] Failed to cleanup host: {e}")
 

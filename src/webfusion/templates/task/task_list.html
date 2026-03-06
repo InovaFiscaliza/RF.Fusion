@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Tasks Recentes{% endblock %}
+
+{% block breadcrumb %}
+<div class="breadcrumb">
+    <a href="{{ url_for('index') }}">Início</a>
+    <span class="breadcrumb-separator">›</span>
+    <span>Tasks</span>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<h1 class="margin-bottom-l">Tasks Recentes</h1>
+
+<div class="card background-neutral-0 padding-l border-radius-m">
+
+<div style="
+    max-height: 520px;
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+">
+
+<table style="width:100%; border-collapse:collapse; font-size:14px;">
+
+    <thead style="
+        position: sticky;
+        top: 0;
+        background: #f3f4f6;
+        z-index: 2;
+    ">
+        <tr style="text-align:left;">
+            <th style="padding:10px;">ID</th>
+            <th style="padding:10px;">Host</th>
+            <th style="padding:10px;">Tipo</th>
+            <th style="padding:10px;">Status</th>
+            <th style="padding:10px;">Data</th>
+            <th style="padding:10px;">Mensagem</th>
+        </tr>
+    </thead>
+
+    <tbody>
+
+    {% for t in tasks %}
+        <tr style="border-bottom:1px solid #e5e7eb;">
+            <td style="padding:8px;">{{ t.ID_HOST_TASK }}</td>
+            <td style="padding:8px;">{{ t.NA_HOST_NAME }}</td>
+            <td style="padding:8px;">
+                {% if t.NU_TYPE == 1 %}
+                    Host Check
+                {% elif t.NU_TYPE == 3 %}
+                    Update Stats
+                {% else %}
+                    {{ t.NU_TYPE }}
+                {% endif %}
+            </td>
+            <td style="padding:8px;">
+                {% if t.NU_STATUS == 1 %}
+                    <span style="color:#2563eb; font-weight:600;">Pending</span>
+                {% elif t.NU_STATUS == 2 %}
+                    <span style="color:#d97706; font-weight:600;">Running</span>
+                {% elif t.NU_STATUS == -1 %}
+                    <span style="color:#dc2626; font-weight:600;">Error</span>
+                {% else %}
+                    {{ t.NU_STATUS }}
+                {% endif %}
+            </td>
+            <td style="padding:8px;">{{ t.DT_HOST_TASK }}</td>
+            <td style="padding:8px; max-width:350px; word-break:break-word;">
+                {{ t.NA_MESSAGE or '-' }}
+            </td>
+        </tr>
+    {% endfor %}
+
+    </tbody>
+
+</table>
+
+</div>
+</div>
+
+{% endblock %}

@@ -24,6 +24,17 @@ repoRoot="/RFFusion-dev/RF.Fusion"
 projectVolume="${repoRoot}"
 
 # ----------------------------------------------------------------------
+# Volume: repositório CIFS (somente leitura)
+# ----------------------------------------------------------------------
+reposVolume="/mnt/reposfi"
+
+if [[ ! -d "${reposVolume}" ]]; then
+    echo "❌ ERROR: reposfi mount not found on host:"
+    echo "    ${reposVolume}"
+    exit 1
+fi
+
+# ----------------------------------------------------------------------
 # Credenciais (root)
 # ----------------------------------------------------------------------
 ROOT_USER="root"
@@ -83,6 +94,7 @@ podman run -d \
   -p "${HostHTTPPort}:${ContainerHTTPPort}" \
   -p "${HostSSHPort}:${ContainerSSHPort}" \
   -v "${projectVolume}:/RF.Fusion:Z" \
+  -v "${reposVolume}:/mnt/reposfi:ro" \
   "${ImageName}:latest" >/dev/null
 
 sleep 6

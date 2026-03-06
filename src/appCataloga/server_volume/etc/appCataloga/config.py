@@ -175,3 +175,10 @@ TASK_RUNNING            = 2         # Task running
 CELPLAN_HOST_TAG = "CWSM"
 CELPLAN_ZIP_TAG = "_DONE"
 RFEYE_HOST_TAG = "RFEye"
+#------------------------------------------
+# Garbage Collector Constants
+#------------------------------------------
+GC_BATCH_SIZE = 500
+GC_QUARANTINE_DAYS = 365
+GC_IDLE_SLEEP = 60
+GC_LOOP_SLEEP = 5

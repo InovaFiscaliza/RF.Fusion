@@ -315,6 +315,31 @@ class sftpConnection:
                 f"Error closing SFTP/SSH for "
                 f"'{self.host_uid}'({self.host_addr}). {e}"
             )
+            
+    def size(self, filename: str) -> int:
+        """
+        Return remote file size in bytes.
+
+        Args:
+            filename (str): Absolute remote file path.
+
+        Returns:
+            int: File size in bytes.
+
+        Raises:
+            FileNotFoundError: If file does not exist.
+            Exception: On other SFTP errors.
+        """
+        try:
+            return self.sftp.stat(filename).st_size
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            self.log.error(
+                f"Error getting size of '{filename}' in "
+                f"'{self.host_uid}'({self.host_addr}). {e}"
+            )
+            raise
 
     # =================================================================
     # OS Detection
@@ -374,7 +399,7 @@ class sftpConnection:
         Perform a cross-platform remote filesystem traversal (Linux or Windows)
         and return a COMPLETE in-memory list of file metadata entries.
 
-        ⚠️ IMPORTANT DESIGN NOTES ⚠️
+        IMPORTANT DESIGN NOTES 
         -----------------------------
         • This function intentionally RETURNS A FULL LIST.
         It does NOT stream, batch, or yield results.

@@ -79,7 +79,6 @@ from db.dbHandlerBKP import dbHandlerBKP
 # ======================================================================
 
 ALLOWED_ROOTS = [
-    "/mnt/reposfi/trash",
     "/mnt/reposfi/RF.Fusion_Processado"
 ]
 

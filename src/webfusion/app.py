@@ -1,5 +1,7 @@
 from flask import Flask, request, render_template, jsonify
-from modules.spectrum.routes import spectrum_bp
+from modules.spectrum.routes import spectrum_bp  # ← IMPORT CORRETO
+from modules.host.routes import host_bp
+from modules.task.routes import task_bp
 
 
 app = Flask(__name__)
@@ -9,6 +11,8 @@ app = Flask(__name__)
 # ----------------------------------------------------------
 
 app.register_blueprint(spectrum_bp)
+app.register_blueprint(host_bp)
+app.register_blueprint(task_bp)
 
 # ----------------------------------------------------------
 # Página inicial institucional

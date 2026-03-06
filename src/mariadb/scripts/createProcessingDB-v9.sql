@@ -85,6 +85,14 @@ CREATE TABLE FILE_TASK (
     CONSTRAINT FK_FILE_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
 );
 
+ALTER TABLE FILE_TASK
+ADD CONSTRAINT uq_file_task_identity
+UNIQUE (
+    FK_HOST,
+    NA_HOST_FILE_PATH,
+    NA_HOST_FILE_NAME
+);
+
 
 -- ==========================================================
 -- FILE_TASK_HISTORY (AUDIT TRAIL)
@@ -107,14 +115,23 @@ CREATE TABLE FILE_TASK_HISTORY (
     DT_FILE_MODIFIED DATETIME COMMENT 'File last modification timestamp',
 	NA_EXTENSION VARCHAR(20) COMMENT 'File extension (.txt, .csv, .log, etc.)',
     NA_MESSAGE TEXT COMMENT 'Optional message',
+    IS_PAYLOAD_DELETED TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'Flag indicating payload removed from repository',
+    DT_PAYLOAD_DELETED DATETIME DEFAULT NULL COMMENT 'Timestamp when payload was deleted',
     CONSTRAINT FK_HISTORY_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST(ID_HOST)
 );
 -- CREATE INDEX TO
-USE BPDATA;
 CREATE INDEX idx_fth_dedup_soft
 ON FILE_TASK_HISTORY (
     FK_HOST,
     NA_HOST_FILE_NAME,
     DT_FILE_CREATED,
     VL_FILE_SIZE_KB
+);
+
+ALTER TABLE FILE_TASK_HISTORY
+ADD CONSTRAINT uq_file_task_history_identity
+UNIQUE (
+    FK_HOST,
+    NA_HOST_FILE_PATH,
+    NA_HOST_FILE_NAME
 );

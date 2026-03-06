@@ -31,6 +31,7 @@ import signal
 import inspect
 import subprocess
 import hashlib
+import paramiko
 from datetime import datetime
 
 # ----------------------------------------------------------------------
@@ -269,30 +270,111 @@ def transfer_file_task(
     remote_filename: str,
     local_path: str,
     server_filename: str,
-) -> None:
+    discovery_size_kb: float,
+) -> float:
     """
-    Transfer a single file from the remote host to the server.
+    Transfer file with integrity validation.
 
-    Args:
-        sftp: Active SFTP connection
-        remote_dir (str): Remote directory path
-        remote_filename (str): Original filename on the host
-        local_path (str): Destination directory on server
-        server_filename (str): Deterministic server-side filename
+    Rules:
+        - Remote file must exist
+        - Remote size must be > 0
+        - Local size must be > 0
+        - Local size must NOT be smaller than discovery size
+        - Local size must NOT be smaller than remote size
+        - Remote file may grow during transfer (accepted)
+
+    Returns:
+        float: confirmed file size in KB (final local size)
 
     Raises:
-        FileNotFoundError: If the remote file does not exist
+        FileNotFoundError
+        RuntimeError (integrity violations)
+        TimeoutError (from run_with_timeout)
+        Any SFTP exception
     """
+
     remote_path = f"{remote_dir}/{remote_filename}"
-    local_file = os.path.join(local_path, server_filename)
+    final_file = os.path.join(local_path, server_filename)
+    tmp_file = final_file + ".tmp"
 
+    # ---------------------------------------------------------
+    # 1) Validate remote existence
+    # ---------------------------------------------------------
     if not sftp.test(remote_path):
-        raise FileNotFoundError(f"Remote file '{remote_path}' not found.")
+        raise FileNotFoundError(
+            f"Remote file not found: {remote_path}"
+        )
 
+    # ---------------------------------------------------------
+    # 2) Read authoritative remote size
+    # ---------------------------------------------------------
+    remote_size_bytes = sftp.size(remote_path)
+
+    if remote_size_bytes <= 0:
+        raise RuntimeError(
+            f"Remote file size invalid: {remote_size_bytes} bytes"
+        )
+
+    # ---------------------------------------------------------
+    # 3) Transfer to temporary file
+    # ---------------------------------------------------------
     timeout_utils.run_with_timeout(
-        lambda: sftp.transfer(remote_path, local_file),
+        lambda: sftp.transfer(remote_path, tmp_file),
         timeout=k.HOST_BUSY_TIMEOUT,
     )
+
+    # ---------------------------------------------------------
+    # 4) Validate local existence
+    # ---------------------------------------------------------
+    if not os.path.exists(tmp_file):
+        raise RuntimeError(
+            "Backup failed: local file not created after transfer"
+        )
+
+    local_size_bytes = os.path.getsize(tmp_file)
+
+    if local_size_bytes <= 0:
+        raise RuntimeError(
+            "Backup failed: local file size is 0 bytes"
+        )
+
+    local_size_kb = local_size_bytes / 1024
+
+    # ---------------------------------------------------------
+    # 5) Must not be smaller than discovery
+    # ---------------------------------------------------------
+    if local_size_kb < discovery_size_kb:
+        raise RuntimeError(
+            f"Backup invalid: local size ({local_size_kb:.2f} KB) "
+            f"is smaller than discovery size ({discovery_size_kb:.2f} KB)"
+        )
+
+    # ---------------------------------------------------------
+    # 6) Must not be smaller than remote
+    # ---------------------------------------------------------
+    # RFeye may still be writing, so:
+    # local >= remote is valid
+    if local_size_bytes < remote_size_bytes:
+        raise RuntimeError(
+            f"Backup corrupted: local size ({local_size_bytes} bytes) "
+            f"is smaller than remote size ({remote_size_bytes} bytes)"
+        )
+
+    # ---------------------------------------------------------
+    # 7) Accept remote growth (informational only)
+    # ---------------------------------------------------------
+    if local_size_bytes > remote_size_bytes:
+        sftp.log.warning(
+            f"[BACKUP] Remote file grew during transfer "
+            f"(remote={remote_size_bytes}, local={local_size_bytes})"
+        )
+
+    # ---------------------------------------------------------
+    # 8) Atomic rename
+    # ---------------------------------------------------------
+    os.rename(tmp_file, final_file)
+
+    return local_size_kb
 
 
 # ======================================================================
@@ -333,6 +415,7 @@ def main() -> None:
         file_task_id = None
         server_filename = None
         server_file_path = None
+        updated_size_kb = None
 
         try:
             # ---------------------------------------------------
@@ -353,151 +436,220 @@ def main() -> None:
             # ---------------------------------------------------
             # Lock host and mark task RUNNING
             # ---------------------------------------------------
-            db.host_update(
-                host_id=host_id,
-                IS_BUSY=True,
-                DT_BUSY=datetime.now(),
-                NU_PID=os.getpid(),
-            )
+            try:
+                db.host_update(
+                    host_id=host_id,
+                    IS_BUSY=True,
+                    DT_BUSY=datetime.now(),
+                    NU_PID=os.getpid(),
+                )
 
-            db.file_task_update(
-                file_task_id,
-                DT_FILE_TASK=datetime.now(),
-                NU_STATUS=k.TASK_RUNNING,
-                NU_PID=os.getpid(),
-                NA_MESSAGE=tools.compose_message(
-                    task_type=k.FILE_TASK_BACKUP_TYPE,
-                    task_status=k.TASK_RUNNING,
-                    path=task["FILE_TASK__NA_HOST_FILE_PATH"],
-                    name=task["FILE_TASK__NA_HOST_FILE_NAME"],
-                ),
-            )
-
+                db.file_task_update(
+                    task_id=file_task_id,
+                    DT_FILE_TASK=datetime.now(),
+                    NU_STATUS=k.TASK_RUNNING,
+                    NU_PID=os.getpid(),
+                    NA_MESSAGE=tools.compose_message(
+                        task_type=k.FILE_TASK_BACKUP_TYPE,
+                        task_status=k.TASK_RUNNING,
+                        path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                        name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                    ),
+                )
+            except Exception as e:
+                err.set("Failed to lock HOST or FILE_TASK", "LOCK", e)
+            
             # ---------------------------------------------------
             # Init SSH/SFTP
             # ---------------------------------------------------
-            host = db.host_read_access(host_id)
-            sftp_conn, _ = legacy.init_host_context(task, log)
+            if not err.triggered:
+                host = db.host_read_access(host_id)
+                if not host:
+                    err.set("Host not found in database", "HOST_READ")
+                
+                try:
+                    sftp_conn, _ = legacy.init_host_context(task, log)
+                except paramiko.AuthenticationException as e:
+                    err.set("Authentication failed (bad credentials)", stage="AUTH", exc=e)
 
+                except paramiko.SSHException as e:
+                    err.set("SSH negotiation failed", stage="SSH", exc=e)
+
+                except Exception as e:
+                    err.set("SSH/SFTP initialization failed", stage="CONNECT", exc=e)
+            
             # ---------------------------------------------------
             # Prepare local server path
             # ---------------------------------------------------
-            server_file_path = os.path.join(
-                k.REPO_FOLDER, k.TMP_FOLDER, host["host_uid"]
-            )
-            os.makedirs(server_file_path, exist_ok=True)
+            if not err.triggered:
+                server_file_path = os.path.join(
+                    k.REPO_FOLDER, k.TMP_FOLDER, host["host_uid"]
+                )
+                os.makedirs(server_file_path, exist_ok=True)
 
             # ---------------------------------------------------
             # Build deterministic server filename
             # ---------------------------------------------------
             # Celplan RMU has in filename specific data that doesn't could be changed
             # Also RMU has timestamp in filename and in theoric cenario never be repetead
-            if "CW" in host["host_uid"]:
-                server_filename = task["FILE_TASK__NA_HOST_FILE_NAME"]
-            else:
-                server_filename = build_server_filename(
-                    host_uid=host["host_uid"],
-                    remote_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
-                    filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
-                )
+            if not err.triggered:
+                if "CW" in host["host_uid"]:
+                    server_filename = task["FILE_TASK__NA_HOST_FILE_NAME"]
+                else:
+                    server_filename = build_server_filename(
+                        host_uid=host["host_uid"],
+                        remote_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                        filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                    )
 
             # ---------------------------------------------------
             # Transfer file
             # ---------------------------------------------------
-            transfer_file_task(
-                sftp=sftp_conn,
-                remote_dir=task["FILE_TASK__NA_HOST_FILE_PATH"],
-                remote_filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
-                local_path=server_file_path,
-                server_filename=server_filename,
-            )
-            file_was_transferred = True
+            if not err.triggered:
+                try:
+                    updated_size_kb = transfer_file_task(
+                        sftp=sftp_conn,
+                        remote_dir=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                        remote_filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                        local_path=server_file_path,
+                        server_filename=server_filename,
+                        discovery_size_kb=task["FILE_TASK__VL_FILE_SIZE_KB"],
+                    )
+                except Exception as e:
+                    err.set("File transfer failed", "TRANSFER", e)
+            
+            if not err.triggered:
+                file_was_transferred = True
 
             # ---------------------------------------------------
             # Update FILE_TASK_HISTORY
             # ---------------------------------------------------
-            db.file_history_update(
-                task_type=k.FILE_TASK_BACKUP_TYPE,
-                host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
-                NA_SERVER_FILE_NAME=server_filename,
-                NA_SERVER_FILE_PATH=server_file_path,
-                NU_STATUS_BACKUP=k.TASK_DONE,
-                NA_MESSAGE=tools.compose_message(
-                    task_type=k.FILE_TASK_BACKUP_TYPE,
-                    task_status=k.TASK_DONE,
-                    path=task["FILE_TASK__NA_HOST_FILE_PATH"],
-                    name=task["FILE_TASK__NA_HOST_FILE_NAME"],
-                ),
-            )
+            # Uniquevity is guaranteed by a unique file identification
+            # (FK_HOST, NA_HOST_FILE_PATH, NA_HOST_FILE_NAME) indicates 
+            # a single file on a specific host, so we can safely update the history record
+            if not err.triggered:
+                try:
+                    db.file_history_update(
+                        task_type=k.FILE_TASK_BACKUP_TYPE,
+                        host_id=host_id,
+                        host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                        host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                        NA_SERVER_FILE_NAME=server_filename,
+                        NA_SERVER_FILE_PATH=server_file_path,
+                        NU_STATUS_BACKUP=k.TASK_DONE,
+                        VL_FILE_SIZE_KB=updated_size_kb,
+                        NA_MESSAGE=tools.compose_message(
+                            task_type=k.FILE_TASK_BACKUP_TYPE,
+                            task_status=k.TASK_DONE,
+                            path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                            name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                        ),
+                    )
 
-            # ---------------------------------------------------
-            # Promote task to PROCESS
-            # ---------------------------------------------------
-            db.file_task_update(
-                task_id=file_task_id,
-                NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
-                NU_STATUS=k.TASK_PENDING,
-                NA_SERVER_FILE_PATH=server_file_path,
-                NA_SERVER_FILE_NAME=server_filename,
-                NA_MESSAGE=tools.compose_message(
-                    task_type=k.FILE_TASK_BACKUP_TYPE,
-                    task_status=k.TASK_DONE,
-                    path=task["FILE_TASK__NA_HOST_FILE_PATH"],
-                    name=task["FILE_TASK__NA_HOST_FILE_NAME"],
-                ),
-            )
+                    # ---------------------------------------------------
+                    # Promote task to PROCESS
+                    # ---------------------------------------------------
+                    db.file_task_update(
+                        task_id=file_task_id,
+                        NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+                        NU_STATUS=k.TASK_PENDING,
+                        NA_SERVER_FILE_PATH=server_file_path,
+                        NA_SERVER_FILE_NAME=server_filename,
+                        VL_FILE_SIZE_KB=updated_size_kb,
+                        NA_MESSAGE=tools.compose_message(
+                            task_type=k.FILE_TASK_BACKUP_TYPE,
+                            task_status=k.TASK_DONE,
+                            path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                            name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                        ),
+                    )
+                except Exception as e:
+                    err.set("Post-transfer update failed", "FINALIZE", e)
 
+
+        # -------------------------------------------------
+        # Unexpected error handling (catch-all)
+        # -------------------------------------------------
         except Exception as e:
             log.error(f"[WORKER {worker_id}] {e}")
-            err.set("Backup failed", stage="BACKUP", exc=e)
-            err.log_error(host_id=host_id, task_id=file_task_id)
 
-            if file_task_id:
+            if not err.triggered:
+                err.set(f"Backup failed | {str(e)}", stage="BACKUP", exc=e)
+
+        
+        # ==============================================================
+        # FINALLY — UNLOCK + CLEANUP (ALWAYS EXECUTED)
+        # ==============================================================
+        finally:
+            # -------------------------------------------------
+            # Persist ERROR state (centralized)
+            # -------------------------------------------------
+            if err.triggered and file_task_id is not None:
+
+                err.log_error(host_id=host_id, task_id=file_task_id)
+
+                # Build Message with error details for both FILE_TASK and FILE_HISTORY
                 NA_MESSAGE = tools.compose_message(
                     task_type=k.FILE_TASK_BACKUP_TYPE,
                     task_status=k.TASK_ERROR,
                 )
+                NA_MESSAGE = f"{NA_MESSAGE} | {err.format_error()}"
 
-                if err.triggered:
-                    NA_MESSAGE = f"{NA_MESSAGE} | {err.format_error()}"
-
-                db.file_task_update(
-                    task_id=file_task_id,
-                    NU_STATUS=k.TASK_ERROR,
-                    NA_MESSAGE=NA_MESSAGE,
-                )
-
-                db.file_history_update(
-                    task_type=k.FILE_TASK_BACKUP_TYPE,
-                    host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
-                    NA_SERVER_FILE_NAME=server_filename,
-                    NA_SERVER_FILE_PATH=server_file_path,
-                    NU_STATUS_BACKUP=k.TASK_ERROR,
-                    NA_MESSAGE=NA_MESSAGE,
-                )
-
-        finally:
-            try:
-                if sftp_conn:
-                    sftp_conn.close()
-            except Exception:
-                pass
-
-            if host_id:
                 try:
-                    if db.host_check_free(
-                        host_id=host_id,
+                    db.file_task_update(
+                        task_id=file_task_id,
+                        NU_STATUS=k.TASK_ERROR,
+                        NA_MESSAGE=NA_MESSAGE,
+                    )
+
+                    db.file_history_update(
                         task_type=k.FILE_TASK_BACKUP_TYPE,
-                    ):
-                        db.host_update(
+                        host_id=host_id,
+                        host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"] if task else None,
+                        host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"] if task else None,
+                        NA_SERVER_FILE_NAME=server_filename,
+                        NA_SERVER_FILE_PATH=server_file_path,
+                        NU_STATUS_BACKUP=k.TASK_ERROR,
+                        NA_MESSAGE=NA_MESSAGE,
+                    )
+
+                    # Host check tasks should be re-queued on connection 
+                    # errors to allow for retries after transient issues are resolved
+                    if err.stage == "CONNECT":
+                        db.queue_host_task(
                             host_id=host_id,
-                            IS_BUSY=False,
-                            NU_PID=0,
+                            task_type=k.HOST_TASK_CHECK_TYPE,
+                            task_status=k.TASK_PENDING,
+                            filter_dict=k.NONE_FILTER,
                         )
+
+                except Exception as e_db:
+                    log.error(f"[FINALIZE] Failed to persist ERROR state: {e_db}")
+
+            # -------------------------------------------------
+            # Close SFTP
+            # -------------------------------------------------
+            if sftp_conn:
+                try:
+                    sftp_conn.close()
                 except Exception:
                     pass
 
-                if file_was_transferred:
+            # -------------------------------------------------
+            # Always release host
+            # -------------------------------------------------
+            if host_id:
+                try:
+                    db.host_update(
+                        host_id=host_id,
+                        IS_BUSY=False,
+                        NU_PID=0,
+                    )
+                except Exception:
+                    pass
+
+                # Create statistics only on success
+                if not err.triggered and file_was_transferred:
                     try:
                         db.host_task_statistics_create(host_id=host_id)
                     except Exception:

@@ -143,6 +143,8 @@ class dbHandlerBKP(DBHandlerBase):
         "DT_FILE_MODIFIED",
         "NA_EXTENSION",
         "NA_MESSAGE",
+        "IS_PAYLOAD_DELETED",
+        "DT_PAYLOAD_DELETED",
     }
     
     # ======================================================================
@@ -1560,7 +1562,7 @@ class dbHandlerBKP(DBHandlerBase):
                 self._upsert_row(
                     table="FILE_TASK",
                     data=rows[0],
-                    unique_keys=["FK_HOST", "NA_HOST_FILE_NAME"],
+                    unique_keys=["FK_HOST", "NA_HOST_FILE_PATH","NA_HOST_FILE_NAME"],
                     commit=False,
                     touch_field="DT_FILE_TASK",
                     log_each=False,
@@ -1574,7 +1576,7 @@ class dbHandlerBKP(DBHandlerBase):
                 processed = self._upsert_batch(
                     table="FILE_TASK",
                     rows=rows,
-                    unique_keys=["FK_HOST", "NA_HOST_FILE_NAME"],
+                    unique_keys=["FK_HOST", "NA_HOST_FILE_PATH","NA_HOST_FILE_NAME"],
                     touch_field="DT_FILE_TASK",
                     batch_size=1000,
                     commit=False,
@@ -1598,72 +1600,130 @@ class dbHandlerBKP(DBHandlerBase):
             self._disconnect()
 
 
-
-
-    def file_task_update(self, task_id: int, **kwargs) -> None:
+    def file_task_update(
+        self,
+        *,
+        task_id: Optional[int] = None,
+        host_id: Optional[int] = None,
+        host_file_path: Optional[str] = None,
+        host_file_name: Optional[str] = None,
+        server_file_name: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
         """
-        Update a specific FILE_TASK entry in the database.
+        Safe and deterministic FILE_TASK update.
 
-        Dynamically updates one or more columns in the FILE_TASK table using the
-        internal `_update_rows()` helper. Only valid fields (as defined in
-        `VALID_FIELDS_FILE_TASK`) are accepted.
+        Identification strategies (exactly one required):
 
-        Args:
-            task_id (int):
-                The ID of the FILE_TASK record to update.
-            **kwargs:
-                Arbitrary column-value pairs corresponding to FILE_TASK fields.
-                Example:
-                    >>> db.file_task_update(
-                    ...     task_id=123,
-                    ...     NU_STATUS=k.TASK_DONE,
-                    ...     NA_MESSAGE="Backup completed successfully."
-                    ... )
+            1) task_id (ID_FILE_TASK)
+            2) (host_id, host_file_path, host_file_name)
+            3) (host_id, server_file_name)  -> only when server_file_name IS NOT NULL
 
-        Raises:
-            ValueError:
-                If invalid fields are passed.
-            Exception:
-                If SQL execution or commit fails.
-
-        Returns:
-            None
+        Update semantics:
+            - Field omitted  -> not updated
+            - Field=None     -> not updated
+            - Field=value    -> updated
         """
-        
+
         self._connect()
-        if not kwargs:
-            self.log.warning(f"[DBHandlerBKP] No fields provided for file_task_update (ID={task_id}).")
-            return
 
-        # --- Validate fields ---
+        # -------------------------------------------------
+        # Validate update fields
+        # -------------------------------------------------
+        if not kwargs:
+            self.log.warning("[DBHandlerBKP] No fields provided for file_task_update.")
+            self._disconnect()
+            return {
+                "success": False,
+                "rows_affected": 0,
+                "updated_fields": {},
+            }
+
         valid_fields = getattr(self, "VALID_FIELDS_FILE_TASK", set())
+
         for key in kwargs.keys():
             if key not in valid_fields:
                 raise ValueError(f"Invalid field '{key}' for FILE_TASK table update.")
 
+        # -------------------------------------------------
+        # Build deterministic WHERE clause
+        # -------------------------------------------------
+        where_dict: Dict[str, Any] = {}
+
+        # OPTION 1 — Primary Key
+        if task_id is not None:
+            where_dict = {"ID_FILE_TASK": task_id}
+
+        # OPTION 2 — Unique host composite key
+        elif (
+            host_id is not None
+            and host_file_path is not None
+            and host_file_name is not None
+        ):
+            where_dict = {
+                "FK_HOST": host_id,
+                "NA_HOST_FILE_PATH": host_file_path,
+                "NA_HOST_FILE_NAME": host_file_name,
+            }
+
+        # OPTION 3 — Post-backup unique key
+        elif (
+            host_id is not None
+            and server_file_name is not None
+        ):
+            where_dict = {
+                "FK_HOST": host_id,
+                "NA_SERVER_FILE_NAME": server_file_name,
+            }
+
+        else:
+            raise ValueError(
+                "Invalid identification strategy for FILE_TASK update. "
+                "Use one of:\n"
+                "1) task_id\n"
+                "2) (host_id, host_file_path, host_file_name)\n"
+                "3) (host_id, server_file_name)"
+            )
+
+        # -------------------------------------------------
+        # Execute UPDATE
+        # -------------------------------------------------
         try:
             affected = self._update_row(
                 table="FILE_TASK",
                 data=kwargs,
-                where={"ID_FILE_TASK": task_id},
+                where=where_dict,
                 commit=True,
             )
 
-            if affected:
-                self.log.entry(
-                    f"[DBHandlerBKP] FILE_TASK {task_id} updated successfully with fields: "
-                    f"{', '.join(kwargs.keys())}."
+            if affected != 1:
+                self.log.warning(
+                    f"[DBHandlerBKP] FILE_TASK update affected {affected} rows "
+                    f"(expected 1). WHERE={where_dict}"
                 )
             else:
-                self.log.warning(f"[DBHandlerBKP] FILE_TASK {task_id} not found or not updated.")
-            
-            self._disconnect()
+                self.log.entry(
+                    f"[DBHandlerBKP] FILE_TASK updated successfully "
+                    f"WHERE={where_dict} | fields={list(kwargs.keys())}"
+                )
+
+            return {
+                "success": True,
+                "rows_affected": affected,
+                "updated_fields": kwargs,
+                "where_used": where_dict,
+            }
 
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[DBHandlerBKP] Failed to update FILE_TASK {task_id}: {e}")
-            self._disconnect()
+            self.log.error(
+                f"[DBHandlerBKP] Failed to update FILE_TASK "
+                f"(WHERE={where_dict}): {e}"
+            )
             raise
+
+        finally:
+            self._disconnect()
 
 
     def file_task_delete(self, task_id: int) -> int:
@@ -2207,6 +2267,8 @@ class dbHandlerBKP(DBHandlerBase):
                     "DT_BACKUP": None,
                     "DT_PROCESSED": None,
                     "NU_STATUS_DISCOVERY": k.TASK_DONE,
+                    "NU_STATUS_BACKUP": k.TASK_PENDING,
+                    "NU_STATUS_PROCESSING": k.TASK_PENDING,
 
                     "NA_MESSAGE": msg,
                 })
@@ -2218,7 +2280,7 @@ class dbHandlerBKP(DBHandlerBase):
                 self._upsert_row(
                     table="FILE_TASK_HISTORY",
                     data=rows[0],
-                    unique_keys=["FK_HOST", "NA_HOST_FILE_NAME", "NU_TYPE"],
+                    unique_keys=["FK_HOST", "NA_HOST_FILE_NAME", "NA_HOST_FILE_PATH"],
                     commit=False,
                     touch_field="DT_DISCOVERED",
                     log_each=False,
@@ -2232,7 +2294,7 @@ class dbHandlerBKP(DBHandlerBase):
                 processed = self._upsert_batch(
                     table="FILE_TASK_HISTORY",
                     rows=rows,
-                    unique_keys=["FK_HOST", "NA_HOST_FILE_NAME", "NU_TYPE"],
+                    unique_keys=["FK_HOST", "NA_HOST_FILE_NAME", "NA_HOST_FILE_PATH"],
                     touch_field="DT_DISCOVERED",
                     batch_size=1000,
                     commit=False,
@@ -2259,28 +2321,29 @@ class dbHandlerBKP(DBHandlerBase):
 
     def file_history_update(
         self,
-        task_type: int,
+        task_type: Optional[int] = None,
         *,
+        history_id: Optional[int] = None,
+        host_id: Optional[int] = None,
+        host_file_path: Optional[str] = None,
         host_file_name: Optional[str] = None,
         server_file_name: Optional[str] = None,
-        task_id: Optional[int] = None,
-        host_id: Optional[int] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """
-        Update an existing FILE_TASK_HISTORY entry.
+        Safe and deterministic FILE_TASK_HISTORY update.
 
-        Identification (WHERE):
-            - ID_HISTORY (task_id)
-            - NA_HOST_FILE_NAME
-            - NA_SERVER_FILE_NAME
-            - FK_HOST (optional)
+        Identification strategies (exactly one required):
+
+            1) history_id
+            2) (host_id, host_file_path, host_file_name)
+            3) (host_id, server_file_name)  -> only when server_file_name IS NOT NULL
 
         Update semantics:
             - Field omitted      -> not updated
             - Field=None         -> not updated
             - Field=SET_NULL     -> explicitly updated to NULL
-            - Field=value        -> updated to value
+            - Field=value        -> updated
         """
 
         self._connect()
@@ -2289,14 +2352,15 @@ class dbHandlerBKP(DBHandlerBase):
         # -------------------------------------------------
         # Automatic timestamps
         # -------------------------------------------------
-        if task_type == k.FILE_TASK_BACKUP_TYPE and not kwargs.get("DT_BACKUP"):
-            kwargs["DT_BACKUP"] = datetime.now()
+        if task_type:
+            if task_type == k.FILE_TASK_BACKUP_TYPE and not kwargs.get("DT_BACKUP"):
+                kwargs["DT_BACKUP"] = datetime.now()
 
-        elif task_type == k.FILE_TASK_PROCESS_TYPE and not kwargs.get("DT_PROCESSED"):
-            kwargs["DT_PROCESSED"] = datetime.now()
+            elif task_type == k.FILE_TASK_PROCESS_TYPE and not kwargs.get("DT_PROCESSED"):
+                kwargs["DT_PROCESSED"] = datetime.now()
 
         # -------------------------------------------------
-        # Validate fields
+        # Validate update fields
         # -------------------------------------------------
         if not kwargs:
             raise ValueError("No fields provided for FILE_TASK_HISTORY update.")
@@ -2306,26 +2370,43 @@ class dbHandlerBKP(DBHandlerBase):
                 raise ValueError(f"Invalid field '{key}' for FILE_TASK_HISTORY.")
 
         # -------------------------------------------------
-        # WHERE clause
+        # Build deterministic WHERE clause
         # -------------------------------------------------
         where_dict: Dict[str, Any] = {}
 
-        if task_id is not None:
-            where_dict["ID_HISTORY"] = task_id
+        # OPTION 1 — Primary Key
+        if history_id is not None:
+            where_dict = {"ID_HISTORY": history_id}
 
-        if host_file_name:
-            where_dict["NA_HOST_FILE_NAME"] = host_file_name
+        # OPTION 2 — Unique host composite key
+        elif (
+            host_id is not None
+            and host_file_path is not None
+            and host_file_name is not None
+        ):
+            where_dict = {
+                "FK_HOST": host_id,
+                "NA_HOST_FILE_PATH": host_file_path,
+                "NA_HOST_FILE_NAME": host_file_name,
+            }
 
-        if server_file_name:
-            where_dict["NA_SERVER_FILE_NAME"] = server_file_name
+        # OPTION 3 — Post-backup unique key
+        elif (
+            host_id is not None
+            and server_file_name is not None
+        ):
+            where_dict = {
+                "FK_HOST": host_id,
+                "NA_SERVER_FILE_NAME": server_file_name,
+            }
 
-        if host_id:
-            where_dict["FK_HOST"] = host_id
-
-        if not where_dict:
+        else:
             raise ValueError(
-                "At least one identifier must be provided "
-                "(task_id, host_file_name, server_file_name)."
+                "Invalid identification strategy for FILE_TASK_HISTORY update. "
+                "Use one of:\n"
+                "1) history_id\n"
+                "2) (host_id, host_file_path, host_file_name)\n"
+                "3) (host_id, server_file_name)"
             )
 
         # -------------------------------------------------
@@ -2343,9 +2424,6 @@ class dbHandlerBKP(DBHandlerBase):
                 update_data[key] = value
 
         if not update_data:
-            self.log.warning(
-                "[DBHandlerBKP] No effective fields to update in FILE_TASK_HISTORY."
-            )
             self._disconnect()
             return {
                 "success": True,
@@ -2365,6 +2443,12 @@ class dbHandlerBKP(DBHandlerBase):
                 commit=True,
             )
 
+            if affected_rows != 1:
+                self.log.warning(
+                    f"[DBHandlerBKP] FILE_TASK_HISTORY update affected {affected_rows} rows "
+                    f"(expected 1). WHERE={where_dict}"
+                )
+
             return {
                 "success": True,
                 "rows_affected": affected_rows,
@@ -2376,7 +2460,7 @@ class dbHandlerBKP(DBHandlerBase):
             self.db_connection.rollback()
             self.log.error(
                 f"[DBHandlerBKP] Failed to update FILE_TASK_HISTORY "
-                f"({where_dict}): {e}"
+                f"(WHERE={where_dict}): {e}"
             )
             raise
 
@@ -2391,13 +2475,42 @@ class dbHandlerBKP(DBHandlerBase):
         batch_size: int,
     ) -> List["FileMetadata"]:
         """
-        Filter out FileMetadata objects that already exist in the database.
+        Deduplicate a batch of FileMetadata objects against FILE_TASK_HISTORY.
 
-        Deduplication key:
-            (FK_HOST, NA_HOST_FILE_NAME, DT_FILE_CREATED, VL_FILE_SIZE_KB)
+        Identity definition (logical key):
+            (FK_HOST, NA_HOST_FILE_NAME, VL_FILE_SIZE_KB, minute(DT_FILE_CREATED))
 
-        Normalization rule:
-            • DT_FILE_CREATED is always compared as datetime.datetime
+        IMPORTANT:
+            Timestamp comparison is intentionally performed at MINUTE precision.
+            Seconds and microseconds are considered unstable and irrelevant
+            for CelPlan DONE.zip identity semantics.
+
+        Rationale:
+            • NTFS may provide sub-second precision.
+            • MySQL DATETIME may truncate microseconds.
+            • Different drivers may alter timestamp precision.
+            • Exact datetime equality is therefore unsafe.
+
+            By normalizing to minute precision we guarantee:
+                - Deterministic deduplication
+                - Stability across re-discovery cycles
+                - Compatibility with historical records
+                - Independence from filesystem precision differences
+
+        Architectural guarantees:
+            • No modification of existing DB records required.
+            • No dependency on DB column precision.
+            • Idempotent behavior under REDISCOVERY mode.
+            • Batch memory bounded by `batch_size`.
+
+        Constraints:
+            • Assumes CelPlan does not generate two distinct files
+            with same name, size and creation minute.
+            • If that assumption changes, identity model must be revisited.
+
+        Returns:
+            List[FileMetadata] containing only files not already
+            present in FILE_TASK_HISTORY under the defined identity.
         """
 
         if not batch:
@@ -2409,7 +2522,14 @@ class dbHandlerBKP(DBHandlerBase):
             )
 
         # ------------------------------------------------------------
-        # Build derived table (UNION ALL) from FileMetadata batch
+        # Build a derived table from the in-memory batch
+        #
+        # Each row contains:
+        #   - file name
+        #   - creation timestamp (raw)
+        #   - file size
+        #
+        # Deduplication is delegated to SQL using minute-level comparison.
         # ------------------------------------------------------------
         row_sql = "SELECT %s AS name, %s AS created, %s AS size"
         union_sql = " UNION ALL ".join([row_sql] * len(batch))
@@ -2420,14 +2540,14 @@ class dbHandlerBKP(DBHandlerBase):
                 {union_sql}
             ) AS f
             JOIN FILE_TASK_HISTORY h
-            ON h.FK_HOST = %s
-            AND h.NA_HOST_FILE_NAME = f.name
-            AND h.DT_FILE_CREATED = f.created
-            AND h.VL_FILE_SIZE_KB = f.size
+                ON h.FK_HOST = %s
+                AND h.NA_HOST_FILE_NAME = f.name
+                AND h.VL_FILE_SIZE_KB = f.size
+                AND TIMESTAMPDIFF(MINUTE, h.DT_FILE_CREATED, f.created) = 0
         """
 
         # ------------------------------------------------------------
-        # Bind parameters
+        # Bind parameters (no normalization here — SQL handles minute logic)
         # ------------------------------------------------------------
         params: list[object] = []
 
@@ -2446,39 +2566,222 @@ class dbHandlerBKP(DBHandlerBase):
         params.append(host_id)
 
         # ------------------------------------------------------------
-        # Execute query
+        # Execute deduplication query
         # ------------------------------------------------------------
         self._connect()
         rows = self._select_raw(sql, tuple(params))
 
         # ------------------------------------------------------------
-        # Normalize DB values → datetime
+        # Build set of existing identity keys (normalized to minute)
+        #
+        # Even though SQL already matches by minute, we normalize again
+        # here for deterministic in-memory comparison.
         # ------------------------------------------------------------
         existing_keys = set()
 
         for row in rows:
             created = row["created"]
 
-            if isinstance(created, datetime):
-                created_dt = created
-            else:
-                # Defensive normalization (MariaDB / MySQL often returns str)
-                created_dt = datetime.fromisoformat(str(created))
+            if not isinstance(created, datetime):
+                created = datetime.fromisoformat(str(created))
+
+            created_minute = created.replace(second=0, microsecond=0)
 
             existing_keys.add((
                 row["name"],
-                created_dt,
+                created_minute,
                 row["size"],
             ))
 
         # ------------------------------------------------------------
-        # Filter original batch (preserve FileMetadata objects)
+        # Filter original batch using minute-level identity
         # ------------------------------------------------------------
-        return [
-            m for m in batch
-            if (
+        result = []
+
+        for m in batch:
+            created_minute = m.DT_FILE_CREATED.replace(second=0, microsecond=0)
+
+            key = (
                 m.NA_FILE,
-                m.DT_FILE_CREATED,
+                created_minute,
                 m.VL_FILE_SIZE_KB,
-            ) not in existing_keys
-        ]
+            )
+
+            if key not in existing_keys:
+                result.append(m)
+
+        return result
+    
+        
+    def file_task_insert_batch(
+        self,
+        rows: list[dict],
+        batch_size: int = 4000,
+    ) -> int:
+
+        if not rows:
+            return 0
+
+        self._connect()
+        processed = 0
+
+        try:
+            cursor = self.db_connection.cursor()
+
+            columns = list(rows[0].keys())
+            cols_sql = ", ".join(columns)
+            placeholders = ", ".join(["%s"] * len(columns))
+
+            sql = f"""
+                INSERT INTO FILE_TASK ({cols_sql})
+                VALUES ({placeholders})
+            """
+
+            batch = []
+
+            for row in rows:
+                batch.append(tuple(row[col] for col in columns))
+
+                if len(batch) >= batch_size:
+                    cursor.executemany(sql, batch)
+                    processed += len(batch)
+                    batch.clear()
+
+            if batch:
+                cursor.executemany(sql, batch)
+                processed += len(batch)
+
+            self.db_connection.commit()
+
+            self.log.entry(
+                f"[DB] Batch INSERT FILE_TASK | rows={processed}"
+            )
+
+            return processed
+
+        except Exception:
+            self.db_connection.rollback()
+            raise
+
+        finally:
+            self._disconnect()
+            
+    def file_history_insert_batch(
+        self,
+        rows: list[dict],
+        batch_size: int = 4000,
+    ) -> int:
+
+        if not rows:
+            return 0
+
+        self._connect()
+        processed = 0
+
+        try:
+            cursor = self.db_connection.cursor()
+
+            columns = list(rows[0].keys())
+            cols_sql = ", ".join(columns)
+            placeholders = ", ".join(["%s"] * len(columns))
+
+            sql = f"""
+                INSERT INTO FILE_TASK_HISTORY ({cols_sql})
+                VALUES ({placeholders})
+            """
+
+            batch = []
+
+            for row in rows:
+                batch.append(tuple(row[col] for col in columns))
+
+                if len(batch) >= batch_size:
+                    cursor.executemany(sql, batch)
+                    processed += len(batch)
+                    batch.clear()
+
+            if batch:
+                cursor.executemany(sql, batch)
+                processed += len(batch)
+
+            self.db_connection.commit()
+
+            self.log.entry(
+                f"[DB] Batch INSERT FILE_TASK_HISTORY | rows={processed}"
+            )
+
+            return processed
+
+        except Exception:
+            self.db_connection.rollback()
+            raise
+
+        finally:
+            self._disconnect()
+            
+    # ======================================================================
+    # GARBAGE COLLECTION
+    # ======================================================================
+    def file_history_get_gc_candidates(self, batch_size: int, quarantine_days: int):
+        """
+        Retrieve FILE_TASK_HISTORY records eligible for garbage collection.
+
+        Criteria:
+            - NU_STATUS_PROCESSING = -1
+            - IS_PAYLOAD_DELETED = 0
+            - DT_FILE_CREATED older than quarantine_days
+            (NULL timestamps are also considered eligible)
+
+        Args:
+            batch_size (int):
+                Maximum number of records returned.
+
+            quarantine_days (int):
+                Minimum file age in days.
+
+        Returns:
+            List[Dict[str, Any]]:
+                Rows containing ID_HISTORY, NA_SERVER_FILE_PATH,
+                and NA_SERVER_FILE_NAME.
+        """
+        self._connect()
+        where = {
+            "NU_STATUS_PROCESSING": -1,
+            "IS_PAYLOAD_DELETED": 0,
+            "#CUSTOM#QUARANTINE": (
+                f"(DT_FILE_CREATED IS NULL OR "
+                f"DT_FILE_CREATED < NOW() - INTERVAL {quarantine_days} DAY)"
+            )
+        }
+
+        return self._select_rows(
+            table="FILE_TASK_HISTORY",
+            where=where,
+            order_by="DT_FILE_CREATED, ID_HISTORY",
+            limit=batch_size,
+            cols=[
+                "ID_HISTORY",
+                "NA_SERVER_FILE_PATH",
+                "NA_SERVER_FILE_NAME"
+            ]
+        )
+        
+
+    def file_history_mark_payload_deleted(self, history_id: int) -> None:
+        """
+        Mark payload as deleted in FILE_TASK_HISTORY.
+
+        Args:
+            history_id (int):
+                FILE_TASK_HISTORY primary key.
+        """
+        self._connect()
+        self._update_rows(
+            table="FILE_TASK_HISTORY",
+            where={"ID_HISTORY": history_id},
+            data={
+                "IS_PAYLOAD_DELETED": 1,
+                "DT_PAYLOAD_DELETED": datetime.now()
+            }
+        )
+    
