@@ -165,6 +165,7 @@ def main() -> None:
         host_id = None
         task_id = None
         fatal_error = False   # FIX: global flag to ensure final cleanup always happens
+        connect_busy = False
 
         try:
             # ==========================================================
@@ -219,12 +220,18 @@ def main() -> None:
 
                 except paramiko.AuthenticationException as e:
                     err.set("Authentication failed (bad credentials)", stage="AUTH", exc=e)
+                
+                except paramiko.ssh_exception.NoValidConnectionsError as e:
+                    connect_busy = True
+                    log.warning(f"[Discovery] Host busy, retry later (host_id={host_id})")
+                    continue
 
                 except paramiko.SSHException as e:
                     err.set("SSH negotiation failed", stage="SSH", exc=e)
 
                 except Exception as e:
                     err.set("SSH/SFTP initialization failed", stage="CONNECT", exc=e)
+                
 
             # Do not allow the pipeline to proceed after any failure
             if err.triggered:
@@ -332,6 +339,19 @@ def main() -> None:
         # ==============================================================
         finally:
 
+            if connect_busy:
+                log.warning(
+                    f"[Discovery] Host busy, retry later (host_id={host_id})"
+                )
+                
+                db.host_task_update(
+                    task_id=task_id,
+                    NU_STATUS=k.TASK_PENDING,
+                    NU_PID=0,
+                    DT_HOST_TASK=datetime.now(),
+                    NA_MESSAGE="Host busy, retrying later",
+                )
+       
             # Handle TASK error state
             if err.triggered and task_id:
                 err.log_error(host_id=host_id, task_id=task_id)
@@ -352,13 +372,13 @@ def main() -> None:
                 if err.stage == "CONNECT":
                     db.queue_host_task(
                         host_id=host_id,
-                        task_type=k.HOST_TASK_CHECK_TYPE,
+                        task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
                         task_status=k.TASK_PENDING,
                         filter_dict=k.NONE_FILTER,
                     )
 
             # Always unlock host regardless of errors
-            if host_id is not None:
+            if host_id is not None and not connect_busy:
                 try:
                     db.host_update(
                         host_id=host_id,

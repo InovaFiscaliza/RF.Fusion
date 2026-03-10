@@ -192,7 +192,6 @@ def map_location_to_data(location, data):
     return data
 
 
-
 # ===============================================================
 # FILE OPERATIONS
 # ===============================================================
@@ -201,10 +200,18 @@ def file_move(filename, path, new_path):
     """
     Move a file from (path/filename) to (new_path/filename),
     creating intermediate directories if necessary.
+
+    Unlike os.renames(), this function NEVER removes source
+    directories, preventing race conditions with backup workers.
     """
+
     source = f"{path}/{filename}"
     target = f"{new_path}/{filename}"
-    os.renames(source, target)
+
+    os.makedirs(new_path, exist_ok=True)
+
+    os.rename(source, target)
+
     return {"filename": filename, "path": new_path}
 
 

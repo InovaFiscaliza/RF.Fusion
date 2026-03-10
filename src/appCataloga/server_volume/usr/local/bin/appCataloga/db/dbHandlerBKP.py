@@ -878,10 +878,7 @@ class dbHandlerBKP(DBHandlerBase):
         # Fetch existing operational task (CHECK / PROCESSING)
         tasks = self.check_host_task(
             FK_HOST=host_id,
-            NU_TYPE=[
-                k.HOST_TASK_CHECK_TYPE,
-                k.HOST_TASK_PROCESSING_TYPE,
-            ],
+            NU_TYPE=task_type,
             FILTER=filter_json,
         )
 
@@ -895,9 +892,10 @@ class dbHandlerBKP(DBHandlerBase):
                 pass
 
             # TERMINAL task → refresh
-            elif status in (k.TASK_ERROR, k.TASK_SUSPENDED):
+            # Have to be reseted to HOST_CHECK because first
                 self.host_task_update(
                     task_id=existing["HOST_TASK__ID_HOST_TASK"],
+                    NU_TYPE=task_type,
                     NU_STATUS=k.TASK_PENDING,
                     DT_HOST_TASK=datetime.now(),
                     NA_MESSAGE=(
@@ -1414,75 +1412,63 @@ class dbHandlerBKP(DBHandlerBase):
         task_type: Optional[int] = None,
         check_host_busy: bool = True,
         extension: Optional[str] = None,
+        lock_host: bool = False,
     ) -> Optional[tuple]:
         """
         Return a single FILE_TASK record joined with HOST metadata.
 
-        This method is used by workers to fetch exactly one task
-        (either the oldest pending task or a task selected by ID).
-
-        Optional filters allow fine-grained task selection, including
-        filtering by file extension when applicable.
+        Optionally performs an atomic HOST lock to prevent multiple workers
+        from processing the same host simultaneously.
 
         Args:
             task_id (Optional[int]):
-                If provided, performs a direct lookup by FILE_TASK ID
-                and ignores all other filters.
+                Direct lookup by FILE_TASK ID.
             task_status (Optional[int]):
-                Task status filter (e.g. PENDING, RUNNING).
+                Task status filter.
             task_type (Optional[int]):
-                Task type filter (e.g. BACKUP, DISCOVERY).
+                Task type filter.
             check_host_busy (bool):
-                If True, excludes tasks whose host is currently BUSY.
+                Exclude BUSY hosts if True.
             extension (Optional[str]):
-                If provided, filters tasks by file extension
-                (e.g. ".bin", ".dbm").
+                File extension filter.
+            lock_host (bool):
+                If True, attempts to atomically lock the host
+                (IS_BUSY=1) before returning the task.
 
         Returns:
             Optional[tuple]:
-                (row_dict, host_id, file_task_id) or None if no task matches.
+                (row_dict, host_id, file_task_id) or None.
         """
 
         # --------------------------------------------------------------
-        # 0) Connect to database
+        # 0) Connect
         # --------------------------------------------------------------
         self._connect()
 
         # --------------------------------------------------------------
-        # 1) WHERE clause construction
+        # 1) WHERE clause
         # --------------------------------------------------------------
         where = {}
 
         if task_id:
-            # Direct lookup → ignore all other filters
             where["FT.ID_FILE_TASK"] = task_id
 
         else:
-            # Status filter
             if task_status is not None:
                 where["FT.NU_STATUS"] = task_status
 
-            # Task type filter (e.g. BACKUP, DISCOVERY)
             if task_type is not None:
                 where["FT.NU_TYPE"] = task_type
 
-            # Optional file extension filter
             if extension is not None:
                 where["FT.NA_EXTENSION"] = extension
 
-            # Exclude BUSY hosts if required
             if check_host_busy:
                 where["H.IS_BUSY"] = False
 
         # --------------------------------------------------------------
-        # 2) Execute query using generic JOIN engine
+        # 2) Select candidate task
         # --------------------------------------------------------------
-        # IMPORTANT:
-        # ORDER BY must use indexed column (ID_FILE_TASK).
-        # Ordering by DT_FILE_TASK without a composite index causes
-        # MariaDB filesort in infinite loops, leading to heap corruption
-        # in mysql client drivers (observed as malloc(): invalid size).
-
         rows = self._select_custom(
             table="FILE_TASK FT",
             joins=["JOIN HOST H ON H.ID_HOST = FT.FK_HOST"],
@@ -1491,15 +1477,45 @@ class dbHandlerBKP(DBHandlerBase):
             limit=1,
         )
 
-        self._disconnect()
-
         if not rows:
+            self._disconnect()
             return None
 
         row = rows[0]
 
         file_task_id = row["FILE_TASK__ID_FILE_TASK"]
         host_id = row["HOST__ID_HOST"]
+
+        # --------------------------------------------------------------
+        # 3) Optional atomic host lock
+        # --------------------------------------------------------------
+        if lock_host and check_host_busy:
+
+            self.cursor.execute(
+                """
+                UPDATE HOST
+                SET
+                    IS_BUSY = 1,
+                    DT_BUSY = NOW(),
+                    NU_PID = %s
+                WHERE
+                    ID_HOST = %s
+                    AND IS_BUSY = 0
+                """,
+                (os.getpid(), host_id),
+            )
+
+            if self.cursor.rowcount == 0:
+                # Another worker locked it
+                self._disconnect()
+                return None
+
+            self.db_connection.commit()
+
+        # --------------------------------------------------------------
+        # 4) Return task
+        # --------------------------------------------------------------
+        self._disconnect()
 
         return row, host_id, file_task_id
 
@@ -1608,6 +1624,7 @@ class dbHandlerBKP(DBHandlerBase):
         host_file_path: Optional[str] = None,
         host_file_name: Optional[str] = None,
         server_file_name: Optional[str] = None,
+        expected_status: Optional[int] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """
@@ -1617,7 +1634,13 @@ class dbHandlerBKP(DBHandlerBase):
 
             1) task_id (ID_FILE_TASK)
             2) (host_id, host_file_path, host_file_name)
-            3) (host_id, server_file_name)  -> only when server_file_name IS NOT NULL
+            3) (host_id, server_file_name)
+
+        Optional optimistic lock:
+
+            expected_status:
+                If provided, the update will only occur when
+                FILE_TASK.NU_STATUS matches this value.
 
         Update semantics:
             - Field omitted  -> not updated
@@ -1684,6 +1707,12 @@ class dbHandlerBKP(DBHandlerBase):
                 "2) (host_id, host_file_path, host_file_name)\n"
                 "3) (host_id, server_file_name)"
             )
+
+        # -------------------------------------------------
+        # Optional optimistic lock
+        # -------------------------------------------------
+        if expected_status is not None:
+            where_dict["NU_STATUS"] = expected_status
 
         # -------------------------------------------------
         # Execute UPDATE

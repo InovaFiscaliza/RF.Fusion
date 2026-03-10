@@ -273,29 +273,90 @@ def transfer_file_task(
     discovery_size_kb: float,
 ) -> float:
     """
-    Transfer file with integrity validation.
+    Transfer a file from a remote host to the local repository with integrity validation.
 
-    Rules:
-        - Remote file must exist
-        - Remote size must be > 0
-        - Local size must be > 0
-        - Local size must NOT be smaller than discovery size
-        - Local size must NOT be smaller than remote size
-        - Remote file may grow during transfer (accepted)
+    This function ensures that the transferred file is valid and consistent with both
+    the discovery metadata and the authoritative remote file size.
 
-    Returns:
-        float: confirmed file size in KB (final local size)
+    Validation rules:
 
-    Raises:
-        FileNotFoundError
-        RuntimeError (integrity violations)
-        TimeoutError (from run_with_timeout)
-        Any SFTP exception
+        1. Remote file must exist.
+        2. Remote file size must be > 0.
+        3. Local file must exist after transfer.
+        4. Local file size must be > 0.
+        5. Local file must NOT be smaller than the remote file size.
+        6. Local file must NOT be smaller than the discovery size beyond a threshold.
+        7. Remote file growth during transfer is accepted.
+
+    FILE_THRESHOLD_SIZE_KB is used to tolerate small differences caused by:
+
+        - rounding during discovery
+        - filesystem allocation differences
+        - minor metadata inconsistencies
+
+    If a valid file already exists locally and its size is within the threshold
+    relative to the discovery size, the transfer is skipped.
+
+    Returns
+    -------
+    float
+        Final local file size in KB.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the remote file does not exist.
+
+    RuntimeError
+        If integrity validation fails.
+
+    TimeoutError
+        If the transfer exceeds HOST_BUSY_TIMEOUT.
     """
 
     remote_path = f"{remote_dir}/{remote_filename}"
     final_file = os.path.join(local_path, server_filename)
     tmp_file = final_file + ".tmp"
+
+    # ---------------------------------------------------------
+    # 0) Local file pre-check (skip download if already valid)
+    # ---------------------------------------------------------
+    if os.path.exists(final_file):
+        local_size_bytes = os.path.getsize(final_file)
+
+        if local_size_bytes > 0:
+            local_size_kb = local_size_bytes / 1024
+
+            if local_size_kb + k.FILE_THRESHOLD_SIZE_KB >= discovery_size_kb:
+                sftp.log.entry(
+                    f"[BACKUP] File already present and within threshold, "
+                    f"skipping transfer: {server_filename}"
+                )
+
+                return local_size_kb
+            else:
+                sftp.log.warning(
+                    f"[BACKUP] Existing file outside discovery threshold, "
+                    f"re-downloading: {server_filename}"
+                )
+                try:
+                    os.remove(final_file)
+                except Exception:
+                    pass
+        else:
+            try:
+                os.remove(final_file)
+            except Exception:
+                pass
+
+    # ---------------------------------------------------------
+    # Remove leftover tmp from previous crash
+    # ---------------------------------------------------------
+    if os.path.exists(tmp_file):
+        try:
+            os.remove(tmp_file)
+        except Exception:
+            pass
 
     # ---------------------------------------------------------
     # 1) Validate remote existence
@@ -341,23 +402,23 @@ def transfer_file_task(
     local_size_kb = local_size_bytes / 1024
 
     # ---------------------------------------------------------
-    # 5) Must not be smaller than discovery
+    # 5) Must not be smaller than remote
     # ---------------------------------------------------------
-    if local_size_kb < discovery_size_kb:
-        raise RuntimeError(
-            f"Backup invalid: local size ({local_size_kb:.2f} KB) "
-            f"is smaller than discovery size ({discovery_size_kb:.2f} KB)"
-        )
-
-    # ---------------------------------------------------------
-    # 6) Must not be smaller than remote
-    # ---------------------------------------------------------
-    # RFeye may still be writing, so:
-    # local >= remote is valid
+    # Remote size is the authoritative source during transfer.
+    # If the local file is smaller, the transfer is considered corrupted.
     if local_size_bytes < remote_size_bytes:
         raise RuntimeError(
             f"Backup corrupted: local size ({local_size_bytes} bytes) "
             f"is smaller than remote size ({remote_size_bytes} bytes)"
+        )
+
+    # ---------------------------------------------------------
+    # 6) Must not be smaller than discovery beyond threshold
+    # ---------------------------------------------------------
+    if local_size_kb + k.FILE_THRESHOLD_SIZE_KB < discovery_size_kb:
+        raise RuntimeError(
+            f"Backup invalid: local size ({local_size_kb:.2f} KB) "
+            f"is smaller than discovery size ({discovery_size_kb:.2f} KB)"
         )
 
     # ---------------------------------------------------------
@@ -392,6 +453,7 @@ def main() -> None:
         ensure_worker_pool()
 
     log.entry(f"[INIT] Backup worker {worker_id} started.")
+    legacy._random_jitter_sleep()
 
     # Initialize database handler
     try:
@@ -416,6 +478,7 @@ def main() -> None:
         server_filename = None
         server_file_path = None
         updated_size_kb = None
+        connect_busy = False
 
         try:
             # ---------------------------------------------------
@@ -425,6 +488,7 @@ def main() -> None:
                 task_status=k.TASK_PENDING,
                 task_type=k.FILE_TASK_BACKUP_TYPE,
                 check_host_busy=True,
+                lock_host=True,
             )
 
             if not row:
@@ -437,25 +501,31 @@ def main() -> None:
             # Lock host and mark task RUNNING
             # ---------------------------------------------------
             try:
-                db.host_update(
-                    host_id=host_id,
-                    IS_BUSY=True,
-                    DT_BUSY=datetime.now(),
-                    NU_PID=os.getpid(),
-                )
+                # db.host_update(
+                #     host_id=host_id,
+                #     IS_BUSY=True,
+                #     DT_BUSY=datetime.now(),
+                #     NU_PID=os.getpid(),
+                # )
 
-                db.file_task_update(
-                    task_id=file_task_id,
-                    DT_FILE_TASK=datetime.now(),
-                    NU_STATUS=k.TASK_RUNNING,
-                    NU_PID=os.getpid(),
-                    NA_MESSAGE=tools.compose_message(
-                        task_type=k.FILE_TASK_BACKUP_TYPE,
-                        task_status=k.TASK_RUNNING,
-                        path=task["FILE_TASK__NA_HOST_FILE_PATH"],
-                        name=task["FILE_TASK__NA_HOST_FILE_NAME"],
-                    ),
-                )
+                # Update File Task with expected status 
+                # to prevent multiple workers from picking the same task
+                result = db.file_task_update(
+                        task_id=file_task_id,
+                        expected_status=k.TASK_PENDING,
+                        DT_FILE_TASK=datetime.now(),
+                        NU_STATUS=k.TASK_RUNNING,
+                        NU_PID=os.getpid(),
+                        NA_MESSAGE=tools.compose_message(
+                            task_type=k.FILE_TASK_BACKUP_TYPE,
+                            task_status=k.TASK_RUNNING,
+                            path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                            name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                        ),
+                    )
+                if result["rows_affected"] != 1:
+                    host_id = None
+                    continue
             except Exception as e:
                 err.set("Failed to lock HOST or FILE_TASK", "LOCK", e)
             
@@ -471,7 +541,12 @@ def main() -> None:
                     sftp_conn, _ = legacy.init_host_context(task, log)
                 except paramiko.AuthenticationException as e:
                     err.set("Authentication failed (bad credentials)", stage="AUTH", exc=e)
-
+                    
+                except paramiko.ssh_exception.NoValidConnectionsError as e:
+                    connect_busy = True
+                    log.warning(f"[BACKUP WORKER {worker_id}] Host busy, retry later (host_id={host_id})")
+                    continue
+                
                 except paramiko.SSHException as e:
                     err.set("SSH negotiation failed", stage="SSH", exc=e)
 
@@ -582,6 +657,19 @@ def main() -> None:
         # ==============================================================
         finally:
             # -------------------------------------------------
+            # Keep FILE_TASK pending if connection was busy to allow for retry by another worker
+            # -------------------------------------------------
+            if connect_busy and file_task_id is not None and not err.triggered:
+                try:
+                    db.file_task_update(
+                        task_id=file_task_id,
+                        NU_STATUS=k.TASK_PENDING,
+                        NU_PID=0,
+                        NA_MESSAGE = "Backup deferred due to connection issues, will retry",
+                    )
+                except Exception:
+                    pass
+            # -------------------------------------------------
             # Persist ERROR state (centralized)
             # -------------------------------------------------
             if err.triggered and file_task_id is not None:
@@ -598,6 +686,7 @@ def main() -> None:
                 try:
                     db.file_task_update(
                         task_id=file_task_id,
+                        NU_TYPE=k.FILE_TASK_BACKUP_TYPE,
                         NU_STATUS=k.TASK_ERROR,
                         NA_MESSAGE=NA_MESSAGE,
                     )
@@ -618,7 +707,7 @@ def main() -> None:
                     if err.stage == "CONNECT":
                         db.queue_host_task(
                             host_id=host_id,
-                            task_type=k.HOST_TASK_CHECK_TYPE,
+                            task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
                             task_status=k.TASK_PENDING,
                             filter_dict=k.NONE_FILTER,
                         )

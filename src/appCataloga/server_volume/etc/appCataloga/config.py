@@ -76,6 +76,8 @@ BKP_TASK_MAX_WORKERS            = 10
 BKP_TASK_WORKER_SERVICE         = "usr/local/bin/appCataloga/appCataloga_file_bkp@"
 MIN_FILE_SIZE_KB                = 1         # minimum file size to be backed up in KB
 MIN_FILE_AGE_MINUTES            = 30        # minimum file age to be backed up in minutes
+FILE_THRESHOLD_SIZE_KB          = 100       # file size threshold for update file
+
 #------------------------------------------
 # metadata publishing module configuration
 #------------------------------------------
@@ -157,6 +159,7 @@ NONE_FILTER = {
 HOST_TASK_CHECK_TYPE                = 1         # Create a Host Check Task
 HOST_TASK_PROCESSING_TYPE           = 2         # Create a Host Processing Task
 HOST_TASK_UPDATE_STATISTICS_TYPE    = 3         # Create a Host Statistics Update Task
+HOST_TASK_CHECK_CONNECTION_TYPE     = 4         # Create a Host Connectivity Check Task      
 FILE_TASK_BACKUP_TYPE               = 1         # Create a backup task
 FILE_TASK_PROCESS_TYPE              = 2         # Process a backup task of indexerD mapped files
 FILE_TASK_DISCOVERY                 = 3         # Create a discovery task to get file metadata

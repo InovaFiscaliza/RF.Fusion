@@ -14,6 +14,7 @@ import socket
 import inspect
 import signal
 from datetime import datetime
+from ping3 import ping
 
 # =================================================
 # PROJECT ROOT (shared/, db/, stations/)
@@ -126,11 +127,10 @@ signal.signal(signal.SIGINT, sigint_handler)
 # ============================================================
 # Connectivity helper
 # ============================================================
-def is_host_online(host_addr: str, host_port: int, timeout: int = k.ICMP_TIMEOUT_SEC) -> bool:
-    """Simple TCP check."""
+
+def is_host_online(host_addr: str) -> bool:
     try:
-        with socket.create_connection((host_addr, host_port), timeout=timeout):
-            return True
+        return ping(host_addr, timeout=k.ICMP_TIMEOUT_SEC) is not None
     except Exception:
         return False
 
@@ -157,7 +157,7 @@ def main():
             # ====================================================
             task = db.host_task_read(
                 task_status=k.TASK_PENDING,
-                task_type=[k.HOST_TASK_CHECK_TYPE, k.HOST_TASK_UPDATE_STATISTICS_TYPE]
+                task_type=[k.HOST_TASK_CHECK_TYPE, k.HOST_TASK_UPDATE_STATISTICS_TYPE, k.HOST_TASK_CHECK_CONNECTION_TYPE],
             )
 
             if not task:
@@ -195,7 +195,7 @@ def main():
 
                 # Connectivity test
                 try:
-                    online = is_host_online(addr, port)
+                    online = is_host_online(addr)
                     log.entry(f"[CHECK] Host {addr}:{port} → "
                               f"{'ONLINE' if online else 'OFFLINE'}")
                 except Exception as e:
@@ -254,7 +254,13 @@ def main():
             # CASE 2 — HOST_TASK_UPDATE_STATISTICS_TYPE
             # ====================================================
             if not err.triggered and task_type == k.HOST_TASK_UPDATE_STATISTICS_TYPE:
-
+                
+                try:
+                    online = is_host_online(addr)
+                    log.entry(f"[CHECK] Host {addr}:{port} → "
+                              f"{'ONLINE' if online else 'OFFLINE'}")
+                except Exception as e:
+                    err.set("Connectivity test failed", "CONNECTIVITY", e)
                 try:
                     
                     # Perform statistics update
@@ -265,6 +271,65 @@ def main():
 
                 except Exception as e:
                     err.set("Statistics update failed", "UPDATE_STATS", e)
+            
+            # ====================================================
+            # CASE 3 — HOST_TASK_CHECK_CONNECTION
+            # ====================================================
+            if not err.triggered and task_type == k.HOST_TASK_CHECK_CONNECTION_TYPE:
+                
+                # Connectivity test
+                try:
+                    online = is_host_online(addr)
+                    log.entry(f"[CHECK_CONNECTION] Host {addr}:{port} → "
+                              f"{'ONLINE' if online else 'OFFLINE'}")
+                except Exception as e:
+                    err.set("Connectivity test failed", "CONNECTIVITY", e)
+
+                # DB update logic
+                if not err.triggered:
+                    try:
+                        if not online:
+                            # Host unreachable: mark offline + suspend tasks
+                            db.host_update(
+                                host_id=host_id,
+                                IS_OFFLINE=True,
+                                IS_BUSY=False,
+                                NU_PID=0,
+                                NU_HOST_CHECK_ERROR=1,
+                                DT_LAST_FAIL=now,
+                                DT_LAST_CHECK=now,
+                            )
+                            db.host_task_suspend_by_host(host_id)
+                            db.file_task_suspend_by_host(host_id)
+
+                            # Persist error instead of deleting
+                            db.host_task_update(
+                                task_id=task_id,
+                                NU_STATUS=k.TASK_ERROR,
+                                NA_MESSAGE="Host unreachable (connectivity check failed)",
+                                DT_HOST_TASK=now,
+                            )
+
+                        else:
+                            # Host reachable → reset flags, resume tasks
+                            db.host_update(
+                                host_id=host_id,
+                                IS_OFFLINE=False,
+                                check_busy_timeout=True,
+                                DT_LAST_CHECK=now,
+                            )
+
+                            # Resume suspended tasks
+                            db.host_task_resume_by_host(host_id)
+                            db.file_task_resume_by_host(host_id)
+                            db.file_history_resume_by_host(host_id)
+
+                            # Promote CHECK → PROCESSING (discovery cycle)
+                            db.host_task_delete(task_id=task_id)
+
+                    except Exception as e:
+                        err.set("DB transaction failed", "TRANSACTION", e)
+                
 
             # ====================================================
             # ERROR HANDLING (centralized)
