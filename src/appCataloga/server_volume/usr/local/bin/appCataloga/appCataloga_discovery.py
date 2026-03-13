@@ -377,13 +377,14 @@ def main() -> None:
                         filter_dict=k.NONE_FILTER,
                     )
 
-            # Always unlock host regardless of errors
-            if host_id is not None and not connect_busy:
+            # -------------------------------------------------
+            # Safe release host
+            # -------------------------------------------------
+            if host_id is not None:
                 try:
-                    db.host_update(
+                    db.host_release_safe(
                         host_id=host_id,
-                        IS_BUSY=False,
-                        NU_PID=0,
+                        current_pid=os.getpid()
                     )
                 except Exception:
                     pass

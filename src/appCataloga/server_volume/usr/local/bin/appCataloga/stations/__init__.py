@@ -5,6 +5,7 @@ Station factory and registration module.
 from .rfeye import RFEyeStation
 from .celplan import CelplanStation
 from .appColeta import AppColetaStation
+from stations.appAnaliseConnection import AppAnaliseConnection
 
 
 def station_factory(*, bin_data: dict, host_uid: str):

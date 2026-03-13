@@ -481,9 +481,10 @@ def main() -> None:
         connect_busy = False
 
         try:
-            # ---------------------------------------------------
-            # Fetch pending FILE_TASK
-            # ---------------------------------------------------
+            # ==========================================================
+            # ACT I — Fetch pending FILE_TASK
+            # Atomic fetch HOST BUSY
+            # ==========================================================
             row = db.read_file_task(
                 task_status=k.TASK_PENDING,
                 task_type=k.FILE_TASK_BACKUP_TYPE,
@@ -497,17 +498,10 @@ def main() -> None:
 
             task, host_id, file_task_id = row
 
-            # ---------------------------------------------------
-            # Lock host and mark task RUNNING
-            # ---------------------------------------------------
+            # ==========================================================
+            # ACT II — Lock HOST and TASK
+            # ==========================================================
             try:
-                # db.host_update(
-                #     host_id=host_id,
-                #     IS_BUSY=True,
-                #     DT_BUSY=datetime.now(),
-                #     NU_PID=os.getpid(),
-                # )
-
                 # Update File Task with expected status 
                 # to prevent multiple workers from picking the same task
                 result = db.file_task_update(
@@ -529,9 +523,9 @@ def main() -> None:
             except Exception as e:
                 err.set("Failed to lock HOST or FILE_TASK", "LOCK", e)
             
-            # ---------------------------------------------------
-            # Init SSH/SFTP
-            # ---------------------------------------------------
+            # ==========================================================
+            # ACT III — Init SFTP + HostDaemon
+            # ==========================================================
             if not err.triggered:
                 host = db.host_read_access(host_id)
                 if not host:
@@ -553,9 +547,9 @@ def main() -> None:
                 except Exception as e:
                     err.set("SSH/SFTP initialization failed", stage="CONNECT", exc=e)
             
-            # ---------------------------------------------------
-            # Prepare local server path
-            # ---------------------------------------------------
+            # ==========================================================
+            # ACT IV — Prepare environment
+            # ==========================================================
             if not err.triggered:
                 server_file_path = os.path.join(
                     k.REPO_FOLDER, k.TMP_FOLDER, host["host_uid"]
@@ -577,9 +571,9 @@ def main() -> None:
                         filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
                     )
 
-            # ---------------------------------------------------
-            # Transfer file
-            # ---------------------------------------------------
+            # ==========================================================
+            # ACT V — Transfer File
+            # ==========================================================
             if not err.triggered:
                 try:
                     updated_size_kb = transfer_file_task(
@@ -721,18 +715,18 @@ def main() -> None:
             if sftp_conn:
                 try:
                     sftp_conn.close()
+                    time.sleep(0.3)  # Ensure proper closure before next connection
                 except Exception:
                     pass
 
             # -------------------------------------------------
-            # Always release host
+            # Safe release host
             # -------------------------------------------------
-            if host_id:
+            if host_id is not None:
                 try:
-                    db.host_update(
+                    db.host_release_safe(
                         host_id=host_id,
-                        IS_BUSY=False,
-                        NU_PID=0,
+                        current_pid=os.getpid()
                     )
                 except Exception:
                     pass

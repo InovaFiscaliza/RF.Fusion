@@ -13,7 +13,7 @@ import os
 import socket
 import inspect
 import signal
-from datetime import datetime
+from datetime import datetime, timedelta
 from ping3 import ping
 
 # =================================================
@@ -140,6 +140,7 @@ def is_host_online(host_addr: str) -> bool:
 # ============================================================
 def main():
     log.entry("[INIT] Host check microservice started.")
+    last_host_cleanup = datetime.min
 
     try:
         db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
@@ -161,6 +162,17 @@ def main():
             )
 
             if not task:
+                # Check for stale BUSY hosts and release them if needed
+                # In this case if IS_BUSY = TRUE but there arent FILE_TASK or HOST_TASK with status RUNNING, 
+                # we can assume the host is stuck and release it if DT_BUSY > 
+                now = datetime.now()
+                if now - last_host_cleanup > timedelta(seconds=k.HOST_CLEANUP_INTERVAL):
+                    try:
+                        db.host_cleanup_stale_locks(threshold_seconds=k.HOST_CLEANUP_INTERVAL)
+                    except Exception as e:
+                        log.error(f"[HOST_CLEANUP] Failed: {e}")
+
+                    last_host_cleanup = now
                 legacy._random_jitter_sleep()
                 continue
             

@@ -813,9 +813,184 @@ class dbHandlerBKP(DBHandlerBase):
 
         finally:
             self._disconnect()
+            
+            
+    def host_release_safe(self, host_id: int, current_pid: int):
+        """
+        Safely release a HOST lock.
 
+        Rules:
+            • Release if owned by current PID
+            • Release if PID is stale
+            • Ignore if owned by another active process
+        """
 
-                              
+        host_read = self.host_read_status(host_id=host_id)
+
+        if not host_read:
+            self.log.warning(f"[CLEANUP] Host not found (host_id={host_id})")
+            return
+
+        is_busy = host_read.get("IS_BUSY")
+        pid = host_read.get("NU_PID")
+
+        if not is_busy:
+            self.log.entry(f"[CLEANUP] Host already released (host_id={host_id})")
+            return
+
+        if pid == current_pid:
+            self.log.warning(
+                f"[CLEANUP] Releasing host lock owned by this worker "
+                f"(host_id={host_id}, pid={current_pid})"
+            )
+
+            self.host_update(
+                host_id=host_id,
+                IS_BUSY=False,
+                NU_PID=0,
+            )
+            return
+
+        # stale pid detection
+        if not tools.pid_exists(pid):
+            self.log.warning(
+                f"[CLEANUP] Stale PID detected (host_id={host_id}, pid={pid}). "
+                f"Releasing lock."
+            )
+
+            self.host_update(
+                host_id=host_id,
+                IS_BUSY=False,
+                NU_PID=0,
+            )
+            return
+
+        self.log.entry(
+            f"[CLEANUP] Host lock owned by another worker "
+            f"(host_id={host_id}, owner_pid={pid})"
+        )
+
+    def host_cleanup_stale_locks(self, threshold_seconds: int) -> None:
+        """
+        Release HOST records stuck in BUSY state.
+
+        A host lock is considered stale when:
+            • No FILE_TASK is running for the host AND
+            • No HOST_TASK is running for the host
+
+        OR when the BUSY duration exceeds `threshold_seconds`.
+
+        In these cases the host is released and a connection check
+        is scheduled.
+        """
+
+        now = datetime.now()
+
+        rows = self._select_raw("""
+            SELECT
+                H.ID_HOST,
+                H.NA_HOST_NAME,
+                H.DT_BUSY,
+                H.NU_PID,
+                EXISTS(
+                    SELECT 1
+                    FROM FILE_TASK FT
+                    WHERE FT.FK_HOST = H.ID_HOST
+                    AND FT.NU_STATUS = %s
+                ) AS FILE_RUNNING,
+                EXISTS(
+                    SELECT 1
+                    FROM HOST_TASK HT
+                    WHERE HT.FK_HOST = H.ID_HOST
+                    AND HT.NU_STATUS = %s
+                ) AS HOST_RUNNING
+            FROM HOST H
+            WHERE H.IS_BUSY = TRUE
+        """, (k.TASK_RUNNING, k.TASK_RUNNING))
+
+        if not rows:
+            return
+
+        self.log.entry(
+            f"[HOST_CLEANUP] Evaluating {len(rows)} busy hosts"
+        )
+
+        for row in rows:
+
+            host_id = row["ID_HOST"]
+            host_name = row["NA_HOST_NAME"]
+            busy_since = row["DT_BUSY"]
+            pid = row["NU_PID"]
+
+            file_running = row["FILE_RUNNING"]
+            host_running = row["HOST_RUNNING"]
+
+            # -------------------------------------------------
+            # Safe elapsed computation
+            # -------------------------------------------------
+            if busy_since is None:
+                elapsed = float("inf")
+            else:
+                elapsed = (now - busy_since).total_seconds()
+
+            release = False
+            reason = None
+
+            if not file_running and not host_running:
+                release = True
+                reason = "NO_RUNNING_TASKS"
+
+            elif elapsed > threshold_seconds:
+                release = True
+                reason = "BUSY_TIMEOUT"
+
+            if not release:
+                continue
+
+            self.log.warning(
+                f"[HOST_CLEANUP] Releasing stale host "
+                f"(host_id={host_id}, host={host_name}, "
+                f"pid={pid}, busy_for={elapsed:.1f}s, reason={reason})"
+            )
+
+            # -------------------------------------------------
+            # Release host lock
+            # -------------------------------------------------
+            try:
+                self.host_update(
+                    host_id=host_id,
+                    IS_BUSY=False,
+                    NU_PID=0
+                )
+            except Exception as e:
+                self.log.error(
+                    f"[HOST_CLEANUP] Failed to release host "
+                    f"(host_id={host_id}): {e}"
+                )
+                continue
+
+            # -------------------------------------------------
+            # Schedule connectivity check
+            # -------------------------------------------------
+            try:
+                self.queue_host_task(
+                    host_id=host_id,
+                    task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
+                    task_status=k.TASK_PENDING,
+                    filter_dict=k.NONE_FILTER,
+                )
+
+                self.log.entry(
+                    f"[HOST_CLEANUP] Connection check scheduled "
+                    f"(host_id={host_id})"
+                )
+
+            except Exception as e:
+                self.log.error(
+                    f"[HOST_CLEANUP] Failed to queue connection check "
+                    f"(host_id={host_id}): {e}"
+                )
+        
     # ======================================================================
     # HOST_TASK OPERATIONS
     # ======================================================================

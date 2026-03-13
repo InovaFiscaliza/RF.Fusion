@@ -3,7 +3,7 @@
 
 """
 Export relationally consistent RF.Fusion sample dataset to Parquet.
-Fully defensive version.
+MATLAB-compatible version (strict dtype normalization).
 """
 
 import os
@@ -44,9 +44,11 @@ DB_ROOT = APP_ROOT / "db"
 SHARED_ROOT = APP_ROOT / "shared"
 ETC_ROOT = SERVER_VOLUME / "etc" / "appCataloga"
 
+
 def safe_add_path(path: Path):
     if path.exists() and str(path) not in sys.path:
         sys.path.insert(0, str(path))
+
 
 safe_add_path(ETC_ROOT)
 safe_add_path(APP_ROOT)
@@ -63,6 +65,53 @@ from db.dbHandlerBKP import dbHandlerBKP
 from db.dbHandlerRFM import dbHandlerRFM
 
 log = logging_utils.log("export_rf_fusion_sample")
+
+# =================================================
+# MATLAB dtype normalization
+# =================================================
+
+def normalize_matlab_types(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert dataframe types to MATLAB-compatible schema.
+    """
+
+    if df is None or df.empty:
+        return df
+
+    for col in df.columns:
+
+        dtype = df[col].dtype
+
+        try:
+
+            # FLOATS
+            if pd.api.types.is_float_dtype(dtype):
+                df[col] = df[col].astype("float32")
+
+            # INTEGERS
+            elif pd.api.types.is_integer_dtype(dtype):
+                df[col] = pd.to_numeric(
+                    df[col],
+                    downcast="integer"
+                )
+
+            # BOOL
+            elif pd.api.types.is_bool_dtype(dtype):
+                df[col] = df[col].astype("bool")
+
+            # DATETIME
+            elif pd.api.types.is_datetime64_any_dtype(dtype):
+                df[col] = pd.to_datetime(df[col])
+
+            # EVERYTHING ELSE -> STRING
+            else:
+                df[col] = df[col].astype("string")
+
+        except Exception as e:
+            log.warning(f"dtype conversion failed for {col}: {e}")
+
+    return df
+
 
 # =================================================
 # Helpers
@@ -91,6 +140,9 @@ def save_parquet(df, name):
     path = os.path.join(OUTPUT_DIR, f"{name}.parquet")
 
     log.entry(f"Exporting {name} ({len(df)} rows)")
+
+    # Normalize types for MATLAB
+    df = normalize_matlab_types(df)
 
     df.to_parquet(
         path,
@@ -204,8 +256,6 @@ def main():
     proc_ids = safe_get_ids(fact, "FK_PROCEDURE")
     equip_ids = safe_get_ids(fact, "FK_EQUIPMENT")
 
-    # GEO_POINT convertido para texto + lat/lon
-
     if site_ids:
 
         ids_str = ",".join(map(str, site_ids))
@@ -287,39 +337,6 @@ def main():
         fetch_dim(db_rfm, "DIM_SPECTRUM_EMITTER", "ID_EMITTER", emit_ids),
         "DIM_SPECTRUM_EMITTER"
     )
-
-    # =================================================
-    # BPDATA CONSISTENT SAMPLE
-    # =================================================
-
-    if safe_column_exists(dim_file, "NA_PATH") and safe_column_exists(dim_file, "NA_FILE"):
-
-        tuples = [
-            f"('{sql_escape(row.NA_PATH)}','{sql_escape(row.NA_FILE)}')"
-            for row in dim_file.itertuples()
-        ]
-
-        if tuples:
-
-            tuple_str = ",".join(tuples)
-
-            history = fetch_df(db_bp, f"""
-                SELECT *
-                FROM FILE_TASK_HISTORY
-                WHERE (NA_SERVER_FILE_PATH, NA_SERVER_FILE_NAME) IN ({tuple_str})
-            """)
-
-            save_parquet(history, "FILE_TASK_HISTORY")
-
-            host_ids = safe_get_ids(history, "FK_HOST")
-
-            host = fetch_dim(db_bp, "HOST", "ID_HOST", host_ids)
-            save_parquet(host, "HOST")
-
-            save_parquet(
-                fetch_dim(db_bp, "HOST_TASK", "FK_HOST", host_ids),
-                "HOST_TASK"
-            )
 
     log.entry("Export complete.")
 

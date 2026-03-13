@@ -139,4 +139,16 @@ def parse_ps_iso(ts: str) -> datetime:
 
     return datetime.fromisoformat(ts)
 
+def pid_exists(pid: int) -> bool:
+    """
+    Check if a PID exists in the system.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
 

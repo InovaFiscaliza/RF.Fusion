@@ -29,6 +29,17 @@ class BinValidationError(ValueError):
     """
     pass
 
+
+class ExternalServiceTransientError(Exception):
+    """
+    Raised when an external dependency fails transiently.
+
+    These errors should not be interpreted as proof that the source
+    file is invalid, because a retry may succeed once the dependency
+    becomes healthy again.
+    """
+    pass
+
 class ErrorHandler:
     """
     Centralized error tracking helper for microservices.

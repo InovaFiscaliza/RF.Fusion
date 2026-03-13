@@ -47,12 +47,14 @@ DB_PASSWORD             = secret["DB_PASSWORD"]
 # =================================================
 # APP_ANALISE remote processing service
 # =================================================
-APP_ANALISE_HOST_ADD        = "192.168.104.100"
+APP_ANALISE_HOST_ADD        = "192.168.104.137"
 APP_ANALISE_HOST_PORT       = 8910
 APP_ANALISE_SOCKET_TIMEOUT  = 10
 APP_ANALISE_BUFFER_SIZE     = 4096
 APP_ANALISE_KEY = "123456"
 APP_ANALISE_CLIENT_NAME = "Matlab"
+APP_ANALISE_PROCESS_TIMEOUT = 100000
+APP_ANALISE_CONNECT_TIMEOUT = 100000
 #------------------------------------------
 # SSH LIMITS
 #------------------------------------------
@@ -72,6 +74,7 @@ HOST_TASK_REQUEST_WAIT_TIME     = 1800      # seconds to wait for the HALT_FLAG 
 HALT_FLAG_CHECK_CYCLES          = 6         # number of cycles to check for HALT_FLAG (6 x 300s = 30 minutes)
 BKP_HOST_ALLOTED_TIME_FRACTION  = 0.8
 HOST_BUSY_TIMEOUT               = 18000     # 18000 seconds or 5 hours
+HOST_CLEANUP_INTERVAL           = 300       # Interval in seconds to check for and clean up stale host locks
 BKP_TASK_MAX_WORKERS            = 10
 BKP_TASK_WORKER_SERVICE         = "usr/local/bin/appCataloga/appCataloga_file_bkp@"
 MIN_FILE_SIZE_KB                = 1         # minimum file size to be backed up in KB
