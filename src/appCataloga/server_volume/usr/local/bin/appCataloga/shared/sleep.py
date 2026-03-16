@@ -1,21 +1,13 @@
+"""
+Legacy placeholder module.
+
+This file currently provides only config-path bootstrap compatibility. It is
+kept in the tree because older environments may still import it indirectly.
+"""
+
 from __future__ import annotations
 import sys
 import os
-import stat
-import time
-import json
-import paramiko
-import stat
-import random
-import ntpath
-import time
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Tuple, Optional, Union
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from enum import Enum
-
-
-
 # ---------------------------------------------------------------------
 # Config import path (as in original code). We keep the behavior so the
 # module remains drop-in compatible with existing deployments.

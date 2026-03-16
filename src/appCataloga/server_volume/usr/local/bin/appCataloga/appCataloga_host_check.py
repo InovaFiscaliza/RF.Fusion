@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-appCataloga_host_check.py — Host Connectivity and Task State Synchronizer
+Host connectivity and task-state synchronizer.
 
-This microservice verifies host connectivity and ensures HOST/HOST_TASK/FILE_TASK
-consistency. It now also handles HOST_TASK_UPDATE_STATISTICS_TYPE, delegating all
-statistic computation to db.host_update_statistics().
+This worker verifies host reachability, keeps HOST/HOST_TASK/FILE_TASK state
+consistent, and also processes deferred host-statistics refresh tasks. The flow
+stays intentionally explicit because connectivity failures directly affect queue
+resume/suspend behavior.
 """
 
 import sys
@@ -14,6 +15,7 @@ import socket
 import inspect
 import signal
 from datetime import datetime, timedelta
+
 from ping3 import ping
 
 # =================================================
@@ -54,7 +56,7 @@ process_status = {"running": True}
 
 
 # ============================================================
-# Signal Handling
+# Signal handling
 # ============================================================
 def release_busy_hosts_on_exit() -> None:
     """
@@ -65,7 +67,7 @@ def release_busy_hosts_on_exit() -> None:
     """
     try:
         pid = os.getpid()
-        log.entry(f"[CLEANUP] Releasing BUSY hosts for PID={pid}")
+        log.entry(f"event=cleanup_busy_hosts pid={pid}")
 
         # Create a fresh DB handler to avoid relying on partially
         # initialized or corrupted state during shutdown
@@ -75,48 +77,31 @@ def release_busy_hosts_on_exit() -> None:
         db.host_release_by_pid(pid)
 
     except Exception as e:
-        # Cleanup must never break process termination
-        log.error(f"[CLEANUP] Failed to release BUSY hosts: {e}")
+        log.error(f"event=cleanup_busy_hosts_failed error={e}")
+
+
+def _signal_handler(signal_name: str) -> None:
+    """
+    Register shutdown intent and release BUSY resources.
+    """
+    current_function = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"event=signal_received signal={signal_name} handler={current_function}")
+    process_status["running"] = False
+    release_busy_hosts_on_exit()
 
 
 def sigterm_handler(signal=None, frame=None) -> None:
     """
-    Handle SIGTERM (graceful shutdown signal).
-
-    This signal is typically sent by:
-    - kill <pid>
-    - pkill
-    - service stop scripts
+    Handle SIGTERM by requesting a graceful shutdown.
     """
-    global process_status, log
-
-    current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"SIGTERM received at: {current_function}()")
-
-    # Stop the main loop gracefully
-    process_status["running"] = False
-
-    # Release any HOST records locked by this process
-    release_busy_hosts_on_exit()
+    _signal_handler("SIGTERM")
 
 
 def sigint_handler(signal=None, frame=None) -> None:
     """
-    Handle SIGINT (interactive interrupt signal).
-
-    This signal is typically sent by:
-    - Ctrl+C in an attached terminal
+    Handle SIGINT by requesting a graceful shutdown.
     """
-    global process_status, log
-
-    current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"SIGINT received at: {current_function}()")
-
-    # Stop the main loop gracefully
-    process_status["running"] = False
-
-    # Release any HOST records locked by this process
-    release_busy_hosts_on_exit()
+    _signal_handler("SIGINT")
 
 
 # Register signal handlers for graceful shutdown
@@ -129,6 +114,9 @@ signal.signal(signal.SIGINT, sigint_handler)
 # ============================================================
 
 def is_host_online(host_addr: str) -> bool:
+    """
+    Check host reachability through ICMP without surfacing ping library errors.
+    """
     try:
         return ping(host_addr, timeout=k.ICMP_TIMEOUT_SEC) is not None
     except Exception:
@@ -139,13 +127,16 @@ def is_host_online(host_addr: str) -> bool:
 # MAIN
 # ============================================================
 def main():
-    log.entry("[INIT] Host check microservice started.")
+    """
+    Run the host-check polling loop until shutdown is requested.
+    """
+    log.entry("event=service_start service=appCataloga_host_check")
     last_host_cleanup = datetime.min
 
     try:
         db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error(f"Failed to initialize DB: {e}")
+        log.error(f"event=db_init_failed service=appCataloga_host_check error={e}")
         sys.exit(1)
 
     while process_status["running"]:
@@ -168,9 +159,11 @@ def main():
                 now = datetime.now()
                 if now - last_host_cleanup > timedelta(seconds=k.HOST_CLEANUP_INTERVAL):
                     try:
-                        db.host_cleanup_stale_locks(threshold_seconds=k.HOST_CLEANUP_INTERVAL)
+                        db.host_cleanup_stale_locks(
+                            threshold_seconds=k.HOST_BUSY_TIMEOUT
+                        )
                     except Exception as e:
-                        log.error(f"[HOST_CLEANUP] Failed: {e}")
+                        log.error(f"event=host_cleanup_failed error={e}")
 
                     last_host_cleanup = now
                 legacy._random_jitter_sleep()
@@ -187,12 +180,23 @@ def main():
             # ====================================================
             # COMMON — Lock this task (avoid other workers)
             # ====================================================
+            # HOST_CHECK / CHECK_CONNECTION / UPDATE_STATISTICS tasks are
+            # claimed atomically as tasks, but they do NOT lock the host
+            # itself. They are observational/maintenance work and should not
+            # block discovery or backup from using the same host.
             try:
-                db.host_task_update(
+                lock_result = db.host_task_update(
                     task_id=task_id,
+                    expected_status=k.TASK_PENDING,
                     NU_STATUS=k.TASK_RUNNING,
                     NU_PID=os.getpid(),
                 )
+
+                if lock_result["rows_affected"] != 1:
+                    log.warning(
+                        f"event=host_task_claim_race host_id={host_id} task_id={task_id}"
+                    )
+                    continue
             except Exception as e:
                 err.set("Failed to lock task", "LOCK_TASK", e)
 
@@ -208,8 +212,10 @@ def main():
                 # Connectivity test
                 try:
                     online = is_host_online(addr)
-                    log.entry(f"[CHECK] Host {addr}:{port} → "
-                              f"{'ONLINE' if online else 'OFFLINE'}")
+                    log.entry(
+                        f"event=host_check host_id={host_id} address={addr} "
+                        f"port={port} online={online}"
+                    )
                 except Exception as e:
                     err.set("Connectivity test failed", "CONNECTIVITY", e)
 
@@ -222,7 +228,7 @@ def main():
                                 host_id=host_id,
                                 IS_OFFLINE=True,
                                 IS_BUSY=False,
-                                NU_PID=0,
+                                NU_PID=k.HOST_UNLOCKED_PID,
                                 NU_HOST_CHECK_ERROR=1,
                                 DT_LAST_FAIL=now,
                                 DT_LAST_CHECK=now,
@@ -269,8 +275,10 @@ def main():
                 
                 try:
                     online = is_host_online(addr)
-                    log.entry(f"[CHECK] Host {addr}:{port} → "
-                              f"{'ONLINE' if online else 'OFFLINE'}")
+                    log.entry(
+                        f"event=host_check_statistics host_id={host_id} "
+                        f"address={addr} port={port} online={online}"
+                    )
                 except Exception as e:
                     err.set("Connectivity test failed", "CONNECTIVITY", e)
                 try:
@@ -292,8 +300,10 @@ def main():
                 # Connectivity test
                 try:
                     online = is_host_online(addr)
-                    log.entry(f"[CHECK_CONNECTION] Host {addr}:{port} → "
-                              f"{'ONLINE' if online else 'OFFLINE'}")
+                    log.entry(
+                        f"event=host_check_connection host_id={host_id} "
+                        f"address={addr} port={port} online={online}"
+                    )
                 except Exception as e:
                     err.set("Connectivity test failed", "CONNECTIVITY", e)
 
@@ -306,7 +316,7 @@ def main():
                                 host_id=host_id,
                                 IS_OFFLINE=True,
                                 IS_BUSY=False,
-                                NU_PID=0,
+                                NU_PID=k.HOST_UNLOCKED_PID,
                                 NU_HOST_CHECK_ERROR=1,
                                 DT_LAST_FAIL=now,
                                 DT_LAST_CHECK=now,
@@ -358,7 +368,7 @@ def main():
                         DT_HOST_TASK=datetime.now(),
                     )
                 except Exception as e2:
-                    log.error(f"[DB-ERROR] Failed to persist HOST_TASK error: {e2}")
+                    log.error(f"event=host_task_error_persist_failed error={e2}")
 
                 legacy._random_jitter_sleep()
                 continue
@@ -370,10 +380,21 @@ def main():
             legacy._random_jitter_sleep()
 
         except Exception as e:
-            log.error(f"[MAIN] Unexpected: {e}")
+            if not err.triggered:
+                err.capture(
+                    reason="Unexpected host check loop failure",
+                    stage="MAIN",
+                    exc=e,
+                    host_id=locals().get("host_id"),
+                    task_id=locals().get("task_id"),
+                )
+            err.log_error(
+                host_id=locals().get("host_id"),
+                task_id=locals().get("task_id"),
+            )
             legacy._random_jitter_sleep()
 
-    log.entry("[STOP] Host check microservice stopped.")
+    log.entry("event=service_stop service=appCataloga_host_check")
 
         
 
@@ -381,4 +402,15 @@ def main():
 # Entrypoint
 # ============================================================
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        err = errors.ErrorHandler(log)
+        err.capture(
+            reason="Fatal host check worker crash",
+            stage="MAIN",
+            exc=e,
+        )
+        err.log_error()
+        release_busy_hosts_on_exit()
+        raise

@@ -25,6 +25,7 @@ services=(
   appCataloga_host_check
   appCataloga_discovery
   appCataloga_file_bin_proces
+  appCataloga_file_bin_proces_appAnalise
   appCataloga_file_bkp
 )
 

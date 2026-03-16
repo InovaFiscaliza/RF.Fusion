@@ -1,31 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-appCataloga_discovery.py — Discovery microservice for appCataloga ecosystem.
+Discovery worker for the appCataloga ecosystem.
 
-This daemon scans remote hosts for candidate files to back up, creating new
-FILE_TASK entries and updating the backlog accordingly. It ensures that each
-host filesystem is accessed safely using HALT_FLAG control, and that tasks are
-only created or moved when the host is reachable.
-
-Key principles:
-    - Direct, linear control flow (no hidden subroutines).
-    - Explicit error handling and resource cleanup.
-    - Full integration with the new host_update(**kwargs) format.
-    - Clear, English technical comments and docstrings.
+This service scans remote hosts for candidate files, writes immutable discovery
+history, and promotes eligible items into the backup queue. The flow is kept
+linear on purpose so that lock handling, retries, and backlog promotion stay
+easy to audit in production.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import signal
+import subprocess
 import sys
 import time
-import json
-import signal
 import traceback
-import subprocess
-import paramiko
 import inspect
+import paramiko
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -56,7 +50,7 @@ if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
 
 # Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
-from shared import errors, legacy, logging_utils,filter
+from shared import errors, filter, legacy, logging_utils, tools
 import config as k
 
 
@@ -69,7 +63,7 @@ _DAEMON_REGISTRY: List[Any] = []
 
 
 # ============================================================
-# Signal Handling
+# Signal handling
 # ============================================================
 def release_busy_hosts_on_exit() -> None:
     """
@@ -80,7 +74,7 @@ def release_busy_hosts_on_exit() -> None:
     """
     try:
         pid = os.getpid()
-        log.entry(f"[CLEANUP] Releasing BUSY hosts for PID={pid}")
+        log.entry(f"event=cleanup_busy_hosts pid={pid}")
 
         # Create a fresh DB handler to avoid relying on partially
         # initialized or corrupted state during shutdown
@@ -90,48 +84,54 @@ def release_busy_hosts_on_exit() -> None:
         db.host_release_by_pid(pid)
 
     except Exception as e:
-        # Cleanup must never break process termination
-        log.error(f"[CLEANUP] Failed to release BUSY hosts: {e}")
+        log.error(f"event=cleanup_busy_hosts_failed error={e}")
+
+
+def release_locked_host(db: dbHandlerBKP, host_id: int | None) -> None:
+    """
+    Release the host claimed by the current discovery iteration.
+
+    This is the normal per-task path that turns `HOST.IS_BUSY` back to
+    `False` after discovery work completes, retries, or fails. Shutdown cleanup
+    remains centralized in `release_busy_hosts_on_exit()`.
+    """
+    if host_id is None:
+        return
+
+    try:
+        db.host_release_safe(
+            host_id=host_id,
+            current_pid=os.getpid(),
+        )
+    except Exception as e:
+        log.warning(
+            f"event=host_release_failed service=appCataloga_discovery "
+            f"host_id={host_id} error={e}"
+        )
+
+
+def _signal_handler(signal_name: str) -> None:
+    """
+    Register shutdown intent and release BUSY resources.
+    """
+    current_function = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"event=signal_received signal={signal_name} handler={current_function}")
+    process_status["running"] = False
+    release_busy_hosts_on_exit()
 
 
 def sigterm_handler(signal=None, frame=None) -> None:
     """
-    Handle SIGTERM (graceful shutdown signal).
-
-    This signal is typically sent by:
-    - kill <pid>
-    - pkill
-    - service stop scripts
+    Handle SIGTERM by requesting a graceful shutdown.
     """
-    global process_status, log
-
-    current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"SIGTERM received at: {current_function}()")
-
-    # Stop the main loop gracefully
-    process_status["running"] = False
-
-    # Release any HOST records locked by this process
-    release_busy_hosts_on_exit()
+    _signal_handler("SIGTERM")
 
 
 def sigint_handler(signal=None, frame=None) -> None:
     """
-    Handle SIGINT (interactive interrupt signal).
-
-    This signal is typically sent by:
-    - Ctrl+C in an attached terminal
+    Handle SIGINT by requesting a graceful shutdown.
     """
-    global process_status, log
-
-    current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"SIGINT received at: {current_function}()")
-
-    # Stop the main loop gracefully
-    process_status["running"] = False
-
-    # Release any HOST records locked by this process
-    release_busy_hosts_on_exit()
+    _signal_handler("SIGINT")
 
 
 # Register signal handlers for graceful shutdown
@@ -143,14 +143,15 @@ signal.signal(signal.SIGINT, sigint_handler)
 # Main daemon loop
 # ======================================================================
 def main() -> None:
-    """Main loop for the discovery microservice."""
+    """
+    Run the discovery polling loop until shutdown is requested.
+    """
 
-    log.entry("[INIT] appCataloga_discovery microservice started.")
-
+    log.entry("event=service_start service=appCataloga_discovery")
     try:
         db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error(f"Failed to initialize database: {e}")
+        log.error(f"event=db_init_failed service=appCataloga_discovery error={e}")
         sys.exit(1)
 
     # ===============================================================
@@ -164,8 +165,12 @@ def main() -> None:
         task = None
         host_id = None
         task_id = None
+        hostname = None
         fatal_error = False   # FIX: global flag to ensure final cleanup always happens
         connect_busy = False
+        preserve_host_busy_cooldown = False
+        processed = 0
+        n = {"rows_updated": 0, "moved_to_backup": 0}
 
         try:
             # ==========================================================
@@ -175,6 +180,7 @@ def main() -> None:
                 task_type=k.HOST_TASK_PROCESSING_TYPE,
                 task_status=k.TASK_PENDING,
                 check_host_busy=True,
+                lock_host=True,
             )
 
             if not task:
@@ -189,25 +195,32 @@ def main() -> None:
             # ACT II — Lock HOST and TASK
             # ==========================================================
             try:
-                db.host_update(
-                    host_id=host_id,
-                    IS_BUSY=True,
-                    DT_BUSY=datetime.now(),
-                    NU_PID=os.getpid(),
-                )
-                db.host_task_update(
-                    task_id=task_id,
+                lock_result = db.host_task_update(
+                    where_dict={
+                        "ID_HOST_TASK": task_id,
+                        "NU_STATUS": k.TASK_PENDING,
+                    },
                     NU_STATUS=k.TASK_RUNNING,
                     NU_PID=os.getpid(),
                     DT_HOST_TASK=datetime.now(),
                 )
 
-            except Exception as e:
-                err.set("Failed to lock HOST or HOST_TASK", "LOCK_TASK", e)
+                if lock_result["rows_affected"] != 1:
+                    log.warning(
+                        f"event=host_task_claim_race host_id={host_id} task_id={task_id}"
+                    )
+                    continue
 
-            # FIX:
-            # Never continue inside this try-block.
-            # If an error is triggered, mark fatal_error and allow main try...finally to run.
+                log.event(
+                    "discovery_started",
+                    host_id=host_id,
+                    task_id=task_id,
+                    host=hostname,
+                )
+
+            except Exception as e:
+                err.capture("Failed to lock HOST or HOST_TASK", "LOCK_TASK", e)
+
             if err.triggered:
                 fatal_error = True
 
@@ -218,19 +231,29 @@ def main() -> None:
                 try:
                     sftp, daemon = legacy.init_host_context(task, log)
 
-                except paramiko.AuthenticationException as e:
-                    err.set("Authentication failed (bad credentials)", stage="AUTH", exc=e)
-                
-                except paramiko.ssh_exception.NoValidConnectionsError as e:
-                    connect_busy = True
-                    log.warning(f"[Discovery] Host busy, retry later (host_id={host_id})")
-                    continue
-
-                except paramiko.SSHException as e:
-                    err.set("SSH negotiation failed", stage="SSH", exc=e)
-
                 except Exception as e:
-                    err.set("SSH/SFTP initialization failed", stage="CONNECT", exc=e)
+                    if errors.is_transient_sftp_init_error(e):
+                        connect_busy = True
+                        log.warning(
+                            f"event=sftp_busy_retry service=appCataloga_discovery "
+                            f"host_id={host_id} task_id={task_id} error={e}"
+                        )
+                        continue
+
+                    if isinstance(e, paramiko.AuthenticationException):
+                        err.capture(
+                            "Authentication failed (bad credentials)",
+                            stage="AUTH",
+                            exc=e,
+                        )
+                    elif isinstance(e, paramiko.SSHException):
+                        err.capture("SSH negotiation failed", stage="SSH", exc=e)
+                    else:
+                        err.capture(
+                            "SSH/SFTP initialization failed",
+                            stage="CONNECT",
+                            exc=e,
+                        )
                 
 
             # Do not allow the pipeline to proceed after any failure
@@ -240,9 +263,6 @@ def main() -> None:
             # ==========================================================
             # ACT IV — Discovery
             # ==========================================================
-            # ------------------------------------------------------------
-            # Discovery execution
-            # ------------------------------------------------------------
             # Executes metadata discovery for the host only if no fatal
             # error has been previously triggered.
             #
@@ -252,8 +272,6 @@ def main() -> None:
                     host_filter = filter.Filter(task["host_filter"], log=log)
 
                     # Counter used only for progress logging
-                    processed = 0
-
                     # ----------------------------------------------------
                     # Metadata discovery pipeline
                     # ----------------------------------------------------
@@ -290,12 +308,13 @@ def main() -> None:
                         # Log progress (already deduplicated files)
                         processed += len(batch)
                         log.entry(
-                            f"[DISCOVERY] Host {host_id}: {processed} files processed"
+                            f"event=discovery_progress host_id={host_id} "
+                            f"processed_files={processed}"
                         )
 
                 except Exception as e:
                     # Any exception here aborts discovery deterministically
-                    err.set("Discovery failed", "DISCOVERY", e)
+                    err.capture("Discovery failed", "DISCOVERY", e)
 
 
             if err.triggered:
@@ -316,13 +335,22 @@ def main() -> None:
                     )
 
                     log.entry(
-                        f"[DISCOVERY] Promoted {n['moved_to_backup']} FILE_TASK(s) to BACKUP"
+                        f"event=backlog_promoted host_id={host_id} "
+                        f"moved_to_backup={n['moved_to_backup']}"
                     )
 
                     db.host_task_delete(task_id=task_id)
+                    log.event(
+                        "discovery_completed",
+                        host_id=host_id,
+                        task_id=task_id,
+                        host=hostname,
+                        discovered_files=processed,
+                        moved_to_backup=n["moved_to_backup"],
+                    )
 
                 except Exception as e:
-                    err.set("Backlog promotion failed", "BACKLOG", e)
+                    err.capture("Backlog promotion failed", "BACKLOG", e)
 
             if err.triggered:
                 fatal_error = True
@@ -331,7 +359,18 @@ def main() -> None:
         # OUTER EXCEPTIONS
         # ==============================================================
         except Exception as e:
-            log.error(f"[MAIN] Unexpected error: {e}\n{traceback.format_exc()}")
+            err.capture(
+                reason="Unexpected discovery loop failure",
+                stage="MAIN",
+                exc=e,
+                host_id=host_id,
+                task_id=task_id,
+            )
+            err.log_error(
+                host_id=host_id,
+                task_id=task_id,
+                traceback=traceback.format_exc(),
+            )
             fatal_error = True  # Ensures proper final cleanup
 
         # ==============================================================
@@ -339,18 +378,38 @@ def main() -> None:
         # ==============================================================
         finally:
 
-            if connect_busy:
-                log.warning(
-                    f"[Discovery] Host busy, retry later (host_id={host_id})"
-                )
-                
-                db.host_task_update(
-                    task_id=task_id,
-                    NU_STATUS=k.TASK_PENDING,
-                    NU_PID=0,
-                    DT_HOST_TASK=datetime.now(),
-                    NA_MESSAGE="Host busy, retrying later",
-                )
+            if connect_busy and task_id is not None and not err.triggered:
+                try:
+                    db.host_task_update(
+                        task_id=task_id,
+                        NU_STATUS=k.TASK_PENDING,
+                        DT_HOST_TASK=datetime.now(),
+                        NA_MESSAGE=tools.compose_message(
+                            task_type=k.FILE_TASK_DISCOVERY,
+                            task_status=k.TASK_PENDING,
+                            detail=k.SFTP_BUSY_RETRY_DETAIL,
+                        ),
+                    )
+
+                    preserve_host_busy_cooldown = db.host_start_transient_busy_cooldown(
+                        host_id=host_id,
+                        owner_pid=os.getpid(),
+                        cooldown_seconds=k.SFTP_BUSY_COOLDOWN_SECONDS,
+                    )
+
+                    if preserve_host_busy_cooldown:
+                        log.warning(
+                            "event=sftp_busy_cooldown_started "
+                            f"service=appCataloga_discovery host_id={host_id} "
+                            f"task_id={task_id} "
+                            f"cooldown_seconds={k.SFTP_BUSY_COOLDOWN_SECONDS}"
+                        )
+                except Exception as e:
+                    log.error(
+                        "event=sftp_busy_requeue_failed "
+                        f"service=appCataloga_discovery host_id={host_id} "
+                        f"task_id={task_id} error={e}"
+                    )
        
             # Handle TASK error state
             if err.triggered and task_id:
@@ -361,7 +420,11 @@ def main() -> None:
                     db.host_task_update(
                         task_id=task_id,
                         NU_STATUS=k.TASK_ERROR,
-                        NA_MESSAGE=err.msg,
+                        NA_MESSAGE=tools.compose_message(
+                            task_type=k.FILE_TASK_DISCOVERY,
+                            task_status=k.TASK_ERROR,
+                            detail=err.msg,
+                        ),
                         DT_HOST_TASK=datetime.now(),
                     )
                 except Exception:
@@ -377,26 +440,15 @@ def main() -> None:
                         filter_dict=k.NONE_FILTER,
                     )
 
-            # -------------------------------------------------
-            # Safe release host
-            # -------------------------------------------------
-            if host_id is not None:
-                try:
-                    db.host_release_safe(
-                        host_id=host_id,
-                        current_pid=os.getpid()
-                    )
-                except Exception:
-                    pass
-
-                # Create statistics update task only when successful operations occurred
-                try:
-                    if (not err.triggered) and (
-                        n.get("rows_updated", 0) > 0 or processed > 0
-                    ):
-                        db.host_update_statistics(host_id=host_id)
-                except Exception as e:
-                    log.warning(f"[FINALIZE] Failed to create statistics task: {e}")
+                log.error_event(
+                    "discovery_error",
+                    host_id=host_id,
+                    task_id=task_id,
+                    host=hostname,
+                    discovered_files=processed,
+                    moved_to_backup=n.get("moved_to_backup", 0),
+                    error=err.format_error() or "Discovery failed",
+                )
 
             # Close SFTP safely
             try:
@@ -406,7 +458,26 @@ def main() -> None:
                     except Exception:
                         pass
             except Exception as e:
-                log.warning(f"[CLEANUP] Failed to cleanup host: {e}")
+                log.warning(f"event=cleanup_host_context_failed error={e}")
+
+            # -------------------------------------------------
+            # Safe release host
+            # -------------------------------------------------
+            if host_id is not None and not preserve_host_busy_cooldown:
+                # This is the single normal-path release point for the host
+                # claimed by `host_task_read(..., lock_host=True)`.
+                release_locked_host(db, host_id)
+
+                # Create statistics update task only when successful operations occurred
+                try:
+                    if (not err.triggered) and (
+                        n.get("rows_updated", 0) > 0 or processed > 0
+                    ):
+                        db.host_update_statistics(host_id=host_id)
+                except Exception as e:
+                    log.warning(
+                        f"event=statistics_update_failed host_id={host_id} error={e}"
+                    )
 
             # If a fatal error occurred, skip to next iteration
             if fatal_error:
@@ -425,8 +496,12 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        try:
-            print(f"[FATAL] appCataloga_discovery failed: {e}", file=sys.stderr)
-        except Exception:
-            pass
+        err = errors.ErrorHandler(log)
+        err.capture(
+            reason="Fatal discovery worker crash",
+            stage="MAIN",
+            exc=e,
+        )
+        err.log_error()
+        release_busy_hosts_on_exit()
         raise

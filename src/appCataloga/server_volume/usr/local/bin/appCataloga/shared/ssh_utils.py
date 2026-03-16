@@ -1,3 +1,11 @@
+"""
+SSH and SFTP transport helpers for appCataloga.
+
+This module wraps Paramiko with the conventions expected by the rest of the
+project: durable connections, metadata-friendly file operations, and
+cross-platform remote traversal helpers.
+"""
+
 from __future__ import annotations
 
 import sys
@@ -10,7 +18,7 @@ from typing import List, Optional, Union
 from enum import Enum
 
 from .logging_utils import log
-from shared.file_metadata import FileMetadata
+from .file_metadata import FileMetadata
 from . import legacy, tools
 
 
@@ -33,17 +41,7 @@ import config as k  # noqa: E402  (must be available at runtime)
 # SFTP Connection
 # =====================================================================
 class sftpConnection:
-    """Light wrapper over Paramiko SSH/SFTP with convenience methods.
-
-    Attributes:
-        log (log): Logger instance.
-        host_uid (str): Host unique identifier.
-        host_addr (str): Host address (hostname or IP).
-        port (int): SSH port.
-        user (str): SSH username.
-        ssh_client (paramiko.SSHClient): Underlying SSH client.
-        sftp (paramiko.SFTPClient): Underlying SFTP client.
-    """
+    """Light wrapper over Paramiko SSH/SFTP with convenience methods."""
 
     def __init__(
         self,
@@ -98,10 +96,8 @@ class sftpConnection:
                 allow_agent=False,
             )
 
-            # -------------------------------------------------------------
-            # TRANSPORT HARDENING
-            # Critical for long-running and high-volume commands
-            # -------------------------------------------------------------
+            # Transport tuning matters here because some hosts stream large
+            # directory listings and stay connected for long periods.
             transport = self.ssh_client.get_transport()
             if not transport:
                 raise RuntimeError("SSH transport not available")
@@ -396,31 +392,11 @@ class sftpConnection:
         newer_than: Optional[str] = None,
     ):
         """
-        Perform a cross-platform remote filesystem traversal (Linux or Windows)
-        and return a COMPLETE in-memory list of file metadata entries.
+        Traverse a remote filesystem and return a full in-memory metadata list.
 
-        IMPORTANT DESIGN NOTES 
-        -----------------------------
-        • This function intentionally RETURNS A FULL LIST.
-        It does NOT stream, batch, or yield results.
-        This behavior is REQUIRED for backward compatibility
-        with the current discovery pipeline.
-
-        • Memory usage can be high for hosts with a large number
-        of files (e.g. CelPlan nodes). This is a KNOWN and ACCEPTED
-        limitation at this stage of the refactor.
-
-        • The only responsibility of this function is:
-            - Remote traversal
-            - Metadata extraction
-            - Normalization into FileMetadata objects
-
-        • NO filtering, deduplication, or business logic must be added here.
-        Those concerns belong to higher layers (hostDaemon / discovery).
-
-        • The returned list preserves the same semantic fields that were
-        historically returned as dictionaries, but now uses FileMetadata
-        objects for type safety and consistency.
+        This function intentionally materializes the entire result because the
+        current discovery pipeline still expects a complete list at this layer.
+        Filtering and deduplication belong to higher orchestration layers.
 
         Args:
             remote_path (str):
@@ -444,10 +420,7 @@ class sftpConnection:
             list[FileMetadata]:
                 A fully materialized list of FileMetadata objects.
 
-        Raises:
-            None explicitly.
-            Any SSH or parsing error is logged and results in
-            an empty list being returned.
+        Any SSH or parsing error is logged and results in an empty list.
         """
 
         # ------------------------------------------------------------
@@ -804,4 +777,3 @@ class sftpConnection:
             yield batch
 
         self.log.entry("[META][ITER] completed")
-

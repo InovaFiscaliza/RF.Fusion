@@ -1,29 +1,18 @@
 #!/usr/bin/python3
 """
-appCataloga_garbage_collector
+Repository garbage-collection worker.
 
 Worker responsible for cleaning payload files that remain in the repository
-trash area beyond a defined quarantine period.
-
-Pipeline (deterministic):
-
-    ACT I       - Fetch FILE_TASK_HISTORY garbage candidates
-    ACT II      - Validate filesystem path
-    ACT III     - Delete payload file
-    ACT IV      - Mark payload deletion in FILE_TASK_HISTORY
-
-Design principles:
-- FILE_TASK_HISTORY is the single source of truth
-- Payload deletion must be idempotent
-- Missing files are treated as already deleted
-- No modification of FILE_TASK
+trash area beyond a defined quarantine period. The worker is deliberately small
+because it is the last step in the file lifecycle and must stay easy to reason
+about during production cleanup incidents.
 """
 
-import sys
 import os
-import time
-import signal
 import inspect
+import signal
+import sys
+import time
 from datetime import datetime
 
 
@@ -58,7 +47,7 @@ if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
 # Internal modules
 # ---------------------------------------------------------------
 import config as k
-from shared import logging_utils
+from shared import errors, logging_utils
 from db.dbHandlerBKP import dbHandlerBKP
 
 
@@ -71,26 +60,38 @@ process_status = {"running": True}
 
 
 # ===============================================================
-# SIGNAL HANDLING
+# Signal handling
 # ===============================================================
-
-def _signal_handler(signal=None, frame=None):
+def _signal_handler(signal_name: str) -> None:
     """
-    Gracefully stop worker.
+    Register shutdown intent for the garbage-collection loop.
     """
     fn = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"SIGNAL received at {fn}()")
+    log.entry(f"event=signal_received signal={signal_name} handler={fn}")
     process_status["running"] = False
 
 
-signal.signal(signal.SIGTERM, _signal_handler)
-signal.signal(signal.SIGINT, _signal_handler)
+def sigterm_handler(signal=None, frame=None) -> None:
+    """
+    Handle SIGTERM by requesting a graceful shutdown.
+    """
+    _signal_handler("SIGTERM")
+
+
+def sigint_handler(signal=None, frame=None) -> None:
+    """
+    Handle SIGINT by requesting a graceful shutdown.
+    """
+    _signal_handler("SIGINT")
+
+
+signal.signal(signal.SIGTERM, sigterm_handler)
+signal.signal(signal.SIGINT, sigint_handler)
 
 
 # ===============================================================
-# FILE OPERATIONS
+# File operations
 # ===============================================================
-
 def delete_file(path):
     """
     Delete a payload file.
@@ -102,28 +103,27 @@ def delete_file(path):
 
     try:
         os.remove(path)
-        log.entry(f"[GC] Deleted payload: {path}")
+        log.entry(f"event=garbage_file_deleted path={path}")
         return True
 
     except FileNotFoundError:
-        log.warning(f"[GC] File already missing: {path}")
+        log.warning(f"event=garbage_file_missing path={path}")
         return True
 
     except Exception as e:
-        log.error(f"[GC] Failed to delete {path}: {e}")
+        log.error(f"event=garbage_delete_failed path={path} error={e}")
         return False
 
 
 # ===============================================================
-# MAIN LOOP
+# Main loop
 # ===============================================================
-
 def main():
     """
-    Main garbage collection loop.
+    Run the garbage-collection loop until shutdown is requested.
     """
 
-    log.entry("[INIT] appCataloga_garbage_collector started")
+    log.entry("event=service_start service=appCataloga_garbage_collector")
 
     db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
 
@@ -137,7 +137,7 @@ def main():
             )
 
             if not rows:
-                log.entry("[GC] No eligible garbage files")
+                log.entry("event=garbage_candidates_empty")
                 time.sleep(k.GC_IDLE_SLEEP)
                 continue
 
@@ -149,13 +149,14 @@ def main():
                 server_file = row["NA_SERVER_FILE_NAME"]
 
                 if not server_path or not server_file:
-                    log.warning("[GC] Invalid path metadata")
+                    log.warning("event=garbage_invalid_path_metadata")
                     continue
 
-                # Safety check: refuse deletion outside trash
+                # Refuse to delete anything outside the managed trash area,
+                # even if metadata drifted or history was corrupted.
                 if k.TRASH_FOLDER not in server_path:
                     log.error(
-                        f"[GC] Refusing deletion outside trash: {server_path}"
+                        f"event=garbage_refused_outside_trash path={server_path}"
                     )
                     continue
 
@@ -173,13 +174,23 @@ def main():
 
             db_bp.commit()
 
-            log.entry(f"[GC] Processed {deleted} payload deletions")
+            log.entry(f"event=garbage_batch_processed deleted={deleted}")
 
         except Exception as e:
-            log.error(f"[GC ERROR] {e}")
+            log.error(f"event=garbage_loop_error error={e}")
 
         time.sleep(k.GC_LOOP_SLEEP)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        err = errors.ErrorHandler(log)
+        err.capture(
+            reason="Fatal garbage-collector worker crash",
+            stage="MAIN",
+            exc=e,
+        )
+        err.log_error()
+        raise

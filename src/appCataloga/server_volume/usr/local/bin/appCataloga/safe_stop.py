@@ -69,8 +69,7 @@ def cleanup_hosts_and_tasks():
             db.file_task_update(
                 task_id=task_id,
                 NU_STATUS=k.TASK_PENDING,
-                NU_PID=0,
-                DT_FILE_TASK=None,
+                DT_FILE_TASK=datetime.now(),
                 NA_MESSAGE="Task reset to PENDING due to controlled shutdown",
             )
 
@@ -98,7 +97,6 @@ def cleanup_hosts_and_tasks():
             db.host_task_update(
                 task_id=host_task_id,
                 NU_STATUS=k.TASK_PENDING,
-                NU_PID=0,
                 DT_HOST_TASK=None,
                 NA_MESSAGE="Host task reset to PENDING due to controlled shutdown",
             )
@@ -126,7 +124,7 @@ def cleanup_hosts_and_tasks():
             db.host_update(
                 host_id=host_id,
                 IS_BUSY=False,
-                NU_PID=0,
+                NU_PID=k.HOST_UNLOCKED_PID,
                 DT_BUSY=None,
             )
 

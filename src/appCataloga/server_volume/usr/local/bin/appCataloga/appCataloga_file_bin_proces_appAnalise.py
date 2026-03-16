@@ -1,35 +1,20 @@
 #!/usr/bin/python3
 """
-appCataloga_file_bin_proces_appAnalise
+appAnalise-backed processing worker for heterogeneous station files.
 
-Worker responsible for processing station files through the external
-MATLAB-based appAnalise service instead of local RFeye parsing.
-
-Pipeline (deterministic):
-
-    ACT I       - Fetch FILE_TASK
-    ACT II      - Mark task as RUNNING
-    ACT III     - Process and semantically validate payload via appAnalise
-    ACT IV      - SITE / GEO enrichment
-    ACT V       - Begin DB transaction
-    ACT VI      - Insert spectrum and metadata into RFDATA
-    ACT VII     - Filesystem move + server file registration
-    FINALLY     - Global resolution (trash on error, history update, cleanup)
-
-Design principles:
-- appAnalise is the exclusive source of spectral parsing
-- No DB operation occurs before successful semantic validation
-- FILE_TASK is always transient
-- FILE_TASK_HISTORY is the single source of truth
-- Error handling is centralized via ErrorHandler + finally
+This worker delegates spectral parsing to the external MATLAB-based
+`appAnalise` service and keeps the rest of the lifecycle explicit: semantic
+validation first, persistence second, and final file resolution last. The flow
+stays linear so transient service failures can be distinguished cleanly from
+definitive payload failures.
 """
 
-import sys
-import os
-import time
-import signal
-import inspect
 import json
+import inspect
+import os
+import signal
+import sys
+import time
 from datetime import datetime
 
 # ---------------------------------------------------------------
@@ -81,14 +66,12 @@ from stations.appAnaliseConnection import AppAnaliseConnection
 
 log = logging_utils.log(target_screen=False)
 process_status = {"running": True}
-RESOLVED_FILES_TRASH_SUBDIR = "resolved_files"
 
 
 # ===============================================================
-# SIGNAL HANDLING
+# Signal handling
 # ===============================================================
-
-def release_busy_hosts_on_exit():
+def release_busy_hosts_on_exit() -> None:
     """
     Release BUSY hosts held by this worker PID.
     """
@@ -97,25 +80,38 @@ def release_busy_hosts_on_exit():
         db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
         db.host_release_by_pid(pid)
     except Exception as e:
-        log.error(f"[CLEANUP] Failed to release BUSY hosts: {e}")
+        log.error(f"event=cleanup_busy_hosts_failed error={e}")
 
 
-def _signal_handler(signal=None, frame=None):
+def _signal_handler(signal_name: str) -> None:
     """
-    Handle SIGTERM / SIGINT gracefully.
+    Register shutdown intent and release BUSY resources.
     """
     fn = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"SIGNAL received at {fn}()")
+    log.entry(f"event=signal_received signal={signal_name} handler={fn}")
     process_status["running"] = False
     release_busy_hosts_on_exit()
 
+def sigterm_handler(signal=None, frame=None) -> None:
+    """
+    Handle SIGTERM by requesting a graceful shutdown.
+    """
+    _signal_handler("SIGTERM")
 
-signal.signal(signal.SIGTERM, _signal_handler)
-signal.signal(signal.SIGINT, _signal_handler)
+
+def sigint_handler(signal=None, frame=None) -> None:
+    """
+    Handle SIGINT by requesting a graceful shutdown.
+    """
+    _signal_handler("SIGINT")
+
+
+signal.signal(signal.SIGTERM, sigterm_handler)
+signal.signal(signal.SIGINT, sigint_handler)
 
 
 # ===============================================================
-# GEOLOCATION HELPERS
+# Geolocation helpers
 # ===============================================================
 
 def do_reverse_geocode(data, attempt=1, max_attempts=10):
@@ -189,13 +185,16 @@ def map_location_to_data(location, data):
 
 
 # ===============================================================
-# FILE OPERATIONS
+# File operations
 # ===============================================================
 
 def file_move(filename, path, new_path):
     """
     Move a file from (path/filename) to (new_path/filename),
     creating intermediate directories if necessary.
+
+    Unlike os.renames(), this function NEVER removes source
+    directories, preventing side effects on shared worker folders.
     """
     source = f"{path}/{filename}"
     target = f"{new_path}/{filename}"
@@ -384,11 +383,12 @@ def return_task_to_pending(db_bp, file_task_id, err):
         task_id=file_task_id,
         NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
         NU_STATUS=k.TASK_PENDING,
-        NU_PID=0,
         DT_FILE_TASK=datetime.now(),
-        NA_MESSAGE=(
-            "APP_ANALISE transient failure, task returned "
-            f"to pending for retry | {err.format_error()}"
+        NA_MESSAGE=tools.compose_message(
+            task_type=k.FILE_TASK_PROCESS_TYPE,
+            task_status=k.TASK_PENDING,
+            detail="APP_ANALISE transient failure, task returned for retry",
+            error=err.format_error(),
         ),
     )
 
@@ -433,8 +433,221 @@ def build_resolved_files_trash_path():
     """
     return (
         f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}/"
-        f"{RESOLVED_FILES_TRASH_SUBDIR}"
+        f"{k.RESOLVED_FILES_TRASH_SUBDIR}"
     )
+
+
+def finalize_successful_processing(
+    db_rfm,
+    spectrum_ids,
+    bin_data,
+    site_id,
+    hostname_bin,
+    file_meta,
+    source_file_meta,
+    export,
+    filename,
+):
+    """
+    Move the final artifact, register it in RFDATA, and retire superseded input.
+
+    This helper keeps the success-side filesystem semantics explicit:
+    when `export=True`, the exported `.mat` becomes the final artifact and the
+    original input is relegated to `trash/resolved_files`.
+    """
+    year = bin_data["spectrum"][0].start_dateidx.year
+    new_path = f"{k.REPO_FOLDER}/{year}/{db_rfm.build_path(site_id)}"
+    final_file_meta = move_file_if_present(file_meta, new_path)
+
+    if final_file_meta is None:
+        raise FileNotFoundError(
+            f"Final output file unavailable: {file_meta}"
+        )
+
+    server_file_id = db_rfm.insert_file(
+        hostname=hostname_bin,
+        NA_VOLUME=k.REPO_VOLUME_NAME,
+        NA_PATH=new_path,
+        NA_FILE=final_file_meta["file_name"],
+        NA_EXTENSION=final_file_meta["extension"],
+        VL_FILE_SIZE_KB=final_file_meta["size_kb"],
+        DT_FILE_CREATED=final_file_meta["dt_created"],
+        DT_FILE_MODIFIED=final_file_meta["dt_modified"],
+    )
+
+    db_rfm.insert_bridge_spectrum_file(spectrum_ids, [server_file_id])
+
+    if export and not is_same_file(source_file_meta, final_file_meta):
+        move_file_if_present(
+            source_file_meta,
+            build_resolved_files_trash_path(),
+        )
+
+    log.event(
+        "processing_completed",
+        file=filename,
+        export=export,
+        final_file=final_file_meta["full_path"],
+    )
+    return new_path, final_file_meta
+
+
+def finalize_task_resolution(
+    db_bp,
+    *,
+    file_task_id,
+    host_id,
+    host_file_name,
+    host_path,
+    server_name,
+    extension,
+    vl_file_size_kb,
+    dt_created,
+    dt_modified,
+    file_was_processed,
+    new_path,
+    file_meta,
+    source_file_meta,
+    export,
+    err,
+):
+    """
+    Apply the final FILE_TASK resolution once retry is no longer an option.
+
+    Definitive failures follow the normal trash/history path. Successful runs
+    persist the exported artifact metadata as the server-side result.
+    """
+    if not file_was_processed and new_path is None:
+        try:
+            trashed_source_meta = move_file_if_present(
+                source_file_meta,
+                f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}",
+            )
+
+            if trashed_source_meta:
+                new_path = trashed_source_meta["file_path"]
+        except Exception as fs_err:
+            log.error(f"event=trash_move_failed error={fs_err}")
+
+        if (
+            export
+            and file_meta
+            and not is_same_file(file_meta, source_file_meta)
+        ):
+            try:
+                move_file_if_present(
+                    file_meta,
+                    build_resolved_files_trash_path(),
+                )
+            except Exception as artifact_err:
+                log.error(
+                    "event=resolved_artifact_trash_move_failed "
+                    f"error={artifact_err}"
+                )
+
+    db_bp.file_task_delete(task_id=file_task_id)
+
+    status = k.TASK_DONE if file_was_processed else k.TASK_ERROR
+
+    history_meta = resolve_history_file_metadata(
+        file_was_processed=file_was_processed,
+        file_meta=file_meta,
+        server_name=server_name,
+        extension=extension,
+        vl_file_size_kb=vl_file_size_kb,
+        dt_created=dt_created,
+        dt_modified=dt_modified,
+    )
+
+    na_message = tools.compose_message(
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        task_status=status,
+        path=new_path if file_was_processed else None,
+        name=history_meta["name"] if file_was_processed else None,
+        error=err.format_error() if err.triggered else None,
+    )
+    processed_at = datetime.now()
+
+    db_bp.file_history_update(
+        host_id=host_id,
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        host_file_name=host_file_name,
+        host_file_path=host_path,
+        DT_PROCESSED=processed_at,
+        NA_SERVER_FILE_NAME=history_meta["name"],
+        NA_SERVER_FILE_PATH=new_path,
+        NA_EXTENSION=history_meta["extension"],
+        VL_FILE_SIZE_KB=history_meta["size_kb"],
+        DT_FILE_CREATED=history_meta["dt_created"],
+        DT_FILE_MODIFIED=history_meta["dt_modified"],
+        NU_STATUS_PROCESSING=status,
+        NA_MESSAGE=na_message,
+    )
+
+    db_bp.host_task_statistics_create(host_id=host_id)
+    return {
+        "status": status,
+        "new_path": new_path,
+        "history_meta": history_meta,
+        "final_file": (
+            os.path.join(new_path, history_meta["name"])
+            if new_path else None
+        ),
+    }
+
+
+def resolve_task_after_attempt(
+    db_bp,
+    *,
+    file_task_id,
+    host_id,
+    host_file_name,
+    host_path,
+    server_name,
+    extension,
+    vl_file_size_kb,
+    dt_created,
+    dt_modified,
+    file_was_processed,
+    new_path,
+    file_meta,
+    source_file_meta,
+    export,
+    retry_later,
+    err,
+):
+    """
+    Resolve the claimed task after a processing attempt.
+
+    Only transient appAnalise connectivity/service failures keep the task alive
+    for a later retry. All other outcomes flow through the definitive
+    history/trash resolution path, because reprocessing the same payload would
+    produce the same definitive result again.
+    """
+    if retry_later:
+        return_task_to_pending(db_bp, file_task_id, err)
+        return {"action": "retry"}
+
+    result = finalize_task_resolution(
+        db_bp,
+        file_task_id=file_task_id,
+        host_id=host_id,
+        host_file_name=host_file_name,
+        host_path=host_path,
+        server_name=server_name,
+        extension=extension,
+        vl_file_size_kb=vl_file_size_kb,
+        dt_created=dt_created,
+        dt_modified=dt_modified,
+        file_was_processed=file_was_processed,
+        new_path=new_path,
+        file_meta=file_meta,
+        source_file_meta=source_file_meta,
+        export=export,
+        err=err,
+    )
+    result["action"] = "finalized"
+    return result
 
 
 # ===============================================================
@@ -450,10 +663,10 @@ def main():
     failures are requeued for retry; definitive validation failures
     follow the normal trash/history finalization path.
     """
-    log.entry("[INIT] appCataloga_file_bin_proces_appAnalise started")
+    log.entry("event=service_start service=appCataloga_file_bin_proces_appAnalise")
 
-    db_bp = dbHandlerBKP(database="BPDATA_TEST", log=log)
-    db_rfm = dbHandlerRFM(database="RFDATA_TEST", log=log)
+    db_bp = dbHandlerBKP(database="BPDATA", log=log)
+    db_rfm = dbHandlerRFM(database="RFDATA", log=log)
     app_analise = AppAnaliseConnection()
 
     while process_status["running"]:
@@ -465,7 +678,7 @@ def main():
         file_meta = None
         retry_later = False
         should_sleep = False
-        export = False
+        export = None
         source_file_meta = None
 
         try:
@@ -511,7 +724,7 @@ def main():
                 app_analise.check_connection()
             except errors.ExternalServiceTransientError as e:
                 log.warning(
-                    f"[APP_ANALISE] Service unavailable, retry later: {e}"
+                    f"event=appanalise_unavailable_retry error={e}"
                 )
                 should_sleep = True
                 continue
@@ -526,7 +739,13 @@ def main():
                     DT_FILE_TASK=datetime.now(),
                     NU_STATUS=k.TASK_RUNNING,
                     NU_PID=os.getpid(),
-                    NA_MESSAGE=f"Processing via APP_ANALISE: {filename}",
+                    NA_MESSAGE=tools.compose_message(
+                        task_type=k.FILE_TASK_PROCESS_TYPE,
+                        task_status=k.TASK_RUNNING,
+                        path=server_path,
+                        name=server_name,
+                        detail=k.APP_ANALISE_WORKER_DETAIL,
+                    ),
                 )
             except Exception as e:
                 err.set(reason=str(e), stage="PROCESS", exc=e)
@@ -537,6 +756,11 @@ def main():
             # ===================================================
             try:
                 export = should_export(hostname_db)
+                log.event(
+                    "processing_started",
+                    file=filename,
+                    export=export,
+                )
 
                 bin_data, file_meta = app_analise.process(
                     file_path=server_path,
@@ -546,6 +770,9 @@ def main():
 
                 hostname_bin = bin_data["hostname"]
             except errors.ExternalServiceTransientError as e:
+                # Connection/service failures are the only processing errors
+                # that should requeue the FILE_TASK instead of resolving it as
+                # definitive error.
                 retry_later = True
                 err.set(reason=str(e), stage="PROCESS", exc=e)
                 raise
@@ -601,46 +828,34 @@ def main():
             # ACT VIII — Filesystem move + server file registration
             # ===================================================
             try:
-                year = bin_data["spectrum"][0].start_dateidx.year
-                new_path = f"{k.REPO_FOLDER}/{year}/{db_rfm.build_path(site_id)}"
-                final_file_meta = move_file_if_present(file_meta, new_path)
-
-                if final_file_meta is None:
-                    raise FileNotFoundError(
-                        f"Final output file unavailable: {file_meta}"
-                    )
-
-                server_file_id = db_rfm.insert_file(
-                    hostname            =hostname_bin,
-                    NA_VOLUME           ="reposfi",
-                    NA_PATH             =new_path,
-                    NA_FILE             =final_file_meta["file_name"],
-                    NA_EXTENSION        =final_file_meta["extension"],
-                    VL_FILE_SIZE_KB     =final_file_meta["size_kb"],
-                    DT_FILE_CREATED     =final_file_meta["dt_created"],
-                    DT_FILE_MODIFIED    =final_file_meta["dt_modified"],
+                # Success resolution decides which artifact becomes canonical
+                # (`.mat` export or original file) and retires superseded input.
+                new_path, file_meta = finalize_successful_processing(
+                    db_rfm=db_rfm,
+                    spectrum_ids=spectrum_ids,
+                    bin_data=bin_data,
+                    site_id=site_id,
+                    hostname_bin=hostname_bin,
+                    file_meta=file_meta,
+                    source_file_meta=source_file_meta,
+                    export=export,
+                    filename=filename,
                 )
-
-                db_rfm.insert_bridge_spectrum_file(
-                    spectrum_ids,
-                    [server_file_id],
-                )
-
-                if export and not is_same_file(source_file_meta, final_file_meta):
-                    move_file_if_present(
-                        source_file_meta,
-                        build_resolved_files_trash_path(),
-                    )
-
-                file_meta = final_file_meta
                 file_was_processed = True
-                log.entry(f"[DONE] {filename}")
             except Exception as e:
                 err.set(reason=str(e), stage="FS", exc=e)
                 raise
 
-        except Exception:
-            log.error(f"[PROCESS ERROR] {err.format_error()}")
+        except Exception as e:
+            if not err.triggered:
+                err.capture(
+                    reason="Unexpected processing loop failure",
+                    stage="PROCESS",
+                    exc=e,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                )
+            err.log_error(host_id=host_id, task_id=file_task_id)
             if db_rfm.in_transaction:
                 db_rfm.rollback()
 
@@ -654,88 +869,78 @@ def main():
             # ---------------------------------------------------
             # Global resolution (single exit point)
             # ---------------------------------------------------
-            # Transient appAnalise failures must preserve the original file
-            # and leave the task available for a later retry.
             if retry_later:
                 try:
-                    return_task_to_pending(db_bp, file_task_id, err)
+                    # Transient service failures keep the task alive and push
+                    # the whole resolution decision into the shared helper.
+                    resolve_task_after_attempt(
+                        db_bp,
+                        file_task_id=file_task_id,
+                        host_id=host_id,
+                        host_file_name=host_file_name,
+                        host_path=host_path,
+                        server_name=server_name,
+                        extension=extension,
+                        vl_file_size_kb=vl_file_size_kb,
+                        dt_created=dt_created,
+                        dt_modified=dt_modified,
+                        file_was_processed=file_was_processed,
+                        new_path=new_path,
+                        file_meta=file_meta,
+                        source_file_meta=source_file_meta,
+                        export=export,
+                        retry_later=True,
+                        err=err,
+                    )
                 except Exception as update_err:
                     log.error(
-                        "[RETRY] Failed to return FILE_TASK to pending: "
-                        f"{update_err}"
+                        f"event=retry_requeue_failed error={update_err}"
                     )
 
                 continue
 
-            # Only definitive failures reach this branch. In that case the
-            # original server-side file follows the standard trash policy.
-            if not file_was_processed and new_path is None:
-                try:
-                    trashed_source_meta = move_file_if_present(
-                        source_file_meta,
-                        f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}",
-                    )
-
-                    if trashed_source_meta:
-                        new_path = trashed_source_meta["file_path"]
-                except Exception as fs_err:
-                    log.error(f"[TRASH] Failed to move file to trash: {fs_err}")
-
-                if (
-                    export
-                    and file_meta
-                    and not is_same_file(file_meta, source_file_meta)
-                ):
-                    try:
-                        move_file_if_present(
-                            file_meta,
-                            build_resolved_files_trash_path(),
-                        )
-                    except Exception as artifact_err:
-                        log.error(
-                            "[TRASH] Failed to move appAnalise artifact "
-                            f"to trash: {artifact_err}"
-                        )
-
-            db_bp.file_task_delete(task_id=file_task_id)
-
-            status = k.TASK_DONE if file_was_processed else k.TASK_ERROR
-
-            history_meta = resolve_history_file_metadata(
-                file_was_processed=file_was_processed,
-                file_meta=file_meta,
+            # Definitive outcomes (success or fatal payload error) are closed
+            # here so task deletion, trash handling, and history stay aligned.
+            resolution = resolve_task_after_attempt(
+                db_bp,
+                file_task_id=file_task_id,
+                host_id=host_id,
+                host_file_name=host_file_name,
+                host_path=host_path,
                 server_name=server_name,
                 extension=extension,
                 vl_file_size_kb=vl_file_size_kb,
                 dt_created=dt_created,
                 dt_modified=dt_modified,
+                file_was_processed=file_was_processed,
+                new_path=new_path,
+                file_meta=file_meta,
+                source_file_meta=source_file_meta,
+                export=export,
+                retry_later=False,
+                err=err,
             )
 
-            na_message = tools.compose_message(
-                task_type=k.FILE_TASK_PROCESS_TYPE,
-                task_status=status,
-                path=new_path if file_was_processed else None,
-                name=history_meta["name"] if file_was_processed else None,
-                error=err.format_error() if err.triggered else None,
-            )
-
-            db_bp.file_history_update(
-                host_id=host_id,
-                task_type=k.FILE_TASK_PROCESS_TYPE,
-                host_file_name=host_file_name,
-                host_file_path=host_path,
-                NA_SERVER_FILE_NAME=history_meta["name"],
-                NA_SERVER_FILE_PATH=new_path,
-                NA_EXTENSION=history_meta["extension"],
-                VL_FILE_SIZE_KB=history_meta["size_kb"],
-                DT_FILE_CREATED=history_meta["dt_created"],
-                DT_FILE_MODIFIED=history_meta["dt_modified"],
-                NU_STATUS_PROCESSING=status,
-                NA_MESSAGE=na_message,
-            )
-
-            db_bp.host_task_statistics_create(host_id=host_id)
+            if resolution["status"] == k.TASK_ERROR:
+                log.error_event(
+                    "processing_error",
+                    file=filename,
+                    export=export,
+                    final_file=resolution["final_file"],
+                    error=err.format_error() or "Processing failed",
+                )
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        err = errors.ErrorHandler(log)
+        err.capture(
+            reason="Fatal appAnalise processing worker crash",
+            stage="MAIN",
+            exc=e,
+        )
+        err.log_error()
+        release_busy_hosts_on_exit()
+        raise

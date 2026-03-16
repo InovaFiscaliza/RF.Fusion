@@ -2,15 +2,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-dbHandlerBase_refactored_doc_v2.py
-----------------------------------
+Shared MySQL foundation for the appCataloga database layer.
 
-Base MySQL handler for appCataloga system, providing all reusable database
-operations for subclasses such as `dbHandlerBKP`.
-
-Implements connection management, CRUD operations, and safe SQL execution
-patterns with centralized logging and transaction control.
-
+`DBHandlerBase` owns connection lifecycle, generic CRUD helpers, and a small
+set of safe SQL builders reused by the domain handlers. It is intentionally
+thin on business rules: subclasses such as `dbHandlerBKP` and `dbHandlerRFM`
+define table semantics, while this module provides the reusable execution
+machinery.
 """
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,11 +18,7 @@ import config as k
 
 
 class DBHandlerBase:
-    """Base class providing MySQL connection management and CRUD utilities.
-
-    This class is inherited by higher-level handlers that manipulate specific
-    database domains such as FILE_TASK, HOST, and HOST_TASK.
-    """
+    """Base class providing MySQL connection management and CRUD utilities."""
 
     # ======================================================================
     # Initialization
@@ -64,15 +58,14 @@ class DBHandlerBase:
         """
         Establish or reuse a MySQL/MariaDB connection and cursor.
 
-        This method centralizes all connection handling for the RF.Fusion
-        database layer and guarantees the following:
+        Guarantees provided by this method:
 
         - Reuse of an existing live connection when possible
         - Automatic reconnection if the connection has dropped
         - Cleanup of any unread result sets (“Unread result found” protection)
         - Creation of a fresh connection if none is valid
-        - Enforcement of AUTOCOMMIT=True for read freshness,
-        EXCEPT when an explicit transaction is active
+        - `autocommit=True` for non-transactional callers, unless an explicit
+          transaction is already active in the subclass
         """
 
         try:
@@ -223,10 +216,7 @@ class DBHandlerBase:
 
     def _disconnect(self, force: bool = False, verbose: bool = False) -> None:
         """
-        Safely close the database connection.
-
-        This method closes the connection only when explicitly requested
-        or when the current session is no longer valid.
+        Close the current database connection when requested or invalid.
 
         Args:
             force (bool, optional): If True, forces disconnection regardless
@@ -323,10 +313,16 @@ class DBHandlerBase:
         touch_field: Optional[str] = None,
     ) -> int:
         """
-        Generic SQL UPDATE builder with support for:
-        __lt, __gt, __lte, __gte, __like, __between, __in, __expr
-        
-        Extra SQL (ORDER BY, LIMIT...) may be appended via extra_sql.
+        Update rows using a dictionary-driven SQL builder.
+
+        Supported WHERE suffix operators:
+        `__lt`, `__gt`, `__lte`, `__gte`, `__like`, `__between`, `__in`.
+
+        Supported SET suffix operator:
+        `__expr` for trusted raw SQL expressions.
+
+        `extra_sql` is reserved for trailing clauses such as `ORDER BY` and
+        `LIMIT` in carefully controlled call sites.
         """
 
         if not data and not touch_field:
@@ -546,12 +542,10 @@ class DBHandlerBase:
     
     def _select_raw(self, sql: str, params: tuple = ()):
         """
-        Execute a raw SQL SELECT query with parameter binding.
+        Execute a raw parameterized SELECT query.
 
-        This method bypasses the automatic SELECT generator used by
-        `_select_custom()`, allowing execution of aggregated queries,
-        complex JOINs, window functions, GROUP BY, subqueries, and any
-        SQL construct not supported by the automatic VALID_FIELDS_* engine.
+        This escape hatch is used for aggregate queries and shapes that do not
+        fit the structured builders, while still preserving parameter binding.
 
         Args:
             sql (str):
@@ -605,10 +599,10 @@ class DBHandlerBase:
         cols: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Select rows from a table and return as list of dictionaries.
+        Select rows from a single table and return dictionaries.
 
-        Supports both normal parameterized filters (key=value)
-        and custom SQL snippets via keys starting with '#CUSTOM#'.
+        The helper supports plain equality filters plus trusted SQL fragments
+        via keys prefixed with `#CUSTOM#`.
         """
         c = ", ".join(cols) if cols else "*"
         sql = f"SELECT {c} FROM {table}"
@@ -661,17 +655,10 @@ class DBHandlerBase:
         order_by: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        PREMIUM SELECT builder supporting:
-            - Automatic column expansion using VALID_FIELDS_*
-            - JOIN resolution with alias discovery
-            - WHERE operators:
-                =, IN, >=, <=, >, <, LIKE, BETWEEN, IS NULL, IS NOT NULL
-            - Raw SQL overrides with "#CUSTOM#"
-            - Safe parameter binding
-            - Fully normalized result columns: TABLE__COL
+        Build a joined SELECT using table aliases and `VALID_FIELDS_*` metadata.
 
-        Returns:
-            List[Dict[str, Any]]
+        Result columns are normalized as `TABLE__COLUMN`, which allows service
+        code to join heterogeneous tables without ambiguous field names.
         """
 
         # ------------------------------------------------------------------
@@ -949,4 +936,3 @@ class DBHandlerBase:
 
         finally:
             self._disconnect()
-

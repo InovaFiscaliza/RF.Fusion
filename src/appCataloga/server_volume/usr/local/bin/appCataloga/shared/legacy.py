@@ -1,3 +1,10 @@
+"""
+Backward-compatibility helpers kept for older call sites.
+
+This module is intentionally thin and mostly delegates to newer shared modules.
+It exists to reduce churn while the codebase converges on the newer abstractions.
+"""
+
 from __future__ import annotations
 
 import sys
@@ -202,7 +209,7 @@ def init_host_context(host: dict, log):
 
 
 def _random_jitter_sleep() -> None:
-    """Small random delay to reduce race conditions between workers."""
+    """Sleep a small random interval to reduce worker polling races."""
     time.sleep(random.uniform(0.5, k.MAX_HOST_TASK_WAIT_TIME))
     
 

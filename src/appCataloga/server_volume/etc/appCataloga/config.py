@@ -24,6 +24,8 @@ LOG_TARGET_FILE     = True
 LOG_TARGET_SCREEN = (
     False  # Only for debugging of individual modules. Do not use in production
 )
+LOG_DIR = "/var/log"
+LOG_FILE_TEMPLATE = "{logger_name}.log"
 LOG_FILE = "/var/log/appCataloga.log"
 
 #------------------------------------------
@@ -47,7 +49,7 @@ DB_PASSWORD             = secret["DB_PASSWORD"]
 # =================================================
 # APP_ANALISE remote processing service
 # =================================================
-APP_ANALISE_HOST_ADD        = "192.168.104.137"
+APP_ANALISE_HOST_ADD        = "WIMATLABPDIN01"
 APP_ANALISE_HOST_PORT       = 8910
 APP_ANALISE_SOCKET_TIMEOUT  = 10
 APP_ANALISE_BUFFER_SIZE     = 4096
@@ -55,6 +57,7 @@ APP_ANALISE_KEY = "123456"
 APP_ANALISE_CLIENT_NAME = "Matlab"
 APP_ANALISE_PROCESS_TIMEOUT = 100000
 APP_ANALISE_CONNECT_TIMEOUT = 100000
+APP_ANALISE_WORKER_DETAIL = "worker=APP_ANALISE"
 #------------------------------------------
 # SSH LIMITS
 #------------------------------------------
@@ -75,11 +78,16 @@ HALT_FLAG_CHECK_CYCLES          = 6         # number of cycles to check for HALT
 BKP_HOST_ALLOTED_TIME_FRACTION  = 0.8
 HOST_BUSY_TIMEOUT               = 18000     # 18000 seconds or 5 hours
 HOST_CLEANUP_INTERVAL           = 300       # Interval in seconds to check for and clean up stale host locks
+SFTP_BUSY_COOLDOWN_SECONDS      = 15        # Temporary host cooldown after transient SSH/SFTP init failure
+HOST_UNLOCKED_PID               = 0         # HOST.NU_PID used when the host is not owned by a worker
+HOST_TRANSIENT_BUSY_PID         = 0         # HOST.NU_PID used during short transient SFTP cooldown
 BKP_TASK_MAX_WORKERS            = 10
+BKP_TASK_IDLE_EXIT_CYCLES       = 3         # extra workers exit after this many idle polls
 BKP_TASK_WORKER_SERVICE         = "usr/local/bin/appCataloga/appCataloga_file_bkp@"
 MIN_FILE_SIZE_KB                = 1         # minimum file size to be backed up in KB
 MIN_FILE_AGE_MINUTES            = 30        # minimum file age to be backed up in minutes
 FILE_THRESHOLD_SIZE_KB          = 100       # file size threshold for update file
+SFTP_BUSY_RETRY_DETAIL         = "sftp connection busy, will retry"
 
 #------------------------------------------
 # metadata publishing module configuration
@@ -110,7 +118,9 @@ LOCAL_INDEXERD  = {
 #------------------------------------------
 TMP_FOLDER      = "tmp"
 TRASH_FOLDER    = "trash"
+RESOLVED_FILES_TRASH_SUBDIR = "resolved_files"
 REPO_FOLDER     = "/mnt/reposfi"
+REPO_VOLUME_NAME = "reposfi"
 REPO_UID        = "repoSFI"
 #------------------------------------------
 # Geographic site definition

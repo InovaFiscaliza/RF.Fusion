@@ -2,21 +2,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-dbHandlerRFM_refactored_doc_v2.py
----------------------------------
+RFM-domain database handler for spectrum persistence.
 
-High-level handler focused on *RFM (Radio Frequency / Spectrum)* domain for the
-appCataloga ecosystem. This module centralizes database interactions for
-spectrum-related entities (hosts, files, tasks, and measurements), reusing the
-generic CRUD helpers provided by `DBHandlerBase`.
-
-This version contains **complete Google-Style docstrings** and **technical
-comments**, keeping logic minimal and consistent with the project's architecture:
-- No raw SQL string interpolation with user data (parameterized queries only)
-- Scoped transactions with explicit commit/rollback
-- Connect/Disconnect safety via try/finally
-- No constant mirroring; constants are read directly from `config as k`
-
+`dbHandlerRFM` owns the analytical side of appCataloga: sites, geography,
+files, procedures, spectrum entities, bridge tables, and Parquet publication.
+It builds on `DBHandlerBase`, while adding explicit transaction control for the
+multi-step ingestion pipeline.
 """
 
 from __future__ import annotations
@@ -56,10 +47,7 @@ class dbHandlerRFM(DBHandlerBase):
     
     def begin_transaction(self) -> None:
         """
-        Begin a database transaction.
-
-        Must be called by the service layer before performing
-        multiple dependent operations (e.g. processing one BIN file).
+        Begin an explicit database transaction for a multi-step ingestion flow.
         """
         self.in_transaction = True
         self._connect()
@@ -102,11 +90,10 @@ class dbHandlerRFM(DBHandlerBase):
             
     def _ensure_transaction(self):
         """
-        Ensure that the current connection is operating
-        with autocommit disabled.
+        Reassert `autocommit=False` when a managed transaction is active.
 
-        This is required because dbHandlerBase._connect()
-        enforces autocommit=True.
+        This helper exists because `DBHandlerBase._connect()` defaults to
+        autocommit for non-transactional callers.
         """
         if self.in_transaction:
             try:
@@ -127,8 +114,8 @@ class dbHandlerRFM(DBHandlerBase):
         - Remove redundant district equal to county.
         - Infer missing state via authoritative county lookup.
 
-        This method MAY perform DB lookups.
-        It guarantees connection safety and respects active transactions.
+        The method may perform read-only DB lookups and must remain safe both
+        inside and outside managed transactions.
         """
 
         # --------------------------------------------------
@@ -198,8 +185,7 @@ class dbHandlerRFM(DBHandlerBase):
 
     def _normalize_string(self, value: str) -> str:
         """
-        Normalize Brazilian geographic names for safe comparison.
-        Removes accents, apostrophes and normalizes spacing.
+        Normalize Brazilian geographic names for deterministic comparison.
         """
         if not value:
             return None
@@ -222,7 +208,7 @@ class dbHandlerRFM(DBHandlerBase):
 
     def insert_site(self, data: dict) -> int:
         """
-        Insert a new site into DIM_SPECTRUM_SITE.
+        Insert a new site into `DIM_SPECTRUM_SITE`.
 
         The geographic point (GEO_POINT) is inserted using a raw SQL expression
         (ST_GeomFromText), while all other fields use parameter binding.
@@ -236,9 +222,8 @@ class dbHandlerRFM(DBHandlerBase):
             raise ValueError("data must be a dict")
 
         try:
-            # --------------------------------------------------
-            # Normalize site data (no external queries here)
-            # --------------------------------------------------
+            # Normalize and enrich the raw geographic payload before resolving
+            # foreign keys or writing the geometry record.
             data = self._normalize_site_data(data)
             
             # --------------------------------------------------
@@ -316,7 +301,7 @@ class dbHandlerRFM(DBHandlerBase):
         altitude_raw: list[float],
     ) -> None:
         """
-        Update geographic coordinates and GNSS statistics of an existing site.
+        Update an existing site using weighted GNSS averages.
 
         The site location is updated using weighted averages based on previous
         measurements stored in the database and new raw GNSS samples provided
@@ -427,7 +412,7 @@ class dbHandlerRFM(DBHandlerBase):
 
 
     def get_site_id(self, data: dict) -> int | bool:
-        """Get site database id based on the coordinates in the data dictionary.
+        """Return the nearest site ID when the coordinates fall within tolerance.
 
         Retrieves the nearest site from DIM_SPECTRUM_SITE using _select_rows and
         checks whether it lies within the GNSS deviation threshold.
@@ -495,8 +480,7 @@ class dbHandlerRFM(DBHandlerBase):
 
     def _get_geographic_codes(self, data: dict) -> Tuple[int, int, int]:
         """
-        Resolve and return foreign keys for STATE, COUNTY and DISTRICT
-        based on human-readable geographic names.
+        Resolve foreign keys for state, county, and district.
 
         This method performs robust normalization to safely match
         Nominatim-derived values against authoritative IBGE-based tables.

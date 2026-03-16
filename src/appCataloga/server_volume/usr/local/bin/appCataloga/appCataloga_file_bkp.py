@@ -1,6 +1,6 @@
 #! /usr/bin/python3
 """
-File Backup Worker.
+Backup worker for remote host payload collection.
 
 This worker transfers pending FILE_TASK records
 (NU_TYPE = BACKUP, NU_STATUS = PENDING) from remote hosts
@@ -18,20 +18,22 @@ Design goals:
     • Reprocessable without database
     • Compatible with RFeye proprietary software
 
-Compatible with Debian 7 (systemd-free).
+Compatible with Debian 7 (systemd-free). The pool grows on demand instead of
+starting all workers eagerly, so worker lifecycle and recovery rules are kept
+very explicit in this file.
 """
 
 # ======================================================================
 # Imports
 # ======================================================================
-import sys
 import os
-import time
-import signal
-import inspect
-import subprocess
 import hashlib
+import inspect
 import paramiko
+import signal
+import subprocess
+import sys
+import time
 from datetime import datetime
 
 # ----------------------------------------------------------------------
@@ -60,7 +62,7 @@ if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
 
 # Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
-from shared import errors, legacy, logging_utils,timeout_utils, tools
+from shared import errors, legacy, logging_utils, timeout_utils, tools
 import config as k
 
 
@@ -71,6 +73,8 @@ log = logging_utils.log()
 process_status = {
     "worker": 0,
     "running": True,
+    "seed_recovery_last_attempt": 0.0,
+    "shutdown_broadcast_sent": False,
 }
 
 
@@ -111,8 +115,18 @@ def build_server_filename(host_uid: str, remote_path: str, filename: str) -> str
 
 
 # ======================================================================
-# Signal Handling
+# Signal handling
 # ======================================================================
+def _signal_handler(signal_name: str) -> None:
+    """
+    Register shutdown intent, stop sibling workers, and release BUSY resources.
+    """
+    process_status["running"] = False
+    log.entry(f"event=signal_received signal={signal_name}")
+    broadcast_shutdown_to_worker_pool(signal_name)
+    release_busy_hosts_on_exit()
+
+
 def release_busy_hosts_on_exit() -> None:
     """
     Release all HOST records marked as BUSY by this process PID.
@@ -122,7 +136,7 @@ def release_busy_hosts_on_exit() -> None:
     """
     try:
         pid = os.getpid()
-        log.entry(f"[CLEANUP] Releasing BUSY hosts for PID={pid}")
+        log.entry(f"event=cleanup_busy_hosts pid={pid}")
         db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
         db.host_release_by_pid(pid)
     except Exception:
@@ -130,28 +144,42 @@ def release_busy_hosts_on_exit() -> None:
         pass
 
 
+def release_locked_host(db: dbHandlerBKP, host_id: int | None) -> None:
+    """
+    Release the host claimed by the current loop iteration.
+
+    This is the normal per-task path that turns `HOST.IS_BUSY` back to
+    `False` after backup work completes, retries, or fails. Shutdown cleanup
+    still uses `release_busy_hosts_on_exit()` to release all locks owned by
+    the worker PID.
+    """
+    if host_id is None:
+        return
+
+    try:
+        db.host_release_safe(
+            host_id=host_id,
+            current_pid=os.getpid(),
+        )
+    except Exception as e:
+        log.warning(
+            f"event=host_release_failed service=appCataloga_file_bkp "
+            f"host_id={host_id} error={e}"
+        )
+
+
 def sigterm_handler(signal=None, frame=None) -> None:
     """
-    Handle SIGTERM (graceful shutdown).
-
-    Triggered by:
-        • kill <pid>
-        • pkill
-        • service stop scripts
+    Handle SIGTERM by requesting a graceful shutdown.
     """
-    process_status["running"] = False
-    release_busy_hosts_on_exit()
+    _signal_handler("SIGTERM")
 
 
 def sigint_handler(signal=None, frame=None) -> None:
     """
-    Handle SIGINT (interactive interrupt).
-
-    Triggered by:
-        • Ctrl+C in terminal
+    Handle SIGINT by requesting a graceful shutdown.
     """
-    process_status["running"] = False
-    release_busy_hosts_on_exit()
+    _signal_handler("SIGINT")
 
 
 # Register signal handlers
@@ -178,9 +206,9 @@ def parse_arguments() -> None:
             try:
                 worker = int(arg.split("=")[1])
             except ValueError:
-                log.warning("Invalid worker value, defaulting to 0.")
+                log.warning("event=worker_arg_invalid fallback_worker=0")
     process_status["worker"] = worker
-    log.entry(f"Worker ID set to {worker}.")
+    log.entry(f"event=worker_configured worker_id={worker}")
 
 
 # ======================================================================
@@ -196,24 +224,114 @@ def list_running_workers(process_filename: str) -> list:
     Returns:
         list[int]: Sorted list of active worker IDs
     """
-    workers = []
+    workers = sorted(
+        {worker_id for _, worker_id in list_running_worker_processes(process_filename)}
+    )
+    log.entry(f"event=worker_pool_scan active_workers={workers}")
+    return workers
+
+
+def list_running_worker_processes(process_filename: str) -> list[tuple[int, int]]:
+    """
+    Detect running backup worker processes with their PID and worker ID.
+
+    The pool is detached (`start_new_session=True`), so console-level `Ctrl+C`
+    only reaches the foreground worker. This helper makes sibling shutdown
+    explicit by letting the signal handler enumerate and terminate the rest of
+    the pool deterministically.
+    """
+    processes = []
     try:
         pids = os.popen(f"pgrep -f {process_filename}").read().splitlines()
-        for pid in pids:
-            cmdline = f"/proc/{pid}/cmdline"
+        for pid_text in pids:
+            cmdline = f"/proc/{pid_text}/cmdline"
             if not os.path.exists(cmdline):
                 continue
+
             args = open(cmdline).read().split("\x00")
-            for arg in args:
-                if arg.startswith("worker="):
-                    workers.append(int(arg.split("=")[1]))
-                    break
+            worker_id = extract_worker_id_from_cmdline(args, process_filename)
+
+            if worker_id is None:
+                continue
+
+            try:
+                pid = int(pid_text)
+            except ValueError:
+                continue
+
+            processes.append((pid, worker_id))
     except Exception:
         pass
 
-    workers = sorted(set(workers))
-    log.entry(f"Detected running workers: {workers}")
-    return workers
+    return sorted(set(processes), key=lambda item: (item[1], item[0]))
+
+
+def broadcast_shutdown_to_worker_pool(signal_name: str) -> None:
+    """
+    Propagate a shutdown signal to sibling backup workers.
+
+    Because workers run in separate sessions, interactive `Ctrl+C` or a direct
+    `kill` sent to one worker would otherwise leave the detached siblings alive.
+    """
+    if process_status.get("shutdown_broadcast_sent"):
+        return
+
+    process_status["shutdown_broadcast_sent"] = True
+    current_pid = os.getpid()
+    script_name = os.path.basename(__file__)
+    targets = [
+        (pid, worker_id)
+        for pid, worker_id in list_running_worker_processes(script_name)
+        if pid != current_pid
+    ]
+
+    if not targets:
+        return
+
+    log.warning(
+        f"event=worker_pool_shutdown_broadcast signal={signal_name} "
+        f"sender_pid={current_pid} targets={targets}"
+    )
+
+    for pid, worker_id in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        except Exception as e:
+            log.warning(
+                f"event=worker_pool_shutdown_broadcast_failed "
+                f"target_pid={pid} worker_id={worker_id} error={e}"
+            )
+
+
+def extract_worker_id_from_cmdline(args: list, process_filename: str):
+    """
+    Resolve the worker ID represented by a process command line.
+
+    The seed process is commonly started without an explicit `worker=0`
+    argument by the service wrapper or an IDE debug session. In that case,
+    once we confirm the command line is running this script, we must still
+    treat it as worker 0; otherwise the pool manager never sees the seed
+    and on-demand scale-out stalls after the first task.
+    """
+    for arg in args:
+        if arg.startswith("worker="):
+            try:
+                return int(arg.split("=")[1])
+            except ValueError:
+                return None
+
+    normalized_args = [
+        os.path.basename(arg)
+        for arg in args
+        if isinstance(arg, str) and arg
+    ]
+
+    if process_filename in normalized_args:
+        return 0
+
+    return None
 
 
 def spawn_additional_worker(current_workers: list) -> None:
@@ -237,28 +355,133 @@ def spawn_additional_worker(current_workers: list) -> None:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        log.entry(f"Spawned backup worker worker={next_worker}.")
+        log.entry(f"event=worker_spawned worker_id={next_worker}")
     except Exception as e:
-        log.error(f"Failed to spawn worker {next_worker}: {e}")
+        log.error(f"event=worker_spawn_failed worker_id={next_worker} error={e}")
 
 
-def ensure_worker_pool() -> None:
+def spawn_specific_worker(worker_id: int) -> bool:
     """
-    Ensure that up to BKP_TASK_MAX_WORKERS are running.
+    Spawn a specific worker ID when a gap in the pool must be repaired.
 
-    Only worker=0 is allowed to spawn additional workers.
+    Normal scale-out always grows from the highest active worker. This helper is
+    reserved for recovery paths, such as recreating worker 0 after an unexpected
+    process death, without inflating the pool beyond the configured limit.
+    """
+    try:
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), f"worker={worker_id}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        log.entry(f"event=worker_spawned worker_id={worker_id} reason=pool_recovery")
+        return True
+    except Exception as e:
+        log.error(
+            f"event=worker_spawn_failed worker_id={worker_id} "
+            f"reason=pool_recovery error={e}"
+        )
+        return False
+
+
+def maybe_spawn_next_worker(worker_id: int) -> None:
+    """
+    Expand the pool only when the current worker is already busy with a task.
+
+    The highest active worker is the only one allowed to spawn the next worker.
+    This makes pool growth gradual and reduces startup races between idle
+    workers competing for the same first tasks.
     """
     try:
         script_name = os.path.basename(__file__)
         current_workers = list_running_workers(script_name)
 
-        while len(current_workers) < k.BKP_TASK_MAX_WORKERS:
-            spawn_additional_worker(current_workers)
-            legacy._random_jitter_sleep()
-            current_workers = list_running_workers(script_name)
+        if len(current_workers) >= k.BKP_TASK_MAX_WORKERS:
+            return
+
+        if not current_workers:
+            return
+
+        if worker_id != max(current_workers):
+            return
+
+        spawn_additional_worker(current_workers)
 
     except Exception as e:
-        log.warning(f"[WORKER_POOL] Failed to ensure worker pool: {e}")
+        log.warning(f"event=worker_pool_scale_out_failed worker_id={worker_id} error={e}")
+
+
+def ensure_seed_worker_alive(worker_id: int) -> bool:
+    """
+    Ensure the seed worker exists so the on-demand pool can recover itself.
+
+    The backup pool scales gradually from worker 0. If worker 0 dies outside the
+    normal try/except flow, the remaining workers must restore it, otherwise the
+    pool could lose the ability to reignite after the current backlog cools down.
+
+    Only the lowest active survivor is allowed to recreate worker 0. This keeps
+    the recovery deterministic and avoids multiple workers racing to spawn the
+    same replacement process.
+    """
+    try:
+        current_workers = list_running_workers(os.path.basename(__file__))
+        now = time.time()
+
+        if 0 in current_workers:
+            process_status["seed_recovery_last_attempt"] = 0.0
+            return True
+
+        if not current_workers:
+            return False
+
+        if len(current_workers) >= k.BKP_TASK_MAX_WORKERS:
+            return False
+
+        if worker_id != min(current_workers):
+            return False
+
+        last_attempt = process_status.get("seed_recovery_last_attempt", 0.0)
+        if now - last_attempt < k.HOST_BUSY_RETRY:
+            return False
+
+        process_status["seed_recovery_last_attempt"] = now
+        log.warning(
+            f"event=worker_seed_missing worker_id={worker_id} "
+            f"active_workers={current_workers}"
+        )
+        return spawn_specific_worker(0)
+
+    except Exception as e:
+        log.warning(
+            f"event=worker_seed_guard_failed worker_id={worker_id} error={e}"
+        )
+        return False
+
+
+def should_retire_idle_worker(worker_id: int, idle_cycles: int) -> bool:
+    """
+    Decide whether an extra worker should exit after repeated idle polls.
+
+    Worker 0 stays alive permanently as the seed worker. Extra workers can
+    retire once the backlog cools down, which reduces useless polling and
+    lowers the chance of races around the next host acquisition.
+    """
+    if worker_id == 0:
+        return False
+
+    if idle_cycles < k.BKP_TASK_IDLE_EXIT_CYCLES:
+        return False
+
+    current_workers = list_running_workers(os.path.basename(__file__))
+
+    # Extra workers should not disappear while the seed worker is missing.
+    # Keeping one survivor alive buys time for the pool recovery path to
+    # recreate worker 0 and prevents the dispatcher from going fully dark.
+    if 0 not in current_workers:
+        return False
+
+    return len(current_workers) > 1
 
 
 # ======================================================================
@@ -329,15 +552,15 @@ def transfer_file_task(
 
             if local_size_kb + k.FILE_THRESHOLD_SIZE_KB >= discovery_size_kb:
                 sftp.log.entry(
-                    f"[BACKUP] File already present and within threshold, "
-                    f"skipping transfer: {server_filename}"
+                    f"event=backup_transfer_skipped reason=file_already_present "
+                    f"server_file={server_filename}"
                 )
 
                 return local_size_kb
             else:
                 sftp.log.warning(
-                    f"[BACKUP] Existing file outside discovery threshold, "
-                    f"re-downloading: {server_filename}"
+                    f"event=backup_transfer_redownload reason=threshold_mismatch "
+                    f"server_file={server_filename}"
                 )
                 try:
                     os.remove(final_file)
@@ -426,13 +649,16 @@ def transfer_file_task(
     # ---------------------------------------------------------
     if local_size_bytes > remote_size_bytes:
         sftp.log.warning(
-            f"[BACKUP] Remote file grew during transfer "
-            f"(remote={remote_size_bytes}, local={local_size_bytes})"
+            f"event=backup_remote_growth remote_size_bytes={remote_size_bytes} "
+            f"local_size_bytes={local_size_bytes}"
         )
 
     # ---------------------------------------------------------
     # 8) Atomic rename
     # ---------------------------------------------------------
+    # `os.rename()` moves only the file entry and does not prune empty source
+    # directories, which keeps TMP folders stable even when the last file in a
+    # batch is finalized here.
     os.rename(tmp_file, final_file)
 
     return local_size_kb
@@ -448,18 +674,14 @@ def main() -> None:
     parse_arguments()
     worker_id = process_status["worker"]
 
-    # Worker 0 manages the pool
-    if worker_id == 0:
-        ensure_worker_pool()
-
-    log.entry(f"[INIT] Backup worker {worker_id} started.")
+    log.entry(f"event=service_start service=appCataloga_file_bkp worker_id={worker_id}")
     legacy._random_jitter_sleep()
 
     # Initialize database handler
     try:
         db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error(f"[INIT] Database init failed: {e}")
+        log.error(f"event=db_init_failed service=appCataloga_file_bkp error={e}")
         sys.exit(1)
 
     # =======================================================
@@ -471,6 +693,7 @@ def main() -> None:
         host = None
         err = errors.ErrorHandler(log)
         file_was_transferred = False
+        idle_cycles = process_status.get("idle_cycles", 0)
 
         task = None
         host_id = None
@@ -479,8 +702,15 @@ def main() -> None:
         server_file_path = None
         updated_size_kb = None
         connect_busy = False
+        preserve_host_busy_cooldown = False
+        input_filename = None
 
         try:
+            # Keep the pool self-healing: if worker 0 disappeared unexpectedly,
+            # surviving workers try to restore it before making new lifecycle
+            # decisions such as retiring for idleness.
+            ensure_seed_worker_alive(worker_id)
+
             # ==========================================================
             # ACT I — Fetch pending FILE_TASK
             # Atomic fetch HOST BUSY
@@ -493,10 +723,26 @@ def main() -> None:
             )
 
             if not row:
+                idle_cycles += 1
+                process_status["idle_cycles"] = idle_cycles
+
+                if should_retire_idle_worker(worker_id, idle_cycles):
+                    log.entry(
+                        f"event=worker_retired_idle worker_id={worker_id} "
+                        f"idle_cycles={idle_cycles}"
+                    )
+                    break
+
                 legacy._random_jitter_sleep()
                 continue
 
             task, host_id, file_task_id = row
+            idle_cycles = 0
+            process_status["idle_cycles"] = 0
+            input_filename = os.path.join(
+                task["FILE_TASK__NA_HOST_FILE_PATH"],
+                task["FILE_TASK__NA_HOST_FILE_NAME"],
+            )
 
             # ==========================================================
             # ACT II — Lock HOST and TASK
@@ -517,11 +763,25 @@ def main() -> None:
                             name=task["FILE_TASK__NA_HOST_FILE_NAME"],
                         ),
                     )
+                log.event(
+                    "backup_started",
+                    worker_id=worker_id,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                    file=input_filename,
+                )
                 if result["rows_affected"] != 1:
-                    host_id = None
+                    log.warning(
+                        f"event=file_task_claim_race worker_id={worker_id} "
+                        f"host_id={host_id} task_id={file_task_id}"
+                    )
                     continue
+
+                # A worker only asks for a new sibling after it has already
+                # secured work for a concrete host.
+                maybe_spawn_next_worker(worker_id)
             except Exception as e:
-                err.set("Failed to lock HOST or FILE_TASK", "LOCK", e)
+                err.capture("Failed to lock HOST or FILE_TASK", "LOCK", e)
             
             # ==========================================================
             # ACT III — Init SFTP + HostDaemon
@@ -529,23 +789,34 @@ def main() -> None:
             if not err.triggered:
                 host = db.host_read_access(host_id)
                 if not host:
-                    err.set("Host not found in database", "HOST_READ")
+                    err.capture("Host not found in database", "HOST_READ")
                 
                 try:
                     sftp_conn, _ = legacy.init_host_context(task, log)
-                except paramiko.AuthenticationException as e:
-                    err.set("Authentication failed (bad credentials)", stage="AUTH", exc=e)
-                    
-                except paramiko.ssh_exception.NoValidConnectionsError as e:
-                    connect_busy = True
-                    log.warning(f"[BACKUP WORKER {worker_id}] Host busy, retry later (host_id={host_id})")
-                    continue
-                
-                except paramiko.SSHException as e:
-                    err.set("SSH negotiation failed", stage="SSH", exc=e)
-
                 except Exception as e:
-                    err.set("SSH/SFTP initialization failed", stage="CONNECT", exc=e)
+                    if errors.is_transient_sftp_init_error(e):
+                        connect_busy = True
+                        log.warning(
+                            f"event=sftp_busy_retry service=appCataloga_file_bkp "
+                            f"worker_id={worker_id} host_id={host_id} "
+                            f"task_id={file_task_id} error={e}"
+                        )
+                        continue
+
+                    if isinstance(e, paramiko.AuthenticationException):
+                        err.capture(
+                            "Authentication failed (bad credentials)",
+                            stage="AUTH",
+                            exc=e,
+                        )
+                    elif isinstance(e, paramiko.SSHException):
+                        err.capture("SSH negotiation failed", stage="SSH", exc=e)
+                    else:
+                        err.capture(
+                            "SSH/SFTP initialization failed",
+                            stage="CONNECT",
+                            exc=e,
+                        )
             
             # ==========================================================
             # ACT IV — Prepare environment
@@ -585,7 +856,7 @@ def main() -> None:
                         discovery_size_kb=task["FILE_TASK__VL_FILE_SIZE_KB"],
                     )
                 except Exception as e:
-                    err.set("File transfer failed", "TRANSFER", e)
+                    err.capture("File transfer failed", "TRANSFER", e)
             
             if not err.triggered:
                 file_was_transferred = True
@@ -598,11 +869,13 @@ def main() -> None:
             # a single file on a specific host, so we can safely update the history record
             if not err.triggered:
                 try:
+                    backup_completed_at = datetime.now()
                     db.file_history_update(
                         task_type=k.FILE_TASK_BACKUP_TYPE,
                         host_id=host_id,
                         host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
                         host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                        DT_BACKUP=backup_completed_at,
                         NA_SERVER_FILE_NAME=server_filename,
                         NA_SERVER_FILE_PATH=server_file_path,
                         NU_STATUS_BACKUP=k.TASK_DONE,
@@ -621,6 +894,7 @@ def main() -> None:
                     db.file_task_update(
                         task_id=file_task_id,
                         NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+                        DT_FILE_TASK=backup_completed_at,
                         NU_STATUS=k.TASK_PENDING,
                         NA_SERVER_FILE_PATH=server_file_path,
                         NA_SERVER_FILE_NAME=server_filename,
@@ -632,18 +906,36 @@ def main() -> None:
                             name=task["FILE_TASK__NA_HOST_FILE_NAME"],
                         ),
                     )
+                    log.event(
+                        "backup_completed",
+                        worker_id=worker_id,
+                        host_id=host_id,
+                        task_id=file_task_id,
+                        file=input_filename,
+                        final_file=os.path.join(server_file_path, server_filename),
+                    )
                 except Exception as e:
-                    err.set("Post-transfer update failed", "FINALIZE", e)
+                    err.capture("Post-transfer update failed", "FINALIZE", e)
 
 
         # -------------------------------------------------
         # Unexpected error handling (catch-all)
         # -------------------------------------------------
         except Exception as e:
-            log.error(f"[WORKER {worker_id}] {e}")
-
             if not err.triggered:
-                err.set(f"Backup failed | {str(e)}", stage="BACKUP", exc=e)
+                err.capture(
+                    reason="Unexpected backup worker failure",
+                    stage="BACKUP",
+                    exc=e,
+                    worker_id=worker_id,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                )
+            err.log_error(
+                worker_id=worker_id,
+                host_id=host_id,
+                task_id=file_task_id,
+            )
 
         
         # ==============================================================
@@ -655,14 +947,39 @@ def main() -> None:
             # -------------------------------------------------
             if connect_busy and file_task_id is not None and not err.triggered:
                 try:
+                    retry_at = datetime.now()
                     db.file_task_update(
                         task_id=file_task_id,
+                        DT_FILE_TASK=retry_at,
                         NU_STATUS=k.TASK_PENDING,
-                        NU_PID=0,
-                        NA_MESSAGE = "Backup deferred due to connection issues, will retry",
+                        NA_MESSAGE=tools.compose_message(
+                            task_type=k.FILE_TASK_BACKUP_TYPE,
+                            task_status=k.TASK_PENDING,
+                            path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                            name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                            detail=k.SFTP_BUSY_RETRY_DETAIL,
+                        ),
                     )
-                except Exception:
-                    pass
+
+                    preserve_host_busy_cooldown = db.host_start_transient_busy_cooldown(
+                        host_id=host_id,
+                        owner_pid=os.getpid(),
+                        cooldown_seconds=k.SFTP_BUSY_COOLDOWN_SECONDS,
+                    )
+
+                    if preserve_host_busy_cooldown:
+                        log.warning(
+                            "event=sftp_busy_cooldown_started "
+                            f"service=appCataloga_file_bkp worker_id={worker_id} "
+                            f"host_id={host_id} task_id={file_task_id} "
+                            f"cooldown_seconds={k.SFTP_BUSY_COOLDOWN_SECONDS}"
+                        )
+                except Exception as e:
+                    log.error(
+                        "event=sftp_busy_requeue_failed "
+                        f"service=appCataloga_file_bkp worker_id={worker_id} "
+                        f"host_id={host_id} task_id={file_task_id} error={e}"
+                    )
             # -------------------------------------------------
             # Persist ERROR state (centralized)
             # -------------------------------------------------
@@ -674,13 +991,17 @@ def main() -> None:
                 NA_MESSAGE = tools.compose_message(
                     task_type=k.FILE_TASK_BACKUP_TYPE,
                     task_status=k.TASK_ERROR,
+                    path=task["FILE_TASK__NA_HOST_FILE_PATH"] if task else None,
+                    name=task["FILE_TASK__NA_HOST_FILE_NAME"] if task else None,
+                    error=err.format_error(),
                 )
-                NA_MESSAGE = f"{NA_MESSAGE} | {err.format_error()}"
+                error_at = datetime.now()
 
                 try:
                     db.file_task_update(
                         task_id=file_task_id,
                         NU_TYPE=k.FILE_TASK_BACKUP_TYPE,
+                        DT_FILE_TASK=error_at,
                         NU_STATUS=k.TASK_ERROR,
                         NA_MESSAGE=NA_MESSAGE,
                     )
@@ -690,6 +1011,7 @@ def main() -> None:
                         host_id=host_id,
                         host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"] if task else None,
                         host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"] if task else None,
+                        DT_BACKUP=error_at,
                         NA_SERVER_FILE_NAME=server_filename,
                         NA_SERVER_FILE_PATH=server_file_path,
                         NU_STATUS_BACKUP=k.TASK_ERROR,
@@ -707,7 +1029,20 @@ def main() -> None:
                         )
 
                 except Exception as e_db:
-                    log.error(f"[FINALIZE] Failed to persist ERROR state: {e_db}")
+                    log.error(f"event=finalize_error_persist_failed error={e_db}")
+
+                log.error_event(
+                    "backup_error",
+                    worker_id=worker_id,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                    file=input_filename,
+                    final_file=(
+                        os.path.join(server_file_path, server_filename)
+                        if server_file_path and server_filename else None
+                    ),
+                    error=err.format_error() or "Backup failed",
+                )
 
             # -------------------------------------------------
             # Close SFTP
@@ -722,14 +1057,10 @@ def main() -> None:
             # -------------------------------------------------
             # Safe release host
             # -------------------------------------------------
-            if host_id is not None:
-                try:
-                    db.host_release_safe(
-                        host_id=host_id,
-                        current_pid=os.getpid()
-                    )
-                except Exception:
-                    pass
+            if host_id is not None and not preserve_host_busy_cooldown:
+                # This is the single normal-path release point for the host
+                # claimed by `read_file_task(..., lock_host=True)`.
+                release_locked_host(db, host_id)
 
                 # Create statistics only on success
                 if not err.triggered and file_was_transferred:
@@ -740,8 +1071,21 @@ def main() -> None:
 
             legacy._random_jitter_sleep()
 
-    log.entry(f"Backup worker {worker_id} shutting down.")
+    log.entry(f"event=service_stop service=appCataloga_file_bkp worker_id={worker_id}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        worker_id = process_status.get("worker", 0)
+        err = errors.ErrorHandler(log)
+        err.capture(
+            reason="Fatal backup worker crash",
+            stage="MAIN",
+            exc=e,
+            worker_id=worker_id,
+        )
+        err.log_error(worker_id=worker_id)
+        release_busy_hosts_on_exit()
+        raise

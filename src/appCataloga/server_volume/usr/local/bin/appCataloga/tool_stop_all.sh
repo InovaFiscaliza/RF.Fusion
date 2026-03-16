@@ -27,6 +27,7 @@ echo
 services=(
   appCataloga_file_bkp
   appCataloga_file_bin_proces
+  appCataloga_file_bin_proces_appAnalise
   appCataloga_discovery
   appCataloga_host_check
   appCataloga

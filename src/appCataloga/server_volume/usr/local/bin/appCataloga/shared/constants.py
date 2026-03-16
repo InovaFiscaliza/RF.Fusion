@@ -1,10 +1,11 @@
+"""
+Small shared constants and sentinel objects.
+
+The contents of this module are intentionally minimal and stable because they
+are imported from several layers of the application.
+"""
+
 from __future__ import annotations
-from enum import Enum
-
-
-# ---------------------------------------------------------------------
-# Constants (preserved)
-# ---------------------------------------------------------------------
 
 NO_MSG = "none"
 

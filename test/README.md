@@ -1,73 +1,59 @@
-<details>
-  <summary>Table of Contents</summary>
-  <ol>
-    <li><a href="#about-logger-test">About Test</a></li>
-    <li><a href="#logger-script-example">Logger Script Example</a></li>
-    <li><a href="#json-output">JSON Output</a></li>
-    <li><a href="#roadmap">Roadmap</a></li>
-    <li><a href="#contributing">Contributing</a></li>
-    <li><a href="#license">License</a></li>
-    <li><a href="#references">References</a></li>
-  </ol>
-</details>
+# Test Suite
 
-# About Test
+This directory contains the new validation test suite for the current
+appCataloga codebase.
 
-Test folder provide scrips, structures and samples used for system testing.
+The old `/RFFusion/test` contents were archived to:
 
-These may be usefull as examples for creating production configurations.
+- `/RFFusion/cemetery/test_legacy_20260316_134816`
 
-# Content
+That legacy material belonged to earlier RF.Fusion iterations and is not
+considered a reliable validation base for the current application.
 
-# Modules, Scripts and Files
+## Goal
 
-appCataloga includes several python scripts that perform the following tasks:
-| Script module | Description |
-| --- | --- |
-| `logger` | Contain logger example script for UDP mask alarm. See details in [logger/readme](./logger/README.md) |
-| `mockNode` | Script move files in a linux machine, simulating file creation in a real RFEye Logger Application |
-| `repo` | Structure used for testing, corresponding to central server file repository  |
+This new test tree is intended for:
 
-# Roadmap
+- validation of shared helpers
+- protocol and adapter validation
+- worker rule validation
+- database-handler rule validation
+- regression protection for recent concurrency, shutdown, and timestamp-ownership fixes
 
-This section presents a simplified view of the roadmap and knwon issues.
+## Structure
 
-For more details, see the [open issues](https://github.com/FSLobao/RF.Fusion/issues) 
+- `tests/shared/`: small deterministic unit tests for shared helpers
+- `tests/stations/`: adapter and protocol tests
+- `tests/workers/`: worker rule and helper tests
+- `tests/db/`: handler and query-shaping tests
+- `fixtures/`: reusable sample payloads and static test assets
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+## Initial Strategy
 
-<!-- CONTRIBUTING -->
-## Contributing
+The suite should start with high-value validation targets:
 
-Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
+1. `shared.tools.compose_message`
+2. `shared.filter.Filter`
+3. `stations.appAnaliseConnection`
+4. helper rules from `appCataloga_file_bin_proces_appAnalise.py`
+5. selected `dbHandlerBKP` and `dbHandlerRFM` methods with mocks
 
-If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also simply open an issue with the tag "enhancement".
+## Current Coverage Highlights
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+The suite now includes automated checks for:
 
-<!-- LICENSE -->
-## License
+- shared helpers such as `compose_message`, timeout helpers, and `ErrorHandler`
+- `appAnaliseConnection` protocol validation and malformed payload handling
+- appAnalise worker resolution rules, including retry vs definitive failure
+- backup worker pool behavior, including seed visibility and shutdown broadcast
+- `dbHandlerBKP` host cooldown rules and explicit timestamp ownership
 
-Distributed under the GNU General Public License (GPL), version 3. See [`LICENSE.txt`](../../LICENSE).
+These tests are intentionally biased toward observable effects and contract
+validation, not optimistic mock-only assertions.
 
-For additional information, please check <https://www.gnu.org/licenses/quick-guide-gplv3.html>
+## Rule
 
-This license model was selected with the idea of enabling collaboration of anyone interested in projects listed within this group.
+This directory should contain automated validation artifacts only.
 
-It is in line with the Brazilian Public Software directives, as published at: <https://softwarepublico.gov.br/social/articles/0004/5936/Manual_do_Ofertante_Temporario_04.10.2016.pdf>
-
-Further reading material can be found at:
-* <http://copyfree.org/policy/copyleft>
-* <https://opensource.stackexchange.com/questions/9805/can-i-license-my-project-with-an-open-source-license-but-disallow-commercial-use>
-* <https://opensource.stackexchange.com/questions/21/whats-the-difference-between-permissive-and-copyleft-licenses/42#42>
-
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
-
-
-<!-- ACKNOWLEDGMENTS -->
-## References
-
-* [root page](/README.md)
-
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
-
+Operational notebooks, historical experiments, ad-hoc SQL dumps, and manual
+lab scripts belong in archived or dedicated utility locations, not here.

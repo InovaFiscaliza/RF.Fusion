@@ -229,9 +229,11 @@ def migrate():
                 # Update FILE_TASK
                 # -------------------------------------------------
                 try:
+                    migrated_at = datetime.now()
                     db.file_task_update(
                         task_id=task["ID_FILE_TASK"],
                         NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+                        DT_FILE_TASK=migrated_at,
                         NU_STATUS=k.TASK_PENDING,
                         NA_SERVER_FILE_PATH=local_path,
                         NA_SERVER_FILE_NAME=new_server_name,

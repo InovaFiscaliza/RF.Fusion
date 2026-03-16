@@ -112,6 +112,10 @@ appCataloga/
 ├── appCataloga_discovery.py
 ├── appCataloga_file_bkp.py
 ├── appCataloga_file_bin_proces.py
+├── appCataloga_file_bin_proces_appAnalise.py
+├── appCataloga_file_bin_proces.sh
+├── appCataloga_file_bin_proces_appAnalise.sh
+├── appCataloga_garbage_collector.py
 ├── appCataloga_host_check.py
 ├── appCataloga_pub_metadata.py
 ├── safe_stop.py
@@ -172,7 +176,8 @@ Registers host and creates initial `HOST_TASK`.
 ## appCataloga_host_check.py
 
 Continuously verifies host connectivity.  
-Suspends or resumes tasks depending on host availability.
+Suspends or resumes tasks depending on host availability.  
+Its `HOST_TASK` entries are observational and do not claim `HOST.IS_BUSY`.
 
 ---
 
@@ -186,7 +191,9 @@ Creates `FILE_TASK` entries based on Filter rules.
 ## appCataloga_file_bkp.py
 
 Handles secure file transfer.  
-Transitions tasks to PROCESS stage after successful backup.
+Transitions tasks to PROCESS stage after successful backup.  
+Uses an on-demand worker pool, host-level DB locks, and a short transient
+SFTP cooldown on `HOST.IS_BUSY/DT_BUSY` to avoid ping-pong between workers.
 
 ---
 
@@ -195,6 +202,13 @@ Transitions tasks to PROCESS stage after successful backup.
 Parses binary files.  
 Extracts GNSS, timestamps, and measurement metadata.  
 Updates RFM domain tables.
+
+---
+
+## appCataloga_file_bin_proces_appAnalise.py
+
+Processes files through the external `appAnalise` service.  
+Supports transient retry semantics distinct from definitive validation errors.
 
 ---
 
@@ -357,6 +371,9 @@ Each phase operates independently and is state-driven.
 - Manual requeue supported  
 - Host-aware suspension  
 - Full logging in FILE_TASK_HISTORY  
+- explicit caller-owned task/history timestamps (`DT_FILE_TASK`, `DT_BACKUP`, `DT_PROCESSED`)
+- transient SFTP bootstrap failures requeue work without discarding the file
+- backup worker shutdown propagates to detached sibling workers in the pool
 
 ---
 
@@ -366,6 +383,10 @@ Each phase operates independently and is state-driven.
 - Database-coordinated task claiming  
 - Host-level workload partitioning  
 - Safe parallel processing  
+- `HOST.IS_BUSY` is reserved for discovery/backup exclusivity on the remote host
+- `appCataloga_host_check.py` claims its `HOST_TASK` rows without blocking host access
+- transient SSH/SFTP contention keeps the host BUSY only for a short cooldown window using `DT_BUSY`
+- the backup pool grows on demand and now propagates shutdown across detached workers
 
 ---
 
@@ -392,6 +413,7 @@ Each phase operates independently and is state-driven.
 - Structured logs  
 - Timestamped events  
 - Process tagging  
+- One log file per `appCataloga_xxx.py` entrypoint  
 - Zabbix integration  
 - Audit-ready logging model  
 
@@ -401,4 +423,3 @@ Each phase operates independently and is state-driven.
 
 Developed under RF.Fusion Innovation Laboratory (LITE).  
 Designed for reliability, traceability, and institutional robustness.
-

@@ -1,3 +1,12 @@
+"""
+Shared file-filter parser and evaluator.
+
+This module normalizes the filter contract used by discovery, backlog
+promotion, and maintenance tooling. It keeps both metadata-side and database-
+side evaluation logic in one place so the meaning of a filter does not drift
+between services.
+"""
+
 from __future__ import annotations
 import sys
 import os
@@ -26,17 +35,7 @@ import config as k  # noqa: E402  (must be available at runtime)
 # Filter class + parse_filter wrapper
 # =====================================================================
 class Filter:
-    """Unified handler for parsing, validating, and applying file filters.
-
-    Provides standardized logic for applying file-level filters based on
-    metadata (name, modification date, extension, etc.) and supports multiple
-    modes such as RANGE, FILE, LAST, ALL, and AGENT.
-
-    Attributes:
-        raw (Union[str, dict, None]): Raw filter configuration (JSON or dict).
-        data (dict): Normalized filter configuration after parsing/validation.
-        log (Optional[Any]): Optional logger for diagnostic messages.
-    """
+    """Canonical parser and evaluator for appCataloga file filters."""
 
     # ------------------------------------------------------------------
     # Filter mode constants
@@ -138,31 +137,11 @@ class Filter:
 
     def _validate(self, f: Dict[str, Any]) -> None:
         """
-        Validate and normalize the parsed filter dictionary.
+        Validate and normalize a parsed filter dictionary in place.
 
-        This method ensures consistency among filter fields, enforcing mode-specific
-        constraints and type normalization. Each supported mode activates only the
-        fields relevant to its semantics, while the others are nullified.
-
-        Behavior by mode:
-            - RANGE: Validates date boundaries (`start_date`, `end_date`), ensuring
-            correct chronological order and ISO 8601 formatting.
-            - FILE: Forces `agent = "local"`, normalizes `file_name`, and disables
-            `extension` when redundant. If `file_name` is empty, reverts mode to NONE.
-            - LAST: Converts `last_n_files` to an integer ≥ 1; invalid entries are nulled.
-            - ALL/NONE: Retain only `extension` and `agent`.
-
-        Additionally:
-            - `extension` is normalized to lowercase and prefixed with '.' if missing.
-            - `agent` is coerced to 'local' or 'remote' (default = 'remote').
-            - Unused fields are explicitly set to None to simplify downstream logic.
-
-        Args:
-            f (dict): Parsed filter configuration (may be user-provided or default).
-
-        Returns:
-            None. The input dictionary is modified in-place.
-    """
+        Each mode keeps only the fields that are semantically relevant to it.
+        The remaining fields are explicitly nulled to simplify downstream logic.
+        """
         mode = f["mode"]
 
         # --- Normalize agent ---

@@ -2,17 +2,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-dbHandlerBKP
----------------------------------
+BKP-domain database handler for host and file orchestration.
 
-High-level handler for the *BKP* domain of appCataloga. This class exposes
-operations for `HOST`, `HOST_TASK`, and `FILE_TASK`, reusing the generic CRUD
-and execution helpers provided by `DBHandlerBase`.
-
-This version contains **complete Google-Style docstrings** and **commentary**
-to make intent and reasoning explicit, while keeping behavior identical to the
-refactored versions.
-
+`dbHandlerBKP` owns the operational side of appCataloga: host registration,
+host-level tasks, per-file tasks, immutable file history, backlog promotion,
+and stale-lock recovery. It sits on top of `DBHandlerBase`, which provides the
+generic SQL and connection helpers.
 """
 
 from __future__ import annotations
@@ -38,13 +33,12 @@ if PROJECT_ROOT not in sys.path:
 # =================================================
 import config as k
 from .dbHandlerBase import DBHandlerBase
-from shared import filter, legacy, constants, tools
+from shared import filter, constants, tools
 from shared.file_metadata import FileMetadata
-from datetime import datetime as _dt
 
 
 class dbHandlerBKP(DBHandlerBase):
-    """BKP domain handler (hosts, host tasks, file tasks).
+    """BKP-domain handler for hosts, host tasks, file tasks, and file history.
 
     This class centralizes all database interactions related to:
     - `HOST` (connection data and counters)
@@ -57,9 +51,8 @@ class dbHandlerBKP(DBHandlerBase):
 
     All constants are referenced directly from `config as k` to avoid shadowing.
     """
-    # ------------------------------------------------------------------
-    # Table field definitions (for validation and consistency)
-    # ------------------------------------------------------------------
+    # Table field definitions used both for validation and for automatic
+    # column expansion in `DBHandlerBase._select_custom()`.
     VALID_FIELDS_HOST = {
         # PRIMARY KEYS & BASIC INFO
         "ID_HOST",
@@ -151,7 +144,7 @@ class dbHandlerBKP(DBHandlerBase):
     # Initialization
     # ======================================================================
     def __init__(self, database: str, log: Any):
-        """Initialize the handler with the target logical database and logger.
+        """Initialize the BKP handler with the target logical database and logger.
 
         Args:
             database (str): Logical database key. Resolved via `config.DB` mapping.
@@ -167,37 +160,12 @@ class dbHandlerBKP(DBHandlerBase):
     # HOST OPERATIONS
     # ======================================================================
     
-    def host_exists(self, host_id: int) -> bool:
-        """Check whether a host_id exists in the HOST table.
-
-        Args:
-            host_id (int): Primary key (ID_HOST) to check.
-
-        Returns:
-            bool: True if the host exists, False otherwise.
-
-        Raises:
-            mysql.connector.Error: If a database error occurs.
-        """
-        try:
-            self._connect()
-            sql = "SELECT COUNT(*) FROM HOST WHERE ID_HOST = %s;"
-            self.cursor.execute(sql, (host_id,))
-            count = self.cursor.fetchone()[0]
-            return count > 0
-        except Exception as e:
-            self.log.error(f"[DBHandlerBKP] Failed to check host existence for ID {host_id}: {e}")
-            raise
-        finally:
-            self._disconnect()
-            
     def host_upsert(self, **kwargs) -> None:
         """
-        Create or update a HOST record using UPSERT semantics.
+        Create or refresh a `HOST` row using UPSERT semantics.
 
-        Any provided field in kwargs will be inserted if the host does not exist,
-        or updated if it already exists. Missing numeric/statistical fields are
-        initialized with defaults.
+        Missing statistical fields are initialized only for new rows, while
+        explicit caller values always win.
 
         Args:
             **kwargs: Fields for the HOST table, e.g.:
@@ -260,110 +228,6 @@ class dbHandlerBKP(DBHandlerBase):
 
         finally:
             self._disconnect()
-
-    
-    def host_create(self, **kwargs) -> None:
-        """
-        Insert a new host record into the HOST table if it does not exist.
-
-        This method accepts dynamic keyword arguments and validates them against
-        the predefined list of valid fields for the HOST table. Missing fields
-        are initialized with zero or NULL defaults as appropriate.
-
-        If the host already exists, the operation is ignored due to
-        INSERT IGNORE semantics.
-
-        Args:
-            **kwargs: Key-value pairs corresponding to columns in the HOST table.
-                Example:
-                    ID_HOST=1001,
-                    NA_HOST_UID="host-xyz",
-                    NA_HOST_ADDRESS="192.168.1.10",
-                    NA_HOST_PORT=22,
-                    NA_HOST_USER="root",
-                    NA_HOST_PASSWORD="pass123"
-
-        Returns:
-            None
-
-        Raises:
-            ValueError: If any provided field is invalid.
-            Exception: On SQL or database errors.
-        """
-        try:
-            # Ensure connection
-            self._connect()
-
-            # ------------------------------------------------------------------
-            # Validation
-            # ------------------------------------------------------------------
-            valid_fields = self.VALID_FIELDS_HOST
-            if valid_fields is None:
-                raise ValueError("Valid fields for HOST table not defined in handler.")
-
-            for key in kwargs.keys():
-                if key not in valid_fields:
-                    raise ValueError(f"Invalid field '{key}' for HOST table.")
-
-            # ------------------------------------------------------------------
-            # Default initialization for numeric/statistical fields
-            # ------------------------------------------------------------------
-            defaults = {
-                "IS_OFFLINE": False,
-                "NU_HOST_CHECK_ERROR": 0,
-                "NU_HOST_FILES": 0
-            }
-
-            # Merge defaults with provided arguments (kwargs overwrite defaults)
-            data = {**defaults, **kwargs}
-
-            # ------------------------------------------------------------------
-            # Perform safe insertion (INSERT IGNORE)
-            # ------------------------------------------------------------------
-            self._insert_row(
-                table="HOST",
-                data=data,
-                ignore=True,   # Enables INSERT IGNORE semantics
-                commit=True,
-            )
-
-            self.log.entry(f"[DBHandlerBKP] HOST {data.get('ID_HOST')} ({data.get('NA_HOST_UID')}) created or already exists.")
-
-        except Exception as e:
-            self.log.error(f"[DBHandlerBKP] Failed to create HOST record: {e}")
-            raise
-
-        finally:
-            self._disconnect()
-            
-    def host_check_free(self, host_id: int, task_type: int) -> bool:
-        """
-        Check if a host has NO RUNNING FILE_TASK of a given type.
-
-        Returns:
-            True  -> host is free (can be released)
-            False -> host still has running tasks
-        """
-        self._connect()
-        try:
-            rows = self._select_rows(
-                table="FILE_TASK",
-                where={
-                    "FK_HOST": host_id,
-                    "NU_STATUS": k.TASK_RUNNING,
-                    "NU_TYPE": task_type,
-                },
-                limit=1,
-                cols=["ID_FILE_TASK"],
-            )
-
-            # If no RUNNING task exists, host is free
-            return len(rows) == 0
-
-        finally:
-            self._disconnect()
-
-    
     def host_read_access(self, host_id: int) -> Dict[str, Any]:
         """Read connection credentials and network parameters for a host.
 
@@ -404,11 +268,10 @@ class dbHandlerBKP(DBHandlerBase):
 
     def host_read_status(self, host_id: int) -> Dict[str, Any]:
         """
-        Read all valid host counters and timestamps dynamically from the HOST table.
+        Read the full operational snapshot of a host.
 
-        This method automatically retrieves all columns listed in `self.valid_fields["HOST"]`
-        and returns them as a dictionary. No static column list is needed, ensuring
-        schema flexibility and consistency with future updates.
+        The column list is derived from `VALID_FIELDS_HOST` so the method stays
+        aligned with the schema contract used elsewhere in the handler.
 
         Args:
             host_id (int): `HOST.ID_HOST`.
@@ -456,64 +319,8 @@ class dbHandlerBKP(DBHandlerBase):
 
         finally:
             self._disconnect()
-
-
-    def host_read_all(self) -> list[dict]:
-        """
-        Retrieve all registered hosts dynamically using `valid_fields`.
-
-        This method reads every row from the HOST table, automatically
-        including only the columns defined in `self.valid_fields["HOST"]`.
-        The result is returned as a list of dictionaries.
-
-        Returns:
-            list[dict]: List of all hosts, each represented as a dictionary.
-                        Returns an empty list if no hosts are found.
-
-        Raises:
-            ValueError: If `valid_fields` for HOST table is not defined.
-            mysql.connector.Error: On query execution or connection failure.
-        """
-        self._connect()
-        try:
-            # ------------------------------------------------------------------
-            # Load valid fields dynamically
-            # ------------------------------------------------------------------
-            valid_fields = self.VALID_FIELDS_HOST
-            if not valid_fields:
-                raise ValueError("Valid fields for HOST table not defined in handler.")
-
-            # ------------------------------------------------------------------
-            # Perform dynamic SELECT
-            # ------------------------------------------------------------------
-            rows = self._select_rows(
-                table="HOST",
-                cols=list(valid_fields),
-                order_by="ID_HOST ASC"
-            )
-
-            # ------------------------------------------------------------------
-            # Handle empty results
-            # ------------------------------------------------------------------
-            if not rows:
-                self.log.entry("[DBHandlerBKP] No hosts found in HOST table.")
-                return []
-
-            self.log.entry(f"[DBHandlerBKP] Retrieved {len(rows)} host record(s).")
-            return rows
-
-        except Exception as e:
-            self.log.error(f"[DBHandlerBKP] Failed to read HOST table: {e}")
-            return []
-
-        finally:
-            self._disconnect()
-    
     def get_last_discovery(self, host_id: int) -> Optional[datetime]:
-        """
-        Return HOST.DT_LAST_DISCOVERY for the given host_id.
-        Uses _select_rows(), which returns a list of dicts.
-        """
+        """Return the last successful discovery timestamp recorded for a host."""
 
         self._connect()
         try:
@@ -536,15 +343,17 @@ class dbHandlerBKP(DBHandlerBase):
     
     def host_release_by_pid(self, pid: int) -> None:
         """
-        Release all HOST rows locked by the given PID.
-        Safe to call multiple times.
+        Release all `HOST` locks owned by the given PID.
+
+        This helper is intentionally idempotent and is mainly used during
+        worker shutdown and crash recovery.
         """
         self._connect()
         self._update_row(
             table="HOST",
             data={
                 "IS_BUSY": False,
-                "NU_PID": 0,
+                "NU_PID": k.HOST_UNLOCKED_PID,
             },
             where={
                 "NU_PID": pid,
@@ -562,6 +371,13 @@ class dbHandlerBKP(DBHandlerBase):
         busy_timeout_seconds: int = k.HOST_BUSY_TIMEOUT,
         **kwargs
     ) -> None:
+        """
+        Update a host row with optional arithmetic semantics.
+
+        Numeric values are additive by default, which is convenient for
+        counters. Pass `reset=True` to switch to direct assignment semantics.
+        `("INC", x)` and `("DEC", x)` are also supported for explicit updates.
+        """
 
         # Connect to DB
         self._connect()
@@ -587,7 +403,7 @@ class dbHandlerBKP(DBHandlerBase):
                         )
                         kwargs["IS_BUSY"] = False
                         kwargs["DT_BUSY"] = None
-                        kwargs["NU_PID"]  = 0
+                        kwargs["NU_PID"]  = k.HOST_UNLOCKED_PID
 
         # ==========================================================
         # 2. Validation
@@ -693,12 +509,11 @@ class dbHandlerBKP(DBHandlerBase):
     
     def host_update_statistics(self, host_id: int) -> None:
         """
-        Recalculate and update HOST statistics based ONLY on FILE_TASK_HISTORY.
+        Recalculate host statistics from `FILE_TASK_HISTORY` only.
 
-        Status semantics:
-            1  → Pending
-            0  → Done
-        -1  → Error
+        This method deliberately treats history as the authoritative source for
+        progress counters and timestamps, instead of trying to infer state from
+        the transient task tables.
         """
 
         self._connect()
@@ -817,10 +632,11 @@ class dbHandlerBKP(DBHandlerBase):
             
     def host_release_safe(self, host_id: int, current_pid: int):
         """
-        Safely release a HOST lock.
+        Release a host lock only when it is safe to do so.
 
         Rules:
             • Release if owned by current PID
+            • Preserve short-lived transient SFTP cooldowns
             • Release if PID is stale
             • Ignore if owned by another active process
         """
@@ -838,6 +654,15 @@ class dbHandlerBKP(DBHandlerBase):
             self.log.entry(f"[CLEANUP] Host already released (host_id={host_id})")
             return
 
+        # `HOST_TRANSIENT_BUSY_PID` means "temporarily quarantined after a
+        # transient SFTP bootstrap error", not "free to release right now".
+        if pid == k.HOST_TRANSIENT_BUSY_PID:
+            self.log.entry(
+                f"[CLEANUP] Preserving transient host cooldown "
+                f"(host_id={host_id})"
+            )
+            return
+
         if pid == current_pid:
             self.log.warning(
                 f"[CLEANUP] Releasing host lock owned by this worker "
@@ -847,7 +672,7 @@ class dbHandlerBKP(DBHandlerBase):
             self.host_update(
                 host_id=host_id,
                 IS_BUSY=False,
-                NU_PID=0,
+                NU_PID=k.HOST_UNLOCKED_PID,
             )
             return
 
@@ -861,7 +686,7 @@ class dbHandlerBKP(DBHandlerBase):
             self.host_update(
                 host_id=host_id,
                 IS_BUSY=False,
-                NU_PID=0,
+                NU_PID=k.HOST_UNLOCKED_PID,
             )
             return
 
@@ -870,18 +695,119 @@ class dbHandlerBKP(DBHandlerBase):
             f"(host_id={host_id}, owner_pid={pid})"
         )
 
+    def host_start_transient_busy_cooldown(
+        self,
+        host_id: int,
+        *,
+        owner_pid: Optional[int] = None,
+        cooldown_seconds: int = k.SFTP_BUSY_COOLDOWN_SECONDS,
+    ) -> bool:
+        """
+        Convert a worker-owned HOST lock into a short transient cooldown.
+
+        This is used only after SSH/SFTP bootstrap errors such as
+        `NoValidConnectionsError`. The host remains BUSY for a few seconds so
+        discovery and backup do not ping-pong on the same remote endpoint.
+
+        Args:
+            host_id (int):
+                Target HOST identifier.
+            owner_pid (Optional[int]):
+                PID expected to own the current BUSY lock. Defaults to the
+                current process PID.
+            cooldown_seconds (int):
+                Cooldown duration used for observability only. The actual
+                release is driven by `DT_BUSY`.
+
+        Returns:
+            bool: True when the lock was successfully converted to cooldown.
+        """
+
+        owner_pid = owner_pid or os.getpid()
+        self._connect()
+
+        try:
+            affected = self._update_row(
+                table="HOST",
+                data={
+                    "IS_BUSY": True,
+                    "DT_BUSY": datetime.now(),
+                    "NU_PID": k.HOST_TRANSIENT_BUSY_PID,
+                },
+                where={
+                    "ID_HOST": host_id,
+                    "IS_BUSY": True,
+                    "NU_PID": owner_pid,
+                },
+                commit=True,
+            )
+
+            if affected == 1:
+                self.log.entry(
+                    f"[HOST_COOLDOWN] Started transient SFTP cooldown "
+                    f"(host_id={host_id}, cooldown_seconds={cooldown_seconds})"
+                )
+                return True
+
+            self.log.warning(
+                f"[HOST_COOLDOWN] Failed to start cooldown because host lock "
+                f"ownership changed (host_id={host_id}, owner_pid={owner_pid})"
+            )
+            return False
+
+        finally:
+            self._disconnect()
+
+    def _release_expired_transient_busy_cooldowns(
+        self,
+        cooldown_seconds: int = k.SFTP_BUSY_COOLDOWN_SECONDS,
+    ) -> int:
+        """
+        Release HOST rows whose transient SFTP cooldown window already expired.
+
+        The method assumes an open DB connection and is intentionally called
+        inline by the task-selection methods so successful hosts can be retried
+        immediately after the short cooldown window ends.
+        """
+
+        threshold_time = datetime.now() - timedelta(seconds=cooldown_seconds)
+
+        affected = self._update_row(
+            table="HOST",
+            data={
+                "IS_BUSY": False,
+                "DT_BUSY": None,
+                "NU_PID": k.HOST_UNLOCKED_PID,
+            },
+            where={
+                "IS_BUSY": True,
+                "NU_PID": k.HOST_TRANSIENT_BUSY_PID,
+                "DT_BUSY__lt": threshold_time,
+            },
+            commit=True,
+        )
+
+        if affected:
+            self.log.entry(
+                f"[HOST_COOLDOWN] Released {affected} expired transient "
+                f"SFTP cooldown host lock(s)"
+            )
+
+        return affected
+
     def host_cleanup_stale_locks(self, threshold_seconds: int) -> None:
         """
-        Release HOST records stuck in BUSY state.
+        Release `HOST` rows that are stuck in BUSY state.
 
         A host lock is considered stale when:
             • No FILE_TASK is running for the host AND
-            • No HOST_TASK is running for the host
+            • No HOST_TASK of type PROCESSING is running for the host
 
-        OR when the BUSY duration exceeds `threshold_seconds`.
+        OR when the BUSY duration exceeds `threshold_seconds` and the owner PID
+        is no longer alive.
 
-        In these cases the host is released and a connection check
-        is scheduled.
+        In both cases the host is released and a connection-check task is
+        scheduled so the orchestration layer can reconcile state safely.
         """
 
         now = datetime.now()
@@ -903,10 +829,15 @@ class dbHandlerBKP(DBHandlerBase):
                     FROM HOST_TASK HT
                     WHERE HT.FK_HOST = H.ID_HOST
                     AND HT.NU_STATUS = %s
-                ) AS HOST_RUNNING
+                    AND HT.NU_TYPE = %s
+                ) AS HOST_PROCESSING_RUNNING
             FROM HOST H
             WHERE H.IS_BUSY = TRUE
-        """, (k.TASK_RUNNING, k.TASK_RUNNING))
+        """, (
+            k.TASK_RUNNING,
+            k.TASK_RUNNING,
+            k.HOST_TASK_PROCESSING_TYPE,
+        ))
 
         if not rows:
             return
@@ -923,7 +854,7 @@ class dbHandlerBKP(DBHandlerBase):
             pid = row["NU_PID"]
 
             file_running = row["FILE_RUNNING"]
-            host_running = row["HOST_RUNNING"]
+            host_processing_running = row["HOST_PROCESSING_RUNNING"]
 
             # -------------------------------------------------
             # Safe elapsed computation
@@ -936,13 +867,36 @@ class dbHandlerBKP(DBHandlerBase):
             release = False
             reason = None
 
-            if not file_running and not host_running:
+            # `HOST_TRANSIENT_BUSY_PID` is a short transient SFTP quarantine,
+            # not a stale worker lock. Preserve it only for the configured
+            # cooldown window.
+            if pid == k.HOST_TRANSIENT_BUSY_PID and elapsed <= k.SFTP_BUSY_COOLDOWN_SECONDS:
+                self.log.entry(
+                    f"[HOST_CLEANUP] Preserving transient SFTP cooldown "
+                    f"(host_id={host_id}, host={host_name}, busy_for={elapsed:.1f}s)"
+                )
+                continue
+
+            if pid == k.HOST_TRANSIENT_BUSY_PID:
+                release = True
+                reason = "SFTP_BUSY_COOLDOWN_EXPIRED"
+
+            elif not file_running and not host_processing_running:
                 release = True
                 reason = "NO_RUNNING_TASKS"
 
-            elif elapsed > threshold_seconds:
+            elif elapsed > threshold_seconds and (
+                pid in (None, k.HOST_UNLOCKED_PID) or not tools.pid_exists(pid)
+            ):
                 release = True
-                reason = "BUSY_TIMEOUT"
+                reason = "BUSY_TIMEOUT_STALE_PID"
+
+            elif elapsed > threshold_seconds:
+                self.log.warning(
+                    f"[HOST_CLEANUP] Preserving long-running busy host "
+                    f"(host_id={host_id}, host={host_name}, pid={pid}, "
+                    f"busy_for={elapsed:.1f}s)"
+                )
 
             if not release:
                 continue
@@ -960,7 +914,7 @@ class dbHandlerBKP(DBHandlerBase):
                 self.host_update(
                     host_id=host_id,
                     IS_BUSY=False,
-                    NU_PID=0
+                    NU_PID=k.HOST_UNLOCKED_PID
                 )
             except Exception as e:
                 self.log.error(
@@ -1040,8 +994,7 @@ class dbHandlerBKP(DBHandlerBase):
         filter_dict: dict,
     ) -> dict:
         """
-        Deterministically enqueue or refresh an operational HOST_TASK
-        (CHECK or PROCESSING) for a given host.
+        Deterministically enqueue or refresh an operational host task.
 
         Guarantees:
             - At most ONE CHECK/PROCESSING task per host
@@ -1066,8 +1019,7 @@ class dbHandlerBKP(DBHandlerBase):
             if status in (k.TASK_PENDING, k.TASK_RUNNING):
                 pass
 
-            # TERMINAL task → refresh
-            # Have to be reseted to HOST_CHECK because first
+            # Terminal task -> refresh in place instead of creating duplicates.
                 self.host_task_update(
                     task_id=existing["HOST_TASK__ID_HOST_TASK"],
                     NU_TYPE=task_type,
@@ -1097,7 +1049,7 @@ class dbHandlerBKP(DBHandlerBase):
     
     def host_task_create(self, **kwargs) -> int:
         """
-        Create a new HOST_TASK entry and return its generated ID.
+        Create a new `HOST_TASK` row and return its generated ID.
 
         Dynamically builds the INSERT statement using only fields defined in
         `VALID_FIELDS_HOST_TASK`. Automatically serializes FILTER (if dict),
@@ -1177,8 +1129,7 @@ class dbHandlerBKP(DBHandlerBase):
 
     def host_task_statistics_create(self, host_id: int) -> int:
         """
-        Create or reactivate a HOST_TASK of type HOST_TASK_UPDATE_STATISTICS_TYPE
-        for the specified host.
+        Create or reactivate the singleton statistics task for a host.
 
         Behavior:
             - If no statistics task exists → INSERT (PENDING)
@@ -1271,10 +1222,23 @@ class dbHandlerBKP(DBHandlerBase):
         task_status: Optional[int] = k.TASK_PENDING,
         task_type: Optional[Union[int, List[int]]] = None,
         check_host_busy: bool = False,
+        lock_host: bool = False,
     ) -> Optional[tuple]:
+        """
+        Return one host task joined with its host metadata.
+
+        This is the main polling helper used by workers that consume
+        `HOST_TASK` entries.
+
+        When `lock_host=True`, the method also attempts to atomically claim the
+        host before returning the task to the caller.
+        """
 
         self._connect()
         try:
+            if check_host_busy:
+                self._release_expired_transient_busy_cooldowns()
+
             where = {}
 
             # 1 — Lookup direto
@@ -1309,6 +1273,31 @@ class dbHandlerBKP(DBHandlerBase):
 
             row = rows[0]
 
+            host_id = row["HOST__ID_HOST"]
+
+            # --------------------------------------------------------------
+            # Optional atomic host lock
+            # --------------------------------------------------------------
+            if lock_host and check_host_busy:
+                self.cursor.execute(
+                    """
+                    UPDATE HOST
+                    SET
+                        IS_BUSY = 1,
+                        DT_BUSY = NOW(),
+                        NU_PID = %s
+                    WHERE
+                        ID_HOST = %s
+                        AND IS_BUSY = 0
+                    """,
+                    (os.getpid(), host_id),
+                )
+
+                if self.cursor.rowcount == 0:
+                    return None
+
+                self.db_connection.commit()
+
             # Parse JSON filter
             raw = row.get("HOST_TASK__FILTER") or "{}"
             try:
@@ -1327,6 +1316,7 @@ class dbHandlerBKP(DBHandlerBase):
         self,
         task_id: Optional[int] = None,
         where_dict: Optional[Dict[str, Any]] = None,
+        expected_status: Optional[int] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Safely update HOST_TASK fields with validation, supporting task_id or custom where_dict.
@@ -1377,6 +1367,9 @@ class dbHandlerBKP(DBHandlerBase):
 
         # --- Determine WHERE condition ---
         where = where_dict if where_dict else {"ID_HOST_TASK": task_id}
+
+        if expected_status is not None:
+            where["NU_STATUS"] = expected_status
 
         try:
             rows_affected = self._update_row(
@@ -1590,10 +1583,10 @@ class dbHandlerBKP(DBHandlerBase):
         lock_host: bool = False,
     ) -> Optional[tuple]:
         """
-        Return a single FILE_TASK record joined with HOST metadata.
+        Return one file task joined with host metadata.
 
-        Optionally performs an atomic HOST lock to prevent multiple workers
-        from processing the same host simultaneously.
+        When `lock_host=True`, the method also attempts to atomically claim the
+        host before returning the task to the caller.
 
         Args:
             task_id (Optional[int]):
@@ -1619,6 +1612,9 @@ class dbHandlerBKP(DBHandlerBase):
         # 0) Connect
         # --------------------------------------------------------------
         self._connect()
+
+        if check_host_busy:
+            self._release_expired_transient_busy_cooldowns()
 
         # --------------------------------------------------------------
         # 1) WHERE clause
@@ -1704,7 +1700,7 @@ class dbHandlerBKP(DBHandlerBase):
         file_metadata: list,
     ) -> int:
         """
-        Create or update FILE_TASK entries using FileMetadata objects.
+        Create or refresh `FILE_TASK` rows from `FileMetadata` objects.
 
         This method supports both single-file and batch ingestion and automatically
         selects the optimal UPSERT strategy.
@@ -1803,7 +1799,7 @@ class dbHandlerBKP(DBHandlerBase):
         **kwargs,
     ) -> Dict[str, Any]:
         """
-        Safe and deterministic FILE_TASK update.
+        Update a `FILE_TASK` row using deterministic identification rules.
 
         Identification strategies (exactly one required):
 
@@ -1821,6 +1817,11 @@ class dbHandlerBKP(DBHandlerBase):
             - Field omitted  -> not updated
             - Field=None     -> not updated
             - Field=value    -> updated
+
+        Timestamp ownership:
+            `DT_FILE_TASK` is caller-owned. This method never injects implicit
+            task timestamps, so workers and maintenance scripts must pass the
+            transition time explicitly when they want that audit field updated.
         """
 
         self._connect()
@@ -1842,6 +1843,15 @@ class dbHandlerBKP(DBHandlerBase):
         for key in kwargs.keys():
             if key not in valid_fields:
                 raise ValueError(f"Invalid field '{key}' for FILE_TASK table update.")
+
+        # Mirror HOST_TASK semantics: when a FILE_TASK returns to PENDING, it
+        # should no longer advertise ownership by a worker PID.
+        if "NU_STATUS" in kwargs:
+            status = kwargs["NU_STATUS"]
+            if status == k.TASK_PENDING and "NU_PID" not in kwargs:
+                kwargs["NU_PID"] = None
+            elif status == k.TASK_RUNNING and "NU_PID" not in kwargs:
+                kwargs["NU_PID"] = getattr(self.log, "pid", None)
 
         # -------------------------------------------------
         # Build deterministic WHERE clause
@@ -1953,7 +1963,7 @@ class dbHandlerBKP(DBHandlerBase):
     
     def file_task_suspend_by_host(self, host_id: int, reason: str = None) -> None:
         """
-        Suspend HOST-dependent FILE_TASK entries for a specific host.
+        Suspend host-dependent file tasks for a host.
 
         Only DISCOVERY and BACKUP tasks are suspended, since PROCESS tasks
         operate exclusively on files already stored on the server and do
@@ -2005,7 +2015,7 @@ class dbHandlerBKP(DBHandlerBase):
         busy_timeout_seconds: int = k.HOST_BUSY_TIMEOUT
     ) -> None:
         """
-        Resume previously suspended, errored, or stale FILE_TASK entries for a given host.
+        Resume suspended, errored, or stale host-dependent file tasks.
 
         Tasks are reactivated under three conditions:
             1. NU_STATUS = TASK_SUSPENDED → host became reachable again.
@@ -2112,8 +2122,7 @@ class dbHandlerBKP(DBHandlerBase):
         host_id: int,
     ) -> None:
         """
-        Resume suspended or errored DISCOVERY and BACKUP phases
-        for FILE_TASK_HISTORY entries when a host becomes reachable again.
+        Resume DISCOVERY and BACKUP phases in file history when a host recovers.
 
         Processing phase is NOT resumed by design.
         """
@@ -2180,20 +2189,10 @@ class dbHandlerBKP(DBHandlerBase):
             
     def check_file_task(self, **kwargs) -> list[dict]:
         """
-        Query FILE_TASK with dynamic filters based on provided keyword arguments.
+        Query `FILE_TASK` with dynamic equality filters.
 
-        Only valid column names defined in `valid_fields` are allowed to form the WHERE clause.
-        Each key in kwargs must match a valid field name in the table.
-
-        Args:
-            **kwargs: Dynamic filter arguments (e.g., FK_HOST=123, NU_STATUS=1, NA_HOST_FILE_NAME='file.bin').
-
-        Returns:
-            list[dict]: Matching rows from FILE_TASK_HISTORY. Returns an empty list if none found.
-
-        Raises:
-            ValueError: If any provided keyword does not match a valid field.
-            mysql.connector.Error: On query failure.
+        This helper still exists for maintenance scripts that need a lightweight
+        FILE_TASK lookup without the heavier worker-oriented joins.
         """
         valid_fields = self.VALID_FIELDS_FILE_TASK
         
@@ -2228,24 +2227,6 @@ class dbHandlerBKP(DBHandlerBase):
 
         return rows or None
     
-    def get_all_filetask_names(self, host_id: int) -> set:
-        """
-        Return a set containing all filenames already present in FILE_TASK
-        for the given host.
-        """
-        rows = self._select_rows(
-            table="FILE_TASK",
-            where={"FK_HOST": host_id},
-            cols=["NA_HOST_FILE_NAME"]
-        )
-        return {r["NA_HOST_FILE_NAME"] for r in rows}
-
-
-    # ======================================================================
-    # BACKLOG MANAGEMENT
-    # ======================================================================
-
-
     def update_backlog_by_filter(
         self,
         host_id: int,
@@ -2257,7 +2238,7 @@ class dbHandlerBKP(DBHandlerBase):
         new_status: int,
     ) -> Dict[str, int]:
         """
-        Update FILE_TASK backlog entries based on a Filter definition.
+        Promote backlog entries in `FILE_TASK` based on a logical filter.
 
         This method performs a single SQL UPDATE on FILE_TASK, transitioning
         tasks from one type/status to another (e.g. DISCOVERY → BACKUP).
@@ -2351,75 +2332,6 @@ class dbHandlerBKP(DBHandlerBase):
 
         finally:
             self._disconnect()
-
-
-    # ======================================================================
-    # BACKLOG MANAGEMENT
-    # ======================================================================
-    def get_all_filetaskhistory_names(self, host_id: int) -> set:
-        """
-        Return a set containing all filenames already present in FILE_TASK_HISTORY
-        for the given host.
-        """
-        rows = self._select_rows(
-            table="FILE_TASK_HISTORY",
-            where={"FK_HOST": host_id},
-            cols=["NA_HOST_FILE_NAME"]
-        )
-        return {r["NA_HOST_FILE_NAME"] for r in rows}
-
-    
-
-    def check_file_history(self, **kwargs) -> list[dict]:
-        """
-        Query FILE_TASK_HISTORY with dynamic filters based on provided keyword arguments.
-
-        Only valid column names defined in `valid_fields` are allowed to form the WHERE clause.
-        Each key in kwargs must match a valid field name in the table.
-
-        Args:
-            **kwargs: Dynamic filter arguments (e.g., FK_HOST=123, NU_STATUS=1, NA_HOST_FILE_NAME='file.bin').
-
-        Returns:
-            list[dict]: Matching rows from FILE_TASK_HISTORY. Returns an empty list if none found.
-
-        Raises:
-            ValueError: If any provided keyword does not match a valid field.
-            mysql.connector.Error: On query failure.
-        """
-        valid_fields = self.VALID_FIELDS_FILE_TASK_HISTORY
-        
-        self._connect()
-
-        # Validate and build WHERE clause
-        where_clause = {}
-        for key, value in kwargs.items():
-            if key not in valid_fields:
-                raise ValueError(f"Invalid field in _check_file_history(): '{key}' is not a valid column.")
-            where_clause[key] = value
-
-        # Execute the SELECT query
-        rows = self._select_rows(
-            table="FILE_TASK_HISTORY",
-            where=where_clause,
-            order_by="ID_HISTORY DESC",
-            cols=[
-                "ID_HISTORY",
-                "FK_HOST",
-                "DT_BACKUP",
-                "DT_PROCESSED",
-                "NA_HOST_FILE_PATH",
-                "NA_HOST_FILE_NAME",
-                "VL_FILE_SIZE_KB",
-                "NA_SERVER_FILE_PATH",
-                "NA_SERVER_FILE_NAME",
-                "NA_MESSAGE",
-            ],
-        )
-
-        return rows or None
-
-        
     def file_history_create(
         self,
         host_id: int,
@@ -2428,7 +2340,7 @@ class dbHandlerBKP(DBHandlerBase):
         file_metadata: list,
     ) -> int:
         """
-        Insert or update FILE_TASK_HISTORY entries using FileMetadata objects.
+        Create or refresh `FILE_TASK_HISTORY` rows from `FileMetadata` objects.
 
         Unique keys:
             (FK_HOST, NA_HOST_FILE_NAME, NU_TYPE)
@@ -2535,7 +2447,7 @@ class dbHandlerBKP(DBHandlerBase):
         **kwargs,
     ) -> Dict[str, Any]:
         """
-        Safe and deterministic FILE_TASK_HISTORY update.
+        Update `FILE_TASK_HISTORY` using deterministic identification rules.
 
         Identification strategies (exactly one required):
 
@@ -2548,20 +2460,15 @@ class dbHandlerBKP(DBHandlerBase):
             - Field=None         -> not updated
             - Field=SET_NULL     -> explicitly updated to NULL
             - Field=value        -> updated
+
+        Timestamp ownership:
+            `DT_BACKUP` and `DT_PROCESSED` are caller-owned. The function keeps
+            `task_type` only for signature compatibility and call-site clarity;
+            it no longer injects implicit timestamps.
         """
 
         self._connect()
         valid_fields = getattr(self, "VALID_FIELDS_FILE_TASK_HISTORY", set())
-
-        # -------------------------------------------------
-        # Automatic timestamps
-        # -------------------------------------------------
-        if task_type:
-            if task_type == k.FILE_TASK_BACKUP_TYPE and not kwargs.get("DT_BACKUP"):
-                kwargs["DT_BACKUP"] = datetime.now()
-
-            elif task_type == k.FILE_TASK_PROCESS_TYPE and not kwargs.get("DT_PROCESSED"):
-                kwargs["DT_PROCESSED"] = datetime.now()
 
         # -------------------------------------------------
         # Validate update fields
@@ -2679,7 +2586,7 @@ class dbHandlerBKP(DBHandlerBase):
         batch_size: int,
     ) -> List["FileMetadata"]:
         """
-        Deduplicate a batch of FileMetadata objects against FILE_TASK_HISTORY.
+        Deduplicate a batch of `FileMetadata` objects against file history.
 
         Identity definition (logical key):
             (FK_HOST, NA_HOST_FILE_NAME, VL_FILE_SIZE_KB, minute(DT_FILE_CREATED))
@@ -2817,118 +2724,12 @@ class dbHandlerBKP(DBHandlerBase):
         return result
     
         
-    def file_task_insert_batch(
-        self,
-        rows: list[dict],
-        batch_size: int = 4000,
-    ) -> int:
-
-        if not rows:
-            return 0
-
-        self._connect()
-        processed = 0
-
-        try:
-            cursor = self.db_connection.cursor()
-
-            columns = list(rows[0].keys())
-            cols_sql = ", ".join(columns)
-            placeholders = ", ".join(["%s"] * len(columns))
-
-            sql = f"""
-                INSERT INTO FILE_TASK ({cols_sql})
-                VALUES ({placeholders})
-            """
-
-            batch = []
-
-            for row in rows:
-                batch.append(tuple(row[col] for col in columns))
-
-                if len(batch) >= batch_size:
-                    cursor.executemany(sql, batch)
-                    processed += len(batch)
-                    batch.clear()
-
-            if batch:
-                cursor.executemany(sql, batch)
-                processed += len(batch)
-
-            self.db_connection.commit()
-
-            self.log.entry(
-                f"[DB] Batch INSERT FILE_TASK | rows={processed}"
-            )
-
-            return processed
-
-        except Exception:
-            self.db_connection.rollback()
-            raise
-
-        finally:
-            self._disconnect()
-            
-    def file_history_insert_batch(
-        self,
-        rows: list[dict],
-        batch_size: int = 4000,
-    ) -> int:
-
-        if not rows:
-            return 0
-
-        self._connect()
-        processed = 0
-
-        try:
-            cursor = self.db_connection.cursor()
-
-            columns = list(rows[0].keys())
-            cols_sql = ", ".join(columns)
-            placeholders = ", ".join(["%s"] * len(columns))
-
-            sql = f"""
-                INSERT INTO FILE_TASK_HISTORY ({cols_sql})
-                VALUES ({placeholders})
-            """
-
-            batch = []
-
-            for row in rows:
-                batch.append(tuple(row[col] for col in columns))
-
-                if len(batch) >= batch_size:
-                    cursor.executemany(sql, batch)
-                    processed += len(batch)
-                    batch.clear()
-
-            if batch:
-                cursor.executemany(sql, batch)
-                processed += len(batch)
-
-            self.db_connection.commit()
-
-            self.log.entry(
-                f"[DB] Batch INSERT FILE_TASK_HISTORY | rows={processed}"
-            )
-
-            return processed
-
-        except Exception:
-            self.db_connection.rollback()
-            raise
-
-        finally:
-            self._disconnect()
-            
     # ======================================================================
     # GARBAGE COLLECTION
     # ======================================================================
     def file_history_get_gc_candidates(self, batch_size: int, quarantine_days: int):
         """
-        Retrieve FILE_TASK_HISTORY records eligible for garbage collection.
+        Return history rows eligible for payload garbage collection.
 
         Criteria:
             - NU_STATUS_PROCESSING = -1
@@ -2943,10 +2744,8 @@ class dbHandlerBKP(DBHandlerBase):
             quarantine_days (int):
                 Minimum file age in days.
 
-        Returns:
-            List[Dict[str, Any]]:
-                Rows containing ID_HISTORY, NA_SERVER_FILE_PATH,
-                and NA_SERVER_FILE_NAME.
+        Returns rows containing only the identifiers and server paths required
+        by the garbage-collector worker.
         """
         self._connect()
         where = {
@@ -2970,22 +2769,4 @@ class dbHandlerBKP(DBHandlerBase):
             ]
         )
         
-
-    def file_history_mark_payload_deleted(self, history_id: int) -> None:
-        """
-        Mark payload as deleted in FILE_TASK_HISTORY.
-
-        Args:
-            history_id (int):
-                FILE_TASK_HISTORY primary key.
-        """
-        self._connect()
-        self._update_rows(
-            table="FILE_TASK_HISTORY",
-            where={"ID_HISTORY": history_id},
-            data={
-                "IS_PAYLOAD_DELETED": 1,
-                "DT_PAYLOAD_DELETED": datetime.now()
-            }
-        )
     

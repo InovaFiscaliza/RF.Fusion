@@ -1,59 +1,84 @@
 #!/usr/bin/python3
 """
-This module publishes measurement metadata using parket file format
-The created file is stored in the /etc/appCataloga/config.py PUBLISH_FILE location
+Metadata publication worker for appCataloga.
 
-Usage:
-    python appCataloga_pub_metadata.py
-
-Returns:    metadata file
-            log entries
+This service exports the latest processed metadata to Parquet when the database
+has changed since the last published snapshot. The loop stays intentionally
+small because it is operational glue, not a data-processing pipeline.
 """
 
-import sys,os
+import inspect
+import os
+import random
+import signal
+import sys
+import time
 
-CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga"))
-sys.path.append(CONFIG_PATH)
+
+# =================================================
+# PROJECT ROOT (shared/, db/, stations/)
+# =================================================
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+
+# =================================================
+# Config directory (etc/appCataloga)
+# =================================================
+_CFG_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga")
+)
+if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
+    sys.path.append(_CFG_DIR)
+
+
+# =================================================
+# DB directory
+# =================================================
+_DB_DIR = os.path.join(PROJECT_ROOT, "db")
+if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
+    sys.path.append(_DB_DIR)
+
 
 # Import appCataloga modules
 import config as k
-from shared import errors, legacy, logging_utils, tools
 from db.dbHandlerRFM import dbHandlerRFM
+from shared import errors, logging_utils
 
-import signal
-import inspect
-import os
-import time
-import random
 
-# define global variables for log and general use
+# ============================================================
+# Globals
+# ============================================================
 log = logging_utils.log()
-
 process_status = {"running": True}
 
 
-# Define a signal handler for SIGTERM (kill command )
+# ============================================================
+# Signal handling
+# ============================================================
+def _signal_handler(signal_name: str) -> None:
+    """
+    Register shutdown intent for the publication loop.
+    """
+    current_function = inspect.currentframe().f_back.f_code.co_name
+    log.entry(f"event=signal_received signal={signal_name} handler={current_function}")
+    process_status["running"] = False
+
+
 def sigterm_handler(signal=None, frame=None) -> None:
-    """Signal handler for SIGTERM (Kill) to stop the process."""
-
-    global process_status
-    global log
-
-    current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"Kill signal received at: {current_function}()")
-    process_status["running"] = False
+    """
+    Handle SIGTERM by requesting a graceful shutdown.
+    """
+    _signal_handler("SIGTERM")
 
 
-# Define a signal handler for SIGINT (Ctrl+C)
 def sigint_handler(signal=None, frame=None) -> None:
-    """Signal handler for SIGINT (Ctrl+C) to stop the process."""
-
-    global process_status
-    global log
-
-    current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"Ctrl+C received at: {current_function}()")
-    process_status["running"] = False
+    """
+    Handle SIGINT by requesting a graceful shutdown.
+    """
+    _signal_handler("SIGINT")
 
 
 # Register the signal handler function, to handle system kill commands
@@ -61,11 +86,9 @@ signal.signal(signal.SIGTERM, sigterm_handler)
 signal.signal(signal.SIGINT, sigint_handler)
 
 
-def test_path(file_name: str) -> None:
-    """Test if the path to the file exists, if not create it.
-
-    Args:
-        file_name (str): File name with path
+def ensure_parent_directory(file_name: str) -> None:
+    """
+    Ensure the parent directory of the publication file exists.
     """
 
     path = os.path.dirname(file_name)
@@ -74,13 +97,8 @@ def test_path(file_name: str) -> None:
 
 
 def get_latest_parquet_time(path: str) -> float:
-    """Get the latest update time for the parquet files in the path.
-
-    Args:
-        path (str): Path to the parquet files
-
-    Returns:
-        float: Latest update time
+    """
+    Return the most recent mtime among Parquet files under `path`.
     """
 
     latest_export = 0.0
@@ -92,52 +110,55 @@ def get_latest_parquet_time(path: str) -> float:
                 if file_time > latest_export:
                     latest_export = file_time
     except Exception as e:
-        log.error(f"Error getting latest parquet time: {e}")
+        log.error(f"event=parquet_scan_failed path={path} error={e}")
         pass
 
     return latest_export
 
 
 def wait_random_time(message: str) -> int:
-    """Wait for a random time between within limits defined in config.py."""
+    """
+    Sleep for a bounded random interval to desynchronize concurrent publishers.
+    """
 
     wait_time = int(
         (k.MAX_HOST_TASK_WAIT_TIME + k.MAX_HOST_TASK_WAIT_TIME * random.random()) / 2
     )
 
-    log.entry(f"Waiting for {wait_time} seconds. {message}")
+    log.entry(f"event=publish_wait seconds={wait_time} detail=\"{message}\"")
     time.sleep(wait_time)
 
 
 def main():
-    """Main function to start the host check process."""
+    """
+    Run the publication polling loop until shutdown is requested.
+    """
 
-    global process_status
-    global log
-
-    log.entry("Starting....")
+    log.entry("event=service_start service=appCataloga_pub_metadata")
+    err = errors.ErrorHandler(log)
 
     try:
-        # create db object using databaseHandler class for the backup and processing database
         rfdb = dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error(f"Error initializing database: {e}")
+        err.capture(
+            reason="Database initialization failed",
+            stage="INIT",
+            exc=e,
+            service="appCataloga_pub_metadata",
+        )
+        err.log_error(service="appCataloga_pub_metadata")
         exit(1)
 
-    # test if path to k.PUBLISH_FILE exists and create it if it does not
-    test_path(file_name=k.PUBLISH_FILE)
+    ensure_parent_directory(file_name=k.PUBLISH_FILE)
 
     while process_status["running"]:
         try:
-            # get the latest update time for the parquet files in the path k.PUBLISH_FILE
             latest_export = get_latest_parquet_time(
                 path=os.path.dirname(k.PUBLISH_FILE)
             )
 
-            # get latest update of metadata in the database
             latest_db_update = rfdb.get_latest_processing_time()
 
-            # convert timstamp to string
             latest_export_str = time.strftime(
                 "%Y-%m-%d %H:%M:%S", time.localtime(latest_export)
             )
@@ -149,17 +170,35 @@ def main():
             if latest_export < latest_db_update:
                 rfdb.export_parquet(file_name=k.PUBLISH_FILE)
 
-                log.entry(f"Published new set of parquet files. {message}.")
+                log.entry(
+                    f"event=parquet_export_completed file={k.PUBLISH_FILE} "
+                    f"detail=\"{message}\""
+                )
             else:
                 wait_random_time(message=message)
 
         except Exception as e:
-            log.error(f"Unmapped error occurred: {str(e)}")
+            err = errors.ErrorHandler(log)
+            err.capture(
+                reason="Unexpected metadata publication loop failure",
+                stage="PUBLISH",
+                exc=e,
+            )
+            err.log_error()
             process_status["running"] = False
-            pass
 
-    log.entry("Shutting down....")
+    log.entry("event=service_stop service=appCataloga_pub_metadata")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        err = errors.ErrorHandler(log)
+        err.capture(
+            reason="Fatal metadata publication worker crash",
+            stage="MAIN",
+            exc=e,
+        )
+        err.log_error()
+        raise

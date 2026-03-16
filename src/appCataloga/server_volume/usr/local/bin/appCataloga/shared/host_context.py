@@ -1,3 +1,11 @@
+"""
+Remote-host orchestration helpers shared by discovery and maintenance flows.
+
+This module provides the high-level `hostDaemon` abstraction used to coordinate
+exclusive access to remote hosts, load remote configuration, and collect remote
+file metadata on top of `ssh_utils`.
+"""
+
 from __future__ import annotations
 
 import os
@@ -27,9 +35,7 @@ from .filter import Filter
 from .ssh_utils import sftpConnection
 from .logging_utils import log
 
-# =====================================================================
-# HaltFlag class to manage objects
-# =====================================================================
+# HALT_FLAG ownership states used to coordinate exclusive host access.
 class HaltFlagState(Enum):
     NO_FLAG = 0
     OWN_FLAG = 1
@@ -37,9 +43,6 @@ class HaltFlagState(Enum):
     STALE_FLAG = 3  # flag existe, mas está vencido (tempo excedido)
 
 
-# =====================================================================
-# hostDaemon (public API preserved)
-# =====================================================================
 class hostDaemon:
     """High-level remote orchestration helper for controlled host access.
 
@@ -144,8 +147,7 @@ class hostDaemon:
     # ----------------------------------------------------------------------
     def get_config(self, timeout: int = 60) -> bool:
         """
-        Load daemon configuration exclusively from the remote indexerD.cfg via SFTP.
-        Timeout is enforced manually because sftp_conn.read() has no built-in timeout.
+        Load the remote daemon configuration via SFTP with an explicit timeout.
         """
 
         try:
@@ -796,4 +798,3 @@ class hostDaemon:
 
             if batch:
                 yield batch
-

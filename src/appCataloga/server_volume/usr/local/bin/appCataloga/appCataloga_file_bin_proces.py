@@ -1,36 +1,19 @@
 #!/usr/bin/python3
 """
-appCataloga_file_bin_process
+BIN processing worker for classic station pipelines.
 
 Worker responsible for processing BIN files produced by monitoring stations
-(e.g., RFeye).
-
-Pipeline (deterministic):
-
-    ACT I       - Fetch FILE_TASK
-    ACT II      - Mark task as RUNNING
-    ACT III     - Parse and semantically validate BIN (fatal)
-    ACT IV      - SITE / GEO enrichment (only for validated BINs)
-    ACT V       - Begin DB transaction
-    ACT VI      - Insert spectrum and metadata into RFDATA
-    ACT VII     - Filesystem move + server file registration
-    FINALLY     - Global resolution (trash on error, history update, cleanup)
-
-Design principles:
-- BIN semantic validation is exclusive responsibility of Station classes
-- No DB operation occurs before successful BIN validation
-- FILE_TASK is always transient
-- FILE_TASK_HISTORY is the single source of truth
-- Error handling is centralized via ErrorHandler + finally
+(e.g., RFeye). The flow remains intentionally linear so that semantic
+validation, database persistence, and final file resolution can be audited as a
+single deterministic pipeline.
 """
 
-import sys
-import os
-import time
-import signal
 import inspect
 import json
-import gc
+import os
+import signal
+import sys
+import time
 from datetime import datetime
 
 # ---------------------------------------------------------------
@@ -83,10 +66,9 @@ process_status = {"running": True}
 
 
 # ===============================================================
-# SIGNAL HANDLING
+# Signal handling
 # ===============================================================
-
-def release_busy_hosts_on_exit():
+def release_busy_hosts_on_exit() -> None:
     """
     Release BUSY hosts held by this worker PID.
     """
@@ -95,21 +77,34 @@ def release_busy_hosts_on_exit():
         db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
         db.host_release_by_pid(pid)
     except Exception as e:
-        log.error(f"[CLEANUP] Failed to release BUSY hosts: {e}")
+        log.error(f"event=cleanup_busy_hosts_failed error={e}")
 
 
-def _signal_handler(signal=None, frame=None):
+def _signal_handler(signal_name: str) -> None:
     """
-    Handle SIGTERM / SIGINT gracefully.
+    Register shutdown intent and release BUSY resources.
     """
     fn = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"SIGNAL received at {fn}()")
+    log.entry(f"event=signal_received signal={signal_name} handler={fn}")
     process_status["running"] = False
     release_busy_hosts_on_exit()
 
+def sigterm_handler(signal=None, frame=None) -> None:
+    """
+    Handle SIGTERM by requesting a graceful shutdown.
+    """
+    _signal_handler("SIGTERM")
 
-signal.signal(signal.SIGTERM, _signal_handler)
-signal.signal(signal.SIGINT, _signal_handler)
+
+def sigint_handler(signal=None, frame=None) -> None:
+    """
+    Handle SIGINT by requesting a graceful shutdown.
+    """
+    _signal_handler("SIGINT")
+
+
+signal.signal(signal.SIGTERM, sigterm_handler)
+signal.signal(signal.SIGINT, sigint_handler)
 
 
 # ===============================================================
@@ -193,9 +188,142 @@ def map_location_to_data(location, data):
 
 
 # ===============================================================
-# FILE OPERATIONS
+# SITE / SPECTRUM HELPERS
 # ===============================================================
+def build_site_data(gps):
+    """
+    Convert normalized GPS data into the SITE payload used by RFDATA.
+    """
+    return {
+        "longitude": gps.longitude,
+        "latitude": gps.latitude,
+        "altitude": gps.altitude,
+        "nu_gnss_measurements": len(gps._longitude),
+    }
 
+
+def upsert_site(db_rfm, bin_data):
+    """
+    Resolve or create the SITE referenced by the processed spectrum batch.
+    """
+    gps = bin_data["gps"]
+    site_data = build_site_data(gps)
+    site_id = db_rfm.get_site_id(site_data)
+
+    if site_id:
+        db_rfm.update_site(
+            site=site_id,
+            longitude_raw=gps._longitude,
+            latitude_raw=gps._latitude,
+            altitude_raw=gps._altitude,
+        )
+        return site_id
+
+    location = do_reverse_geocode(site_data)
+    site_data = map_location_to_data(location, site_data)
+    return db_rfm.insert_site(site_data)
+
+
+def insert_spectra_batch(
+    db_rfm,
+    *,
+    bin_data,
+    site_id,
+    hostname_bin,
+    hostname_db,
+    host_path,
+    host_file_name,
+    extension,
+    vl_file_size_kb,
+    dt_created,
+    dt_modified,
+):
+    """
+    Persist host file metadata and all normalized spectra in a single batch.
+    """
+    host_file_id = db_rfm.insert_file(
+        hostname=hostname_bin,
+        NA_VOLUME=hostname_db,
+        NA_PATH=host_path,
+        NA_FILE=host_file_name,
+        NA_EXTENSION=extension,
+        VL_FILE_SIZE_KB=vl_file_size_kb,
+        DT_FILE_CREATED=dt_created,
+        DT_FILE_MODIFIED=dt_modified,
+    )
+
+    procedure_id = db_rfm.insert_procedure(bin_data["method"])
+    dim_eq = db_rfm.get_or_create_spectrum_equipment(hostname_bin.lower())
+    spectrum_ids = []
+
+    for spectrum in bin_data["spectrum"]:
+        metadata = (
+            spectrum.metadata
+            if hasattr(spectrum, "metadata")
+            else {"antuid": spectrum.antuid}
+        )
+
+        spectrum_ids.append(
+            db_rfm.insert_spectrum(
+                {
+                    "id_site": site_id,
+                    "id_procedure": procedure_id,
+                    "id_detector_type": db_rfm.insert_detector_type(
+                        k.DEFAULT_DETECTOR
+                    ),
+                    "id_trace_type": db_rfm.insert_trace_type(
+                        spectrum.processing
+                    ),
+                    "id_equipment": dim_eq,
+                    "id_measure_unit": db_rfm.insert_measure_unit(
+                        spectrum.level_unit
+                    ),
+                    "na_description": getattr(spectrum, "description", None),
+                    "nu_freq_start": spectrum.start_mega,
+                    "nu_freq_end": spectrum.stop_mega,
+                    "dt_time_start": spectrum.start_dateidx,
+                    "dt_time_end": spectrum.stop_dateidx,
+                    "nu_sample_duration": k.DEFAULT_SAMPLE_DURATION,
+                    "nu_trace_count": spectrum.trace_length,
+                    "nu_trace_length": spectrum.ndata,
+                    "nu_rbw": getattr(spectrum, "bw", None),
+                    "nu_att_gain": k.DEFAULT_ATTENUATION_GAIN,
+                    "js_metadata": json.dumps(metadata),
+                }
+            )
+        )
+
+    db_rfm.insert_bridge_spectrum_file(spectrum_ids, [host_file_id])
+    return spectrum_ids
+
+
+def process_local_station_file(filename, hostname_db):
+    """
+    Parse and normalize a locally processed station payload.
+    """
+    if "rfeye" in hostname_db.lower():
+        bin_data_raw = parse_bin(filename)
+        station = station_factory(
+            bin_data=bin_data_raw,
+            host_uid=hostname_db,
+        )
+        bin_data = station.process()
+        return bin_data, bin_data["hostname"]
+
+    station = station_factory(
+        bin_data=None,
+        host_uid=hostname_db,
+    )
+    bin_data = station.process(
+        file_path=os.path.dirname(filename),
+        file_name=os.path.basename(filename),
+    )
+    return bin_data, bin_data["hostname"]
+
+
+# ===============================================================
+# File operations
+# ===============================================================
 def file_move(filename, path, new_path):
     """
     Move a file from (path/filename) to (new_path/filename),
@@ -215,26 +343,149 @@ def file_move(filename, path, new_path):
     return {"filename": filename, "path": new_path}
 
 
+def finalize_successful_processing(
+    db_rfm,
+    *,
+    spectrum_ids,
+    bin_data,
+    site_id,
+    hostname_bin,
+    server_name,
+    server_path,
+    extension,
+    vl_file_size_kb,
+    dt_created,
+    dt_modified,
+    filename,
+):
+    """
+    Move the processed BIN to its final repository location and register it.
+    """
+    year = bin_data["spectrum"][0].start_dateidx.year
+    new_path = f"{k.REPO_FOLDER}/{year}/{db_rfm.build_path(site_id)}"
+
+    file_move(server_name, server_path, new_path)
+
+    server_file_id = db_rfm.insert_file(
+        hostname=hostname_bin,
+        NA_VOLUME=k.REPO_VOLUME_NAME,
+        NA_PATH=new_path,
+        NA_FILE=server_name,
+        NA_EXTENSION=extension,
+        VL_FILE_SIZE_KB=vl_file_size_kb,
+        DT_FILE_CREATED=dt_created,
+        DT_FILE_MODIFIED=dt_modified,
+    )
+
+    db_rfm.insert_bridge_spectrum_file(spectrum_ids, [server_file_id])
+    log.event(
+        "processing_completed",
+        file=filename,
+        final_file=os.path.join(new_path, server_name),
+    )
+    return new_path
+
+
+def finalize_task_resolution(
+    db_bp,
+    *,
+    file_task_id,
+    host_id,
+    host_file_name,
+    host_path,
+    server_path,
+    server_name,
+    extension,
+    vl_file_size_kb,
+    dt_created,
+    dt_modified,
+    file_was_processed,
+    new_path,
+    err,
+):
+    """
+    Apply the final FILE_TASK resolution once local processing is finished.
+
+    Local BIN parsing is deterministic: reprocessing the same payload through
+    the local parser will produce the same success or the same definitive
+    failure. Because of that, this worker always resolves the task
+    definitively here instead of requeueing it for retry.
+    """
+    if not file_was_processed and new_path is None:
+        try:
+            file_data = file_move(
+                filename=server_name,
+                path=server_path,
+                new_path=f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}",
+            )
+            new_path = file_data["path"]
+        except Exception as fs_err:
+            log.error(f"event=trash_move_failed error={fs_err}")
+
+    db_bp.file_task_delete(task_id=file_task_id)
+
+    status = k.TASK_DONE if file_was_processed else k.TASK_ERROR
+    na_message = tools.compose_message(
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        task_status=status,
+        path=new_path if file_was_processed else None,
+        name=server_name if file_was_processed else None,
+        error=err.format_error() if err.triggered else None,
+    )
+    processed_at = datetime.now()
+
+    db_bp.file_history_update(
+        host_id=host_id,
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        host_file_name=host_file_name,
+        host_file_path=host_path,
+        DT_PROCESSED=processed_at,
+        NA_SERVER_FILE_NAME=server_name,
+        NA_SERVER_FILE_PATH=new_path,
+        NA_EXTENSION=extension,
+        VL_FILE_SIZE_KB=vl_file_size_kb,
+        DT_FILE_CREATED=dt_created,
+        DT_FILE_MODIFIED=dt_modified,
+        NU_STATUS_PROCESSING=status,
+        NA_MESSAGE=na_message,
+    )
+
+    db_bp.host_task_statistics_create(host_id=host_id)
+    return {
+        "status": status,
+        "new_path": new_path,
+        "final_file": (
+            os.path.join(new_path, server_name)
+            if new_path else None
+        ),
+    }
+
+
 # ===============================================================
-# MAIN LOOP
+# Main loop
 # ===============================================================
 
 def main():
     """
-    Main worker loop.
+    Run the local BIN processing loop until shutdown is requested.
+
+    The lifecycle mirrors the appAnalise-backed worker as closely as possible:
+    validate first, persist second, and resolve FILE_TASK/HISTORY in one final
+    place. The main difference is that payload normalization happens locally
+    instead of through an external processing service.
     """
-    log.entry("[INIT] appCataloga_file_bin_process started")
+    log.entry("event=service_start service=appCataloga_file_bin_proces")
 
     db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     db_rfm = dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)
 
     while process_status["running"]:
         err = errors.ErrorHandler(log)
-
         file_task_id = None
         file_was_processed = False
         new_path = None
         host_id = None
+        should_sleep = False
 
         try:
             # ===================================================
@@ -248,9 +499,10 @@ def main():
             )
 
             if not result:
-                legacy._random_jitter_sleep()
+                should_sleep = True
                 continue
 
+            # From this point on, we have a concrete FILE_TASK candidate.
             row, host_id, _ = result
 
             file_task_id    = row["FILE_TASK__ID_FILE_TASK"]
@@ -276,81 +528,45 @@ def main():
                     DT_FILE_TASK=datetime.now(),
                     NU_STATUS=k.TASK_RUNNING,
                     NU_PID=os.getpid(),
-                    NA_MESSAGE=f"Processing BIN: {filename}",
+                    NA_MESSAGE=tools.compose_message(
+                        task_type=k.FILE_TASK_PROCESS_TYPE,
+                        task_status=k.TASK_RUNNING,
+                        path=server_path,
+                        name=server_name,
+                        detail="worker=BIN_PROCESS",
+                    ),
                 )
+                log.event("processing_started", file=filename)
             except Exception as e:
                 err.set(reason=str(e), stage="PROCESS", exc=e)
                 raise
 
             # ===================================================
-            # ACT III — Parse and validate BIN (semantic, fatal)
+            # ACT III — Parse and validate BIN locally
             # ===================================================
-            if 'rfeye' in hostname_db.lower():
-                try:
-                    # Process RFeye stations via direct parsing
-                    bin_data_raw = parse_bin(filename)
-                    station = station_factory(
-                        bin_data=bin_data_raw,
-                        host_uid=hostname_db
-                    )
-                    bin_data = station.process()
-                                        
-                    hostname_bin = bin_data["hostname"]
-                except errors.BinValidationError as e:
-                    err.set(reason=str(e), stage="PROCESS", exc=e)
-                    raise
-                except Exception as e:
-                    err.set(reason=str(e), stage="PROCESS", exc=e)
-                    raise
-            else:
-                # Process Celplan stations via APP_ANALISE service
-                try:
-                    bin_data = station_factory(
-                        bin_data=None,
-                        host_uid=hostname_db
-                    ).process(
-                        file_path=server_path,
-                        file_name=server_name
-                    )
-                except errors.BinValidationError as e:
-                    print(json.dumps({
-                        "status_query": 0,
-                        "message_query": str(e)
-                    }, ensure_ascii=False, indent=2))
-                    return
+            try:
+                bin_data, hostname_bin = process_local_station_file(
+                    filename=filename,
+                    hostname_db=hostname_db,
+                )
+            except errors.BinValidationError as e:
+                err.set(reason=str(e), stage="PROCESS", exc=e)
+                raise
+            except Exception as e:
+                err.set(reason=str(e), stage="PROCESS", exc=e)
+                raise
 
-            
             # ===================================================
             # ACT IV — SITE / GEO enrichment
             # ===================================================
             try:
-                gps = bin_data["gps"]
-
-                site_data = {
-                    "longitude": gps.longitude,
-                    "latitude": gps.latitude,
-                    "altitude": gps.altitude,
-                    "nu_gnss_measurements": len(gps._longitude),
-                }
-
-                site_id = db_rfm.get_site_id(site_data)
-
-                if site_id:
-                    db_rfm.update_site(
-                        site=site_id,
-                        longitude_raw=gps._longitude,
-                        latitude_raw=gps._latitude,
-                        altitude_raw=gps._altitude,
-                    )
-                else:
-                    location = do_reverse_geocode(site_data)
-                    site_data = map_location_to_data(location, site_data)
-                    site_id = db_rfm.insert_site(site_data)
-
+                # SITE resolution is intentionally outside the DB transaction,
+                # matching the appAnalise-backed worker.
+                site_id = upsert_site(db_rfm, bin_data)
             except Exception as e:
                 err.set(reason=str(e), stage="SITE", exc=e)
                 raise
-            
+
             # ===================================================
             # ACT V — Begin DB transaction
             # ===================================================
@@ -364,52 +580,22 @@ def main():
             # ACT VI — Insert spectrum and metadata (DB)
             # ===================================================
             try:
-                host_file_id = db_rfm.insert_file(
-                    hostname=hostname_bin,
-                    NA_VOLUME=hostname_db,
-                    NA_PATH=host_path,
-                    NA_FILE=host_file_name,
-                    NA_EXTENSION=extension,
-                    VL_FILE_SIZE_KB=vl_file_size_kb,
-                    DT_FILE_CREATED=dt_created,
-                    DT_FILE_MODIFIED=dt_modified,
+                # The host-side source file and all derived spectra must be
+                # committed as one unit for consistent lineage.
+                spectrum_ids = insert_spectra_batch(
+                    db_rfm,
+                    bin_data=bin_data,
+                    site_id=site_id,
+                    hostname_bin=hostname_bin,
+                    hostname_db=hostname_db,
+                    host_path=host_path,
+                    host_file_name=host_file_name,
+                    extension=extension,
+                    vl_file_size_kb=vl_file_size_kb,
+                    dt_created=dt_created,
+                    dt_modified=dt_modified,
                 )
-
-                procedure_id = db_rfm.insert_procedure(bin_data["method"])
-                dim_eq = db_rfm.get_or_create_spectrum_equipment(hostname_bin.lower())
-
-                spectrum_ids = []
-
-                for s in bin_data["spectrum"]:
-                    spectrum_ids.append(
-                        db_rfm.insert_spectrum(
-                            {
-                                "id_site": site_id,
-                                "id_procedure": procedure_id,
-                                "id_detector_type": db_rfm.insert_detector_type(k.DEFAULT_DETECTOR),
-                                "id_trace_type": db_rfm.insert_trace_type(s.processing),
-                                "id_equipment": dim_eq,
-                                "id_measure_unit": db_rfm.insert_measure_unit(s.level_unit),
-                                "na_description": getattr(s, "description", None),
-                                "nu_freq_start": s.start_mega,
-                                "nu_freq_end": s.stop_mega,
-                                "dt_time_start": s.start_dateidx,
-                                "dt_time_end": s.stop_dateidx,
-                                "nu_sample_duration": k.DEFAULT_SAMPLE_DURATION,
-                                "nu_trace_count": s.trace_length,
-                                "nu_trace_length": s.ndata,
-                                "nu_rbw": getattr(s, "bw", None),
-                                "nu_att_gain": k.DEFAULT_ATTENUATION_GAIN,
-                                "js_metadata": json.dumps(
-                                    s.metadata if hasattr(s, "metadata") else {"antuid": s.antuid}
-                                ),
-                            }
-                        )
-                    )
-
-                db_rfm.insert_bridge_spectrum_file(spectrum_ids, [host_file_id])
                 db_rfm.commit()
-
             except Exception as e:
                 err.set(reason=str(e), stage="DB", exc=e)
                 raise
@@ -418,89 +604,85 @@ def main():
             # ACT VII — Filesystem move + server file registration
             # ===================================================
             try:
-                year = bin_data["spectrum"][0].start_dateidx.year
-                new_path = f"{k.REPO_FOLDER}/{year}/{db_rfm.build_path(site_id)}"
-
-                file_move(server_name, server_path, new_path)
-
-                server_file_id = db_rfm.insert_file(
-                    hostname=hostname_bin,
-                    NA_VOLUME="reposfi",
-                    NA_PATH=new_path,
-                    NA_FILE=server_name,
-                    NA_EXTENSION=extension,
-                    VL_FILE_SIZE_KB=vl_file_size_kb,
-                    DT_FILE_CREATED=dt_created,
-                    DT_FILE_MODIFIED=dt_modified,
+                new_path = finalize_successful_processing(
+                    db_rfm,
+                    spectrum_ids=spectrum_ids,
+                    bin_data=bin_data,
+                    site_id=site_id,
+                    hostname_bin=hostname_bin,
+                    server_name=server_name,
+                    server_path=server_path,
+                    extension=extension,
+                    vl_file_size_kb=vl_file_size_kb,
+                    dt_created=dt_created,
+                    dt_modified=dt_modified,
+                    filename=filename,
                 )
-
-                db_rfm.insert_bridge_spectrum_file(spectrum_ids, [server_file_id])
-
                 file_was_processed = True
-                log.entry(f"[DONE] {filename}")
-                
-
             except Exception as e:
                 err.set(reason=str(e), stage="FS", exc=e)
                 raise
 
-        except Exception:
-            log.error(f"[PROCESS ERROR] {err.format_error()}")
+        except Exception as e:
+            if not err.triggered:
+                err.capture(
+                    reason="Unexpected processing loop failure",
+                    stage="PROCESS",
+                    exc=e,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                )
+            err.log_error(host_id=host_id, task_id=file_task_id)
             if db_rfm.in_transaction:
                 db_rfm.rollback()
 
         finally:
+            if should_sleep:
+                legacy._random_jitter_sleep()
+
             if not file_task_id:
                 continue
 
             # ---------------------------------------------------
             # Global resolution (single exit point)
             # ---------------------------------------------------
-
-            # Move file to trash if processing failed
-            if not file_was_processed and new_path is None:
-                try:
-                    file_data = file_move(
-                        filename=server_name,
-                        path=server_path,
-                        new_path=f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}",
-                    )
-                    new_path = file_data["path"]
-                except Exception as fs_err:
-                    log.error(f"[TRASH] Failed to move file to trash: {fs_err}")
-
-            # Remove transient FILE_TASK
-            db_bp.file_task_delete(task_id=file_task_id)
-
-            # Update FILE_TASK_HISTORY
-            status = k.TASK_DONE if file_was_processed else k.TASK_ERROR
-
-            # Build NA_MESSAGE
-            NA_MESSAGE = tools.compose_message(
-                task_type=k.FILE_TASK_PROCESS_TYPE,
-                task_status=status,
-                path=new_path if file_was_processed else None,
-                name=server_name if file_was_processed else None,
-                error=err.format_error() if err.triggered else None,
-            )
-
-            # Update File History
-            # Internally insert DT_PROCESSED timestamp
-            db_bp.file_history_update(
+            # Local BIN parsing is deterministic, so every claimed task is
+            # resolved definitively here instead of being requeued later.
+            resolution = finalize_task_resolution(
+                db_bp,
+                file_task_id=file_task_id,
                 host_id=host_id,
-                task_type=k.FILE_TASK_PROCESS_TYPE,
                 host_file_name=host_file_name,
-                host_file_path=host_path,
-                NA_SERVER_FILE_NAME=server_name,
-                NA_SERVER_FILE_PATH=new_path,   
-                NU_STATUS_PROCESSING=status,
-                NA_MESSAGE=NA_MESSAGE,
+                host_path=host_path,
+                server_path=server_path,
+                server_name=server_name,
+                extension=extension,
+                vl_file_size_kb=vl_file_size_kb,
+                dt_created=dt_created,
+                dt_modified=dt_modified,
+                file_was_processed=file_was_processed,
+                new_path=new_path,
+                err=err,
             )
 
-            db_bp.host_task_statistics_create(host_id=host_id)
-            
-            
-
+            if resolution["status"] == k.TASK_ERROR:
+                log.error_event(
+                    "processing_error",
+                    file=filename,
+                    final_file=resolution["final_file"],
+                    error=err.format_error() or "Processing failed",
+                )
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        err = errors.ErrorHandler(log)
+        err.capture(
+            reason="Fatal BIN processing worker crash",
+            stage="MAIN",
+            exc=e,
+        )
+        err.log_error()
+        release_busy_hosts_on_exit()
+        raise
