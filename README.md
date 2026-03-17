@@ -1,214 +1,208 @@
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/InovaFiscaliza/RF.Fusion)
 
-<!-- Improved compatibility of back to top link: See: https://github.com/othneildrew/Best-README-Template/pull/73 -->
-<a name="indexerd-md-top"></a>
+# RF.Fusion
 
-<!-- PROJECT SHIELDS -->
-<!--
-*** based on https://github.com/othneildrew/Best-README-Template
-*** Reference links are enclosed in brackets [ ] instead of parentheses ( ).
-*** See the bottom of this document for the declaration of the reference variables
-*** for contributors-url, forks-url, etc. This is an optional, concise syntax you may use.
-*** https://www.markdownguide.org/basic-syntax/#reference-style-links
--->
-<!-- TABLE OF CONTENTS -->
-<details>
-  <summary>Table of Contents</summary>
-  <ol>
-    <li><a href="#about-RF.Fusion">About RF.Fusion</a></li>
-    <li><a href="#background">Background</a></li>
-      <ul>
-        <li><a href="#monitoring-unit">Monitoring Unit</a></li>
-        <li><a href="#network-server-core">Network Server Core</a></li>
-      </ul>
-    <li><a href="#bricks-and-blocks">Bricks and Blocks</a></li>
-    <ul>
-    <li><a href="#openvpn">OpenVPN</a></li>
-    <li><a href="#zabbix-and-grafana">Zabbix and Grafana</a></li>
-    <li><a href="#nginx">NGINX</a></li>
-    <li><a href="#appcataloga">appCataloga</a></li>
-    <li><a href="#other">Other</a></li>
-    </ul>
-    <li><a href="#getting-started">Getting Started</a></li>
-    <li><a href="#roadmap">Roadmap</a></li>
-    <li><a href="#contributing">Contributing</a></li>
-    <li><a href="#license">License</a></li>
-    <li><a href="#additional-references">Additional References</a></li>
-  </ol>
-</details>
+<p align="center">
+  <img src="./docs/images/logo.png" alt="RF.Fusion logo" width="280">
+</p>
 
-<!-- ABOUT THE PROJECT -->
-# About RF.Fusion
+RF.Fusion is a spectrum-monitoring integration platform centered on three
+practical concerns:
 
-RF.Fusion is an integration framework to manage hardware and data across an Spectrum Monitoring Network.
+- collecting and organizing files from remote monitoring stations
+- cataloging spectra and repository metadata
+- exposing operational and analytical views through a lightweight web UI
 
-The framework is composed by a series of modules that can be used together or independently, depending on the needs of the user.
+Today the repository is primarily structured around:
 
-The modules are designed to be used in a distributed network, where each monitoring unit can operate independently, but also communicate with a central server core for data storage, analysis and publication. Although conceived with such network in mind, most of the modules could be easily adapted to suit other needs associated with data collection from any distributed automated sensor network, providing a base for projects such as those related to smart cities and environment monitoring.
-
-General workflow is depicted in the following figure:
+- `appCataloga`: operational pipeline and workers
+- `MariaDB`: `BPDATA` + `RFDATA`
+- `webfusion`: browser-based query and task interface
+- infrastructure and integration modules such as OpenVPN, nginx, Zabbix, and
+  Grafana
 
 ![General Workflow for the Spectrum Monitoring Network](./docs/images/HLD-RFFusion.svg)
 
-Modules were constructed with the idea of maximizing code reuse by employing standard open source tools to perform core tasks and dedicated modules to perform equipment specific data integrations.
+## Project Architecture
 
+At a practical level, the current system behaves like this:
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+1. monitoring stations generate raw measurement files
+2. `appCataloga` discovers, backs up, and processes those files
+3. operational state is stored in `BPDATA`
+4. spectra and repository catalog data are stored in `RFDATA`
+5. payloads live in the shared repository mount (`reposfi`)
+6. `webfusion` queries both databases and serves the user-facing workflow
 
-# Background
+Main runtime responsibilities:
 
-To better understand and maybe adapt the modules presented in this repository, it is helpful to understand the general architecture of a spectrum monitoring network, such as presented in the following figure.
+- `appCataloga`
+  - remote host discovery
+  - SFTP backup
+  - local and external processing
+  - task queue orchestration
+
+- `MariaDB`
+  - `BPDATA`: hosts, host tasks, file tasks, history
+  - `RFDATA`: sites, equipment, spectra, repository file catalog
+
+- `webfusion`
+  - station map centered on Brazil
+  - spectrum query in `Spectrum` and `File` modes
+  - host inspection
+  - host-task creation
+  - direct repository-backed downloads through `nginx`
 
 ![General Diagram for the Spectrum Monitoring Network](./docs/images/general_diagram.svg)
 
-The elements in the above diagram may be briefily described as follows:
+## Main Components
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+### appCataloga
 
-## Monitoring Unit
+`appCataloga` is the operational core of the project.
 
-The network itself can be composed by several monitoring units, up to a few hundred.
+It contains the worker scripts that:
 
-Each monitoring unit integrates a series of functional components as follows
+- discover files on remote hosts
+- back them up to the server repository
+- process spectra locally or through `appAnalise`
+- update `BPDATA` and `RFDATA`
 
-- **Antenna & Receiver:** Is the data acquisition front-end, from the RF receiving antennas to the digitizer and DSP units that provides data streams with IF IQ data, spectrum sweeps, demodulated data and alarms. Each equipment may provide a different set of data as output.
-- **Processor:** Is a generic data processor running linux or windows. It's the local brain of the monitoring station, responsible to perform data requests to the acquisition front-end, any additional processing for data analysis and tagging. It also manage interfaces and the local data repository.
-- **Environment Control:** may be composed of several elements that are accessory to the measurement, such as temperature control, security detectors, cameras, UPS and power supply management, etc.
-- **Router, Firewall and Network Interfaces:** may be composed of several elements that interconnect elements within the station and from it to the outside world. Common solutions provide up to 3 interfaces including an ethernet cable, an integrated 4G or 5G modem to connect to to the mobile WAN network and a VPN connection, that allows for a secure communication with the server core
+Main documentation:
 
-Monitoring units used with RF.Fusion include [CRFS RFeye Node 20-6](https://www.crfs.com/product/receivers/rfeye-node-20-6/); [Celplam CWRMU](https://www.celplan.com/products/test-measurement/cellwirelesssm/); [Rohde&Schwarz UMS300](https://www.rohde-schwarz.com/es/productos/sector-aeroespacial-defensa-seguridad/aplicacion-en-el-exterior/rs-ums300-compact-monitoring-and-location-system_63493-56146.html) and further units integrates by the use of appColeta using VISA/SCPI to access data from spectrum analysers and monitoring receivers from various manufacturers.
+- [appCataloga overview](./src/appCataloga/README.md)
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+### webfusion
 
-## Network Server Core
+`webfusion` is the current browser interface for the project.
 
-Composed by a series of functional components as follows
+It provides:
 
-- **VPN Server:** Provide secure connection and network integration between the monitoring units and the network core servers
-- **Monitor and Automation:** Run services responsible for monitoring the health of the monitoring units, essential network services. Orchestrate the data backup from the monitoring units to the core server data storage. Employs Zabbix and Grafana as core applications
-- **Publish:** Run services responsible catalog and publish data for direct user consumption. Employs nginx as a core and additional
-- **Data Storage:** Network storage attached to the server core. Provide a shared file space to receive data from the monitoring units, share with users through the publication service and data analytics services.
-- **Data Analytics:** Rum services related to the data analysis, either autonomous processing and with user interfaces.
+- station map with quick actions
+- spectrum and file query screens
+- host query
+- task creation
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+Main documentation:
 
-# Bricks and Blocks
+- [webfusion module README](./src/webfusion/README.MD)
+- [web container README](./install/webserver/README.MD)
 
-## OpenVPN
-OpenVPN provides a secure communication channel between all elements of the spectrum monitoring network.
+### Database Layer
 
-The framework provides a set of script to automate the deployment of keys and configuration packages in batch.
+The repository uses two project databases:
 
-It also provides scripts for integration of the OpenVPN server with other services, including DNS and Zabbix Monitoring.
+- `BPDATA`
+- `RFDATA`
 
-For more information see the detailed description for the [OpenVPN server setup](/src/ovpn/README.md).
+Main documentation:
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+- [MariaDB container README](./install/mariaDB/README.md)
+- [database interconnections](./src/mariadb/scripts/DB_INTERCONNECTIONS.md)
 
-## Zabbix and Grafana
+### Infrastructure Modules
 
-Zabbix provides the core network monitoring and automation of the spectrum monitoring network equipment.
+Additional repository areas cover network and service integration, including:
 
-Grafana provides a rich front-end to Zabbix for the end-users and allows for custom use of forms to access the zabbix database, including additional elements that may be required.
+- OpenVPN
+- nginx
+- Zabbix
+- Grafana
 
-The framework provides a set of Zabbix templates and external check scripts that enable the integration of various equipment and the automatic update of network deployment characteristics, including address based on the GPS data and essential network data.
+Relevant module docs:
 
-For more information, see the detailed description for the [Zabbix Service](/src/zabbix/README.md) and [Grafana Service](/src/grafana/README.md)
+- [OpenVPN](./src/ovpn/README.md)
+- [nginx](./src/nginx/README.md)
+- [Zabbix](./src/zabbix/README.md)
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+## Repository Layout
 
-## NGINX
+```text
+RF.Fusion/
+├── cemetery/        # archived legacy material
+├── docs/            # project images and reference docs
+├── install/         # container and deployment material
+├── src/             # application and service source code
+├── test/            # active validation suite
+└── data/            # project data area
+```
 
-Web server used by Zabbix, as proxy to Grafana and for data publication, enabling users to download data through http service for desktop processing
+Important subtrees:
 
-The framework provides configuration files for both the Zabbix server and the raw data publishing server
+- `install/appCataloga`
+- `install/mariaDB`
+- `install/webserver`
+- `src/appCataloga`
+- `src/webfusion`
+- `src/mariadb/scripts`
+- `test/`
 
-For more information, see the detailed description for the [NGINX Server](/src/nginx/README.md)
+## Deployment Entry Points
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+The most relevant container deployment documentation today is:
 
-## appCataloga
+- [appCataloga container](./install/appCataloga/README.md)
+- [MariaDB container](./install/mariaDB/README.md)
+- [webfusion/webserver container](./install/webserver/README.MD)
 
-Include several scripts that perform a recurrent sweep of all servers monitored by Zabbix, and start the backup process.
+These documents reflect the current Linux/Podman-oriented deployment flow.
 
-Backup process includes metadata extraction from raw files and organization of the data repository.
+## Testing
 
-For more information, see the detailed description of [appCataloga service](/src/appCataloga/README.md)
+The active test suite now lives under `test/`.
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+The legacy test material was intentionally archived under `cemetery/` and
+should not be treated as the current validation baseline.
 
-## Other
+Current test entry points include:
 
-Other components include the webApp for analysis and additional tools under the project repository to be expanded
+- `test/tests/shared`
+- `test/tests/stations`
+- `test/tests/workers`
+- `test/tests/db`
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+Typical execution:
 
-<!-- GETTING STARTED -->
-# Getting Started
+```bash
+cd /RFFusion/test
+pytest tests -q
+```
 
-This initial page provide links to additional pages under the same project with detailed information about the installation of each component.
+Additional test documentation:
 
-Currently there is no quick deployment tool and components need to be installed manually or with the aid of indicated scripts.
+- [test suite README](./test/README.md)
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+## Current State
 
-<!-- ROADMAP -->
-# Roadmap
+The repository has a mix of mature operational code and inherited historical
+structure.
 
-* [ ] Create main repository and upload existing data
-  * [x] Complete base upload
-  * [ ] Upload grafana nginx configuration
-  * [ ] Upload nginx zabbix-grafana proxy configuration
-* [ ] Start issue list
-* [ ] Adapt appCataloga to new architecture
-  * [ ] Test file catalog agent
-  * [ ] Test integration modes between Zabbix and appCataloga
-    * [ ] Use Zabbix external_check to call the backup microservice for a single host and get latest backup data results.
-    * [ ] Use Zabbix api to load station list, sweep list getting files, use zabbix trapper item to load data into host.
-    
+In practical terms:
 
-See the [open issues](https://github.com/othneildrew/Best-README-Template/issues) for a full list of proposed features (and known issues).
+- the `appCataloga` pipeline is functional and significantly more robust than
+  its earlier state
+- `webfusion` has evolved from a thin query page into a useful operational UI
+- deployment documentation for the active containers has been refreshed
+- the project still carries legacy areas and some schema-level heuristics,
+  especially around cross-database correlation such as `site -> host`
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+## Contributing
 
-<!-- CONTRIBUTING -->
-# Contributing
+Contributions are welcome, especially when they improve:
 
-Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
+- operational robustness
+- documentation quality
+- test coverage
+- schema clarity
+- maintainability of the worker pipeline
 
-If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also simply open an issue with the tag "enhancement".
-Don't forget to give the project a star! Thanks again!
+When working on the repository, prefer the currently active documentation and
+test suite over legacy material archived under `cemetery/`.
 
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+## License
 
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
+Distributed under the GNU General Public License (GPL), version 3.
 
-<!-- LICENSE -->
-# License
+See:
 
-Distributed under the GNU General Public License (GPL), version 3. See [`LICENSE.txt`](.\LICENSE) for more information.
-
-For additional information, please check <https://www.gnu.org/licenses/quick-guide-gplv3.html>
-
-This license model was selected with the idea of enabling collaboration of anyone interested in projects listed within this group.
-
-It is in line with the Brazilian Public Software directives, as published at: <https://softwarepublico.gov.br/social/articles/0004/5936/Manual_do_Ofertante_Temporario_04.10.2016.pdf>
-
-Further reading material can be found at:
-- <http://copyfree.org/policy/copyleft>
-- <https://opensource.stackexchange.com/questions/9805/can-i-license-my-project-with-an-open-source-license-but-disallow-commercial-use>
-- <https://opensource.stackexchange.com/questions/21/whats-the-difference-between-permissive-and-copyleft-licenses/42#42>
-
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
-
-# Additional References
-
-<p align="right">(<a href="#indexerd-md-top">back to top</a>)</p>
-
-<!-- MARKDOWN LINKS & IMAGES -->
-[smn_overview]: https://github.com/FSLobao/RF.Fusion/tree/main/docs/images/general_diagram.svg
-
+- [LICENSE.txt](./LICENSE)
