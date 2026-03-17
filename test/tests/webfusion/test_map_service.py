@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import importlib.util
+import sys
+import types
+import unittest
+from pathlib import Path
+
+
+MODULE_PATH = Path("/RFFusion/src/webfusion/modules/map/service.py")
+
+
+def load_map_service():
+    stub_db = types.ModuleType("db")
+    stub_db.get_connection_bpdata = lambda: None
+    stub_db.get_connection_rfdata = lambda: None
+
+    previous_db = sys.modules.get("db")
+    sys.modules["db"] = stub_db
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "webfusion_map_service_test",
+            MODULE_PATH,
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Unable to load module from {MODULE_PATH}")
+
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        if previous_db is not None:
+            sys.modules["db"] = previous_db
+        else:
+            sys.modules.pop("db", None)
+
+
+class TestMapService(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_map_service()
+
+    def test_build_cwsm_signature_handles_short_host_name(self):
+        self.assertEqual(
+            self.module._build_cwsm_signature("cwsm211001"),
+            "cwsm211001",
+        )
+
+    def test_build_cwsm_signature_handles_long_receiver_name(self):
+        self.assertEqual(
+            self.module._build_cwsm_signature("cwsm21100001"),
+            "cwsm211001",
+        )
+        self.assertEqual(
+            self.module._build_cwsm_signature("cwsm22010040"),
+            "cwsm220040",
+        )
+
+    def test_find_host_for_equipment_matches_celplan_receiver_variants(self):
+        host_index = {
+            "raw": {
+                "cwsm211001": {
+                    "host_id": 101,
+                    "host_name": "CWSM211001",
+                    "is_offline": False,
+                },
+                "cwsm220040": {
+                    "host_id": 202,
+                    "host_name": "CWSM220040",
+                    "is_offline": False,
+                },
+            },
+            "normalized": {
+                "cwsm211001": [
+                    {
+                        "host_id": 101,
+                        "host_name": "CWSM211001",
+                        "is_offline": False,
+                    }
+                ],
+                "cwsm220040": [
+                    {
+                        "host_id": 202,
+                        "host_name": "CWSM220040",
+                        "is_offline": False,
+                    }
+                ],
+            },
+        }
+
+        host = self.module._find_host_for_equipment(host_index, "cwsm21100001")
+        self.assertIsNotNone(host)
+        self.assertEqual(host["host_id"], 101)
+
+        host = self.module._find_host_for_equipment(host_index, "cwsm22010040")
+        self.assertIsNotNone(host)
+        self.assertEqual(host["host_id"], 202)
+
+
+if __name__ == "__main__":
+    unittest.main()

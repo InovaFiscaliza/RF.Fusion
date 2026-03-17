@@ -2,10 +2,6 @@
 
 # RF.Fusion
 
-<p align="center">
-  <img src="./docs/images/logo.png" alt="RF.Fusion logo" width="280">
-</p>
-
 RF.Fusion is a spectrum-monitoring integration platform centered on three
 practical concerns:
 
@@ -21,7 +17,13 @@ Today the repository is primarily structured around:
 - infrastructure and integration modules such as OpenVPN, nginx, Zabbix, and
   Grafana
 
-![General Workflow for the Spectrum Monitoring Network](./docs/images/HLD-RFFusion.svg)
+## System Context
+
+RF.Fusion was designed for a distributed spectrum-monitoring environment with
+remote monitoring stations, central services, shared storage, and user-facing
+publication and analytics layers.
+
+![General Diagram for the Spectrum Monitoring Network](./docs/images/general_diagram.svg)
 
 ## Project Architecture
 
@@ -53,7 +55,9 @@ Main runtime responsibilities:
   - host-task creation
   - direct repository-backed downloads through `nginx`
 
-![General Diagram for the Spectrum Monitoring Network](./docs/images/general_diagram.svg)
+The current RF.Fusion platform-level organization is represented below.
+
+![General Workflow for the Spectrum Monitoring Network](./docs/images/HLD-RFFusion.svg)
 
 ## Main Components
 
@@ -67,6 +71,10 @@ It contains the worker scripts that:
 - back them up to the server repository
 - process spectra locally or through `appAnalise`
 - update `BPDATA` and `RFDATA`
+
+Its operational workflow is summarized below.
+
+![RF.Fusion Operational Workflow](./docs/images/RFFusion-workflow.svg)
 
 Main documentation:
 

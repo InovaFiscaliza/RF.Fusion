@@ -4,8 +4,21 @@
 
 {% block extra_css %}
 <style>
+    html,
+    body {
+        overflow-y: auto !important;
+    }
+
+    body .layout.layout-top.fixed-header {
+        overflow: visible !important;
+    }
+
+    body .main-content {
+        overflow: visible !important;
+    }
+
     .station-map-card {
-        overflow: hidden;
+        overflow: visible;
     }
 
     .station-map-header {

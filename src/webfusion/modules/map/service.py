@@ -12,6 +12,7 @@ POINT_WKT_RE = re.compile(
     re.IGNORECASE,
 )
 NON_ALNUM_RE = re.compile(r"[^a-z0-9]+", re.IGNORECASE)
+CWSM_KEY_RE = re.compile(r"^(cwsm)(\d+)$", re.IGNORECASE)
 
 MAP_CACHE_TTL_SECONDS = 300
 
@@ -51,6 +52,58 @@ def _normalize_station_key(value):
     return NON_ALNUM_RE.sub("", str(value).strip().lower())
 
 
+def _build_cwsm_signature(normalized_key):
+    """
+    Collapse CelPlan receiver variants into a stable comparison key.
+
+    Why this exists:
+        CelPlan hosts are registered in BPDATA with names like:
+            CWSM211001
+            CWSM220040
+
+        But processed spectra may surface receiver identifiers such as:
+            cwsm21100001
+            cwsm22010040
+
+        A safe compromise is to compare:
+            - the CWSM prefix
+            - the first 3 digits
+            - the last 3 digits
+
+        This keeps the inference strict enough to avoid broad substring
+        matching while still reconciling the known CelPlan naming variants.
+    """
+    match = CWSM_KEY_RE.fullmatch(normalized_key or "")
+
+    if not match:
+        return None
+
+    digits = match.group(2)
+
+    if len(digits) < 6:
+        return None
+
+    return f"cwsm{digits[:3]}{digits[-3:]}"
+
+
+def _build_station_alias_keys(value):
+    """
+    Build normalized aliases used to reconcile equipment and host identifiers.
+    """
+    normalized_key = _normalize_station_key(value)
+
+    if not normalized_key:
+        return set()
+
+    aliases = {normalized_key}
+    cwsm_signature = _build_cwsm_signature(normalized_key)
+
+    if cwsm_signature:
+        aliases.add(cwsm_signature)
+
+    return aliases
+
+
 def _load_hosts_index():
     """
     Load HOST rows once and index them by normalized host name.
@@ -85,9 +138,10 @@ def _load_hosts_index():
             "is_offline": bool(row["IS_OFFLINE"]),
         }
         raw_key = host["host_name"].strip().lower()
-        normalized_key = _normalize_station_key(host["host_name"])
         raw_index[raw_key] = host
-        normalized_index.setdefault(normalized_key, []).append(host)
+
+        for alias_key in _build_station_alias_keys(host["host_name"]):
+            normalized_index.setdefault(alias_key, []).append(host)
 
     return {
         "raw": raw_index,
@@ -230,6 +284,8 @@ def _find_host_for_equipment(host_index, equipment_name):
     we also accept unique normalized matches such as:
         rfeye002264    <-> RFEye-002264
         cwsm211006     <-> CWSM211006.local
+        cwsm21100001   <-> CWSM211001
+        cwsm22010040   <-> CWSM220040
     """
     if not equipment_name:
         return None
@@ -240,15 +296,16 @@ def _find_host_for_equipment(host_index, equipment_name):
     if exact:
         return exact
 
-    normalized_key = _normalize_station_key(equipment_name)
+    alias_keys = _build_station_alias_keys(equipment_name)
 
-    if not normalized_key:
+    if not alias_keys:
         return None
 
-    normalized_matches = host_index["normalized"].get(normalized_key, [])
+    for alias_key in alias_keys:
+        normalized_matches = host_index["normalized"].get(alias_key, [])
 
-    if len(normalized_matches) == 1:
-        return normalized_matches[0]
+        if len(normalized_matches) == 1:
+            return normalized_matches[0]
 
     candidate_map = {}
 
@@ -256,9 +313,10 @@ def _find_host_for_equipment(host_index, equipment_name):
         if not host_key:
             continue
 
-        if host_key.startswith(normalized_key) or normalized_key.startswith(host_key):
-            for host in hosts:
-                candidate_map[host["host_id"]] = host
+        for alias_key in alias_keys:
+            if host_key.startswith(alias_key) or alias_key.startswith(host_key):
+                for host in hosts:
+                    candidate_map[host["host_id"]] = host
 
     if len(candidate_map) == 1:
         return next(iter(candidate_map.values()))
