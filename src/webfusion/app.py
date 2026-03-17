@@ -1,7 +1,14 @@
+import os
+
 from flask import Flask, request, render_template, jsonify
+from waitress import serve
 from modules.spectrum.routes import spectrum_bp  # ← IMPORT CORRETO
 from modules.host.routes import host_bp
 from modules.task.routes import task_bp
+from modules.map.service import (
+    get_station_map_points,
+    get_station_map_site_detail,
+)
 
 
 app = Flask(__name__)
@@ -21,6 +28,38 @@ app.register_blueprint(task_bp)
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/map/stations")
+def map_stations():
+    """
+    Return station-map points without blocking the landing page render.
+    """
+    try:
+        return jsonify({"points": get_station_map_points()})
+    except Exception:
+        app.logger.exception("failed_to_build_station_map")
+        # The UI treats an empty dataset as a degraded-but-usable state.
+        return jsonify({"points": []})
+
+
+@app.route("/api/map/stations/<int:site_id>")
+def map_station_detail(site_id):
+    """
+    Return popup actions for a single station point.
+    """
+    try:
+        return jsonify(get_station_map_site_detail(site_id))
+    except Exception:
+        app.logger.exception("failed_to_build_station_map_site_detail", extra={"site_id": site_id})
+        return jsonify(
+            {
+                "site_id": site_id,
+                "stations": [],
+                "has_online_host": False,
+                "has_known_host": False,
+            }
+        )
 
 # ----------------------------------------------------------
 # Popup de filtro (temporariamente mantido aqui)
@@ -83,7 +122,11 @@ def health():
 # ----------------------------------------------------------
 
 if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=80
+    serve(
+        app,
+        host=os.getenv("WEBFUSION_HOST", "127.0.0.1"),
+        port=int(os.getenv("WEBFUSION_PORT", "8000")),
+        threads=int(os.getenv("WEBFUSION_THREADS", "8")),
+        channel_timeout=int(os.getenv("WEBFUSION_CHANNEL_TIMEOUT", "300")),
+        ident="RF.Fusion Web"
     )

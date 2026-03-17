@@ -63,7 +63,7 @@ def _signal_handler(signal_name: str) -> None:
     Register shutdown intent for the publication loop.
     """
     current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"event=signal_received signal={signal_name} handler={current_function}")
+    log.signal_received(signal_name, handler=current_function)
     process_status["running"] = False
 
 
@@ -125,7 +125,7 @@ def wait_random_time(message: str) -> int:
         (k.MAX_HOST_TASK_WAIT_TIME + k.MAX_HOST_TASK_WAIT_TIME * random.random()) / 2
     )
 
-    log.entry(f"event=publish_wait seconds={wait_time} detail=\"{message}\"")
+    log.event("publish_wait", seconds=wait_time, detail=message)
     time.sleep(wait_time)
 
 
@@ -134,7 +134,7 @@ def main():
     Run the publication polling loop until shutdown is requested.
     """
 
-    log.entry("event=service_start service=appCataloga_pub_metadata")
+    log.service_start("appCataloga_pub_metadata")
     err = errors.ErrorHandler(log)
 
     try:
@@ -170,9 +170,10 @@ def main():
             if latest_export < latest_db_update:
                 rfdb.export_parquet(file_name=k.PUBLISH_FILE)
 
-                log.entry(
-                    f"event=parquet_export_completed file={k.PUBLISH_FILE} "
-                    f"detail=\"{message}\""
+                log.event(
+                    "parquet_export_completed",
+                    file=k.PUBLISH_FILE,
+                    detail=message,
                 )
             else:
                 wait_random_time(message=message)
@@ -187,7 +188,7 @@ def main():
             err.log_error()
             process_status["running"] = False
 
-    log.entry("event=service_stop service=appCataloga_pub_metadata")
+    log.service_stop("appCataloga_pub_metadata")
 
 
 if __name__ == "__main__":

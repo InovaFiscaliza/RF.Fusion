@@ -1,12 +1,54 @@
-from flask import Blueprint, render_template, request, redirect
+from flask import Blueprint, Response, redirect, render_template, request
 from modules.task.service import create_task
 from db import get_connection_bpdata as get_connection
 
 
 task_bp = Blueprint("task", __name__, url_prefix="/task")
 
+TASK_AUTH_USERNAME = "admin"
+TASK_AUTH_PASSWORD = "admin"
+TASK_AUTH_REALM = "RF.Fusion Task"
 
-@task_bp.route("/", methods=["GET", "POST"])
+
+def _task_auth_failed():
+    """
+    Trigger a browser basic-auth challenge for the task module.
+    """
+    return Response(
+        "Authentication required.",
+        401,
+        {"WWW-Authenticate": f'Basic realm="{TASK_AUTH_REALM}"'},
+    )
+
+
+def _has_valid_task_credentials():
+    """
+    Validate the simple bootstrap credentials for the task module.
+
+    This is intentionally minimal for the first protection layer. If the
+    module graduates to broader use, these credentials should move to a proper
+    configuration source and session-backed authentication.
+    """
+    auth = request.authorization
+
+    if not auth:
+        return False
+
+    return (
+        str(auth.username or "") == TASK_AUTH_USERNAME
+        and str(auth.password or "") == TASK_AUTH_PASSWORD
+    )
+
+
+@task_bp.before_request
+def require_task_auth():
+    """
+    Protect the task builder and task list behind a basic-auth prompt.
+    """
+    if not _has_valid_task_credentials():
+        return _task_auth_failed()
+
+
 @task_bp.route("/", methods=["GET", "POST"])
 def task_builder():
     """
@@ -37,6 +79,7 @@ def task_builder():
 
     db = get_connection()
     cursor = db.cursor()
+    selected_host = request.form.get("host_id") if request.method == "POST" else request.args.get("host_id")
 
     # --------------------------------------------------
     # Discover host prefixes dynamically
@@ -55,10 +98,11 @@ def task_builder():
     # Determine checkbox state (online-only filter)
     # --------------------------------------------------
     if request.method == "POST":
-        online_only = request.form.get("online_only") is not None
+        online_only = request.form.get("online_only") == "1"
     else:
-        # Default behavior: show only online hosts
-        online_only = True
+        # Default behavior: show only online hosts, but allow the page
+        # filter to explicitly request the full HOST list.
+        online_only = request.args.get("online_only", "1") == "1"
 
     # --------------------------------------------------
     # Load hosts for individual selection
@@ -105,8 +149,11 @@ def task_builder():
             query = """
                 SELECT ID_HOST
                 FROM HOST
-                WHERE IS_OFFLINE = 0
+                WHERE 1 = 1
             """
+
+            if online_only:
+                query += " AND IS_OFFLINE = 0"
 
             # Apply prefix filter dynamically
             if host_filter != "ALL":
@@ -152,7 +199,8 @@ def task_builder():
         "task/task_builder.html",
         hosts=hosts,
         host_prefixes=host_prefixes,
-        online_only=online_only
+        online_only=online_only,
+        selected_host=selected_host,
     )
 
 

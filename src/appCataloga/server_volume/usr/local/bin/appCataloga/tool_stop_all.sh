@@ -62,11 +62,21 @@ fi
 # -----------------------------------------------------------------------------
 # Optional log cleanup
 # -----------------------------------------------------------------------------
-read -p "Remove all log files in /var/log/appCataloga? [y/N] " -n 1 -r
+LOG_DIR="/var/log"
+
+read -p "Remove appCataloga log files in ${LOG_DIR} (appCataloga*.log)? [y/N] " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    rm -f /var/log/appCataloga.log
-    echo "All log files removed."
+    shopt -s nullglob
+    log_files=("${LOG_DIR}"/appCataloga*.log)
+    shopt -u nullglob
+
+    if [[ ${#log_files[@]} -eq 0 ]]; then
+        echo "No appCataloga log files found."
+    else
+        rm -f "${log_files[@]}"
+        echo "Removed ${#log_files[@]} appCataloga log file(s)."
+    fi
 else
     echo "Log files preserved."
 fi

@@ -17,6 +17,17 @@
         box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
     }
 
+    .task-builder-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 20px;
+        align-items: end;
+    }
+
+    .task-builder-field {
+        min-width: 0;
+    }
+
     label {
         display: block;
         margin-bottom: 6px;
@@ -24,10 +35,13 @@
     }
 
     .form-control {
+        width: 100%;
         height: 38px;
         padding: 8px 12px;
         box-sizing: border-box;
         border-radius: 6px;
+        border: 1px solid #cbd5e1;
+        background: #fff;
     }
 
     .section-title {
@@ -39,10 +53,54 @@
         font-size: 15px;
     }
 
-    .inline-flex {
+    .select-shell {
+        position: relative;
+    }
+
+    .select-shell::after {
+        content: "";
+        position: absolute;
+        top: 50%;
+        right: 14px;
+        width: 8px;
+        height: 8px;
+        border-right: 2px solid #475569;
+        border-bottom: 2px solid #475569;
+        transform: translateY(-65%) rotate(45deg);
+        pointer-events: none;
+    }
+
+    .select-shell .form-control {
+        appearance: none;
+        -webkit-appearance: none;
+        -moz-appearance: none;
+        padding-right: 40px;
+    }
+
+    .online-filter {
         display: flex;
         align-items: center;
-        gap: 16px;
+        min-height: 38px;
+        padding: 0 12px;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        background: #fff;
+    }
+
+    .online-filter label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        font-weight: 500;
+        margin: 0;
+    }
+
+    .filter-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 18px 20px;
+        max-width: 980px;
     }
 
     /* Checkbox reset */
@@ -74,65 +132,86 @@
 
         <!-- ===================== TOP LINE ===================== -->
 
-        <div class="inline-flex" style="flex-wrap:wrap; gap:24px; align-items:flex-end;">
+        <div class="task-builder-grid">
 
             <!-- Task Type -->
-            <div style="flex:1; min-width:240px;">
+            <div class="task-builder-field">
                 <label>Tipo da Task</label>
-                <select name="task_type" class="form-control" required>
-                    <option value="1">Host Check</option>
-                    <option value="3">Update Statistics</option>
-                </select>
+                <div class="select-shell">
+                    <select name="task_type" class="form-control" required>
+                        <option value="1">Host Check</option>
+                        <option value="3">Update Statistics</option>
+                    </select>
+                </div>
             </div>
 
             <!-- Execution Mode -->
-            <div style="flex:1; min-width:240px;">
+            <div class="task-builder-field">
                 <label>Execução</label>
-                <select name="execution_type" class="form-control" required>
-                    <option value="individual">Individual</option>
-                    <option value="collective">Coletiva</option>
-                </select>
+                <div class="select-shell">
+                    <select name="execution_type" class="form-control" required>
+                        <option value="individual">Individual</option>
+                        <option value="collective">Coletiva</option>
+                    </select>
+                </div>
             </div>
 
             <!-- Station Type (Collective only) -->
-            <div style="flex:1; min-width:240px; display:none;" id="station-type-wrapper">
+            <div class="task-builder-field" style="display:none;" id="station-type-wrapper">
                 <label>Tipo de Estação</label>
 
-                <select name="host_filter" class="form-control">
-                    <option value="ALL">Todas</option>
+                <div class="select-shell">
+                    <select name="host_filter" class="form-control">
+                        <option value="ALL">Todas</option>
 
-                    {% for p in host_prefixes %}
-                    <option value="{{ p.PREFIX }}">
-                        {{ p.PREFIX }} ({{ p.HOSTS }})
-                    </option>
-                    {% endfor %}
-                </select>
+                        {% for p in host_prefixes %}
+                        <option value="{{ p.PREFIX }}">
+                            {{ p.PREFIX }} ({{ p.HOSTS }})
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
             </div>
 
             <!-- Host Selector -->
-            <!-- Host selector -->
-            <div style="flex:1; min-width:240px;" id="host-wrapper">
+            <div class="task-builder-field" id="host-wrapper">
 
                 <label>Host</label>
 
-                <select name="host_id" class="form-control">
-                    {% for h in hosts %}
-                    <option value="{{ h.ID_HOST }}">{{ h.NA_HOST_NAME }}</option>
-                    {% endfor %}
-                </select>
+                <div class="select-shell">
+                    <select name="host_id" class="form-control">
+                        {% for h in hosts %}
+                        <option
+                            value="{{ h.ID_HOST }}"
+                            data-host-name="{{ h.NA_HOST_NAME }}"
+                            {% if h.ID_HOST|string == selected_host %}selected{% endif %}
+                        >
+                            {{ h.NA_HOST_NAME }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
 
             </div>
 
 
             <!-- ONLINE filter -->
-            <div style="flex:1; min-width:200px;" id="online-wrapper">
+            <div class="task-builder-field" id="online-wrapper">
 
                 <label>&nbsp;</label>
 
-                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-weight:500; margin:0;">
-                    <input type="checkbox" name="online_only" value="1" {% if online_only %}checked{% endif %}>
-                    Apenas ONLINE
-                </label>
+                <div class="online-filter">
+                    <label>
+                        <input
+                            type="checkbox"
+                            name="online_only"
+                            value="1"
+                            onchange="toggleOnlineOnlyFilter(this)"
+                            {% if online_only %}checked{% endif %}
+                        >
+                        Apenas Online
+                    </label>
+                </div>
 
             </div>
 
@@ -146,46 +225,48 @@
 
             <div class="section-title">Filtro</div>
 
-            <div style="max-width:520px;">
+            <div class="filter-grid">
 
-                <div class="margin-bottom-m">
+                <div class="task-builder-field">
                     <label>Mode</label>
-                    <select name="mode" class="form-control">
-                        <option value="NONE">NONE</option>
-                        <option value="ALL">ALL</option>
-                        <option value="REDISCOVERY">REDISCOVERY</option>
-                        <option value="RANGE">RANGE</option>
-                        <option value="LAST_N">LAST_N</option>
-                        <option value="FILE">FILE</option>
-                    </select>
+                    <div class="select-shell">
+                        <select name="mode" class="form-control">
+                            <option value="NONE">NONE</option>
+                            <option value="ALL">ALL</option>
+                            <option value="REDISCOVERY">REDISCOVERY</option>
+                            <option value="RANGE">RANGE</option>
+                            <option value="LAST_N">LAST_N</option>
+                            <option value="FILE">FILE</option>
+                        </select>
+                    </div>
                 </div>
 
-                <div class="margin-bottom-m" id="start-date-wrapper">
+                <div class="task-builder-field" id="start-date-wrapper">
                     <label>Start Date</label>
                     <input type="date" name="start_date" class="form-control">
                 </div>
 
-                <div class="margin-bottom-m" id="end-date-wrapper">
+                <div class="task-builder-field" id="end-date-wrapper">
                     <label>End Date</label>
                     <input type="date" name="end_date" class="form-control">
                 </div>
 
-                <div class="margin-bottom-m" id="last-n-wrapper">
+                <div class="task-builder-field" id="last-n-wrapper">
                     <label>Last N Files</label>
                     <input type="number" name="last_n_files" class="form-control">
                 </div>
 
-                <div class="margin-bottom-m">
+                <div class="task-builder-field">
                     <label>Extension</label>
                     <input type="text" name="extension" class="form-control">
                 </div>
 
-                <div class="margin-bottom-m">
+                <div class="task-builder-field">
                     <label>File Path</label>
                     <input type="text" name="file_path" value="/mnt/internal/data" class="form-control">
                 </div>
 
-                <div class="margin-bottom-m" id="file-name-wrapper">
+                <div class="task-builder-field" id="file-name-wrapper">
                     <label>File Name</label>
                     <input type="text" name="file_name" class="form-control">
                 </div>
@@ -203,11 +284,28 @@
 </div>
 
 <script>
+    function toggleOnlineOnlyFilter(checkbox) {
+        const url = new URL(window.location.href);
+        const hostSelect = document.querySelector("[name='host_id']");
+
+        if (hostSelect && hostSelect.value) {
+            url.searchParams.set("host_id", hostSelect.value);
+        } else {
+            url.searchParams.delete("host_id");
+        }
+
+        url.searchParams.set("online_only", checkbox.checked ? "1" : "0");
+        window.location.href = url.toString();
+    }
+
     document.addEventListener("DOMContentLoaded", function () {
 
         const taskType = document.querySelector("[name='task_type']");
         const executionType = document.querySelector("[name='execution_type']");
+        const hostSelect = document.querySelector("[name='host_id']");
+        const hostFilterSelect = document.querySelector("[name='host_filter']");
         const modeSelect = document.querySelector("[name='mode']");
+        const filePathInput = document.querySelector("[name='file_path']");
 
         const filterSection = document.getElementById("filter-section");
         const hostWrapper = document.getElementById("host-wrapper");
@@ -219,6 +317,41 @@
         const fileNameWrapper = document.getElementById("file-name-wrapper");
 
         const fileOption = modeSelect.querySelector("option[value='FILE']");
+        const defaultFilePath = "/mnt/internal/data";
+        const cwsmFilePath = "C:/CelPlan/CellWireless RU/Spectrum/Completed";
+
+        function currentSelectionLooksLikeCwsm() {
+
+            if (executionType.value === "collective") {
+                return hostFilterSelect && hostFilterSelect.value === "CWSM";
+            }
+
+            const selected = hostSelect ? hostSelect.selectedOptions[0] : null;
+            const hostName = selected ? (selected.dataset.hostName || selected.textContent || "") : "";
+
+            return hostName.trim().toUpperCase().startsWith("CWSM");
+        }
+
+        function syncSuggestedFilePath() {
+
+            if (!filePathInput) {
+                return;
+            }
+
+            const isCwsm = currentSelectionLooksLikeCwsm();
+            const currentValue = (filePathInput.value || "").trim();
+            const followsDefaultMask = (
+                currentValue === "" ||
+                currentValue === defaultFilePath ||
+                currentValue === cwsmFilePath
+            );
+
+            if (!followsDefaultMask) {
+                return;
+            }
+
+            filePathInput.value = isCwsm ? cwsmFilePath : defaultFilePath;
+        }
 
         function toggleTaskType() {
 
@@ -252,6 +385,7 @@
             }
 
             toggleModeFields();
+            syncSuggestedFilePath();
         }
 
         function toggleModeFields() {
@@ -282,10 +416,17 @@
         taskType.addEventListener("change", toggleTaskType);
         executionType.addEventListener("change", toggleExecution);
         modeSelect.addEventListener("change", toggleModeFields);
+        if (hostSelect) {
+            hostSelect.addEventListener("change", syncSuggestedFilePath);
+        }
+        if (hostFilterSelect) {
+            hostFilterSelect.addEventListener("change", syncSuggestedFilePath);
+        }
 
         toggleTaskType();
         toggleExecution();
         toggleModeFields();
+        syncSuggestedFilePath();
 
     });
 </script>

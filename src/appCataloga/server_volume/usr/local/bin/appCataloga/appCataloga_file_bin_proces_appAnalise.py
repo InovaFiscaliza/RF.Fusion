@@ -88,7 +88,7 @@ def _signal_handler(signal_name: str) -> None:
     Register shutdown intent and release BUSY resources.
     """
     fn = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"event=signal_received signal={signal_name} handler={fn}")
+    log.signal_received(signal_name, handler=fn)
     process_status["running"] = False
     release_busy_hosts_on_exit()
 
@@ -663,7 +663,7 @@ def main():
     failures are requeued for retry; definitive validation failures
     follow the normal trash/history finalization path.
     """
-    log.entry("event=service_start service=appCataloga_file_bin_proces_appAnalise")
+    log.service_start("appCataloga_file_bin_proces_appAnalise")
 
     db_bp = dbHandlerBKP(database="BPDATA", log=log)
     db_rfm = dbHandlerRFM(database="RFDATA", log=log)

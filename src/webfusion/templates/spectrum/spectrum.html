@@ -15,11 +15,35 @@
 
 /* ===================== CARD ===================== */
 
+html,
+body {
+    overflow-y: auto !important;
+}
+
+body .layout.layout-top.fixed-header {
+    overflow: visible !important;
+}
+
+body .main-content {
+    overflow: visible !important;
+}
+
 .card {
     box-shadow: 0 2px 6px rgba(0,0,0,0.04);
 }
 
 /* ===================== FORM ===================== */
+
+.spectrum-query-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 20px;
+    align-items: end;
+}
+
+.spectrum-query-field {
+    min-width: 0;
+}
 
 label {
     display: block;
@@ -28,9 +52,37 @@ label {
 }
 
 .form-control {
+    width: 100%;
     height: 36px;
     padding: 6px 10px;
     box-sizing: border-box;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #fff;
+}
+
+.select-shell {
+    position: relative;
+}
+
+.select-shell::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    right: 14px;
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid #475569;
+    border-bottom: 2px solid #475569;
+    transform: translateY(-65%) rotate(45deg);
+    pointer-events: none;
+}
+
+.select-shell .form-control {
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    padding-right: 40px;
 }
 
 /* ===================== BOTÃO ===================== */
@@ -59,6 +111,7 @@ label {
 }
 
 .table-scroll {
+    width: 100%;
     max-height: 440px;
     overflow-y: auto;
     border: 1px solid #e5e7eb;
@@ -66,6 +119,7 @@ label {
 }
 
 .table-scroll table {
+    width: max(100%, 1280px);
     min-width: 1100px;
     border-collapse: collapse;
     font-size: 13px;
@@ -105,15 +159,18 @@ label {
 
 .pagination-container {
     margin: 16px 0;
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) auto;
     align-items: center;
+    gap: 16px;
 }
 
 .pagination-buttons {
     display: flex;
     align-items: center;
     gap: 6px;
+    justify-content: flex-end;
+    min-width: 360px;
 }
 
 .btn-page {
@@ -130,6 +187,11 @@ label {
     text-align: center;
 }
 
+.btn-page,
+.btn-page-placeholder {
+    min-width: 36px;
+}
+
 .btn-page:hover {
     background-color: #163a66;
     border-color: #163a66;
@@ -138,6 +200,12 @@ label {
 .btn-page-active {
     background-color: #0f2a4d;
     border-color: #0f2a4d;
+}
+
+.btn-page-placeholder {
+    display: inline-block;
+    min-height: 1px;
+    visibility: hidden;
 }
 
 /* ===================== LINK DOWNLOAD ===================== */
@@ -158,6 +226,73 @@ label {
     margin-left: 4px;
 }
 
+.file-expand-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #1f4f8b;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.file-expand-btn:hover {
+    background: #eff6ff;
+    border-color: #93c5fd;
+}
+
+.file-detail-row > td {
+    padding: 0 !important;
+    background: #f8fafc;
+}
+
+.file-detail-panel {
+    padding: 14px 16px;
+}
+
+.file-detail-header {
+    margin-bottom: 10px;
+    font-size: 12px;
+    color: #475569;
+    font-weight: 600;
+}
+
+.file-detail-table-wrap {
+    overflow-x: auto;
+}
+
+.file-detail-table {
+    width: 100%;
+    min-width: 780px;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.file-detail-table th,
+.file-detail-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid #e2e8f0;
+    text-align: left;
+    white-space: nowrap;
+}
+
+.file-detail-table th {
+    background: #eef2f7;
+    font-weight: 700;
+    color: #334155;
+}
+
+.file-detail-empty,
+.file-detail-loading,
+.file-detail-error {
+    font-size: 12px;
+    color: #475569;
+}
+
 </style>
 {% endblock %}
 
@@ -175,41 +310,118 @@ label {
         Parâmetros de Pesquisa
     </div>
 
-    <form method="get">
+    <form method="get" id="spectrum-query-form">
 
-        <div class="ThemeGrid_Row">
+        <div class="spectrum-query-grid">
 
-            <div class="ThemeGrid_Width3">
-                <label>Equipamento</label>
-                <select name="equipment_id" class="form-control" required>
-                    <option value="">-- selecione --</option>
-                    {% for e in equipments %}
-                    <option value="{{ e.ID_EQUIPMENT }}"
-                        {% if e.ID_EQUIPMENT|string == equipment_id %}selected{% endif %}>
-                        {{ e.NA_EQUIPMENT }}
-                    </option>
-                    {% endfor %}
-                </select>
+            <div class="spectrum-query-field">
+                <label>Modo da Consulta</label>
+                <div class="select-shell">
+                    <select name="query_mode"
+                            id="query_mode"
+                            class="form-control"
+                            onchange="this.form.submit()">
+                        <option value="spectrum" {% if query_mode == "spectrum" %}selected{% endif %}>Espectro</option>
+                        <option value="file" {% if query_mode == "file" %}selected{% endif %}>Arquivo</option>
+                    </select>
+                </div>
             </div>
 
-            <div class="ThemeGrid_Width3">
+            <div class="spectrum-query-field">
+                <label>Estação / Equipamento</label>
+                <div class="select-shell">
+                    <select name="equipment_id" class="form-control" required>
+                        <option value="">-- selecione --</option>
+                        {% for e in equipments %}
+                        <option value="{{ e.ID_EQUIPMENT }}"
+                            {% if e.ID_EQUIPMENT|string == equipment_id %}selected{% endif %}>
+                            {{ e.NA_EQUIPMENT }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            <div class="spectrum-query-field">
                 <label>Período Inicial</label>
                 <input type="date"
                        name="start_date"
-                       value="{{ start_date }}"
-                       class="form-control"
-                       required>
-            </div>
-
-            <div class="ThemeGrid_Width3">
-                <label>Período Final</label>
-                <input type="date"
-                       name="end_date"
-                       value="{{ end_date }}"
+                       value="{{ start_date or '' }}"
                        class="form-control">
             </div>
 
-            <div class="ThemeGrid_Width3 display-flex align-items-end">
+            <div class="spectrum-query-field">
+                <label>Período Final</label>
+                <input type="date"
+                       name="end_date"
+                       value="{{ end_date or '' }}"
+                       class="form-control">
+            </div>
+
+            {% if query_mode == "spectrum" %}
+            <div class="spectrum-query-field">
+                <label>Frequência Inicial (MHz)</label>
+                <input type="number"
+                       name="freq_start"
+                       value="{{ freq_start or '' }}"
+                       class="form-control"
+                       step="0.001"
+                       min="0">
+            </div>
+
+            <div class="spectrum-query-field">
+                <label>Frequência Final (MHz)</label>
+                <input type="number"
+                       name="freq_end"
+                       value="{{ freq_end or '' }}"
+                       class="form-control"
+                       step="0.001"
+                       min="0">
+            </div>
+
+            <div class="spectrum-query-field">
+                <label>Plano / Descrição</label>
+                <input type="text"
+                       name="description"
+                       value="{{ description or '' }}"
+                       class="form-control"
+                       placeholder="Parte do nome do plano">
+            </div>
+            {% endif %}
+
+            <div class="spectrum-query-field">
+                <label>Ordenar por</label>
+                <div class="select-shell">
+                    <select name="sort_by" class="form-control">
+                        {% if query_mode == "file" %}
+                        <option value="date_start" {% if sort_by == "date_start" %}selected{% endif %}>Data inicial</option>
+                        <option value="date_end" {% if sort_by == "date_end" %}selected{% endif %}>Data final</option>
+                        <option value="file_name" {% if sort_by == "file_name" %}selected{% endif %}>Arquivo</option>
+                        <option value="spectrum_count" {% if sort_by == "spectrum_count" %}selected{% endif %}>Qtd. espectros</option>
+                        {% else %}
+                        <option value="date_start" {% if sort_by == "date_start" %}selected{% endif %}>Data inicial</option>
+                        <option value="date_end" {% if sort_by == "date_end" %}selected{% endif %}>Data final</option>
+                        <option value="freq_start" {% if sort_by == "freq_start" %}selected{% endif %}>Frequência inicial</option>
+                        <option value="freq_end" {% if sort_by == "freq_end" %}selected{% endif %}>Frequência final</option>
+                        <option value="rbw" {% if sort_by == "rbw" %}selected{% endif %}>RBW</option>
+                        <option value="trace_count" {% if sort_by == "trace_count" %}selected{% endif %}>Traces</option>
+                        {% endif %}
+                    </select>
+                </div>
+            </div>
+
+            <div class="spectrum-query-field">
+                <label>Ordem</label>
+                <div class="select-shell">
+                    <select name="sort_order" class="form-control">
+                        <option value="DESC" {% if sort_order == "DESC" %}selected{% endif %}>Decrescente</option>
+                        <option value="ASC" {% if sort_order == "ASC" %}selected{% endif %}>Crescente</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="spectrum-query-field">
+                <label>&nbsp;</label>
                 <button type="submit" class="btn-search width-full">
                     Pesquisar
                 </button>
@@ -233,6 +445,12 @@ label {
         de {{ total }} registros
     </div>
 
+    {% if query_mode == "file" %}
+    <div class="margin-bottom-s text-neutral-7 font-size-s">
+        Modo arquivo: uma linha por arquivo oficial, agregando o período e a quantidade de espectros associados.
+    </div>
+    {% endif %}
+
     <div class="pagination-container">
         <div class="text-neutral-7 font-size-s">
             Página {{ page }} de {{ total_pages }}
@@ -241,10 +459,13 @@ label {
         <div class="pagination-buttons">
             {% if page > 1 %}
                 <a class="btn-page"
-                   href="?equipment_id={{ equipment_id }}&start_date={{ start_date }}&end_date={{ end_date }}&sort_by={{ sort_by }}&sort_order={{ sort_order }}&page=1">«</a>
+                   href="?{{ page_query_prefix }}page=1">«</a>
 
                 <a class="btn-page"
-                   href="?equipment_id={{ equipment_id }}&start_date={{ start_date }}&end_date={{ end_date }}&sort_by={{ sort_by }}&sort_order={{ sort_order }}&page={{ page-1 }}">‹</a>
+                   href="?{{ page_query_prefix }}page={{ page-1 }}">‹</a>
+            {% else %}
+                <span class="btn-page-placeholder"></span>
+                <span class="btn-page-placeholder"></span>
             {% endif %}
 
             {% for p in visible_pages %}
@@ -252,16 +473,19 @@ label {
                     <span class="btn-page btn-page-active">{{ p }}</span>
                 {% else %}
                     <a class="btn-page"
-                       href="?equipment_id={{ equipment_id }}&start_date={{ start_date }}&end_date={{ end_date }}&sort_by={{ sort_by }}&sort_order={{ sort_order }}&page={{ p }}">{{ p }}</a>
+                       href="?{{ page_query_prefix }}page={{ p }}">{{ p }}</a>
                 {% endif %}
             {% endfor %}
 
             {% if page < total_pages %}
                 <a class="btn-page"
-                   href="?equipment_id={{ equipment_id }}&start_date={{ start_date }}&end_date={{ end_date }}&sort_by={{ sort_by }}&sort_order={{ sort_order }}&page={{ page+1 }}">›</a>
+                   href="?{{ page_query_prefix }}page={{ page+1 }}">›</a>
 
                 <a class="btn-page"
-                   href="?equipment_id={{ equipment_id }}&start_date={{ start_date }}&end_date={{ end_date }}&sort_by={{ sort_by }}&sort_order={{ sort_order }}&page={{ total_pages }}">»</a>
+                   href="?{{ page_query_prefix }}page={{ total_pages }}">»</a>
+            {% else %}
+                <span class="btn-page-placeholder"></span>
+                <span class="btn-page-placeholder"></span>
             {% endif %}
         </div>
     </div>
@@ -271,6 +495,17 @@ label {
 
             <table>
                 <thead>
+                {% if query_mode == "file" %}
+                <tr>
+                    <th></th>
+                    <th>ID Arquivo</th>
+                    <th>Estação</th>
+                    <th>Início</th>
+                    <th>Fim</th>
+                    <th>Qtd. Espectros</th>
+                    <th>Arquivo Oficial</th>
+                </tr>
+                {% else %}
                 <tr>
                     <th>ID</th>
                     <th>Plano</th>
@@ -282,9 +517,50 @@ label {
                     <th>Traces</th>
                     <th>Arquivo Oficial</th>
                 </tr>
+                {% endif %}
                 </thead>
 
                 <tbody>
+                {% if query_mode == "file" %}
+                {% for r in rows %}
+                <tr class="file-summary-row" data-file-id="{{ r.ID_FILE }}">
+                    <td>
+                        <button type="button"
+                                class="file-expand-btn"
+                                data-file-toggle="{{ r.ID_FILE }}"
+                                aria-expanded="false"
+                                title="Mostrar espectros do arquivo">
+                            +
+                        </button>
+                    </td>
+                    <td>{{ r.ID_FILE }}</td>
+                    <td>{{ r.NA_EQUIPMENT }}</td>
+                    <td>{{ r.DT_TIME_START }}</td>
+                    <td>{{ r.DT_TIME_END }}</td>
+                    <td>{{ r.NU_SPECTRA }}</td>
+                    <td>
+                        {% if r.NA_FILE %}
+                            <a href="{{ r.DOWNLOAD_URL or url_for('spectrum.download_spectrum_file', file_id=r.ID_FILE) }}"
+                               class="file-link">
+                                {{ r.NA_FILE }}
+                            </a>
+                            <span class="file-size">
+                                ({{ r.VL_FILE_SIZE_KB }} KB)
+                            </span>
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+                </tr>
+                <tr class="file-detail-row" data-file-detail="{{ r.ID_FILE }}" hidden>
+                    <td colspan="7">
+                        <div class="file-detail-panel">
+                            <div class="file-detail-loading">Carregando espectros do arquivo...</div>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% else %}
                 {% for r in rows %}
                 <tr>
                     <td>{{ r.ID_SPECTRUM }}</td>
@@ -297,7 +573,7 @@ label {
                     <td>{{ r.NU_TRACE_COUNT }}</td>
                     <td>
                         {% if r.NA_FILE %}
-                            <a href="{{ url_for('spectrum.download_spectrum', spectrum_id=r.ID_SPECTRUM) }}"
+                            <a href="{{ r.DOWNLOAD_URL or url_for('spectrum.download_spectrum', spectrum_id=r.ID_SPECTRUM) }}"
                                class="file-link">
                                 {{ r.NA_FILE }}
                             </a>
@@ -310,6 +586,7 @@ label {
                     </td>
                 </tr>
                 {% endfor %}
+                {% endif %}
                 </tbody>
 
             </table>
@@ -319,7 +596,7 @@ label {
 
 </div>
 
-{% elif equipment_id and start_date %}
+{% elif equipment_id %}
 
 <div class="card background-neutral-0 padding-l border-radius-m">
     Nenhum registro encontrado para os filtros informados.
@@ -327,4 +604,103 @@ label {
 
 {% endif %}
 
+{% endblock %}
+
+{% block extra_js %}
+{% if query_mode == "file" and rows %}
+<script>
+    (function () {
+        const detailCache = new Map();
+
+        function escapeHtml(value) {
+            return String(value ?? "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/\"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+        }
+
+        function buildDetailHtml(rows) {
+            if (!Array.isArray(rows) || rows.length === 0) {
+                return '<div class="file-detail-empty">Nenhum espectro vinculado a este arquivo.</div>';
+            }
+
+            const body = rows.map((row) => `
+                <tr>
+                    <td>${escapeHtml(row.ID_SPECTRUM)}</td>
+                    <td>${escapeHtml(row.NA_DESCRIPTION || "—")}</td>
+                    <td>${escapeHtml(row.NU_FREQ_START)} – ${escapeHtml(row.NU_FREQ_END)}</td>
+                    <td>${escapeHtml(row.DT_TIME_START || "—")}</td>
+                    <td>${escapeHtml(row.DT_TIME_END || "—")}</td>
+                    <td>${escapeHtml(row.NU_RBW || "—")}</td>
+                    <td>${escapeHtml(row.NU_TRACE_COUNT || "—")}</td>
+                </tr>
+            `).join("");
+
+            return `
+                <div class="file-detail-header">Espectros internos do arquivo</div>
+                <div class="file-detail-table-wrap">
+                    <table class="file-detail-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Plano</th>
+                                <th>Faixa (MHz)</th>
+                                <th>Início</th>
+                                <th>Fim</th>
+                                <th>RBW</th>
+                                <th>Traces</th>
+                            </tr>
+                        </thead>
+                        <tbody>${body}</tbody>
+                    </table>
+                </div>
+            `;
+        }
+
+        async function loadFileDetail(fileId) {
+            if (detailCache.has(fileId)) {
+                return detailCache.get(fileId);
+            }
+
+            const response = await fetch(`/api/spectrum/file/${fileId}/spectra`);
+            const payload = await response.json();
+            const rows = Array.isArray(payload.rows) ? payload.rows : [];
+            detailCache.set(fileId, rows);
+            return rows;
+        }
+
+        document.querySelectorAll("[data-file-toggle]").forEach((button) => {
+            button.addEventListener("click", async () => {
+                const fileId = button.getAttribute("data-file-toggle");
+                const detailRow = document.querySelector(`[data-file-detail="${fileId}"]`);
+
+                if (!detailRow) {
+                    return;
+                }
+
+                const isOpen = !detailRow.hidden;
+                detailRow.hidden = isOpen;
+                button.textContent = isOpen ? "+" : "−";
+                button.setAttribute("aria-expanded", isOpen ? "false" : "true");
+
+                if (isOpen || detailRow.dataset.loaded === "1") {
+                    return;
+                }
+
+                const panel = detailRow.querySelector(".file-detail-panel");
+
+                try {
+                    const rows = await loadFileDetail(fileId);
+                    panel.innerHTML = buildDetailHtml(rows);
+                    detailRow.dataset.loaded = "1";
+                } catch (error) {
+                    panel.innerHTML = '<div class="file-detail-error">Nao foi possivel carregar os espectros deste arquivo.</div>';
+                }
+            });
+        });
+    })();
+</script>
+{% endif %}
 {% endblock %}

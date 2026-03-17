@@ -7,9 +7,10 @@ host_bp = Blueprint("host", __name__)
 def host():
 
     host_id = request.args.get("host_id")
-    online_only = request.args.get("online_only") == "1"
+    search = request.args.get("search") or None
+    online_only = request.args.get("online_only", "1") == "1"
 
-    hosts = get_all_hosts(online_only=online_only)
+    hosts = get_all_hosts(online_only=online_only, search=search)
     stats = None
 
     if host_id:
@@ -20,5 +21,6 @@ def host():
         hosts=hosts,
         stats=stats,
         selected_host=host_id,
-        online_only=online_only
+        online_only=online_only,
+        search=search,
     )

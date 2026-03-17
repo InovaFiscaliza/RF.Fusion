@@ -122,7 +122,7 @@ def _signal_handler(signal_name: str) -> None:
     Register shutdown intent, stop sibling workers, and release BUSY resources.
     """
     process_status["running"] = False
-    log.entry(f"event=signal_received signal={signal_name}")
+    log.signal_received(signal_name)
     broadcast_shutdown_to_worker_pool(signal_name)
     release_busy_hosts_on_exit()
 
@@ -136,7 +136,7 @@ def release_busy_hosts_on_exit() -> None:
     """
     try:
         pid = os.getpid()
-        log.entry(f"event=cleanup_busy_hosts pid={pid}")
+        log.event("cleanup_busy_hosts", pid=pid)
         db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
         db.host_release_by_pid(pid)
     except Exception:
@@ -208,7 +208,7 @@ def parse_arguments() -> None:
             except ValueError:
                 log.warning("event=worker_arg_invalid fallback_worker=0")
     process_status["worker"] = worker
-    log.entry(f"event=worker_configured worker_id={worker}")
+    log.event("worker_configured", worker_id=worker)
 
 
 # ======================================================================
@@ -227,7 +227,7 @@ def list_running_workers(process_filename: str) -> list:
     workers = sorted(
         {worker_id for _, worker_id in list_running_worker_processes(process_filename)}
     )
-    log.entry(f"event=worker_pool_scan active_workers={workers}")
+    log.event("worker_pool_scan", active_workers=workers)
     return workers
 
 
@@ -355,7 +355,7 @@ def spawn_additional_worker(current_workers: list) -> None:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        log.entry(f"event=worker_spawned worker_id={next_worker}")
+        log.event("worker_spawned", worker_id=next_worker)
     except Exception as e:
         log.error(f"event=worker_spawn_failed worker_id={next_worker} error={e}")
 
@@ -375,7 +375,7 @@ def spawn_specific_worker(worker_id: int) -> bool:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        log.entry(f"event=worker_spawned worker_id={worker_id} reason=pool_recovery")
+        log.event("worker_spawned", worker_id=worker_id, reason="pool_recovery")
         return True
     except Exception as e:
         log.error(
@@ -551,9 +551,10 @@ def transfer_file_task(
             local_size_kb = local_size_bytes / 1024
 
             if local_size_kb + k.FILE_THRESHOLD_SIZE_KB >= discovery_size_kb:
-                sftp.log.entry(
-                    f"event=backup_transfer_skipped reason=file_already_present "
-                    f"server_file={server_filename}"
+                sftp.log.event(
+                    "backup_transfer_skipped",
+                    reason="file_already_present",
+                    server_file=server_filename,
                 )
 
                 return local_size_kb
@@ -674,7 +675,7 @@ def main() -> None:
     parse_arguments()
     worker_id = process_status["worker"]
 
-    log.entry(f"event=service_start service=appCataloga_file_bkp worker_id={worker_id}")
+    log.service_start("appCataloga_file_bkp", worker_id=worker_id)
     legacy._random_jitter_sleep()
 
     # Initialize database handler
@@ -727,9 +728,10 @@ def main() -> None:
                 process_status["idle_cycles"] = idle_cycles
 
                 if should_retire_idle_worker(worker_id, idle_cycles):
-                    log.entry(
-                        f"event=worker_retired_idle worker_id={worker_id} "
-                        f"idle_cycles={idle_cycles}"
+                    log.event(
+                        "worker_retired_idle",
+                        worker_id=worker_id,
+                        idle_cycles=idle_cycles,
                     )
                     break
 
@@ -1071,7 +1073,7 @@ def main() -> None:
 
             legacy._random_jitter_sleep()
 
-    log.entry(f"event=service_stop service=appCataloga_file_bkp worker_id={worker_id}")
+    log.service_stop("appCataloga_file_bkp", worker_id=worker_id)
 
 
 if __name__ == "__main__":

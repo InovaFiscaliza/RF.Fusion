@@ -12,6 +12,7 @@ ENV PYTHONUNBUFFERED=1
 # Utilitários essenciais + SSH
 # -------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    nginx-light \
     openssh-server \
     net-tools \
     iputils-ping \
@@ -33,6 +34,7 @@ RUN pip install --no-cache-dir \
     flask \
     waitress \
     requests \
+    pymysql \
     mysql-connector-python
 
 # -------------------------------------------------
@@ -40,6 +42,7 @@ RUN pip install --no-cache-dir \
 # -------------------------------------------------
 RUN mkdir -p \
     /var/run/sshd \
+    /var/cache/nginx \
     /RF.Fusion \
     /opt/rffusion/bin
 
@@ -53,9 +56,11 @@ RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/
 # -------------------------------------------------
 # Entrypoint
 # -------------------------------------------------
+COPY nginx-webfusion.conf /etc/nginx/conf.d/webfusion.conf
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN rm -f /etc/nginx/sites-enabled/default
 
-EXPOSE 22 9082
+EXPOSE 22 80
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

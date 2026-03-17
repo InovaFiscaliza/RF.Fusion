@@ -1,7 +1,7 @@
 from db import get_connection_rfdata as get_connection
 
 
-def get_all_hosts(online_only=False):
+def get_all_hosts(online_only=False, search=None):
 
     conn = get_connection()
     cur = conn.cursor()
@@ -11,12 +11,22 @@ def get_all_hosts(online_only=False):
         FROM BPDATA.HOST
     """
 
+    where_clauses = []
+    params = []
+
     if online_only:
-        query += " WHERE IS_OFFLINE = 0"
+        where_clauses.append("IS_OFFLINE = 0")
+
+    if search:
+        where_clauses.append("NA_HOST_NAME LIKE %s")
+        params.append(f"%{search}%")
+
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
 
     query += " ORDER BY NA_HOST_NAME"
 
-    cur.execute(query)
+    cur.execute(query, params)
     rows = cur.fetchall()
 
     conn.close()

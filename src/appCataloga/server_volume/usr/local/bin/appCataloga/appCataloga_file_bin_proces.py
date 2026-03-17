@@ -85,7 +85,7 @@ def _signal_handler(signal_name: str) -> None:
     Register shutdown intent and release BUSY resources.
     """
     fn = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"event=signal_received signal={signal_name} handler={fn}")
+    log.signal_received(signal_name, handler=fn)
     process_status["running"] = False
     release_busy_hosts_on_exit()
 
@@ -474,7 +474,7 @@ def main():
     place. The main difference is that payload normalization happens locally
     instead of through an external processing service.
     """
-    log.entry("event=service_start service=appCataloga_file_bin_proces")
+    log.service_start("appCataloga_file_bin_proces")
 
     db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     db_rfm = dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)

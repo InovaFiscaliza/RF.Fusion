@@ -67,7 +67,7 @@ def release_busy_hosts_on_exit() -> None:
     """
     try:
         pid = os.getpid()
-        log.entry(f"event=cleanup_busy_hosts pid={pid}")
+        log.event("cleanup_busy_hosts", pid=pid)
 
         # Create a fresh DB handler to avoid relying on partially
         # initialized or corrupted state during shutdown
@@ -85,7 +85,7 @@ def _signal_handler(signal_name: str) -> None:
     Register shutdown intent and release BUSY resources.
     """
     current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"event=signal_received signal={signal_name} handler={current_function}")
+    log.signal_received(signal_name, handler=current_function)
     process_status["running"] = False
     release_busy_hosts_on_exit()
 
@@ -130,7 +130,7 @@ def main():
     """
     Run the host-check polling loop until shutdown is requested.
     """
-    log.entry("event=service_start service=appCataloga_host_check")
+    log.service_start("appCataloga_host_check")
     last_host_cleanup = datetime.min
 
     try:
@@ -212,9 +212,12 @@ def main():
                 # Connectivity test
                 try:
                     online = is_host_online(addr)
-                    log.entry(
-                        f"event=host_check host_id={host_id} address={addr} "
-                        f"port={port} online={online}"
+                    log.event(
+                        "host_check",
+                        host_id=host_id,
+                        address=addr,
+                        port=port,
+                        online=online,
                     )
                 except Exception as e:
                     err.set("Connectivity test failed", "CONNECTIVITY", e)
@@ -275,9 +278,12 @@ def main():
                 
                 try:
                     online = is_host_online(addr)
-                    log.entry(
-                        f"event=host_check_statistics host_id={host_id} "
-                        f"address={addr} port={port} online={online}"
+                    log.event(
+                        "host_check_statistics",
+                        host_id=host_id,
+                        address=addr,
+                        port=port,
+                        online=online,
                     )
                 except Exception as e:
                     err.set("Connectivity test failed", "CONNECTIVITY", e)
@@ -300,9 +306,12 @@ def main():
                 # Connectivity test
                 try:
                     online = is_host_online(addr)
-                    log.entry(
-                        f"event=host_check_connection host_id={host_id} "
-                        f"address={addr} port={port} online={online}"
+                    log.event(
+                        "host_check_connection",
+                        host_id=host_id,
+                        address=addr,
+                        port=port,
+                        online=online,
                     )
                 except Exception as e:
                     err.set("Connectivity test failed", "CONNECTIVITY", e)
@@ -394,7 +403,7 @@ def main():
             )
             legacy._random_jitter_sleep()
 
-    log.entry("event=service_stop service=appCataloga_host_check")
+    log.service_stop("appCataloga_host_check")
 
         
 

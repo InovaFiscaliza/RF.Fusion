@@ -74,7 +74,7 @@ def release_busy_hosts_on_exit() -> None:
     """
     try:
         pid = os.getpid()
-        log.entry(f"event=cleanup_busy_hosts pid={pid}")
+        log.event("cleanup_busy_hosts", pid=pid)
 
         # Create a fresh DB handler to avoid relying on partially
         # initialized or corrupted state during shutdown
@@ -115,7 +115,7 @@ def _signal_handler(signal_name: str) -> None:
     Register shutdown intent and release BUSY resources.
     """
     current_function = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"event=signal_received signal={signal_name} handler={current_function}")
+    log.signal_received(signal_name, handler=current_function)
     process_status["running"] = False
     release_busy_hosts_on_exit()
 
@@ -147,7 +147,7 @@ def main() -> None:
     Run the discovery polling loop until shutdown is requested.
     """
 
-    log.entry("event=service_start service=appCataloga_discovery")
+    log.service_start("appCataloga_discovery")
     try:
         db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
@@ -307,9 +307,10 @@ def main() -> None:
 
                         # Log progress (already deduplicated files)
                         processed += len(batch)
-                        log.entry(
-                            f"event=discovery_progress host_id={host_id} "
-                            f"processed_files={processed}"
+                        log.event(
+                            "discovery_progress",
+                            host_id=host_id,
+                            processed_files=processed,
                         )
 
                 except Exception as e:
@@ -334,9 +335,10 @@ def main() -> None:
                         new_status=k.TASK_PENDING,
                     )
 
-                    log.entry(
-                        f"event=backlog_promoted host_id={host_id} "
-                        f"moved_to_backup={n['moved_to_backup']}"
+                    log.event(
+                        "backlog_promoted",
+                        host_id=host_id,
+                        moved_to_backup=n["moved_to_backup"],
                     )
 
                     db.host_task_delete(task_id=task_id)

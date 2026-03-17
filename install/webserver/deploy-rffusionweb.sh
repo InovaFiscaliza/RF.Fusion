@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ======================================================================
 # RF.Fusion - Deploy Web UI + Python Dispatcher
 # ======================================================================
@@ -71,7 +73,7 @@ podman context use default >/dev/null 2>&1 || true
 echo "=== [4/7] Building image ${ImageName} ==="
 podman rmi -f "${ImageName}" >/dev/null 2>&1 || true
 
-podman build --no-cache -t "${ImageName}" .
+podman build --no-cache -t "${ImageName}" -f "${scriptDir}/Containerfile" "${scriptDir}"
 if [[ $? -ne 0 ]]; then
     echo "❌ ERROR: Failed to build image ${ImageName}"
     exit 1
@@ -86,6 +88,7 @@ podman rm -f "${ContainerName}" >/dev/null 2>&1 || true
 podman run -d \
   --name "${ContainerName}" \
   --hostname "${ContainerName}" \
+  --restart unless-stopped \
   --network "${NetworkName}" \
   --ip "${IPAddress}" \
   -e "ROOT_USER=${ROOT_USER}" \
@@ -118,7 +121,13 @@ echo "✅ Container is running."
 # 7) Testes básicos
 # ======================================================================
 echo "=== [7/7] Testing exposed services ==="
-nc -z localhost "${HostHTTPPort}" && echo "✅ HTTP ${HostHTTPPort} OK" || echo "⚠️ HTTP FAIL"
+
+if curl -fsS "http://127.0.0.1:${HostHTTPPort}/health" >/dev/null; then
+    echo "✅ HTTP ${HostHTTPPort} OK"
+else
+    echo "⚠️ HTTP healthcheck failed"
+fi
+
 nc -z localhost "${HostSSHPort}" && echo "✅ SSH ${HostSSHPort} OK" || echo "⚠️ SSH FAIL"
 
 echo

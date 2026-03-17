@@ -7,7 +7,7 @@ import time
 
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Dict
+from typing import Dict, Optional
 from collections.abc import Iterable
 
 from shared import errors
@@ -56,6 +56,12 @@ class AppAnaliseConnection:
     INVALID_HOSTNAME_VALUES = {
         "none", "(none)", "null", "(null)", "unknown", ""
     }
+    SOURCE_FILE_MISSING_SNIPPETS = (
+        "filenotfound",
+        "nosuchfile",
+        "cannotfindfile",
+        "pathnotfound",
+    )
     RFEYE_CANONICAL_RE = re.compile(r"(rfeye\d{6})", re.IGNORECASE)
     GPS_SENTINEL_VALUE = -1
 
@@ -353,7 +359,67 @@ class AppAnaliseConnection:
     # Protocol error detection
     # =================================================
 
-    def _detect_protocol_error(self, payload: Dict):
+    @classmethod
+    def _is_missing_source_file_error(cls, message: object) -> bool:
+        """
+        Return whether an appAnalise error string points to a missing source file.
+
+        The MATLAB side can report this in slightly different spellings, so we
+        compare against a compact, normalized string instead of exact wording.
+        """
+        if not isinstance(message, str):
+            return False
+
+        normalized = "".join(message.strip().lower().split())
+        return any(
+            snippet in normalized for snippet in cls.SOURCE_FILE_MISSING_SNIPPETS
+        )
+
+    @staticmethod
+    def _validate_source_file(full_path: str) -> None:
+        """
+        Ensure the requested source file still exists before contacting appAnalise.
+        """
+        if not os.path.isfile(full_path):
+            raise errors.BinValidationError(
+                f"APP_ANALISE source file unavailable before request: {full_path}"
+            )
+
+    def _raise_answer_error(
+        self,
+        answer_error: str,
+        requested_full_path: Optional[str] = None,
+    ) -> None:
+        """
+        Classify string errors returned in `Answer`.
+
+        `FileNotFound` deserves an extra local filesystem check: if the source
+        file still exists here, the failure looks like a service-side visibility
+        problem and should be retried. If the file is truly gone locally, the
+        task is no longer recoverable by reprocessing.
+        """
+        if self._is_missing_source_file_error(answer_error):
+            if requested_full_path and os.path.isfile(requested_full_path):
+                raise errors.ExternalServiceTransientError(
+                    "APP_ANALISE reported missing source file, but it still "
+                    f"exists locally: {requested_full_path} ({answer_error})"
+                )
+
+            if requested_full_path:
+                raise errors.BinValidationError(
+                    "APP_ANALISE reported missing source file and it is "
+                    f"absent locally: {requested_full_path} ({answer_error})"
+                )
+
+        raise errors.BinValidationError(
+            f"APP_ANALISE returned error in Answer: {answer_error}"
+        )
+
+    def _detect_protocol_error(
+        self,
+        payload: Dict,
+        requested_full_path: Optional[str] = None,
+    ):
         """
         Validate the top-level protocol structure before normalization begins.
         """
@@ -389,9 +455,7 @@ class AppAnaliseConnection:
             )
 
         if isinstance(answer, str):
-            raise errors.BinValidationError(
-                f"APP_ANALISE returned error in Answer: {answer}"
-            )
+            self._raise_answer_error(answer, requested_full_path)
 
         if not isinstance(answer, dict):
             raise errors.BinValidationError(
@@ -662,10 +726,17 @@ class AppAnaliseConnection:
         """
         full_path = os.path.join(file_path, file_name)
 
+        # If the source file already disappeared locally, recontacting the
+        # external processor cannot make this task recoverable.
+        self._validate_source_file(full_path)
+
         # The socket response defines both the normalized spectra and, when
         # export is enabled, the artifact that becomes relevant downstream.
         payload = self._request_process(full_path, export)
-        self._detect_protocol_error(payload)
+        self._detect_protocol_error(
+            payload,
+            requested_full_path=full_path,
+        )
         answer = self._get_answer(payload)
         file_info = self._build_output_file_info(
             answer=answer,

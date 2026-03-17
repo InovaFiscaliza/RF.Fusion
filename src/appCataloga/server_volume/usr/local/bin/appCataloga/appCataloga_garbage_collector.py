@@ -67,7 +67,7 @@ def _signal_handler(signal_name: str) -> None:
     Register shutdown intent for the garbage-collection loop.
     """
     fn = inspect.currentframe().f_back.f_code.co_name
-    log.entry(f"event=signal_received signal={signal_name} handler={fn}")
+    log.signal_received(signal_name, handler=fn)
     process_status["running"] = False
 
 
@@ -103,7 +103,7 @@ def delete_file(path):
 
     try:
         os.remove(path)
-        log.entry(f"event=garbage_file_deleted path={path}")
+        log.event("garbage_file_deleted", path=path)
         return True
 
     except FileNotFoundError:
@@ -123,7 +123,7 @@ def main():
     Run the garbage-collection loop until shutdown is requested.
     """
 
-    log.entry("event=service_start service=appCataloga_garbage_collector")
+    log.service_start("appCataloga_garbage_collector")
 
     db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
 
@@ -137,7 +137,7 @@ def main():
             )
 
             if not rows:
-                log.entry("event=garbage_candidates_empty")
+                log.event("garbage_candidates_empty")
                 time.sleep(k.GC_IDLE_SLEEP)
                 continue
 
@@ -174,7 +174,7 @@ def main():
 
             db_bp.commit()
 
-            log.entry(f"event=garbage_batch_processed deleted={deleted}")
+            log.event("garbage_batch_processed", deleted=deleted)
 
         except Exception as e:
             log.error(f"event=garbage_loop_error error={e}")

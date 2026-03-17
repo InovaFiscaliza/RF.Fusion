@@ -11,6 +11,8 @@ What is covered here:
 
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
 from pathlib import Path
 import sys
@@ -64,6 +66,46 @@ class DetectProtocolErrorTests(unittest.TestCase):
 
         self.assertIn("APP_ANALISE returned error in Answer", str(ctx.exception))
 
+    def test_detect_protocol_error_retries_missing_file_when_source_still_exists(self) -> None:
+        # If MATLAB says "FileNotFound" but the requested source file still
+        # exists locally, that looks more like a service-side visibility issue
+        # than a definitively bad processing task.
+        payload = {
+            "Request": {"type": "FileRead"},
+            "Answer": "tcpServerLib:FileNotFound",
+        }
+
+        with tempfile.NamedTemporaryFile() as tmp_file:
+            with self.assertRaises(
+                AppAnaliseErrors.ExternalServiceTransientError
+            ) as ctx:
+                self.conn._detect_protocol_error(
+                    payload,
+                    requested_full_path=tmp_file.name,
+                )
+
+        self.assertIn("still exists locally", str(ctx.exception))
+
+    def test_detect_protocol_error_rejects_missing_file_when_source_is_gone(self) -> None:
+        # The same protocol error becomes definitive if the source file really
+        # is absent from the filesystem watched by appCataloga.
+        payload = {
+            "Request": {"type": "FileRead"},
+            "Answer": "tcpServerLib:FileNotFound",
+        }
+        missing_path = "/tmp/appCataloga_missing_input.bin"
+
+        if os.path.exists(missing_path):
+            os.unlink(missing_path)
+
+        with self.assertRaises(AppAnaliseErrors.BinValidationError) as ctx:
+            self.conn._detect_protocol_error(
+                payload,
+                requested_full_path=missing_path,
+            )
+
+        self.assertIn("absent locally", str(ctx.exception))
+
     def test_detect_protocol_error_rejects_missing_spectra(self) -> None:
         # A dict-shaped `Answer` is still invalid if the expected payload body is missing.
         payload = {
@@ -84,6 +126,23 @@ class DetectProtocolErrorTests(unittest.TestCase):
             self.conn._detect_protocol_error(payload)
 
         self.assertIn("tcpServerLib - PortClosed", str(ctx.exception))
+
+    def test_process_rejects_missing_source_before_request(self) -> None:
+        # The worker should fail early if the source file is already gone,
+        # instead of contacting appAnalise and producing a misleading retry.
+        called = {"value": False}
+
+        def fake_request_process(*args, **kwargs):
+            called["value"] = True
+            return {}
+
+        self.conn._request_process = fake_request_process
+
+        with self.assertRaises(AppAnaliseErrors.BinValidationError) as ctx:
+            self.conn.process("/tmp", "appCataloga_missing_source.bin", export=True)
+
+        self.assertIn("source file unavailable before request", str(ctx.exception))
+        self.assertFalse(called["value"])
 
 
 if __name__ == "__main__":
