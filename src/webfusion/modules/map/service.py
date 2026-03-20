@@ -1,3 +1,14 @@
+"""Station-map helpers used by the WebFusion landing page.
+
+The map is intentionally split between:
+
+- fast point loading from ``RFDATA``
+- later host enrichment using ``BPDATA``
+
+That keeps the home page responsive while still allowing quick actions on the
+station popup.
+"""
+
 import re
 import time
 
@@ -183,6 +194,8 @@ def _load_site_rows():
         SELECT
             s.ID_SITE,
             COALESCE(NULLIF(s.NA_SITE, ''), CONCAT('Site ', s.ID_SITE)) AS SITE_LABEL,
+            c.NA_COUNTY AS COUNTY_NAME,
+            d.NA_DISTRICT AS DISTRICT_NAME,
             st.ID_STATE,
             st.NA_STATE,
             st.LC_STATE,
@@ -190,6 +203,10 @@ def _load_site_rows():
             s.NU_ALTITUDE,
             s.NU_GNSS_MEASUREMENTS
         FROM DIM_SPECTRUM_SITE s
+        LEFT JOIN DIM_SITE_COUNTY c
+            ON c.ID_COUNTY = s.FK_COUNTY
+        LEFT JOIN DIM_SITE_DISTRICT d
+            ON d.ID_DISTRICT = s.FK_DISTRICT
         LEFT JOIN DIM_SITE_STATE st
             ON st.ID_STATE = s.FK_STATE
         WHERE s.GEO_POINT IS NOT NULL
@@ -234,6 +251,10 @@ def _load_equipment_rows_for_site(site_id):
 def _build_site_detail(site_id):
     """
     Build the popup metadata for a single site.
+
+    The popup is where we pay the cost of relating site/equipment information
+    to host information. The landing page itself only needs the geographic
+    points.
     """
     host_index = _get_cached_hosts_index()
     rows = _load_equipment_rows_for_site(site_id)
@@ -355,6 +376,16 @@ def get_station_map_points():
         point = {
             "site_id": site_id,
             "site_label": str(row["SITE_LABEL"]),
+            "county_name": (
+                str(row["COUNTY_NAME"])
+                if row["COUNTY_NAME"] is not None
+                else None
+            ),
+            "district_name": (
+                str(row["DISTRICT_NAME"])
+                if row["DISTRICT_NAME"] is not None
+                else None
+            ),
             "state_id": int(row["ID_STATE"]) if row["ID_STATE"] is not None else None,
             "state_name": str(row["NA_STATE"]) if row["NA_STATE"] is not None else None,
             "state_code": str(row["LC_STATE"]) if row["LC_STATE"] is not None else None,

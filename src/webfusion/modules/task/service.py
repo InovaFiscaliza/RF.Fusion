@@ -1,3 +1,5 @@
+"""Task-creation helpers for the WebFusion task builder."""
+
 import json
 from datetime import datetime
 from .builder import build_filter, NONE_FILTER
@@ -5,6 +7,7 @@ from .builder import build_filter, NONE_FILTER
 
 HOST_TASK_CHECK_TYPE = 1
 HOST_TASK_UPDATE_STATISTICS_TYPE = 3
+HOST_TASK_CHECK_CONNECTION_TYPE = 4
 
 TASK_PENDING = 1
 TASK_RUNNING = 2
@@ -14,7 +17,12 @@ TASK_SUSPENDED = 3
 
 def queue_host_task_safe(db, host_id, task_type, filter_dict, message):
     """
-    Deterministic host task creation.
+    Create or refresh a HOST_TASK without duplicating active work.
+
+    The rule is intentionally conservative:
+        - pending/running tasks are kept as-is
+        - terminal tasks may be refreshed
+        - missing tasks are inserted
     """
 
     cursor = db.cursor()
@@ -38,7 +46,7 @@ def queue_host_task_safe(db, host_id, task_type, filter_dict, message):
 
         # Already active → do nothing
         if status in (TASK_PENDING, TASK_RUNNING):
-            return
+            return "skipped_active"
 
         # Terminal → refresh
         if status in (TASK_ERROR, TASK_SUSPENDED):
@@ -57,7 +65,7 @@ def queue_host_task_safe(db, host_id, task_type, filter_dict, message):
             ))
 
             db.commit()
-            return
+            return "refreshed"
 
     # No existing task → create new
     cursor.execute("""
@@ -73,23 +81,31 @@ def queue_host_task_safe(db, host_id, task_type, filter_dict, message):
     ))
 
     db.commit()
+    return "created"
 
 
 def create_task(db, hosts, task_type, mode, filter_data):
+    """Create or refresh one or more host tasks from the builder form."""
 
     if task_type not in (
         HOST_TASK_CHECK_TYPE,
         HOST_TASK_UPDATE_STATISTICS_TYPE,
+        HOST_TASK_CHECK_CONNECTION_TYPE,
     ):
         raise ValueError("Tipo de task inválido")
 
     collective = len(hosts) > 1
+    queued_count = 0
+    skipped_count = 0
 
     for host_id in hosts:
 
         if task_type == HOST_TASK_UPDATE_STATISTICS_TYPE:
             filter_dict = NONE_FILTER.copy()
             action_name = "Update Statistics"
+        elif task_type == HOST_TASK_CHECK_CONNECTION_TYPE:
+            filter_dict = NONE_FILTER.copy()
+            action_name = "Check Connection"
 
         else:
             filter_dict = build_filter(
@@ -101,16 +117,26 @@ def create_task(db, hosts, task_type, mode, filter_data):
                 file_path=filter_data.get("file_path"),
                 file_name=filter_data.get("file_name"),
             )
-            action_name = f"Host Check ({mode})"
+            action_name = f"Backup ({mode})"
 
         scope = "Collective" if collective else "Individual"
 
         message = f"Created by WebFusion | {action_name} | {scope}"
 
-        queue_host_task_safe(
+        result = queue_host_task_safe(
             db=db,
             host_id=host_id,
             task_type=task_type,
             filter_dict=filter_dict,
             message=message
         )
+
+        if result in ("created", "refreshed"):
+            queued_count += 1
+        else:
+            skipped_count += 1
+
+    return {
+        "queued_count": queued_count,
+        "skipped_count": skipped_count,
+    }

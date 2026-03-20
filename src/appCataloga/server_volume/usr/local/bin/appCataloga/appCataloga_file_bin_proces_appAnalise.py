@@ -294,6 +294,9 @@ def upsert_site(db_rfm, bin_data):
     site_id = db_rfm.get_site_id(site_data)
 
     if site_id:
+        # Existing sites are identified from the persisted GNSS centroid.
+        # In this path we deliberately avoid reverse geocoding so a new
+        # Nominatim answer cannot degrade the geographic labels already stored.
         db_rfm.update_site(
             site=site_id,
             longitude_raw=gps._longitude,
@@ -429,7 +432,12 @@ def move_file_if_present(file_meta, destination_path):
 
 def build_resolved_files_trash_path():
     """
-    Return the dedicated trash location for source files superseded by .mat output.
+    Return the dedicated quarantine for export-resolved leftovers.
+
+    Files moved here are intentionally outside the normal FILE_TASK_HISTORY
+    garbage-collection path because the canonical artifact may now be a renamed
+    `.mat` stored elsewhere. The garbage collector sweeps this folder directly
+    by filesystem age.
     """
     return (
         f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}/"
@@ -515,7 +523,10 @@ def finalize_task_resolution(
     Apply the final FILE_TASK resolution once retry is no longer an option.
 
     Definitive failures follow the normal trash/history path. Successful runs
-    persist the exported artifact metadata as the server-side result.
+    persist the exported artifact metadata as the server-side result. Any
+    export-only leftovers that no longer participate in lineage are moved into
+    the dedicated `resolved_files` quarantine for filesystem-based garbage
+    cleanup.
     """
     if not file_was_processed and new_path is None:
         try:
@@ -558,6 +569,16 @@ def finalize_task_resolution(
         dt_created=dt_created,
         dt_modified=dt_modified,
     )
+    history_server_path = new_path
+
+    if (
+        not file_was_processed
+        and history_server_path is None
+        and source_file_meta
+    ):
+        # Error finalization should keep a deterministic last-known repository
+        # location even if the move to trash could not be completed.
+        history_server_path = source_file_meta["file_path"]
 
     na_message = tools.compose_message(
         task_type=k.FILE_TASK_PROCESS_TYPE,
@@ -575,7 +596,7 @@ def finalize_task_resolution(
         host_file_path=host_path,
         DT_PROCESSED=processed_at,
         NA_SERVER_FILE_NAME=history_meta["name"],
-        NA_SERVER_FILE_PATH=new_path,
+        NA_SERVER_FILE_PATH=history_server_path,
         NA_EXTENSION=history_meta["extension"],
         VL_FILE_SIZE_KB=history_meta["size_kb"],
         DT_FILE_CREATED=history_meta["dt_created"],
@@ -587,11 +608,11 @@ def finalize_task_resolution(
     db_bp.host_task_statistics_create(host_id=host_id)
     return {
         "status": status,
-        "new_path": new_path,
+        "new_path": history_server_path,
         "history_meta": history_meta,
         "final_file": (
-            os.path.join(new_path, history_meta["name"])
-            if new_path else None
+            os.path.join(history_server_path, history_meta["name"])
+            if history_server_path else None
         ),
     }
 

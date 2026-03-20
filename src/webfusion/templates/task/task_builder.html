@@ -13,6 +13,19 @@
 {% block extra_css %}
 
 <style>
+    html,
+    body {
+        overflow-y: auto !important;
+    }
+
+    body .layout.layout-top.fixed-header {
+        overflow: visible !important;
+    }
+
+    body .main-content {
+        overflow: visible !important;
+    }
+
     .card {
         box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
     }
@@ -39,9 +52,7 @@
         height: 38px;
         padding: 8px 12px;
         box-sizing: border-box;
-        border-radius: 6px;
-        border: 1px solid #cbd5e1;
-        background: #fff;
+        border-radius: 8px;
     }
 
     .section-title {
@@ -82,9 +93,9 @@
         align-items: center;
         min-height: 38px;
         padding: 0 12px;
+        border-radius: 8px;
         border: 1px solid #cbd5e1;
-        border-radius: 6px;
-        background: #fff;
+        background: #ffffff;
     }
 
     .online-filter label {
@@ -103,6 +114,213 @@
         max-width: 980px;
     }
 
+    .filter-base-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 18px 20px;
+        max-width: 980px;
+        align-items: end;
+    }
+
+    .filter-mode-shell {
+        margin-top: 18px;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        background: #f8fafc;
+        padding: 18px;
+        min-height: 138px;
+    }
+
+    .filter-mode-title {
+        margin: 0 0 6px;
+        font-size: 14px;
+        font-weight: 700;
+        color: #0f172a;
+    }
+
+    .filter-mode-note {
+        margin: 0 0 16px;
+        font-size: 12px;
+        color: #64748b;
+        line-height: 1.4;
+    }
+
+    .filter-mode-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 18px 20px;
+        align-items: end;
+    }
+
+    .task-builder-field-full {
+        grid-column: 1 / -1;
+    }
+
+    .task-builder-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .collective-host-search {
+        width: 100%;
+        height: 38px;
+        padding: 8px 12px;
+        box-sizing: border-box;
+        border-radius: 8px;
+    }
+
+    .collective-host-picker {
+        height: 220px;
+        max-height: 220px;
+        padding: 8px 10px;
+    }
+
+    .field-help {
+        font-size: 12px;
+        color: #64748b;
+        line-height: 1.4;
+    }
+
+    .task-builder-actions {
+        margin-top: 28px;
+    }
+
+    .execution-config-shell {
+        margin-top: 20px;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        background: #f8fafc;
+        padding: 18px;
+    }
+
+    .execution-panel[hidden] {
+        display: none !important;
+    }
+
+    .execution-panel-title {
+        margin: 0 0 6px;
+        font-size: 14px;
+        font-weight: 700;
+        color: #0f172a;
+    }
+
+    .execution-panel-note {
+        margin: 0 0 16px;
+        font-size: 12px;
+        color: #64748b;
+        line-height: 1.4;
+    }
+
+    .execution-config-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 18px 20px;
+        align-items: end;
+    }
+
+    .btn-primary-action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 42px;
+        padding: 0 18px;
+        border-radius: 8px;
+        border: 1px solid #1f4f8b;
+        background: #1f4f8b;
+        color: #ffffff;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background-color 0.2s ease, border-color 0.2s ease;
+    }
+
+    .btn-primary-action:hover {
+        background: #163a66;
+        border-color: #163a66;
+    }
+
+    .btn-secondary-action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 42px;
+        padding: 0 18px;
+        border-radius: 8px;
+        border: 1px solid #cbd5e1;
+        background: #ffffff;
+        color: #0f172a;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background-color 0.2s ease, border-color 0.2s ease;
+    }
+
+    .btn-secondary-action:hover {
+        background: #f8fafc;
+        border-color: #94a3b8;
+    }
+
+    .confirm-dialog {
+        width: min(560px, calc(100vw - 32px));
+        border: none;
+        border-radius: 14px;
+        padding: 0;
+        box-shadow: 0 20px 50px rgba(15, 23, 42, 0.24);
+    }
+
+    .confirm-dialog::backdrop {
+        background: rgba(15, 23, 42, 0.42);
+    }
+
+    .confirm-dialog-card {
+        padding: 22px;
+        background: #ffffff;
+    }
+
+    .confirm-dialog-title {
+        margin: 0 0 8px;
+        font-size: 18px;
+        font-weight: 700;
+        color: #0f172a;
+    }
+
+    .confirm-dialog-note {
+        margin: 0 0 18px;
+        font-size: 13px;
+        color: #475569;
+        line-height: 1.5;
+    }
+
+    .confirm-dialog-summary {
+        display: grid;
+        gap: 10px;
+        margin-bottom: 20px;
+    }
+
+    .confirm-dialog-row {
+        display: grid;
+        grid-template-columns: minmax(140px, 180px) 1fr;
+        gap: 12px;
+        align-items: start;
+        font-size: 13px;
+    }
+
+    .confirm-dialog-label {
+        font-weight: 700;
+        color: #334155;
+    }
+
+    .confirm-dialog-value {
+        color: #0f172a;
+        word-break: break-word;
+    }
+
+    .confirm-dialog-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
     /* Checkbox reset */
 
     /* Force native checkbox rendering */
@@ -118,6 +336,10 @@
         height: 16px !important;
         margin: 0 !important;
     }
+
+    [hidden] {
+        display: none !important;
+    }
 </style>
 
 {% endblock %}
@@ -128,7 +350,7 @@
 
 <div class="card background-neutral-0 padding-l border-radius-m">
 
-    <form method="post">
+    <form method="post" id="task-builder-form">
 
         <!-- ===================== TOP LINE ===================== -->
 
@@ -139,8 +361,9 @@
                 <label>Tipo da Task</label>
                 <div class="select-shell">
                     <select name="task_type" class="form-control" required>
-                        <option value="1">Host Check</option>
-                        <option value="3">Update Statistics</option>
+                        <option value="1" {% if selected_task_type == "1" %}selected{% endif %}>Backup</option>
+                        <option value="3" {% if selected_task_type == "3" %}selected{% endif %}>Update Statistics</option>
+                        <option value="4" {% if selected_task_type == "4" %}selected{% endif %}>Check Connection</option>
                     </select>
                 </div>
             </div>
@@ -150,51 +373,13 @@
                 <label>Execução</label>
                 <div class="select-shell">
                     <select name="execution_type" class="form-control" required>
-                        <option value="individual">Individual</option>
-                        <option value="collective">Coletiva</option>
+                        <option value="individual" {% if selected_execution_type == "individual" %}selected{% endif %}>Individual</option>
+                        <option value="collective" {% if selected_execution_type == "collective" %}selected{% endif %}>Coletiva</option>
                     </select>
                 </div>
             </div>
 
             <!-- Station Type (Collective only) -->
-            <div class="task-builder-field" style="display:none;" id="station-type-wrapper">
-                <label>Tipo de Estação</label>
-
-                <div class="select-shell">
-                    <select name="host_filter" class="form-control">
-                        <option value="ALL">Todas</option>
-
-                        {% for p in host_prefixes %}
-                        <option value="{{ p.PREFIX }}">
-                            {{ p.PREFIX }} ({{ p.HOSTS }})
-                        </option>
-                        {% endfor %}
-                    </select>
-                </div>
-            </div>
-
-            <!-- Host Selector -->
-            <div class="task-builder-field" id="host-wrapper">
-
-                <label>Host</label>
-
-                <div class="select-shell">
-                    <select name="host_id" class="form-control">
-                        {% for h in hosts %}
-                        <option
-                            value="{{ h.ID_HOST }}"
-                            data-host-name="{{ h.NA_HOST_NAME }}"
-                            {% if h.ID_HOST|string == selected_host %}selected{% endif %}
-                        >
-                            {{ h.NA_HOST_NAME }}
-                        </option>
-                        {% endfor %}
-                    </select>
-                </div>
-
-            </div>
-
-
             <!-- ONLINE filter -->
             <div class="task-builder-field" id="online-wrapper">
 
@@ -217,6 +402,84 @@
 
         </div>
 
+        <div class="execution-config-shell">
+            <div class="execution-panel" id="individual-config-panel" {% if selected_execution_type == "collective" %}hidden{% endif %}>
+                <h2 class="execution-panel-title">Escopo Individual</h2>
+                <p class="execution-panel-note">
+                    Selecione uma estação específica para receber a task.
+                </p>
+                <div class="execution-config-grid">
+                    <div class="task-builder-field" id="host-wrapper" {% if selected_execution_type == "collective" %}hidden{% endif %}>
+                        <label>Host</label>
+                        <div class="select-shell">
+                            <select name="host_id" class="form-control">
+                                {% for h in hosts %}
+                                <option
+                                    value="{{ h.ID_HOST }}"
+                                    data-host-name="{{ h.NA_HOST_NAME }}"
+                                    {% if h.ID_HOST|string == selected_host %}selected{% endif %}
+                                >
+                                    {{ h.NA_HOST_NAME }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="execution-panel" id="collective-config-panel" {% if selected_execution_type != "collective" %}hidden{% endif %}>
+                <h2 class="execution-panel-title">Escopo Coletivo</h2>
+                <p class="execution-panel-note">
+                    Primeiro filtre o grupo de estações e, se quiser, refine a seleção manualmente abaixo.
+                </p>
+                <div class="execution-config-grid">
+                    <div class="task-builder-field" id="station-type-wrapper" {% if selected_execution_type != "collective" %}hidden{% endif %}>
+                        <label>Tipo de Estação</label>
+                        <div class="select-shell">
+                            <select name="host_filter" class="form-control">
+                                <option value="ALL" {% if selected_host_filter == "ALL" %}selected{% endif %}>Todas</option>
+
+                                {% for p in host_prefixes %}
+                                <option value="{{ p.PREFIX }}" {% if selected_host_filter == p.PREFIX %}selected{% endif %}>
+                                    {{ p.PREFIX }} ({{ p.HOSTS }})
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+
+                    <div
+                        class="task-builder-field task-builder-field-full"
+                        id="collective-hosts-wrapper"
+                        {% if selected_execution_type != "collective" %}hidden{% endif %}
+                    >
+                        <label>Hosts Específicos</label>
+                        <div class="task-builder-stack">
+                            <input
+                                type="text"
+                                name="collective_host_search"
+                                id="collective-host-search"
+                                class="collective-host-search"
+                                placeholder="Filtrar hosts da execução coletiva"
+                                value="{{ selected_collective_host_search }}"
+                            >
+                            <select
+                                name="collective_host_ids"
+                                id="collective-hosts-select"
+                                class="form-control collective-host-picker"
+                                multiple
+                            ></select>
+                            <div class="field-help">
+                                Opcional. Se nada for selecionado, a task será criada para todos os hosts do filtro acima.
+                                Use Ctrl/Cmd para selecionar múltiplos hosts.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <hr class="margin-y-l">
 
         <!-- ===================== FILTER SECTION ===================== -->
@@ -225,76 +488,145 @@
 
             <div class="section-title">Filtro</div>
 
-            <div class="filter-grid">
+            <div class="filter-base-grid">
 
                 <div class="task-builder-field">
                     <label>Mode</label>
                     <div class="select-shell">
                         <select name="mode" class="form-control">
-                            <option value="NONE">NONE</option>
-                            <option value="ALL">ALL</option>
-                            <option value="REDISCOVERY">REDISCOVERY</option>
-                            <option value="RANGE">RANGE</option>
-                            <option value="LAST_N">LAST_N</option>
-                            <option value="FILE">FILE</option>
+                            <option value="NONE" {% if selected_mode == "NONE" %}selected{% endif %}>NONE</option>
+                            <option value="ALL" {% if selected_mode == "ALL" %}selected{% endif %}>ALL</option>
+                            <option value="REDISCOVERY" {% if selected_mode == "REDISCOVERY" %}selected{% endif %}>REDISCOVERY</option>
+                            <option value="RANGE" {% if selected_mode == "RANGE" %}selected{% endif %}>RANGE</option>
+                            <option value="LAST_N" {% if selected_mode == "LAST_N" %}selected{% endif %}>LAST_N</option>
+                            <option value="FILE" {% if selected_mode == "FILE" %}selected{% endif %}>FILE</option>
                         </select>
                     </div>
                 </div>
 
-                <div class="task-builder-field" id="start-date-wrapper">
-                    <label>Start Date</label>
-                    <input type="date" name="start_date" class="form-control">
-                </div>
-
-                <div class="task-builder-field" id="end-date-wrapper">
-                    <label>End Date</label>
-                    <input type="date" name="end_date" class="form-control">
-                </div>
-
-                <div class="task-builder-field" id="last-n-wrapper">
-                    <label>Last N Files</label>
-                    <input type="number" name="last_n_files" class="form-control">
-                </div>
-
                 <div class="task-builder-field">
                     <label>Extension</label>
-                    <input type="text" name="extension" class="form-control">
+                    <input type="text" name="extension" class="form-control" value="{{ selected_extension }}">
                 </div>
 
                 <div class="task-builder-field">
                     <label>File Path</label>
-                    <input type="text" name="file_path" value="/mnt/internal/data" class="form-control">
-                </div>
-
-                <div class="task-builder-field" id="file-name-wrapper">
-                    <label>File Name</label>
-                    <input type="text" name="file_name" class="form-control">
+                    <input type="text" name="file_path" value="{{ selected_file_path }}" class="form-control">
                 </div>
 
             </div>
 
+            <div class="filter-mode-shell" id="filter-mode-shell">
+                <h2 class="filter-mode-title" id="filter-mode-title">Parâmetros do modo</h2>
+                <p class="filter-mode-note" id="filter-mode-note">
+                    Este modo não exige parâmetros adicionais.
+                </p>
+
+                <div class="filter-mode-grid">
+                    <div class="task-builder-field" id="start-date-wrapper" {% if selected_mode != "RANGE" %}hidden{% endif %}>
+                        <label>Start Date</label>
+                        <input type="date" name="start_date" class="form-control" value="{{ selected_start_date }}">
+                    </div>
+
+                    <div class="task-builder-field" id="end-date-wrapper" {% if selected_mode != "RANGE" %}hidden{% endif %}>
+                        <label>End Date</label>
+                        <input type="date" name="end_date" class="form-control" value="{{ selected_end_date }}">
+                    </div>
+
+                    <div class="task-builder-field" id="last-n-wrapper" {% if selected_mode != "LAST_N" %}hidden{% endif %}>
+                        <label>Last N Files</label>
+                        <input type="number" name="last_n_files" class="form-control" value="{{ selected_last_n_files }}">
+                    </div>
+
+                    <div class="task-builder-field" id="file-name-wrapper" {% if selected_mode != "FILE" %}hidden{% endif %}>
+                        <label>File Name</label>
+                        <input type="text" name="file_name" class="form-control" value="{{ selected_file_name }}">
+                    </div>
+                </div>
+            </div>
+
         </div>
 
-        <div class="margin-top-l">
-            <button type="submit" class="btn-search">Criar Task</button>
+        <div class="task-builder-actions">
+            <button type="submit" class="btn-primary-action" id="task-submit-button">Criar Task</button>
         </div>
 
     </form>
+
+    <dialog id="task-confirm-dialog" class="confirm-dialog">
+        <div class="confirm-dialog-card">
+            <h2 class="confirm-dialog-title">Confirmar criação da task</h2>
+            <p class="confirm-dialog-note">
+                Revise o resumo abaixo antes de enviar. Esta ação vai criar a task com os parâmetros atualmente preenchidos.
+            </p>
+            <div class="confirm-dialog-summary">
+                <div class="confirm-dialog-row">
+                    <div class="confirm-dialog-label">Tipo da task</div>
+                    <div class="confirm-dialog-value" id="task-confirm-type">-</div>
+                </div>
+                <div class="confirm-dialog-row">
+                    <div class="confirm-dialog-label">Execução</div>
+                    <div class="confirm-dialog-value" id="task-confirm-execution">-</div>
+                </div>
+                <div class="confirm-dialog-row">
+                    <div class="confirm-dialog-label">Escopo</div>
+                    <div class="confirm-dialog-value" id="task-confirm-scope">-</div>
+                </div>
+                <div class="confirm-dialog-row">
+                    <div class="confirm-dialog-label">Filtro</div>
+                    <div class="confirm-dialog-value" id="task-confirm-filter">-</div>
+                </div>
+            </div>
+            <div class="confirm-dialog-actions">
+                <button type="button" class="btn-secondary-action" id="task-confirm-cancel">Cancelar</button>
+                <button type="button" class="btn-primary-action" id="task-confirm-submit">Confirmar criação</button>
+            </div>
+        </div>
+    </dialog>
 
 </div>
 
 <script>
     function toggleOnlineOnlyFilter(checkbox) {
         const url = new URL(window.location.href);
-        const hostSelect = document.querySelector("[name='host_id']");
+        const form = checkbox.closest("form");
+        url.search = "";
 
-        if (hostSelect && hostSelect.value) {
-            url.searchParams.set("host_id", hostSelect.value);
-        } else {
-            url.searchParams.delete("host_id");
+        if (!form) {
+            url.searchParams.set("online_only", checkbox.checked ? "1" : "0");
+            window.location.href = url.toString();
+            return;
         }
 
-        url.searchParams.set("online_only", checkbox.checked ? "1" : "0");
+        const formData = new FormData(form);
+        formData.set("online_only", checkbox.checked ? "1" : "0");
+
+        for (const [key, value] of formData.entries()) {
+            if (key === "collective_host_ids") {
+                continue;
+            }
+
+            if (value === null || value === undefined) {
+                continue;
+            }
+
+            const text = String(value).trim();
+            if (!text) {
+                continue;
+            }
+
+            url.searchParams.append(key, text);
+        }
+
+        if (window.taskBuilderSelectedCollectiveHostIds) {
+            window.taskBuilderSelectedCollectiveHostIds.forEach((hostId) => {
+                const text = String(hostId).trim();
+                if (text) {
+                    url.searchParams.append("collective_host_ids", text);
+                }
+            });
+        }
+
         window.location.href = url.toString();
     }
 
@@ -306,11 +638,28 @@
         const hostFilterSelect = document.querySelector("[name='host_filter']");
         const modeSelect = document.querySelector("[name='mode']");
         const filePathInput = document.querySelector("[name='file_path']");
+        const extensionInput = document.querySelector("[name='extension']");
+        const collectiveHostsSelect = document.getElementById("collective-hosts-select");
+        const collectiveHostsWrapper = document.getElementById("collective-hosts-wrapper");
+        const collectiveHostSearch = document.getElementById("collective-host-search");
+        const submitButton = document.getElementById("task-submit-button");
+        const taskBuilderForm = document.getElementById("task-builder-form");
+        const confirmationDialog = document.getElementById("task-confirm-dialog");
+        const confirmationCancelButton = document.getElementById("task-confirm-cancel");
+        const confirmationSubmitButton = document.getElementById("task-confirm-submit");
+        const confirmationType = document.getElementById("task-confirm-type");
+        const confirmationExecution = document.getElementById("task-confirm-execution");
+        const confirmationScope = document.getElementById("task-confirm-scope");
+        const confirmationFilter = document.getElementById("task-confirm-filter");
 
         const filterSection = document.getElementById("filter-section");
+        const individualConfigPanel = document.getElementById("individual-config-panel");
+        const collectiveConfigPanel = document.getElementById("collective-config-panel");
         const hostWrapper = document.getElementById("host-wrapper");
         const stationTypeWrapper = document.getElementById("station-type-wrapper");
 
+        const filterModeTitle = document.getElementById("filter-mode-title");
+        const filterModeNote = document.getElementById("filter-mode-note");
         const startWrapper = document.getElementById("start-date-wrapper");
         const endWrapper = document.getElementById("end-date-wrapper");
         const lastNWrapper = document.getElementById("last-n-wrapper");
@@ -319,10 +668,111 @@
         const fileOption = modeSelect.querySelector("option[value='FILE']");
         const defaultFilePath = "/mnt/internal/data";
         const cwsmFilePath = "C:/CelPlan/CellWireless RU/Spectrum/Completed";
+        const defaultExtension = ".bin";
+        const cwsmExtension = ".zip";
+        const selectedCollectiveHostIds = new Set({{ selected_collective_host_ids|tojson }});
+        window.taskBuilderSelectedCollectiveHostIds = selectedCollectiveHostIds;
+        const filterModeMeta = {
+            NONE: {
+                title: "Sem parâmetros adicionais",
+                note: "Este modo não exige filtros complementares."
+            },
+            ALL: {
+                title: "Cobertura completa",
+                note: "A task será criada sobre o conjunto completo dentro do caminho e extensão informados."
+            },
+            REDISCOVERY: {
+                title: "Redescoberta",
+                note: "Reexecuta a descoberta sem exigir parâmetros extras além dos campos-base."
+            },
+            RANGE: {
+                title: "Janela por período",
+                note: "Defina a data inicial e a data final para limitar os arquivos considerados."
+            },
+            LAST_N: {
+                title: "Recorte pelos últimos arquivos",
+                note: "Informe quantos arquivos mais recentes devem entrar na task."
+            },
+            FILE: {
+                title: "Arquivo específico",
+                note: "Informe o nome exato do arquivo dentro do caminho base selecionado."
+            }
+        };
+        const hostCatalog = [
+            {% for h in hosts %}
+            {
+                id: "{{ h.ID_HOST }}",
+                name: {{ h.NA_HOST_NAME|tojson }}
+            }{% if not loop.last %},{% endif %}
+            {% endfor %}
+        ];
+        let submitConfirmed = false;
+
+        function extractHostPrefix(hostName) {
+            const match = String(hostName || "").trim().match(/^[A-Za-z]+/);
+            return match ? match[0].toUpperCase() : "";
+        }
+
+        function syncCollectiveSelectionState() {
+            if (!collectiveHostsSelect) {
+                return;
+            }
+
+            const visibleIds = Array.from(collectiveHostsSelect.options).map((option) => option.value);
+            visibleIds.forEach((id) => selectedCollectiveHostIds.delete(id));
+
+            Array.from(collectiveHostsSelect.selectedOptions).forEach((option) => {
+                selectedCollectiveHostIds.add(option.value);
+            });
+        }
+
+        function renderCollectiveHosts() {
+
+            if (!collectiveHostsSelect) {
+                return;
+            }
+
+            syncCollectiveSelectionState();
+
+            const selectedPrefix = hostFilterSelect ? hostFilterSelect.value : "ALL";
+            const searchTerm = String(collectiveHostSearch ? collectiveHostSearch.value : "").trim().toLowerCase();
+
+            const filteredHosts = hostCatalog.filter((host) => {
+                if (selectedPrefix !== "ALL" && extractHostPrefix(host.name) !== selectedPrefix.toUpperCase()) {
+                    return false;
+                }
+
+                if (searchTerm && !host.name.toLowerCase().includes(searchTerm)) {
+                    return false;
+                }
+
+                return true;
+            });
+
+            collectiveHostsSelect.innerHTML = "";
+
+            filteredHosts.forEach((host) => {
+                const option = document.createElement("option");
+                option.value = host.id;
+                option.textContent = host.name;
+                option.selected = selectedCollectiveHostIds.has(host.id);
+                collectiveHostsSelect.appendChild(option);
+            });
+        }
 
         function currentSelectionLooksLikeCwsm() {
 
             if (executionType.value === "collective") {
+                const selectedHosts = hostCatalog.filter((host) =>
+                    selectedCollectiveHostIds.has(host.id)
+                );
+
+                if (selectedHosts.length > 0) {
+                    return selectedHosts.every((host) =>
+                        String(host.name || "").trim().toUpperCase().startsWith("CWSM")
+                    );
+                }
+
                 return hostFilterSelect && hostFilterSelect.value === "CWSM";
             }
 
@@ -353,9 +803,169 @@
             filePathInput.value = isCwsm ? cwsmFilePath : defaultFilePath;
         }
 
+        function syncSuggestedExtension() {
+
+            if (!extensionInput) {
+                return;
+            }
+
+            const isCwsm = currentSelectionLooksLikeCwsm();
+            const currentValue = (extensionInput.value || "").trim().toLowerCase();
+            const followsDefaultMask = (
+                currentValue === "" ||
+                currentValue === defaultExtension ||
+                currentValue === cwsmExtension
+            );
+
+            if (!followsDefaultMask) {
+                return;
+            }
+
+            extensionInput.value = isCwsm ? cwsmExtension : defaultExtension;
+        }
+
+        function updateSubmitButtonLabel() {
+            if (!submitButton) {
+                return;
+            }
+
+            submitButton.textContent = executionType.value === "collective"
+                ? "Criar Tasks"
+                : "Criar Task";
+        }
+
+        function buildFilterSummary() {
+            const taskTypeLabel = taskType.selectedOptions[0] ? taskType.selectedOptions[0].textContent.trim() : "-";
+
+            if (taskTypeLabel === "Update Statistics" || taskTypeLabel === "Check Connection") {
+                return "Sem filtro de arquivos para este tipo de task.";
+            }
+
+            const parts = [];
+            const modeLabel = modeSelect.selectedOptions[0] ? modeSelect.selectedOptions[0].textContent.trim() : "NONE";
+            parts.push("Modo " + modeLabel);
+
+            const extensionValue = String(extensionInput ? extensionInput.value : "").trim();
+            if (extensionValue) {
+                parts.push("Extensão " + extensionValue);
+            }
+
+            const filePathValue = String(filePathInput ? filePathInput.value : "").trim();
+            if (filePathValue) {
+                parts.push("Caminho " + filePathValue);
+            }
+
+            if (modeSelect.value === "RANGE") {
+                const startDate = taskBuilderForm.elements.start_date ? String(taskBuilderForm.elements.start_date.value || "").trim() : "";
+                const endDate = taskBuilderForm.elements.end_date ? String(taskBuilderForm.elements.end_date.value || "").trim() : "";
+                if (startDate || endDate) {
+                    parts.push("Período " + (startDate || "...") + " até " + (endDate || "..."));
+                }
+            } else if (modeSelect.value === "LAST_N") {
+                const lastN = taskBuilderForm.elements.last_n_files ? String(taskBuilderForm.elements.last_n_files.value || "").trim() : "";
+                if (lastN) {
+                    parts.push("Últimos " + lastN + " arquivo(s)");
+                }
+            } else if (modeSelect.value === "FILE") {
+                const fileName = taskBuilderForm.elements.file_name ? String(taskBuilderForm.elements.file_name.value || "").trim() : "";
+                if (fileName) {
+                    parts.push("Arquivo " + fileName);
+                }
+            }
+
+            return parts.join(" | ");
+        }
+
+        function buildScopeSummary() {
+            if (executionType.value === "collective") {
+                const filterLabel = hostFilterSelect && hostFilterSelect.selectedOptions[0]
+                    ? hostFilterSelect.selectedOptions[0].textContent.trim()
+                    : "Todas";
+                const selectedCount = selectedCollectiveHostIds.size;
+
+                if (selectedCount > 0) {
+                    return "Filtro " + filterLabel + " com " + selectedCount + " host(s) selecionado(s) manualmente.";
+                }
+
+                return "Filtro " + filterLabel + " sem seleção manual de hosts.";
+            }
+
+            const selectedHost = hostSelect && hostSelect.selectedOptions[0]
+                ? hostSelect.selectedOptions[0].textContent.trim()
+                : "-";
+            return selectedHost;
+        }
+
+        function buildConfirmationSummaryText() {
+            const taskTypeLabel = taskType.selectedOptions[0] ? taskType.selectedOptions[0].textContent.trim() : "-";
+            const executionLabel = executionType.selectedOptions[0] ? executionType.selectedOptions[0].textContent.trim() : "-";
+            const scopeLabel = buildScopeSummary();
+            const filterLabel = buildFilterSummary();
+
+            return {
+                taskTypeLabel,
+                executionLabel,
+                scopeLabel,
+                filterLabel,
+                confirmMessage:
+                    "Tipo da task: " + taskTypeLabel + "\n" +
+                    "Execução: " + executionLabel + "\n" +
+                    "Escopo: " + scopeLabel + "\n" +
+                    "Filtro: " + filterLabel + "\n\n" +
+                    "Deseja criar esta task?"
+            };
+        }
+
+        function openTaskConfirmation() {
+            const summary = buildConfirmationSummaryText();
+
+            if (confirmationType) {
+                confirmationType.textContent = summary.taskTypeLabel;
+            }
+
+            if (confirmationExecution) {
+                confirmationExecution.textContent = summary.executionLabel;
+            }
+
+            if (confirmationScope) {
+                confirmationScope.textContent = summary.scopeLabel;
+            }
+
+            if (confirmationFilter) {
+                confirmationFilter.textContent = summary.filterLabel;
+            }
+
+            if (confirmationDialog && typeof confirmationDialog.showModal === "function") {
+                confirmationDialog.showModal();
+                return;
+            }
+
+            if (window.confirm(summary.confirmMessage)) {
+                submitConfirmed = true;
+                if (taskBuilderForm.requestSubmit) {
+                    taskBuilderForm.requestSubmit();
+                } else {
+                    taskBuilderForm.submit();
+                }
+            }
+        }
+
+        function setFieldVisibility(wrapper, visible) {
+            if (!wrapper) {
+                return;
+            }
+
+            wrapper.hidden = !visible;
+
+            const controls = wrapper.querySelectorAll("input, select, textarea");
+            controls.forEach((control) => {
+                control.disabled = !visible;
+            });
+        }
+
         function toggleTaskType() {
 
-            if (taskType.value === "3") {
+            if (taskType.value === "3" || taskType.value === "4") {
                 filterSection.style.display = "none";
             } else {
                 filterSection.style.display = "block";
@@ -367,8 +977,17 @@
 
             const collective = executionType.value === "collective";
 
-            hostWrapper.style.display = collective ? "none" : "block";
-            stationTypeWrapper.style.display = collective ? "block" : "none";
+            if (individualConfigPanel) {
+                individualConfigPanel.hidden = collective;
+            }
+
+            if (collectiveConfigPanel) {
+                collectiveConfigPanel.hidden = !collective;
+            }
+
+            hostWrapper.hidden = collective;
+            stationTypeWrapper.hidden = !collective;
+            collectiveHostsWrapper.hidden = !collective;
 
             if (collective) {
 
@@ -385,29 +1004,50 @@
             }
 
             toggleModeFields();
+            renderCollectiveHosts();
+            updateSubmitButtonLabel();
             syncSuggestedFilePath();
+            syncSuggestedExtension();
         }
 
         function toggleModeFields() {
 
-            startWrapper.style.display = "none";
-            endWrapper.style.display = "none";
-            lastNWrapper.style.display = "none";
-            fileNameWrapper.style.display = "none";
+            const modeMeta = filterModeMeta[modeSelect.value] || filterModeMeta.NONE;
+
+            if (filterModeTitle) {
+                filterModeTitle.textContent = modeMeta.title;
+            }
+
+            if (filterModeNote) {
+                filterModeNote.textContent = modeMeta.note;
+            }
+
+            if (taskType.value === "3" || taskType.value === "4") {
+                setFieldVisibility(startWrapper, false);
+                setFieldVisibility(endWrapper, false);
+                setFieldVisibility(lastNWrapper, false);
+                setFieldVisibility(fileNameWrapper, false);
+                return;
+            }
+
+            setFieldVisibility(startWrapper, false);
+            setFieldVisibility(endWrapper, false);
+            setFieldVisibility(lastNWrapper, false);
+            setFieldVisibility(fileNameWrapper, false);
 
             switch (modeSelect.value) {
 
                 case "RANGE":
-                    startWrapper.style.display = "block";
-                    endWrapper.style.display = "block";
+                    setFieldVisibility(startWrapper, true);
+                    setFieldVisibility(endWrapper, true);
                     break;
 
                 case "LAST_N":
-                    lastNWrapper.style.display = "block";
+                    setFieldVisibility(lastNWrapper, true);
                     break;
 
                 case "FILE":
-                    fileNameWrapper.style.display = "block";
+                    setFieldVisibility(fileNameWrapper, true);
                     break;
             }
 
@@ -417,16 +1057,76 @@
         executionType.addEventListener("change", toggleExecution);
         modeSelect.addEventListener("change", toggleModeFields);
         if (hostSelect) {
-            hostSelect.addEventListener("change", syncSuggestedFilePath);
+            hostSelect.addEventListener("change", function () {
+                syncSuggestedFilePath();
+                syncSuggestedExtension();
+            });
         }
         if (hostFilterSelect) {
-            hostFilterSelect.addEventListener("change", syncSuggestedFilePath);
+            hostFilterSelect.addEventListener("change", function () {
+                renderCollectiveHosts();
+                syncSuggestedFilePath();
+                syncSuggestedExtension();
+            });
+        }
+        if (collectiveHostSearch) {
+            collectiveHostSearch.addEventListener("input", renderCollectiveHosts);
+        }
+        if (collectiveHostsSelect) {
+            collectiveHostsSelect.addEventListener("change", function () {
+                syncCollectiveSelectionState();
+                syncSuggestedFilePath();
+                syncSuggestedExtension();
+            });
+        }
+
+        if (taskBuilderForm) {
+            taskBuilderForm.addEventListener("submit", function (event) {
+                if (submitConfirmed) {
+                    submitConfirmed = false;
+                    return;
+                }
+
+                event.preventDefault();
+                openTaskConfirmation();
+            });
+        }
+
+        if (confirmationCancelButton && confirmationDialog) {
+            confirmationCancelButton.addEventListener("click", function () {
+                confirmationDialog.close();
+            });
+        }
+
+        if (confirmationSubmitButton) {
+            confirmationSubmitButton.addEventListener("click", function () {
+                if (confirmationDialog) {
+                    confirmationDialog.close();
+                }
+
+                submitConfirmed = true;
+
+                if (taskBuilderForm) {
+                    if (window.showPageLoadingOverlay) {
+                        window.showPageLoadingOverlay("Criando task...");
+                    }
+
+                    if (taskBuilderForm.requestSubmit) {
+                        taskBuilderForm.requestSubmit();
+                    } else {
+                        taskBuilderForm.submit();
+                    }
+                }
+            });
         }
 
         toggleTaskType();
         toggleExecution();
         toggleModeFields();
+        renderCollectiveHosts();
+        updateSubmitButtonLabel();
         syncSuggestedFilePath();
+        syncSuggestedExtension();
 
     });
 </script>

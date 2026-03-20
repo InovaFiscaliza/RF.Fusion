@@ -130,17 +130,9 @@ class dbHandlerRFM(DBHandlerBase):
             # --------------------------------------------------
             # Basic string cleanup
             # --------------------------------------------------
-            for key in ["state", "county", "district"]:
+            for key in ["state", "county", "district", "site_name"]:
                 if data.get(key):
                     data[key] = data[key].strip()
-
-            # --------------------------------------------------
-            # Remove district if identical to county
-            # OSM often duplicates municipality as suburb
-            # --------------------------------------------------
-            if data.get("district") and data.get("county"):
-                if data["district"].strip().lower() == data["county"].strip().lower():
-                    data["district"] = None
 
             # --------------------------------------------------
             # Infer state via county if missing (DB authoritative)
@@ -205,6 +197,25 @@ class dbHandlerRFM(DBHandlerBase):
         return value
 
 
+    def _resolve_site_name(self, data: dict) -> Optional[str]:
+        """
+        Resolve the best human-readable label for a site.
+
+        Priority:
+        - explicit site name, when provided by future enrichments
+        - district, when reverse geocoding resolved a finer locality
+        - county, as the last safe geographic fallback
+        """
+        for key in ["site_name", "district", "county"]:
+            value = data.get(key)
+            if isinstance(value, str):
+                value = value.strip()
+            if value:
+                return value
+
+        return None
+
+
 
     def insert_site(self, data: dict) -> int:
         """
@@ -241,6 +252,7 @@ class dbHandlerRFM(DBHandlerBase):
                 "FK_STATE": db_state_id,
                 "FK_COUNTY": db_county_id,
                 "FK_DISTRICT": db_district_id,
+                "NA_SITE": self._resolve_site_name(data),
             }
 
             geom_expr = (
@@ -306,6 +318,11 @@ class dbHandlerRFM(DBHandlerBase):
         The site location is updated using weighted averages based on previous
         measurements stored in the database and new raw GNSS samples provided
         by the current acquisition.
+
+        Only the numeric GNSS aggregate is updated here. Geographic labels
+        already resolved for the site (state/county/district/name) are kept
+        untouched so a later processing pass cannot degrade the existing
+        mapping with a new reverse-geocoding answer.
 
         Updates are skipped when the configured maximum number of GNSS
         measurements is reached.
@@ -634,10 +651,18 @@ class dbHandlerRFM(DBHandlerBase):
                         break
 
                 # -------------------------------------------------------
-                # Insert new district only if not found.
-                # This keeps district growth controlled per county.
+                # A district equal to the county is not discarded here.
+                # Some curated legacy fixes intentionally use the municipal
+                # seat name as the district label, so the safe behavior is to
+                # try matching the catalog first and only leave FK_DISTRICT
+                # null when no deterministic district exists.
+                #
+                # Reverse geocoding is helpful, but not authoritative enough
+                # to silently expand the district dimension unless that policy
+                # is explicitly enabled. The conservative default is to keep
+                # FK_DISTRICT null when no deterministic match exists.
                 # -------------------------------------------------------
-                if not db_district_id:
+                if not db_district_id and k.SITE_DISTRICT_AUTO_CREATE:
                     db_district_id = self._insert_row(
                         table="DIM_SITE_DISTRICT",
                         data={

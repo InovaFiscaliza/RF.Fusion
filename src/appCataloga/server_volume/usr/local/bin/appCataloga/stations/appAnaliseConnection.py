@@ -7,7 +7,7 @@ import time
 
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from collections.abc import Iterable
 
 from shared import errors
@@ -64,6 +64,34 @@ class AppAnaliseConnection:
     )
     RFEYE_CANONICAL_RE = re.compile(r"(rfeye\d{6})", re.IGNORECASE)
     GPS_SENTINEL_VALUE = -1
+
+    def __init__(self) -> None:
+        """
+        Keep the latest protocol artifacts available for post-failure inspection.
+
+        `process()` still raises on semantic or protocol errors, but callers can
+        inspect these attributes afterwards to understand what appAnalise
+        returned before the failure was classified.
+        """
+        self.bin_data: Dict[str, Any] = {}
+        self.last_requested_file: Optional[str] = None
+        self.last_response_text: Optional[str] = None
+        self.last_payload: Optional[Dict[str, Any]] = None
+        self.last_answer: Optional[Dict[str, Any]] = None
+        self.last_file_info: Optional[Dict[str, Any]] = None
+        self.last_output_meta: Optional[Dict[str, Any]] = None
+
+    def _reset_last_result(self) -> None:
+        """
+        Clear per-request debug state before a new processing attempt.
+        """
+        self.bin_data = {}
+        self.last_requested_file = None
+        self.last_response_text = None
+        self.last_payload = None
+        self.last_answer = None
+        self.last_file_info = None
+        self.last_output_meta = None
 
     def _build_request_payload(self, full_path: str, export: bool) -> Dict:
         """
@@ -175,7 +203,7 @@ class AppAnaliseConnection:
         if (
             lat == self.GPS_SENTINEL_VALUE
             and lon == self.GPS_SENTINEL_VALUE
-            and alt == self.GPS_SENTINEL_VALUE
+            and (alt == self.GPS_SENTINEL_VALUE or alt == 0)
         ):
             raise errors.BinValidationError(
                 "Invalid GPS reading: GNSS unavailable sentinel"
@@ -266,6 +294,7 @@ class AppAnaliseConnection:
                 sock.sendall(request_bytes)
                 raw_response = self._receive_all(sock)
                 response_text = self._safe_decode(raw_response)
+                self.last_response_text = response_text
 
                 return self._extract_json(response_text)
 
@@ -584,6 +613,7 @@ class AppAnaliseConnection:
         spectrums = []
         hostname = None
         gps_obj = None
+        method = None
 
         for spec in spectra_payload:
             metadata = spec.get("MetaData", {})
@@ -607,10 +637,10 @@ class AppAnaliseConnection:
                 gps_obj = SimpleNamespace(
                     longitude=lon,
                     latitude=lat,
-                    altitude=float(gps.get("Altitude", 0)),
+                    altitude=float(gps.get("Altitude", self.GPS_SENTINEL_VALUE)),
                     _longitude=[lon],
                     _latitude=[lat],
-                    _altitude=[None]
+                    _altitude=[self.GPS_SENTINEL_VALUE]
                 )
 
             start_mega = float(metadata["FreqStart"]) / 1e6
@@ -618,6 +648,13 @@ class AppAnaliseConnection:
             ndata = metadata["DataPoints"]
 
             for rf in related:
+                if method is None:
+                    task_name = rf.get("Task") or rf.get("task")
+                    if isinstance(task_name, str) and task_name.strip():
+                        # The effective processing recipe comes from the
+                        # RelatedFiles task that generated the spectrum slice.
+                        method = task_name.strip()
+
                 try:
                     start_time = datetime.strptime(
                         rf.get("BeginTime"),
@@ -633,11 +670,15 @@ class AppAnaliseConnection:
                     start_time = datetime.utcnow()
                     end_time = start_time
 
+                trace_count = rf.get("NumSweeps")
+                if trace_count is None:
+                    trace_count = rf.get("nSweeps")
+
                 spectrum = SimpleNamespace(
                     start_mega=start_mega,
                     stop_mega=stop_mega,
                     ndata=ndata,
-                    trace_length=rf.get("nSweeps"),
+                    trace_length=trace_count,
                     level_unit=metadata.get("LevelUnit"),
                     processing=metadata.get("TraceMode", "peak").lower(),
                     start_dateidx=start_time,
@@ -651,7 +692,7 @@ class AppAnaliseConnection:
 
         return {
             "hostname": hostname,
-            "method": answer.get("Method", self.PROCESSOR_NAME),
+            "method": method or answer.get("Method", self.PROCESSOR_NAME),
             "gps": gps_obj,
             "spectrum": spectrums
         }
@@ -725,6 +766,8 @@ class AppAnaliseConnection:
                   this processing request
         """
         full_path = os.path.join(file_path, file_name)
+        self._reset_last_result()
+        self.last_requested_file = full_path
 
         # If the source file already disappeared locally, recontacting the
         # external processor cannot make this task recoverable.
@@ -733,18 +776,22 @@ class AppAnaliseConnection:
         # The socket response defines both the normalized spectra and, when
         # export is enabled, the artifact that becomes relevant downstream.
         payload = self._request_process(full_path, export)
+        self.last_payload = payload
         self._detect_protocol_error(
             payload,
             requested_full_path=full_path,
         )
         answer = self._get_answer(payload)
+        self.last_answer = answer
         file_info = self._build_output_file_info(
             answer=answer,
             file_path=file_path,
             file_name=file_name,
             export=export,
         )
+        self.last_file_info = file_info
         file_meta = self._resolve_output_file(file_info)
+        self.last_output_meta = file_meta
 
         # Only after the protocol and output artifact are confirmed do we
         # normalize and validate the spectral payload.

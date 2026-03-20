@@ -180,6 +180,7 @@ def main() -> None:
                 task_type=k.HOST_TASK_PROCESSING_TYPE,
                 task_status=k.TASK_PENDING,
                 check_host_busy=True,
+                check_host_offline=True,
                 lock_host=True,
             )
 
@@ -234,6 +235,26 @@ def main() -> None:
                 except Exception as e:
                     if errors.is_transient_sftp_init_error(e):
                         connect_busy = True
+
+                        # Not every transient SSH/SFTP init failure means the
+                        # host is offline. Contention still gets a soft retry,
+                        # but stronger network-like symptoms also ask host_check
+                        # for an explicit connectivity confirmation.
+                        if errors.should_queue_connection_check_for_sftp_init_error(e):
+                            try:
+                                db.queue_host_task(
+                                    host_id=host_id,
+                                    task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
+                                    task_status=k.TASK_PENDING,
+                                    filter_dict=k.NONE_FILTER,
+                                )
+                            except Exception as e_queue:
+                                log.error(
+                                    "event=queue_host_check_failed "
+                                    f"service=appCataloga_discovery host_id={host_id} "
+                                    f"task_id={task_id} error={e_queue}"
+                                )
+
                         log.warning(
                             f"event=sftp_busy_retry service=appCataloga_discovery "
                             f"host_id={host_id} task_id={task_id} error={e}"
@@ -419,13 +440,16 @@ def main() -> None:
                 
                 # Persist error state for observability and retry
                 try:
+                    # Discovery follows the same persistence contract used by
+                    # backup/processing: a stable generic prefix plus the
+                    # canonical ErrorHandler payload for grouping and diagnosis.
                     db.host_task_update(
                         task_id=task_id,
                         NU_STATUS=k.TASK_ERROR,
                         NA_MESSAGE=tools.compose_message(
                             task_type=k.FILE_TASK_DISCOVERY,
                             task_status=k.TASK_ERROR,
-                            detail=err.msg,
+                            error=err.format_error(),
                         ),
                         DT_HOST_TASK=datetime.now(),
                     )
@@ -434,7 +458,7 @@ def main() -> None:
                 
                 # Host check tasks should be re-queued on connection 
                 # errors to allow for retries after transient issues are resolved
-                if err.stage == "CONNECT":
+                if err.stage in {"CONNECT", "SSH"}:
                     db.queue_host_task(
                         host_id=host_id,
                         task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,

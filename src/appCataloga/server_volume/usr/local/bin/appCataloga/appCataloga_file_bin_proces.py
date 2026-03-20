@@ -211,6 +211,9 @@ def upsert_site(db_rfm, bin_data):
     site_id = db_rfm.get_site_id(site_data)
 
     if site_id:
+        # Existing sites are identified from the persisted GNSS centroid.
+        # In this path we deliberately avoid reverse geocoding so a new
+        # Nominatim answer cannot degrade the geographic labels already stored.
         db_rfm.update_site(
             site=site_id,
             longitude_raw=gps._longitude,

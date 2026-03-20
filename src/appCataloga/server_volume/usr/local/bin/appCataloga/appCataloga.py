@@ -340,7 +340,10 @@ def serve_client(client_socket: socket.socket) -> None:
     finally:
         if err.triggered:
             err.log_error(host_id=host_id, peer_ip=peer_ip)
-            response_payload = {"status": 0, "message": err.msg}
+            response_payload = {
+                "status": 0,
+                "message": err.format_error() or err.msg,
+            }
 
         send_response(
             client_socket=client_socket,

@@ -319,6 +319,37 @@ class dbHandlerBKP(DBHandlerBase):
 
         finally:
             self._disconnect()
+
+    def host_list_for_connectivity_check(self) -> List[Dict[str, Any]]:
+        """
+        Return lightweight host rows ordered by the oldest connectivity snapshot.
+
+        The background connectivity sweep reads the whole HOST table in memory
+        because the dataset is small and the logic benefits from simple
+        oldest-first scheduling.
+        """
+        self._connect()
+        try:
+            return self._select_rows(
+                table="HOST",
+                where={
+                    "#CUSTOM#HOST_ADDRESS": (
+                        "NA_HOST_ADDRESS IS NOT NULL "
+                        "AND TRIM(NA_HOST_ADDRESS) <> ''"
+                    ),
+                },
+                order_by="DT_LAST_CHECK IS NULL DESC, DT_LAST_CHECK ASC, ID_HOST ASC",
+                cols=[
+                    "ID_HOST",
+                    "NA_HOST_NAME",
+                    "NA_HOST_ADDRESS",
+                    "IS_OFFLINE",
+                    "DT_LAST_CHECK",
+                ],
+            )
+        finally:
+            self._disconnect()
+
     def get_last_discovery(self, host_id: int) -> Optional[datetime]:
         """Return the last successful discovery timestamp recorded for a host."""
 
@@ -809,35 +840,37 @@ class dbHandlerBKP(DBHandlerBase):
         In both cases the host is released and a connection-check task is
         scheduled so the orchestration layer can reconcile state safely.
         """
-
         now = datetime.now()
-
-        rows = self._select_raw("""
-            SELECT
-                H.ID_HOST,
-                H.NA_HOST_NAME,
-                H.DT_BUSY,
-                H.NU_PID,
-                EXISTS(
-                    SELECT 1
-                    FROM FILE_TASK FT
-                    WHERE FT.FK_HOST = H.ID_HOST
-                    AND FT.NU_STATUS = %s
-                ) AS FILE_RUNNING,
-                EXISTS(
-                    SELECT 1
-                    FROM HOST_TASK HT
-                    WHERE HT.FK_HOST = H.ID_HOST
-                    AND HT.NU_STATUS = %s
-                    AND HT.NU_TYPE = %s
-                ) AS HOST_PROCESSING_RUNNING
-            FROM HOST H
-            WHERE H.IS_BUSY = TRUE
-        """, (
-            k.TASK_RUNNING,
-            k.TASK_RUNNING,
-            k.HOST_TASK_PROCESSING_TYPE,
-        ))
+        self._connect()
+        try:
+            rows = self._select_raw("""
+                SELECT
+                    H.ID_HOST,
+                    H.NA_HOST_NAME,
+                    H.DT_BUSY,
+                    H.NU_PID,
+                    EXISTS(
+                        SELECT 1
+                        FROM FILE_TASK FT
+                        WHERE FT.FK_HOST = H.ID_HOST
+                        AND FT.NU_STATUS = %s
+                    ) AS FILE_RUNNING,
+                    EXISTS(
+                        SELECT 1
+                        FROM HOST_TASK HT
+                        WHERE HT.FK_HOST = H.ID_HOST
+                        AND HT.NU_STATUS = %s
+                        AND HT.NU_TYPE = %s
+                    ) AS HOST_PROCESSING_RUNNING
+                FROM HOST H
+                WHERE H.IS_BUSY = TRUE
+            """, (
+                k.TASK_RUNNING,
+                k.TASK_RUNNING,
+                k.HOST_TASK_PROCESSING_TYPE,
+            ))
+        finally:
+            self._disconnect()
 
         if not rows:
             return
@@ -881,9 +914,20 @@ class dbHandlerBKP(DBHandlerBase):
                 release = True
                 reason = "SFTP_BUSY_COOLDOWN_EXPIRED"
 
-            elif not file_running and not host_processing_running:
+            elif (
+                not file_running
+                and not host_processing_running
+                and elapsed > k.HOST_CLEANUP_NO_TASK_GRACE_SEC
+            ):
                 release = True
                 reason = "NO_RUNNING_TASKS"
+
+            elif not file_running and not host_processing_running:
+                self.log.entry(
+                    f"[HOST_CLEANUP] Preserving recently claimed busy host "
+                    f"(host_id={host_id}, host={host_name}, pid={pid}, "
+                    f"busy_for={elapsed:.1f}s, grace={k.HOST_CLEANUP_NO_TASK_GRACE_SEC}s)"
+                )
 
             elif elapsed > threshold_seconds and (
                 pid in (None, k.HOST_UNLOCKED_PID) or not tools.pid_exists(pid)
@@ -927,12 +971,14 @@ class dbHandlerBKP(DBHandlerBase):
             # Schedule connectivity check
             # -------------------------------------------------
             try:
+                self._connect()
                 self.queue_host_task(
                     host_id=host_id,
                     task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
                     task_status=k.TASK_PENDING,
                     filter_dict=k.NONE_FILTER,
                 )
+                self._disconnect()
 
                 self.log.entry(
                     f"[HOST_CLEANUP] Connection check scheduled "
@@ -940,6 +986,7 @@ class dbHandlerBKP(DBHandlerBase):
                 )
 
             except Exception as e:
+                self._disconnect()
                 self.log.error(
                     f"[HOST_CLEANUP] Failed to queue connection check "
                     f"(host_id={host_id}): {e}"
@@ -1018,8 +1065,8 @@ class dbHandlerBKP(DBHandlerBase):
             # ACTIVE task → do nothing
             if status in (k.TASK_PENDING, k.TASK_RUNNING):
                 pass
-
-            # Terminal task -> refresh in place instead of creating duplicates.
+            else:
+                # Terminal task -> refresh in place instead of creating duplicates.
                 self.host_task_update(
                     task_id=existing["HOST_TASK__ID_HOST_TASK"],
                     NU_TYPE=task_type,
@@ -1172,18 +1219,20 @@ class dbHandlerBKP(DBHandlerBase):
             if rows:
                 existing = rows[0]
                 tid = int(existing["HOST_TASK__ID_HOST_TASK"])
-                status = existing.get("NU_STATUS", k.TASK_PENDING)
+                status = existing.get("HOST_TASK__NU_STATUS", k.TASK_PENDING)
 
-                if status == k.TASK_PENDING:
+                if status in (k.TASK_PENDING, k.TASK_RUNNING):
                     self.log.entry(
-                        f"[DBHandlerBKP] Statistics HOST_TASK already pending "
-                        f"(host={host_id}, ID={tid}). No action taken."
+                        f"[DBHandlerBKP] Statistics HOST_TASK already active "
+                        f"(host={host_id}, ID={tid}, status={status}). No action taken."
                     )
                     return tid
 
-                # Reactivate the existing task
+                # Reactivate the existing singleton row instead of creating
+                # unbounded INSERT/DELETE churn in HOST_TASK.
                 self.host_task_update(
                     task_id=tid,
+                    NU_STATUS=k.TASK_PENDING,
                     DT_HOST_TASK=dt_now,
                     NA_MESSAGE=payload["NA_MESSAGE"],
                 )
@@ -1222,6 +1271,7 @@ class dbHandlerBKP(DBHandlerBase):
         task_status: Optional[int] = k.TASK_PENDING,
         task_type: Optional[Union[int, List[int]]] = None,
         check_host_busy: bool = False,
+        check_host_offline: bool = False,
         lock_host: bool = False,
     ) -> Optional[tuple]:
         """
@@ -1232,6 +1282,9 @@ class dbHandlerBKP(DBHandlerBase):
 
         When `lock_host=True`, the method also attempts to atomically claim the
         host before returning the task to the caller.
+
+        `check_host_offline=True` is opt-in because only host-dependent
+        consumers such as discovery should skip hosts already marked offline.
         """
 
         self._connect()
@@ -1260,6 +1313,9 @@ class dbHandlerBKP(DBHandlerBase):
                 if check_host_busy:
                     where["H.IS_BUSY"] = False
 
+                if check_host_offline:
+                    where["H.IS_OFFLINE"] = False
+
             rows = self._select_custom(
                 table="HOST_TASK HT",
                 joins=["JOIN HOST H ON H.ID_HOST = HT.FK_HOST"],
@@ -1279,8 +1335,7 @@ class dbHandlerBKP(DBHandlerBase):
             # Optional atomic host lock
             # --------------------------------------------------------------
             if lock_host and check_host_busy:
-                self.cursor.execute(
-                    """
+                lock_query = """
                     UPDATE HOST
                     SET
                         IS_BUSY = 1,
@@ -1289,9 +1344,15 @@ class dbHandlerBKP(DBHandlerBase):
                     WHERE
                         ID_HOST = %s
                         AND IS_BUSY = 0
-                    """,
-                    (os.getpid(), host_id),
-                )
+                """
+                lock_params = [os.getpid(), host_id]
+
+                # Discovery can opt into this guard so a host that flipped
+                # offline after SELECT is not claimed by the atomic lock.
+                if check_host_offline:
+                    lock_query += " AND IS_OFFLINE = 0"
+
+                self.cursor.execute(lock_query, lock_params)
 
                 if self.cursor.rowcount == 0:
                     return None
@@ -1579,6 +1640,7 @@ class dbHandlerBKP(DBHandlerBase):
         task_status: Optional[int] = k.TASK_PENDING,
         task_type: Optional[int] = None,
         check_host_busy: bool = True,
+        check_host_offline: bool = False,
         extension: Optional[str] = None,
         lock_host: bool = False,
     ) -> Optional[tuple]:
@@ -1597,6 +1659,8 @@ class dbHandlerBKP(DBHandlerBase):
                 Task type filter.
             check_host_busy (bool):
                 Exclude BUSY hosts if True.
+            check_host_offline (bool):
+                Exclude hosts already marked OFFLINE if True.
             extension (Optional[str]):
                 File extension filter.
             lock_host (bool):
@@ -1637,6 +1701,9 @@ class dbHandlerBKP(DBHandlerBase):
             if check_host_busy:
                 where["H.IS_BUSY"] = False
 
+            if check_host_offline:
+                where["H.IS_OFFLINE"] = False
+
         # --------------------------------------------------------------
         # 2) Select candidate task
         # --------------------------------------------------------------
@@ -1661,9 +1728,7 @@ class dbHandlerBKP(DBHandlerBase):
         # 3) Optional atomic host lock
         # --------------------------------------------------------------
         if lock_host and check_host_busy:
-
-            self.cursor.execute(
-                """
+            lock_query = """
                 UPDATE HOST
                 SET
                     IS_BUSY = 1,
@@ -1672,9 +1737,15 @@ class dbHandlerBKP(DBHandlerBase):
                 WHERE
                     ID_HOST = %s
                     AND IS_BUSY = 0
-                """,
-                (os.getpid(), host_id),
-            )
+            """
+            lock_params = [os.getpid(), host_id]
+
+            # Backup can opt into the same offline guard so a host already
+            # marked unreachable is not locked and retried needlessly.
+            if check_host_offline:
+                lock_query += " AND IS_OFFLINE = 0"
+
+            self.cursor.execute(lock_query, lock_params)
 
             if self.cursor.rowcount == 0:
                 # Another worker locked it
@@ -1959,6 +2030,51 @@ class dbHandlerBKP(DBHandlerBase):
             return self._delete_row("FILE_TASK", where=where, commit=True)
         finally:
             self._disconnect()
+
+
+    def file_history_delete(
+        self,
+        *,
+        history_id: Optional[int] = None,
+        host_id: Optional[int] = None,
+        host_file_path: Optional[str] = None,
+        host_file_name: Optional[str] = None,
+    ) -> int:
+        """Delete a `FILE_TASK_HISTORY` row using a deterministic identity.
+
+        Supported identification strategies:
+            1) `history_id`
+            2) (`host_id`, `host_file_path`, `host_file_name`)
+
+        This is used by backup cleanup when a file vanished from the remote
+        host after discovery and must not remain resumable in history.
+
+        Returns:
+            int: Number of deleted rows.
+        """
+        self._connect()
+        try:
+            if history_id is not None:
+                where = {"ID_HISTORY": history_id}
+            elif (
+                host_id is not None
+                and host_file_path is not None
+                and host_file_name is not None
+            ):
+                where = {
+                    "FK_HOST": host_id,
+                    "NA_HOST_FILE_PATH": host_file_path,
+                    "NA_HOST_FILE_NAME": host_file_name,
+                }
+            else:
+                raise ValueError(
+                    "Invalid identification strategy for FILE_TASK_HISTORY delete. "
+                    "Use either history_id or (host_id, host_file_path, host_file_name)."
+                )
+
+            return self._delete_row("FILE_TASK_HISTORY", where=where, commit=True)
+        finally:
+            self._disconnect()
             
     
     def file_task_suspend_by_host(self, host_id: int, reason: str = None) -> None:
@@ -2117,6 +2233,68 @@ class dbHandlerBKP(DBHandlerBase):
                 f"[DBHandlerBKP] Failed to resume FILE_TASK entries for host {host_id}: {e}"
             )
 
+    def file_history_suspend_by_host(self, host_id: int, reason: str = None) -> None:
+        """
+        Mirror host-driven suspension into FILE_TASK_HISTORY.
+
+        Only host-dependent phases are touched:
+            - DISCOVERY status
+            - BACKUP status
+
+        Processing history is intentionally left alone because it does not
+        depend on the remote host once the file is already on the server.
+        """
+        try:
+            message = (
+                reason
+                or "Host unreachable — host-dependent history suspended by host_check service"
+            )
+
+            suspended_discovery = self._update_row(
+                table="FILE_TASK_HISTORY",
+                data={
+                    "NU_STATUS_DISCOVERY": k.TASK_SUSPENDED,
+                    "NA_MESSAGE": message,
+                },
+                where={
+                    "FK_HOST": host_id,
+                    "NU_STATUS_DISCOVERY__in": (
+                        k.TASK_PENDING,
+                        k.TASK_RUNNING,
+                    ),
+                },
+                commit=True,
+            )
+
+            suspended_backup = self._update_row(
+                table="FILE_TASK_HISTORY",
+                data={
+                    "NU_STATUS_BACKUP": k.TASK_SUSPENDED,
+                    "NA_MESSAGE": message,
+                },
+                where={
+                    "FK_HOST": host_id,
+                    "NU_STATUS_BACKUP__in": (
+                        k.TASK_PENDING,
+                        k.TASK_RUNNING,
+                    ),
+                },
+                commit=True,
+            )
+
+            total_suspended = suspended_discovery + suspended_backup
+
+            if total_suspended:
+                self.log.entry(
+                    f"[DBHandlerBKP] Suspended {total_suspended} FILE_TASK_HISTORY phases "
+                    f"(discovery + backup) for host {host_id}."
+                )
+
+        except Exception as e:
+            self.log.error(
+                f"[DBHandlerBKP] Failed to suspend FILE_TASK_HISTORY entries for host {host_id}: {e}"
+            )
+
     def file_history_resume_by_host(
         self,
         host_id: int,
@@ -2124,7 +2302,9 @@ class dbHandlerBKP(DBHandlerBase):
         """
         Resume DISCOVERY and BACKUP phases in file history when a host recovers.
 
-        Processing phase is NOT resumed by design.
+        Processing phase is NOT resumed by design. Both TASK_SUSPENDED and
+        TASK_ERROR are reactivated here because both states represent
+        host-dependent work that can continue once connectivity returns.
         """
         try:
             total_resumed = 0
@@ -2142,7 +2322,10 @@ class dbHandlerBKP(DBHandlerBase):
                 },
                 where={
                     "FK_HOST": host_id,
-                    "NU_STATUS_DISCOVERY": k.TASK_ERROR,
+                    "NU_STATUS_DISCOVERY__in": (
+                        k.TASK_SUSPENDED,
+                        k.TASK_ERROR,
+                    ),
                 },
                 commit=True,
             )
@@ -2160,7 +2343,10 @@ class dbHandlerBKP(DBHandlerBase):
                 },
                 where={
                     "FK_HOST": host_id,
-                    "NU_STATUS_BACKUP": k.TASK_ERROR,
+                    "NU_STATUS_BACKUP__in": (
+                        k.TASK_SUSPENDED,
+                        k.TASK_ERROR,
+                    ),
                 },
                 commit=True,
             )

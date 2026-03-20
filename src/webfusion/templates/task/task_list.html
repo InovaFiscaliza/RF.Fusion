@@ -1,6 +1,133 @@
 {% extends "base.html" %}
 {% block title %}Tasks Recentes{% endblock %}
 
+{% block extra_css %}
+<style>
+    .card {
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+    }
+
+    .task-summary-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.35);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        z-index: 999;
+    }
+
+    .task-summary-modal {
+        width: min(420px, 100%);
+        background: #ffffff;
+        border-radius: 14px;
+        padding: 22px 22px 18px;
+        box-shadow: 0 12px 36px rgba(15, 23, 42, 0.18);
+    }
+
+    .task-summary-title {
+        font-size: 16px;
+        font-weight: 700;
+        color: #0f172a;
+        margin-bottom: 10px;
+    }
+
+    .task-summary-text {
+        color: #475569;
+        font-size: 13px;
+        line-height: 1.5;
+        margin-bottom: 8px;
+    }
+
+    .task-summary-actions {
+        margin-top: 16px;
+        display: flex;
+        justify-content: flex-end;
+    }
+
+    .task-summary-close {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 40px;
+        padding: 0 16px;
+        border-radius: 8px;
+        border: 1px solid #1f4f8b;
+        background: #1f4f8b;
+        color: #ffffff;
+        font-weight: 600;
+        cursor: pointer;
+    }
+
+    .task-table-wrap {
+        max-height: 520px;
+        overflow-y: auto;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #ffffff;
+    }
+
+    .task-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+
+    .task-table thead {
+        position: sticky;
+        top: 0;
+        background: #f8fafc;
+        z-index: 2;
+    }
+
+    .task-table th {
+        padding: 10px;
+        text-align: left;
+        font-size: 12px;
+        font-weight: 600;
+        border-bottom: 1px solid #e5e7eb;
+    }
+
+    .task-table td {
+        padding: 8px 10px;
+        vertical-align: top;
+    }
+
+    .task-table tbody tr {
+        border-bottom: 1px solid #e5e7eb;
+    }
+
+    .task-table tbody tr:hover {
+        background: #f8fafc;
+    }
+
+    .task-status {
+        font-weight: 600;
+    }
+
+    .task-status-pending {
+        color: #1d4ed8;
+    }
+
+    .task-status-running {
+        color: #b45309;
+    }
+
+    .task-status-error {
+        color: #b91c1c;
+    }
+
+    .task-message-cell {
+        max-width: 360px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        line-height: 1.5;
+        color: #334155;
+    }
+</style>
+{% endblock %}
+
 {% block breadcrumb %}
 <div class="breadcrumb">
     <a href="{{ url_for('index') }}">Início</a>
@@ -13,61 +140,72 @@
 
 <h1 class="margin-bottom-l">Tasks Recentes</h1>
 
+{% if show_creation_summary %}
+<div class="task-summary-backdrop" id="task-summary-backdrop">
+    <div class="task-summary-modal">
+        <div class="task-summary-title">Resumo da criação</div>
+        <div class="task-summary-text">
+            {{ queued_count or 0 }} task(s) criada(s) ou atualizada(s) para execução.
+        </div>
+        {% if skipped_count %}
+        <div class="task-summary-text">
+            {{ skipped_count }} task(s) já estavam pendentes ou em execução e foram mantidas como estavam.
+        </div>
+        {% endif %}
+        <div class="task-summary-actions">
+            <button type="button" class="task-summary-close" onclick="closeTaskSummary()">Continuar</button>
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <div class="card background-neutral-0 padding-l border-radius-m">
 
-<div style="
-    max-height: 520px;
-    overflow-y: auto;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-">
+<div class="task-table-wrap">
 
-<table style="width:100%; border-collapse:collapse; font-size:14px;">
+<table class="task-table">
 
-    <thead style="
-        position: sticky;
-        top: 0;
-        background: #f3f4f6;
-        z-index: 2;
-    ">
-        <tr style="text-align:left;">
-            <th style="padding:10px;">ID</th>
-            <th style="padding:10px;">Host</th>
-            <th style="padding:10px;">Tipo</th>
-            <th style="padding:10px;">Status</th>
-            <th style="padding:10px;">Data</th>
-            <th style="padding:10px;">Mensagem</th>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Host</th>
+            <th>Tipo</th>
+            <th>Status</th>
+            <th>Data</th>
+            <th>Mensagem</th>
         </tr>
     </thead>
 
     <tbody>
 
     {% for t in tasks %}
-        <tr style="border-bottom:1px solid #e5e7eb;">
-            <td style="padding:8px;">{{ t.ID_HOST_TASK }}</td>
-            <td style="padding:8px;">{{ t.NA_HOST_NAME }}</td>
-            <td style="padding:8px;">
+        <tr>
+            <td>{{ t.ID_HOST_TASK }}</td>
+            <td>{{ t.NA_HOST_NAME }}</td>
+            <td>
                 {% if t.NU_TYPE == 1 %}
-                    Host Check
+                    Backup
                 {% elif t.NU_TYPE == 3 %}
-                    Update Stats
+                    Update Statistics
+                {% elif t.NU_TYPE == 4 %}
+                    Check Connection
                 {% else %}
                     {{ t.NU_TYPE }}
                 {% endif %}
             </td>
-            <td style="padding:8px;">
+            <td>
                 {% if t.NU_STATUS == 1 %}
-                    <span style="color:#2563eb; font-weight:600;">Pending</span>
+                    <span class="task-status task-status-pending">Pending</span>
                 {% elif t.NU_STATUS == 2 %}
-                    <span style="color:#d97706; font-weight:600;">Running</span>
+                    <span class="task-status task-status-running">Running</span>
                 {% elif t.NU_STATUS == -1 %}
-                    <span style="color:#dc2626; font-weight:600;">Error</span>
+                    <span class="task-status task-status-error">Error</span>
                 {% else %}
                     {{ t.NU_STATUS }}
                 {% endif %}
             </td>
-            <td style="padding:8px;">{{ t.DT_HOST_TASK }}</td>
-            <td style="padding:8px; max-width:350px; word-break:break-word;">
+            <td>{{ t.DT_HOST_TASK }}</td>
+            <td class="task-message-cell">
                 {{ t.NA_MESSAGE or '-' }}
             </td>
         </tr>
@@ -80,4 +218,17 @@
 </div>
 </div>
 
+{% endblock %}
+
+{% block extra_js %}
+{% if show_creation_summary %}
+<script>
+    function closeTaskSummary() {
+        const backdrop = document.getElementById("task-summary-backdrop");
+        if (backdrop) {
+            backdrop.remove();
+        }
+    }
+</script>
+{% endif %}
 {% endblock %}

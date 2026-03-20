@@ -1,4 +1,8 @@
-# modules/task/builder.py
+"""Helpers for building task filter payloads.
+
+The resulting dictionary mirrors the filter structure expected by appCataloga
+workers, so the web layer can remain thin and predictable.
+"""
 
 NONE_FILTER = {
     "mode": "NONE",
@@ -21,6 +25,7 @@ def build_filter(
     file_path=None,
     file_name=None,
 ):
+    """Build the filter payload stored in ``HOST_TASK.FILTER``."""
     return {
         "mode": mode,
         "start_date": start_date,

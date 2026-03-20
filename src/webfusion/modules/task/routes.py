@@ -1,4 +1,6 @@
-from flask import Blueprint, Response, redirect, render_template, request
+"""Routes for the task builder and recent task list."""
+
+from flask import Blueprint, Response, redirect, render_template, request, url_for
 from modules.task.service import create_task
 from db import get_connection_bpdata as get_connection
 
@@ -40,6 +42,21 @@ def _has_valid_task_credentials():
     )
 
 
+def _safe_int_arg(name):
+    """
+    Parse an optional integer query parameter without crashing the page.
+    """
+    raw_value = request.args.get(name)
+
+    if raw_value in (None, ""):
+        return None
+
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+
 @task_bp.before_request
 def require_task_auth():
     """
@@ -79,7 +96,23 @@ def task_builder():
 
     db = get_connection()
     cursor = db.cursor()
-    selected_host = request.form.get("host_id") if request.method == "POST" else request.args.get("host_id")
+    selected_host = request.args.get("host_id")
+    selected_task_type = request.args.get("task_type", "1")
+    selected_execution_type = request.args.get("execution_type", "individual")
+    selected_host_filter = request.args.get("host_filter", "ALL")
+    selected_mode = request.args.get("mode", "NONE")
+    selected_start_date = request.args.get("start_date", "")
+    selected_end_date = request.args.get("end_date", "")
+    selected_last_n_files = request.args.get("last_n_files", "")
+    selected_extension = request.args.get("extension", "")
+    selected_file_path = request.args.get("file_path", "/mnt/internal/data")
+    selected_file_name = request.args.get("file_name", "")
+    selected_collective_host_ids = [
+        value
+        for value in request.args.getlist("collective_host_ids")
+        if str(value).strip()
+    ]
+    selected_collective_host_search = request.args.get("collective_host_search", "")
 
     # --------------------------------------------------
     # Discover host prefixes dynamically
@@ -145,28 +178,44 @@ def task_builder():
         if execution_type == "collective":
 
             host_filter = request.form.get("host_filter", "ALL")
+            selected_collective_host_ids = {
+                int(value)
+                for value in request.form.getlist("collective_host_ids")
+                if str(value).strip()
+            }
 
             query = """
                 SELECT ID_HOST
                 FROM HOST
                 WHERE 1 = 1
             """
+            params = []
 
             if online_only:
                 query += " AND IS_OFFLINE = 0"
 
             # Apply prefix filter dynamically
             if host_filter != "ALL":
-                query += f" AND NA_HOST_NAME LIKE '{host_filter}%'"
+                query += " AND NA_HOST_NAME LIKE %s"
+                params.append(f"{host_filter}%")
 
             query += " ORDER BY NA_HOST_NAME"
 
-            cursor.execute(query)
+            cursor.execute(query, tuple(params))
 
-            all_hosts = [h["ID_HOST"] for h in cursor.fetchall()]
+            candidate_hosts = [h["ID_HOST"] for h in cursor.fetchall()]
+            if selected_collective_host_ids:
+                all_hosts = [
+                    host_id
+                    for host_id in candidate_hosts
+                    if host_id in selected_collective_host_ids
+                ]
+            else:
+                all_hosts = candidate_hosts
 
+            creation_summary = {"queued_count": 0, "skipped_count": 0}
             if all_hosts:
-                create_task(
+                creation_summary = create_task(
                     db=db,
                     hosts=all_hosts,
                     task_type=task_type,
@@ -180,9 +229,10 @@ def task_builder():
         else:
 
             host_id = request.form.get("host_id")
+            creation_summary = {"queued_count": 0, "skipped_count": 0}
 
             if host_id:
-                create_task(
+                creation_summary = create_task(
                     db=db,
                     hosts=[int(host_id)],
                     task_type=task_type,
@@ -190,7 +240,13 @@ def task_builder():
                     filter_data=filter_data,
                 )
 
-        return redirect("/task/list")
+        return redirect(
+            url_for(
+                "task.task_list",
+                queued_count=creation_summary["queued_count"],
+                skipped_count=creation_summary["skipped_count"],
+            )
+        )
 
     # --------------------------------------------------
     # Render page
@@ -201,11 +257,24 @@ def task_builder():
         host_prefixes=host_prefixes,
         online_only=online_only,
         selected_host=selected_host,
+        selected_task_type=selected_task_type,
+        selected_execution_type=selected_execution_type,
+        selected_host_filter=selected_host_filter,
+        selected_mode=selected_mode,
+        selected_start_date=selected_start_date,
+        selected_end_date=selected_end_date,
+        selected_last_n_files=selected_last_n_files,
+        selected_extension=selected_extension,
+        selected_file_path=selected_file_path,
+        selected_file_name=selected_file_name,
+        selected_collective_host_ids=selected_collective_host_ids,
+        selected_collective_host_search=selected_collective_host_search,
     )
 
 
 @task_bp.route("/list")
 def task_list():
+    """Render the most recent HOST_TASK rows and optional creation summary."""
 
     db = get_connection()
     cursor = db.cursor()
@@ -227,4 +296,13 @@ def task_list():
 
     tasks = cursor.fetchall()
 
-    return render_template("task/task_list.html", tasks=tasks)
+    queued_count = _safe_int_arg("queued_count")
+    skipped_count = _safe_int_arg("skipped_count")
+
+    return render_template(
+        "task/task_list.html",
+        tasks=tasks,
+        queued_count=queued_count,
+        skipped_count=skipped_count,
+        show_creation_summary=queued_count is not None or skipped_count is not None,
+    )

@@ -38,11 +38,38 @@ body .main-content {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 20px;
-    align-items: end;
+    align-items: start;
 }
 
 .spectrum-query-field {
     min-width: 0;
+}
+
+.spectrum-query-actions {
+    align-self: end;
+}
+
+.spectrum-query-submit-row {
+    margin-top: 18px;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.spectrum-query-submit-row .btn-search {
+    min-width: 140px;
+}
+
+.filter-helper-text {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #64748b;
+    line-height: 1.35;
+    min-height: 32px;
+}
+
+.form-control.is-refreshing {
+    background-color: #f8fafc;
+    color: #64748b;
 }
 
 label {
@@ -53,12 +80,10 @@ label {
 
 .form-control {
     width: 100%;
-    height: 36px;
-    padding: 6px 10px;
+    height: 38px;
+    padding: 8px 12px;
     box-sizing: border-box;
-    border: 1px solid #cbd5e1;
-    border-radius: 6px;
-    background: #fff;
+    border-radius: 8px;
 }
 
 .select-shell {
@@ -91,7 +116,7 @@ label {
     background-color: #1f4f8b;
     color: #ffffff;
     border: 1px solid #1f4f8b;
-    border-radius: 6px;
+    border-radius: 8px;
     padding: 8px 18px;
     font-weight: 600;
     cursor: pointer;
@@ -166,18 +191,36 @@ label {
 }
 
 .pagination-buttons {
+    display: grid;
+    grid-template-columns: minmax(78px, auto) minmax(228px, auto) minmax(78px, auto);
+    align-items: center;
+    gap: 12px;
+    justify-items: center;
+    min-width: 420px;
+    font-variant-numeric: tabular-nums;
+}
+
+.pagination-nav-group,
+.pagination-slot-group {
     display: flex;
     align-items: center;
     gap: 6px;
-    justify-content: flex-end;
-    min-width: 360px;
+    justify-content: center;
+}
+
+.pagination-nav-group {
+    min-width: 78px;
+}
+
+.pagination-slot-group {
+    min-width: 228px;
 }
 
 .btn-page {
     background-color: #1f4f8b;
     color: #ffffff;
     border: 1px solid #1f4f8b;
-    border-radius: 4px;
+    border-radius: 8px;
     padding: 4px 10px;
     font-weight: 600;
     cursor: pointer;
@@ -187,8 +230,7 @@ label {
     text-align: center;
 }
 
-.btn-page,
-.btn-page-placeholder {
+.btn-page {
     min-width: 36px;
 }
 
@@ -202,10 +244,12 @@ label {
     border-color: #0f2a4d;
 }
 
-.btn-page-placeholder {
-    display: inline-block;
-    min-height: 1px;
-    visibility: hidden;
+.btn-page-disabled {
+    background-color: #e2e8f0;
+    border-color: #cbd5e1;
+    color: #94a3b8;
+    cursor: default;
+    pointer-events: none;
 }
 
 /* ===================== LINK DOWNLOAD ===================== */
@@ -310,7 +354,7 @@ label {
         Parâmetros de Pesquisa
     </div>
 
-    <form method="get" id="spectrum-query-form">
+    <form method="get" id="spectrum-query-form" data-loading-message="Consultando espectros...">
 
         <div class="spectrum-query-grid">
 
@@ -319,8 +363,7 @@ label {
                 <div class="select-shell">
                     <select name="query_mode"
                             id="query_mode"
-                            class="form-control"
-                            onchange="this.form.submit()">
+                            class="form-control">
                         <option value="spectrum" {% if query_mode == "spectrum" %}selected{% endif %}>Espectro</option>
                         <option value="file" {% if query_mode == "file" %}selected{% endif %}>Arquivo</option>
                     </select>
@@ -330,7 +373,7 @@ label {
             <div class="spectrum-query-field">
                 <label>Estação / Equipamento</label>
                 <div class="select-shell">
-                    <select name="equipment_id" class="form-control" required>
+                    <select name="equipment_id" id="equipment_id" class="form-control" required>
                         <option value="">-- selecione --</option>
                         {% for e in equipments %}
                         <option value="{{ e.ID_EQUIPMENT }}"
@@ -339,6 +382,34 @@ label {
                         </option>
                         {% endfor %}
                     </select>
+                </div>
+            </div>
+
+            <div class="spectrum-query-field">
+                <label>Localidade</label>
+                <div class="select-shell">
+                    <select
+                        name="site_id"
+                        id="site_id"
+                        class="form-control"
+                    >
+                        <option value="">Todas as localidades</option>
+                        {% for locality in localities %}
+                        <option
+                            value="{{ locality.ID_SITE }}"
+                            {% if locality.ID_SITE|string == site_id %}selected{% endif %}
+                        >
+                            {{ locality.OPTION_LABEL }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="filter-helper-text" id="site-filter-hint">
+                    {% if site_id and localities %}
+                        Localidade carregada. As opções disponíveis seguem a estação selecionada, sem depender do período.
+                    {% else %}
+                        As localidades disponíveis seguem somente a estação selecionada.
+                    {% endif %}
                 </div>
             </div>
 
@@ -385,7 +456,10 @@ label {
                        name="description"
                        value="{{ description or '' }}"
                        class="form-control"
-                       placeholder="Parte do nome do plano">
+                       placeholder="Ex.: %PMEC% ou parte do nome do plano">
+                <div class="filter-helper-text">
+                    Para buscar um plano específico, você pode usar curingas SQL como <code>%PMEC%</code>.
+                </div>
             </div>
             {% endif %}
 
@@ -420,13 +494,12 @@ label {
                 </div>
             </div>
 
-            <div class="spectrum-query-field">
-                <label>&nbsp;</label>
-                <button type="submit" class="btn-search width-full">
-                    Pesquisar
-                </button>
-            </div>
+        </div>
 
+        <div class="spectrum-query-submit-row">
+            <button type="submit" class="btn-search">
+                Pesquisar
+            </button>
         </div>
 
     </form>
@@ -434,6 +507,14 @@ label {
 </div>
 
 <!-- ====================== RESULTADOS ====================== -->
+
+{% if query_error_message %}
+
+<div class="card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+    {{ query_error_message }}
+</div>
+
+{% endif %}
 
 {% if rows %}
 
@@ -457,36 +538,42 @@ label {
         </div>
 
         <div class="pagination-buttons">
-            {% if page > 1 %}
-                <a class="btn-page"
-                   href="?{{ page_query_prefix }}page=1">«</a>
-
-                <a class="btn-page"
-                   href="?{{ page_query_prefix }}page={{ page-1 }}">‹</a>
-            {% else %}
-                <span class="btn-page-placeholder"></span>
-                <span class="btn-page-placeholder"></span>
-            {% endif %}
-
-            {% for p in visible_pages %}
-                {% if p == page %}
-                    <span class="btn-page btn-page-active">{{ p }}</span>
-                {% else %}
+            <div class="pagination-nav-group">
+                {% if page > 1 %}
                     <a class="btn-page"
-                       href="?{{ page_query_prefix }}page={{ p }}">{{ p }}</a>
+                       href="?{{ page_query_prefix }}page=1">«</a>
+
+                    <a class="btn-page"
+                       href="?{{ page_query_prefix }}page={{ page-1 }}">‹</a>
+                {% else %}
+                    <span class="btn-page btn-page-disabled">«</span>
+                    <span class="btn-page btn-page-disabled">‹</span>
                 {% endif %}
-            {% endfor %}
+            </div>
 
-            {% if page < total_pages %}
-                <a class="btn-page"
-                   href="?{{ page_query_prefix }}page={{ page+1 }}">›</a>
+            <div class="pagination-slot-group">
+                {% for p in visible_pages %}
+                    {% if p == page %}
+                        <span class="btn-page btn-page-active">{{ p }}</span>
+                    {% else %}
+                        <a class="btn-page"
+                           href="?{{ page_query_prefix }}page={{ p }}">{{ p }}</a>
+                    {% endif %}
+                {% endfor %}
+            </div>
 
-                <a class="btn-page"
-                   href="?{{ page_query_prefix }}page={{ total_pages }}">»</a>
-            {% else %}
-                <span class="btn-page-placeholder"></span>
-                <span class="btn-page-placeholder"></span>
-            {% endif %}
+            <div class="pagination-nav-group">
+                {% if page < total_pages %}
+                    <a class="btn-page"
+                       href="?{{ page_query_prefix }}page={{ page+1 }}">›</a>
+
+                    <a class="btn-page"
+                       href="?{{ page_query_prefix }}page={{ total_pages }}">»</a>
+                {% else %}
+                    <span class="btn-page btn-page-disabled">›</span>
+                    <span class="btn-page btn-page-disabled">»</span>
+                {% endif %}
+            </div>
         </div>
     </div>
 
@@ -500,6 +587,7 @@ label {
                     <th></th>
                     <th>ID Arquivo</th>
                     <th>Estação</th>
+                    <th>Localidade</th>
                     <th>Início</th>
                     <th>Fim</th>
                     <th>Qtd. Espectros</th>
@@ -510,6 +598,7 @@ label {
                     <th>ID</th>
                     <th>Plano</th>
                     <th>Equipamento</th>
+                    <th>Localidade</th>
                     <th>Faixa (MHz)</th>
                     <th>Início</th>
                     <th>Fim</th>
@@ -535,12 +624,14 @@ label {
                     </td>
                     <td>{{ r.ID_FILE }}</td>
                     <td>{{ r.NA_EQUIPMENT }}</td>
+                    <td title="{{ r.LOCALITY_DETAILS or r.LOCALITY_DISPLAY }}">{{ r.LOCALITY_DISPLAY }}</td>
                     <td>{{ r.DT_TIME_START }}</td>
                     <td>{{ r.DT_TIME_END }}</td>
                     <td>{{ r.NU_SPECTRA }}</td>
                     <td>
                         {% if r.NA_FILE %}
                             <a href="{{ r.DOWNLOAD_URL or url_for('spectrum.download_spectrum_file', file_id=r.ID_FILE) }}"
+                               data-download-loading-message="Iniciando download do arquivo..."
                                class="file-link">
                                 {{ r.NA_FILE }}
                             </a>
@@ -553,7 +644,7 @@ label {
                     </td>
                 </tr>
                 <tr class="file-detail-row" data-file-detail="{{ r.ID_FILE }}" hidden>
-                    <td colspan="7">
+                    <td colspan="8">
                         <div class="file-detail-panel">
                             <div class="file-detail-loading">Carregando espectros do arquivo...</div>
                         </div>
@@ -566,6 +657,7 @@ label {
                     <td>{{ r.ID_SPECTRUM }}</td>
                     <td>{{ r.NA_DESCRIPTION }}</td>
                     <td>{{ r.NA_EQUIPMENT }}</td>
+                    <td>{{ r.LOCALITY_LABEL or "—" }}</td>
                     <td>{{ r.NU_FREQ_START }} – {{ r.NU_FREQ_END }}</td>
                     <td>{{ r.DT_TIME_START }}</td>
                     <td>{{ r.DT_TIME_END }}</td>
@@ -574,6 +666,7 @@ label {
                     <td>
                         {% if r.NA_FILE %}
                             <a href="{{ r.DOWNLOAD_URL or url_for('spectrum.download_spectrum', spectrum_id=r.ID_SPECTRUM) }}"
+                               data-download-loading-message="Iniciando download do arquivo..."
                                class="file-link">
                                 {{ r.NA_FILE }}
                             </a>
@@ -599,7 +692,11 @@ label {
 {% elif equipment_id %}
 
 <div class="card background-neutral-0 padding-l border-radius-m">
-    Nenhum registro encontrado para os filtros informados.
+    {% if site_availability_hint and site_availability_hint.DATE_START and site_availability_hint.DATE_END %}
+        Nenhum registro encontrado para os filtros informados. Para {{ site_availability_hint.LOCALITY_LABEL or ('site ' ~ site_id) }}, existem medições entre {{ site_availability_hint.DATE_START }} e {{ site_availability_hint.DATE_END }}.
+    {% else %}
+        Nenhum registro encontrado para os filtros informados.
+    {% endif %}
 </div>
 
 {% endif %}
@@ -607,6 +704,226 @@ label {
 {% endblock %}
 
 {% block extra_js %}
+<script>
+    (function () {
+        const queryForm = document.getElementById("spectrum-query-form");
+        const equipmentField = document.getElementById("equipment_id");
+        const siteField = document.getElementById("site_id");
+        const queryModeField = document.getElementById("query_mode");
+        const siteHint = document.getElementById("site-filter-hint");
+        let requestSerial = 0;
+        let refreshTimer = null;
+        const localityCache = new Map();
+        const hasInitialLocalityOptions = siteField.options.length > 1;
+
+        if (!queryForm || !equipmentField || !siteField || !queryModeField) {
+            return;
+        }
+
+        function setSiteHint(message) {
+            if (siteHint) {
+                siteHint.textContent = message;
+            }
+        }
+
+        function buildLocationQuery() {
+            const params = new URLSearchParams();
+            const equipmentId = equipmentField.value.trim();
+
+            if (equipmentId) {
+                params.set("equipment_id", equipmentId);
+            }
+
+            params.set("query_mode", queryModeField.value || "spectrum");
+
+            return params;
+        }
+
+        function buildModeChangeUrl(nextQueryMode) {
+            const params = new URLSearchParams();
+            const formData = new FormData(queryForm);
+
+            for (const [key, rawValue] of formData.entries()) {
+                const value = typeof rawValue === "string" ? rawValue.trim() : rawValue;
+
+                if (!value) {
+                    continue;
+                }
+
+                params.set(key, value);
+            }
+
+            params.set("query_mode", nextQueryMode || "spectrum");
+            params.delete("page");
+
+            if (nextQueryMode === "file") {
+                params.delete("freq_start");
+                params.delete("freq_end");
+                params.delete("description");
+
+                if (!["date_start", "date_end", "file_name", "spectrum_count"].includes(params.get("sort_by"))) {
+                    params.set("sort_by", "date_start");
+                }
+            } else if (!["date_start", "date_end", "freq_start", "freq_end", "rbw", "trace_count"].includes(params.get("sort_by"))) {
+                params.set("sort_by", "date_start");
+            }
+
+            const query = params.toString();
+            return `${queryForm.getAttribute("action") || window.location.pathname}${query ? `?${query}` : ""}`;
+        }
+
+        function hasEquipmentSelection() {
+            return Boolean(equipmentField && equipmentField.value.trim());
+        }
+
+        function resetSiteOptions(message) {
+            siteField.innerHTML = '<option value="">Todas as localidades</option>';
+            siteField.value = "";
+            setSiteHint(message);
+        }
+
+        function markSiteOptionsStale(message) {
+            setSiteHint(message);
+        }
+
+        function setSiteFieldRefreshing(isRefreshing) {
+            siteField.classList.toggle("is-refreshing", isRefreshing);
+        }
+
+        function getCurrentSelectionSnapshot() {
+            const selectedOption = siteField.options[siteField.selectedIndex];
+
+            return {
+                value: siteField.value ? String(siteField.value) : "",
+                label: selectedOption ? selectedOption.textContent : "",
+            };
+        }
+
+        function populateSiteOptions(rows, selectedValue, selectedLabel) {
+            siteField.innerHTML = '<option value="">Todas as localidades</option>';
+
+            rows.forEach((row) => {
+                const option = document.createElement("option");
+                option.value = String(row.ID_SITE);
+                option.textContent = row.OPTION_LABEL;
+                siteField.appendChild(option);
+            });
+
+            const hasSelectedValue = selectedValue
+                && rows.some((row) => String(row.ID_SITE) === String(selectedValue));
+
+            if (selectedValue && !hasSelectedValue && selectedLabel) {
+                const option = document.createElement("option");
+                option.value = String(selectedValue);
+                option.textContent = selectedLabel;
+                siteField.appendChild(option);
+            }
+
+            if (selectedValue) {
+                siteField.value = String(selectedValue);
+            } else {
+                siteField.value = "";
+            }
+
+            setSiteHint(
+                rows.length
+                    ? `${rows.length} localidades disponíveis.`
+                    : "Nenhuma localidade encontrada para os filtros atuais."
+            );
+        }
+
+        async function refreshLocalities(options = {}) {
+            const { force = false } = options;
+
+            if (!hasEquipmentSelection()) {
+                resetSiteOptions("Selecione uma estação para listar as localidades conhecidas.");
+                return;
+            }
+
+            const params = buildLocationQuery();
+            const cacheKey = params.toString();
+            const selectionSnapshot = getCurrentSelectionSnapshot();
+            const currentRequest = ++requestSerial;
+
+            if (!force && localityCache.has(cacheKey)) {
+                populateSiteOptions(
+                    localityCache.get(cacheKey),
+                    selectionSnapshot.value,
+                    selectionSnapshot.label,
+                );
+                return;
+            }
+
+            setSiteFieldRefreshing(true);
+            setSiteHint("Atualizando localidades observadas...");
+
+            try {
+                const response = await fetch(`/api/spectrum/localities?${params.toString()}`);
+                const payload = await response.json();
+
+                if (currentRequest !== requestSerial) {
+                    return;
+                }
+
+                const rows = Array.isArray(payload.rows) ? payload.rows : [];
+                localityCache.set(cacheKey, rows);
+                populateSiteOptions(
+                    rows,
+                    selectionSnapshot.value,
+                    selectionSnapshot.label,
+                );
+            } catch (error) {
+                if (currentRequest !== requestSerial) {
+                    return;
+                }
+                markSiteOptionsStale("Nao foi possivel atualizar as localidades agora.");
+            } finally {
+                if (currentRequest === requestSerial) {
+                    setSiteFieldRefreshing(false);
+                }
+            }
+        }
+
+        function scheduleLocalityRefresh(message) {
+            if (!hasEquipmentSelection()) {
+                resetSiteOptions("Selecione uma estação para listar as localidades conhecidas.");
+                return;
+            }
+
+            markSiteOptionsStale(message || "Atualizando localidades observadas...");
+
+            if (refreshTimer) {
+                window.clearTimeout(refreshTimer);
+            }
+
+            refreshTimer = window.setTimeout(() => {
+                refreshLocalities();
+            }, 450);
+        }
+
+        equipmentField.addEventListener("change", () => {
+            resetSiteOptions("Estação alterada. Carregando localidades conhecidas...");
+            scheduleLocalityRefresh("Estação alterada. Carregando localidades conhecidas...");
+        });
+        queryModeField.addEventListener("change", () => {
+            if (window.showPageLoadingOverlay) {
+                window.showPageLoadingOverlay("Atualizando modo de consulta...");
+            }
+
+            window.location.href = buildModeChangeUrl(queryModeField.value || "spectrum");
+        });
+
+        if (hasEquipmentSelection()) {
+            if (!hasInitialLocalityOptions || siteField.options.length <= 2) {
+                refreshLocalities();
+            } else {
+                setSiteHint(`${Math.max(siteField.options.length - 1, 0)} localidades disponíveis.`);
+            }
+        } else if (!hasInitialLocalityOptions) {
+            resetSiteOptions("Selecione uma estação para listar as localidades conhecidas.");
+        }
+    })();
+</script>
 {% if query_mode == "file" and rows %}
 <script>
     (function () {

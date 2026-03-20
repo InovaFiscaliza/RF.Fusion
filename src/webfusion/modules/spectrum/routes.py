@@ -1,18 +1,52 @@
+"""Routes for spectrum browsing, file mode, and repository downloads."""
+
 import os
+import time
 from urllib.parse import quote
 from urllib.parse import urlencode
-from flask import Blueprint, Response, jsonify, render_template, request
+from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from werkzeug.wsgi import wrap_file
 from modules.spectrum.service import (
     get_spectrum_data,
     get_spectrum_file_data,
     get_equipments,
+    get_spectrum_locality_options,
+    get_spectrum_site_option,
+    get_spectrum_site_availability_range,
     get_file_by_file_id,
     get_file_by_spectrum_id,
     get_spectra_by_file_id,
 )
 
 spectrum_bp = Blueprint("spectrum", __name__)
+
+
+def _build_visible_page_slots(page, total_pages, max_slots=5):
+    """Return a stable page-slot window for the numeric paginator.
+
+    The UI feels jumpy when the amount of visible page buttons changes near the
+    beginning or the end of the result set. Returning a fixed-length list keeps
+    the paginator footprint stable while still centering the current page when
+    possible.
+    """
+
+    if total_pages <= 0:
+        return []
+
+    max_slots = max(1, int(max_slots))
+
+    if total_pages <= max_slots:
+        return list(range(1, total_pages + 1))
+
+    half_window = max_slots // 2
+    start = max(1, page - half_window)
+    end = start + max_slots - 1
+
+    if end > total_pages:
+        end = total_pages
+        start = end - max_slots + 1
+
+    return list(range(start, end + 1))
 
 
 def _build_public_download_url(file_path):
@@ -169,11 +203,19 @@ def _normalize_optional_arg(value):
 
 @spectrum_bp.route("/spectrum", methods=["GET"])
 def spectrum():
+    """Render the spectrum query page.
+
+    The page supports two different grains:
+
+    - ``spectrum``: one row per spectrum
+    - ``file``: one row per repository file, with expandable linked spectra
+    """
     query_mode = request.args.get("query_mode", "spectrum")
     if query_mode not in {"spectrum", "file"}:
         query_mode = "spectrum"
 
     equipment_id = _normalize_optional_arg(request.args.get("equipment_id"))
+    site_id = _normalize_optional_arg(request.args.get("site_id"))
     start_date = _normalize_optional_arg(request.args.get("start_date"))
     end_date = _normalize_optional_arg(request.args.get("end_date"))
     freq_start = _normalize_optional_arg(request.args.get("freq_start"))
@@ -214,7 +256,15 @@ def spectrum():
     except Exception:
         freq_end = None
 
-    equipments = get_equipments()
+    query_error_message = None
+
+    try:
+        equipments = get_equipments()
+    except Exception:
+        current_app.logger.exception("failed_to_load_spectrum_equipments")
+        equipments = []
+        query_error_message = "Nao foi possivel carregar o catalogo de estacoes agora."
+
     equipment_name_by_id = {
         str(item["ID_EQUIPMENT"]): item["NA_EQUIPMENT"]
         for item in equipments
@@ -224,45 +274,19 @@ def spectrum():
     total = 0
     total_pages = 0
     visible_pages = []
-
+    site_availability_hint = None
     # ---------------------------
     # Consulta por equipamento
     # ---------------------------
     # Once an equipment is selected, empty optional filters should mean
     # "return all spectra for this equipment", not "skip the query".
     if equipment_id:
-        if query_mode == "file":
-            rows, total = get_spectrum_file_data(
-                equipment_id=equipment_id,
-                start_date=start_date,
-                end_date=end_date,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                page=page,
-                page_size=page_size
-            )
-        else:
-            rows, total = get_spectrum_data(
-                equipment_id=equipment_id,
-                start_date=start_date,
-                end_date=end_date,
-                freq_start=freq_start_value,
-                freq_end=freq_end_value,
-                description=description,
-                sort_by=sort_by,
-                sort_order=sort_order,
-                page=page,
-                page_size=page_size
-            )
-
-        total_pages = (total + page_size - 1) // page_size
-
-        # Ajuste caso usuário tente acessar página maior que total_pages
-        if total_pages > 0 and page > total_pages:
-            page = total_pages
+        query_started_at = time.perf_counter()
+        try:
             if query_mode == "file":
                 rows, total = get_spectrum_file_data(
                     equipment_id=equipment_id,
+                    site_id=site_id,
                     start_date=start_date,
                     end_date=end_date,
                     sort_by=sort_by,
@@ -273,6 +297,7 @@ def spectrum():
             else:
                 rows, total = get_spectrum_data(
                     equipment_id=equipment_id,
+                    site_id=site_id,
                     start_date=start_date,
                     end_date=end_date,
                     freq_start=freq_start_value,
@@ -284,27 +309,128 @@ def spectrum():
                     page_size=page_size
                 )
 
-        # ---------------------------
-        # Paginação numérica inteligente
-        # ---------------------------
-        if total_pages > 0:
-            start = max(1, page - 2)
-            end = min(total_pages, page + 2)
-            visible_pages = list(range(start, end + 1))
+            total_pages = ((total + page_size - 1) // page_size) if total > 0 else 0
 
-        if query_mode == "file":
-            selected_equipment_name = equipment_name_by_id.get(str(equipment_id))
+            # Ajuste caso usuário tente acessar página maior que total_pages
+            if total_pages > 0 and page > total_pages:
+                page = total_pages
+                if query_mode == "file":
+                    rows, total = get_spectrum_file_data(
+                        equipment_id=equipment_id,
+                        site_id=site_id,
+                        start_date=start_date,
+                        end_date=end_date,
+                        sort_by=sort_by,
+                        sort_order=sort_order,
+                        page=page,
+                        page_size=page_size
+                    )
+                else:
+                    rows, total = get_spectrum_data(
+                        equipment_id=equipment_id,
+                        site_id=site_id,
+                        start_date=start_date,
+                        end_date=end_date,
+                        freq_start=freq_start_value,
+                        freq_end=freq_end_value,
+                        description=description,
+                        sort_by=sort_by,
+                        sort_order=sort_order,
+                        page=page,
+                        page_size=page_size
+                    )
 
-            for row in rows:
-                row["NA_EQUIPMENT"] = selected_equipment_name
+            # ---------------------------
+            # Paginação numérica inteligente
+            # ---------------------------
+            if total_pages > 0:
+                visible_pages = _build_visible_page_slots(page, total_pages)
 
-        _annotate_download_urls(rows)
+            if query_mode == "file":
+                selected_equipment_name = equipment_name_by_id.get(str(equipment_id))
+
+                for row in rows:
+                    row["NA_EQUIPMENT"] = selected_equipment_name
+
+            _annotate_download_urls(rows)
+
+            current_app.logger.info(
+                "spectrum_query_completed query_mode=%s equipment_id=%s site_id=%s "
+                "start_date=%s end_date=%s rows=%s total=%s elapsed_ms=%.1f",
+                query_mode,
+                equipment_id,
+                site_id,
+                start_date,
+                end_date,
+                len(rows),
+                total,
+                (time.perf_counter() - query_started_at) * 1000.0,
+            )
+        except Exception:
+            current_app.logger.exception(
+                "failed_to_query_spectrum_page query_mode=%s equipment_id=%s site_id=%s "
+                "start_date=%s end_date=%s freq_start=%s freq_end=%s description=%s "
+                "sort_by=%s sort_order=%s page=%s",
+                query_mode,
+                equipment_id,
+                site_id,
+                start_date,
+                end_date,
+                freq_start,
+                freq_end,
+                description,
+                sort_by,
+                sort_order,
+                page,
+            )
+            rows = []
+            total = 0
+            total_pages = 0
+            visible_pages = []
+            query_error_message = (
+                "Nao foi possivel consultar os registros com esses filtros agora."
+            )
+
+    # Preserve the active filters while the user moves through pagination links.
+    localities = []
+
+    if site_id:
+        try:
+            selected_locality = get_spectrum_site_option(site_id)
+            if selected_locality:
+                localities = [selected_locality]
+        except Exception:
+            current_app.logger.exception(
+                "failed_to_load_selected_spectrum_locality site_id=%s equipment_id=%s query_mode=%s",
+                site_id,
+                equipment_id,
+                query_mode,
+            )
+
+    if (
+        equipment_id
+        and site_id
+        and not rows
+        and not query_error_message
+    ):
+        try:
+            site_availability_hint = get_spectrum_site_availability_range(
+                equipment_id=equipment_id,
+                site_id=site_id,
+            )
+        except Exception:
+            current_app.logger.exception(
+                "failed_to_load_spectrum_site_availability equipment_id=%s site_id=%s",
+                equipment_id,
+                site_id,
+            )
 
     query_base = urlencode(
         {
             key: value
             for key, value in {
                 "equipment_id": equipment_id,
+                "site_id": site_id,
                 "query_mode": query_mode,
                 "start_date": start_date,
                 "end_date": end_date,
@@ -322,9 +448,11 @@ def spectrum():
     return render_template(
         "spectrum/spectrum.html",
         equipments=equipments,
+        localities=localities,
         rows=rows,
         query_mode=query_mode,
         equipment_id=equipment_id,
+        site_id=site_id,
         start_date=start_date,
         end_date=end_date,
         freq_start=freq_start,
@@ -335,13 +463,53 @@ def spectrum():
         page=page,
         total_pages=total_pages,
         total=total,
+        query_error_message=query_error_message,
+        site_availability_hint=site_availability_hint,
         visible_pages=visible_pages,
         page_query_prefix=page_query_prefix,
     )
 
 
+@spectrum_bp.route("/api/spectrum/localities")
+def spectrum_localities():
+    """Return known localities for one equipment."""
+
+    query_mode = request.args.get("query_mode", "spectrum")
+    if query_mode not in {"spectrum", "file"}:
+        query_mode = "spectrum"
+
+    equipment_id = _normalize_optional_arg(request.args.get("equipment_id"))
+
+    if not equipment_id:
+        return jsonify({"rows": []})
+
+    started_at = time.perf_counter()
+
+    try:
+        rows = get_spectrum_locality_options(
+            equipment_id=equipment_id,
+            query_mode=query_mode,
+        )
+        current_app.logger.info(
+            "spectrum_localities_loaded query_mode=%s equipment_id=%s rows=%s elapsed_ms=%.1f",
+            query_mode,
+            equipment_id,
+            len(rows),
+            (time.perf_counter() - started_at) * 1000.0,
+        )
+        return jsonify({"rows": rows})
+    except Exception:
+        current_app.logger.exception(
+            "failed_to_load_spectrum_localities query_mode=%s equipment_id=%s",
+            query_mode,
+            equipment_id,
+        )
+        return jsonify({"rows": []})
+
+
 @spectrum_bp.route("/spectrum/download/<int:spectrum_id>")
 def download_spectrum(spectrum_id):
+    """Download the repository file linked to one spectrum row."""
 
     file_path = get_file_by_spectrum_id(spectrum_id)
 
@@ -353,6 +521,7 @@ def download_spectrum(spectrum_id):
 
 @spectrum_bp.route("/spectrum/download-file/<int:file_id>")
 def download_spectrum_file(file_id):
+    """Download a repository file directly from file-mode results."""
 
     file_path = get_file_by_file_id(file_id)
 
@@ -364,5 +533,13 @@ def download_spectrum_file(file_id):
 
 @spectrum_bp.route("/api/spectrum/file/<int:file_id>/spectra")
 def spectrum_file_spectra(file_id):
+    """Return the spectra listed in the expandable file-mode detail row."""
 
-    return jsonify({"rows": get_spectra_by_file_id(file_id)})
+    try:
+        return jsonify({"rows": get_spectra_by_file_id(file_id)})
+    except Exception:
+        current_app.logger.exception(
+            "failed_to_load_spectrum_file_detail file_id=%s",
+            file_id,
+        )
+        return jsonify({"rows": []})

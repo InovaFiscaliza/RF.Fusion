@@ -1,0 +1,999 @@
+{% extends "base.html" %}
+{% block title %}Panorama do Servidor{% endblock %}
+
+{% block breadcrumb %}
+<div class="breadcrumb">
+    <a href="{{ url_for('index') }}">Consulta</a>
+    <span class="breadcrumb-separator">›</span>
+    <span>Servidor</span>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    html,
+    body {
+        overflow-y: auto !important;
+    }
+
+    body .layout.layout-top.fixed-header {
+        overflow: visible !important;
+    }
+
+    body .main-content {
+        overflow: visible !important;
+    }
+
+    .card {
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+    }
+
+    label {
+        display: block;
+        margin-bottom: 6px;
+        font-weight: 600;
+    }
+
+    .form-control {
+        width: 100%;
+        height: 38px;
+        padding: 8px 12px;
+        box-sizing: border-box;
+    }
+
+    .online-filter {
+        display: flex;
+        align-items: center;
+        min-height: 38px;
+        padding: 0 12px;
+        border-radius: 8px;
+        border: 1px solid #cbd5e1;
+        background: #ffffff;
+    }
+
+    .online-filter label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        font-weight: 500;
+        margin: 0;
+    }
+
+    .btn-search {
+        background-color: #1f4f8b;
+        color: #ffffff;
+        border: 1px solid #1f4f8b;
+        border-radius: 8px;
+        padding: 8px 18px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background-color 0.2s ease;
+    }
+
+    .btn-search:hover {
+        background-color: #163a66;
+        border-color: #163a66;
+    }
+
+    .section-title {
+        font-weight: 600;
+        margin-top: 32px;
+        margin-bottom: 16px;
+        border-bottom: 1px solid #e5e7eb;
+        padding-bottom: 6px;
+        font-size: 15px;
+    }
+
+    .section-header-row {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 16px;
+        margin-top: 32px;
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+    }
+
+    .section-header-row .section-title {
+        margin: 0;
+        min-width: 0;
+    }
+
+    .section-header-copy {
+        min-width: 0;
+        flex: 1 1 420px;
+    }
+
+    .section-header-copy .summary-card-note {
+        margin-top: 8px;
+    }
+
+    .section-online-filter {
+        flex: 0 0 auto;
+    }
+
+    .table-panel-toolbar {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+    }
+
+    .table-panel-toolbar .summary-card-note {
+        margin: 0;
+        flex: 1 1 420px;
+    }
+
+    .table-panel-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+
+    @media (max-width: 900px) {
+        .table-panel-actions {
+            width: 100%;
+            justify-content: flex-start;
+        }
+    }
+
+    .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 14px;
+        margin-top: 14px;
+    }
+
+    .summary-subsection + .summary-subsection {
+        margin-top: 22px;
+    }
+
+    .summary-subsection-title {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 700;
+        color: #334155;
+    }
+
+    .summary-subsection-note {
+        margin-top: 4px;
+        font-size: 12px;
+        color: #64748b;
+    }
+
+    .summary-card {
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        background: #f8fafc;
+        padding: 14px 16px;
+    }
+
+    .summary-card-label {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: #64748b;
+        margin-bottom: 6px;
+    }
+
+    .summary-card-value {
+        font-size: 22px;
+        font-weight: 700;
+        color: #0f172a;
+    }
+
+    .summary-card-value-loading {
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #64748b;
+    }
+
+    .summary-card-value-online {
+        color: #166534;
+    }
+
+    .summary-card-value-offline {
+        color: #9a3412;
+    }
+
+    .summary-card-note {
+        margin-top: 4px;
+        font-size: 12px;
+        color: #64748b;
+    }
+
+    .page-intro {
+        margin-top: -6px;
+        margin-bottom: 18px;
+        font-size: 13px;
+        color: #475569;
+    }
+
+    .page-intro strong {
+        color: #0f172a;
+    }
+
+    .details-panel {
+        margin-top: 16px;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        background: #ffffff;
+    }
+
+    .details-panel summary {
+        cursor: pointer;
+        list-style: none;
+        padding: 14px 16px;
+        font-weight: 600;
+        color: #1f2937;
+    }
+
+    .details-panel summary::-webkit-details-marker {
+        display: none;
+    }
+
+    .details-panel summary::before {
+        content: "▸";
+        display: inline-block;
+        margin-right: 8px;
+        color: #1f4f8b;
+    }
+
+    .details-panel[open] summary::before {
+        content: "▾";
+    }
+
+    .details-panel-body {
+        padding: 0 16px 16px;
+    }
+
+    .details-summary-meta {
+        display: inline-block;
+        margin-left: 8px;
+        font-size: 12px;
+        font-weight: 500;
+        color: #64748b;
+    }
+
+    .stats-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+
+    .stats-table th,
+    .stats-table td {
+        padding: 10px 12px;
+    }
+
+    .stats-table th {
+        text-align: left;
+        font-weight: 600;
+        color: #374151;
+        white-space: nowrap;
+    }
+
+    .stats-table td {
+        color: #111827;
+        white-space: nowrap;
+    }
+
+    .stats-table tr:not(:last-child) {
+        border-bottom: 1px solid #f1f5f9;
+    }
+
+    .annual-breakdown {
+        margin-top: 16px;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        background: #ffffff;
+        overflow-x: auto;
+    }
+
+    .diagnostic-breakdown {
+        margin-top: 16px;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        background: #ffffff;
+        overflow: hidden;
+    }
+
+    .diagnostic-table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: auto;
+        font-size: 13px;
+    }
+
+    .diagnostic-table th,
+    .diagnostic-table td {
+        padding: 10px 12px;
+        vertical-align: top;
+    }
+
+    .diagnostic-table th {
+        text-align: left;
+        font-weight: 600;
+        color: #374151;
+    }
+
+    .diagnostic-table tr:not(:last-child) {
+        border-bottom: 1px solid #f1f5f9;
+    }
+
+    .diagnostic-count-col {
+        width: 140px;
+        text-align: right !important;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+        color: #475569;
+    }
+
+    .diagnostic-message-cell {
+        white-space: normal;
+        word-break: break-word;
+        color: #1f2937;
+        line-height: 1.5;
+        font-size: 13px;
+    }
+
+    .status-badge {
+        display: inline-block;
+        padding: 3px 10px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .status-online {
+        background: #dcfce7;
+        color: #166534;
+    }
+
+    .status-offline {
+        background: #fee2e2;
+        color: #991b1b;
+    }
+
+    .status-busy {
+        background: #fef3c7;
+        color: #92400e;
+    }
+
+    .status-idle {
+        background: #dbeafe;
+        color: #1e40af;
+    }
+
+    .link-action {
+        color: #1f4f8b;
+        font-weight: 600;
+        text-decoration: none;
+    }
+
+    .link-action:hover {
+        text-decoration: underline;
+    }
+
+    #online_only {
+        all: revert !important;
+        appearance: auto !important;
+        -webkit-appearance: checkbox !important;
+        display: inline-block !important;
+        position: static !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+        width: 16px !important;
+        height: 16px !important;
+        margin: 0 !important;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<h1 class="margin-bottom-l">
+    Panorama do Servidor
+</h1>
+
+<div class="page-intro">
+    <strong>Escopo desta tela:</strong> a tabela desta página representa o catálogo de estações conhecido pelo Zabbix/Grafana.
+</div>
+
+<form id="server-filter-form" method="get" data-loading-message="Atualizando panorama do servidor..."></form>
+
+<div class="card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+    <div class="section-title section-title-tight">Consolidado do Servidor</div>
+    <div class="summary-subsection">
+        <div class="summary-subsection-title">Panorama das Estações</div>
+        <div class="summary-subsection-note">Visão geral do parque monitorado e do estado atual de conectividade.</div>
+        <div class="summary-grid">
+            <div class="summary-card">
+                <div class="summary-card-label">Estações Cadastradas</div>
+                <div class="summary-card-value">{{ server_overview.TOTAL_HOSTS }}</div>
+                <div class="summary-card-note">Total global conhecido pelo servidor</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Online</div>
+                <div class="summary-card-value">{{ server_overview.ONLINE_HOSTS }}</div>
+                <div class="summary-card-note">Estações com conectividade ativa no total global</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Offline</div>
+                <div class="summary-card-value">{{ server_overview.OFFLINE_HOSTS }}</div>
+                <div class="summary-card-note">Estações indisponíveis no total global</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Ocupadas</div>
+                <div class="summary-card-value">{{ server_overview.BUSY_HOSTS }}</div>
+                <div class="summary-card-note">Hosts atualmente em uso operacional</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="summary-subsection">
+        <div class="summary-subsection-title">Ciclo de Backup e Armazenamento</div>
+        <div class="summary-subsection-note">Acompanha descoberta de arquivos, transferência para o repositório e volume movimentado.</div>
+        <div class="summary-grid">
+            <div class="summary-card">
+                <div class="summary-card-label">Arquivos mapeados</div>
+                <div class="summary-card-value summary-card-value-loading" id="server-summary-discovered-total">CARREGANDO</div>
+                <div class="summary-card-note">Total acumulado de descobertas</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Backups no mês</div>
+                <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-done-month">CARREGANDO</div>
+                <div class="summary-card-note">Mês de referência: <span id="server-summary-month-label">{{ server_overview.CURRENT_MONTH_LABEL }}</span></div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Volume no mês</div>
+                <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-done-gb-month">CARREGANDO</div>
+                <div class="summary-card-note">Consumo atual da franquia agregada</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Backups pendentes</div>
+                <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-pending-total">CARREGANDO</div>
+                <div class="summary-card-note">Arquivos aguardando transferência</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Backups com erro</div>
+                <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-error-total">CARREGANDO</div>
+                <div class="summary-card-note">Falhas conhecidas na etapa de backup</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Volume pendente de backup</div>
+                <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-pending-gb">CARREGANDO</div>
+                <div class="summary-card-note">Volume ainda não transferido</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="summary-subsection">
+        <div class="summary-subsection-title">Processamento e Base Analítica</div>
+        <div class="summary-subsection-note">Separa o status do processamento por arquivo do volume analítico final gerado em espectros.</div>
+        <div class="summary-grid">
+            <div class="summary-card">
+                <div class="summary-card-label">Arquivos com Processamento Pendente</div>
+                <div class="summary-card-value summary-card-value-loading" id="server-summary-processing-pending-total">CARREGANDO</div>
+                <div class="summary-card-note">Arquivos já transferidos e ainda aguardando processamento</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Arquivos com Processamento Concluído</div>
+                <div class="summary-card-value summary-card-value-loading" id="server-summary-processing-done-total">CARREGANDO</div>
+                <div class="summary-card-note">Arquivos processados com sucesso no histórico global</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Arquivos com Erro de Processamento</div>
+                <div class="summary-card-value summary-card-value-loading" id="server-summary-processing-error-total">CARREGANDO</div>
+                <div class="summary-card-note">Arquivos que falharam na etapa de processamento</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Espectros Gerados</div>
+                <div class="summary-card-value summary-card-value-loading" id="server-summary-fact-spectrum-total">CARREGANDO</div>
+                <div class="summary-card-note">Total de espectros gravados na base analítica; um arquivo pode gerar vários espectros</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section-title">Infraestrutura Compartilhada do Servidor</div>
+    <div class="summary-grid">
+        <div class="summary-card">
+            <div class="summary-card-label">Uso de Memória RAM</div>
+            <div class="summary-card-value">
+                {{ server_overview.SERVER_MEMORY.used_human }}/{{ server_overview.SERVER_MEMORY.total_human }}
+            </div>
+            <div class="summary-card-note">
+                Ocupado/Total | Disponível {{ server_overview.SERVER_MEMORY.available_human }} | Uso {{ server_overview.SERVER_MEMORY.use_percent }}%
+            </div>
+        </div>
+        <div class="summary-card">
+            <div class="summary-card-label">Uso do Repositório Oficial</div>
+            <div class="summary-card-value">
+                {% if server_overview.REPOSFI_USAGE.mounted %}
+                {{ server_overview.REPOSFI_USAGE.used_human }}/{{ server_overview.REPOSFI_USAGE.total_human }}
+                {% else %}
+                Indisponível
+                {% endif %}
+            </div>
+            <div class="summary-card-note">
+                {% if server_overview.REPOSFI_USAGE.mounted %}
+                Ocupado/Total | Livre {{ server_overview.REPOSFI_USAGE.free_human }} | Uso {{ server_overview.REPOSFI_USAGE.use_percent }}%
+                {% else %}
+                Montagem {{ server_overview.REPOSFI_USAGE.path }} indisponível
+                {% endif %}
+            </div>
+        </div>
+        <div class="summary-card">
+            <div class="summary-card-label">Status do appAnalise</div>
+            <div class="summary-card-value {% if server_overview.APP_ANALISE_STATUS.online %}summary-card-value-online{% else %}summary-card-value-offline{% endif %}">
+                {% if server_overview.APP_ANALISE_STATUS.online %}
+                Online
+                {% else %}
+                Offline
+                {% endif %}
+            </div>
+            <div class="summary-card-note">
+                {{ server_overview.APP_ANALISE_STATUS.host or "-" }}:{{ server_overview.APP_ANALISE_STATUS.port or "-" }}
+                {% if server_overview.APP_ANALISE_STATUS.online %}
+                | {{ server_overview.APP_ANALISE_STATUS.latency_ms }} ms
+                {% elif server_overview.APP_ANALISE_STATUS.error %}
+                | {{ server_overview.APP_ANALISE_STATUS.error }}
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="section-title">Diagnóstico de Processamento</div>
+    <details class="details-panel" id="server-processing-errors-panel">
+        <summary>
+            Clique para carregar detalhes sobre erros agrupados de processamento
+            <span class="details-summary-meta" id="server-processing-errors-meta">Sob demanda para abrir a página mais rápido</span>
+        </summary>
+        <div class="details-panel-body">
+            <div class="diagnostic-breakdown">
+                <table class="diagnostic-table">
+                    <thead>
+                        <tr>
+                            <th>Mensagem de erro</th>
+                            <th class="diagnostic-count-col">Ocorrências</th>
+                        </tr>
+                    </thead>
+                    <tbody id="server-processing-errors-body">
+                        <tr>
+                            <td colspan="2">Abra este painel para carregar os erros agrupados do histórico global.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </details>
+
+    <div class="section-title">Diagnóstico de Backup</div>
+    <details class="details-panel" id="server-backup-errors-panel">
+        <summary>
+            Clique para carregar detalhes sobre erros agrupados de backup
+            <span class="details-summary-meta" id="server-backup-errors-meta">Sob demanda para abrir a página mais rápido</span>
+        </summary>
+        <div class="details-panel-body">
+            <div class="diagnostic-breakdown">
+                <table class="diagnostic-table">
+                    <thead>
+                        <tr>
+                            <th>Mensagem de erro</th>
+                            <th class="diagnostic-count-col">Ocorrências</th>
+                        </tr>
+                    </thead>
+                    <tbody id="server-backup-errors-body">
+                        <tr>
+                            <td colspan="2">Abra este painel para carregar os erros agrupados de backup do histórico global.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </details>
+
+    <details class="details-panel" id="server-host-table-panel">
+        <summary>
+            Clique para expandir a tabela de estações
+            <span class="details-summary-meta">{{ server_overview.HOST_ROWS|length }} estação(ões) no filtro atual</span>
+        </summary>
+        <div class="details-panel-body">
+            <div class="table-panel-toolbar">
+                <div class="summary-card-note">
+                    O consolidado acima é global. O filtro desta página afeta apenas a tabela abaixo, formada pelas estações catalogadas no Zabbix/Grafana.
+                </div>
+                <div class="table-panel-actions">
+                    <div class="online-filter section-online-filter">
+                        <label>
+                            <input
+                                type="checkbox"
+                                id="online_only"
+                                name="online_only"
+                                value="1"
+                                form="server-filter-form"
+                                onchange="toggleServerOnlineFilter(this)"
+                                {% if online_only %}checked{% endif %}
+                            >
+                            Apenas Online na Tabela
+                        </label>
+                    </div>
+                    <button
+                        type="submit"
+                        class="btn-search"
+                        form="server-filter-form"
+                    >
+                        Atualizar Panorama
+                    </button>
+                </div>
+            </div>
+            <div class="annual-breakdown">
+                <table class="stats-table">
+                    <thead>
+                        <tr>
+                            <th>Estação</th>
+                            <th>Conexão</th>
+                            <th>Ocupação</th>
+                            <th>Último check</th>
+                            <th>Backups pendentes</th>
+                            <th>Erros de backup</th>
+                            <th>Processamentos pendentes</th>
+                            <th>Erros de processamento</th>
+                            <th>Volume pendente (GB)</th>
+                            <th>Ação</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for row in server_overview.HOST_ROWS %}
+                        <tr>
+                            <td>{{ row.NA_HOST_NAME }}</td>
+                            <td>
+                                {% if row.IS_OFFLINE %}
+                                <span class="status-badge status-offline">Offline</span>
+                                {% else %}
+                                <span class="status-badge status-online">Online</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if row.IS_BUSY %}
+                                <span class="status-badge status-busy">Ocupada</span>
+                                {% else %}
+                                <span class="status-badge status-idle">Disponível</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ row.DT_LAST_CHECK or "-" }}</td>
+                            <td>{{ row.NU_PENDING_FILE_BACKUP_TASKS }}</td>
+                            <td>{{ row.NU_ERROR_FILE_BACKUP_TASKS }}</td>
+                            <td>{{ row.NU_PENDING_FILE_PROCESS_TASKS }}</td>
+                            <td>{{ row.NU_ERROR_FILE_PROCESS_TASKS }}</td>
+                            <td>{{ row.PENDING_BACKUP_GB }}</td>
+                            <td>
+                                <a
+                                    class="link-action"
+                                    href="{{ url_for('host.host', host_id=row.ID_HOST, online_only='1' if online_only else '0') }}"
+                                    data-loading-message="Carregando panorama da estação..."
+                                >
+                                    Abrir
+                                </a>
+                            </td>
+                        </tr>
+                    {% else %}
+                        <tr>
+                            <td colspan="10">Nenhuma estação encontrada para o filtro atual.</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </details>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    const SERVER_HOST_TABLE_PANEL_STATE_KEY = "webfusion.server.host_table_panel_open";
+
+    function persistServerHostTablePanelState(isOpen) {
+        try {
+            window.sessionStorage.setItem(
+                SERVER_HOST_TABLE_PANEL_STATE_KEY,
+                isOpen ? "1" : "0"
+            );
+        } catch (error) {
+            // Storage is only a UX enhancement here; failure should not block navigation.
+        }
+    }
+
+    function toggleServerOnlineFilter(checkbox) {
+        const hostTablePanel = document.getElementById("server-host-table-panel");
+
+        if (hostTablePanel) {
+            persistServerHostTablePanelState(Boolean(hostTablePanel.open));
+        }
+
+        if (window.showPageLoadingOverlay) {
+            window.showPageLoadingOverlay("Atualizando filtro de estações...");
+        }
+
+        if (checkbox.form && checkbox.form.requestSubmit) {
+            checkbox.form.requestSubmit();
+            return;
+        }
+
+        if (checkbox.form) {
+            checkbox.form.submit();
+        }
+    }
+
+    (function () {
+        const summaryBindings = {
+            CURRENT_MONTH_LABEL: document.getElementById("server-summary-month-label"),
+            BACKUP_DONE_THIS_MONTH: document.getElementById("server-summary-backup-done-month"),
+            BACKUP_DONE_GB_THIS_MONTH: document.getElementById("server-summary-backup-done-gb-month"),
+            DISCOVERED_FILES_TOTAL: document.getElementById("server-summary-discovered-total"),
+            BACKUP_PENDING_FILES_TOTAL: document.getElementById("server-summary-backup-pending-total"),
+            BACKUP_ERROR_FILES_TOTAL: document.getElementById("server-summary-backup-error-total"),
+            PROCESSING_PENDING_FILES_TOTAL: document.getElementById("server-summary-processing-pending-total"),
+            PROCESSING_DONE_FILES_TOTAL: document.getElementById("server-summary-processing-done-total"),
+            FACT_SPECTRUM_TOTAL: document.getElementById("server-summary-fact-spectrum-total"),
+            PROCESSING_ERROR_FILES_TOTAL: document.getElementById("server-summary-processing-error-total"),
+            BACKUP_PENDING_GB_TOTAL: document.getElementById("server-summary-backup-pending-gb"),
+        };
+        const panel = document.getElementById("server-processing-errors-panel");
+        const meta = document.getElementById("server-processing-errors-meta");
+        const body = document.getElementById("server-processing-errors-body");
+        const backupPanel = document.getElementById("server-backup-errors-panel");
+        const backupMeta = document.getElementById("server-backup-errors-meta");
+        const backupBody = document.getElementById("server-backup-errors-body");
+        const hostTablePanel = document.getElementById("server-host-table-panel");
+        const serverFilterForm = document.getElementById("server-filter-form");
+
+        if (hostTablePanel) {
+            try {
+                if (window.sessionStorage.getItem(SERVER_HOST_TABLE_PANEL_STATE_KEY) === "1") {
+                    hostTablePanel.open = true;
+                }
+            } catch (error) {
+                // Ignore storage access issues and keep the default collapsed state.
+            }
+
+            hostTablePanel.addEventListener("toggle", function () {
+                persistServerHostTablePanelState(Boolean(hostTablePanel.open));
+            });
+        }
+
+        if (serverFilterForm && hostTablePanel) {
+            serverFilterForm.addEventListener("submit", function () {
+                persistServerHostTablePanelState(Boolean(hostTablePanel.open));
+            });
+        }
+
+        function setMessageRow(targetBody, message) {
+            if (!targetBody) {
+                return;
+            }
+            targetBody.innerHTML = "";
+            const tr = document.createElement("tr");
+            const td = document.createElement("td");
+            td.colSpan = 2;
+            td.textContent = message;
+            tr.appendChild(td);
+            targetBody.appendChild(tr);
+        }
+
+        function renderRows(targetBody, rows, emptyMessage) {
+            if (!targetBody) {
+                return;
+            }
+            targetBody.innerHTML = "";
+
+            if (!Array.isArray(rows) || rows.length === 0) {
+                setMessageRow(targetBody, emptyMessage);
+                return;
+            }
+
+            rows.forEach((row) => {
+                const tr = document.createElement("tr");
+                const messageTd = document.createElement("td");
+                const countTd = document.createElement("td");
+
+                messageTd.className = "diagnostic-message-cell";
+                messageTd.textContent = row.ERROR_MESSAGE || "(Sem mensagem)";
+
+                countTd.className = "diagnostic-count-col";
+                countTd.textContent = String(row.ERROR_COUNT || 0);
+
+                tr.appendChild(messageTd);
+                tr.appendChild(countTd);
+                targetBody.appendChild(tr);
+            });
+        }
+
+        function bindDiagnosticPanel(panelElement, metaElement, bodyElement, endpoint, options) {
+            if (!panelElement || !metaElement || !bodyElement) {
+                return;
+            }
+
+            let loading = false;
+            let loaded = false;
+
+            function loadPanel() {
+                if (loading || loaded) {
+                    return;
+                }
+
+                loading = true;
+                metaElement.textContent = "Carregando...";
+                setMessageRow(bodyElement, options.loadingMessage);
+
+                fetch(endpoint)
+                    .then((response) => {
+                        if (!response.ok) {
+                            throw new Error("request_failed");
+                        }
+                        return response.json();
+                    })
+                    .then((payload) => {
+                        renderRows(bodyElement, payload.rows || [], options.emptyMessage);
+                        metaElement.textContent = `${payload.error_group_count || 0} tipos / ${payload.error_total_occurrences || 0} ocorrências`;
+                        loaded = true;
+                    })
+                    .catch(() => {
+                        setMessageRow(bodyElement, options.failureMessage);
+                        metaElement.textContent = "Falha ao carregar";
+                    })
+                    .finally(() => {
+                        loading = false;
+                    });
+            }
+
+            panelElement.addEventListener("toggle", function () {
+                if (panelElement.open) {
+                    loadPanel();
+                }
+            });
+        }
+
+        function renderSummaryMetrics(payload) {
+            if (summaryBindings.CURRENT_MONTH_LABEL && payload.CURRENT_MONTH_LABEL) {
+                summaryBindings.CURRENT_MONTH_LABEL.textContent = payload.CURRENT_MONTH_LABEL;
+            }
+
+            function setSummaryValue(element, text) {
+                if (!element) {
+                    return;
+                }
+
+                element.textContent = text;
+                element.classList.remove("summary-card-value-loading");
+            }
+
+            if (summaryBindings.BACKUP_DONE_THIS_MONTH) {
+                setSummaryValue(
+                    summaryBindings.BACKUP_DONE_THIS_MONTH,
+                    String(payload.BACKUP_DONE_THIS_MONTH ?? 0)
+                );
+            }
+
+            if (summaryBindings.BACKUP_DONE_GB_THIS_MONTH) {
+                setSummaryValue(
+                    summaryBindings.BACKUP_DONE_GB_THIS_MONTH,
+                    `${payload.BACKUP_DONE_GB_THIS_MONTH ?? 0} GB`
+                );
+            }
+
+            if (summaryBindings.DISCOVERED_FILES_TOTAL) {
+                setSummaryValue(
+                    summaryBindings.DISCOVERED_FILES_TOTAL,
+                    String(payload.DISCOVERED_FILES_TOTAL ?? 0)
+                );
+            }
+
+            if (summaryBindings.BACKUP_PENDING_FILES_TOTAL) {
+                setSummaryValue(
+                    summaryBindings.BACKUP_PENDING_FILES_TOTAL,
+                    String(payload.BACKUP_PENDING_FILES_TOTAL ?? 0)
+                );
+            }
+
+            if (summaryBindings.BACKUP_ERROR_FILES_TOTAL) {
+                setSummaryValue(
+                    summaryBindings.BACKUP_ERROR_FILES_TOTAL,
+                    String(payload.BACKUP_ERROR_FILES_TOTAL ?? 0)
+                );
+            }
+
+            if (summaryBindings.PROCESSING_PENDING_FILES_TOTAL) {
+                setSummaryValue(
+                    summaryBindings.PROCESSING_PENDING_FILES_TOTAL,
+                    String(payload.PROCESSING_PENDING_FILES_TOTAL ?? 0)
+                );
+            }
+
+            if (summaryBindings.PROCESSING_DONE_FILES_TOTAL) {
+                setSummaryValue(
+                    summaryBindings.PROCESSING_DONE_FILES_TOTAL,
+                    String(payload.PROCESSING_DONE_FILES_TOTAL ?? 0)
+                );
+            }
+
+            if (summaryBindings.FACT_SPECTRUM_TOTAL) {
+                setSummaryValue(
+                    summaryBindings.FACT_SPECTRUM_TOTAL,
+                    String(payload.FACT_SPECTRUM_TOTAL ?? 0)
+                );
+            }
+
+            if (summaryBindings.PROCESSING_ERROR_FILES_TOTAL) {
+                setSummaryValue(
+                    summaryBindings.PROCESSING_ERROR_FILES_TOTAL,
+                    String(payload.PROCESSING_ERROR_FILES_TOTAL ?? 0)
+                );
+            }
+
+            if (summaryBindings.BACKUP_PENDING_GB_TOTAL) {
+                setSummaryValue(
+                    summaryBindings.BACKUP_PENDING_GB_TOTAL,
+                    `${payload.BACKUP_PENDING_GB_TOTAL ?? 0} GB`
+                );
+            }
+        }
+
+        fetch("{{ url_for('server.server_summary_metrics') }}")
+            .then((response) => {
+                if (!response.ok) {
+                    throw new Error("request_failed");
+                }
+                return response.json();
+            })
+            .then(renderSummaryMetrics)
+            .catch(() => {
+                renderSummaryMetrics({
+                    BACKUP_DONE_THIS_MONTH: 0,
+                    BACKUP_DONE_GB_THIS_MONTH: 0,
+                    DISCOVERED_FILES_TOTAL: 0,
+                    BACKUP_PENDING_FILES_TOTAL: 0,
+                    BACKUP_ERROR_FILES_TOTAL: 0,
+                    PROCESSING_PENDING_FILES_TOTAL: 0,
+                    PROCESSING_DONE_FILES_TOTAL: 0,
+                    FACT_SPECTRUM_TOTAL: 0,
+                    PROCESSING_ERROR_FILES_TOTAL: 0,
+                    BACKUP_PENDING_GB_TOTAL: 0,
+                });
+            });
+
+        bindDiagnosticPanel(
+            panel,
+            meta,
+            body,
+            "{{ url_for('server.server_processing_errors') }}",
+            {
+                loadingMessage: "Carregando erros agrupados...",
+                emptyMessage: "Nenhum erro de processamento agrupado no histórico global.",
+                failureMessage: "Não foi possível carregar os erros agrupados agora."
+            }
+        );
+
+        bindDiagnosticPanel(
+            backupPanel,
+            backupMeta,
+            backupBody,
+            "{{ url_for('server.server_backup_errors') }}",
+            {
+                loadingMessage: "Carregando erros agrupados de backup...",
+                emptyMessage: "Nenhum erro de backup agrupado no histórico global.",
+                failureMessage: "Não foi possível carregar os erros agrupados de backup agora."
+            }
+        );
+    })();
+</script>
+{% endblock %}

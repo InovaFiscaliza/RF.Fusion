@@ -11,6 +11,19 @@
 
 {% block extra_css %}
 <style>
+    html,
+    body {
+        overflow-y: auto !important;
+    }
+
+    body .layout.layout-top.fixed-header {
+        overflow: visible !important;
+    }
+
+    body .main-content {
+        overflow: visible !important;
+    }
+
     .card {
         box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
     }
@@ -34,12 +47,9 @@
 
     .form-control {
         width: 100%;
-        height: 36px;
-        padding: 6px 10px;
+        height: 38px;
+        padding: 8px 12px;
         box-sizing: border-box;
-        border: 1px solid #cbd5e1;
-        border-radius: 6px;
-        background: #fff;
     }
 
     .select-shell {
@@ -69,11 +79,11 @@
     .online-filter {
         display: flex;
         align-items: center;
-        min-height: 36px;
+        min-height: 38px;
         padding: 0 12px;
+        border-radius: 8px;
         border: 1px solid #cbd5e1;
-        border-radius: 6px;
-        background: #fff;
+        background: #ffffff;
     }
 
     .online-filter label {
@@ -89,7 +99,7 @@
         background-color: #1f4f8b;
         color: #ffffff;
         border: 1px solid #1f4f8b;
-        border-radius: 6px;
+        border-radius: 8px;
         padding: 8px 18px;
         font-weight: 600;
         cursor: pointer;
@@ -159,28 +169,205 @@
         color: #92400e;
     }
 
-    .status-idle {
+.status-idle {
         background: #dbeafe;
         color: #1e40af;
     }
 
+    .status-warning {
+        background: #ffedd5;
+        color: #9a3412;
+    }
+
     .host-stats-scroll {
-        max-height: 72vh;
-        overflow-y: auto;
-        padding-right: 8px;
+        overflow: visible;
+        padding-right: 0;
     }
 
-    .host-stats-scroll::-webkit-scrollbar {
-        width: 8px;
+    .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 14px;
+        margin-top: 14px;
     }
 
-    .host-stats-scroll::-webkit-scrollbar-thumb {
-        background: #cbd5e1;
-        border-radius: 6px;
+    .summary-card {
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        background: #f8fafc;
+        padding: 14px 16px;
     }
 
-    .host-stats-scroll::-webkit-scrollbar-thumb:hover {
-        background: #94a3b8;
+    .summary-card-label {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: #64748b;
+        margin-bottom: 6px;
+    }
+
+    .summary-card-value {
+        font-size: 22px;
+        font-weight: 700;
+        color: #0f172a;
+    }
+
+    .summary-card-value-loading {
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #64748b;
+    }
+
+    .summary-card-value-online {
+        color: #166534;
+    }
+
+    .summary-card-value-offline {
+        color: #9a3412;
+    }
+
+    .summary-card-note {
+        margin-top: 4px;
+        font-size: 12px;
+        color: #64748b;
+    }
+
+    .details-panel {
+        margin-top: 16px;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        background: #ffffff;
+    }
+
+    .details-panel summary {
+        cursor: pointer;
+        list-style: none;
+        padding: 14px 16px;
+        font-weight: 600;
+        color: #1f2937;
+    }
+
+    .details-panel summary::-webkit-details-marker {
+        display: none;
+    }
+
+    .details-panel summary::before {
+        content: "▸";
+        display: inline-block;
+        margin-right: 8px;
+        color: #1f4f8b;
+    }
+
+    .details-panel[open] summary::before {
+        content: "▾";
+    }
+
+    .details-panel-body {
+        padding: 0 16px 16px;
+    }
+
+    .annual-breakdown {
+        margin-top: 16px;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        background: #ffffff;
+        overflow-x: auto;
+    }
+
+    .diagnostic-breakdown {
+        margin-top: 16px;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        background: #ffffff;
+        overflow: hidden;
+    }
+
+    .diagnostic-table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: auto;
+        font-size: 13px;
+    }
+
+    .diagnostic-table th,
+    .diagnostic-table td {
+        padding: 10px 12px;
+        vertical-align: top;
+    }
+
+    .diagnostic-table th {
+        text-align: left;
+        font-weight: 600;
+        color: #374151;
+    }
+
+    .diagnostic-table tr:not(:last-child) {
+        border-bottom: 1px solid #f1f5f9;
+    }
+
+    .diagnostic-count-col {
+        width: 140px;
+        text-align: right !important;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+        color: #475569;
+    }
+
+    .diagnostic-message-cell {
+        white-space: normal;
+        word-break: break-word;
+        color: #1f2937;
+        line-height: 1.5;
+        font-size: 13px;
+    }
+
+    .annual-breakdown .stats-table {
+        min-width: 1080px;
+        table-layout: fixed;
+    }
+
+    .annual-breakdown .stats-table th {
+        width: auto;
+        white-space: nowrap;
+        vertical-align: bottom;
+    }
+
+    .annual-breakdown .stats-table td,
+    .annual-breakdown .stats-table th {
+        font-size: 12px;
+    }
+
+    .annual-breakdown .stats-table th:first-child,
+    .annual-breakdown .stats-table td:first-child {
+        text-align: left;
+        width: 88px;
+    }
+
+    .annual-breakdown .stats-table th:not(:first-child),
+    .annual-breakdown .stats-table td:not(:first-child) {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .overview-table th {
+        width: auto;
+        white-space: nowrap;
+    }
+
+    .overview-table td {
+        white-space: nowrap;
+    }
+
+    .link-action {
+        color: #1f4f8b;
+        font-weight: 600;
+        text-decoration: none;
+    }
+
+    .link-action:hover {
+        text-decoration: underline;
     }
 
     #online_only {
@@ -201,18 +388,18 @@
 {% block content %}
 
 <h1 class="margin-bottom-l">
-    Estatísticas do Host
+    Panorama da Estação
 </h1>
 
 <div class="card background-neutral-0 padding-l border-radius-m margin-bottom-l">
 
-    <form method="get">
+    <form method="get" data-loading-message="Carregando panorama da estação...">
 
         <div class="host-query-grid">
 
             <!-- HOST -->
             <div class="host-query-field">
-                <label>Host</label>
+                <label>Estação</label>
                 <div class="select-shell">
                     <select name="host_id" class="form-control" required>
                         <option value="">-- selecione --</option>
@@ -261,26 +448,67 @@
 
 <div class="card background-neutral-0 padding-l border-radius-m">
 
-    <div class="host-stats-scroll">
+        <div class="host-stats-scroll">
 
         <!-- IDENTIFICAÇÃO -->
-        <div class="section-title">Identificação</div>
+        <div class="section-title">Identificação da Estação</div>
         <table class="stats-table">
             <tr>
-                <th>Nome</th>
+                <th>Nome da estação</th>
                 <td>{{ stats.NA_HOST_NAME }}</td>
             </tr>
             <tr>
-                <th>Endereço</th>
+                <th>Endereço SSH</th>
                 <td>{{ stats.NA_HOST_ADDRESS }}:{{ stats.NA_HOST_PORT }}</td>
             </tr>
         </table>
 
+        <div class="section-title">Histórico de Localidades</div>
+        <div class="annual-breakdown">
+            <table class="stats-table">
+                <thead>
+                    <tr>
+                        <th>Site</th>
+                        <th>Localidade</th>
+                        <th>Cidade / UF</th>
+                        <th>Primeira medição</th>
+                        <th>Última medição</th>
+                        <th>Espectros</th>
+                    </tr>
+                </thead>
+                <tbody id="host-location-history-rows">
+                    <tr>
+                        <td colspan="6" class="summary-card-value-loading">CARREGANDO</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- FRANQUIA DO MÊS -->
+        <div class="section-title">Backup do Mês</div>
+        <div class="summary-grid">
+            <div class="summary-card">
+                <div class="summary-card-label">Mês de referência</div>
+                <div class="summary-card-value">{{ stats.CURRENT_MONTH_LABEL }}</div>
+                <div class="summary-card-note">Janela atual de controle da franquia</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Arquivos baixados no mês</div>
+                <div class="summary-card-value">{{ stats.BACKUP_DONE_THIS_MONTH }}</div>
+                <div class="summary-card-note">Backups concluídos no mês corrente</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Volume baixado no mês</div>
+                <div class="summary-card-value">{{ stats.BACKUP_DONE_GB_THIS_MONTH }} GB</div>
+                <div class="summary-card-note">Volume já consumido da franquia no mês</div>
+            </div>
+        </div>
+
         <!-- STATUS OPERACIONAL -->
-        <div class="section-title">Status Operacional</div>
+        <div class="section-title">Estado Operacional</div>
         <table class="stats-table">
             <tr>
-                <th>Status</th>
+                <th>Status de Conexão</th>
                 <td>
                     {% if stats.IS_OFFLINE %}
                     <span class="status-badge status-offline">Offline</span>
@@ -290,50 +518,54 @@
                 </td>
             </tr>
             <tr>
-                <th>Execução</th>
+                <th>Estado de Ocupação</th>
                 <td>
                     {% if stats.IS_BUSY %}
-                    <span class="status-badge status-busy">Busy</span>
+                    <span class="status-badge status-busy">Ocupada</span>
                     {% else %}
-                    <span class="status-badge status-idle">Idle</span>
+                    <span class="status-badge status-idle">Disponível</span>
                     {% endif %}
                 </td>
             </tr>
             <tr>
-                <th>PID</th>
-                <td>{{ stats.NU_PID }}</td>
+                <th>Processo que ocupa a estação</th>
+                <td>{{ stats.NU_PID if stats.NU_PID else "-" }}</td>
             </tr>
             <tr>
-                <th>Desde (Busy)</th>
-                <td>{{ stats.DT_BUSY }}</td>
+                <th>Último registro de ocupação</th>
+                <td>{{ stats.DT_BUSY or "-" }}</td>
             </tr>
             <tr>
-                <th>Último Check</th>
-                <td>{{ stats.DT_LAST_CHECK }}</td>
+                <th>Última verificação de conectividade</th>
+                <td>{{ stats.DT_LAST_CHECK or "-" }}</td>
             </tr>
             <tr>
-                <th>Último Fail</th>
-                <td>{{ stats.DT_LAST_FAIL }}</td>
+                <th>Última falha de conectividade</th>
+                <td>{{ stats.DISPLAY_LAST_FAILURE_AT or "-" }}</td>
             </tr>
             <tr>
-                <th>Erros de Check</th>
+                <th>Motivo da última falha</th>
+                <td>{{ stats.LAST_FAILURE_REASON or "-" }}</td>
+            </tr>
+            <tr>
+                <th>Falhas acumuladas de conectividade</th>
                 <td>{{ stats.NU_HOST_CHECK_ERROR }}</td>
             </tr>
         </table>
 
         <!-- DISCOVERY -->
-        <div class="section-title">Discovery</div>
+        <div class="section-title">Descoberta de Arquivos</div>
         <table class="stats-table">
             <tr>
-                <th>Último Discovery</th>
-                <td>{{ stats.DT_LAST_DISCOVERY }}</td>
+                <th>Última varredura de arquivos</th>
+                <td>{{ stats.DT_LAST_DISCOVERY or "-" }}</td>
             </tr>
             <tr>
-                <th>Discovery OK</th>
+                <th>Total de arquivos descobertos acumulado</th>
                 <td>{{ stats.NU_DONE_FILE_DISCOVERY_TASKS }}</td>
             </tr>
             <tr>
-                <th>Discovery Erro</th>
+                <th>Arquivos com erro na descoberta</th>
                 <td>{{ stats.NU_ERROR_FILE_DISCOVERY_TASKS }}</td>
             </tr>
         </table>
@@ -342,60 +574,265 @@
         <div class="section-title">Backup</div>
         <table class="stats-table">
             <tr>
-                <th>Último Backup</th>
-                <td>{{ stats.DT_LAST_BACKUP }}</td>
+                <th>Último backup concluído</th>
+                <td>{{ stats.DT_LAST_BACKUP or "-" }}</td>
             </tr>
             <tr>
-                <th>Backup Pendente</th>
+                <th>Backups pendentes</th>
                 <td>{{ stats.NU_PENDING_FILE_BACKUP_TASKS }}</td>
             </tr>
             <tr>
-                <th>Backup OK</th>
+                <th>Backups concluídos</th>
                 <td>{{ stats.NU_DONE_FILE_BACKUP_TASKS }}</td>
             </tr>
             <tr>
-                <th>Backup Erro</th>
+                <th>Backups com erro</th>
                 <td>{{ stats.NU_ERROR_FILE_BACKUP_TASKS }}</td>
             </tr>
             <tr>
-                <th>Volume Pendente (GB)</th>
+                <th>Volume com erro de backup (GB)</th>
+                <td>{{ stats.BACKUP_ERROR_GB_TOTAL }}</td>
+            </tr>
+            <tr>
+                <th>Volume ainda pendente de backup (GB)</th>
                 <td>{{ stats.PENDING_GB }}</td>
             </tr>
             <tr>
-                <th>Volume Processado (GB)</th>
+                <th>Volume total já baixado (GB)</th>
                 <td>{{ stats.DONE_GB }}</td>
             </tr>
         </table>
+
+        <!-- RESUMO GLOBAL -->
+        <div class="section-title">Resumo Global dos Backups</div>
+        <div class="summary-grid">
+            <div class="summary-card">
+                <div class="summary-card-label">Arquivos mapeados</div>
+                <div class="summary-card-value">{{ stats.DISCOVERED_FILES_TOTAL }}</div>
+                <div class="summary-card-note">Total conhecido no histórico da estação</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Volume mapeado</div>
+                <div class="summary-card-value">{{ stats.DISCOVERED_GB_TOTAL }} GB</div>
+                <div class="summary-card-note">Somatório do volume descoberto</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Backups concluídos</div>
+                <div class="summary-card-value">{{ stats.BACKUP_DONE_FILES_TOTAL }}</div>
+                <div class="summary-card-note">Arquivos já baixados da estação</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Volume já baixado</div>
+                <div class="summary-card-value">{{ stats.BACKUP_DONE_GB_TOTAL }} GB</div>
+                <div class="summary-card-note">Total transferido da estação</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Backups pendentes</div>
+                <div class="summary-card-value">{{ stats.BACKUP_PENDING_FILES_TOTAL }}</div>
+                <div class="summary-card-note">Arquivos ainda aguardando transferência</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Volume pendente</div>
+                <div class="summary-card-value">{{ stats.BACKUP_PENDING_GB_TOTAL }} GB</div>
+                <div class="summary-card-note">Volume ainda não baixado</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Backups com erro</div>
+                <div class="summary-card-value">{{ stats.BACKUP_ERROR_FILES_TOTAL }}</div>
+                <div class="summary-card-note">Arquivos que falharam no backup</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Volume com erro no backup</div>
+                <div class="summary-card-value">{{ stats.BACKUP_ERROR_GB_TOTAL }} GB</div>
+                <div class="summary-card-note">Volume associado a falhas de backup</div>
+            </div>
+        </div>
+
+        <div class="section-title">Histórico Anual de Descoberta e Backup</div>
+        <div class="annual-breakdown">
+            <table class="stats-table">
+                <thead>
+                    <tr>
+                        <th>Ano</th>
+                        <th>Arquivos mapeados</th>
+                        <th>Volume mapeado (GB)</th>
+                        <th>Backups concluídos</th>
+                        <th>Volume concluído (GB)</th>
+                        <th>Pendentes</th>
+                        <th>Volume pendente (GB)</th>
+                        <th>Erros</th>
+                        <th>Volume com erro (GB)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for row in stats.BACKUP_YEARLY_BREAKDOWN %}
+                    <tr>
+                        <td>{{ row.REFERENCE_YEAR }}</td>
+                        <td>{{ row.DISCOVERED_FILES }}</td>
+                        <td>{{ row.DISCOVERED_GB }}</td>
+                        <td>{{ row.BACKUP_DONE_FILES }}</td>
+                        <td>{{ row.BACKUP_DONE_GB }}</td>
+                        <td>{{ row.BACKUP_PENDING_FILES }}</td>
+                        <td>{{ row.BACKUP_PENDING_GB }}</td>
+                        <td>{{ row.BACKUP_ERROR_FILES }}</td>
+                        <td>{{ row.BACKUP_ERROR_GB }}</td>
+                    </tr>
+                {% else %}
+                    <tr>
+                        <td colspan="9">Sem histórico anual disponível para esta estação.</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section-title">Diagnóstico de Backup</div>
+        <details class="details-panel" data-host-backup-error-panel="{{ stats.ID_HOST }}">
+            <summary>
+                Clique para mais detalhes sobre erros agrupados de backup desta estação
+                <span class="details-summary-meta" data-host-backup-error-meta>Carregamento sob demanda</span>
+            </summary>
+            <div class="details-panel-body">
+                <div class="diagnostic-breakdown">
+                    <table class="diagnostic-table">
+                        <thead>
+                            <tr>
+                                <th>Mensagem de erro</th>
+                                <th class="diagnostic-count-col">Ocorrências</th>
+                            </tr>
+                        </thead>
+                        <tbody data-host-backup-error-rows>
+                            <tr>
+                                <td colspan="2">Nenhum erro de backup agrupado para esta estação.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </details>
+
+        <div class="section-title">Resumo Global dos Processamentos</div>
+        <div class="summary-grid">
+            <div class="summary-card">
+                <div class="summary-card-label">Arquivos com Processamento Concluído</div>
+                <div class="summary-card-value">{{ stats.PROCESSING_DONE_FILES_TOTAL }}</div>
+                <div class="summary-card-note">Arquivos concluídos no processamento</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Espectros Gerados</div>
+                <div class="summary-card-value">{{ stats.FACT_SPECTRUM_TOTAL }}</div>
+                <div class="summary-card-note">Total de espectros gravados na base analítica para esta estação</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Volume processado</div>
+                <div class="summary-card-value">{{ stats.PROCESSING_DONE_GB_TOTAL }} GB</div>
+                <div class="summary-card-note">Volume total já processado</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Arquivos com Processamento Pendente</div>
+                <div class="summary-card-value">{{ stats.PROCESSING_PENDING_FILES_TOTAL }}</div>
+                <div class="summary-card-note">Arquivos aguardando processamento</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Volume pendente</div>
+                <div class="summary-card-value">{{ stats.PROCESSING_PENDING_GB_TOTAL }} GB</div>
+                <div class="summary-card-note">Volume ainda não processado</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Arquivos com Erro de Processamento</div>
+                <div class="summary-card-value">{{ stats.PROCESSING_ERROR_FILES_TOTAL }}</div>
+                <div class="summary-card-note">Arquivos com falha de processamento</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Volume com erro</div>
+                <div class="summary-card-value">{{ stats.PROCESSING_ERROR_GB_TOTAL }} GB</div>
+                <div class="summary-card-note">Volume associado a falhas de processamento</div>
+            </div>
+        </div>
+
+        <div class="section-title">Diagnóstico de Processamento</div>
+        <details class="details-panel" data-host-error-panel="{{ stats.ID_HOST }}">
+            <summary>
+                Clique para mais detalhes sobre erros agrupados de processamento desta estação
+                <span class="details-summary-meta" data-host-error-meta>Carregamento sob demanda</span>
+            </summary>
+            <div class="details-panel-body">
+                <div class="diagnostic-breakdown">
+                    <table class="diagnostic-table">
+                        <thead>
+                            <tr>
+                                <th>Mensagem de erro</th>
+                                <th class="diagnostic-count-col">Ocorrências</th>
+                            </tr>
+                        </thead>
+                        <tbody data-host-error-rows>
+                            <tr>
+                                <td colspan="2">Nenhum erro de processamento agrupado para esta estação.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </details>
 
         <!-- PROCESSAMENTO -->
         <div class="section-title">Processamento</div>
         <table class="stats-table">
             <tr>
-                <th>Último Processamento</th>
-                <td>{{ stats.DT_LAST_PROCESSING }}</td>
+                <th>Último processamento concluído</th>
+                <td>{{ stats.DT_LAST_PROCESSING or "-" }}</td>
             </tr>
             <tr>
-                <th>Processamento Pendente</th>
+                <th>Processamentos pendentes</th>
                 <td>{{ stats.NU_PENDING_FILE_PROCESS_TASKS }}</td>
             </tr>
             <tr>
-                <th>Processamento OK</th>
+                <th>Processamentos concluídos</th>
                 <td>{{ stats.NU_DONE_FILE_PROCESS_TASKS }}</td>
             </tr>
             <tr>
-                <th>Processamento Erro</th>
+                <th>Processamentos com erro</th>
                 <td>{{ stats.NU_ERROR_FILE_PROCESS_TASKS }}</td>
+            </tr>
+            <tr>
+                <th>Volume com erro de processamento (GB)</th>
+                <td>{{ stats.PROCESSING_ERROR_GB_TOTAL }}</td>
             </tr>
         </table>
 
-        <!-- ARQUIVOS -->
-        <div class="section-title">Arquivos Locais</div>
-        <table class="stats-table">
-            <tr>
-                <th>Total Arquivos no Host</th>
-                <td>{{ stats.NU_HOST_FILES }}</td>
-            </tr>
-        </table>
+        <div class="section-title">Histórico Anual de Processamento</div>
+        <div class="annual-breakdown">
+            <table class="stats-table">
+                <thead>
+                    <tr>
+                        <th>Ano</th>
+                        <th>Processado</th>
+                        <th>Volume processado (GB)</th>
+                        <th>Pendente</th>
+                        <th>Volume pendente (GB)</th>
+                        <th>Erros</th>
+                        <th>Volume com erro (GB)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for row in stats.PROCESSING_YEARLY_BREAKDOWN %}
+                    <tr>
+                        <td>{{ row.REFERENCE_YEAR }}</td>
+                        <td>{{ row.PROCESSING_DONE_FILES }}</td>
+                        <td>{{ row.PROCESSING_DONE_GB }}</td>
+                        <td>{{ row.PROCESSING_PENDING_FILES }}</td>
+                        <td>{{ row.PROCESSING_PENDING_GB }}</td>
+                        <td>{{ row.PROCESSING_ERROR_FILES }}</td>
+                        <td>{{ row.PROCESSING_ERROR_GB }}</td>
+                    </tr>
+                {% else %}
+                    <tr>
+                        <td colspan="7">Sem histórico anual de processamento para esta estação.</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
 
     </div>
 
@@ -415,8 +852,183 @@
         }
 
         url.searchParams.set("online_only", checkbox.checked ? "1" : "0");
+        if (window.showPageLoadingOverlay) {
+            window.showPageLoadingOverlay("Atualizando filtro de estações...");
+        }
         window.location.href = url.toString();
     }
 </script>
+
+{% if stats %}
+<script>
+    (function () {
+        const locationRows = document.getElementById("host-location-history-rows");
+        const processingPanel = document.querySelector("[data-host-error-panel='{{ stats.ID_HOST }}']");
+        const backupPanel = document.querySelector("[data-host-backup-error-panel='{{ stats.ID_HOST }}']");
+        let locationLoaded = false;
+
+        function escapeHtml(value) {
+            return String(value ?? "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/\"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+        }
+
+        function renderLocationHistory(payload) {
+            const locationHistory = Array.isArray(payload.location_history) ? payload.location_history : [];
+
+            if (!locationRows) {
+                return;
+            }
+
+            if (locationHistory.length === 0) {
+                locationRows.innerHTML = `
+                    <tr>
+                        <td colspan="6">Sem histórico de localidades no catálogo espectral para esta estação.</td>
+                    </tr>
+                `;
+                return;
+            }
+
+            locationRows.innerHTML = locationHistory.map((row) => {
+                const countyState = row.COUNTY_NAME && row.STATE_CODE
+                    ? `${escapeHtml(row.COUNTY_NAME)}/${escapeHtml(row.STATE_CODE)}`
+                    : row.COUNTY_NAME
+                    ? escapeHtml(row.COUNTY_NAME)
+                    : "—";
+
+                return `
+                    <tr>
+                        <td>${escapeHtml(row.ID_SITE)}</td>
+                        <td>${escapeHtml(row.LOCALITY_LABEL || "—")}</td>
+                        <td>${countyState}</td>
+                        <td>${escapeHtml(row.FIRST_SEEN_AT || "—")}</td>
+                        <td>${escapeHtml(row.LAST_SEEN_AT || "—")}</td>
+                        <td>${escapeHtml(row.SPECTRUM_COUNT || 0)}</td>
+                    </tr>
+                `;
+            }).join("");
+        }
+
+        function loadLocationHistory() {
+            if (locationLoaded) {
+                return;
+            }
+
+            if (locationRows) {
+                locationRows.innerHTML = `
+                    <tr>
+                        <td colspan="6" class="summary-card-value-loading">CARREGANDO</td>
+                    </tr>
+                `;
+            }
+
+            fetch("/api/host/{{ stats.ID_HOST }}/locations")
+                .then((response) => response.json())
+                .then((payload) => {
+                    renderLocationHistory(payload);
+                    locationLoaded = true;
+                })
+                .catch(() => {
+                    if (locationRows) {
+                        locationRows.innerHTML = `
+                            <tr>
+                                <td colspan="6">Nao foi possivel carregar o histórico de localidades agora.</td>
+                            </tr>
+                        `;
+                    }
+                });
+        }
+
+        function bindDiagnosticPanel(panel, options) {
+            if (!panel) {
+                return;
+            }
+
+            const meta = panel.querySelector(options.metaSelector);
+            const rowsContainer = panel.querySelector(options.rowsSelector);
+            let loaded = false;
+            let loading = false;
+
+            function setMeta(message) {
+                if (meta) {
+                    meta.textContent = message;
+                }
+            }
+
+            function buildRows(rows) {
+                if (!Array.isArray(rows) || rows.length === 0) {
+                    rowsContainer.innerHTML = `
+                        <tr>
+                            <td colspan="2">${options.emptyMessage}</td>
+                        </tr>
+                    `;
+                    return;
+                }
+
+                rowsContainer.innerHTML = rows.map((row) => `
+                    <tr>
+                        <td class="diagnostic-message-cell">${escapeHtml(row.ERROR_MESSAGE || "(Sem mensagem)")}</td>
+                        <td class="diagnostic-count-col">${escapeHtml(row.ERROR_COUNT || 0)}</td>
+                    </tr>
+                `).join("");
+            }
+
+            panel.addEventListener("toggle", async () => {
+                if (!panel.open || loaded || loading) {
+                    return;
+                }
+
+                loading = true;
+                setMeta("Carregando...");
+                rowsContainer.innerHTML = `
+                    <tr>
+                        <td colspan="2">${options.loadingMessage}</td>
+                    </tr>
+                `;
+
+                try {
+                    const response = await fetch(options.url);
+                    const payload = await response.json();
+                    buildRows(payload.rows || []);
+                    setMeta(`${payload.error_group_count || 0} tipos / ${payload.error_total_occurrences || 0} ocorrências`);
+                    loaded = true;
+                } catch (error) {
+                    rowsContainer.innerHTML = `
+                        <tr>
+                            <td colspan="2">${options.failureMessage}</td>
+                        </tr>
+                    `;
+                    setMeta("Falha ao carregar");
+                } finally {
+                    loading = false;
+                }
+            });
+        }
+
+        bindDiagnosticPanel(processingPanel, {
+            metaSelector: "[data-host-error-meta]",
+            rowsSelector: "[data-host-error-rows]",
+            url: "/api/host/{{ stats.ID_HOST }}/processing-errors",
+            emptyMessage: "Nenhum erro de processamento agrupado para esta estação.",
+            loadingMessage: "Carregando erros agrupados desta estação...",
+            failureMessage: "Nao foi possivel carregar os erros agrupados agora."
+        });
+
+        bindDiagnosticPanel(backupPanel, {
+            metaSelector: "[data-host-backup-error-meta]",
+            rowsSelector: "[data-host-backup-error-rows]",
+            url: "/api/host/{{ stats.ID_HOST }}/backup-errors",
+            emptyMessage: "Nenhum erro de backup agrupado para esta estação.",
+            loadingMessage: "Carregando erros agrupados de backup desta estação...",
+            failureMessage: "Nao foi possivel carregar os erros agrupados de backup agora."
+        });
+
+        loadLocationHistory();
+    })();
+</script>
+{% endif %}
 
 {% endblock %}

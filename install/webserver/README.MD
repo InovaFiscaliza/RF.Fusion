@@ -111,3 +111,7 @@ On the host, the relevant mappings are:
 - If `Containerfile`, `docker-entrypoint.sh`, `nginx-webfusion.conf`, or the
   `webfusion` source code changes, the correct procedure is to recreate the
   container by running the deployment again.
+- Application logs from Flask/Waitress go to the container standard output and
+  standard error because the app does not configure a dedicated file handler.
+- In practice, the fastest way to inspect WebFusion errors is through the
+  container runtime log stream, for example `podman logs -f <container>`.

@@ -586,6 +586,9 @@ def transfer_file_task(
     # 1) Validate remote existence
     # ---------------------------------------------------------
     if not sftp.test(remote_path):
+        # This exact exception type is part of the backup contract: the caller
+        # interprets TRANSFER + FileNotFoundError as terminal source drift and
+        # prunes FILE_TASK / FILE_TASK_HISTORY instead of persisting TASK_ERROR.
         raise FileNotFoundError(
             f"Remote file not found: {remote_path}"
         )
@@ -720,6 +723,7 @@ def main() -> None:
                 task_status=k.TASK_PENDING,
                 task_type=k.FILE_TASK_BACKUP_TYPE,
                 check_host_busy=True,
+                check_host_offline=True,
                 lock_host=True,
             )
 
@@ -798,6 +802,27 @@ def main() -> None:
                 except Exception as e:
                     if errors.is_transient_sftp_init_error(e):
                         connect_busy = True
+
+                        # A transient init failure still returns the current
+                        # FILE_TASK to PENDING. Only the subset that smells
+                        # like real connectivity trouble asks host_check for a
+                        # confirmation; pure contention keeps the soft retry.
+                        if errors.should_queue_connection_check_for_sftp_init_error(e):
+                            try:
+                                db.queue_host_task(
+                                    host_id=host_id,
+                                    task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
+                                    task_status=k.TASK_PENDING,
+                                    filter_dict=k.NONE_FILTER,
+                                )
+                            except Exception as e_queue:
+                                log.error(
+                                    "event=queue_host_check_failed "
+                                    f"service=appCataloga_file_bkp worker_id={worker_id} "
+                                    f"host_id={host_id} task_id={file_task_id} "
+                                    f"error={e_queue}"
+                                )
+
                         log.warning(
                             f"event=sftp_busy_retry service=appCataloga_file_bkp "
                             f"worker_id={worker_id} host_id={host_id} "
@@ -858,6 +883,11 @@ def main() -> None:
                         discovery_size_kb=task["FILE_TASK__VL_FILE_SIZE_KB"],
                     )
                 except Exception as e:
+                    # Keep the stage-level reason stable here. The persisted
+                    # message is enriched later by ErrorHandler.format_error(),
+                    # which now extracts actionable detail from the exception
+                    # itself (SSH banner errors, timeouts, permission issues,
+                    # etc.) without fragmenting dashboards by raw text.
                     err.capture("File transfer failed", "TRANSFER", e)
             
             if not err.triggered:
@@ -986,65 +1016,123 @@ def main() -> None:
             # Persist ERROR state (centralized)
             # -------------------------------------------------
             if err.triggered and file_task_id is not None:
-
-                err.log_error(host_id=host_id, task_id=file_task_id)
-
-                # Build Message with error details for both FILE_TASK and FILE_HISTORY
-                NA_MESSAGE = tools.compose_message(
-                    task_type=k.FILE_TASK_BACKUP_TYPE,
-                    task_status=k.TASK_ERROR,
-                    path=task["FILE_TASK__NA_HOST_FILE_PATH"] if task else None,
-                    name=task["FILE_TASK__NA_HOST_FILE_NAME"] if task else None,
-                    error=err.format_error(),
+                # Only one transfer failure is considered terminal here:
+                # discovery saw the file before, but the source host no longer
+                # exposes it at backup time. That means the artifact drifted
+                # away from the station and should not be retried on host
+                # recovery like transient SSH/SFTP failures.
+                remote_file_missing = (
+                    err.stage == "TRANSFER"
+                    and isinstance(err.exc, FileNotFoundError)
+                    and task is not None
                 )
-                error_at = datetime.now()
 
-                try:
-                    db.file_task_update(
-                        task_id=file_task_id,
-                        NU_TYPE=k.FILE_TASK_BACKUP_TYPE,
-                        DT_FILE_TASK=error_at,
-                        NU_STATUS=k.TASK_ERROR,
-                        NA_MESSAGE=NA_MESSAGE,
-                    )
+                # A file that disappeared on the remote host after discovery is
+                # treated as terminal drift, not as a retryable backup failure.
+                # We prune both the live task and its history snapshot so host
+                # recovery logic does not resurrect an artifact that no longer
+                # exists on the source station.
+                if remote_file_missing:
+                    deleted_file_task = None
+                    deleted_history = None
 
-                    db.file_history_update(
-                        task_type=k.FILE_TASK_BACKUP_TYPE,
-                        host_id=host_id,
-                        host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"] if task else None,
-                        host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"] if task else None,
-                        DT_BACKUP=error_at,
-                        NA_SERVER_FILE_NAME=server_filename,
-                        NA_SERVER_FILE_PATH=server_file_path,
-                        NU_STATUS_BACKUP=k.TASK_ERROR,
-                        NA_MESSAGE=NA_MESSAGE,
-                    )
-
-                    # Host check tasks should be re-queued on connection 
-                    # errors to allow for retries after transient issues are resolved
-                    if err.stage == "CONNECT":
-                        db.queue_host_task(
-                            host_id=host_id,
-                            task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
-                            task_status=k.TASK_PENDING,
-                            filter_dict=k.NONE_FILTER,
+                    # Cleanup is best-effort per table. A partial failure should
+                    # still remove whatever can be safely pruned instead of
+                    # collapsing back into the generic retryable error path.
+                    try:
+                        deleted_file_task = db.file_task_delete(file_task_id)
+                    except Exception as e_db:
+                        log.error(
+                            "event=backup_missing_remote_file_task_delete_failed "
+                            f"worker_id={worker_id} host_id={host_id} "
+                            f"task_id={file_task_id} file={input_filename} "
+                            f"error={e_db}"
                         )
 
-                except Exception as e_db:
-                    log.error(f"event=finalize_error_persist_failed error={e_db}")
+                    try:
+                        deleted_history = db.file_history_delete(
+                            host_id=host_id,
+                            host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                            host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                        )
+                    except Exception as e_db:
+                        log.error(
+                            "event=backup_missing_remote_history_delete_failed "
+                            f"worker_id={worker_id} host_id={host_id} "
+                            f"task_id={file_task_id} file={input_filename} "
+                            f"error={e_db}"
+                        )
 
-                log.error_event(
-                    "backup_error",
-                    worker_id=worker_id,
-                    host_id=host_id,
-                    task_id=file_task_id,
-                    file=input_filename,
-                    final_file=(
-                        os.path.join(server_file_path, server_filename)
-                        if server_file_path and server_filename else None
-                    ),
-                    error=err.format_error() or "Backup failed",
-                )
+                    log.warning_event(
+                        "backup_remote_file_missing_pruned",
+                        worker_id=worker_id,
+                        host_id=host_id,
+                        task_id=file_task_id,
+                        file=input_filename,
+                        deleted_file_task=deleted_file_task,
+                        deleted_history=deleted_history,
+                        reason=str(err.exc) if err.exc else None,
+                    )
+
+                if not remote_file_missing:
+                    err.log_error(host_id=host_id, task_id=file_task_id)
+
+                    # Build Message with error details for both FILE_TASK and FILE_HISTORY
+                    NA_MESSAGE = tools.compose_message(
+                        task_type=k.FILE_TASK_BACKUP_TYPE,
+                        task_status=k.TASK_ERROR,
+                        path=task["FILE_TASK__NA_HOST_FILE_PATH"] if task else None,
+                        name=task["FILE_TASK__NA_HOST_FILE_NAME"] if task else None,
+                        error=err.format_error(),
+                    )
+                    error_at = datetime.now()
+
+                    try:
+                        db.file_task_update(
+                            task_id=file_task_id,
+                            NU_TYPE=k.FILE_TASK_BACKUP_TYPE,
+                            DT_FILE_TASK=error_at,
+                            NU_STATUS=k.TASK_ERROR,
+                            NA_MESSAGE=NA_MESSAGE,
+                        )
+
+                        db.file_history_update(
+                            task_type=k.FILE_TASK_BACKUP_TYPE,
+                            host_id=host_id,
+                            host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"] if task else None,
+                            host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"] if task else None,
+                            DT_BACKUP=error_at,
+                            NA_SERVER_FILE_NAME=server_filename,
+                            NA_SERVER_FILE_PATH=server_file_path,
+                            NU_STATUS_BACKUP=k.TASK_ERROR,
+                            NA_MESSAGE=NA_MESSAGE,
+                        )
+
+                        # Host check tasks should be re-queued on connection
+                        # errors to allow for retries after transient issues are resolved
+                        if err.stage in {"CONNECT", "SSH"}:
+                            db.queue_host_task(
+                                host_id=host_id,
+                                task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
+                                task_status=k.TASK_PENDING,
+                                filter_dict=k.NONE_FILTER,
+                            )
+
+                    except Exception as e_db:
+                        log.error(f"event=finalize_error_persist_failed error={e_db}")
+
+                    log.error_event(
+                        "backup_error",
+                        worker_id=worker_id,
+                        host_id=host_id,
+                        task_id=file_task_id,
+                        file=input_filename,
+                        final_file=(
+                            os.path.join(server_file_path, server_filename)
+                            if server_file_path and server_filename else None
+                        ),
+                        error=err.format_error() or "Backup failed",
+                    )
 
             # -------------------------------------------------
             # Close SFTP

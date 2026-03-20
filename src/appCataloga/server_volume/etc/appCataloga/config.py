@@ -7,8 +7,7 @@ Require additional /etc/appCataloga/.secret file with the following content:
         DB_PASSWORD = '<app_pass>'
 """
 
-import os, importlib.util,runpy
-import importlib.machinery
+import os, runpy
 
 #------------------------------------------
 # load base dir
@@ -36,7 +35,6 @@ TOTAL_CONNECTIONS       = 50
 BACKUP_QUERY_TAG        = "backup"
 START_TAG               = "<json>"
 END_TAG                 = "</json>"
-ZABBIX_ADDRESS          = "172.24.0.13"
 #------------------------------------------
 # database configuration
 #------------------------------------------
@@ -49,16 +47,15 @@ DB_PASSWORD             = secret["DB_PASSWORD"]
 # =================================================
 # APP_ANALISE remote processing service
 # =================================================
-APP_ANALISE_HOST_ADD        = "192.168.104.184"
-#APP_ANALISE_HOST_ADD        = "WIMATLABPDIN01"
+APP_ANALISE_HOST_ADD        = "WIMATLABPDIN01"
 APP_ANALISE_HOST_PORT       = 8910
 APP_ANALISE_SOCKET_TIMEOUT  = 10
 APP_ANALISE_BUFFER_SIZE     = 4096
-APP_ANALISE_KEY = "123456"
-APP_ANALISE_CLIENT_NAME = "Matlab"
-APP_ANALISE_PROCESS_TIMEOUT = 100000
-APP_ANALISE_CONNECT_TIMEOUT = 100000
-APP_ANALISE_WORKER_DETAIL = "worker=APP_ANALISE"
+APP_ANALISE_KEY             = "123456"
+APP_ANALISE_CLIENT_NAME     = "Matlab"
+APP_ANALISE_PROCESS_TIMEOUT = 600
+APP_ANALISE_CONNECT_TIMEOUT = 15
+APP_ANALISE_WORKER_DETAIL   = "worker=APP_ANALISE"
 #------------------------------------------
 # SSH LIMITS
 #------------------------------------------
@@ -68,66 +65,58 @@ SSH_AUTH_TIMEOUT       = 30
 #------------------------------------------
 # ICMP LIMITS
 #------------------------------------------
-ICMP_TIMEOUT_SEC = 10 
+ICMP_TIMEOUT_SEC = 10
+HOST_CHECK_ALL_ENABLED = True              # Periodic HOST table sweep outside HOST_TASK queue
+HOST_CHECK_ALL_STALE_AFTER_SEC = 300       # Re-check hosts whose DT_LAST_CHECK is older than this
+HOST_CHECK_ALL_BATCH_SIZE = 10             # Max hosts per idle sweep batch
+HOST_CHECK_ALL_ICMP_TIMEOUT_SEC = 3        # Short ICMP timeout for background sweep
 #------------------------------------------
 # backup module configuration
 #------------------------------------------
 MAX_HOST_TASK_WAIT_TIME         = 2         # seconds to wait for a new task. Minimum half, maximum equal to this value
 MAX_FILE_TASK_WAIT_TIME         = 30        # seconds to wait for a new task. Minimum half, maximum equal to this value
-HOST_TASK_REQUEST_WAIT_TIME     = 1800      # seconds to wait for the HALT_FLAG release before aborting the task
 HALT_FLAG_CHECK_CYCLES          = 6         # number of cycles to check for HALT_FLAG (6 x 300s = 30 minutes)
-BKP_HOST_ALLOTED_TIME_FRACTION  = 0.8
 HOST_BUSY_TIMEOUT               = 18000     # 18000 seconds or 5 hours
 HOST_CLEANUP_INTERVAL           = 300       # Interval in seconds to check for and clean up stale host locks
+HOST_CLEANUP_NO_TASK_GRACE_SEC  = 30        # Minimum BUSY age before releasing a host with no running tasks detected
 SFTP_BUSY_COOLDOWN_SECONDS      = 15        # Temporary host cooldown after transient SSH/SFTP init failure
 HOST_UNLOCKED_PID               = 0         # HOST.NU_PID used when the host is not owned by a worker
 HOST_TRANSIENT_BUSY_PID         = 0         # HOST.NU_PID used during short transient SFTP cooldown
 BKP_TASK_MAX_WORKERS            = 10
 BKP_TASK_IDLE_EXIT_CYCLES       = 3         # extra workers exit after this many idle polls
-BKP_TASK_WORKER_SERVICE         = "usr/local/bin/appCataloga/appCataloga_file_bkp@"
 MIN_FILE_SIZE_KB                = 1         # minimum file size to be backed up in KB
 MIN_FILE_AGE_MINUTES            = 30        # minimum file age to be backed up in minutes
 FILE_THRESHOLD_SIZE_KB          = 100       # file size threshold for update file
-SFTP_BUSY_RETRY_DETAIL         = "sftp connection busy, will retry"
+SFTP_BUSY_RETRY_DETAIL          = "sftp connection busy, will retry"
 
 #------------------------------------------
 # metadata publishing module configuration
 #------------------------------------------
 PUBLISH_FILE = "/mnt/reposfi/Metadata/rf_metadata"  # filename without extension
 #------------------------------------------
-# general configuration
-#------------------------------------------
-SECONDS_IN_MINUTE = 60
-#------------------------------------------
 # daemon standard indexerD configuration
 #------------------------------------------
-DEFAULT_DATA_FOLDER = "/mnt/internal"
-DAEMON_CFG_FILE = "/etc/node/indexerD.cfg"
-DISCOVERY_BATCH_SIZE = 1000
-LOCAL_INDEXERD  = {
-    "LOCAL_REPO"            : "/mnt/internal/data",
-    "INDEXERD_FOLDER"       : "/mnt/internal/.indexerD",
-    "TEMP_CHANGED"          : "temp.changed.list",
-    "DUE_BACKUP"            : "files.changed.list",
-    "BACKUP_DONE"           : "backup.done.list",
-    "HALT_FLAG"             : ".halt_cookie",
-    "HALT_TIMEOUT"          : 300,
-    "LAST_FILE_SEARCH_FLAG" : ".last.file.search.cookie"
-}
+DEFAULT_DATA_FOLDER     = "/mnt/internal"
+DAEMON_CFG_FILE         = "/etc/node/indexerD.cfg"
+DISCOVERY_BATCH_SIZE    = 1000
 #------------------------------------------
 # Folder configuration
 #------------------------------------------
 TMP_FOLDER      = "tmp"
 TRASH_FOLDER    = "trash"
+# appAnalise export success/failure may leave superseded source payloads or
+# intermediate exported artifacts that are no longer referenced by BKP history.
+# Those files are quarantined here and garbage-collected directly from the
+# filesystem instead of through FILE_TASK_HISTORY lookups.
 RESOLVED_FILES_TRASH_SUBDIR = "resolved_files"
 REPO_FOLDER     = "/mnt/reposfi"
 REPO_VOLUME_NAME = "reposfi"
-REPO_UID        = "repoSFI"
 #------------------------------------------
 # Geographic site definition
 #------------------------------------------
 MAXIMUM_GNSS_DEVIATION = 0.0005
 MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS = 1000
+SITE_DISTRICT_AUTO_CREATE = False         # Keep district resolution conservative unless explicitly enabled
 #------------------------------------------
 # Nomintim Geocoding parameters
 #------------------------------------------
@@ -150,7 +139,6 @@ REQUIRED_ADDRESS_FIELD = {
 #------------------------------------------
 # Default values for CRFS Bin File Translation/Processing
 #------------------------------------------
-DEFAULT_VBW                 = 0.0
 DEFAULT_DETECTOR            = "RMS"
 DEFAULT_SAMPLE_DURATION     = 0.0
 DEFAULT_ATTENUATION_GAIN    = 0.0
@@ -189,9 +177,9 @@ TASK_RUNNING            = 2         # Task running
 #------------------------------------------
 # Station Constants
 #------------------------------------------
-CELPLAN_HOST_TAG = "CWSM"
-CELPLAN_ZIP_TAG = "_DONE"
-RFEYE_HOST_TAG = "RFEye"
+CELPLAN_HOST_TAG    = "CWSM"
+CELPLAN_ZIP_TAG     = "_DONE"
+RFEYE_HOST_TAG      = "RFEye"
 #------------------------------------------
 # Garbage Collector Constants
 #------------------------------------------

@@ -115,6 +115,54 @@ def delete_file(path):
         return False
 
 
+def build_resolved_files_trash_path() -> str:
+    """
+    Return the dedicated quarantine used by appAnalise export leftovers.
+
+    Files in this folder are no longer part of the canonical repository
+    lineage, so they are collected directly from the filesystem instead of
+    through `FILE_TASK_HISTORY`.
+    """
+    return os.path.join(
+        k.REPO_FOLDER,
+        k.TRASH_FOLDER,
+        k.RESOLVED_FILES_TRASH_SUBDIR,
+    )
+
+
+def get_resolved_files_gc_candidates(batch_size: int, quarantine_days: int):
+    """
+    Return aged files from `trash/resolved_files` for direct filesystem cleanup.
+    """
+    resolved_root = build_resolved_files_trash_path()
+
+    if not os.path.isdir(resolved_root):
+        return []
+
+    cutoff_ts = time.time() - (quarantine_days * 86400)
+    candidates = []
+
+    for root, _, files in os.walk(resolved_root):
+        for name in files:
+            full_path = os.path.join(root, name)
+
+            try:
+                modified_at = os.path.getmtime(full_path)
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                log.error(
+                    f"event=garbage_resolved_files_stat_failed path={full_path} error={e}"
+                )
+                continue
+
+            if modified_at <= cutoff_ts:
+                candidates.append((modified_at, full_path))
+
+    candidates.sort(key=lambda item: item[0])
+    return [path for _, path in candidates[:batch_size]]
+
+
 # ===============================================================
 # Main loop
 # ===============================================================
@@ -131,19 +179,25 @@ def main():
 
         try:
 
-            rows = db_bp.file_history_get_gc_candidates(
+            history_rows = db_bp.file_history_get_gc_candidates(
                 batch_size=k.GC_BATCH_SIZE,
                 quarantine_days=k.GC_QUARANTINE_DAYS
             )
+            resolved_rows = get_resolved_files_gc_candidates(
+                batch_size=k.GC_BATCH_SIZE,
+                quarantine_days=k.GC_QUARANTINE_DAYS,
+            )
 
-            if not rows:
+            if not history_rows and not resolved_rows:
                 log.event("garbage_candidates_empty")
                 time.sleep(k.GC_IDLE_SLEEP)
                 continue
 
             deleted = 0
+            deleted_history_payloads = 0
+            deleted_resolved_files = 0
 
-            for row in rows:
+            for row in history_rows:
 
                 server_path = row["NA_SERVER_FILE_PATH"]
                 server_file = row["NA_SERVER_FILE_NAME"]
@@ -171,10 +225,29 @@ def main():
                     )
 
                     deleted += 1
+                    deleted_history_payloads += 1
+
+            for file_path in resolved_rows:
+                # `resolved_files` is an explicit quarantine for superseded
+                # export artifacts, so filesystem age is the source of truth.
+                if k.RESOLVED_FILES_TRASH_SUBDIR not in file_path:
+                    log.error(
+                        f"event=garbage_refused_outside_resolved_files path={file_path}"
+                    )
+                    continue
+
+                if delete_file(file_path):
+                    deleted += 1
+                    deleted_resolved_files += 1
 
             db_bp.commit()
 
-            log.event("garbage_batch_processed", deleted=deleted)
+            log.event(
+                "garbage_batch_processed",
+                deleted=deleted,
+                deleted_history_payloads=deleted_history_payloads,
+                deleted_resolved_files=deleted_resolved_files,
+            )
 
         except Exception as e:
             log.error(f"event=garbage_loop_error error={e}")

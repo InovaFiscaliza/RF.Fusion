@@ -1,4 +1,9 @@
-# modules/task/worker.py
+"""Legacy/example worker for HOST_TASK execution.
+
+This file is not part of the normal Flask request flow. It is kept as a small
+reference for queue consumption logic and should be read as operational sample
+code rather than as a core WebFusion runtime module.
+"""
 
 import time
 import json
@@ -7,6 +12,7 @@ from socket_client import send_socket_payload  # você vai criar
 
 
 def run_worker():
+    """Poll pending tasks and forward them to the socket layer."""
 
     while True:
         db = get_connection()
@@ -33,6 +39,8 @@ def run_worker():
         db.commit()
 
         try:
+            # Translate the database task row into the socket payload expected
+            # by the remote processing side.
             payload = {
                 "query_tag": task["NU_TYPE"],
                 "host_id": task["ID_HOST"],

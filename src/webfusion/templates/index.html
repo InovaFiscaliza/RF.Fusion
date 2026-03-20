@@ -31,10 +31,12 @@
 
     .station-map-toolbar {
         display: grid;
-        grid-template-columns: minmax(180px, 220px) minmax(240px, 1fr) auto;
+        grid-template-columns: minmax(180px, 220px) minmax(320px, 1fr) auto;
         gap: 14px;
         margin-bottom: 16px;
         align-items: end;
+        position: relative;
+        z-index: 700;
     }
 
     .station-map-filter {
@@ -73,15 +75,92 @@
         width: 100%;
         min-height: 42px;
         border-radius: 10px;
-        border: 1px solid #cbd5e1;
-        background: #ffffff;
-        color: #0f172a;
         padding: 0 40px 0 12px;
-        font-size: 14px;
+        font-size: 13px;
         appearance: none;
         -webkit-appearance: none;
         -moz-appearance: none;
         cursor: pointer;
+    }
+
+    .station-map-filter input[type="text"] {
+        width: 100%;
+        min-height: 42px;
+        border-radius: 10px;
+        padding: 0 12px;
+        font-size: 13px;
+        box-sizing: border-box;
+    }
+
+    .station-map-combobox-wrap {
+        position: relative;
+        z-index: 750;
+    }
+
+    .station-map-combobox-wrap::after {
+        content: "";
+        position: absolute;
+        right: 14px;
+        top: 50%;
+        width: 10px;
+        height: 10px;
+        border-right: 2px solid #475569;
+        border-bottom: 2px solid #475569;
+        transform: translateY(-70%) rotate(45deg);
+        pointer-events: none;
+        opacity: 0.9;
+    }
+
+    .station-map-combobox {
+        padding-right: 38px !important;
+    }
+
+    .station-map-combobox::placeholder {
+        color: #64748b;
+    }
+
+    .station-map-combobox-menu {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(100% + 6px);
+        z-index: 900;
+        max-height: 320px;
+        overflow-y: auto;
+        border: 1px solid #cbd5e1;
+        border-radius: 12px;
+        background: #ffffff;
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+    }
+
+    .station-map-combobox-menu[hidden] {
+        display: none;
+    }
+
+    .station-map-combobox-option,
+    .station-map-combobox-empty {
+        width: 100%;
+        display: block;
+        padding: 11px 12px;
+        border: 0;
+        background: transparent;
+        text-align: left;
+        font-size: 13px;
+        color: #1e293b;
+    }
+
+    .station-map-combobox-option {
+        cursor: pointer;
+    }
+
+    .station-map-combobox-option:hover,
+    .station-map-combobox-option.is-active {
+        background: #eff6ff;
+        color: #1d4ed8;
+    }
+
+    .station-map-combobox-empty {
+        color: #64748b;
     }
 
     .station-map-checkbox {
@@ -93,7 +172,6 @@
         border-radius: 10px;
         border: 1px solid #cbd5e1;
         background: #ffffff;
-        color: #0f172a;
         cursor: pointer;
         user-select: none;
         white-space: nowrap;
@@ -105,7 +183,7 @@
     }
 
     .station-map-checkbox-label {
-        font-size: 14px;
+        font-size: 13px;
         font-weight: 600;
         color: #334155;
     }
@@ -131,6 +209,8 @@
     }
 
     #station-map {
+        position: relative;
+        z-index: 1;
         width: 100%;
         height: 68vh;
         min-height: 460px;
@@ -216,6 +296,12 @@
         font-size: 13px;
     }
 
+    .station-entry-context {
+        margin-bottom: 8px;
+        font-size: 12px;
+        color: #64748b;
+    }
+
     .station-status {
         display: inline-flex;
         align-items: center;
@@ -271,6 +357,13 @@
         height: 100%;
     }
 
+    .module-link {
+        display: block;
+        height: 100%;
+        color: inherit;
+        text-decoration: none;
+    }
+
     .module-card:hover {
         transform: translateY(-2px);
         box-shadow: 0 4px 10px rgba(0,0,0,0.06);
@@ -284,9 +377,37 @@
         min-height: 40px;
     }
 
+    .home-footer-note {
+        margin-top: 28px;
+        padding: 8px 32px 0;
+        font-size: 12px;
+        color: #64748b;
+        text-align: center;
+    }
+
+    .module-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 20px;
+        padding-left: 32px;
+        padding-right: 32px;
+        box-sizing: border-box;
+    }
+
     @media (max-width: 880px) {
         .station-map-toolbar {
             grid-template-columns: 1fr;
+        }
+
+        .module-grid {
+            grid-template-columns: 1fr;
+            padding-left: 0;
+            padding-right: 0;
+        }
+
+        .home-footer-note {
+            padding-left: 0;
+            padding-right: 0;
         }
     }
 </style>
@@ -309,7 +430,7 @@
         <div>
             <div class="font-semi-bold">Mapa das Estações</div>
             <div class="station-map-meta">
-                Passe o mouse sobre um ponto para abrir ações rápidas da estação.
+                Visão de estação por localidade, disponível apenas para estações com binários já processados.
             </div>
         </div>
         <div class="station-map-meta">
@@ -328,10 +449,15 @@
         </div>
         <div class="station-map-filter">
             <label class="station-map-field-label" for="station-map-site-filter">Estação</label>
-            <div class="station-map-select-wrap">
-                <select id="station-map-site-filter">
-                    <option value="">Todas as estações</option>
-                </select>
+            <div class="station-map-combobox-wrap">
+                <input
+                    type="text"
+                    id="station-map-site-filter"
+                    class="station-map-combobox"
+                    placeholder="Todas as estações"
+                    autocomplete="off"
+                >
+                <div id="station-map-site-menu" class="station-map-combobox-menu" hidden></div>
             </div>
         </div>
         <div class="station-map-filter">
@@ -361,11 +487,11 @@
     </div>
 </div>
 
-<div class="ThemeGrid_Row">
+<div class="module-grid">
 
     <!-- ======================= SPECTRUM ======================= -->
-    <div class="ThemeGrid_Width4">
-        <a href="{{ url_for('spectrum.spectrum') }}" style="text-decoration:none;">
+    <div>
+        <a href="{{ url_for('spectrum.spectrum') }}" class="module-link" data-loading-message="Abrindo consulta de binários...">
             <div class="card background-neutral-0 padding-l border-radius-m module-card">
 
                 <div class="display-flex align-items-center gap-m">
@@ -390,8 +516,34 @@
     </div>
 
     <!-- ======================= HOST ======================= -->
-    <div class="ThemeGrid_Width4">
-        <a href="{{ url_for('host.host') }}" style="text-decoration:none;">
+    <div>
+        <a href="{{ url_for('server.server') }}" class="module-link" data-loading-message="Carregando panorama do servidor...">
+            <div class="card background-neutral-0 padding-l border-radius-m module-card">
+
+                <div class="display-flex align-items-center gap-m">
+
+                    <div class="module-icon text-primary">
+                        <i class="fa fa-dashboard"></i>
+                    </div>
+
+                    <div>
+                        <div class="font-semi-bold">
+                            Panorama do Servidor
+                        </div>
+                        <div class="font-size-s text-neutral-6 margin-top-xs module-description">
+                            Consolidado global, infraestrutura compartilhada e visão agregada das estações.
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+        </a>
+    </div>
+
+    <!-- ======================= HOST ======================= -->
+    <div>
+        <a href="{{ url_for('host.host') }}" class="module-link" data-loading-message="Abrindo consulta de host...">
             <div class="card background-neutral-0 padding-l border-radius-m module-card">
 
                 <div class="display-flex align-items-center gap-m">
@@ -416,8 +568,8 @@
     </div>
 
     <!-- ======================= TASK ======================= -->
-    <div class="ThemeGrid_Width4">
-        <a href="{{ url_for('task.task_builder') }}" style="text-decoration:none;">
+    <div>
+        <a href="{{ url_for('task.task_builder') }}" class="module-link" data-loading-message="Abrindo criação de task...">
             <div class="card background-neutral-0 padding-l border-radius-m module-card">
 
                 <div class="display-flex align-items-center gap-m">
@@ -443,6 +595,10 @@
 
 </div>
 
+<div class="home-footer-note">
+    Desenvolvido por LITE - Laboratório de Inovação Tecnológica - ANATEL
+</div>
+
 {% endblock %}
 
 {% block extra_js %}
@@ -453,11 +609,13 @@
 ></script>
 <script>
     (function () {
+        const ALL_SITES_LABEL = "Todas as estações";
         const defaultCenter = [-14.2350, -51.9253];
         const brazilBounds = [[-35.5, -74.5], [7.5, -29.0]];
         const pointCount = document.getElementById("station-map-count");
         const stateFilter = document.getElementById("station-map-state-filter");
         const siteFilter = document.getElementById("station-map-site-filter");
+        const siteMenu = document.getElementById("station-map-site-menu");
         const onlineOnlyToggle = document.getElementById("station-map-online-only");
         const map = L.map("station-map", {
             preferCanvas: true,
@@ -472,6 +630,9 @@
         let allStationPoints = [];
         let warmCycleId = 0;
         let rerenderTimer = null;
+        let siteOptionRecords = [];
+        let siteOptionIndex = new Map();
+        let selectedSiteId = "";
 
         L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
             maxZoom: 18,
@@ -488,6 +649,88 @@
                 .replace(/>/g, "&gt;")
                 .replace(/\"/g, "&quot;")
                 .replace(/'/g, "&#39;");
+        }
+
+        function normalizeSearchText(value) {
+            return String(value || "")
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "")
+                .trim()
+                .toLowerCase();
+        }
+
+        function isDistinctText(value, reference) {
+            return Boolean(value) && normalizeSearchText(value) !== normalizeSearchText(reference);
+        }
+
+        function getPointSearchText(point) {
+            const parts = [
+                point.site_label,
+                point.county_name,
+                point.district_name,
+                getPointDisplayName(point)
+            ];
+
+            if (Array.isArray(point.stations)) {
+                point.stations.forEach((station) => {
+                    parts.push(station.host_name || station.equipment_name || "");
+                });
+            }
+
+            return normalizeSearchText(parts.join(" "));
+        }
+
+        function getPointCountyStateLabel(point) {
+            if (point.county_name && point.state_code) {
+                return `${point.county_name}/${point.state_code}`;
+            }
+
+            if (point.county_name) {
+                return point.county_name;
+            }
+
+            return point.state_code || "";
+        }
+
+        function getPointLocalityLabel(point) {
+            const countyState = getPointCountyStateLabel(point);
+
+            if (point.site_label && countyState && point.site_label !== point.county_name) {
+                return `${point.site_label} · ${countyState}`;
+            }
+
+            if (point.site_label && !countyState) {
+                return point.site_label;
+            }
+
+            return countyState || point.site_label;
+        }
+
+        function getPointOptionBaseLabel(point) {
+            const pointLabel = getPointDisplayName(point);
+            const countyState = getPointCountyStateLabel(point);
+
+            if (countyState) {
+                return `${pointLabel} · ${countyState}`;
+            }
+
+            return pointLabel;
+        }
+
+        function getPointOptionDisambiguator(point) {
+            if (isDistinctText(point.district_name, point.county_name)) {
+                return point.district_name;
+            }
+
+            if (isDistinctText(point.site_label, point.county_name) && isDistinctText(point.site_label, point.district_name)) {
+                return point.site_label;
+            }
+
+            return `ponto ${point.site_id}`;
+        }
+
+        function getSelectedSiteId() {
+            return selectedSiteId;
         }
 
         function stationStatusClass(station) {
@@ -521,7 +764,7 @@
         function buildPopupHtml(point) {
             const meta = [
                 `ID_SITE ${point.site_id}`,
-                point.state_code ? `UF ${point.state_code}` : null,
+                getPointLocalityLabel(point) ? `Localidade ${getPointLocalityLabel(point)}` : null,
                 point.altitude !== null && point.altitude !== undefined ? `Alt ${point.altitude} m` : null,
                 point.gnss_measurements ? `${point.gnss_measurements} medições GNSS` : null
             ].filter(Boolean).join(" | ");
@@ -558,12 +801,15 @@
 
             const entries = point.stations.map((station) => {
                 const equipmentName = escapeHtml(station.equipment_name || "Equipamento");
+                const localityContext = escapeHtml(getPointLocalityLabel(point) || "Localidade não identificada");
                 const hostHref = station.host_id ? `/host?host_id=${station.host_id}&online_only=0` : null;
                 const hostSearchHref = !station.host_id && station.equipment_name
                     ? `/host?search=${encodeURIComponent(station.equipment_name)}&online_only=0`
                     : null;
                 const taskHref = station.host_id ? `/task/?host_id=${station.host_id}&online_only=0` : null;
-                const spectrumHref = station.equipment_id ? `/spectrum?equipment_id=${station.equipment_id}&sort_by=date_start&sort_order=DESC` : null;
+                const spectrumHref = station.equipment_id
+                    ? `/spectrum?equipment_id=${station.equipment_id}&site_id=${point.site_id}&sort_by=date_start&sort_order=DESC`
+                    : null;
 
                 return `
                     <div class="station-entry">
@@ -571,11 +817,12 @@
                             <span class="station-entry-name">${equipmentName}</span>
                             <span class="station-status ${stationStatusClass(station)}">${stationStatusLabel(station)}</span>
                         </div>
+                        <div class="station-entry-context">${localityContext}</div>
                         <div class="station-actions">
-                            ${spectrumHref ? `<a class="station-action" href="${spectrumHref}">Binários</a>` : ""}
-                            ${hostHref ? `<a class="station-action" href="${hostHref}">Host</a>` : ""}
-                            ${hostSearchHref ? `<a class="station-action" href="${hostSearchHref}">Buscar Host</a>` : ""}
-                            ${taskHref ? `<a class="station-action" href="${taskHref}">Criar Task</a>` : ""}
+                            ${spectrumHref ? `<a class="station-action" href="${spectrumHref}" data-loading-message="Abrindo consulta de binários...">Binários</a>` : ""}
+                            ${hostHref ? `<a class="station-action" href="${hostHref}" data-loading-message="Carregando panorama da estação...">Host</a>` : ""}
+                            ${hostSearchHref ? `<a class="station-action" href="${hostSearchHref}" data-loading-message="Abrindo consulta de host...">Buscar Host</a>` : ""}
+                            ${taskHref ? `<a class="station-action" href="${taskHref}" data-loading-message="Abrindo criação de task...">Criar Task</a>` : ""}
                         </div>
                     </div>
                 `;
@@ -619,7 +866,7 @@
                     point.has_known_host = Boolean(payload.has_known_host);
                     updateMarkerColor(marker, point);
                     marker.setPopupContent(buildPopupHtml(point));
-                    populateSiteFilter(allStationPoints, stateFilter.value, siteFilter.value);
+                    populateSiteFilter(allStationPoints, stateFilter.value);
 
                     if (onlineOnlyToggle.checked) {
                         scheduleFilteredRerender();
@@ -756,7 +1003,7 @@
                 popupElement.addEventListener("mouseleave", scheduleClose);
             });
 
-            marker.bindTooltip(point.site_label, {
+            marker.bindTooltip(getPointOptionBaseLabel(point), {
                 direction: "top",
                 offset: [0, -8],
                 opacity: 0.95
@@ -819,37 +1066,108 @@
             });
         }
 
-        function populateSiteFilter(points, selectedStateCode, selectedSiteId) {
+        function populateSiteFilter(points, selectedStateCode) {
             const filteredByState = selectedStateCode
                 ? points.filter((point) => point.state_code === selectedStateCode)
                 : points;
+            const sortedPoints = sortSites(filteredByState);
+            const baseLabelCounts = new Map();
 
-            siteFilter.innerHTML = '<option value="">Todas as estações</option>';
-
-            sortSites(filteredByState).forEach((point) => {
-                const option = document.createElement("option");
-                option.value = String(point.site_id);
-                const pointLabel = getPointDisplayName(point);
-                option.textContent = point.state_code
-                    ? `${pointLabel} (${point.state_code})`
-                    : pointLabel;
-                siteFilter.appendChild(option);
+            sortedPoints.forEach((point) => {
+                const baseLabel = getPointOptionBaseLabel(point);
+                baseLabelCounts.set(baseLabel, (baseLabelCounts.get(baseLabel) || 0) + 1);
             });
 
-            if (
-                selectedSiteId &&
-                filteredByState.some((point) => String(point.site_id) === selectedSiteId)
-            ) {
-                siteFilter.value = selectedSiteId;
+            siteOptionRecords = [];
+            siteOptionIndex = new Map();
+            siteOptionRecords.push({site_id: "", label: ALL_SITES_LABEL});
+
+            sortedPoints.forEach((point) => {
+                const baseLabel = getPointOptionBaseLabel(point);
+                const optionLabel = baseLabelCounts.get(baseLabel) > 1
+                    ? `${baseLabel} · ${getPointOptionDisambiguator(point)}`
+                    : baseLabel;
+                siteOptionRecords.push({
+                    site_id: String(point.site_id),
+                    label: optionLabel
+                });
+                siteOptionIndex.set(normalizeSearchText(optionLabel), String(point.site_id));
+            });
+
+            if (selectedSiteId) {
+                const selectedOption = siteOptionRecords.find((option) => option.site_id === String(selectedSiteId));
+
+                if (selectedOption) {
+                    siteFilter.value = selectedOption.label;
+                } else {
+                    selectedSiteId = "";
+                }
+            }
+
+            renderSiteMenu();
+        }
+
+        function renderSiteMenu() {
+            if (!siteMenu) {
                 return;
             }
 
-            siteFilter.value = "";
+            const searchTerm = normalizeSearchText(siteFilter.value);
+            const visibleOptions = siteOptionRecords.filter((option) => {
+                if (!option.site_id) {
+                    return true;
+                }
+
+                if (!searchTerm) {
+                    return true;
+                }
+
+                return normalizeSearchText(option.label).includes(searchTerm);
+            }).slice(0, 120);
+
+            if (visibleOptions.length === 0) {
+                siteMenu.innerHTML = '<div class="station-map-combobox-empty">Nenhuma estação encontrada para esse filtro.</div>';
+                return;
+            }
+
+            siteMenu.innerHTML = visibleOptions.map((option) => {
+                const isActive = option.site_id && option.site_id === String(selectedSiteId);
+                return `
+                    <button
+                        type="button"
+                        class="station-map-combobox-option${isActive ? " is-active" : ""}"
+                        data-site-option="${option.site_id}"
+                    >
+                        ${escapeHtml(option.label)}
+                    </button>
+                `;
+            }).join("");
+        }
+
+        function openSiteMenu() {
+            renderSiteMenu();
+            siteMenu.hidden = false;
+        }
+
+        function closeSiteMenu() {
+            siteMenu.hidden = true;
+        }
+
+        function applySiteSelection(siteId, label) {
+            selectedSiteId = String(siteId || "");
+            siteFilter.value = selectedSiteId ? label : "";
+            closeSiteMenu();
+            renderFilteredPoints();
         }
 
         function getFilteredPoints() {
             const selectedStateCode = stateFilter.value;
-            const selectedSiteId = siteFilter.value;
+            const selectedSiteId = getSelectedSiteId();
+            const siteSearchTerm = selectedSiteId
+                ? ""
+                : normalizeSearchText(siteFilter.value) === normalizeSearchText(ALL_SITES_LABEL)
+                ? ""
+                : normalizeSearchText(siteFilter.value);
             const onlineOnly = onlineOnlyToggle.checked;
 
             return allStationPoints.filter((point) => {
@@ -857,7 +1175,11 @@
                     return false;
                 }
 
-                if (selectedSiteId && String(point.site_id) !== selectedSiteId) {
+                if (selectedSiteId) {
+                    if (String(point.site_id) !== selectedSiteId) {
+                        return false;
+                    }
+                } else if (siteSearchTerm && !getPointSearchText(point).includes(siteSearchTerm)) {
                     return false;
                 }
 
@@ -882,7 +1204,7 @@
             if (filteredPoints.length > 0 && bounds.length > 0) {
                 map.fitBounds(bounds, {
                     padding: [30, 30],
-                    maxZoom: siteFilter.value ? 11 : 8
+                    maxZoom: getSelectedSiteId() ? 11 : 8
                 });
             } else {
                 map.setView(defaultCenter, 4);
@@ -905,12 +1227,70 @@
         }
 
         stateFilter.addEventListener("change", () => {
-            populateSiteFilter(allStationPoints, stateFilter.value, "");
+            selectedSiteId = "";
+            siteFilter.value = "";
+            populateSiteFilter(allStationPoints, stateFilter.value);
+            renderFilteredPoints();
+        });
+
+        siteFilter.addEventListener("focus", () => {
+            openSiteMenu();
+        });
+
+        siteFilter.addEventListener("input", () => {
+            selectedSiteId = siteOptionIndex.get(normalizeSearchText(siteFilter.value)) || "";
+            openSiteMenu();
             renderFilteredPoints();
         });
 
         siteFilter.addEventListener("change", () => {
+            const normalizedValue = normalizeSearchText(siteFilter.value);
+
+            if (!normalizedValue || normalizedValue === normalizeSearchText(ALL_SITES_LABEL)) {
+                selectedSiteId = "";
+                siteFilter.value = "";
+            } else if (siteOptionIndex.has(normalizedValue)) {
+                selectedSiteId = siteOptionIndex.get(normalizedValue) || "";
+            }
+
+            closeSiteMenu();
             renderFilteredPoints();
+        });
+
+        siteFilter.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                closeSiteMenu();
+            }
+
+            if (event.key === "Enter") {
+                const normalizedValue = normalizeSearchText(siteFilter.value);
+                const matchedSiteId = siteOptionIndex.get(normalizedValue) || "";
+
+                if (matchedSiteId) {
+                    event.preventDefault();
+                    applySiteSelection(matchedSiteId, siteFilter.value);
+                }
+            }
+        });
+
+        siteMenu.addEventListener("mousedown", (event) => {
+            const button = event.target.closest("[data-site-option]");
+
+            if (!button) {
+                return;
+            }
+
+            event.preventDefault();
+            applySiteSelection(
+                button.getAttribute("data-site-option"),
+                button.textContent.trim()
+            );
+        });
+
+        document.addEventListener("click", (event) => {
+            if (!event.target.closest(".station-map-combobox-wrap")) {
+                closeSiteMenu();
+            }
         });
 
         onlineOnlyToggle.addEventListener("change", () => {
@@ -923,7 +1303,7 @@
                 const stationPoints = Array.isArray(payload.points) ? payload.points : [];
                 allStationPoints = stationPoints;
                 populateStateFilter(allStationPoints);
-                populateSiteFilter(allStationPoints, "", "");
+                populateSiteFilter(allStationPoints, "");
                 renderFilteredPoints();
             })
             .catch(() => {
