@@ -1,11 +1,11 @@
 #!/bin/bash
 # =============================================================================
 # Script: appCataloga_host_check.sh
-# Purpose: Host availability and health check daemon (SINGLETON)
+# Purpose: Queued HOST_TASK worker for connectivity and statistics (SINGLETON)
 #
 # Role:
-#   - Periodically checks host reachability and basic health
-#   - Supports discovery and backup pipelines
+#   - Consumes HOST_TASK_CHECK / HOST_TASK_CHECK_CONNECTION / HOST_TASK_UPDATE_STATISTICS
+#   - Reconciles host state from explicit queued work only
 #
 # Usage:
 #   ./appCataloga_host_check.sh {start|stop|restart|status}

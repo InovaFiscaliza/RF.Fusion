@@ -51,6 +51,7 @@ class FakeWorkerLog:
     def __init__(self) -> None:
         self.entries = []
         self.errors = []
+        self.warnings = []
 
     def entry(self, message: str) -> None:
         self.entries.append(message)
@@ -58,11 +59,17 @@ class FakeWorkerLog:
     def error(self, message: str) -> None:
         self.errors.append(message)
 
+    def warning(self, message: str) -> None:
+        self.warnings.append(message)
+
     def event(self, event: str, **fields) -> None:
         self.entries.append((event, fields))
 
     def error_event(self, event: str, **fields) -> None:
         self.errors.append((event, fields))
+
+    def service_start(self, service: str) -> None:
+        self.entries.append(("service_start", service))
 
 
 class FakeDbBkp:
@@ -251,6 +258,19 @@ class FileMoveTests(unittest.TestCase):
 
 
 class RetryTests(unittest.TestCase):
+    def test_preflight_app_analise_connection_returns_false_without_claiming_task(self) -> None:
+        class FakeApp:
+            def check_connection(self) -> None:
+                raise worker.errors.ExternalServiceTransientError("service down")
+
+        fake_log = FakeWorkerLog()
+
+        with patch.object(worker, "log", fake_log):
+            self.assertFalse(worker.preflight_app_analise_connection(FakeApp()))
+
+        self.assertEqual(len(fake_log.warnings), 1)
+        self.assertIn("appanalise_unavailable_retry", fake_log.warnings[0])
+
     def test_return_task_to_pending_requeues_with_standard_message(self) -> None:
         class FakeDb:
             def __init__(self) -> None:
@@ -317,6 +337,45 @@ class PathRuleTests(unittest.TestCase):
 
 
 class WorkerFlowScenarioTests(unittest.TestCase):
+    def test_main_does_not_read_file_task_when_appanalise_is_unavailable(self) -> None:
+        fake_log = FakeWorkerLog()
+        read_calls = []
+        sleep_calls = []
+
+        class FakeDbBkpMain:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def read_file_task(self, **kwargs):
+                read_calls.append(kwargs)
+                return None
+
+        class FakeDbRfmMain:
+            def __init__(self, *args, **kwargs) -> None:
+                self.in_transaction = False
+
+        class FakeApp:
+            def check_connection(self) -> None:
+                worker.process_status["running"] = False
+                raise worker.errors.ExternalServiceTransientError("service down")
+
+        with patch.object(worker, "log", fake_log):
+            with patch.object(worker, "dbHandlerBKP", FakeDbBkpMain):
+                with patch.object(worker, "dbHandlerRFM", FakeDbRfmMain):
+                    with patch.object(worker, "AppAnaliseConnection", FakeApp):
+                        with patch.object(
+                            worker.legacy,
+                            "_random_jitter_sleep",
+                            side_effect=lambda: sleep_calls.append("slept"),
+                        ):
+                            worker.process_status["running"] = True
+                            worker.main()
+
+        self.assertEqual(read_calls, [])
+        self.assertEqual(sleep_calls, ["slept"])
+        self.assertEqual(len(fake_log.warnings), 1)
+        self.assertIn("appanalise_unavailable_retry", fake_log.warnings[0])
+
     def test_successful_export_promotes_mat_and_retires_original(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir) / "reposfi"

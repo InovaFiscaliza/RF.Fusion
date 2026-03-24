@@ -73,7 +73,7 @@ process_status = {"running": True}
 # ===============================================================
 def release_busy_hosts_on_exit() -> None:
     """
-    Release BUSY hosts held by this worker PID.
+    Release any HOST BUSY locks owned by this worker PID.
     """
     try:
         pid = os.getpid()
@@ -118,7 +118,9 @@ def do_reverse_geocode(data, attempt=1, max_attempts=10):
     """
     Perform reverse geocoding using Nominatim with retry logic.
 
-    This function must only be executed after payload semantic validation.
+    This helper must only run after payload semantic validation because it
+    enriches already-accepted coordinates; it must not influence whether a BIN
+    payload is considered structurally valid.
     """
     point = (data["latitude"], data["longitude"])
     geocoding = Nominatim(user_agent=k.NOMINATIM_USER, timeout=5)
@@ -207,7 +209,10 @@ def file_move(filename, path, new_path):
 
 def should_export(hostname: str) -> bool:
     """
-    Decide whether appAnalise should export a .mat artifact.
+    Decide whether appAnalise should export a `.mat` artifact for this host.
+
+    Host-specific exceptions live here so the rest of the processing pipeline
+    does not need to know station-family export quirks.
     """
     normalized = (hostname or "").lower()
 
@@ -230,7 +235,12 @@ def resolve_history_file_metadata(
     dt_modified,
 ):
     """
-    Resolve which file metadata should be persisted to FILE_TASK_HISTORY.
+    Resolve which file metadata should be written to FILE_TASK_HISTORY.
+
+    On success, history should point to the canonical output artifact. On
+    failure or partial processing, history should preserve the original
+    server-side payload metadata so operators can still locate the attempted
+    input.
     """
     if file_was_processed and file_meta:
         return {
@@ -394,6 +404,22 @@ def return_task_to_pending(db_bp, file_task_id, err):
             error=err.format_error(),
         ),
     )
+
+
+def preflight_app_analise_connection(app_analise) -> bool:
+    """
+    Check appAnalise availability before claiming a FILE_TASK.
+
+    When the external service is unavailable we must not even pick a task from
+    the queue, otherwise the `finally` block may resolve it with no captured
+    error context and persist a generic "Processing Error".
+    """
+    try:
+        app_analise.check_connection()
+        return True
+    except errors.ExternalServiceTransientError as e:
+        log.warning(f"event=appanalise_unavailable_retry error={e}")
+        return False
 
 
 def is_same_file(file_a, file_b):
@@ -704,7 +730,14 @@ def main():
 
         try:
             # ===================================================
-            # ACT I — Fetch FILE_TASK
+            # ACT I — Confirm appAnalise is reachable before claiming work
+            # ===================================================
+            if not preflight_app_analise_connection(app_analise):
+                should_sleep = True
+                continue
+
+            # ===================================================
+            # ACT II — Fetch one pending PROCESS FILE_TASK
             # ===================================================
             result = db_bp.read_file_task(
                 task_type=k.FILE_TASK_PROCESS_TYPE,
@@ -716,7 +749,9 @@ def main():
                 should_sleep = True
                 continue
 
-            # From this point on, we have a concrete FILE_TASK candidate.
+            # From this point on, the loop is working on one concrete payload.
+            # Everything below must either requeue this row explicitly or
+            # finalize it through the single resolution helper in `finally`.
             row, host_id, _ = result
             file_task_id    = row["FILE_TASK__ID_FILE_TASK"]
             server_path     = row["FILE_TASK__NA_SERVER_FILE_PATH"]
@@ -739,19 +774,7 @@ def main():
             )
 
             # ===================================================
-            # ACT II — Preflight appAnalise connectivity
-            # ===================================================
-            try:
-                app_analise.check_connection()
-            except errors.ExternalServiceTransientError as e:
-                log.warning(
-                    f"event=appanalise_unavailable_retry error={e}"
-                )
-                should_sleep = True
-                continue
-
-            # ===================================================
-            # ACT III — Mark task as RUNNING
+            # ACT III — Mark the FILE_TASK as RUNNING
             # ===================================================
             try:
                 db_bp.file_task_update(
@@ -773,7 +796,7 @@ def main():
                 raise
 
             # ===================================================
-            # ACT IV — Process and validate via appAnalise
+            # ACT IV — Delegate parsing to appAnalise and validate the result
             # ===================================================
             try:
                 export = should_export(hostname_db)
@@ -791,13 +814,18 @@ def main():
 
                 hostname_bin = bin_data["hostname"]
             except errors.ExternalServiceTransientError as e:
-                # Connection/service failures are the only processing errors
-                # that should requeue the FILE_TASK instead of resolving it as
-                # definitive error.
+                # appAnalise availability problems are retryable. They are the
+                # only processing failures that should requeue the FILE_TASK
+                # instead of resolving it as a definitive payload error.
+                # Keeping this branch explicit prevents generic "Processing
+                # Error" rows when the external service is merely unavailable.
                 retry_later = True
                 err.set(reason=str(e), stage="PROCESS", exc=e)
                 raise
             except errors.BinValidationError as e:
+                # Validation errors are definitive payload problems. They go to
+                # normal finalization instead of retry because the same input
+                # would fail again with the same semantic defect.
                 err.set(reason=str(e), stage="PROCESS", exc=e)
                 raise
             except Exception as e:
@@ -805,15 +833,16 @@ def main():
                 raise
 
             try:
-                # SITE resolution is intentionally outside the DB transaction,
-                # matching the existing BIN worker behavior.
+                # SITE resolution stays outside the RFDATA transaction, matching
+                # the existing BIN worker behavior and keeping geocoding latency
+                # out of the DB critical section.
                 site_id = upsert_site(db_rfm, bin_data)
             except Exception as e:
                 err.set(reason=str(e), stage="SITE", exc=e)
                 raise
 
             # ===================================================
-            # ACT VI — Begin DB transaction
+            # ACT VI — Begin the RFDATA transaction
             # ===================================================
             try:
                 db_rfm.begin_transaction()
@@ -822,7 +851,7 @@ def main():
                 raise
 
             # ===================================================
-            # ACT VII — Insert spectrum and metadata (DB)
+            # ACT VII — Insert spectra and related metadata
             # ===================================================
             try:
                 # The host-side source file and all derived spectra must be
@@ -840,13 +869,16 @@ def main():
                     dt_created=dt_created,
                     dt_modified=dt_modified,
                 )
+                # After this commit, the payload is already part of RFDATA.
+                # Filesystem finalization below must therefore preserve a
+                # canonical artifact path instead of retrying DB writes.
                 db_rfm.commit()
             except Exception as e:
                 err.set(reason=str(e), stage="DB", exc=e)
                 raise
 
             # ===================================================
-            # ACT VIII — Filesystem move + server file registration
+            # ACT VIII — Finalize files on disk and register the canonical output
             # ===================================================
             try:
                 # Success resolution decides which artifact becomes canonical
@@ -888,12 +920,13 @@ def main():
                 continue
 
             # ---------------------------------------------------
-            # Global resolution (single exit point)
+            # Global resolution (single exit point for task state)
             # ---------------------------------------------------
             if retry_later:
                 try:
-                    # Transient service failures keep the task alive and push
-                    # the whole resolution decision into the shared helper.
+                    # Transient service failures keep the task alive and reuse
+                    # the shared resolution helper so task/history persistence
+                    # stays consistent with the normal path.
                     resolve_task_after_attempt(
                         db_bp,
                         file_task_id=file_task_id,
@@ -922,6 +955,8 @@ def main():
 
             # Definitive outcomes (success or fatal payload error) are closed
             # here so task deletion, trash handling, and history stay aligned.
+            # Having one exit point avoids splitting queue state, history state,
+            # and filesystem cleanup across many error branches above.
             resolution = resolve_task_after_attempt(
                 db_bp,
                 file_task_id=file_task_id,

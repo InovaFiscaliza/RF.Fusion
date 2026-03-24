@@ -343,6 +343,10 @@ class dbHandlerBKP(DBHandlerBase):
                     "ID_HOST",
                     "NA_HOST_NAME",
                     "NA_HOST_ADDRESS",
+                    "NA_HOST_PORT",
+                    "NA_HOST_USER",
+                    "NA_HOST_PASSWORD",
+                    "IS_BUSY",
                     "IS_OFFLINE",
                     "DT_LAST_CHECK",
                 ],
@@ -991,6 +995,193 @@ class dbHandlerBKP(DBHandlerBase):
                     f"[HOST_CLEANUP] Failed to queue connection check "
                     f"(host_id={host_id}): {e}"
                 )
+
+    def host_task_cleanup_stale_operational_tasks(
+        self,
+        stale_after_seconds: int,
+    ) -> None:
+        """
+        Recover stale host-dependent HOST_TASK rows without forcing SSH preemption.
+
+        The janitor focuses on the host-task state itself:
+            - PENDING rows with missing `DT_HOST_TASK` get normalized so the
+              discovery reservation TTL can expire deterministically.
+            - RUNNING rows older than `stale_after_seconds` are reset to
+              PENDING when execution ownership no longer matches reality
+              (host unlocked, stale PID, or mismatched host/task owner).
+
+        Host release remains conservative: only obviously stale host locks are
+        cleared here. Normal connectivity reconciliation still belongs to the
+        existing host cleanup / host_check paths.
+        """
+        now = datetime.now()
+        operational_types = (
+            k.HOST_TASK_CHECK_TYPE,
+            k.HOST_TASK_PROCESSING_TYPE,
+            k.HOST_TASK_CHECK_CONNECTION_TYPE,
+        )
+
+        self._connect()
+        try:
+            rows = self._select_raw("""
+                SELECT
+                    HT.ID_HOST_TASK,
+                    HT.FK_HOST,
+                    HT.NU_TYPE,
+                    HT.NU_STATUS,
+                    HT.DT_HOST_TASK,
+                    HT.NU_PID,
+                    H.IS_BUSY,
+                    H.NU_PID AS HOST_OWNER_PID
+                FROM HOST_TASK HT
+                JOIN HOST H ON H.ID_HOST = HT.FK_HOST
+                WHERE HT.NU_TYPE IN (%s, %s, %s)
+                  AND HT.NU_STATUS IN (%s, %s)
+            """, (
+                *operational_types,
+                k.TASK_PENDING,
+                k.TASK_RUNNING,
+            ))
+        finally:
+            self._disconnect()
+
+        if not rows:
+            return
+
+        self.log.entry(
+            f"[HOST_TASK_CLEANUP] Evaluating {len(rows)} active operational HOST_TASK entries"
+        )
+
+        for row in rows:
+            task_id = row["ID_HOST_TASK"]
+            host_id = row["FK_HOST"]
+            task_type = row["NU_TYPE"]
+            status = row["NU_STATUS"]
+            task_started_at = row["DT_HOST_TASK"]
+            task_pid = row["NU_PID"]
+            host_is_busy = bool(row["IS_BUSY"])
+            host_owner_pid = row["HOST_OWNER_PID"]
+
+            # Normalize legacy/residual PENDING rows without timestamps so the
+            # discovery reservation can age out deterministically.
+            if status == k.TASK_PENDING and task_started_at is None:
+                try:
+                    self.host_task_update(
+                        task_id=task_id,
+                        DT_HOST_TASK=now,
+                        NA_MESSAGE=(
+                            "Operational HOST_TASK timestamp normalized by janitor "
+                            "for reservation TTL control"
+                        ),
+                    )
+                except Exception as e:
+                    self.log.error(
+                        f"[HOST_TASK_CLEANUP] Failed to normalize pending HOST_TASK "
+                        f"(task_id={task_id}, host_id={host_id}, type={task_type}): {e}"
+                    )
+                continue
+
+            if status != k.TASK_RUNNING:
+                continue
+
+            elapsed = (
+                float("inf")
+                if task_started_at is None
+                else (now - task_started_at).total_seconds()
+            )
+
+            if elapsed <= stale_after_seconds:
+                continue
+
+            task_pid_alive = bool(task_pid) and tools.pid_exists(task_pid)
+            host_owner_alive = bool(host_owner_pid) and tools.pid_exists(host_owner_pid)
+
+            # Legitimate long-running execution still owns the host and keeps
+            # the same live PID on both HOST and HOST_TASK.
+            if (
+                host_is_busy
+                and task_pid_alive
+                and host_owner_pid == task_pid
+            ):
+                self.log.entry(
+                    f"[HOST_TASK_CLEANUP] Preserving active long-running HOST_TASK "
+                    f"(task_id={task_id}, host_id={host_id}, type={task_type}, "
+                    f"busy_for={elapsed:.1f}s)"
+                )
+                continue
+
+            reasons = []
+            if not host_is_busy:
+                reasons.append("HOST_NOT_BUSY")
+            if task_pid in (None, k.HOST_UNLOCKED_PID):
+                reasons.append("TASK_PID_MISSING")
+            elif not task_pid_alive:
+                reasons.append("TASK_PID_STALE")
+            if host_is_busy and host_owner_pid not in (None, k.HOST_UNLOCKED_PID):
+                if not host_owner_alive:
+                    reasons.append("HOST_PID_STALE")
+                elif task_pid not in (None, k.HOST_UNLOCKED_PID) and host_owner_pid != task_pid:
+                    reasons.append("HOST_PID_MISMATCH")
+            elif host_is_busy:
+                reasons.append("HOST_PID_MISSING")
+
+            if not reasons:
+                reasons.append("STALE_RUNNING_TTL_EXPIRED")
+
+            self.log.warning(
+                f"[HOST_TASK_CLEANUP] Recovering stale operational HOST_TASK "
+                f"(task_id={task_id}, host_id={host_id}, type={task_type}, "
+                f"busy_for={elapsed:.1f}s, reasons={','.join(reasons)})"
+            )
+
+            try:
+                self.host_task_update(
+                    task_id=task_id,
+                    NU_STATUS=k.TASK_PENDING,
+                    DT_HOST_TASK=now,
+                    NA_MESSAGE=(
+                        "Stale operational HOST_TASK recovered by janitor "
+                        f"({', '.join(reasons)})"
+                    ),
+                )
+            except Exception as e:
+                self.log.error(
+                    f"[HOST_TASK_CLEANUP] Failed to recover HOST_TASK "
+                    f"(task_id={task_id}, host_id={host_id}): {e}"
+                )
+                continue
+
+            should_release_host = (
+                host_is_busy
+                and (
+                    host_owner_pid in (None, k.HOST_UNLOCKED_PID)
+                    or not host_owner_alive
+                    or (
+                        task_pid not in (None, k.HOST_UNLOCKED_PID)
+                        and host_owner_pid == task_pid
+                        and not task_pid_alive
+                    )
+                )
+            )
+
+            if not should_release_host:
+                continue
+
+            try:
+                self.host_update(
+                    host_id=host_id,
+                    IS_BUSY=False,
+                    NU_PID=k.HOST_UNLOCKED_PID,
+                )
+                self.log.warning(
+                    f"[HOST_TASK_CLEANUP] Released stale host lock while recovering "
+                    f"HOST_TASK (task_id={task_id}, host_id={host_id})"
+                )
+            except Exception as e:
+                self.log.error(
+                    f"[HOST_TASK_CLEANUP] Failed to release stale host lock "
+                    f"(task_id={task_id}, host_id={host_id}): {e}"
+                )
         
     # ======================================================================
     # HOST_TASK OPERATIONS
@@ -1032,6 +1223,138 @@ class dbHandlerBKP(DBHandlerBase):
 
         return rows or []
 
+    def _normalize_host_task_filter(self, filter_value: Any) -> Any:
+        """
+        Return a semantic representation of a HOST_TASK filter payload.
+
+        `HOST_TASK.FILTER` may arrive as dict, JSON string, or raw bytes from
+        the DB connector. Queue deduplication must compare filters by meaning,
+        not by textual key order.
+        """
+        if filter_value is None:
+            return dict(k.NONE_FILTER)
+
+        if isinstance(filter_value, (bytes, bytearray)):
+            filter_value = filter_value.decode("utf-8")
+
+        if isinstance(filter_value, str):
+            try:
+                return json.loads(filter_value)
+            except json.JSONDecodeError:
+                return filter_value
+
+        if isinstance(filter_value, dict):
+            return dict(filter_value)
+
+        return filter_value
+
+    def _serialize_host_task_filter(self, filter_value: Any) -> str:
+        """
+        Normalize and serialize a HOST_TASK filter for DB persistence.
+
+        The operational queue treats FILTER as durable state, so inserts and
+        updates must store it canonically to avoid accidental churn caused by
+        JSON key ordering differences.
+        """
+        if filter_value is None:
+            normalized = dict(k.NONE_FILTER)
+        elif isinstance(filter_value, (bytes, bytearray)):
+            normalized = json.loads(filter_value.decode("utf-8"))
+        elif isinstance(filter_value, dict):
+            normalized = dict(filter_value)
+        elif isinstance(filter_value, str):
+            try:
+                normalized = json.loads(filter_value)
+            except json.JSONDecodeError:
+                raise ValueError("FILTER must be a valid JSON string or dict.")
+        else:
+            normalized = filter_value
+
+        return json.dumps(normalized, sort_keys=True, ensure_ascii=False)
+
+    def _canonicalize_host_task_filter(self, filter_value: Any) -> str:
+        """
+        Build a deterministic string key for semantic HOST_TASK filter matching.
+        """
+        normalized = self._normalize_host_task_filter(filter_value)
+        return json.dumps(normalized, sort_keys=True, ensure_ascii=False)
+
+    def _find_reusable_operational_host_task(
+        self,
+        tasks: list[dict],
+    ) -> tuple[Optional[dict], int]:
+        """
+        Pick the best reusable CHECK/PROCESSING row for a host.
+
+        Preference order:
+            1. PENDING task
+            2. RUNNING task
+            3. Otherwise the newest terminal row
+        """
+        if not tasks:
+            return None, 0
+
+        pending = next(
+            (
+                task
+                for task in tasks
+                if task.get("HOST_TASK__NU_STATUS") == k.TASK_PENDING
+            ),
+            None,
+        )
+        if pending:
+            return pending, len(tasks)
+
+        running = next(
+            (
+                task
+                for task in tasks
+                if task.get("HOST_TASK__NU_STATUS") == k.TASK_RUNNING
+            ),
+            None,
+        )
+        if running:
+            return running, len(tasks)
+
+        return tasks[0], len(tasks)
+
+    def _find_matching_host_task(
+        self,
+        tasks: list[dict],
+        *,
+        filter_value: Any,
+    ) -> tuple[Optional[dict], int]:
+        """
+        Return the best semantic filter match among already selected HOST_TASK rows.
+
+        Preference order:
+            1. Any ACTIVE row (PENDING / RUNNING)
+            2. Otherwise the newest matching row
+        """
+        target_filter = self._canonicalize_host_task_filter(filter_value)
+        matches = [
+            task
+            for task in tasks
+            if self._canonicalize_host_task_filter(
+                task.get("HOST_TASK__FILTER")
+            ) == target_filter
+        ]
+
+        if not matches:
+            return None, 0
+
+        active = next(
+            (
+                task
+                for task in matches
+                if task.get("HOST_TASK__NU_STATUS")
+                in (k.TASK_PENDING, k.TASK_RUNNING)
+            ),
+            None,
+        )
+
+        return active or matches[0], len(matches)
+
     
     def queue_host_task(
         self,
@@ -1044,37 +1367,74 @@ class dbHandlerBKP(DBHandlerBase):
         Deterministically enqueue or refresh an operational host task.
 
         Guarantees:
-            - At most ONE CHECK/PROCESSING task per host
+            - At most ONE CHECK/PROCESSING task row is reused per host
             - No statistics task is created here
         """
+        operational_types = (
+            k.HOST_TASK_CHECK_TYPE,
+            k.HOST_TASK_PROCESSING_TYPE,
+        )
+        lookup_types: Union[int, list[int]]
 
-        filter_json = json.dumps(filter_dict)
+        if task_type in operational_types:
+            lookup_types = list(operational_types)
+        else:
+            lookup_types = task_type
 
-        # Fetch existing operational task (CHECK / PROCESSING)
         tasks = self.check_host_task(
             FK_HOST=host_id,
-            NU_TYPE=task_type,
-            FILTER=filter_json,
+            NU_TYPE=lookup_types,
         )
 
-        existing = tasks[0] if tasks else None
+        if task_type in operational_types:
+            existing, match_count = self._find_reusable_operational_host_task(tasks)
+        else:
+            existing, match_count = self._find_matching_host_task(
+                tasks,
+                filter_value=filter_dict,
+            )
+
+        if match_count > 1:
+            if task_type in operational_types:
+                warning_message = (
+                    "[DBHandlerBKP] Multiple operational HOST_TASK rows matched "
+                    f"host={host_id}, type={task_type}, matches={match_count}. "
+                    "Reusing one row and leaving cleanup to maintenance tooling."
+                )
+            else:
+                warning_message = (
+                    "[DBHandlerBKP] Multiple matching HOST_TASK rows found "
+                    f"host={host_id}, type={task_type}, matches={match_count}. "
+                    "Reusing one row and leaving cleanup to maintenance tooling."
+                )
+
+            self.log.warning(warning_message)
 
         if existing:
             status = existing["HOST_TASK__NU_STATUS"]
+            existing_type = existing.get("HOST_TASK__NU_TYPE")
 
-            # ACTIVE task → do nothing
-            if status in (k.TASK_PENDING, k.TASK_RUNNING):
-                pass
+            # RUNNING task → preserve the live execution context. A new request
+            # should not rewrite the filter of an in-flight worker.
+            if status == k.TASK_RUNNING and task_type in operational_types:
+                self.log.warning(
+                    "[DBHandlerBKP] Operational HOST_TASK already RUNNING; "
+                    f"preserving current execution (host={host_id}, "
+                    f"task_id={existing['HOST_TASK__ID_HOST_TASK']}, "
+                    f"type={existing_type})."
+                )
+
+            # PENDING task or terminal row -> refresh in place.
             else:
-                # Terminal task -> refresh in place instead of creating duplicates.
                 self.host_task_update(
                     task_id=existing["HOST_TASK__ID_HOST_TASK"],
+                    FILTER=filter_dict,
                     NU_TYPE=task_type,
-                    NU_STATUS=k.TASK_PENDING,
+                    NU_STATUS=task_status,
                     DT_HOST_TASK=datetime.now(),
                     NA_MESSAGE=(
                         "Operational HOST_TASK refreshed by queue_host_task "
-                        f"(previous status={status})"
+                        f"(previous type={existing_type}, status={status})"
                     ),
                 )
 
@@ -1138,16 +1498,9 @@ class dbHandlerBKP(DBHandlerBase):
                 payload["NU_STATUS"] = k.TASK_PENDING
 
             # --- Handle FILTER field properly ---
-            if "FILTER" not in payload or payload["FILTER"] is None:
-                payload["FILTER"] = k.NONE_FILTER
-            elif isinstance(payload["FILTER"], dict):
-                payload["FILTER"] = json.dumps(payload["FILTER"], ensure_ascii=False)
-            elif isinstance(payload["FILTER"], str):
-                # Validate JSON string
-                try:
-                    json.loads(payload["FILTER"])
-                except json.JSONDecodeError:
-                    raise ValueError("FILTER must be a valid JSON string or dict.")
+            payload["FILTER"] = self._serialize_host_task_filter(
+                payload.get("FILTER")
+            )
 
             # --- Default message ---
             if "NA_MESSAGE" not in payload:
@@ -1421,6 +1774,9 @@ class dbHandlerBKP(DBHandlerBase):
             elif status == k.TASK_RUNNING and "NU_PID" not in set_dict:
                 set_dict["NU_PID"] = getattr(self.log, "pid", None)
 
+        if "FILTER" in set_dict:
+            set_dict["FILTER"] = self._serialize_host_task_filter(set_dict["FILTER"])
+
         # --- Nothing to update ---
         if not set_dict:
             self.log.warning(f"[DB] host_task_update() called with no valid fields for update.")
@@ -1489,18 +1845,15 @@ class dbHandlerBKP(DBHandlerBase):
         
     def host_task_suspend_by_host(self, host_id: int) -> None:
         """
-        Suspend all HOST_TASK entries for a specific host.
+        Suspend host-dependent HOST_TASK entries for a specific host.
 
-        This method updates all pending (TASK_PENDING) or running (TASK_RUNNING)
-        HOST_TASK records related to the specified host, setting their status
-        to TASK_SUSPENDED and updating the NA_MESSAGE field with an explanatory
-        reason.
+        Only connectivity/operational tasks are suspended here. Statistics
+        updates are DB-only maintenance work and intentionally remain outside
+        host online/offline churn.
 
         Args:
             host_id (int): Unique identifier (ID_HOST) of the host whose tasks
                 should be suspended.
-            reason (str, optional): Optional text reason to store in NA_MESSAGE.
-                If not provided, a default system message is used.
 
         Returns:
             None
@@ -1510,12 +1863,24 @@ class dbHandlerBKP(DBHandlerBase):
         """
         try:
             affected = 0
+            host_dependent_types = (
+                k.HOST_TASK_CHECK_TYPE,
+                k.HOST_TASK_PROCESSING_TYPE,
+                k.HOST_TASK_CHECK_CONNECTION_TYPE,
+            )
 
             for status in (k.TASK_PENDING, k.TASK_RUNNING):
                 affected += self._update_row(
                     table="HOST_TASK",
-                    data={"NU_STATUS": k.TASK_SUSPENDED, "NA_MESSAGE": "Host unreachable. Tasks suspended automatically."},
-                    where={"FK_HOST": host_id, "NU_STATUS": status},
+                    data={
+                        "NU_STATUS": k.TASK_SUSPENDED,
+                        "NA_MESSAGE": "Host unreachable. Tasks suspended automatically.",
+                    },
+                    where={
+                        "FK_HOST": host_id,
+                        "NU_STATUS": status,
+                        "NU_TYPE__in": host_dependent_types,
+                    },
                     commit=True
                 )
 
@@ -1531,13 +1896,16 @@ class dbHandlerBKP(DBHandlerBase):
         busy_timeout_seconds: int = k.HOST_BUSY_TIMEOUT
     ) -> None:
         """
-        Resume previously suspended, errored, or stale HOST_TASK entries for a given host.
+        Resume host-dependent suspended, errored, or stale HOST_TASK entries.
 
         Tasks are reactivated under three conditions:
             1. NU_STATUS = TASK_SUSPENDED → host became reachable again.
             2. NU_STATUS = TASK_ERROR     → retry.
             3. NU_STATUS = TASK_RUNNING   → considered stale if DT_HOST_TASK is older
             than (now - busy_timeout_seconds), assuming the worker crashed.
+
+        Statistics HOST_TASK rows are intentionally excluded because they do
+        not depend on host connectivity and should keep their own lifecycle.
 
         Args:
             host_id (int): Foreign key of the host whose tasks should be resumed.
@@ -1550,6 +1918,11 @@ class dbHandlerBKP(DBHandlerBase):
         try:
             total_resumed = 0
             threshold_time = datetime.now() - timedelta(seconds=busy_timeout_seconds)
+            host_dependent_types = (
+                k.HOST_TASK_CHECK_TYPE,
+                k.HOST_TASK_PROCESSING_TYPE,
+                k.HOST_TASK_CHECK_CONNECTION_TYPE,
+            )
 
             # -----------------------------------------------------------------
             # 1. Reactivate suspended tasks
@@ -1558,7 +1931,6 @@ class dbHandlerBKP(DBHandlerBase):
                 table="HOST_TASK",
                 data={
                     "NU_STATUS": k.TASK_PENDING,
-                    "NU_TYPE": k.HOST_TASK_PROCESSING_TYPE,
                     "NA_MESSAGE": (
                         "Host reachable again — suspended task resumed automatically"
                     ),
@@ -1566,6 +1938,7 @@ class dbHandlerBKP(DBHandlerBase):
                 where={
                     "FK_HOST": host_id,
                     "NU_STATUS": k.TASK_SUSPENDED,
+                    "NU_TYPE__in": host_dependent_types,
                 },
                 commit=True,
             )
@@ -1577,7 +1950,6 @@ class dbHandlerBKP(DBHandlerBase):
                 table="HOST_TASK",
                 data={
                     "NU_STATUS": k.TASK_PENDING,
-                    "NU_TYPE": k.HOST_TASK_PROCESSING_TYPE,
                     "NA_MESSAGE": (
                         "Host reachable again — previously failed task resubmitted"
                     ),
@@ -1585,6 +1957,7 @@ class dbHandlerBKP(DBHandlerBase):
                 where={
                     "FK_HOST": host_id,
                     "NU_STATUS": k.TASK_ERROR,
+                    "NU_TYPE__in": host_dependent_types,
                 },
                 commit=True,
             )
@@ -1596,7 +1969,6 @@ class dbHandlerBKP(DBHandlerBase):
                 table="HOST_TASK",
                 data={
                     "NU_STATUS": k.TASK_PENDING,
-                    "NU_TYPE": k.HOST_TASK_PROCESSING_TYPE,
                     "NA_MESSAGE": (
                         f"Detected stale running task (> {busy_timeout_seconds}s) — "
                         f"resubmitted automatically"
@@ -1606,6 +1978,7 @@ class dbHandlerBKP(DBHandlerBase):
                     "FK_HOST": host_id,
                     "NU_STATUS": k.TASK_RUNNING,
                     "DT_HOST_TASK__lt": threshold_time,
+                    "NU_TYPE__in": host_dependent_types,
                 },
                 commit=True,
             )
@@ -1643,6 +2016,8 @@ class dbHandlerBKP(DBHandlerBase):
         check_host_offline: bool = False,
         extension: Optional[str] = None,
         lock_host: bool = False,
+        reserve_hosts_for_discovery: bool = False,
+        fair_by_host: bool = False,
     ) -> Optional[tuple]:
         """
         Return one file task joined with host metadata.
@@ -1666,6 +2041,15 @@ class dbHandlerBKP(DBHandlerBase):
             lock_host (bool):
                 If True, attempts to atomically lock the host
                 (IS_BUSY=1) before returning the task.
+            reserve_hosts_for_discovery (bool):
+                When True for backup selection, treats active CHECK/PROCESSING
+                HOST_TASK rows as a reservation for the next host window. This
+                does not preempt current SSH work; it only prevents backup from
+                claiming a fresh FILE_TASK on that host.
+            fair_by_host (bool):
+                When True for backup selection, chooses at most one candidate
+                FILE_TASK per host and orders hosts by least recent successful
+                backup before task age.
 
         Returns:
             Optional[tuple]:
@@ -1684,6 +2068,17 @@ class dbHandlerBKP(DBHandlerBase):
         # 1) WHERE clause
         # --------------------------------------------------------------
         where = {}
+        custom_clauses = {}
+        fair_backup_mode = (
+            not task_id
+            and task_type == k.FILE_TASK_BACKUP_TYPE
+            and fair_by_host
+        )
+        discovery_host_reservation = (
+            not task_id
+            and task_type == k.FILE_TASK_BACKUP_TYPE
+            and reserve_hosts_for_discovery
+        )
 
         if task_id:
             where["FT.ID_FILE_TASK"] = task_id
@@ -1704,6 +2099,45 @@ class dbHandlerBKP(DBHandlerBase):
             if check_host_offline:
                 where["H.IS_OFFLINE"] = False
 
+            if discovery_host_reservation:
+                custom_clauses["#CUSTOM#host_discovery_reservation"] = (
+                    "NOT EXISTS ("
+                    "SELECT 1 FROM HOST_TASK HT_BLOCK "
+                    "WHERE HT_BLOCK.FK_HOST = FT.FK_HOST "
+                    f"AND HT_BLOCK.NU_TYPE IN ({k.HOST_TASK_CHECK_TYPE}, {k.HOST_TASK_PROCESSING_TYPE}) "
+                    "AND ("
+                    f"HT_BLOCK.NU_STATUS = {k.TASK_RUNNING} "
+                    "OR ("
+                    f"HT_BLOCK.NU_STATUS = {k.TASK_PENDING} "
+                    "AND ("
+                    "HT_BLOCK.DT_HOST_TASK IS NULL "
+                    f"OR HT_BLOCK.DT_HOST_TASK >= DATE_SUB(NOW(), INTERVAL {k.DISCOVERY_RESERVATION_TTL_SEC} SECOND)"
+                    ")"
+                    ")"
+                    ")"
+                    ")"
+                )
+
+            if fair_backup_mode:
+                custom_clauses["#CUSTOM#backup_host_round_robin"] = (
+                    "FT.ID_FILE_TASK = ("
+                    "SELECT MIN(FT_HOST.ID_FILE_TASK) FROM FILE_TASK FT_HOST "
+                    "WHERE FT_HOST.FK_HOST = FT.FK_HOST "
+                    f"AND FT_HOST.NU_STATUS = {task_status} "
+                    f"AND FT_HOST.NU_TYPE = {task_type}"
+                    ")"
+                )
+
+            where.update(custom_clauses)
+
+        if fair_backup_mode:
+            order_by = (
+                "CASE WHEN H.DT_LAST_BACKUP IS NULL THEN 0 ELSE 1 END ASC, "
+                "H.DT_LAST_BACKUP ASC, FT.ID_FILE_TASK ASC"
+            )
+        else:
+            order_by = "FT.ID_FILE_TASK ASC" if not task_id else None
+
         # --------------------------------------------------------------
         # 2) Select candidate task
         # --------------------------------------------------------------
@@ -1711,7 +2145,7 @@ class dbHandlerBKP(DBHandlerBase):
             table="FILE_TASK FT",
             joins=["JOIN HOST H ON H.ID_HOST = FT.FK_HOST"],
             where=where,
-            order_by="FT.ID_FILE_TASK ASC" if not task_id else None,
+            order_by=order_by,
             limit=1,
         )
 

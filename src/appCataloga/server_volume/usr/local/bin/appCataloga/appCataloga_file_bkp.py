@@ -2,9 +2,9 @@
 """
 Backup worker for remote host payload collection.
 
-This worker transfers pending FILE_TASK records
-(NU_TYPE = BACKUP, NU_STATUS = PENDING) from remote hosts
-to the central repository via SFTP.
+This worker transfers pending backup FILE_TASK rows from remote hosts into the
+central repository through SFTP and then promotes successful rows into the
+processing queue.
 
 Architecture principles:
     • One process per worker
@@ -19,8 +19,8 @@ Design goals:
     • Compatible with RFeye proprietary software
 
 Compatible with Debian 7 (systemd-free). The pool grows on demand instead of
-starting all workers eagerly, so worker lifecycle and recovery rules are kept
-very explicit in this file.
+starting all workers eagerly, so worker lifecycle, host ownership, and retry
+rules are kept very explicit in this file.
 """
 
 # ======================================================================
@@ -85,8 +85,9 @@ def build_server_filename(host_uid: str, remote_path: str, filename: str) -> str
     """
     Build a deterministic server-side filename.
 
-    This function is the ONLY place where server filenames
-    are defined. It must never be reimplemented elsewhere.
+    This is the single source of truth for server-side backup filenames.
+    It must not be reimplemented elsewhere, otherwise reprocessing and file
+    lineage become inconsistent.
 
     Pattern:
         p-<hash>--<original_filename>
@@ -673,7 +674,14 @@ def transfer_file_task(
 # ======================================================================
 def main() -> None:
     """
-    Main worker execution loop.
+    Run one backup worker process until shutdown is requested.
+
+    Each loop iteration tries to:
+        1. select one fair backup candidate
+        2. claim the FILE_TASK and its HOST
+        3. bootstrap SSH/SFTP
+        4. transfer and validate the payload
+        5. update history and promote the row to PROCESS
     """
     parse_arguments()
     worker_id = process_status["worker"]
@@ -706,6 +714,7 @@ def main() -> None:
         server_file_path = None
         updated_size_kb = None
         connect_busy = False
+        connect_retry_detail = k.SFTP_BUSY_RETRY_DETAIL
         preserve_host_busy_cooldown = False
         input_filename = None
 
@@ -716,8 +725,7 @@ def main() -> None:
             ensure_seed_worker_alive(worker_id)
 
             # ==========================================================
-            # ACT I — Fetch pending FILE_TASK
-            # Atomic fetch HOST BUSY
+            # ACT I — Fetch one pending backup FILE_TASK and atomically lock its host
             # ==========================================================
             row = db.read_file_task(
                 task_status=k.TASK_PENDING,
@@ -725,8 +733,14 @@ def main() -> None:
                 check_host_busy=True,
                 check_host_offline=True,
                 lock_host=True,
+                reserve_hosts_for_discovery=True,
+                fair_by_host=True,
             )
 
+            # The selector applies two scheduling rules before we ever touch
+            # the host: reserve hosts that have pending discovery work and pick
+            # backup candidates fairly across hosts instead of draining one host
+            # to exhaustion while the rest of the fleet waits.
             if not row:
                 idle_cycles += 1
                 process_status["idle_cycles"] = idle_cycles
@@ -751,11 +765,17 @@ def main() -> None:
             )
 
             # ==========================================================
-            # ACT II — Lock HOST and TASK
+            # ACT II — Mark the selected FILE_TASK as RUNNING
             # ==========================================================
             try:
-                # Update File Task with expected status 
-                # to prevent multiple workers from picking the same task
+                # The worker claims the FILE_TASK before touching SSH/SFTP so
+                # ownership stays deterministic. Doing a separate connectivity
+                # probe first would duplicate network traffic, reopen a race
+                # with sibling workers, and still require the same claim step
+                # afterwards. Transient bootstrap failures are therefore
+                # handled by requeueing this same row back to PENDING later.
+                # The expected-status guard prevents multiple workers from
+                # converting the same pending FILE_TASK into RUNNING.
                 result = db.file_task_update(
                         task_id=file_task_id,
                         expected_status=k.TASK_PENDING,
@@ -790,7 +810,7 @@ def main() -> None:
                 err.capture("Failed to lock HOST or FILE_TASK", "LOCK", e)
             
             # ==========================================================
-            # ACT III — Init SFTP + HostDaemon
+            # ACT III — Bootstrap the remote SSH/SFTP session
             # ==========================================================
             if not err.triggered:
                 host = db.host_read_access(host_id)
@@ -802,11 +822,16 @@ def main() -> None:
                 except Exception as e:
                     if errors.is_transient_sftp_init_error(e):
                         connect_busy = True
+                        connect_retry_detail = errors.get_transient_sftp_retry_detail(e)
+
+                        # Transient bootstrap failures do not consume the
+                        # FILE_TASK. The row goes back to PENDING in `finally`
+                        # so another worker can retry after cooldown.
 
                         # A transient init failure still returns the current
                         # FILE_TASK to PENDING. Only the subset that smells
-                        # like real connectivity trouble asks host_check for a
-                        # confirmation; pure contention keeps the soft retry.
+                        # like real connectivity trouble asks the queued host
+                        # worker for explicit reconciliation.
                         if errors.should_queue_connection_check_for_sftp_init_error(e):
                             try:
                                 db.queue_host_task(
@@ -823,16 +848,21 @@ def main() -> None:
                                     f"error={e_queue}"
                                 )
 
-                        log.warning(
-                            f"event=sftp_busy_retry service=appCataloga_file_bkp "
-                            f"worker_id={worker_id} host_id={host_id} "
-                            f"task_id={file_task_id} error={e}"
+                        log.warning_event(
+                            "sftp_init_retry",
+                            service="appCataloga_file_bkp",
+                            worker_id=worker_id,
+                            host_id=host_id,
+                            task_id=file_task_id,
+                            timeout_like=errors.is_timeout_like_sftp_init_error(e),
+                            retry_detail=connect_retry_detail,
+                            error=e,
                         )
                         continue
 
                     if isinstance(e, paramiko.AuthenticationException):
                         err.capture(
-                            "Authentication failed (bad credentials)",
+                            "SSH authentication failed",
                             stage="AUTH",
                             exc=e,
                         )
@@ -846,7 +876,7 @@ def main() -> None:
                         )
             
             # ==========================================================
-            # ACT IV — Prepare environment
+            # ACT IV — Prepare the local repository destination
             # ==========================================================
             if not err.triggered:
                 server_file_path = os.path.join(
@@ -857,8 +887,9 @@ def main() -> None:
             # ---------------------------------------------------
             # Build deterministic server filename
             # ---------------------------------------------------
-            # Celplan RMU has in filename specific data that doesn't could be changed
-            # Also RMU has timestamp in filename and in theoric cenario never be repetead
+            # CelPlan payloads keep their original filename because the station
+            # naming is already unique enough and downstream tooling expects it.
+            # Other hosts use the deterministic hashed naming contract above.
             if not err.triggered:
                 if "CW" in host["host_uid"]:
                     server_filename = task["FILE_TASK__NA_HOST_FILE_NAME"]
@@ -870,7 +901,7 @@ def main() -> None:
                     )
 
             # ==========================================================
-            # ACT V — Transfer File
+            # ACT V — Transfer and validate the payload
             # ==========================================================
             if not err.triggered:
                 try:
@@ -894,11 +925,11 @@ def main() -> None:
                 file_was_transferred = True
 
             # ---------------------------------------------------
-            # Update FILE_TASK_HISTORY
+            # Update FILE_TASK_HISTORY and promote the pipeline row
             # ---------------------------------------------------
-            # Uniquevity is guaranteed by a unique file identification
-            # (FK_HOST, NA_HOST_FILE_PATH, NA_HOST_FILE_NAME) indicates 
-            # a single file on a specific host, so we can safely update the history record
+            # `(FK_HOST, NA_HOST_FILE_PATH, NA_HOST_FILE_NAME)` is the logical
+            # identity of the source file, so the history row can be updated in
+            # place after the transfer succeeds.
             if not err.triggered:
                 try:
                     backup_completed_at = datetime.now()
@@ -920,9 +951,10 @@ def main() -> None:
                         ),
                     )
 
-                    # ---------------------------------------------------
-                    # Promote task to PROCESS
-                    # ---------------------------------------------------
+                    # The same FILE_TASK row continues into PROCESS instead of
+                    # creating a second queue record for the same payload.
+                    # That preserves one mutable queue row per source artifact
+                    # while FILE_TASK_HISTORY remains the immutable audit trail.
                     db.file_task_update(
                         task_id=file_task_id,
                         NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
@@ -975,7 +1007,8 @@ def main() -> None:
         # ==============================================================
         finally:
             # -------------------------------------------------
-            # Keep FILE_TASK pending if connection was busy to allow for retry by another worker
+            # Transient SSH/SFTP bootstrap failures keep the FILE_TASK pending
+            # so another worker can retry it later.
             # -------------------------------------------------
             if connect_busy and file_task_id is not None and not err.triggered:
                 try:
@@ -989,7 +1022,7 @@ def main() -> None:
                             task_status=k.TASK_PENDING,
                             path=task["FILE_TASK__NA_HOST_FILE_PATH"],
                             name=task["FILE_TASK__NA_HOST_FILE_NAME"],
-                            detail=k.SFTP_BUSY_RETRY_DETAIL,
+                            detail=connect_retry_detail,
                         ),
                     )
 
@@ -1013,14 +1046,12 @@ def main() -> None:
                         f"host_id={host_id} task_id={file_task_id} error={e}"
                     )
             # -------------------------------------------------
-            # Persist ERROR state (centralized)
+            # Persist task failure after any non-transient error.
             # -------------------------------------------------
             if err.triggered and file_task_id is not None:
-                # Only one transfer failure is considered terminal here:
-                # discovery saw the file before, but the source host no longer
-                # exposes it at backup time. That means the artifact drifted
-                # away from the station and should not be retried on host
-                # recovery like transient SSH/SFTP failures.
+                # Only one transfer failure is treated as terminal drift:
+                # discovery saw the file earlier, but the source host no
+                # longer exposes it at backup time.
                 remote_file_missing = (
                     err.stage == "TRANSFER"
                     and isinstance(err.exc, FileNotFoundError)
@@ -1111,6 +1142,9 @@ def main() -> None:
                         # Host check tasks should be re-queued on connection
                         # errors to allow for retries after transient issues are resolved
                         if err.stage in {"CONNECT", "SSH"}:
+                            # The queued host worker reconciles host state out
+                            # of band so this backup worker can close its task
+                            # deterministically and move on.
                             db.queue_host_task(
                                 host_id=host_id,
                                 task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
@@ -1135,7 +1169,8 @@ def main() -> None:
                     )
 
             # -------------------------------------------------
-            # Close SFTP
+            # Close transport objects defensively. Cleanup must not hide the
+            # result of the transfer attempt.
             # -------------------------------------------------
             if sftp_conn:
                 try:
@@ -1145,16 +1180,20 @@ def main() -> None:
                     pass
 
             # -------------------------------------------------
-            # Safe release host
+            # Release the host unless a short transient cooldown is now
+            # intentionally holding the BUSY flag.
             # -------------------------------------------------
             if host_id is not None and not preserve_host_busy_cooldown:
                 # This is the single normal-path release point for the host
                 # claimed by `read_file_task(..., lock_host=True)`.
                 release_locked_host(db, host_id)
 
-                # Create statistics only on success
+                # Successful backup activity schedules deferred statistics
+                # refresh for the host through the queued HOST_TASK path.
                 if not err.triggered and file_was_transferred:
                     try:
+                        # Stats are deferred on purpose so repository I/O is
+                        # done before any host-level aggregation work begins.
                         db.host_task_statistics_create(host_id=host_id)
                     except Exception:
                         pass

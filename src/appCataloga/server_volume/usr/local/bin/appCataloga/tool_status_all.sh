@@ -23,6 +23,7 @@ banner "AppCataloga – SERVICE STATUS"
 services=(
   appCataloga
   appCataloga_host_check
+  appCataloga_host_maintenance
   appCataloga_discovery
   appCataloga_file_bin_proces
   appCataloga_file_bin_proces_appAnalise

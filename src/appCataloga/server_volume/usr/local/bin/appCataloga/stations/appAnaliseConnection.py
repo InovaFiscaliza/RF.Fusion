@@ -503,15 +503,48 @@ class AppAnaliseConnection:
 
         spectra = answer.get("Spectra")
 
+        self._coerce_spectra_payload(spectra, allow_empty=True)
+
+    def _coerce_spectra_payload(
+        self,
+        spectra: Any,
+        *,
+        allow_empty: bool = False,
+    ) -> list[Dict[str, Any]]:
+        """
+        Normalize `Answer.Spectra` into a list of spectrum dictionaries.
+
+        appAnalise may return a single spectrum directly as a dict instead of
+        wrapping it in a list. RF.Fusion accepts both shapes, but the rest of
+        the normalization pipeline always works with a list.
+        """
         if isinstance(spectra, str):
             raise errors.BinValidationError(
                 f"APP_ANALISE returned invalid Spectra payload: {spectra}"
             )
 
-        if not isinstance(spectra, (list, tuple)):
+        if isinstance(spectra, dict):
+            spectra_list = [spectra]
+        elif isinstance(spectra, (list, tuple)):
+            spectra_list = list(spectra)
+        else:
             raise errors.BinValidationError(
                 f"APP_ANALISE returned invalid Answer.Spectra type: {spectra}"
             )
+
+        if not allow_empty and not spectra_list:
+            raise errors.BinValidationError(
+                "APP_ANALISE returned empty Spectra list"
+            )
+
+        for index, spectrum in enumerate(spectra_list):
+            if not isinstance(spectrum, dict):
+                raise errors.BinValidationError(
+                    "APP_ANALISE returned invalid spectrum entry "
+                    f"at index {index}: {spectrum}"
+                )
+
+        return spectra_list
 
     def _get_answer(self, payload: Dict) -> Dict:
         """
@@ -603,12 +636,9 @@ class AppAnaliseConnection:
         """
 
         answer = self._get_answer(payload)
-        spectra_payload = answer.get("Spectra", [])
-
-        if not spectra_payload:
-            raise errors.BinValidationError(
-                "APP_ANALISE returned empty Spectra list"
-            )
+        spectra_payload = self._coerce_spectra_payload(
+            answer.get("Spectra", [])
+        )
 
         spectrums = []
         hostname = None

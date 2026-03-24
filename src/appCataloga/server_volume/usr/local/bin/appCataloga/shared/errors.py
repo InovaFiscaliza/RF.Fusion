@@ -98,9 +98,20 @@ def _canonicalize_error_reason(
     # so dashboards can aggregate by code without discarding what Paramiko/OS
     # actually reported.
     if stage == "AUTH" or isinstance(exc, paramiko.AuthenticationException):
+        if exc is not None and is_auth_timeout_error(exc):
+            detail = exc_text or (
+                raw_reason
+                if raw_reason != "SSH authentication failed"
+                else None
+            )
+            return "SSH_AUTH_TIMEOUT", "SSH authentication timed out", detail
+
         detail = exc_text or (
             raw_reason
-            if raw_reason != "Authentication failed (bad credentials)"
+            if raw_reason not in {
+                "Authentication failed (bad credentials)",
+                "SSH authentication failed",
+            }
             else None
         )
         return "AUTH_FAILED", "Authentication failed", detail
@@ -251,6 +262,97 @@ TRANSIENT_SSH_MESSAGE_SNIPPETS = (
     "no existing session",
 )
 
+AUTH_TIMEOUT_MESSAGE_SNIPPETS = (
+    "authentication timeout",
+    "auth timeout",
+)
+
+UNREACHABLE_ERRNOS = {
+    errno.EHOSTUNREACH,
+    errno.ENETUNREACH,
+    errno.EHOSTDOWN,
+    errno.ENETDOWN,
+}
+
+
+def is_auth_timeout_error(exc: Exception) -> bool:
+    """
+    Return whether a Paramiko authentication failure is timeout-driven.
+
+    Some hosts reach the authentication phase but answer too slowly for a short
+    probe. Those cases should be treated as timeout/degraded, not as explicit
+    bad credentials.
+    """
+    if not isinstance(exc, paramiko.AuthenticationException):
+        return False
+
+    normalized = str(exc).strip().lower()
+    return any(snippet in normalized for snippet in AUTH_TIMEOUT_MESSAGE_SNIPPETS)
+
+
+def classify_no_valid_connections_error(exc: Exception) -> dict:
+    """
+    Summarize the wrapped inner failures of NoValidConnectionsError.
+
+    Paramiko uses this exception as a container for one or more low-level
+    socket/connect failures. The interesting detail lives in `exc.errors`,
+    not in the wrapper message itself.
+    """
+    if not isinstance(exc, paramiko.ssh_exception.NoValidConnectionsError):
+        raise TypeError("exc must be NoValidConnectionsError")
+
+    nested = getattr(exc, "errors", {}) or {}
+    entries = []
+
+    for endpoint, inner_exc in nested.items():
+        kind = "unknown"
+        errno_value = getattr(inner_exc, "errno", None)
+
+        if isinstance(inner_exc, (socket.timeout, TimeoutError)):
+            kind = "timeout"
+        elif isinstance(inner_exc, ConnectionRefusedError):
+            kind = "refused"
+        elif isinstance(inner_exc, (ConnectionResetError, BrokenPipeError)):
+            kind = "reset"
+        elif isinstance(inner_exc, OSError):
+            if errno_value == errno.ECONNREFUSED:
+                kind = "refused"
+            elif errno_value == errno.ETIMEDOUT:
+                kind = "timeout"
+            elif errno_value in {errno.ECONNRESET, errno.ECONNABORTED}:
+                kind = "reset"
+            elif errno_value in UNREACHABLE_ERRNOS:
+                kind = "unreachable"
+
+        entries.append(
+            {
+                "endpoint": endpoint,
+                "kind": kind,
+                "errno": errno_value,
+                "error_type": type(inner_exc).__name__,
+                "message": str(inner_exc),
+            }
+        )
+
+    kinds = {entry["kind"] for entry in entries}
+
+    if not entries:
+        summary = "unknown"
+    elif len(kinds) == 1:
+        summary = next(iter(kinds))
+    else:
+        summary = "mixed"
+
+    return {
+        "summary": summary,
+        "entries": entries,
+        "has_timeout": any(entry["kind"] == "timeout" for entry in entries),
+        "has_refused": any(entry["kind"] == "refused" for entry in entries),
+        "has_reset": any(entry["kind"] == "reset" for entry in entries),
+        "has_unreachable": any(entry["kind"] == "unreachable" for entry in entries),
+        "has_unknown": any(entry["kind"] == "unknown" for entry in entries),
+    }
+
 
 def is_transient_sftp_init_error(exc: Exception) -> bool:
     """
@@ -261,21 +363,16 @@ def is_transient_sftp_init_error(exc: Exception) -> bool:
     are considered transient and may be requeued.
     """
     if isinstance(exc, paramiko.AuthenticationException):
-        return False
+        return is_auth_timeout_error(exc)
 
     if isinstance(exc, (socket.timeout, TimeoutError, EOFError, ConnectionResetError)):
         return True
 
     if isinstance(exc, paramiko.ssh_exception.NoValidConnectionsError):
-        nested = getattr(exc, "errors", {}) or {}
-        if not nested:
-            return True
-
-        return all(
-            is_transient_sftp_init_error(inner_exc)
-            for inner_exc in nested.values()
-            if isinstance(inner_exc, BaseException)
-        )
+        # The wrapper only tells us that no TCP family succeeded from this VM.
+        # That is too weak to prove the host is dead, so workers should keep
+        # the task retryable and let higher-level liveness mechanisms decide.
+        return True
 
     if isinstance(exc, OSError):
         return exc.errno in TRANSIENT_SFTP_ERRNOS
@@ -290,6 +387,37 @@ def is_transient_sftp_init_error(exc: Exception) -> bool:
     return False
 
 
+def is_timeout_like_sftp_init_error(exc: Exception) -> bool:
+    """
+    Return whether the SSH/SFTP init failure looks timeout-driven.
+
+    Timeout-like failures are ambiguous: they may indicate a dead SSH service,
+    a stalled banner/auth phase, or temporary overload. Callers should avoid
+    labeling these cases as simple "busy" contention.
+    """
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return True
+
+    if is_auth_timeout_error(exc):
+        return True
+
+    if isinstance(exc, OSError):
+        return exc.errno == errno.ETIMEDOUT
+
+    if isinstance(exc, paramiko.SSHException):
+        normalized = str(exc).strip().lower()
+        return (
+            "timed out" in normalized
+            or "timeout" in normalized
+            or "error reading ssh protocol banner" in normalized
+        )
+
+    if isinstance(exc, paramiko.ssh_exception.NoValidConnectionsError):
+        return classify_no_valid_connections_error(exc)["has_timeout"]
+
+    return False
+
+
 def should_queue_connection_check_for_sftp_init_error(exc: Exception) -> bool:
     """
     Return whether a transient SFTP init failure is suspicious enough to ask
@@ -300,7 +428,7 @@ def should_queue_connection_check_for_sftp_init_error(exc: Exception) -> bool:
     only requeue the current task, not suggest that the host is offline.
     """
     if isinstance(exc, paramiko.AuthenticationException):
-        return False
+        return is_auth_timeout_error(exc)
 
     if isinstance(exc, (socket.timeout, TimeoutError, ConnectionResetError, EOFError)):
         return True
@@ -312,6 +440,19 @@ def should_queue_connection_check_for_sftp_init_error(exc: Exception) -> bool:
         return exc.errno in TRANSIENT_SFTP_ERRNOS
 
     return False
+
+
+def get_transient_sftp_retry_detail(exc: Exception) -> str:
+    """
+    Return the user-facing retry detail for a transient SSH/SFTP init error.
+
+    Timeouts are ambiguous and deserve a more explicit message than plain SSH
+    contention. All other retryable init errors keep the legacy busy wording.
+    """
+    if is_timeout_like_sftp_init_error(exc):
+        return k.SSH_TIMEOUT_RETRY_DETAIL
+
+    return k.SFTP_BUSY_RETRY_DETAIL
 
 class ErrorHandler:
     """

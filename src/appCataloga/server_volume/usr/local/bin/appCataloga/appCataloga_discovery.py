@@ -4,9 +4,17 @@
 Discovery worker for the appCataloga ecosystem.
 
 This service scans remote hosts for candidate files, writes immutable discovery
-history, and promotes eligible items into the backup queue. The flow is kept
-linear on purpose so that lock handling, retries, and backlog promotion stay
-easy to audit in production.
+history, and promotes eligible items into the backup queue.
+
+The loop is intentionally linear:
+    1. claim PROCESSING host task
+    2. bootstrap remote host context
+    3. stream discovery batches into task/history tables
+    4. promote eligible rows into the backup queue
+    5. release the host and schedule statistics refresh
+
+Keeping those steps explicit makes lock handling, retries, and backlog
+promotion easier to audit in production.
 """
 
 from __future__ import annotations
@@ -144,7 +152,7 @@ signal.signal(signal.SIGINT, sigint_handler)
 # ======================================================================
 def main() -> None:
     """
-    Run the discovery polling loop until shutdown is requested.
+    Run the discovery worker until shutdown is requested.
     """
 
     log.service_start("appCataloga_discovery")
@@ -166,15 +174,18 @@ def main() -> None:
         host_id = None
         task_id = None
         hostname = None
-        fatal_error = False   # FIX: global flag to ensure final cleanup always happens
+        # This flag prevents the loop body from continuing after any stage has
+        # already failed and ensures the final cleanup path runs exactly once.
+        fatal_error = False
         connect_busy = False
+        connect_retry_detail = k.SFTP_BUSY_RETRY_DETAIL
         preserve_host_busy_cooldown = False
         processed = 0
         n = {"rows_updated": 0, "moved_to_backup": 0}
 
         try:
             # ==========================================================
-            # ACT I — Fetch next HOST_TASK (PROCESSING pending)
+            # ACT I — Fetch the next PROCESSING host task and lock the host
             # ==========================================================
             task = db.host_task_read(
                 task_type=k.HOST_TASK_PROCESSING_TYPE,
@@ -193,9 +204,15 @@ def main() -> None:
             hostname = task["HOST__NA_HOST_NAME"]
 
             # ==========================================================
-            # ACT II — Lock HOST and TASK
+            # ACT II — Mark the claimed host task as RUNNING
             # ==========================================================
             try:
+                # We claim the queue row before opening SSH/SFTP on purpose.
+                # A "pre-flight" probe here would still race with another
+                # worker, add one more connection attempt to the same host, and
+                # then force us to claim the same task anyway. The safer
+                # contract is: claim once, try once, and if bootstrap looks
+                # transient return the same HOST_TASK to PENDING in `finally`.
                 lock_result = db.host_task_update(
                     where_dict={
                         "ID_HOST_TASK": task_id,
@@ -226,7 +243,7 @@ def main() -> None:
                 fatal_error = True
 
             # ==========================================================
-            # ACT III — Init SFTP + HostDaemon
+            # ACT III — Bootstrap remote SSH/SFTP context
             # ==========================================================
             if not err.triggered:
                 try:
@@ -235,11 +252,16 @@ def main() -> None:
                 except Exception as e:
                     if errors.is_transient_sftp_init_error(e):
                         connect_busy = True
+                        connect_retry_detail = errors.get_transient_sftp_retry_detail(e)
+
+                        # This branch deliberately uses `continue` so the
+                        # shared finally block requeues the same HOST_TASK and
+                        # releases or cools down the host in one place.
 
                         # Not every transient SSH/SFTP init failure means the
-                        # host is offline. Contention still gets a soft retry,
-                        # but stronger network-like symptoms also ask host_check
-                        # for an explicit connectivity confirmation.
+                        # host is offline. Pure contention keeps a soft retry;
+                        # stronger network-like symptoms also request explicit
+                        # host reconciliation through CHECK_CONNECTION.
                         if errors.should_queue_connection_check_for_sftp_init_error(e):
                             try:
                                 db.queue_host_task(
@@ -255,15 +277,20 @@ def main() -> None:
                                     f"task_id={task_id} error={e_queue}"
                                 )
 
-                        log.warning(
-                            f"event=sftp_busy_retry service=appCataloga_discovery "
-                            f"host_id={host_id} task_id={task_id} error={e}"
+                        log.warning_event(
+                            "sftp_init_retry",
+                            service="appCataloga_discovery",
+                            host_id=host_id,
+                            task_id=task_id,
+                            timeout_like=errors.is_timeout_like_sftp_init_error(e),
+                            retry_detail=connect_retry_detail,
+                            error=e,
                         )
                         continue
 
                     if isinstance(e, paramiko.AuthenticationException):
                         err.capture(
-                            "Authentication failed (bad credentials)",
+                            "SSH authentication failed",
                             stage="AUTH",
                             exc=e,
                         )
@@ -277,31 +304,22 @@ def main() -> None:
                         )
                 
 
-            # Do not allow the pipeline to proceed after any failure
+            # Stop the linear pipeline at the first stage failure.
             if err.triggered:
                 fatal_error = True
 
             # ==========================================================
-            # ACT IV — Discovery
+            # ACT IV — Stream discovery batches into task and history tables
             # ==========================================================
-            # Executes metadata discovery for the host only if no fatal
-            # error has been previously triggered.
-            #
             if not err.triggered:
                 try:
-                    # Build the discovery Filter from HOST_TASK definition
+                    # The HOST_TASK filter is the authoritative scope for this
+                    # discovery pass.
                     host_filter = filter.Filter(task["host_filter"], log=log)
 
-                    # Counter used only for progress logging
-                    # ----------------------------------------------------
-                    # Metadata discovery pipeline
-                    # ----------------------------------------------------
-                    # iter_metadata_files:
-                    #   • Streams remote filesystem metadata
-                    #   • Yields bounded batches of FileMetadata
-                    #   • Delegates deduplication via callback
-                    #   • Guarantees memory bounded by batch_size
-                    #
+                    # Discovery streams bounded batches and delegates
+                    # deduplication to DB callbacks so large hosts do not blow
+                    # up memory usage.
                     for batch in daemon.iter_metadata_files(
                         host_id=host_id,
                         hostname=hostname,
@@ -310,7 +328,9 @@ def main() -> None:
                         callBackGetLastDBDate=db.get_last_discovery,
                         batch_size=k.DISCOVERY_BATCH_SIZE,
                     ):
-                        # Persist discovered files as pipeline tasks
+                        # Discovery rows are written twice on purpose:
+                        # FILE_TASK holds the mutable pipeline queue, while
+                        # FILE_TASK_HISTORY keeps the immutable audit trail.
                         db.file_task_create(
                             host_id=host_id,
                             file_metadata=batch,
@@ -318,7 +338,6 @@ def main() -> None:
                             task_status=k.TASK_DONE,
                         )
 
-                        # Append discovery records to immutable history
                         db.file_history_create(
                             host_id=host_id,
                             file_metadata=batch,
@@ -326,7 +345,7 @@ def main() -> None:
                             task_status=k.TASK_DONE,
                         )
 
-                        # Log progress (already deduplicated files)
+                        # Progress counts only newly persisted rows.
                         processed += len(batch)
                         log.event(
                             "discovery_progress",
@@ -335,7 +354,7 @@ def main() -> None:
                         )
 
                 except Exception as e:
-                    # Any exception here aborts discovery deterministically
+                    # Discovery failures are terminal for this host task.
                     err.capture("Discovery failed", "DISCOVERY", e)
 
 
@@ -343,10 +362,13 @@ def main() -> None:
                 fatal_error = True
 
             # ==========================================================
-            # ACT V — Promote → BACKUP queue
+            # ACT V — Promote eligible discovery rows into the backup queue
             # ==========================================================
             if not err.triggered:
                 try:
+                    # Promotion is a separate stage on purpose: discovery first
+                    # records what exists, then a deterministic DB update turns
+                    # only the eligible subset into backup work.
                     n = db.update_backlog_by_filter(
                         host_id=host_id,
                         task_filter=task["host_filter"],
@@ -362,7 +384,14 @@ def main() -> None:
                         moved_to_backup=n["moved_to_backup"],
                     )
 
-                    db.host_task_delete(task_id=task_id)
+                    db.host_task_update(
+                        task_id=task_id,
+                        NU_STATUS=k.TASK_DONE,
+                        DT_HOST_TASK=datetime.now(),
+                        NA_MESSAGE=(
+                            f"Discovery completed successfully for host {host_id}"
+                        ),
+                    )
                     log.event(
                         "discovery_completed",
                         host_id=host_id,
@@ -394,7 +423,7 @@ def main() -> None:
                 task_id=task_id,
                 traceback=traceback.format_exc(),
             )
-            fatal_error = True  # Ensures proper final cleanup
+            fatal_error = True
 
         # ==============================================================
         # FINALLY — UNLOCK + CLEANUP (ALWAYS EXECUTED)
@@ -403,6 +432,8 @@ def main() -> None:
 
             if connect_busy and task_id is not None and not err.triggered:
                 try:
+                    # Transient SSH/SFTP bootstrap errors requeue the same
+                    # HOST_TASK instead of persisting TASK_ERROR.
                     db.host_task_update(
                         task_id=task_id,
                         NU_STATUS=k.TASK_PENDING,
@@ -410,7 +441,7 @@ def main() -> None:
                         NA_MESSAGE=tools.compose_message(
                             task_type=k.FILE_TASK_DISCOVERY,
                             task_status=k.TASK_PENDING,
-                            detail=k.SFTP_BUSY_RETRY_DETAIL,
+                            detail=connect_retry_detail,
                         ),
                     )
 
@@ -420,6 +451,9 @@ def main() -> None:
                         cooldown_seconds=k.SFTP_BUSY_COOLDOWN_SECONDS,
                     )
 
+                    # The short cooldown reserves the next slot for discovery
+                    # recovery instead of letting backup immediately reclaim
+                    # the same host and recreate the same contention.
                     if preserve_host_busy_cooldown:
                         log.warning(
                             "event=sftp_busy_cooldown_started "
@@ -434,7 +468,7 @@ def main() -> None:
                         f"task_id={task_id} error={e}"
                     )
        
-            # Handle TASK error state
+            # Persist task failure after any non-transient error.
             if err.triggered and task_id:
                 err.log_error(host_id=host_id, task_id=task_id)
                 
@@ -456,8 +490,8 @@ def main() -> None:
                 except Exception:
                     pass
                 
-                # Host check tasks should be re-queued on connection 
-                # errors to allow for retries after transient issues are resolved
+                # CONNECT/SSH failures ask the queued host worker to reconcile
+                # host state explicitly after the current task is resolved.
                 if err.stage in {"CONNECT", "SSH"}:
                     db.queue_host_task(
                         host_id=host_id,
@@ -476,7 +510,8 @@ def main() -> None:
                     error=err.format_error() or "Discovery failed",
                 )
 
-            # Close SFTP safely
+            # Close transport objects defensively. Cleanup must not mask the
+            # original failure state.
             try:
                 if sftp:
                     try:
@@ -487,19 +522,23 @@ def main() -> None:
                 log.warning(f"event=cleanup_host_context_failed error={e}")
 
             # -------------------------------------------------
-            # Safe release host
+            # Release the host unless the short transient cooldown is now
+            # owning the BUSY flag.
             # -------------------------------------------------
             if host_id is not None and not preserve_host_busy_cooldown:
                 # This is the single normal-path release point for the host
                 # claimed by `host_task_read(..., lock_host=True)`.
                 release_locked_host(db, host_id)
 
-                # Create statistics update task only when successful operations occurred
+                # Successful discovery activity schedules deferred statistics
+                # refresh through the queued HOST_TASK mechanism.
                 try:
                     if (not err.triggered) and (
                         n.get("rows_updated", 0) > 0 or processed > 0
                     ):
-                        db.host_update_statistics(host_id=host_id)
+                        # Statistics refresh stays deferred so lock release is
+                        # not delayed by host aggregation work.
+                        db.host_task_statistics_create(host_id=host_id)
                 except Exception as e:
                     log.warning(
                         f"event=statistics_update_failed host_id={host_id} error={e}"

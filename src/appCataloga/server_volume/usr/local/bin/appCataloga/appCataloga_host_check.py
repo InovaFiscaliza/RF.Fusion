@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Host connectivity and task-state synchronizer.
+Queued HOST_TASK worker for connectivity reconciliation and deferred statistics.
 
-This worker verifies host reachability, keeps HOST/HOST_TASK/FILE_TASK state
-consistent, and also processes deferred host-statistics refresh tasks. The flow
-stays intentionally explicit because connectivity failures directly affect queue
-resume/suspend behavior.
+This daemon consumes only queued HOST_TASK rows and never performs background
+maintenance on its own. Its responsibilities are intentionally narrow:
+
+    - confirm host connectivity for CHECK / CHECK_CONNECTION tasks
+    - promote successful CHECK tasks into PROCESSING
+    - execute deferred host-statistics refresh tasks
+
+Recurring reconciliation such as stale-lock cleanup and oldest-first ICMP
+sweeps lives in `appCataloga_host_maintenance.py`, which keeps this loop
+focused on queue-driven work and easier to reason about during incidents.
 """
 
 import sys
 import os
-import socket
 import inspect
 import signal
-from datetime import datetime, timedelta
-
-from ping3 import ping
+from datetime import datetime
 
 # =================================================
 # PROJECT ROOT (shared/, db/, stations/)
@@ -44,7 +47,7 @@ if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
 
 # Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
-from shared import errors, legacy, logging_utils
+from shared import errors, host_connectivity, legacy, logging_utils
 import config as k
 
 
@@ -53,6 +56,11 @@ import config as k
 # ============================================================
 log = logging_utils.log()
 process_status = {"running": True}
+HOST_TASK_PRIORITY = (
+    k.HOST_TASK_CHECK_TYPE,
+    k.HOST_TASK_CHECK_CONNECTION_TYPE,
+    k.HOST_TASK_UPDATE_STATISTICS_TYPE,
+)
 
 
 # ============================================================
@@ -109,114 +117,146 @@ signal.signal(signal.SIGTERM, sigterm_handler)
 signal.signal(signal.SIGINT, sigint_handler)
 
 
-# ============================================================
-# Connectivity helper
-# ============================================================
-
-def is_host_online(host_addr: str, timeout_sec=None) -> bool:
-    """
-    Check host reachability through ICMP without surfacing ping library errors.
-    """
-    timeout = k.ICMP_TIMEOUT_SEC if timeout_sec is None else timeout_sec
-    try:
-        return ping(host_addr, timeout=timeout) is not None
-    except Exception:
-        return False
-
-
-def apply_host_connectivity_state(
-    db: dbHandlerBKP,
-    host_id: int,
-    was_offline: bool,
-    online: bool,
-    now: datetime,
-) -> None:
-    """
-    Persist the latest connectivity snapshot and trigger side effects only
-    when the host actually changes state.
-    """
-    # online -> online:
-    # Refresh the heartbeat only. No task churn should happen here.
-    #
-    # offline -> online:
-    # Refresh the heartbeat and reopen work that was suspended while the
-    # host was considered unreachable.
-    if online:
-        db.host_update(
-            host_id=host_id,
-            IS_OFFLINE=False,
-            check_busy_timeout=True,
-            DT_LAST_CHECK=now,
+def _read_next_host_task(db: dbHandlerBKP) -> dict | None:
+    """Return the next HOST_TASK according to the fixed worker priority."""
+    for task_type in HOST_TASK_PRIORITY:
+        task = db.host_task_read(
+            task_status=k.TASK_PENDING,
+            task_type=task_type,
         )
+        if task:
+            return task
+    return None
 
-        # Only a real offline -> online edge should reopen suspended work.
-        if was_offline:
-            log.event(
-                "host_state_transition",
-                host_id=host_id,
-                previous_state="offline",
-                current_state="online",
-            )
-            db.host_task_resume_by_host(host_id)
-            db.file_task_resume_by_host(host_id)
-            db.file_history_resume_by_host(host_id)
 
-        return
-
-    update_fields = {
-        "IS_OFFLINE": True,
-        "DT_LAST_CHECK": now,
+def _build_task_context(task_row: dict) -> dict:
+    """Extract the HOST/HOST_TASK fields used by this loop iteration."""
+    return {
+        "host_id": task_row["HOST__ID_HOST"],
+        "task_id": task_row["HOST_TASK__ID_HOST_TASK"],
+        "task_type": task_row["HOST_TASK__NU_TYPE"],
+        "addr": task_row["HOST__NA_HOST_ADDRESS"],
+        "port": task_row["HOST__NA_HOST_PORT"],
+        "user": task_row["HOST__NA_HOST_USER"],
+        "password": task_row["HOST__NA_HOST_PASSWORD"],
+        "was_offline": bool(task_row.get("HOST__IS_OFFLINE")),
+        "host_check_error_count": int(task_row.get("HOST__NU_HOST_CHECK_ERROR") or 0),
+        "now": datetime.now(),
     }
 
-    # offline -> offline:
-    # Keep refreshing the last failed heartbeat, but do not keep suspending
-    # tasks or unlocking the host over and over again.
-    #
-    # online -> offline:
-    # This is the important edge. Suspend host-dependent work first, then
-    # release the BUSY flag so a new worker does not enter the same host in
-    # the transition window.
-    if not was_offline:
-        log.event(
-            "host_state_transition",
-            host_id=host_id,
-            previous_state="online",
-            current_state="offline",
-        )
-        db.host_task_suspend_by_host(host_id)
-        db.file_task_suspend_by_host(host_id)
-        db.file_history_suspend_by_host(host_id)
 
-        # Suspend host-dependent work before releasing the BUSY flag so
-        # another worker does not claim fresh tasks in the transition window.
-        update_fields.update(
-            IS_BUSY=False,
-            NU_PID=k.HOST_UNLOCKED_PID,
-            NU_HOST_CHECK_ERROR=1,
-            DT_LAST_FAIL=now,
-        )
+def _claim_host_task(db: dbHandlerBKP, task: dict) -> bool:
+    """
+    Atomically flip the queued HOST_TASK from PENDING to RUNNING.
 
-    db.host_update(host_id=host_id, **update_fields)
+    These supervisory tasks deliberately do not lock `HOST.IS_BUSY`; they
+    supervise the host state but must not block discovery/backup data-plane
+    work from using the host itself.
+    """
+    lock_result = db.host_task_update(
+        task_id=task["task_id"],
+        expected_status=k.TASK_PENDING,
+        NU_STATUS=k.TASK_RUNNING,
+        NU_PID=os.getpid(),
+    )
+
+    if lock_result["rows_affected"] == 1:
+        return True
+
+    log.warning(
+        f"event=host_task_claim_race host_id={task['host_id']} task_id={task['task_id']}"
+    )
+    return False
 
 
 def check_host_connectivity(
     host_id: int,
     addr: str,
     port: int,
+    user: str,
+    password: str,
     event_name: str,
-) -> bool:
+) -> dict:
     """
-    Run an ICMP connectivity check and emit the corresponding structured log.
+    Run the shared operational connectivity probe and emit one structured log.
+
+    A host is considered operationally online for discovery/backup only when:
+        1. ICMP responds
+        2. the short SSH confirmation probe succeeds
     """
-    online = is_host_online(addr)
+    probe = host_connectivity.probe_host_operational_connectivity(
+        addr=addr,
+        port=port,
+        user=user,
+        password=password,
+    )
+    online = probe["state"] == "online"
+
     log.event(
         event_name,
         host_id=host_id,
         address=addr,
         port=port,
+        state=probe["state"],
+        reason=probe["reason"],
         online=online,
+        icmp_online=probe["icmp_online"],
+        ssh_online=probe["ssh_online"],
+        error=probe["error"],
     )
-    return online
+    return probe
+
+
+def handle_degraded_connectivity_task(
+    db: dbHandlerBKP,
+    task_id: int,
+    host_id: int,
+    current_error_count: int,
+    now: datetime,
+) -> None:
+    """
+    Handle ambiguous SSH timeouts without immediately flipping host state.
+
+    Any SSH-side supervisory failure while ICMP still responds is treated as
+    degraded first. The task can eventually fail, but the host state itself is
+    preserved so a short probe does not suspend the entire station incorrectly.
+    """
+    next_error_count = max(0, int(current_error_count or 0)) + 1
+    threshold = k.HOST_CHECK_SSH_TIMEOUT_CONFIRMATIONS
+
+    # Degraded SSH while ICMP is still alive is recorded on the HOST, but it no
+    # longer forces an online -> offline transition by itself.
+    db.host_update(
+        host_id=host_id,
+        DT_LAST_CHECK=now,
+        DT_LAST_FAIL=now,
+        NU_HOST_CHECK_ERROR=next_error_count,
+    )
+
+    if next_error_count >= threshold:
+        db.host_task_update(
+            task_id=task_id,
+            NU_STATUS=k.TASK_ERROR,
+            DT_HOST_TASK=now,
+            NA_MESSAGE=(
+                "SSH supervision degraded threshold reached while ICMP still "
+                f"responds ({next_error_count}/{threshold})"
+            ),
+        )
+        return
+
+    # Before the threshold we keep the supervisory task alive so the next probe
+    # can confirm whether the SSH side is truly degraded or just momentarily
+    # overloaded.
+    db.host_task_update(
+        task_id=task_id,
+        NU_STATUS=k.TASK_PENDING,
+        DT_HOST_TASK=now,
+        NA_MESSAGE=(
+            "SSH supervision degraded while ICMP still responds | "
+            f"confirmation {next_error_count}/{threshold}"
+        ),
+    )
 
 
 def finalize_connectivity_host_task(
@@ -229,11 +269,17 @@ def finalize_connectivity_host_task(
     promote_to_processing: bool,
 ) -> None:
     """
-    Persist the connectivity result for HOST_TASK_CHECK and
-    HOST_TASK_CHECK_CONNECTION tasks.
+    Apply the final result of a queued connectivity task.
+
+    CHECK and CHECK_CONNECTION share the same failure path. They differ only on
+    success: CHECK becomes PROCESSING, while CHECK_CONNECTION is consumed as a
+    one-off reconciliation task.
     """
-    apply_host_connectivity_state(
+    # Connectivity state is updated first so queue side effects (resume/suspend)
+    # stay aligned with the final HOST_TASK result written just below.
+    host_connectivity.persist_host_connectivity_state(
         db=db,
+        log=log,
         host_id=host_id,
         was_offline=was_offline,
         online=online,
@@ -262,89 +308,94 @@ def finalize_connectivity_host_task(
     db.host_task_delete(task_id=task_id)
 
 
-def run_host_check_all_batch(db: dbHandlerBKP, now: datetime) -> int:
+def _process_connectivity_task(
+    db: dbHandlerBKP,
+    task: dict,
+    *,
+    event_name: str,
+    promote_to_processing: bool,
+    err: errors.ErrorHandler,
+) -> None:
     """
-    Refresh a small batch of stale host connectivity snapshots outside the
-    HOST_TASK queue.
+    Execute either CHECK or CHECK_CONNECTION with one shared flow.
+
+    The two queued task types only differ on successful completion:
+        - CHECK becomes PROCESSING
+        - CHECK_CONNECTION is consumed immediately
     """
-    if not k.HOST_CHECK_ALL_ENABLED:
-        return 0
+    try:
+        connectivity = check_host_connectivity(
+            host_id=task["host_id"],
+            addr=task["addr"],
+            port=task["port"],
+            user=task["user"],
+            password=task["password"],
+            event_name=event_name,
+        )
+    except Exception as e:
+        err.set("Connectivity test failed", "CONNECTIVITY", e)
+        return
 
-    hosts = db.host_list_for_connectivity_check()
-    if not hosts:
-        return 0
+    if err.triggered:
+        return
 
-    stale_after = timedelta(seconds=k.HOST_CHECK_ALL_STALE_AFTER_SEC)
-    due_hosts = []
+    state = connectivity["state"]
 
-    for host in hosts:
-        last_check = host.get("DT_LAST_CHECK")
-
-        # The list is ordered from oldest to newest snapshot.
-        if last_check and (now - last_check) < stale_after:
-            break
-
-        due_hosts.append(host)
-
-        if len(due_hosts) >= k.HOST_CHECK_ALL_BATCH_SIZE:
-            break
-
-    if not due_hosts:
-        return 0
-
-    log.event(
-        "host_check_all_batch",
-        batch_size=len(due_hosts),
-        stale_after_sec=k.HOST_CHECK_ALL_STALE_AFTER_SEC,
-        timeout_sec=k.HOST_CHECK_ALL_ICMP_TIMEOUT_SEC,
-    )
-
-    checked = 0
-
-    for host in due_hosts:
-        # Shutdown should interrupt the sweep immediately.
-        if not process_status["running"]:
-            break
-
-        host_id = host["ID_HOST"]
-        addr = host["NA_HOST_ADDRESS"]
-        host_name = host.get("NA_HOST_NAME")
-        was_offline = bool(host.get("IS_OFFLINE"))
-
-        try:
-            online = is_host_online(
-                addr,
-                timeout_sec=k.HOST_CHECK_ALL_ICMP_TIMEOUT_SEC,
-            )
-            checked_at = datetime.now()
-
-            log.event(
-                "host_check_all",
-                host_id=host_id,
-                host=host_name,
-                address=addr,
-                online=online,
-            )
-
-            apply_host_connectivity_state(
+    try:
+        if state == "degraded":
+            handle_degraded_connectivity_task(
                 db=db,
-                host_id=host_id,
-                was_offline=was_offline,
-                online=online,
-                now=checked_at,
+                task_id=task["task_id"],
+                host_id=task["host_id"],
+                current_error_count=task["host_check_error_count"],
+                now=task["now"],
             )
-            checked += 1
+            return
 
-        except Exception as e:
-            log.error(
-                f"event=host_check_all_failed host_id={host_id} "
-                f"host={host_name} address={addr} error={e}"
+        if state == "auth_error":
+            err.set(
+                "SSH authentication failed during connectivity confirmation",
+                "AUTH",
+                RuntimeError(connectivity["error"] or connectivity["reason"]),
             )
+            return
 
-    if checked:
-        log.event("host_check_all_done", checked=checked)
+        finalize_connectivity_host_task(
+            db=db,
+            task_id=task["task_id"],
+            host_id=task["host_id"],
+            was_offline=task["was_offline"],
+            online=(state == "online"),
+            now=task["now"],
+            promote_to_processing=promote_to_processing,
+        )
+    except Exception as e:
+        err.set("DB transaction failed", "TRANSACTION", e)
 
-    return checked
+
+def _process_statistics_task(
+    db: dbHandlerBKP,
+    task: dict,
+    err: errors.ErrorHandler,
+) -> None:
+    """Execute the deferred host statistics refresh task."""
+    try:
+        db.host_update_statistics(host_id=task["host_id"])
+        db.host_task_update(
+            task_id=task["task_id"],
+            NU_STATUS=k.TASK_DONE,
+            DT_HOST_TASK=task["now"],
+            NA_MESSAGE=(
+                f"Host statistics refreshed successfully for host {task['host_id']}"
+            ),
+        )
+        log.event(
+            "host_statistics_completed",
+            host_id=task["host_id"],
+            task_id=task["task_id"],
+        )
+    except Exception as e:
+        err.set("Statistics update failed", "UPDATE_STATS", e)
 
 
 # ============================================================
@@ -352,10 +403,17 @@ def run_host_check_all_batch(db: dbHandlerBKP, now: datetime) -> int:
 # ============================================================
 def main():
     """
-    Run the host-check polling loop until shutdown is requested.
+    Run the queued HOST_TASK worker until shutdown is requested.
+
+    Task priority is intentional:
+        1. CHECK
+        2. CHECK_CONNECTION
+        3. UPDATE_STATISTICS
+
+    That ordering keeps fresh discovery bootstrap work ahead of reconciliation
+    and statistics refresh.
     """
     log.service_start("appCataloga_host_check")
-    last_host_cleanup = datetime.min
 
     try:
         db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
@@ -366,200 +424,69 @@ def main():
     while process_status["running"]:
 
         err = errors.ErrorHandler(log)
+        task = None
 
         try:
-            # ====================================================
-            # Fetch operational HOST_TASK first.
-            # ====================================================
-            task = db.host_task_read(
-                task_status=k.TASK_PENDING,
-                task_type=[
-                    k.HOST_TASK_CHECK_TYPE,
-                    k.HOST_TASK_CHECK_CONNECTION_TYPE,
-                ],
-            )
-
-            if not task:
-                # Statistics refresh is intentionally lower priority than
-                # connectivity-related work so it does not delay discovery flow.
-                task = db.host_task_read(
-                    task_status=k.TASK_PENDING,
-                    task_type=k.HOST_TASK_UPDATE_STATISTICS_TYPE,
-                )
-
-            if not task:
-                # The idle branch owns maintenance work only. Any operational
-                # HOST_TASK should preempt cleanup and periodic sweeps.
-                # Check for stale BUSY hosts and release them if needed
-                # In this case if IS_BUSY = TRUE but there arent FILE_TASK or HOST_TASK with status RUNNING, 
-                # we can assume the host is stuck and release it if DT_BUSY > 
-                now = datetime.now()
-                if now - last_host_cleanup > timedelta(seconds=k.HOST_CLEANUP_INTERVAL):
-                    try:
-                        db.host_cleanup_stale_locks(
-                            threshold_seconds=k.HOST_BUSY_TIMEOUT
-                        )
-                    except Exception as e:
-                        log.error(f"event=host_cleanup_failed error={e}")
-
-                    last_host_cleanup = now
-
-                try:
-                    run_host_check_all_batch(db=db, now=now)
-                except Exception as e:
-                    log.error(f"event=host_check_all_batch_failed error={e}")
-
+            task_row = _read_next_host_task(db)
+            if not task_row:
                 legacy._random_jitter_sleep()
                 continue
-            
-            # Tasks contents
-            host_id   = task["HOST__ID_HOST"]
-            task_id   = task["HOST_TASK__ID_HOST_TASK"]
-            task_type = task["HOST_TASK__NU_TYPE"]
-            addr      = task["HOST__NA_HOST_ADDRESS"]
-            port      = task["HOST__NA_HOST_PORT"]
-            was_offline = bool(task.get("HOST__IS_OFFLINE"))
-            now       = datetime.now()
 
-            # ====================================================
-            # COMMON — Lock this task (avoid other workers)
-            # ====================================================
-            # HOST_CHECK / CHECK_CONNECTION / UPDATE_STATISTICS tasks are
-            # claimed atomically as tasks, but they do NOT lock the host
-            # itself. They are observational/maintenance work and should not
-            # block discovery or backup from using the same host.
+            task = _build_task_context(task_row)
+
             try:
-                lock_result = db.host_task_update(
-                    task_id=task_id,
-                    expected_status=k.TASK_PENDING,
-                    NU_STATUS=k.TASK_RUNNING,
-                    NU_PID=os.getpid(),
-                )
-
-                if lock_result["rows_affected"] != 1:
-                    log.warning(
-                        f"event=host_task_claim_race host_id={host_id} task_id={task_id}"
-                    )
+                if not _claim_host_task(db, task):
                     continue
             except Exception as e:
                 err.set("Failed to lock task", "LOCK_TASK", e)
 
-            if err.triggered:
-                # Skip special-case cleanup: centralized handler below
-                pass
-
-            # ====================================================
-            # CASE 1 — HOST_TASK_CHECK_TYPE
-            # ====================================================
-            if not err.triggered and task_type == k.HOST_TASK_CHECK_TYPE:
-
-                try:
-                    online = check_host_connectivity(
-                        host_id=host_id,
-                        addr=addr,
-                        port=port,
-                        event_name="host_check",
-                    )
-                except Exception as e:
-                    err.set("Connectivity test failed", "CONNECTIVITY", e)
-
-                if not err.triggered:
-                    try:
-                        # A successful CHECK task becomes PROCESSING so
-                        # discovery can claim the host next.
-                        finalize_connectivity_host_task(
+            if not err.triggered:
+                match task["task_type"]:
+                    #--------------------------------------------------
+                    #CASE 1: UPDATE STATISTICS
+                    #--------------------------------------------------
+                    case k.HOST_TASK_UPDATE_STATISTICS_TYPE:
+                        _process_statistics_task(db, task, err)
+                    #--------------------------------------------------
+                    #CASE 2: RECEIVED FROM APPCATALOGA.PY AND SEND TO DISCOVERY
+                    #--------------------------------------------------
+                    case k.HOST_TASK_CHECK_TYPE:
+                        _process_connectivity_task(
                             db=db,
-                            task_id=task_id,
-                            host_id=host_id,
-                            was_offline=was_offline,
-                            online=online,
-                            now=now,
+                            task=task,
+                            event_name="host_check",
                             promote_to_processing=True,
+                            err=err,
                         )
-                    except Exception as e:
-                        err.set("DB transaction failed", "TRANSACTION", e)
-
-            # ====================================================
-            # CASE 2 — HOST_TASK_UPDATE_STATISTICS_TYPE
-            # ====================================================
-            if not err.triggered and task_type == k.HOST_TASK_UPDATE_STATISTICS_TYPE:
-                
-                try:
-                    # Statistics come from FILE_TASK_HISTORY; connectivity here
-                    # is only a diagnostic breadcrumb in the logs.
-                    online = is_host_online(addr)
-                    log.event(
-                        "host_check_statistics",
-                        host_id=host_id,
-                        address=addr,
-                        port=port,
-                        online=online,
-                    )
-                except Exception as e:
-                    err.set("Connectivity test failed", "CONNECTIVITY", e)
-                try:
-                    
-                    # Perform statistics update
-                    db.host_update_statistics(host_id=host_id)
-
-                    # Keep a singleton statistics HOST_TASK row per host and
-                    # recycle it, instead of generating insert/delete churn.
-                    db.host_task_update(
-                        task_id=task_id,
-                        NU_STATUS=k.TASK_DONE,
-                        DT_HOST_TASK=now,
-                        NA_MESSAGE=(
-                            f"Host statistics refreshed successfully for host {host_id}"
-                        ),
-                    )
-
-                except Exception as e:
-                    err.set("Statistics update failed", "UPDATE_STATS", e)
-            
-            # ====================================================
-            # CASE 3 — HOST_TASK_CHECK_CONNECTION
-            # ====================================================
-            if not err.triggered and task_type == k.HOST_TASK_CHECK_CONNECTION_TYPE:
-
-                try:
-                    online = check_host_connectivity(
-                        host_id=host_id,
-                        addr=addr,
-                        port=port,
-                        event_name="host_check_connection",
-                    )
-                except Exception as e:
-                    err.set("Connectivity test failed", "CONNECTIVITY", e)
-
-                if not err.triggered:
-                    try:
-                        # Connection checks stop here; they only reconcile
-                        # host state after another worker observed doubt/failure.
-                        finalize_connectivity_host_task(
+                    #--------------------------------------------------
+                    #CASE 3: RECEIVED FROM WORKERS TO CHECK CONNECTIVITY DUE TO CONNECTION AMBIGUITY
+                    #--------------------------------------------------
+                    case k.HOST_TASK_CHECK_CONNECTION_TYPE:
+                        _process_connectivity_task(
                             db=db,
-                            task_id=task_id,
-                            host_id=host_id,
-                            was_offline=was_offline,
-                            online=online,
-                            now=now,
+                            task=task,
+                            event_name="host_check_connection",
                             promote_to_processing=False,
+                            err=err,
                         )
-                    except Exception as e:
-                        err.set("DB transaction failed", "TRANSACTION", e)
-                
+                    case _:
+                        err.set(
+                            f"Unsupported HOST_TASK type: {task['task_type']}",
+                            "TASK_TYPE",
+                        )
 
             # ====================================================
             # ERROR HANDLING (centralized)
             # ====================================================
             if err.triggered:
-                err.log_error(host_id=host_id, task_id=task_id)
+                err.log_error(host_id=task["host_id"], task_id=task["task_id"])
 
                 try:
                     # Host-check failures now persist as a stable generic
                     # prefix plus the canonical ErrorHandler payload so they
                     # can be read directly and aggregated later if needed.
                     db.host_task_update(
-                        task_id=task_id,
+                        task_id=task["task_id"],
                         NU_STATUS=k.TASK_ERROR,
                         NA_MESSAGE=f"Host Check Error | {err.format_error()}",
                         DT_HOST_TASK=datetime.now(),
@@ -582,12 +509,12 @@ def main():
                     reason="Unexpected host check loop failure",
                     stage="MAIN",
                     exc=e,
-                    host_id=locals().get("host_id"),
-                    task_id=locals().get("task_id"),
+                    host_id=task["host_id"] if task else None,
+                    task_id=task["task_id"] if task else None,
                 )
             err.log_error(
-                host_id=locals().get("host_id"),
-                task_id=locals().get("task_id"),
+                host_id=task["host_id"] if task else None,
+                task_id=task["task_id"] if task else None,
             )
             legacy._random_jitter_sleep()
 

@@ -19,7 +19,7 @@ from enum import Enum
 
 from .logging_utils import log
 from .file_metadata import FileMetadata
-from . import legacy, tools
+from . import host_connectivity, tools
 
 
 # ---------------------------------------------------------------------
@@ -69,6 +69,7 @@ class sftpConnection:
         self.log = log
         self.host_uid = host_uid
         self.host_addr = host_addr
+        self.connect_addr = host_connectivity.resolve_primary_host_address(host_addr)
         self.port = port
         self.user = user
 
@@ -85,7 +86,7 @@ class sftpConnection:
             # CONNECT (timeouts apply ONLY to connection/auth phase)
             # -------------------------------------------------------------
             self.ssh_client.connect(
-                hostname=host_addr,
+                hostname=self.connect_addr,
                 port=port,
                 username=user,
                 password=password,
@@ -119,13 +120,13 @@ class sftpConnection:
 
             self.log.entry(
                 f"[SSH] Connected to {self.host_uid} "
-                f"({self.host_addr}:{self.port}) as {self.user}"
+                f"({self.host_addr} -> {self.connect_addr}:{self.port}) as {self.user}"
             )
 
         except Exception as e:
             self.log.error(
                 f"[SSH] Error initializing SSH to "
-                f"'{self.host_uid}' ({self.host_addr}): {e}"
+                f"'{self.host_uid}' ({self.host_addr} -> {self.connect_addr}): {e}"
             )
             raise
 

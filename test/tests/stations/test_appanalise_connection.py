@@ -54,6 +54,22 @@ class DetectProtocolErrorTests(unittest.TestCase):
 
         self.conn._detect_protocol_error(payload)
 
+    def test_detect_protocol_error_accepts_single_spectrum_dict(self) -> None:
+        payload = {
+            "Request": {"type": "FileRead"},
+            "Answer": {
+                "Spectra": {
+                    "Receiver": "CWSM21100005",
+                    "MetaData": {},
+                    "GPS": {},
+                    "RelatedFiles": [],
+                },
+                "General": {},
+            },
+        }
+
+        self.conn._detect_protocol_error(payload)
+
     def test_detect_protocol_error_rejects_answer_string(self) -> None:
         # Real failures from appAnalise can arrive as plain strings in `Answer`.
         payload = {
@@ -143,6 +159,44 @@ class DetectProtocolErrorTests(unittest.TestCase):
 
         self.assertIn("source file unavailable before request", str(ctx.exception))
         self.assertFalse(called["value"])
+
+    def test_normalize_response_accepts_single_spectrum_dict(self) -> None:
+        payload = {
+            "Request": {"type": "FileRead"},
+            "Answer": {
+                "General": {},
+                "Spectra": {
+                    "Receiver": "CWSM21100005",
+                    "MetaData": {
+                        "FreqStart": 702882812.5,
+                        "FreqStop": 984425781.25,
+                        "DataPoints": 2884,
+                        "LevelUnit": "dBm",
+                        "TraceMode": "ClearWrite",
+                        "Resolution": 97656.25,
+                    },
+                    "GPS": {
+                        "Latitude": -19.782451,
+                        "Longitude": -43.950737,
+                    },
+                    "RelatedFiles": [
+                        {
+                            "Task": "Undefined",
+                            "Description": "Undefined",
+                            "BeginTime": "30-Sep-2025 02:02:01",
+                            "EndTime": "30-Sep-2025 14:01:21",
+                            "NumSweeps": 720,
+                        }
+                    ],
+                },
+            },
+        }
+
+        result = self.conn._normalize_response(payload)
+
+        self.assertEqual(result["hostname"], "CWSM21100005")
+        self.assertEqual(len(result["spectrum"]), 1)
+        self.assertEqual(result["spectrum"][0].trace_length, 720)
 
 
 if __name__ == "__main__":

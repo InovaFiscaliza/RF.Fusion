@@ -29,6 +29,7 @@ services=(
   appCataloga_file_bin_proces
   appCataloga_file_bin_proces_appAnalise
   appCataloga_discovery
+  appCataloga_host_maintenance
   appCataloga_host_check
   appCataloga
 )

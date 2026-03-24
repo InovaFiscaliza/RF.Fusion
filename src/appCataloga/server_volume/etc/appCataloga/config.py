@@ -80,6 +80,10 @@ HOST_BUSY_TIMEOUT               = 18000     # 18000 seconds or 5 hours
 HOST_CLEANUP_INTERVAL           = 300       # Interval in seconds to check for and clean up stale host locks
 HOST_CLEANUP_NO_TASK_GRACE_SEC  = 30        # Minimum BUSY age before releasing a host with no running tasks detected
 SFTP_BUSY_COOLDOWN_SECONDS      = 15        # Temporary host cooldown after transient SSH/SFTP init failure
+DISCOVERY_RESERVATION_TTL_SEC   = 300       # Fresh pending CHECK/PROCESSING HOST_TASK reserves the next host window for discovery
+HOST_TASK_OPERATIONAL_STALE_SEC = 300       # Recover stale RUNNING operational HOST_TASK when ownership/liveness no longer matches execution reality
+HOST_CHECK_SSH_PROBE_TIMEOUT_SEC = 20       # Short SSH probe timeout for host_check operational confirmation
+HOST_CHECK_SSH_TIMEOUT_CONFIRMATIONS = 3    # Consecutive SSH timeout confirmations required before suspending a pingable host
 HOST_UNLOCKED_PID               = 0         # HOST.NU_PID used when the host is not owned by a worker
 HOST_TRANSIENT_BUSY_PID         = 0         # HOST.NU_PID used during short transient SFTP cooldown
 BKP_TASK_MAX_WORKERS            = 10
@@ -88,6 +92,7 @@ MIN_FILE_SIZE_KB                = 1         # minimum file size to be backed up 
 MIN_FILE_AGE_MINUTES            = 30        # minimum file age to be backed up in minutes
 FILE_THRESHOLD_SIZE_KB          = 100       # file size threshold for update file
 SFTP_BUSY_RETRY_DETAIL          = "sftp connection busy, will retry"
+SSH_TIMEOUT_RETRY_DETAIL        = "ssh init timeout, awaiting connectivity confirmation"
 
 #------------------------------------------
 # metadata publishing module configuration

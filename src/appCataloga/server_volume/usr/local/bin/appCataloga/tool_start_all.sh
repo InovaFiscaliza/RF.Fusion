@@ -27,8 +27,10 @@ echo
 services=(
   appCataloga
   appCataloga_host_check
+  appCataloga_host_maintenance
   appCataloga_discovery
   appCataloga_file_bkp
+  appCataloga_file_bin_proces_appAnalise
 )
 
 for svc in "${services[@]}"; do
