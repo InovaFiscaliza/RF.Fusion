@@ -26,6 +26,8 @@ LOG_TARGET_SCREEN = (
 LOG_DIR = "/var/log"
 LOG_FILE_TEMPLATE = "{logger_name}.log"
 LOG_FILE = "/var/log/appCataloga.log"
+LOG_MAX_FILE_SIZE_MB = 100        # Rotate one log file after it reaches this size (MB)
+LOG_MAX_BACKUP_FILES = 5          # Keep at most this many rotated log generations per file
 
 #------------------------------------------
 # appCataloga socket service configuration
@@ -56,6 +58,20 @@ APP_ANALISE_CLIENT_NAME     = "Matlab"
 APP_ANALISE_PROCESS_TIMEOUT = 600
 APP_ANALISE_CONNECT_TIMEOUT = 15
 APP_ANALISE_WORKER_DETAIL   = "worker=APP_ANALISE"
+APP_ANALISE_SOURCE_LINEAGE_FAMILIES = (
+    "cwsm",
+    "rfeye",
+    "miaer",
+    "emrx",
+    "ermx",
+)
+APP_ANALISE_MOBILE_TASK_MARKERS = (
+    "drive-test",
+    "drive test",
+)
+APP_ANALISE_MOBILE_GPS_STD_THRESHOLD = 0.001
+APP_ANALISE_MOBILE_PATH_STD_MULTIPLIER = 2.0
+APP_ANALISE_MULTI_SITE_REPO_SUBDIR = "appanalise_multi_site"
 #------------------------------------------
 # SSH LIMITS
 #------------------------------------------
@@ -86,7 +102,7 @@ HOST_CHECK_SSH_PROBE_TIMEOUT_SEC = 20       # Short SSH probe timeout for host_c
 HOST_CHECK_SSH_TIMEOUT_CONFIRMATIONS = 3    # Consecutive SSH timeout confirmations required before suspending a pingable host
 HOST_UNLOCKED_PID               = 0         # HOST.NU_PID used when the host is not owned by a worker
 HOST_TRANSIENT_BUSY_PID         = 0         # HOST.NU_PID used during short transient SFTP cooldown
-BKP_TASK_MAX_WORKERS            = 10
+BKP_TASK_MAX_WORKERS            = 10        # Number of concurrent backup workers. Set to 1 to avoid overloading the network and SFTP server, which can cause more harm than good when multiple workers are contending for the same resources.
 BKP_TASK_IDLE_EXIT_CYCLES       = 3         # extra workers exit after this many idle polls
 MIN_FILE_SIZE_KB                = 1         # minimum file size to be backed up in KB
 MIN_FILE_AGE_MINUTES            = 30        # minimum file age to be backed up in minutes
@@ -190,5 +206,9 @@ RFEYE_HOST_TAG      = "RFEye"
 #------------------------------------------
 GC_BATCH_SIZE = 500
 GC_QUARANTINE_DAYS = 365
+# `resolved_files` keeps superseded source/export artifacts only for short-term
+# operator inspection and recovery, so its retention can be shorter than the
+# main trash that still backs FILE_TASK_HISTORY error rows.
+GC_RESOLVED_FILES_QUARANTINE_DAYS = 60
 GC_IDLE_SLEEP = 60
 GC_LOOP_SLEEP = 5

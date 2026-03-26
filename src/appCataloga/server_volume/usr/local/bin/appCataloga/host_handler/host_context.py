@@ -16,6 +16,8 @@ from enum import Enum
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from shared.file_metadata import FileMetadata
+from shared.filter import Filter
+from shared.logging_utils import log
 from typing import Dict, Union
 
 # ---------------------------------------------------------------------
@@ -31,9 +33,7 @@ if CONFIG_PATH not in sys.path:
     sys.path.insert(0, CONFIG_PATH)
 
 import config as k  # noqa: E402
-from .filter import Filter
 from .ssh_utils import sftpConnection
-from .logging_utils import log
 
 # HALT_FLAG ownership states used to coordinate exclusive host access.
 class HaltFlagState(Enum):
@@ -798,3 +798,35 @@ class hostDaemon:
 
             if batch:
                 yield batch
+
+
+def init_host_context(host: dict, log):
+    """
+    Initialize the shared SSH/SFTP and host-daemon context for one host row.
+    """
+    try:
+        host_uid = host["HOST__NA_HOST_NAME"]
+        host_addr = host["HOST__NA_HOST_ADDRESS"]
+        port = int(host["HOST__NA_HOST_PORT"])
+        user = host["HOST__NA_HOST_USER"]
+        password = host["HOST__NA_HOST_PASSWORD"]
+    except KeyError as exc:
+        missing = str(exc)
+        log.error(f"[INIT] Missing field in host metadata: {missing}")
+        raise
+
+    sftp_conn = sftpConnection(
+        host_uid=host_uid,
+        host_addr=host_addr,
+        port=port,
+        user=user,
+        password=password,
+        log=log,
+    )
+
+    daemon = hostDaemon(
+        sftp_conn=sftp_conn,
+        log=log,
+    )
+
+    return sftp_conn, daemon

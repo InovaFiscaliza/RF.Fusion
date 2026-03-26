@@ -185,7 +185,6 @@ File and spectrum registration:
 - `insert_measure_unit()`
 - `insert_trace_type()`
 - `insert_spectrum()`
-- `insert_bridge_spectrum_equipment()`
 - `insert_bridge_spectrum_file()`
 
 Publication support:

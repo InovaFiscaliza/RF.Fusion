@@ -55,6 +55,8 @@ class HostCooldownTests(unittest.TestCase):
     """Validate the HOST cooldown contract used by discovery and backup."""
 
     def make_handler(self):
+        """Build a bare handler instance with only the pieces these tests use."""
+
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
         handler._connect = lambda: None
@@ -235,6 +237,8 @@ class FileTimestampOwnershipTests(unittest.TestCase):
     """Validate that task/history timestamps are explicit at call sites."""
 
     def make_handler(self):
+        """Build a lightweight handler without opening a real DB connection."""
+
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
         handler._connect = lambda: None
@@ -298,10 +302,61 @@ class FileTimestampOwnershipTests(unittest.TestCase):
         self.assertEqual(captured["where"], {"ID_FILE_TASK": 77})
 
 
+class GarbageCollectorQueryTests(unittest.TestCase):
+    """Validate the history query that feeds payload garbage collection."""
+
+    def make_handler(self):
+        """Build a handler with only the SELECT path required by this group."""
+
+        handler = object.__new__(db_bkp_module.dbHandlerBKP)
+        handler.log = FakeLog()
+        handler._connect = lambda: None
+        return handler
+
+    def test_file_history_get_gc_candidates_uses_quarantine_anchor(self) -> None:
+        handler = self.make_handler()
+        captured = {}
+
+        def fake_select_rows(*, table, where, order_by, limit, cols):
+            captured["table"] = table
+            captured["where"] = where
+            captured["order_by"] = order_by
+            captured["limit"] = limit
+            captured["cols"] = cols
+            return []
+
+        handler._select_rows = fake_select_rows
+
+        rows = handler.file_history_get_gc_candidates(
+            batch_size=25,
+            quarantine_days=365,
+        )
+
+        self.assertEqual(rows, [])
+        self.assertEqual(captured["table"], "FILE_TASK_HISTORY")
+        self.assertEqual(captured["where"]["NU_STATUS_PROCESSING"], -1)
+        self.assertEqual(captured["where"]["IS_PAYLOAD_DELETED"], 0)
+        self.assertIn(
+            "COALESCE(DT_PROCESSED, DT_FILE_CREATED)",
+            captured["where"]["#CUSTOM#QUARANTINE"],
+        )
+        self.assertEqual(
+            captured["order_by"],
+            "COALESCE(DT_PROCESSED, DT_FILE_CREATED), ID_HISTORY",
+        )
+        self.assertEqual(captured["limit"], 25)
+        self.assertEqual(
+            captured["cols"],
+            ["ID_HISTORY", "NA_SERVER_FILE_PATH", "NA_SERVER_FILE_NAME"],
+        )
+
+
 class FileTaskSelectionTests(unittest.TestCase):
     """Validate backup FILE_TASK selection rules for priority and host fairness."""
 
     def make_handler(self):
+        """Build a handler wired only for FILE_TASK selection tests."""
+
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
         handler._connect = lambda: None
@@ -380,9 +435,11 @@ class FileTaskSelectionTests(unittest.TestCase):
 
 
 class HostTaskQueueTests(unittest.TestCase):
-    """Validate HOST_TASK reuse semantics across operational families."""
+    """Validate singleton-per-type HOST_TASK reuse semantics."""
 
     def make_handler(self):
+        """Build a handler with only the queueing helpers these tests exercise."""
+
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
         handler.host_update_statistics = lambda host_id: None
@@ -390,7 +447,7 @@ class HostTaskQueueTests(unittest.TestCase):
         return handler
 
     def test_queue_host_task_refreshes_pending_operational_task_for_host(self) -> None:
-        """A queued CHECK should refresh the existing pending operational row."""
+        """A queued CHECK should refresh the existing pending CHECK row."""
 
         handler = self.make_handler()
         created = []
@@ -403,7 +460,7 @@ class HostTaskQueueTests(unittest.TestCase):
             return [
                 {
                     "HOST_TASK__ID_HOST_TASK": 101,
-                    "HOST_TASK__NU_TYPE": db_bkp_module.k.HOST_TASK_PROCESSING_TYPE,
+                    "HOST_TASK__NU_TYPE": db_bkp_module.k.HOST_TASK_CHECK_TYPE,
                     "HOST_TASK__NU_STATUS": db_bkp_module.k.TASK_PENDING,
                     "HOST_TASK__FILTER": json.dumps({"file_path": "/mnt/internal/data"}),
                 }
@@ -420,13 +477,9 @@ class HostTaskQueueTests(unittest.TestCase):
             filter_dict=filter_dict,
         )
 
-        self.assertEqual(
-            requested_types,
-            [[
-                db_bkp_module.k.HOST_TASK_CHECK_TYPE,
-                db_bkp_module.k.HOST_TASK_PROCESSING_TYPE,
-            ]],
-        )
+        # The current contract is exact-type reuse: one durable CHECK row, one
+        # durable PROCESSING row, and so on.
+        self.assertEqual(requested_types, [db_bkp_module.k.HOST_TASK_CHECK_TYPE])
         self.assertEqual(created, [])
         self.assertEqual(len(updated), 1)
         self.assertEqual(updated[0]["task_id"], 101)
@@ -437,7 +490,7 @@ class HostTaskQueueTests(unittest.TestCase):
         self.assertEqual(result, {"ID_HOST": 55})
 
     def test_queue_host_task_preserves_running_operational_task(self) -> None:
-        """A running operational row must not have its live filter overwritten."""
+        """A running singleton row must not have its live filter overwritten."""
 
         handler = self.make_handler()
         created = []
@@ -446,7 +499,7 @@ class HostTaskQueueTests(unittest.TestCase):
         handler.check_host_task = lambda **kwargs: [
             {
                 "HOST_TASK__ID_HOST_TASK": 102,
-                "HOST_TASK__NU_TYPE": db_bkp_module.k.HOST_TASK_PROCESSING_TYPE,
+                "HOST_TASK__NU_TYPE": db_bkp_module.k.HOST_TASK_CHECK_TYPE,
                 "HOST_TASK__NU_STATUS": db_bkp_module.k.TASK_RUNNING,
                 "HOST_TASK__FILTER": '{"file_path":"/mnt/internal/data"}',
             }
@@ -464,7 +517,7 @@ class HostTaskQueueTests(unittest.TestCase):
         self.assertEqual(created, [])
         self.assertEqual(updated, [])
         self.assertTrue(
-            any("Operational HOST_TASK already RUNNING" in msg for msg in handler.log.warnings)
+            any("HOST_TASK already RUNNING" in msg for msg in handler.log.warnings)
         )
 
     def test_queue_host_task_matches_non_operational_filter_semantically(self) -> None:
@@ -497,7 +550,7 @@ class HostTaskQueueTests(unittest.TestCase):
         self.assertEqual(updated[0]["task_id"], 104)
 
     def test_queue_host_task_refreshes_terminal_match_in_place(self) -> None:
-        """A terminal operational row should be refreshed instead of duplicated."""
+        """A terminal singleton row should be refreshed instead of duplicated."""
 
         handler = self.make_handler()
         created = []
@@ -506,7 +559,7 @@ class HostTaskQueueTests(unittest.TestCase):
         handler.check_host_task = lambda **kwargs: [
             {
                 "HOST_TASK__ID_HOST_TASK": 103,
-                "HOST_TASK__NU_TYPE": db_bkp_module.k.HOST_TASK_PROCESSING_TYPE,
+                "HOST_TASK__NU_TYPE": db_bkp_module.k.HOST_TASK_CHECK_TYPE,
                 "HOST_TASK__NU_STATUS": db_bkp_module.k.TASK_ERROR,
                 "HOST_TASK__FILTER": {"file_path": "/mnt/internal/data"},
             }
@@ -529,7 +582,7 @@ class HostTaskQueueTests(unittest.TestCase):
         self.assertEqual(updated[0]["NU_STATUS"], db_bkp_module.k.TASK_PENDING)
 
     def test_queue_host_task_warns_when_multiple_operational_matches_exist(self) -> None:
-        """Multiple matches should emit a warning and still refresh only one row."""
+        """Multiple rows of the same type should emit a warning and refresh one."""
 
         handler = self.make_handler()
         created = []
@@ -544,7 +597,7 @@ class HostTaskQueueTests(unittest.TestCase):
             },
             {
                 "HOST_TASK__ID_HOST_TASK": 200,
-                "HOST_TASK__NU_TYPE": db_bkp_module.k.HOST_TASK_CHECK_TYPE,
+                "HOST_TASK__NU_TYPE": db_bkp_module.k.HOST_TASK_PROCESSING_TYPE,
                 "HOST_TASK__NU_STATUS": db_bkp_module.k.TASK_ERROR,
                 "HOST_TASK__FILTER": '{"file_path":"/mnt/internal/data"}',
             },
@@ -563,7 +616,7 @@ class HostTaskQueueTests(unittest.TestCase):
         self.assertEqual(len(updated), 1)
         self.assertEqual(updated[0]["task_id"], 201)
         self.assertTrue(
-            any("Multiple operational HOST_TASK rows matched" in msg for msg in handler.log.warnings)
+            any("Multiple HOST_TASK rows matched" in msg for msg in handler.log.warnings)
         )
 
     def test_host_task_update_serializes_filter_canonically(self) -> None:
@@ -600,6 +653,8 @@ class HostTaskConnectivityLifecycleTests(unittest.TestCase):
     """Validate suspend/resume rules for host-dependent HOST_TASK rows."""
 
     def make_handler(self):
+        """Build a minimal handler for suspend/resume lifecycle checks."""
+
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
         return handler

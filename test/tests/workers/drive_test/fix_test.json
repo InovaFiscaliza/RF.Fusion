@@ -1,0 +1,1056 @@
+
+{
+    "General": {
+        "FilePath": "/mnt/reposfi",
+        "FileName": "p-4d2c95e5--rfeye002106_251210_T144800.mat",
+        "Extension": ".mat"
+    },
+    "Spectra": [
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 3.29E+9,
+                "FreqStop": 3.799999999999E+9,
+                "DataPoints": 13056,
+                "Resolution": 73828,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEF/PMEC  (Faixa 5 de 5).",
+                    "BeginTime": "10-Dec-2025 14:49:00",
+                    "EndTime": "11-Dec-2025 18:59:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 60.000000153846152,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 240,
+                    "NumSweeps": 1691
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 7.0E+7,
+                "FreqStop": 8.0E+7,
+                "DataPoints": 1024,
+                "Resolution": 18457,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEC  (Faixa 1 de 10).",
+                    "BeginTime": "10-Dec-2025 14:49:00",
+                    "EndTime": "11-Dec-2025 18:59:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 59.999999715384611,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 300,
+                    "NumSweeps": 1691
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 1.05E+8,
+                "FreqStop": 1.4E+8,
+                "DataPoints": 3584,
+                "Resolution": 18457,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEC  (Faixa 2 de 10).",
+                    "BeginTime": "10-Dec-2025 14:49:00",
+                    "EndTime": "11-Dec-2025 18:59:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 60.000000099408282,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 310,
+                    "NumSweeps": 1691
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 1.55E+8,
+                "FreqStop": 1.65E+8,
+                "DataPoints": 1024,
+                "Resolution": 18457,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEC  (Faixa 3 de 10).",
+                    "BeginTime": "10-Dec-2025 14:49:00",
+                    "EndTime": "11-Dec-2025 18:59:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 60.000000146153837,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 320,
+                    "NumSweeps": 1691
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 3.25E+8,
+                "FreqStop": 3.4E+8,
+                "DataPoints": 1536,
+                "Resolution": 18457,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEC  (Faixa 4 de 10).",
+                    "BeginTime": "10-Dec-2025 14:49:00",
+                    "EndTime": "11-Dec-2025 18:59:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 60.000000100591713,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 330,
+                    "NumSweeps": 1691
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 4.05E+8,
+                "FreqStop": 4.1E+8,
+                "DataPoints": 512,
+                "Resolution": 18457,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEC  (Faixa 5 de 10).",
+                    "BeginTime": "10-Dec-2025 14:49:00",
+                    "EndTime": "11-Dec-2025 18:59:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 60.000000135502958,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 340,
+                    "NumSweeps": 1691
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 9.6E+8,
+                "FreqStop": 1.429999999999E+9,
+                "DataPoints": 12032,
+                "Resolution": 73828,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEC  (Faixa 6 de 10).",
+                    "BeginTime": "10-Dec-2025 14:49:00",
+                    "EndTime": "11-Dec-2025 18:59:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 60.000000199408277,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 350,
+                    "NumSweeps": 1691
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 1.53E+9,
+                "FreqStop": 1.649999999999E+9,
+                "DataPoints": 3072,
+                "Resolution": 73828,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEC  (Faixa 7 de 10).",
+                    "BeginTime": "10-Dec-2025 14:49:00",
+                    "EndTime": "11-Dec-2025 18:59:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 60.000000113017748,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 360,
+                    "NumSweeps": 1691
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 2.69E+9,
+                "FreqStop": 2.899999999999E+9,
+                "DataPoints": 5376,
+                "Resolution": 73828,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEC  (Faixa 8 de 10).",
+                    "BeginTime": "10-Dec-2025 14:49:00",
+                    "EndTime": "11-Dec-2025 18:59:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 60.000000116568046,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 370,
+                    "NumSweeps": 1691
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 5.0E+9,
+                "FreqStop": 5.15E+9,
+                "DataPoints": 3840,
+                "Resolution": 73828,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEC  (Faixa 9 de 10).",
+                    "BeginTime": "10-Dec-2025 14:49:00",
+                    "EndTime": "11-Dec-2025 18:59:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 60.000000249704151,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 380,
+                    "NumSweeps": 1691
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 5.339999999999E+9,
+                "FreqStop": 5.459999999999E+9,
+                "DataPoints": 3328,
+                "Resolution": 73828,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEC  (Faixa 10 de 10).",
+                    "BeginTime": "10-Dec-2025 14:49:00",
+                    "EndTime": "11-Dec-2025 18:59:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 60.00000015325444,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 390,
+                    "NumSweeps": 1691
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 5.0E+7,
+                "FreqStop": 9.0E+7,
+                "DataPoints": 1024,
+                "Resolution": 73828,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBµV/m",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMRD (Faixa 1 de 4).",
+                    "BeginTime": "10-Dec-2025 14:50:00",
+                    "EndTime": "11-Dec-2025 18:55:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 300.0000005875371,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 100,
+                    "NumSweeps": 338
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 7.0E+7,
+                "FreqStop": 1.1E+8,
+                "DataPoints": 2048,
+                "Resolution": 36914,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBµV/m",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMRD  (Faixa 2 de 4).",
+                    "BeginTime": "10-Dec-2025 14:50:00",
+                    "EndTime": "11-Dec-2025 18:55:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 300.00000081602377,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 110,
+                    "NumSweeps": 338
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 1.7E+8,
+                "FreqStop": 2.2E+8,
+                "DataPoints": 1280,
+                "Resolution": 73828,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBµV/m",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMRD  (Faixa 3 de 4).",
+                    "BeginTime": "10-Dec-2025 14:50:00",
+                    "EndTime": "11-Dec-2025 18:55:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 300.00000086350144,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 120,
+                    "NumSweeps": 338
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 4.7E+8,
+                "FreqStop": 7.0E+8,
+                "DataPoints": 5888,
+                "Resolution": 73828,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBµV/m",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMRD  (Faixa 4 de 4).",
+                    "BeginTime": "10-Dec-2025 14:50:00",
+                    "EndTime": "11-Dec-2025 18:55:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 300.00000068842729,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 130,
+                    "NumSweeps": 338
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 7.0E+8,
+                "FreqStop": 9.6E+8,
+                "DataPoints": 6656,
+                "Resolution": 73828,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEF/PMEC  (Faixa 1 de 5).",
+                    "BeginTime": "10-Dec-2025 14:50:00",
+                    "EndTime": "11-Dec-2025 18:55:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 299.99999980712164,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 200,
+                    "NumSweeps": 338
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 1.71E+9,
+                "FreqStop": 2.169999999999E+9,
+                "DataPoints": 11776,
+                "Resolution": 73828,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEF/PMEC  (Faixa 2 de 5).",
+                    "BeginTime": "10-Dec-2025 14:50:00",
+                    "EndTime": "11-Dec-2025 18:55:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 300.00000066172112,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 210,
+                    "NumSweeps": 338
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 2.29E+9,
+                "FreqStop": 2.399999999999E+9,
+                "DataPoints": 2816,
+                "Resolution": 73828,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEF/PMEC  (Faixa 3 de 5).",
+                    "BeginTime": "10-Dec-2025 14:50:00",
+                    "EndTime": "11-Dec-2025 18:55:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 300.00000059050444,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 220,
+                    "NumSweeps": 338
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        },
+        {
+            "Receiver": "RFeye002106",
+            "MetaData": {
+                "DataType": 67,
+                "FreqStart": 2.5E+9,
+                "FreqStop": 2.69E+9,
+                "DataPoints": 4864,
+                "Resolution": 73828,
+                "VBW": -1,
+                "Threshold": -1,
+                "TraceMode": "Peak",
+                "TraceIntegration": -1,
+                "Detector": "",
+                "LevelUnit": "dBm",
+                "Antenna": {
+                    "SwitchMode": "auto"
+                },
+                "Others": ""
+            },
+            "Data": [],
+            "GPS": {
+                "Status": 1,
+                "Count": 1691,
+                "Latitude": -10.286181,
+                "Longitude": -36.543807,
+                "Latitude_std": 1.7E-5,
+                "Longitude_std": 1.6E-5,
+                "stdRange": [
+                    47.131874630396219,
+                    92.667060910703725,
+                    99.763453577764636
+                ],
+                "Location": "Penedo/AL",
+                "LocationSource": "API",
+                "Edited": false
+            },
+            "RelatedFiles": [
+                {
+                    "File": "p-4d2c95e5--rfeye002106_251210_T144800.bin",
+                    "Task": "Script2025v1LoggerFixed.cfg",
+                    "ID": 0,
+                    "Description": "PMEF/PMEC  (Faixa 4 de 5).",
+                    "BeginTime": "10-Dec-2025 14:50:00",
+                    "EndTime": "11-Dec-2025 18:55:00",
+                    "nSweeps": 0,
+                    "RevisitTime": 300.00000086646884,
+                    "GPS": [],
+                    "uuid": [],
+                    "Id": 230,
+                    "NumSweeps": 338
+                }
+            ],
+            "FileMap": [],
+            "Enable": "on"
+        }
+    ]
+}
+

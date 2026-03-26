@@ -20,16 +20,25 @@ import paramiko
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from _support import SHARED_ROOT, ensure_app_paths, import_package_module
+from _support import (
+    HOST_HANDLER_ROOT,
+    SHARED_ROOT,
+    bind_real_shared_package,
+    ensure_app_paths,
+    import_package_module,
+)
 
 
 ensure_app_paths()
 
-errors = import_package_module("app_shared", SHARED_ROOT, "errors")
-ssh_utils = import_package_module("app_shared", SHARED_ROOT, "ssh_utils")
+with bind_real_shared_package():
+    errors = import_package_module("app_shared", SHARED_ROOT, "errors")
+    ssh_utils = import_package_module("app_host_handler", HOST_HANDLER_ROOT, "ssh_utils")
 
 
 class FakeTransport:
+    """Tiny transport double exposing the tuning knobs touched by ssh_utils."""
+
     def __init__(self) -> None:
         self.keepalive = None
         self.packetizer = type("Packetizer", (), {})()
@@ -42,6 +51,8 @@ class FakeTransport:
 
 
 class FakeSSHClient:
+    """Small Paramiko stand-in that records the chosen connect address."""
+
     def __init__(self) -> None:
         self.connect_calls = []
         self.transport = FakeTransport()
@@ -64,6 +75,8 @@ class FakeSSHClient:
 
 
 class SftpInitErrorClassificationTests(unittest.TestCase):
+    """Validate classification of retryable versus fatal SSH/SFTP bootstrap errors."""
+
     def test_classifies_no_valid_connections_timeout(self) -> None:
         exc = paramiko.ssh_exception.NoValidConnectionsError(
             {("127.0.0.1", 22): TimeoutError("timed out")}
@@ -163,6 +176,8 @@ class SftpInitErrorClassificationTests(unittest.TestCase):
 
 
 class SshConnectionResolutionTests(unittest.TestCase):
+    """Validate address resolution rules used before opening the SFTP session."""
+
     def test_sftp_connection_prefers_primary_172_address(self) -> None:
         fake_client = FakeSSHClient()
 

@@ -3,6 +3,15 @@ Shared error and timeout helpers for appCataloga.
 
 This module centralizes domain-level exceptions, structured error capture, and
 small timeout utilities reused across workers and adapters.
+
+It plays three distinct roles in the codebase:
+    1. translate noisy runtime failures into stable canonical error codes
+    2. classify SSH/SFTP bootstrap failures into retry vs reconcile vs fatal
+    3. provide `ErrorHandler`, the lightweight state carrier used by workers
+       to capture one workflow failure and persist/log it later
+
+The module is intentionally policy-heavy. Workers call into it when they need
+shared operational semantics, not just pretty error strings.
 """
 
 from __future__ import annotations
@@ -12,7 +21,7 @@ import sys
 import os
 import paramiko
 from . import constants
-from typing import Any, Dict, List, Tuple, Optional, Union
+from typing import Any, Dict, Optional
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 
@@ -44,18 +53,41 @@ def _canonicalize_error_reason(
     `canonical_reason` is the stable, aggregation-friendly part of the message.
     `detail` preserves volatile specifics (paths, raw source strings, etc.)
     without forcing dashboards to treat every occurrence as a distinct error.
+
+    The goal is not to preserve the exact original message byte-for-byte. The
+    goal is to keep storage and dashboards stable enough that repeated failures
+    group together while still retaining the actionable detail operators need.
     """
     raw_reason = (reason or "").strip()
     exc_text = str(exc).strip() if exc is not None else ""
 
+    # -------------------------------------------------------------
+    # Generic fallbacks used when the caller supplied little or no
+    # structured reason and we have to infer something from `exc`.
+    # -------------------------------------------------------------
     if not raw_reason:
         if isinstance(exc, FileNotFoundError) and exc_text:
             return "FILE_NOT_FOUND", "File not found", exc_text
         return None, None, None
 
+    # -------------------------------------------------------------
+    # Domain validation errors from BIN / metadata processing.
+    # -------------------------------------------------------------
     if "GNSS unavailable sentinel" in raw_reason:
         canonical = "Invalid GPS reading: GNSS unavailable sentinel"
-        detail = raw_reason if raw_reason != canonical else None
+        detail = None
+
+        if raw_reason != canonical:
+            # Keep the dashboard/grouping key stable while still preserving the
+            # extra context appended by callers such as "all spectra in payload
+            # failed GPS validation". When the caller already prefixes the
+            # canonical reason, strip that fixed part and retain only the
+            # specific suffix as detail.
+            if raw_reason.startswith(canonical):
+                detail = raw_reason[len(canonical):].lstrip(" |:-") or None
+            else:
+                detail = raw_reason
+
         return "GPS_GNSS_UNAVAILABLE", canonical, detail
 
     if raw_reason == "BIN discarded: no valid spectra after validation":
@@ -83,6 +115,10 @@ def _canonicalize_error_reason(
     if raw_reason == "buffer size must be a multiple of element size":
         return "INVALID_BUFFER_SIZE", "Invalid binary buffer size", raw_reason
 
+    # -------------------------------------------------------------
+    # DIM / enrichment failures where the human-readable message is
+    # too specific to use directly as the dashboard grouping key.
+    # -------------------------------------------------------------
     if (
         raw_reason.startswith("Error inserting site in DIM_SPECTRUM_SITE:")
         and "Error retrieving geographic codes:" in raw_reason
@@ -131,6 +167,10 @@ def _canonicalize_error_reason(
         )
         return "SFTP_INIT_FAILED", "SSH/SFTP initialization failed", detail
 
+    # -------------------------------------------------------------
+    # Transfer is the noisiest worker stage: the same outer reason
+    # may wrap source drift, SSH transport issues, or local I/O.
+    # -------------------------------------------------------------
     if stage == "TRANSFER":
         if isinstance(exc, FileNotFoundError):
             return "FILE_NOT_FOUND", "File not found", exc_text or raw_reason
@@ -175,6 +215,9 @@ def _canonicalize_error_reason(
     if raw_reason == "Post-transfer update failed":
         return "FINALIZE_UPDATE_FAILED", raw_reason, exc_text or None
 
+    # -------------------------------------------------------------
+    # Stable stage-level reasons used by workers and service entrypoints.
+    # -------------------------------------------------------------
     if stage == "DISCOVERY" or raw_reason == "Discovery failed":
         detail = exc_text or (
             raw_reason if raw_reason != "Discovery failed" else None
@@ -231,7 +274,9 @@ def _canonicalize_error_reason(
 class BinValidationError(ValueError):
     """
     Raised when BIN semantic validation fails.
-    Domain-level error (fatal validation).
+
+    This is a domain-level fatal validation error. Retrying the same payload
+    without changing its contents will not make it valid.
     """
     pass
 
@@ -254,6 +299,8 @@ TRANSIENT_SFTP_ERRNOS = {
     errno.ETIMEDOUT,
 }
 
+# Paramiko sometimes surfaces timeout semantics through message text instead of
+# a dedicated exception subclass, especially around banner/auth phases.
 TRANSIENT_SSH_MESSAGE_SNIPPETS = (
     "error reading ssh protocol banner",
     "connection reset by peer",
@@ -297,6 +344,10 @@ def classify_no_valid_connections_error(exc: Exception) -> dict:
     Paramiko uses this exception as a container for one or more low-level
     socket/connect failures. The interesting detail lives in `exc.errors`,
     not in the wrapper message itself.
+
+    The returned summary is intentionally coarse. Callers rarely need every
+    nested endpoint failure; they usually need to know whether the overall
+    picture looks like timeout, refusal, unreachable network, or a mixture.
     """
     if not isinstance(exc, paramiko.ssh_exception.NoValidConnectionsError):
         raise TypeError("exc must be NoValidConnectionsError")
@@ -308,6 +359,8 @@ def classify_no_valid_connections_error(exc: Exception) -> dict:
         kind = "unknown"
         errno_value = getattr(inner_exc, "errno", None)
 
+        # Normalize many socket/OS exception shapes into a small vocabulary
+        # that worker policy can make decisions on.
         if isinstance(inner_exc, (socket.timeout, TimeoutError)):
             kind = "timeout"
         elif isinstance(inner_exc, ConnectionRefusedError):
@@ -361,6 +414,9 @@ def is_transient_sftp_init_error(exc: Exception) -> bool:
     Authentication and clearly semantic protocol failures remain fatal. Transport
     setup failures caused by connection contention, resets, or banner timeouts
     are considered transient and may be requeued.
+
+    "Transient" here means "too weak to prove the host is truly bad". It does
+    not necessarily mean "caused by local contention".
     """
     if isinstance(exc, paramiko.AuthenticationException):
         return is_auth_timeout_error(exc)
@@ -416,9 +472,7 @@ def is_timeout_like_sftp_init_error(exc: Exception) -> bool:
         return classify_no_valid_connections_error(exc)["has_timeout"]
 
     return False
-
-
-def should_queue_connection_check_for_sftp_init_error(exc: Exception) -> bool:
+def should_queue_host_check(exc: Exception) -> bool:
     """
     Return whether a transient SFTP init failure is suspicious enough to ask
     host_check for an explicit connectivity confirmation.
@@ -426,6 +480,10 @@ def should_queue_connection_check_for_sftp_init_error(exc: Exception) -> bool:
     This is intentionally narrower than `is_transient_sftp_init_error()`. Some
     transient init failures are just SSH/SFTP contention or overload and should
     only requeue the current task, not suggest that the host is offline.
+
+    In other words:
+        - retryable != always worth a host reconciliation task
+        - this helper answers the second question
     """
     if isinstance(exc, paramiko.AuthenticationException):
         return is_auth_timeout_error(exc)
@@ -468,6 +526,11 @@ class ErrorHandler:
 
         if err.triggered:
             err.log_error(host_id=..., task_id=...)
+
+    The handler is intentionally simple:
+        - capture the first meaningful failure
+        - keep structured context next to it
+        - let the caller decide later whether to log, persist, or both
     """
 
     def __init__(self, log):
@@ -484,7 +547,13 @@ class ErrorHandler:
         exc: Exception = None,
         **context: Any,
     ):
-        """Register an error once and optionally store structured context."""
+        """
+        Register the first meaningful error and ignore later noise.
+
+        Workers often cross several cleanup branches after the original
+        failure. Preserving only the first failure keeps persistence stable and
+        prevents secondary cleanup noise from overwriting the root cause.
+        """
         if not self.reason:
             self.reason = reason
             self.stage = stage
@@ -502,7 +571,12 @@ class ErrorHandler:
         exc: Exception = None,
         **context: Any,
     ):
-        """Alias for `set()` used at exception boundaries."""
+        """
+        Alias for `set()` used at exception boundaries.
+
+        The shorter name reads better inside `except` blocks and staged worker
+        pipelines, where most callers use this helper.
+        """
         self.set(reason=reason, stage=stage, exc=exc, **context)
 
     @property
@@ -511,12 +585,19 @@ class ErrorHandler:
 
     @property
     def msg(self) -> str:
+        """Return a compact stage-prefixed message for quick human reads."""
         if self.stage:
             return f"{self.stage}: {self.reason}"
         return self.reason or ""
 
     def log_error(self, **runtime_context: Any):
-        """Emit a structured error log enriched with stored context."""
+        """
+        Emit one structured error log enriched with stored and runtime context.
+
+        `self.context` holds the facts captured at the failure point. The
+        optional `runtime_context` lets callers attach outer-loop information
+        only available at log time, such as traceback or aggregate counters.
+        """
         merged_context = dict(self.context)
         for key, value in runtime_context.items():
             if value is not None:
@@ -532,6 +613,9 @@ class ErrorHandler:
         if self.exc is not None:
             payload["exception"] = repr(self.exc)
 
+        # Prefer the richer structured logger when available, but keep a
+        # readable fallback for plain logger implementations used in tests or
+        # stripped-down environments.
         if hasattr(self.logger, "error_event"):
             self.logger.error_event("error_handler_triggered", **payload)
             return
@@ -553,8 +637,13 @@ class ErrorHandler:
         
     def format_error(self) -> str:
         """
-        Return a compact, structured error string
-        suitable for persistence (DB, history, audit).
+        Return a compact structured error string for persistence.
+
+        The output is tuned for DB/history fields:
+            - stable enough for grouping
+            - detailed enough for audits
+            - compact enough to avoid turning every raw exception into a
+              unique ungroupable blob
         """
         if not self.triggered:
             return ""
@@ -592,12 +681,23 @@ class ErrorHandler:
 
 
 class TimeoutError(Exception):
-    """Raised when a function exceeds the allowed timeout."""
+    """
+    Raised when a function exceeds the allowed timeout.
+
+    This is the module-local timeout abstraction returned by `run_with_timeout`
+    so callers do not need to know about `concurrent.futures`.
+    """
     pass
 
 def run_with_timeout(func, timeout: float):
     """
     Execute `func()` with a timeout using the shared executor from `constants`.
+
+    This helper keeps the rest of the codebase independent from executor
+    details. Callers supply a zero-argument function and get either:
+        - the result
+        - `TimeoutError`
+        - the original exception raised by `func`
 
     Raises:
         TimeoutError

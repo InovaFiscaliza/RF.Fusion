@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 import os
+import shlex
 import stat
 import time
 import paramiko
@@ -17,9 +18,10 @@ from datetime import datetime
 from typing import List, Optional, Union
 from enum import Enum
 
-from .logging_utils import log
-from .file_metadata import FileMetadata
-from . import host_connectivity, tools
+from shared import tools
+from shared.file_metadata import FileMetadata
+from shared.logging_utils import log
+from . import host_connectivity
 
 
 # ---------------------------------------------------------------------
@@ -337,6 +339,111 @@ class sftpConnection:
                 f"'{self.host_uid}'({self.host_addr}). {e}"
             )
             raise
+
+    def read_file_metadata(self, filename: str) -> FileMetadata:
+        """
+        Read one authoritative metadata snapshot for a single remote file.
+
+        Discovery and backup should agree on the meaning of extension, size,
+        created time, and modified time. This helper therefore reuses the same
+        OS-specific extraction rules as bulk discovery instead of guessing from
+        a partial SFTP stat result.
+        """
+        normalized_path = filename.rstrip("/").rstrip("\\")
+        os_type = self.detect_remote_os()
+
+        # Linux metadata is collected through `find -printf` so backup and
+        # discovery keep the same timestamp semantics (`%C@`, `%T@`, `%A@`).
+        if os_type == "linux":
+            quoted_path = shlex.quote(normalized_path)
+            cmd = (
+                f"find {quoted_path} -maxdepth 0 -type f "
+                "-printf '%p|%s|%C@|%T@|%A@|%U|%G|%m\n'"
+            )
+
+            _, stdout, stderr = self.ssh_client.exec_command(
+                cmd,
+                timeout=k.HOST_BUSY_TIMEOUT,
+            )
+            raw = stdout.readline().strip()
+            err = stderr.read().decode("utf-8", errors="ignore").strip()
+
+            if err:
+                self.log.warning(f"[META][LINUX][ONE] STDERR: {err}")
+
+            if not raw:
+                raise FileNotFoundError(f"Remote file not found: {normalized_path}")
+
+            fullpath, size, c_at, m_at, a_at, uid, gid, mode = raw.split("|")
+            filename_only = os.path.basename(fullpath)
+            dirname = os.path.dirname(fullpath)
+            _, ext = os.path.splitext(filename_only)
+
+            return FileMetadata(
+                NA_FULL_PATH=fullpath,
+                NA_PATH=dirname,
+                NA_FILE=filename_only,
+                NA_EXTENSION=ext,
+                VL_FILE_SIZE_KB=int(size) // 1024,
+                DT_FILE_CREATED=datetime.fromtimestamp(float(c_at)),
+                DT_FILE_MODIFIED=datetime.fromtimestamp(float(m_at)),
+                DT_FILE_ACCESSED=datetime.fromtimestamp(float(a_at)),
+                NA_OWNER=str(uid),
+                NA_GROUP=str(gid),
+                NA_PERMISSIONS=stat.filemode(int(mode, 8)),
+            )
+
+        # Windows uses PowerShell because SFTP alone does not expose creation
+        # time in a portable way. We normalize the output to the same
+        # `FileMetadata` contract used everywhere else.
+        if os_type == "windows":
+            ps_path = normalized_path.replace("'", "''")
+            ps_cmd = (
+                f"$item = Get-Item -LiteralPath '{ps_path}' -ErrorAction Stop; "
+                "[string]::Join('|',"
+                "$item.FullName,"
+                "$item.Length,"
+                "$item.CreationTimeUtc.ToString('o'),"
+                "$item.LastWriteTimeUtc.ToString('o'),"
+                "'NTFS'"
+                ")"
+            )
+            cmd = f'powershell -NoProfile -Command "{ps_cmd}"'
+
+            _, stdout, stderr = self.ssh_client.exec_command(
+                cmd,
+                timeout=k.HOST_BUSY_TIMEOUT,
+            )
+            raw = stdout.readline().strip()
+            err = stderr.read().decode("utf-8", errors="ignore").strip()
+
+            if err:
+                self.log.warning(f"[META][WINDOWS][ONE] STDERR: {err}")
+
+            if not raw:
+                raise FileNotFoundError(f"Remote file not found: {normalized_path}")
+
+            fullpath, size, c_at, m_at, perms = raw.split("|")
+            fullpath = fullpath.replace("\\", "/")
+            filename_only = os.path.basename(fullpath)
+            dirname = os.path.dirname(fullpath)
+            _, ext = os.path.splitext(filename_only)
+
+            return FileMetadata(
+                NA_FULL_PATH=fullpath,
+                NA_PATH=dirname,
+                NA_FILE=filename_only,
+                NA_EXTENSION=ext,
+                VL_FILE_SIZE_KB=int(size) // 1024,
+                DT_FILE_CREATED=tools.parse_ps_iso(c_at),
+                DT_FILE_MODIFIED=tools.parse_ps_iso(m_at),
+                DT_FILE_ACCESSED=None,
+                NA_OWNER="",
+                NA_GROUP="0",
+                NA_PERMISSIONS=perms,
+            )
+
+        raise RuntimeError(f"Unsupported OS '{os_type}' for metadata probe")
 
     # =================================================================
     # OS Detection

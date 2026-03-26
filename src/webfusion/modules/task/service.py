@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .builder import NONE_FILTER, build_filter
+from .builder import build_filter
 
 
 HOST_TASK_CHECK_TYPE = 1
@@ -19,13 +19,6 @@ TASK_PENDING = 1
 TASK_RUNNING = 2
 TASK_SUSPENDED = 3
 
-ACTIVE_TASK_STATUSES = (TASK_PENDING, TASK_RUNNING)
-OPERATIONAL_TASK_TYPES = (
-    HOST_TASK_CHECK_TYPE,
-    HOST_TASK_PROCESSING_TYPE,
-)
-
-
 def _serialize_filter(filter_value: Any) -> str:
     """Return a deterministic JSON representation for HOST_TASK.FILTER."""
     if isinstance(filter_value, str):
@@ -38,37 +31,24 @@ def _serialize_filter(filter_value: Any) -> str:
 
 
 def _select_candidate_host_tasks(db, host_id, task_type):
-    """Load reusable HOST_TASK candidates for the requested task family."""
+    """Load reusable HOST_TASK candidates for the requested exact type."""
     cursor = db.cursor()
-
-    if task_type in OPERATIONAL_TASK_TYPES:
-        cursor.execute(
-            """
-            SELECT ID_HOST_TASK, NU_TYPE, NU_STATUS, FILTER
-            FROM HOST_TASK
-            WHERE FK_HOST = %s
-              AND NU_TYPE IN (%s, %s)
-            ORDER BY DT_HOST_TASK DESC, ID_HOST_TASK DESC
-            """,
-            (host_id, *OPERATIONAL_TASK_TYPES),
-        )
-    else:
-        cursor.execute(
-            """
-            SELECT ID_HOST_TASK, NU_TYPE, NU_STATUS, FILTER
-            FROM HOST_TASK
-            WHERE FK_HOST = %s
-              AND NU_TYPE = %s
-            ORDER BY DT_HOST_TASK DESC, ID_HOST_TASK DESC
-            """,
-            (host_id, task_type),
-        )
+    cursor.execute(
+        """
+        SELECT ID_HOST_TASK, NU_TYPE, NU_STATUS, FILTER
+        FROM HOST_TASK
+        WHERE FK_HOST = %s
+          AND NU_TYPE = %s
+        ORDER BY DT_HOST_TASK DESC, ID_HOST_TASK DESC
+        """,
+        (host_id, task_type),
+    )
 
     return cursor.fetchall() or []
 
 
-def _find_reusable_operational_host_task(tasks):
-    """Mirror appCataloga's host-level CHECK/PROCESSING reuse rule."""
+def _find_reusable_singleton_host_task(tasks):
+    """Mirror appCataloga's singleton-per-host-type reuse rule."""
     pending = next(
         (task for task in tasks if task.get("NU_STATUS") == TASK_PENDING),
         None,
@@ -83,30 +63,6 @@ def _find_reusable_operational_host_task(tasks):
     if running:
         return running
 
-    return tasks[0] if tasks else None
-
-
-def _find_matching_host_task(tasks, filter_dict):
-    """Return the best semantic filter match among same-type HOST_TASK rows."""
-    target_filter = _serialize_filter(filter_dict)
-    matches = [
-        task
-        for task in tasks
-        if _serialize_filter(task.get("FILTER")) == target_filter
-    ]
-
-    if not matches:
-        return None
-
-    active = next(
-        (task for task in matches if task.get("NU_STATUS") in ACTIVE_TASK_STATUSES),
-        None,
-    )
-    return active or matches[0]
-
-
-def _find_latest_host_task(tasks):
-    """Return the newest row for singleton task types."""
     return tasks[0] if tasks else None
 
 
@@ -158,32 +114,21 @@ def queue_host_task_safe(db, host_id, task_type, filter_dict, message):
     """
     Create or refresh a HOST_TASK without creating duplicate logical work.
 
-    WebFusion follows the same queue contract already adopted by appCataloga:
-        - CHECK/PROCESSING share one reusable operational row per host
-        - statistics remains a singleton per host
-        - check-connection reuses the same semantic task when possible
+    WebFusion now mirrors appCataloga's durable HOST_TASK contract:
+        - one reusable row per `FK_HOST + NU_TYPE`
+        - PENDING rows are refreshed in place
+        - RUNNING rows are preserved
+        - terminal rows are reactivated instead of creating infinite inserts
     """
 
     tasks = _select_candidate_host_tasks(db, host_id, task_type)
-
-    if task_type in OPERATIONAL_TASK_TYPES:
-        existing = _find_reusable_operational_host_task(tasks)
-    elif task_type == HOST_TASK_UPDATE_STATISTICS_TYPE:
-        existing = _find_latest_host_task(tasks)
-    else:
-        existing = _find_matching_host_task(tasks, filter_dict)
+    existing = _find_reusable_singleton_host_task(tasks)
 
     if existing:
         status = existing["NU_STATUS"]
         task_id = existing["ID_HOST_TASK"]
 
-        if task_type in OPERATIONAL_TASK_TYPES and status == TASK_RUNNING:
-            return "skipped_active"
-
-        if task_type == HOST_TASK_UPDATE_STATISTICS_TYPE and status in ACTIVE_TASK_STATUSES:
-            return "skipped_active"
-
-        if task_type == HOST_TASK_CHECK_CONNECTION_TYPE and status in ACTIVE_TASK_STATUSES:
+        if status == TASK_RUNNING:
             return "skipped_active"
 
         _refresh_host_task(
@@ -206,39 +151,26 @@ def queue_host_task_safe(db, host_id, task_type, filter_dict, message):
 
 
 def create_task(db, hosts, task_type, mode, filter_data):
-    """Create or refresh one or more host tasks from the builder form."""
+    """Create or refresh one or more conventional CHECK HOST_TASK rows."""
 
-    if task_type not in (
-        HOST_TASK_CHECK_TYPE,
-        HOST_TASK_UPDATE_STATISTICS_TYPE,
-        HOST_TASK_CHECK_CONNECTION_TYPE,
-    ):
-        raise ValueError("Tipo de task inválido")
+    if task_type != HOST_TASK_CHECK_TYPE:
+        raise ValueError("WebFusion only exposes the conventional CHECK task.")
 
     collective = len(hosts) > 1
     queued_count = 0
     skipped_count = 0
 
     for host_id in hosts:
-
-        if task_type == HOST_TASK_UPDATE_STATISTICS_TYPE:
-            filter_dict = NONE_FILTER.copy()
-            action_name = "Update Statistics"
-        elif task_type == HOST_TASK_CHECK_CONNECTION_TYPE:
-            filter_dict = NONE_FILTER.copy()
-            action_name = "Check Connection"
-
-        else:
-            filter_dict = build_filter(
-                mode=mode,
-                start_date=filter_data.get("start_date"),
-                end_date=filter_data.get("end_date"),
-                last_n_files=filter_data.get("last_n_files"),
-                extension=filter_data.get("extension"),
-                file_path=filter_data.get("file_path"),
-                file_name=filter_data.get("file_name"),
-            )
-            action_name = f"Backup ({mode})"
+        filter_dict = build_filter(
+            mode=mode,
+            start_date=filter_data.get("start_date"),
+            end_date=filter_data.get("end_date"),
+            last_n_files=filter_data.get("last_n_files"),
+            extension=filter_data.get("extension"),
+            file_path=filter_data.get("file_path"),
+            file_name=filter_data.get("file_name"),
+        )
+        action_name = f"Host Check | Backup ({mode})"
 
         scope = "Collective" if collective else "Individual"
 

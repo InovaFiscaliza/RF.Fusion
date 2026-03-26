@@ -2,12 +2,14 @@
 Shared structured logger for appCataloga services and utility scripts.
 
 The logger is intentionally lightweight: it formats deterministic log lines,
-resolves per-script log files, and offers a small structured-event API without
+resolves one log file per entrypoint (for example `appCataloga_discovery.log`),
+rotates oversized files, and offers a small structured-event API without
 depending on Python's heavier logging configuration machinery.
 """
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import sys
@@ -22,7 +24,16 @@ import config as k  # config MUST be loaded by the application entrypoint
 # Log
 # =====================================================================
 class log:
-    """Shared logger for appCataloga entrypoints and helpers."""
+    """
+    Shared structured logger for appCataloga entrypoints and helpers.
+
+    Design goals:
+        1. produce one deterministic line format across scripts
+        2. keep the public API tiny (`entry`, `warning`, `error`, `event`, ...)
+        3. keep each entrypoint writing to its own log file by default
+        4. stay safe for long-running daemons by rotating oversized files
+        5. remain simple enough to use from utility scripts without extra setup
+    """
 
     def __init__(
         self,
@@ -57,6 +68,14 @@ class log:
         self.error_msg: List[tuple[int, str]] = []
         self.pid = os.getpid()
         self.script_name = os.path.basename(sys.argv[0]) if sys.argv else "app"
+        self.max_file_size_bytes = max(
+            0,
+            int(getattr(k, "LOG_MAX_FILE_SIZE_MB", 0) * 1024 * 1024),
+        )
+        self.max_backup_files = max(
+            0,
+            int(getattr(k, "LOG_MAX_BACKUP_FILES", 0)),
+        )
 
         if isinstance(verbose, dict):
             self.verbose = {
@@ -76,9 +95,7 @@ class log:
         self._fh = None
         if self.target_file:
             try:
-                log_dir = os.path.dirname(self.log_file_name) or "."
-                os.makedirs(log_dir, exist_ok=True)
-                self._fh = open(self.log_file_name, "a", buffering=1, encoding="utf-8")
+                self._reopen_file_handle()
                 self._write("INFO", "logger initialized")
             except Exception as e:
                 self._fh = None
@@ -109,6 +126,10 @@ class log:
     def _resolve_log_file_name(self, logger_name: str) -> str:
         """
         Resolve the log file path for the current logger.
+
+        By default each entrypoint receives its own file derived from the
+        script name, so `appCataloga_discovery.py` naturally lands in
+        `appCataloga_discovery.log`.
         """
         if hasattr(k, "LOG_DIR"):
             return os.path.join(
@@ -123,9 +144,113 @@ class log:
         return os.path.join(log_dir, f"{logger_name}.log")
 
     # ---------------------------- internal helpers ----------------------------
+    def _reopen_file_handle(self) -> None:
+        """
+        Open or reopen the active log file in append mode.
+
+        This helper is reused after external rotation as well as after this
+        logger rotates its own file. Reopening keeps each process attached to
+        the current active path instead of writing forever to a renamed inode.
+        """
+        log_dir = os.path.dirname(self.log_file_name) or "."
+        os.makedirs(log_dir, exist_ok=True)
+
+        if self._fh:
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+
+        self._fh = open(self.log_file_name, "a", buffering=1, encoding="utf-8")
+
+    def _sync_file_handle(self) -> None:
+        """
+        Reattach the file handle if another process already rotated this log.
+
+        The normal contract is "one entrypoint -> one log file". Even so, the
+        same daemon can run multiple instances or worker processes that append
+        to that one per-script file. If one instance rotates it, the others
+        must reopen the active path or they would keep writing to the renamed
+        backup file.
+        """
+        if not self.target_file:
+            return
+
+        if self._fh is None:
+            self._reopen_file_handle()
+            return
+
+        try:
+            current_path_stat = os.stat(self.log_file_name)
+            current_handle_stat = os.fstat(self._fh.fileno())
+            if current_path_stat.st_ino != current_handle_stat.st_ino:
+                self._reopen_file_handle()
+        except FileNotFoundError:
+            self._reopen_file_handle()
+        except Exception:
+            self._reopen_file_handle()
+
+    def _rotate_logs_if_needed(self, incoming_bytes: int) -> None:
+        """
+        Rotate the active log file when the next write would exceed the limit.
+
+        Rotation is best-effort but process-safe:
+            - rotation happens independently for each log file / script
+            - an exclusive lock serializes concurrent rotations
+            - backups shift to `.1`, `.2`, ... up to the configured retention
+            - the oldest generation is deleted first when retention is exceeded
+        """
+        if (
+            not self.target_file
+            or self.max_file_size_bytes <= 0
+            or self.max_backup_files <= 0
+        ):
+            return
+
+        lock_path = f"{self.log_file_name}.lock"
+        os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+
+        with open(lock_path, "a", encoding="utf-8") as lock_fh:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+
+            self._sync_file_handle()
+
+            try:
+                current_size = os.path.getsize(self.log_file_name)
+            except FileNotFoundError:
+                current_size = 0
+
+            if current_size + incoming_bytes <= self.max_file_size_bytes:
+                return
+
+            if self._fh:
+                try:
+                    self._fh.flush()
+                except Exception:
+                    pass
+
+            oldest_backup = f"{self.log_file_name}.{self.max_backup_files}"
+            if os.path.exists(oldest_backup):
+                os.remove(oldest_backup)
+
+            for index in range(self.max_backup_files - 1, 0, -1):
+                src = f"{self.log_file_name}.{index}"
+                dst = f"{self.log_file_name}.{index + 1}"
+                if os.path.exists(src):
+                    os.replace(src, dst)
+
+            if os.path.exists(self.log_file_name):
+                os.replace(self.log_file_name, f"{self.log_file_name}.1")
+
+            self._reopen_file_handle()
+
     def _write(self, level: str, msg: str) -> None:
         """
-        Write a formatted line to the configured targets.
+        Write one fully formatted line to the configured targets.
+
+        The logger writes plain UTF-8 lines so log files stay easy to inspect
+        with shell tools. File rotation happens immediately before the write so
+        recurring daemons cannot grow logs without bound.
         """
         self.last_update = datetime.now()
         self.last_msg = msg
@@ -137,6 +262,8 @@ class log:
 
         if self.target_file and self._fh:
             try:
+                self._rotate_logs_if_needed(len(line.encode("utf-8")))
+                self._sync_file_handle()
                 self._fh.write(line)
             except Exception:
                 self.target_file = False
@@ -246,10 +373,23 @@ class log:
         """Return all collected error messages as a single string."""
         return ", ".join([m for _, m in self.error_msg])
 
-    def __del__(self) -> None:
-        """Close the log file handle upon garbage collection (best-effort)."""
+    def close(self) -> None:
+        """
+        Close the current file handle explicitly.
+
+        Long-running daemons typically keep the logger alive for the whole
+        process lifetime, but tests and short utilities benefit from an
+        explicit shutdown hook.
+        """
         try:
             if self._fh:
                 self._fh.close()
+        finally:
+            self._fh = None
+
+    def __del__(self) -> None:
+        """Close the log file handle upon garbage collection (best-effort)."""
+        try:
+            self.close()
         except Exception:
             pass

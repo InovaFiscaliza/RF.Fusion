@@ -11,42 +11,13 @@ The implementation intentionally stays synchronous and explicit:
 - request validation is centralized through ErrorHandler
 """
 
-import json
 import os
-import signal
-import socket
-import subprocess
 import sys
-import time
 from datetime import datetime
 from selectors import DefaultSelector, EVENT_READ
 
-
-# =================================================
-# PROJECT ROOT (shared/, db/, stations/)
-# =================================================
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
-
-# =================================================
-# Config directory (etc/appCataloga)
-# =================================================
-_CFG_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga")
-)
-if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
-    sys.path.append(_CFG_DIR)
-
-
-# =================================================
-# DB directory
-# =================================================
-_DB_DIR = os.path.join(PROJECT_ROOT, "db")
-if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
-    sys.path.append(_DB_DIR)
+from bootstrap_paths import bootstrap_app_paths
+PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 
 # =================================================
@@ -54,7 +25,16 @@ if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
 # =================================================
 import config as k
 from db.dbHandlerBKP import dbHandlerBKP
-from shared import errors, legacy, logging_utils
+from server_handler import process_control, signal_runtime, socket_handler
+from shared import errors, logging_utils
+
+
+# ======================================================================
+# Service constants
+# ======================================================================
+SERVICE_NAME = "appCataloga"
+SCRIPT_NAME = "appCataloga.py"
+SHUTDOWN_PAYLOAD = {"status": 0, "message": "Server shutting down"}
 
 
 # ======================================================================
@@ -66,64 +46,27 @@ process_status = {"running": True}
 # network activity.
 WAKE_R_FD, WAKE_W_FD = os.pipe()
 log = logging_utils.log()
-db_bp = None
 
 
 # ======================================================================
-# Signal handling
-# ======================================================================
-def wake_selector() -> None:
+def _shutdown_cleanup(signal_name: str) -> None:
     """
-    Wake the selector loop by writing a byte to the control pipe.
+    Wake the selector loop so shutdown is noticed immediately.
     """
-    try:
-        os.write(WAKE_W_FD, b"\0")
-    except Exception:
-        pass
+    process_control.wake_selector(WAKE_W_FD)
 
 
-def _signal_handler(signal_name: str) -> None:
-    """
-    Register shutdown intent and wake the selector loop.
-    """
-    # Keep signal handling minimal: record intent, log once and let the
-    # main loop unwind in a controlled way.
-    process_status["running"] = False
-    log.signal_received(signal_name, action="shutdown")
-    wake_selector()
-
-
-def sigterm_handler(signum: int = None, frame=None) -> None:
-    """
-    Handle SIGTERM by requesting a graceful shutdown.
-    """
-    _signal_handler("SIGTERM")
-
-
-def sigint_handler(signum: int = None, frame=None) -> None:
-    """
-    Handle SIGINT by requesting a graceful shutdown.
-    """
-    _signal_handler("SIGINT")
-
-
-signal.signal(signal.SIGTERM, sigterm_handler)
-signal.signal(signal.SIGINT, sigint_handler)
-
-
-# ======================================================================
-# Response helpers
-# ======================================================================
-def frame_payload(payload: dict) -> str:
-    """
-    Wrap a JSON payload inside the protocol tags expected by clients.
-    """
-    return f"{k.START_TAG}{json.dumps(payload)}{k.END_TAG}"
+signal_runtime.install_shutdown_handlers(
+    process_status=process_status,
+    logger=log,
+    on_shutdown=_shutdown_cleanup,
+    log_fields={"action": "shutdown"},
+)
 
 
 def build_success_response(task_result: dict, host_filter) -> dict:
     """
-    Build the success response sent after queueing a HOST_TASK.
+    Build the success payload returned after queueing one HOST_TASK.
     """
     response = dict(task_result)
     response.update(
@@ -136,278 +79,129 @@ def build_success_response(task_result: dict, host_filter) -> dict:
     return response
 
 
-def close_client_socket(client_socket: socket.socket) -> None:
+def stop_service_siblings() -> None:
     """
-    Close a client socket without surfacing cleanup failures.
+    Ask sibling `appCataloga.py` processes to terminate.
+
+    The entrypoint uses this both after fatal startup/runtime failure and
+    during final teardown so the service does not leave duplicate daemons
+    behind.
     """
-    try:
-        client_socket.close()
-    except Exception:
-        pass
+    process_control.stop_self_service(
+        script_name=SCRIPT_NAME,
+        logger=log,
+    )
 
 
-def send_response(client_socket: socket.socket, payload: dict, peer_ip: str) -> None:
+def build_service_selector(*, server_socket) -> DefaultSelector:
     """
-    Send a framed response to a client and log the result.
-    """
-    try:
-        # Framing is part of the wire contract with existing clients, so
-        # every outbound payload must pass through the same helper.
-        framed = frame_payload(payload)
-        client_socket.sendall(framed.encode("utf-8"))
-        log.event("response_sent", peer_ip=peer_ip)
-    except Exception as exc:
-        log.warning_event("response_send_failed", peer_ip=peer_ip, error=exc)
+    Create the selector owned by this appCataloga daemon instance.
 
-
-# ======================================================================
-# Service stop: kill by PID discovery (no systemd dependency)
-# ======================================================================
-def stop_self_service(script_name: str = "appCataloga.py") -> None:
-    """
-    Stop daemon processes whose command line matches `script_name`.
-
-    This is a best-effort safeguard used when the service needs to
-    terminate sibling instances outside a process manager.
-    """
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", script_name],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-        )
-        pids = [
-            int(pid)
-            for pid in result.stdout.split()
-            if pid.strip().isdigit()
-        ]
-        current_pid = os.getpid()
-
-        if not pids:
-            log.event("service_stop_scan_empty", script_name=script_name)
-            return
-
-        # We never signal the current process here. This routine is only for
-        # sibling instances discovered through `pgrep -f`.
-        for pid in pids:
-            if pid == current_pid:
-                continue
-
-            try:
-                os.kill(pid, signal.SIGTERM)
-                log.event(
-                    "service_stop_signal_sent",
-                    signal="SIGTERM",
-                    pid=pid,
-                )
-            except ProcessLookupError:
-                continue
-            except Exception as exc:
-                log.warning_event(
-                    "service_stop_signal_failed",
-                    signal="SIGTERM",
-                    pid=pid,
-                    error=exc,
-                )
-
-        time.sleep(2.0)
-
-        # Escalation to SIGKILL is intentionally delayed to give sibling
-        # processes a small grace period for clean shutdown.
-        for pid in pids:
-            if pid == current_pid:
-                continue
-
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                continue
-
-            os.kill(pid, signal.SIGKILL)
-            log.warning_event(
-                "service_stop_signal_sent",
-                signal="SIGKILL",
-                pid=pid,
-            )
-
-    except Exception as exc:
-        log.error_event(
-            "service_stop_failed",
-            script_name=script_name,
-            error=exc,
-        )
-
-
-# ======================================================================
-# Client handling
-# ======================================================================
-def serve_client(client_socket: socket.socket) -> None:
-    """
-    Handle a single TCP client request.
-
-    The request lifecycle is:
-    1. Read raw bytes
-    2. Parse and validate the socket message
-    3. Ensure the HOST exists
-    4. Queue the corresponding HOST_TASK
-    5. Send a framed success or failure response
-    """
-    peer_ip = "unknown"
-    try:
-        peer_ip, _ = client_socket.getpeername()
-    except Exception:
-        pass
-
-    err = errors.ErrorHandler(log)
-    response_payload = {"status": 0, "message": "Unexpected error"}
-    host_id = None
-    host_filter = None
-
-    try:
-        # The service accepts one short request per connection, so the
-        # protocol stays intentionally simple and bounded.
-        raw_message = client_socket.recv(2048)
-        if not raw_message:
-            err.capture("Empty request", stage="READ")
-            raise ValueError("Empty request")
-
-        host = legacy.parse_socket_message(
-            data=raw_message.decode(),
-            peername=client_socket.getpeername(),
-            log=log,
-        )
-
-        if host.get("command") != k.BACKUP_QUERY_TAG:
-            err.capture("Unsupported command", stage="COMMAND")
-            raise ValueError("Unsupported command")
-
-        host_id = host.get("host_id")
-        if host_id is None or host_id <= 0:
-            err.capture("Invalid host_id", stage="PARSE")
-            raise ValueError("Invalid host_id")
-
-        host_uid = host["host_uid"]
-        host_addr = host["host_addr"]
-        host_port = host["host_port"]
-        user = host["user"]
-        password = host["password"]
-        host_filter = host["filter"]
-
-        try:
-            log.event("host_upsert", host_id=host_id, host_uid=host_uid)
-            db_bp.host_upsert(
-                ID_HOST=host_id,
-                NA_HOST_NAME=host_uid,
-                NA_HOST_ADDRESS=host_addr,
-                NA_HOST_PORT=host_port,
-                NA_HOST_USER=user,
-                NA_HOST_PASSWORD=password,
-            )
-        except Exception as exc:
-            err.capture(
-                "Failed to create/ensure HOST",
-                stage="HOST_CREATE",
-                exc=exc,
-                host_id=host_id,
-            )
-            raise
-
-        try:
-            task_result = db_bp.queue_host_task(
-                host_id=host_id,
-                task_type=k.HOST_TASK_CHECK_TYPE,
-                task_status=k.TASK_PENDING,
-                filter_dict=host_filter,
-            )
-            response_payload = build_success_response(task_result, host_filter)
-        except Exception as exc:
-            db_bp.host_update(host_id=host_id, NU_HOST_CHECK_ERROR=1)
-            err.capture(
-                "Failed to queue HOST_TASK",
-                stage="QUEUE",
-                exc=exc,
-                host_id=host_id,
-            )
-            raise
-
-    except Exception:
-        # Request failures are normalized through ErrorHandler and converted
-        # into a structured response in the `finally` block below.
-        pass
-
-    finally:
-        if err.triggered:
-            err.log_error(host_id=host_id, peer_ip=peer_ip)
-            response_payload = {
-                "status": 0,
-                "message": err.format_error() or err.msg,
-            }
-
-        send_response(
-            client_socket=client_socket,
-            payload=response_payload,
-            peer_ip=peer_ip,
-        )
-        close_client_socket(client_socket)
-
-
-# ======================================================================
-# Server loop
-# ======================================================================
-def serve_forever(server_socket: socket.socket) -> None:
-    """
-    Run the main TCP accept loop using a selector plus wake-up pipe.
+    The service listens to exactly two readiness sources:
+    - the listening TCP socket for incoming clients
+    - the wake-up pipe used by signal-driven shutdown
     """
     selector = DefaultSelector()
     selector.register(server_socket, EVENT_READ)
     selector.register(WAKE_R_FD, EVENT_READ)
+    return selector
 
-    while process_status["running"]:
-        for key, _ in selector.select():
-            if key.fileobj == server_socket:
-                try:
-                    client_socket, client_address = server_socket.accept()
-                    client_socket.setblocking(True)
 
-                    if process_status["running"]:
-                        # Request handling stays inline on purpose: this
-                        # service is operationally simple and easier to debug
-                        # without worker threads or hidden dispatch layers.
-                        log.event(
-                            "client_connected",
-                            client_address=client_address,
-                        )
-                        serve_client(client_socket)
-                    else:
-                        # If shutdown started after accept() but before request
-                        # handling, return an explicit framed response instead
-                        # of dropping the connection silently.
-                        shutdown_payload = {
-                            "status": 0,
-                            "message": "Server shutting down",
-                        }
-                        send_response(
-                            client_socket=client_socket,
-                            payload=shutdown_payload,
-                            peer_ip=str(client_address),
-                        )
-                        close_client_socket(client_socket)
-                except Exception as exc:
-                    err = errors.ErrorHandler(log)
-                    err.capture(
-                        reason="Accept loop failure",
-                        stage="ACCEPT",
-                        exc=exc,
-                    )
-                    err.log_error()
+def close_service_runtime(*, selector, server_socket) -> None:
+    """
+    Best-effort release of local runtime resources owned by `main()`.
 
-            elif key.fileobj == WAKE_R_FD:
-                try:
-                    os.read(WAKE_R_FD, 1)
-                except Exception:
-                    pass
+    This helper closes only in-process resources. Process-level shutdown of
+    sibling daemons is handled separately by `stop_service_siblings()`.
+    """
+    try:
+        if selector is not None:
+            selector.close()
+    except Exception:
+        pass
+
+    try:
+        if server_socket:
+            server_socket.close()
+    except Exception:
+        pass
+
+
+def handle_host_request(host: dict, err, db) -> tuple[int | None, dict]:
+    """
+    Execute the appCataloga-specific business action for one parsed request.
+
+    This is the only place in this module that knows what a valid
+    appCataloga TCP request actually means.
+
+    `socket_handler` stops at transport/protocol concerns and hands us a
+    normalized `host` payload. From here on we are in pure service/domain
+    flow: validate the request, persist HOST state, queue one HOST_TASK and
+    return the payload that will go back to the client.
+
+    Flow:
+        1. validate the request contract expected by appCataloga
+        2. upsert the HOST row
+        3. enqueue the initial HOST_TASK
+        4. return `(host_id, response_payload)` for socket finalization
+    """
+    if host.get("command") != k.BACKUP_QUERY_TAG:
+        err.capture("Unsupported command", stage="COMMAND")
+        raise ValueError("Unsupported command")
+
+    host_id = host.get("host_id")
+    if host_id is None or host_id <= 0:
+        err.capture("Invalid host_id", stage="PARSE")
+        raise ValueError("Invalid host_id")
+
+    # The filter is carried through to the queued HOST_TASK. Keeping it in a
+    # local variable early makes the success and failure paths easier to read.
+    host_filter = host["filter"]
+
+    try:
+        # Phase 1: ensure the HOST row exists and is refreshed with the
+        # connection details received from the client.
+        log.event("host_upsert", host_id=host_id, host_uid=host["host_uid"])
+        db.host_upsert(
+            ID_HOST=host_id,
+            NA_HOST_NAME=host["host_uid"],
+            NA_HOST_ADDRESS=host["host_addr"],
+            NA_HOST_PORT=host["host_port"],
+            NA_HOST_USER=host["user"],
+            NA_HOST_PASSWORD=host["password"],
+        )
+    except Exception as exc:
+        err.capture(
+            "Failed to create/ensure HOST",
+            stage="HOST_CREATE",
+            exc=exc,
+            host_id=host_id,
+        )
+        raise
+
+    try:
+        # Phase 2: create or recycle the dedicated CHECK HOST_TASK. That row
+        # is the gate between "request accepted" and "host proved reachable"
+        # before discovery gets its own PROCESSING task.
+        task_result = db.queue_host_task(
+            host_id=host_id,
+            task_type=k.HOST_TASK_CHECK_TYPE,
+            task_status=k.TASK_PENDING,
+            filter_dict=host_filter,
+        )
+        return host_id, build_success_response(task_result, host_filter)
+    except Exception as exc:
+        # If queueing fails after the HOST row exists, record that the host
+        # needs attention. The structured error returned to the socket still
+        # comes from ErrorHandler below.
+        db.host_update(host_id=host_id, NU_HOST_CHECK_ERROR=1)
+        err.capture(
+            "Failed to queue HOST_TASK",
+            stage="QUEUE",
+            exc=exc,
+            host_id=host_id,
+        )
+        raise
 
 
 # ======================================================================
@@ -416,44 +210,91 @@ def serve_forever(server_socket: socket.socket) -> None:
 def main() -> None:
     """
     Create the listening socket and run the main server loop.
+
+    Reading guide:
+        1. bootstrap server resources (socket + DB)
+        2. declare the request/runtime objects used by the selector loop
+        3. wire the selector owned by this process
+        4. dispatch ready events until shutdown flips `process_status`
     """
-    log.service_start("appCataloga")
+    log.service_start(SERVICE_NAME)
     err = errors.ErrorHandler(log)
     server_socket = None
+    selector = None
 
     try:
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_socket.bind(("", k.SERVER_PORT))
-        server_socket.listen(k.TOTAL_CONNECTIONS)
+        # --------------------------------------------------------------
+        # ACT I — Bring up the listening TCP socket
+        # --------------------------------------------------------------
+        server_socket = socket_handler.open_listening_socket(
+            port=k.SERVER_PORT,
+            backlog=k.TOTAL_CONNECTIONS,
+        )
         log.event("server_listening", port=k.SERVER_PORT)
 
+        # --------------------------------------------------------------
+        # ACT II — Initialize dependencies after the port is live
+        # --------------------------------------------------------------
         # DB initialization happens only after the socket is listening, so
         # startup failures clearly distinguish network setup from DB setup.
-        global db_bp
         db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
 
-        serve_forever(server_socket)
+        # --------------------------------------------------------------
+        # ACT III — Build the selector owned by this process
+        # --------------------------------------------------------------
+        selector = build_service_selector(server_socket=server_socket)
+
+        # --------------------------------------------------------------
+        # ACT IV — Main service loop
+        # --------------------------------------------------------------
+        while process_status["running"]:
+            for key, _ in selector.select():
+                # The selector has only two event sources. Keeping this branch
+                # inline makes the daemon easier to debug than bouncing
+                # through generic dispatch helpers.
+                if key.fileobj == server_socket:
+                    socket_handler.handle_ready_server_socket(
+                        server_socket=server_socket,
+                        process_status=process_status,
+                        handle_host_request=handle_host_request,
+                        db=db_bp,
+                        logger=log,
+                        errors_module=errors,
+                        none_filter=k.NONE_FILTER,
+                        shutdown_payload=SHUTDOWN_PAYLOAD,
+                        start_tag=k.START_TAG,
+                        end_tag=k.END_TAG,
+                    )
+                elif key.fileobj == WAKE_R_FD:
+                    socket_handler.drain_wakeup_pipe(WAKE_R_FD)
 
     except Exception as exc:
+        # Any exception here means the daemon itself failed, not a single
+        # client request. Capture it once, log it, and ask sibling processes
+        # with the same script name to terminate as part of self-recovery.
         err.capture(
             reason="Fatal appCataloga service error",
             stage="MAIN",
             exc=exc,
         )
         err.log_error()
-        stop_self_service(script_name="appCataloga.py")
+        stop_service_siblings()
         sys.exit(1)
 
     finally:
-        try:
-            if server_socket:
-                server_socket.close()
-        except Exception:
-            pass
+        # Teardown is intentionally defensive. We are already leaving the
+        # service loop, so cleanup must not raise and mask the original exit
+        # reason.
+        close_service_runtime(
+            selector=selector,
+            server_socket=server_socket,
+        )
 
-        stop_self_service(script_name="appCataloga.py")
-        log.service_stop("appCataloga")
+        # This best-effort stop mirrors the fatal path above and helps avoid
+        # orphaned sibling instances if shutdown happened through signal flow
+        # instead of the explicit exception path.
+        stop_service_siblings()
+        log.service_stop(SERVICE_NAME)
 
 
 if __name__ == "__main__":

@@ -2,10 +2,10 @@
 Station factory and registration module.
 """
 
-from .rfeye import RFEyeStation
-from .celplan import CelplanStation
+from appAnalise.appAnalise_connection import AppAnaliseConnection
 from .appColeta import AppColetaStation
-from stations.appAnaliseConnection import AppAnaliseConnection
+from .celplan import CelplanStation
+from .rfeye import RFEyeStation
 
 
 def station_factory(*, bin_data: dict, host_uid: str):

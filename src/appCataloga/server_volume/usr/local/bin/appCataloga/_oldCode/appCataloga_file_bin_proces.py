@@ -51,11 +51,12 @@ from geopy.exc import GeocoderTimedOut
 # Internal modules
 # ---------------------------------------------------------------
 import config as k
-from shared import errors, legacy, logging_utils, tools
+from server_handler import sleep as runtime_sleep
+from shared import errors, logging_utils, tools
 
 from db.dbHandlerBKP import dbHandlerBKP
 from db.dbHandlerRFM import dbHandlerRFM
-from stations import station_factory
+from stations_legacy import station_factory
 
 
 # ===============================================================
@@ -641,7 +642,7 @@ def main():
 
         finally:
             if should_sleep:
-                legacy._random_jitter_sleep()
+                runtime_sleep.random_jitter_sleep()
 
             if not file_task_id:
                 continue

@@ -1,3 +1,14 @@
+"""
+Validation tests for `webfusion.modules.map.service`.
+
+How to run:
+    /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_map_service.py -q
+
+What is covered here:
+    - normalization of Celplan/CWSM receiver naming
+    - map-side host reconciliation against `BPDATA`
+"""
+
 from __future__ import annotations
 
 import importlib.util
@@ -11,6 +22,7 @@ MODULE_PATH = Path("/RFFusion/src/webfusion/modules/map/service.py")
 
 
 def load_map_service():
+    """Import the map service with lightweight DB stubs only."""
     stub_db = types.ModuleType("db")
     stub_db.get_connection_bpdata = lambda: None
     stub_db.get_connection_rfdata = lambda: None
@@ -37,6 +49,8 @@ def load_map_service():
 
 
 class TestMapService(unittest.TestCase):
+    """Validate the receiver-to-host matching rules used by the map popup."""
+
     @classmethod
     def setUpClass(cls):
         cls.module = load_map_service()

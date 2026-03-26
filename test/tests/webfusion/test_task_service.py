@@ -1,3 +1,14 @@
+"""
+Validation tests for `webfusion.modules.task.service`.
+
+How to run:
+    /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_task_service.py -q
+
+What is covered here:
+    - safe reuse of durable `HOST_TASK` rows
+    - refusal to expose internal-only task types through the UI service layer
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -10,6 +21,7 @@ WEBFUSION_ROOT = Path("/RFFusion/src/webfusion")
 
 
 def load_task_service():
+    """Reload the task service so module-level constants stay fresh in tests."""
     root = str(WEBFUSION_ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
@@ -19,6 +31,8 @@ def load_task_service():
 
 
 class FakeCursor:
+    """Very small cursor double that replays pre-seeded SELECT results."""
+
     def __init__(self, db):
         self.db = db
         self._last_result = []
@@ -40,6 +54,8 @@ class FakeCursor:
 
 
 class FakeDB:
+    """DB double that records SQL shape and commit behavior."""
+
     def __init__(self, select_results=None):
         self.select_results = list(select_results or [])
         self.executions = []
@@ -53,17 +69,19 @@ class FakeDB:
 
 
 class TestTaskService(unittest.TestCase):
+    """Protect the queue contract mirrored from `appCataloga`."""
+
     @classmethod
     def setUpClass(cls):
         cls.module = load_task_service()
 
-    def test_operational_task_refreshes_existing_processing_row(self):
+    def test_check_task_refreshes_existing_check_row(self):
         db = FakeDB(
             select_results=[
                 [
                     {
                         "ID_HOST_TASK": 77,
-                        "NU_TYPE": self.module.HOST_TASK_PROCESSING_TYPE,
+                        "NU_TYPE": self.module.HOST_TASK_CHECK_TYPE,
                         "NU_STATUS": self.module.TASK_PENDING,
                         "FILTER": '{"mode":"NONE","file_path":"/mnt/internal/data","agent":"local"}',
                     }
@@ -86,13 +104,14 @@ class TestTaskService(unittest.TestCase):
             host_id=1001,
             task_type=self.module.HOST_TASK_CHECK_TYPE,
             filter_dict=filter_dict,
-            message="Created by WebFusion | Backup (LAST_N_FILES) | Individual",
+            message="Created by WebFusion | Host Check | Backup (LAST_N_FILES) | Individual",
         )
 
         self.assertEqual(result, "refreshed")
         self.assertEqual(db.commit_calls, 1)
         self.assertEqual(len(db.executions), 2)
-        self.assertIn("NU_TYPE IN", db.executions[0][0])
+        self.assertIn("NU_TYPE = %s", db.executions[0][0])
+        self.assertNotIn("NU_TYPE IN", db.executions[0][0])
 
         update_sql, update_params = db.executions[1]
         self.assertTrue(update_sql.startswith("UPDATE HOST_TASK"))
@@ -101,13 +120,13 @@ class TestTaskService(unittest.TestCase):
         self.assertEqual(update_params[-1], 77)
         self.assertIn('"last_n_files": "25"', update_params[2])
 
-    def test_running_operational_task_is_preserved(self):
+    def test_running_check_task_is_preserved(self):
         db = FakeDB(
             select_results=[
                 [
                     {
                         "ID_HOST_TASK": 88,
-                        "NU_TYPE": self.module.HOST_TASK_PROCESSING_TYPE,
+                        "NU_TYPE": self.module.HOST_TASK_CHECK_TYPE,
                         "NU_STATUS": self.module.TASK_RUNNING,
                         "FILTER": '{"mode":"NONE","file_path":"/mnt/internal/data","agent":"local"}',
                     }
@@ -119,121 +138,97 @@ class TestTaskService(unittest.TestCase):
             db=db,
             host_id=1002,
             task_type=self.module.HOST_TASK_CHECK_TYPE,
-            filter_dict=self.module.NONE_FILTER.copy(),
-            message="Created by WebFusion | Backup (NONE) | Individual",
+            filter_dict={
+                "mode": "NONE",
+                "start_date": None,
+                "end_date": None,
+                "last_n_files": None,
+                "extension": None,
+                "file_path": "/mnt/internal/data",
+                "file_name": None,
+                "agent": "local",
+            },
+            message="Created by WebFusion | Host Check | Backup (NONE) | Individual",
         )
 
         self.assertEqual(result, "skipped_active")
         self.assertEqual(db.commit_calls, 0)
         self.assertEqual(len(db.executions), 1)
 
-    def test_statistics_task_active_row_is_not_duplicated(self):
+    def test_processing_row_is_not_reused_for_check_task(self):
         db = FakeDB(
             select_results=[
-                [
-                    {
-                        "ID_HOST_TASK": 99,
-                        "NU_TYPE": self.module.HOST_TASK_UPDATE_STATISTICS_TYPE,
-                        "NU_STATUS": self.module.TASK_PENDING,
-                        "FILTER": self.module._serialize_filter(self.module.NONE_FILTER),
-                    }
-                ]
+                []
             ]
         )
 
         result = self.module.queue_host_task_safe(
             db=db,
             host_id=1003,
-            task_type=self.module.HOST_TASK_UPDATE_STATISTICS_TYPE,
-            filter_dict=self.module.NONE_FILTER.copy(),
-            message="Created by WebFusion | Update Statistics | Individual",
+            task_type=self.module.HOST_TASK_CHECK_TYPE,
+            filter_dict={
+                "mode": "NONE",
+                "start_date": None,
+                "end_date": None,
+                "last_n_files": None,
+                "extension": None,
+                "file_path": "/mnt/internal/data",
+                "file_name": None,
+                "agent": "local",
+            },
+            message="Created by WebFusion | Host Check | Backup (NONE) | Individual",
         )
 
-        self.assertEqual(result, "skipped_active")
-        self.assertEqual(db.commit_calls, 0)
-        self.assertEqual(len(db.executions), 1)
-
-    def test_statistics_task_done_row_is_reactivated(self):
-        db = FakeDB(
-            select_results=[
-                [
-                    {
-                        "ID_HOST_TASK": 101,
-                        "NU_TYPE": self.module.HOST_TASK_UPDATE_STATISTICS_TYPE,
-                        "NU_STATUS": self.module.TASK_DONE,
-                        "FILTER": self.module._serialize_filter(self.module.NONE_FILTER),
-                    }
-                ]
-            ]
-        )
-
-        result = self.module.queue_host_task_safe(
-            db=db,
-            host_id=1004,
-            task_type=self.module.HOST_TASK_UPDATE_STATISTICS_TYPE,
-            filter_dict=self.module.NONE_FILTER.copy(),
-            message="Created by WebFusion | Update Statistics | Individual",
-        )
-
-        self.assertEqual(result, "refreshed")
+        self.assertEqual(result, "created")
         self.assertEqual(db.commit_calls, 1)
-        self.assertTrue(db.executions[1][0].startswith("UPDATE HOST_TASK"))
+        self.assertEqual(len(db.executions), 2)
+        self.assertIn("NU_TYPE = %s", db.executions[0][0])
+        insert_sql, insert_params = db.executions[1]
+        self.assertTrue(insert_sql.startswith("INSERT INTO HOST_TASK"))
+        self.assertEqual(insert_params[1], self.module.HOST_TASK_CHECK_TYPE)
 
-    def test_statistics_task_reuses_singleton_even_with_legacy_filter(self):
-        db = FakeDB(
-            select_results=[
-                [
-                    {
-                        "ID_HOST_TASK": 111,
-                        "NU_TYPE": self.module.HOST_TASK_UPDATE_STATISTICS_TYPE,
-                        "NU_STATUS": self.module.TASK_DONE,
-                        "FILTER": '{"legacy":"value"}',
-                    }
-                ]
-            ]
-        )
+    def test_create_task_only_accepts_conventional_check_type(self):
+        with self.assertRaises(ValueError):
+            self.module.create_task(
+                db=FakeDB(),
+                hosts=[1],
+                task_type=self.module.HOST_TASK_UPDATE_STATISTICS_TYPE,
+                mode="NONE",
+                filter_data={},
+            )
 
-        result = self.module.queue_host_task_safe(
+        with self.assertRaises(ValueError):
+            self.module.create_task(
+                db=FakeDB(),
+                hosts=[1],
+                task_type=self.module.HOST_TASK_CHECK_CONNECTION_TYPE,
+                mode="NONE",
+                filter_data={},
+            )
+
+    def test_create_task_builds_check_request_for_selected_hosts(self):
+        db = FakeDB(select_results=[[], []])
+
+        summary = self.module.create_task(
             db=db,
-            host_id=1006,
-            task_type=self.module.HOST_TASK_UPDATE_STATISTICS_TYPE,
-            filter_dict=self.module.NONE_FILTER.copy(),
-            message="Created by WebFusion | Update Statistics | Individual",
+            hosts=[11, 12],
+            task_type=self.module.HOST_TASK_CHECK_TYPE,
+            mode="LAST_N_FILES",
+            filter_data={
+                "start_date": None,
+                "end_date": None,
+                "last_n_files": "10",
+                "extension": ".zip",
+                "file_path": "/mnt/internal/inbox",
+                "file_name": None,
+            },
         )
 
-        self.assertEqual(result, "refreshed")
-        self.assertEqual(db.commit_calls, 1)
-        self.assertTrue(db.executions[1][0].startswith("UPDATE HOST_TASK"))
-
-    def test_connection_task_matches_filter_semantically(self):
-        db = FakeDB(
-            select_results=[
-                [
-                    {
-                        "ID_HOST_TASK": 202,
-                        "NU_TYPE": self.module.HOST_TASK_CHECK_CONNECTION_TYPE,
-                        "NU_STATUS": self.module.TASK_DONE,
-                        "FILTER": (
-                            '{"agent":"local","end_date":null,"extension":null,'
-                            '"file_name":null,"file_path":"/mnt/internal/data",'
-                            '"last_n_files":null,"mode":"NONE","start_date":null}'
-                        ),
-                    }
-                ]
-            ]
-        )
-
-        result = self.module.queue_host_task_safe(
-            db=db,
-            host_id=1005,
-            task_type=self.module.HOST_TASK_CHECK_CONNECTION_TYPE,
-            filter_dict=self.module.NONE_FILTER.copy(),
-            message="Created by WebFusion | Check Connection | Individual",
-        )
-
-        self.assertEqual(result, "refreshed")
-        self.assertEqual(db.commit_calls, 1)
-        self.assertTrue(db.executions[1][0].startswith("UPDATE HOST_TASK"))
+        self.assertEqual(summary, {"queued_count": 2, "skipped_count": 0})
+        inserts = [row for row in db.executions if row[0].startswith("INSERT INTO HOST_TASK")]
+        self.assertEqual(len(inserts), 2)
+        self.assertTrue(all(params[1] == self.module.HOST_TASK_CHECK_TYPE for _, params in inserts))
+        self.assertTrue(all("Host Check | Backup (LAST_N_FILES)" in params[-1] for _, params in inserts))
 
 
 if __name__ == "__main__":

@@ -9,61 +9,38 @@ stays linear so transient service failures can be distinguished cleanly from
 definitive payload failures.
 """
 
-import json
-import inspect
 import os
-import signal
 import sys
-import time
 from datetime import datetime
 
-# ---------------------------------------------------------------
-# Configuration path
-# ---------------------------------------------------------------
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+from bootstrap_paths import bootstrap_app_paths
 
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
 
-# =================================================
-# Config directory
-# =================================================
-_CFG_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga")
-)
-
-if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
-    sys.path.append(_CFG_DIR)
-
-# =================================================
-# DB directory
-# =================================================
-_DB_DIR = os.path.join(PROJECT_ROOT, "db")
-
-if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
-    sys.path.append(_DB_DIR)
-
-# ---------------------------------------------------------------
-# External libraries
-# ---------------------------------------------------------------
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut
+PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 # ---------------------------------------------------------------
 # Internal modules
 # ---------------------------------------------------------------
 import config as k
-from shared import errors, legacy, logging_utils, tools
+from appAnalise import task_flow
+from appAnalise.appAnalise_connection import AppAnaliseConnection
+from host_handler import host_runtime
+from server_handler import signal_runtime, sleep as runtime_sleep
+from shared import (
+    errors,
+    logging_utils,
+    tools,
+)
 
 from db.dbHandlerBKP import dbHandlerBKP
 from db.dbHandlerRFM import dbHandlerRFM
-from stations.appAnaliseConnection import AppAnaliseConnection
 
 
 # ===============================================================
 # GLOBAL STATE
 # ===============================================================
 
+SERVICE_NAME = "appCataloga_file_bin_proces_appAnalise"
 log = logging_utils.log(target_screen=False)
 process_status = {"running": True}
 
@@ -71,339 +48,22 @@ process_status = {"running": True}
 # ===============================================================
 # Signal handling
 # ===============================================================
-def release_busy_hosts_on_exit() -> None:
+def _shutdown_cleanup(signal_name: str) -> None:
     """
-    Release any HOST BUSY locks owned by this worker PID.
+    Release BUSY host locks during process shutdown.
     """
-    try:
-        pid = os.getpid()
-        db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
-        db.host_release_by_pid(pid)
-    except Exception as e:
-        log.error(f"event=cleanup_busy_hosts_failed error={e}")
-
-
-def _signal_handler(signal_name: str) -> None:
-    """
-    Register shutdown intent and release BUSY resources.
-    """
-    fn = inspect.currentframe().f_back.f_code.co_name
-    log.signal_received(signal_name, handler=fn)
-    process_status["running"] = False
-    release_busy_hosts_on_exit()
-
-def sigterm_handler(signal=None, frame=None) -> None:
-    """
-    Handle SIGTERM by requesting a graceful shutdown.
-    """
-    _signal_handler("SIGTERM")
-
-
-def sigint_handler(signal=None, frame=None) -> None:
-    """
-    Handle SIGINT by requesting a graceful shutdown.
-    """
-    _signal_handler("SIGINT")
-
-
-signal.signal(signal.SIGTERM, sigterm_handler)
-signal.signal(signal.SIGINT, sigint_handler)
-
-
-# ===============================================================
-# Geolocation helpers
-# ===============================================================
-
-def do_reverse_geocode(data, attempt=1, max_attempts=10):
-    """
-    Perform reverse geocoding using Nominatim with retry logic.
-
-    This helper must only run after payload semantic validation because it
-    enriches already-accepted coordinates; it must not influence whether a BIN
-    payload is considered structurally valid.
-    """
-    point = (data["latitude"], data["longitude"])
-    geocoding = Nominatim(user_agent=k.NOMINATIM_USER, timeout=5)
-
-    try:
-        return geocoding.reverse(point, timeout=5 + attempt, language="pt")
-    except GeocoderTimedOut:
-        if attempt < max_attempts:
-            time.sleep(2)
-            return do_reverse_geocode(data, attempt + 1)
-        raise
-
-
-def map_location_to_data(location, data):
-    """
-    Map Nominatim address fields into internal SITE structure.
-    """
-    address = location.raw.get("address", {})
-
-    for field, candidates in k.REQUIRED_ADDRESS_FIELD.items():
-        data[field] = None
-        for c in candidates:
-            if c in address:
-                data[field] = address[c]
-                break
-
-    if not data.get("state"):
-        iso = address.get("ISO3166-2-lvl4")
-
-        if iso and iso.startswith("BR-"):
-            uf_to_state = {
-                "RO": "Rondônia",
-                "AC": "Acre",
-                "AM": "Amazonas",
-                "RR": "Roraima",
-                "PA": "Pará",
-                "AP": "Amapá",
-                "TO": "Tocantins",
-                "MA": "Maranhão",
-                "PI": "Piauí",
-                "CE": "Ceará",
-                "RN": "Rio Grande do Norte",
-                "PB": "Paraíba",
-                "PE": "Pernambuco",
-                "AL": "Alagoas",
-                "SE": "Sergipe",
-                "BA": "Bahia",
-                "MG": "Minas Gerais",
-                "ES": "Espírito Santo",
-                "RJ": "Rio de Janeiro",
-                "SP": "São Paulo",
-                "PR": "Paraná",
-                "SC": "Santa Catarina",
-                "RS": "Rio Grande do Sul",
-                "MS": "Mato Grosso do Sul",
-                "MT": "Mato Grosso",
-                "GO": "Goiás",
-                "DF": "Distrito Federal",
-            }
-
-            data["state"] = uf_to_state.get(iso[3:])
-
-    return data
-
-
-# ===============================================================
-# File operations
-# ===============================================================
-
-def file_move(filename, path, new_path):
-    """
-    Move a file from (path/filename) to (new_path/filename),
-    creating intermediate directories if necessary.
-
-    Unlike os.renames(), this function NEVER removes source
-    directories, preventing side effects on shared worker folders.
-    """
-    source = f"{path}/{filename}"
-    target = f"{new_path}/{filename}"
-
-    os.makedirs(new_path, exist_ok=True)
-    os.rename(source, target)
-
-    return {"filename": filename, "path": new_path}
-
-
-def should_export(hostname: str) -> bool:
-    """
-    Decide whether appAnalise should export a `.mat` artifact for this host.
-
-    Host-specific exceptions live here so the rest of the processing pipeline
-    does not need to know station-family export quirks.
-    """
-    normalized = (hostname or "").lower()
-
-    if "rfeye" in normalized:
-        return False
-
-    if "cw" in normalized:
-        return True
-
-    return True
-
-
-def resolve_history_file_metadata(
-    file_was_processed,
-    file_meta,
-    server_name,
-    extension,
-    vl_file_size_kb,
-    dt_created,
-    dt_modified,
-):
-    """
-    Resolve which file metadata should be written to FILE_TASK_HISTORY.
-
-    On success, history should point to the canonical output artifact. On
-    failure or partial processing, history should preserve the original
-    server-side payload metadata so operators can still locate the attempted
-    input.
-    """
-    if file_was_processed and file_meta:
-        return {
-            "name": file_meta["file_name"],
-            "extension": file_meta["extension"],
-            "size_kb": file_meta["size_kb"],
-            "dt_created": file_meta["dt_created"],
-            "dt_modified": file_meta["dt_modified"],
-        }
-
-    return {
-        "name": server_name,
-        "extension": extension,
-        "size_kb": vl_file_size_kb,
-        "dt_created": dt_created,
-        "dt_modified": dt_modified,
-    }
-
-
-def build_file_metadata(
-    *,
-    file_path,
-    file_name,
-    extension,
-    size_kb,
-    dt_created,
-    dt_modified,
-):
-    """
-    Build the normalized file metadata structure used by this worker.
-    """
-    return {
-        "file_path": file_path,
-        "file_name": file_name,
-        "extension": extension,
-        "size_kb": size_kb,
-        "dt_created": dt_created,
-        "dt_modified": dt_modified,
-        "full_path": os.path.join(file_path, file_name),
-    }
-
-
-def build_site_data(gps):
-    """
-    Convert normalized GPS data into the SITE payload used by RFDATA.
-    """
-    return {
-        "longitude": gps.longitude,
-        "latitude": gps.latitude,
-        "altitude": gps.altitude,
-        "nu_gnss_measurements": len(gps._longitude),
-    }
-
-
-def upsert_site(db_rfm, bin_data):
-    """
-    Resolve or create the SITE referenced by the processed spectrum batch.
-    """
-    gps = bin_data["gps"]
-    site_data = build_site_data(gps)
-    site_id = db_rfm.get_site_id(site_data)
-
-    if site_id:
-        # Existing sites are identified from the persisted GNSS centroid.
-        # In this path we deliberately avoid reverse geocoding so a new
-        # Nominatim answer cannot degrade the geographic labels already stored.
-        db_rfm.update_site(
-            site=site_id,
-            longitude_raw=gps._longitude,
-            latitude_raw=gps._latitude,
-            altitude_raw=gps._altitude,
-        )
-        return site_id
-
-    location = do_reverse_geocode(site_data)
-    site_data = map_location_to_data(location, site_data)
-    return db_rfm.insert_site(site_data)
-
-
-def insert_spectra_batch(
-    db_rfm,
-    bin_data,
-    site_id,
-    hostname_bin,
-    hostname_db,
-    host_path,
-    host_file_name,
-    extension,
-    vl_file_size_kb,
-    dt_created,
-    dt_modified,
-):
-    """
-    Persist host file metadata and all normalized spectra in a single batch.
-    """
-    host_file_id = db_rfm.insert_file(
-        hostname=hostname_bin,
-        NA_VOLUME=hostname_db,
-        NA_PATH=host_path,
-        NA_FILE=host_file_name,
-        NA_EXTENSION=extension,
-        VL_FILE_SIZE_KB=vl_file_size_kb,
-        DT_FILE_CREATED=dt_created,
-        DT_FILE_MODIFIED=dt_modified,
+    host_runtime.release_busy_hosts_for_current_pid(
+        db_factory=dbHandlerBKP,
+        database_name=k.BKP_DATABASE_NAME,
+        logger=log,
     )
 
-    procedure_id = db_rfm.insert_procedure(bin_data["method"])
-    dim_eq = db_rfm.get_or_create_spectrum_equipment(hostname_bin.lower())
-    spectrum_ids = []
 
-    for spectrum in bin_data["spectrum"]:
-        metadata = spectrum.metadata if hasattr(spectrum, "metadata") else {}
-
-        spectrum_ids.append(
-            db_rfm.insert_spectrum(
-                {
-                    "id_site": site_id,
-                    "id_procedure": procedure_id,
-                    "id_detector_type": db_rfm.insert_detector_type(
-                        k.DEFAULT_DETECTOR
-                    ),
-                    "id_trace_type": db_rfm.insert_trace_type(
-                        spectrum.processing
-                    ),
-                    "id_equipment": dim_eq,
-                    "id_measure_unit": db_rfm.insert_measure_unit(
-                        spectrum.level_unit
-                    ),
-                    "na_description": getattr(spectrum, "description", None),
-                    "nu_freq_start": spectrum.start_mega,
-                    "nu_freq_end": spectrum.stop_mega,
-                    "dt_time_start": spectrum.start_dateidx,
-                    "dt_time_end": spectrum.stop_dateidx,
-                    "nu_sample_duration": k.DEFAULT_SAMPLE_DURATION,
-                    "nu_trace_count": spectrum.trace_length,
-                    "nu_trace_length": spectrum.ndata,
-                    "nu_rbw": getattr(spectrum, "bw", None),
-                    "nu_att_gain": k.DEFAULT_ATTENUATION_GAIN,
-                    "js_metadata": json.dumps(metadata),
-                }
-            )
-        )
-
-    db_rfm.insert_bridge_spectrum_file(spectrum_ids, [host_file_id])
-    return spectrum_ids
-
-
-def return_task_to_pending(db_bp, file_task_id, err):
-    """
-    Requeue the current FILE_TASK after a transient appAnalise failure.
-    """
-    db_bp.file_task_update(
-        task_id=file_task_id,
-        NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
-        NU_STATUS=k.TASK_PENDING,
-        DT_FILE_TASK=datetime.now(),
-        NA_MESSAGE=tools.compose_message(
-            task_type=k.FILE_TASK_PROCESS_TYPE,
-            task_status=k.TASK_PENDING,
-            detail="APP_ANALISE transient failure, task returned for retry",
-            error=err.format_error(),
-        ),
-    )
+signal_runtime.install_shutdown_handlers(
+    process_status=process_status,
+    logger=log,
+    on_shutdown=_shutdown_cleanup,
+)
 
 
 def preflight_app_analise_connection(app_analise) -> bool:
@@ -422,281 +82,6 @@ def preflight_app_analise_connection(app_analise) -> bool:
         return False
 
 
-def is_same_file(file_a, file_b):
-    """
-    Check whether two metadata dictionaries point to the same filesystem path.
-    """
-    if not file_a or not file_b:
-        return False
-
-    path_a = os.path.normpath(file_a["full_path"])
-    path_b = os.path.normpath(file_b["full_path"])
-    return path_a == path_b
-
-
-def move_file_if_present(file_meta, destination_path):
-    """
-    Move a file when it still exists and return its new metadata.
-    """
-    if not file_meta or not os.path.exists(file_meta["full_path"]):
-        return None
-
-    file_move(
-        filename=file_meta["file_name"],
-        path=file_meta["file_path"],
-        new_path=destination_path,
-    )
-
-    moved_meta = dict(file_meta)
-    moved_meta["file_path"] = destination_path
-    moved_meta["full_path"] = os.path.join(
-        destination_path,
-        file_meta["file_name"],
-    )
-    return moved_meta
-
-
-def build_resolved_files_trash_path():
-    """
-    Return the dedicated quarantine for export-resolved leftovers.
-
-    Files moved here are intentionally outside the normal FILE_TASK_HISTORY
-    garbage-collection path because the canonical artifact may now be a renamed
-    `.mat` stored elsewhere. The garbage collector sweeps this folder directly
-    by filesystem age.
-    """
-    return (
-        f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}/"
-        f"{k.RESOLVED_FILES_TRASH_SUBDIR}"
-    )
-
-
-def finalize_successful_processing(
-    db_rfm,
-    spectrum_ids,
-    bin_data,
-    site_id,
-    hostname_bin,
-    file_meta,
-    source_file_meta,
-    export,
-    filename,
-):
-    """
-    Move the final artifact, register it in RFDATA, and retire superseded input.
-
-    This helper keeps the success-side filesystem semantics explicit:
-    when `export=True`, the exported `.mat` becomes the final artifact and the
-    original input is relegated to `trash/resolved_files`.
-    """
-    year = bin_data["spectrum"][0].start_dateidx.year
-    new_path = f"{k.REPO_FOLDER}/{year}/{db_rfm.build_path(site_id)}"
-    final_file_meta = move_file_if_present(file_meta, new_path)
-
-    if final_file_meta is None:
-        raise FileNotFoundError(
-            f"Final output file unavailable: {file_meta}"
-        )
-
-    server_file_id = db_rfm.insert_file(
-        hostname=hostname_bin,
-        NA_VOLUME=k.REPO_VOLUME_NAME,
-        NA_PATH=new_path,
-        NA_FILE=final_file_meta["file_name"],
-        NA_EXTENSION=final_file_meta["extension"],
-        VL_FILE_SIZE_KB=final_file_meta["size_kb"],
-        DT_FILE_CREATED=final_file_meta["dt_created"],
-        DT_FILE_MODIFIED=final_file_meta["dt_modified"],
-    )
-
-    db_rfm.insert_bridge_spectrum_file(spectrum_ids, [server_file_id])
-
-    if export and not is_same_file(source_file_meta, final_file_meta):
-        move_file_if_present(
-            source_file_meta,
-            build_resolved_files_trash_path(),
-        )
-
-    log.event(
-        "processing_completed",
-        file=filename,
-        export=export,
-        final_file=final_file_meta["full_path"],
-    )
-    return new_path, final_file_meta
-
-
-def finalize_task_resolution(
-    db_bp,
-    *,
-    file_task_id,
-    host_id,
-    host_file_name,
-    host_path,
-    server_name,
-    extension,
-    vl_file_size_kb,
-    dt_created,
-    dt_modified,
-    file_was_processed,
-    new_path,
-    file_meta,
-    source_file_meta,
-    export,
-    err,
-):
-    """
-    Apply the final FILE_TASK resolution once retry is no longer an option.
-
-    Definitive failures follow the normal trash/history path. Successful runs
-    persist the exported artifact metadata as the server-side result. Any
-    export-only leftovers that no longer participate in lineage are moved into
-    the dedicated `resolved_files` quarantine for filesystem-based garbage
-    cleanup.
-    """
-    if not file_was_processed and new_path is None:
-        try:
-            trashed_source_meta = move_file_if_present(
-                source_file_meta,
-                f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}",
-            )
-
-            if trashed_source_meta:
-                new_path = trashed_source_meta["file_path"]
-        except Exception as fs_err:
-            log.error(f"event=trash_move_failed error={fs_err}")
-
-        if (
-            export
-            and file_meta
-            and not is_same_file(file_meta, source_file_meta)
-        ):
-            try:
-                move_file_if_present(
-                    file_meta,
-                    build_resolved_files_trash_path(),
-                )
-            except Exception as artifact_err:
-                log.error(
-                    "event=resolved_artifact_trash_move_failed "
-                    f"error={artifact_err}"
-                )
-
-    db_bp.file_task_delete(task_id=file_task_id)
-
-    status = k.TASK_DONE if file_was_processed else k.TASK_ERROR
-
-    history_meta = resolve_history_file_metadata(
-        file_was_processed=file_was_processed,
-        file_meta=file_meta,
-        server_name=server_name,
-        extension=extension,
-        vl_file_size_kb=vl_file_size_kb,
-        dt_created=dt_created,
-        dt_modified=dt_modified,
-    )
-    history_server_path = new_path
-
-    if (
-        not file_was_processed
-        and history_server_path is None
-        and source_file_meta
-    ):
-        # Error finalization should keep a deterministic last-known repository
-        # location even if the move to trash could not be completed.
-        history_server_path = source_file_meta["file_path"]
-
-    na_message = tools.compose_message(
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        task_status=status,
-        path=new_path if file_was_processed else None,
-        name=history_meta["name"] if file_was_processed else None,
-        error=err.format_error() if err.triggered else None,
-    )
-    processed_at = datetime.now()
-
-    db_bp.file_history_update(
-        host_id=host_id,
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        host_file_name=host_file_name,
-        host_file_path=host_path,
-        DT_PROCESSED=processed_at,
-        NA_SERVER_FILE_NAME=history_meta["name"],
-        NA_SERVER_FILE_PATH=history_server_path,
-        NA_EXTENSION=history_meta["extension"],
-        VL_FILE_SIZE_KB=history_meta["size_kb"],
-        DT_FILE_CREATED=history_meta["dt_created"],
-        DT_FILE_MODIFIED=history_meta["dt_modified"],
-        NU_STATUS_PROCESSING=status,
-        NA_MESSAGE=na_message,
-    )
-
-    db_bp.host_task_statistics_create(host_id=host_id)
-    return {
-        "status": status,
-        "new_path": history_server_path,
-        "history_meta": history_meta,
-        "final_file": (
-            os.path.join(history_server_path, history_meta["name"])
-            if history_server_path else None
-        ),
-    }
-
-
-def resolve_task_after_attempt(
-    db_bp,
-    *,
-    file_task_id,
-    host_id,
-    host_file_name,
-    host_path,
-    server_name,
-    extension,
-    vl_file_size_kb,
-    dt_created,
-    dt_modified,
-    file_was_processed,
-    new_path,
-    file_meta,
-    source_file_meta,
-    export,
-    retry_later,
-    err,
-):
-    """
-    Resolve the claimed task after a processing attempt.
-
-    Only transient appAnalise connectivity/service failures keep the task alive
-    for a later retry. All other outcomes flow through the definitive
-    history/trash resolution path, because reprocessing the same payload would
-    produce the same definitive result again.
-    """
-    if retry_later:
-        return_task_to_pending(db_bp, file_task_id, err)
-        return {"action": "retry"}
-
-    result = finalize_task_resolution(
-        db_bp,
-        file_task_id=file_task_id,
-        host_id=host_id,
-        host_file_name=host_file_name,
-        host_path=host_path,
-        server_name=server_name,
-        extension=extension,
-        vl_file_size_kb=vl_file_size_kb,
-        dt_created=dt_created,
-        dt_modified=dt_modified,
-        file_was_processed=file_was_processed,
-        new_path=new_path,
-        file_meta=file_meta,
-        source_file_meta=source_file_meta,
-        export=export,
-        err=err,
-    )
-    result["action"] = "finalized"
-    return result
-
-
 # ===============================================================
 # MAIN LOOP
 # ===============================================================
@@ -710,10 +95,10 @@ def main():
     failures are requeued for retry; definitive validation failures
     follow the normal trash/history finalization path.
     """
-    log.service_start("appCataloga_file_bin_proces_appAnalise")
+    log.service_start(SERVICE_NAME)
 
-    db_bp = dbHandlerBKP(database="BPDATA", log=log)
-    db_rfm = dbHandlerRFM(database="RFDATA", log=log)
+    db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+    db_rfm = dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)
     app_analise = AppAnaliseConnection()
 
     while process_status["running"]:
@@ -724,16 +109,19 @@ def main():
         host_id = None
         file_meta = None
         retry_later = False
-        should_sleep = False
         export = None
         source_file_meta = None
+        resolved_site_ids = None
 
         try:
             # ===================================================
             # ACT I — Confirm appAnalise is reachable before claiming work
             # ===================================================
             if not preflight_app_analise_connection(app_analise):
-                should_sleep = True
+                # Preflight failure means the external dependency is down, not
+                # that a FILE_TASK is bad. Sleep before polling again so the
+                # worker does not hot-loop on a known-outage condition.
+                runtime_sleep.random_jitter_sleep()
                 continue
 
             # ===================================================
@@ -746,7 +134,9 @@ def main():
             )
 
             if not result:
-                should_sleep = True
+                # This worker does not own a pool, so an empty queue simply
+                # yields back to the normal jitter contract before polling again.
+                runtime_sleep.random_jitter_sleep()
                 continue
 
             # From this point on, the loop is working on one concrete payload.
@@ -764,14 +154,15 @@ def main():
             dt_modified     = row["FILE_TASK__DT_FILE_MODIFIED"]
             vl_file_size_kb = row["FILE_TASK__VL_FILE_SIZE_KB"]
             filename        = f"{server_path}/{server_name}"
-            source_file_meta = build_file_metadata(
-                file_path=server_path,
-                file_name=server_name,
-                extension=extension,
-                size_kb=vl_file_size_kb,
-                dt_created=dt_created,
-                dt_modified=dt_modified,
-            )
+            source_file_meta = {
+                "file_path": server_path,
+                "file_name": server_name,
+                "extension": extension,
+                "size_kb": vl_file_size_kb,
+                "dt_created": dt_created,
+                "dt_modified": dt_modified,
+                "full_path": os.path.join(server_path, server_name),
+            }
 
             # ===================================================
             # ACT III — Mark the FILE_TASK as RUNNING
@@ -792,14 +183,20 @@ def main():
                     ),
                 )
             except Exception as e:
-                err.set(reason=str(e), stage="PROCESS", exc=e)
+                err.capture(
+                    reason="Failed to claim processing FILE_TASK",
+                    stage="CLAIM",
+                    exc=e,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                )
                 raise
 
             # ===================================================
             # ACT IV — Delegate parsing to appAnalise and validate the result
             # ===================================================
             try:
-                export = should_export(hostname_db)
+                export = task_flow.should_export(hostname_db)
                 log.event(
                     "processing_started",
                     file=filename,
@@ -812,7 +209,6 @@ def main():
                     export=export,
                 )
 
-                hostname_bin = bin_data["hostname"]
             except errors.ExternalServiceTransientError as e:
                 # appAnalise availability problems are retryable. They are the
                 # only processing failures that should requeue the FILE_TASK
@@ -820,25 +216,67 @@ def main():
                 # Keeping this branch explicit prevents generic "Processing
                 # Error" rows when the external service is merely unavailable.
                 retry_later = True
-                err.set(reason=str(e), stage="PROCESS", exc=e)
+                err.capture(
+                    reason="Transient appAnalise processing failure",
+                    stage="PROCESS",
+                    exc=e,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                )
                 raise
             except errors.BinValidationError as e:
                 # Validation errors are definitive payload problems. They go to
                 # normal finalization instead of retry because the same input
                 # would fail again with the same semantic defect.
-                err.set(reason=str(e), stage="PROCESS", exc=e)
+                #
+                # appAnalise may already have materialized an exported artifact
+                # and `process()` may already have resolved its metadata before
+                # the later semantic validation step rejects the payload. Keep
+                # that metadata so finalization can quarantine the orphaned
+                # export instead of leaving it behind in the live inbox.
+                if file_meta is None:
+                    file_meta = app_analise.last_output_meta
+
+                err.capture(
+                    reason="Payload validation failed during processing",
+                    stage="PROCESS",
+                    exc=e,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                )
                 raise
             except Exception as e:
-                err.set(reason=str(e), stage="PROCESS", exc=e)
+                err.capture(
+                    reason="Unexpected appAnalise processing failure",
+                    stage="PROCESS",
+                    exc=e,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                )
                 raise
 
+            # ===================================================
+            # ACT V — Resolve or create every spectrum SITE outside the DB transaction
+            # ===================================================
             try:
                 # SITE resolution stays outside the RFDATA transaction, matching
                 # the existing BIN worker behavior and keeping geocoding latency
-                # out of the DB critical section.
-                site_id = upsert_site(db_rfm, bin_data)
+                # out of the DB critical section. The ownership is now per
+                # spectrum, not per file, so mixed-location payloads can be
+                # persisted without forcing a single synthetic `site_id`.
+                resolved_site_ids = task_flow.resolve_spectrum_sites(
+                    db_rfm,
+                    bin_data,
+                    logger=log,
+                )
             except Exception as e:
-                err.set(reason=str(e), stage="SITE", exc=e)
+                err.capture(
+                    reason="Failed to resolve SITE ownership for processed spectra",
+                    stage="SITE",
+                    exc=e,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                )
                 raise
 
             # ===================================================
@@ -847,7 +285,13 @@ def main():
             try:
                 db_rfm.begin_transaction()
             except Exception as e:
-                err.set(reason=str(e), stage="DB", exc=e)
+                err.capture(
+                    reason="Failed to open RFDATA transaction",
+                    stage="DB",
+                    exc=e,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                )
                 raise
 
             # ===================================================
@@ -856,11 +300,9 @@ def main():
             try:
                 # The host-side source file and all derived spectra must be
                 # committed as one unit for consistent lineage.
-                spectrum_ids = insert_spectra_batch(
+                spectrum_ids = task_flow.insert_spectra_batch(
                     db_rfm=db_rfm,
                     bin_data=bin_data,
-                    site_id=site_id,
-                    hostname_bin=hostname_bin,
                     hostname_db=hostname_db,
                     host_path=host_path,
                     host_file_name=host_file_name,
@@ -874,7 +316,13 @@ def main():
                 # canonical artifact path instead of retrying DB writes.
                 db_rfm.commit()
             except Exception as e:
-                err.set(reason=str(e), stage="DB", exc=e)
+                err.capture(
+                    reason="Failed to persist processed spectra batch",
+                    stage="DB",
+                    exc=e,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                )
                 raise
 
             # ===================================================
@@ -883,20 +331,26 @@ def main():
             try:
                 # Success resolution decides which artifact becomes canonical
                 # (`.mat` export or original file) and retires superseded input.
-                new_path, file_meta = finalize_successful_processing(
+                new_path, file_meta = task_flow.finalize_successful_processing(
                     db_rfm=db_rfm,
                     spectrum_ids=spectrum_ids,
                     bin_data=bin_data,
-                    site_id=site_id,
-                    hostname_bin=hostname_bin,
+                    hostname_db=hostname_db,
                     file_meta=file_meta,
                     source_file_meta=source_file_meta,
                     export=export,
                     filename=filename,
+                    logger=log,
                 )
                 file_was_processed = True
             except Exception as e:
-                err.set(reason=str(e), stage="FS", exc=e)
+                err.capture(
+                    reason="Failed to finalize processed artifacts on disk",
+                    stage="FS",
+                    exc=e,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                )
                 raise
 
         except Exception as e:
@@ -913,51 +367,32 @@ def main():
                 db_rfm.rollback()
 
         finally:
-            if should_sleep:
-                legacy._random_jitter_sleep()
-
             if not file_task_id:
                 continue
 
             # ---------------------------------------------------
-            # Global resolution (single exit point for task state)
+            # Phase 1 — Resolve the queue row through one exit point
             # ---------------------------------------------------
             if retry_later:
                 try:
-                    # Transient service failures keep the task alive and reuse
-                    # the shared resolution helper so task/history persistence
-                    # stays consistent with the normal path.
-                    resolve_task_after_attempt(
-                        db_bp,
-                        file_task_id=file_task_id,
-                        host_id=host_id,
-                        host_file_name=host_file_name,
-                        host_path=host_path,
-                        server_name=server_name,
-                        extension=extension,
-                        vl_file_size_kb=vl_file_size_kb,
-                        dt_created=dt_created,
-                        dt_modified=dt_modified,
-                        file_was_processed=file_was_processed,
-                        new_path=new_path,
-                        file_meta=file_meta,
-                        source_file_meta=source_file_meta,
-                        export=export,
-                        retry_later=True,
-                        err=err,
-                    )
+                    # Transient dependency failures keep the queue row alive.
+                    task_flow.return_task_to_pending(db_bp, file_task_id, err)
                 except Exception as update_err:
                     log.error(
                         f"event=retry_requeue_failed error={update_err}"
                     )
 
+                # Even retryable outages deserve a short pause so a sick
+                # dependency does not cause this worker to churn through the
+                # same queue rows at maximum speed.
+                runtime_sleep.random_jitter_sleep()
                 continue
 
             # Definitive outcomes (success or fatal payload error) are closed
             # here so task deletion, trash handling, and history stay aligned.
             # Having one exit point avoids splitting queue state, history state,
             # and filesystem cleanup across many error branches above.
-            resolution = resolve_task_after_attempt(
+            resolution = task_flow.finalize_task_resolution(
                 db_bp,
                 file_task_id=file_task_id,
                 host_id=host_id,
@@ -973,7 +408,6 @@ def main():
                 file_meta=file_meta,
                 source_file_meta=source_file_meta,
                 export=export,
-                retry_later=False,
                 err=err,
             )
 
@@ -986,17 +420,28 @@ def main():
                     error=err.format_error() or "Processing failed",
                 )
 
+            # Phase 2 — End the iteration with the same jitter contract used by
+            # the other workers so success and fatal payload paths do not spin
+            # more aggressively than idle or retry paths.
+            runtime_sleep.random_jitter_sleep()
+
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
         err = errors.ErrorHandler(log)
+        # This outer boundary is for daemon-level crashes, not one FILE_TASK.
+        # The worker loop above already owns normal retry/error resolution.
         err.capture(
             reason="Fatal appAnalise processing worker crash",
             stage="MAIN",
             exc=e,
         )
         err.log_error()
-        release_busy_hosts_on_exit()
+        host_runtime.release_busy_hosts_for_current_pid(
+            db_factory=dbHandlerBKP,
+            database_name=k.BKP_DATABASE_NAME,
+            logger=log,
+        )
         raise

@@ -1,7 +1,7 @@
 """Routes for the task builder and recent task list."""
 
 from flask import Blueprint, Response, redirect, render_template, request, url_for
-from modules.task.service import create_task
+from modules.task.service import HOST_TASK_CHECK_TYPE, create_task
 from db import get_connection_bpdata as get_connection
 
 
@@ -97,7 +97,10 @@ def task_builder():
     db = get_connection()
     cursor = db.cursor()
     selected_host = request.args.get("host_id")
-    selected_task_type = request.args.get("task_type", "1")
+    # The builder now exposes only the conventional CHECK HOST_TASK. Keep the
+    # selected value pinned to the supported type even if stale query params
+    # still mention older task types that used to be visible in the UI.
+    selected_task_type = str(HOST_TASK_CHECK_TYPE)
     selected_execution_type = request.args.get("execution_type", "individual")
     selected_host_filter = request.args.get("host_filter", "ALL")
     selected_mode = request.args.get("mode", "NONE")
@@ -158,7 +161,10 @@ def task_builder():
     # --------------------------------------------------
     if request.method == "POST":
 
-        task_type = int(request.form.get("task_type"))
+        # WebFusion no longer allows ad-hoc statistics/check-connection task
+        # creation from the UI. The builder always requests the conventional
+        # CHECK task that drives the normal backend pipeline.
+        task_type = HOST_TASK_CHECK_TYPE
         execution_type = request.form.get("execution_type")
         mode = request.form.get("mode")
 

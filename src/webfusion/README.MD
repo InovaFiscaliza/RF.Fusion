@@ -1,160 +1,44 @@
-# WebFusion
+# webfusion
 
-`webfusion` is the web interface of RF.Fusion. It was built to help operators
-and developers inspect the platform without opening SQL clients or manually
-triggering maintenance commands.
+`webfusion` is the operator-facing web interface of RF.Fusion.
 
-In practice, WebFusion is the human-facing layer for four recurring jobs:
+It exists to let people inspect the system without opening SQL clients or
+touching the `appCataloga` runtime directly.
 
-- inspect station points on the Brazil map
+In practical terms, `webfusion` is used for four recurring jobs:
+
+- inspect monitored localities on the Brazil-centered map
 - query spectra and repository files
 - inspect host and server operational state
-- create `HOST_TASK` entries for appCataloga
+- request the conventional host-check flow that feeds `appCataloga`
+
+If the root [README.md](/RFFusion/README.md) explains the full platform, this
+file explains the `webfusion` application itself.
 
 ## Runtime Model
 
-The web stack is intentionally small:
+The runtime is intentionally small:
 
-- Flask provides routing and template rendering
-- `waitress` serves the WSGI application
-- `nginx` fronts the app in the deployment container
-- `nginx` also serves repository downloads directly from `/mnt/reposfi`
+- Flask provides routes and template rendering
+- `waitress` serves the WSGI app
+- `nginx` fronts the application in the container
+- `nginx` also serves repository-backed downloads directly from `/mnt/reposfi`
 
-This separation matters because the repository is mounted from CIFS. Letting
-`nginx` serve the file directly is much faster than pushing the whole payload
+This split matters because the repository is usually mounted from CIFS. Direct
+delivery through `nginx` is much more efficient than pushing large files
 through Flask.
 
-## Main Pages
+## What webfusion Reads
 
-### Home
+`webfusion` is read-heavy.
 
-- route: `/`
-- template: [index.html](/RFFusion/src/webfusion/templates/index.html)
-- purpose:
-  - show the station map
-  - provide quick navigation to the other modules
-  - expose quick actions from the popup of each plotted site
+It reads from:
 
-The home page renders first and loads station points asynchronously so the map
-does not block the whole application start.
-
-Important details:
-
-- the map plots processed-spectrum localities, not the full Zabbix/Grafana host
-  inventory
-- the station filter is a searchable combobox
-- duplicate station names in the same city are disambiguated with a more human
-  label:
-  - district/locality name when available
-  - fallback `ponto <ID_SITE>` only when no better distinction exists
-- popup actions are loaded on demand so the map can render before host
-  reconciliation is complete
-
-### Spectrum
-
-- routes: [routes.py](/RFFusion/src/webfusion/modules/spectrum/routes.py)
-- queries: [service.py](/RFFusion/src/webfusion/modules/spectrum/service.py)
-- template: [spectrum.html](/RFFusion/src/webfusion/templates/spectrum/spectrum.html)
-
-The spectrum module supports two complementary views:
-
-- `Spectrum` mode
-  - one row per spectrum
-  - useful when the spectrum itself is the object of analysis
-
-- `File` mode
-  - one row per repository file
-  - useful when the operator wants to avoid repeating the same official file
-    path across many spectra
-  - includes expandable linked spectra
-
-Current behavior worth knowing:
-
-- the locality filter follows the selected equipment/station, not the date
-  range
-- locality options are loaded asynchronously and cached for short periods
-- in `File` mode, the page requires at least one narrowing filter:
-  - locality
-  - start date
-  - end date
-- when a locality is selected but the result set is empty, the page can show
-  the observed date range available for that equipment/locality pair
-- downloads prefer direct `nginx` URLs and only fall back to Flask when needed
-
-### Server
-
-- route: `/server`
-- route code: [routes.py](/RFFusion/src/webfusion/modules/server/routes.py)
-- shared aggregation logic: [service.py](/RFFusion/src/webfusion/modules/host/service.py)
-- template: [server.html](/RFFusion/src/webfusion/templates/server/server.html)
-
-The server page is the global operational dashboard. It concentrates:
-
-- total hosts, online, offline, and busy
-- monthly backup consumption
-- global backup and processing counts
-- grouped processing errors
-- shared infrastructure status:
-  - RAM
-  - `/mnt/reposfi`
-  - `appAnalise` connectivity
-
-Important rule:
-the summary cards are global, while the table at the bottom can be filtered for
-navigation.
-
-Performance note:
-
-- heavy global cards are loaded after the page shell appears
-- grouped processing diagnostics are fetched only when the panel is expanded
-
-### Host
-
-- route: `/host`
-- route code: [routes.py](/RFFusion/src/webfusion/modules/host/routes.py)
-- service code: [service.py](/RFFusion/src/webfusion/modules/host/service.py)
-- template: [host.html](/RFFusion/src/webfusion/templates/host/host.html)
-
-The host page is station-focused. It should answer questions like:
-
-- is this station online?
-- when was the last discovery, backup, or processing event?
-- how much backup was consumed this month?
-- how many files are pending or failing?
-- what processing errors are most common for this host?
-
-The page intentionally avoids loading everything up front:
-
-- grouped processing errors are fetched on demand when the diagnostic panel is
-  opened
-- reconciled locality history from `RFDATA` is loaded asynchronously after the
-  station shell is rendered
-- the locality history answers not only "where is this host now?" but also
-  "where has this station been observed over time?"
-
-### Task
-
-- route prefix: `/task`
-- route code: [routes.py](/RFFusion/src/webfusion/modules/task/routes.py)
-- service code: [service.py](/RFFusion/src/webfusion/modules/task/service.py)
-- filter builder: [builder.py](/RFFusion/src/webfusion/modules/task/builder.py)
-- templates:
-  - [task_builder.html](/RFFusion/src/webfusion/templates/task/task_builder.html)
-  - [task_list.html](/RFFusion/src/webfusion/templates/task/task_list.html)
-
-This is the write-oriented module of WebFusion. It inserts or refreshes
-`HOST_TASK` rows in `BPDATA` for:
-
-- backup
-- update statistics
-- check connection
-
-The current protection layer is intentionally simple: HTTP Basic Auth with
-bootstrap credentials.
-
-## Data Sources
-
-WebFusion reads from two databases:
+- `BPDATA`
+  - host inventory
+  - host state
+  - host task queue
+  - file-task history
 
 - `RFDATA`
   - sites
@@ -162,59 +46,127 @@ WebFusion reads from two databases:
   - spectra
   - repository file metadata
 
-- `BPDATA`
-  - host inventory
-  - host state counters
-  - host task queue
-  - file-task history
+The UI is where these two worlds meet.
 
-The map is a good example of how both worlds meet:
+Example:
 
-1. geographic points come from `RFDATA.DIM_SPECTRUM_SITE`
-2. host actions come from `BPDATA.HOST`
-3. the association is resolved in Python through tolerant name matching
+- the map gets geographic points from `RFDATA`
+- host actions and operational context come from `BPDATA`
+- the association is reconciled in Python, not by a direct cross-database FK
 
-## Code Guide
+## Main Pages
 
-For someone less familiar with web services, these files are the best starting
-points:
+### Home
 
-1. [app.py](/RFFusion/src/webfusion/app.py)
-   - creates the Flask app
-   - registers blueprints
-   - exposes `/health`
-   - serves the station-map JSON APIs
+- route: `/`
+- template: [index.html](/RFFusion/src/webfusion/templates/index.html)
 
-2. [db.py](/RFFusion/src/webfusion/db.py)
-   - centralizes database connection helpers
+Purpose:
 
-3. Feature route modules
-   - each route module reads HTTP parameters
-   - delegates the heavy work to a service module
-   - renders the final template
+- render the station map shell
+- load station points asynchronously
+- provide navigation to host, server, spectrum and task views
 
-4. Feature service modules
-   - contain the SQL and aggregation rules
-   - prepare the dictionaries consumed by the templates
+Important behavior:
 
-This split is intentional: route files stay short, while service files hold the
-domain logic.
+- the map plots processed-spectrum localities, not the full Zabbix inventory
+- popup details are loaded on demand
+- the page is intentionally rendered before the full map dataset is ready
 
-## Downloads
+### Spectrum
 
-Repository-backed downloads follow this preferred path:
+- routes: [routes.py](/RFFusion/src/webfusion/modules/spectrum/routes.py)
+- service: [service.py](/RFFusion/src/webfusion/modules/spectrum/service.py)
+- template: [spectrum.html](/RFFusion/src/webfusion/templates/spectrum/spectrum.html)
 
-1. the query identifies the file path
-2. the table renders a direct `/downloads/...` URL when possible
-3. `nginx` serves the file from `/mnt/reposfi`
+This module supports two complementary views:
 
-Fallback Flask routes still exist, but they are not the preferred path for
-large downloads.
+- `Spectrum` mode
+  - one row per spectrum
+
+- `File` mode
+  - one row per repository file
+  - expandable linked spectra
+
+Important behavior:
+
+- `File` mode is repository-oriented, not `host_file`-oriented
+- downloads prefer direct `nginx` URLs
+- locality filters are loaded asynchronously
+
+### Server
+
+- route: `/server`
+- route code: [routes.py](/RFFusion/src/webfusion/modules/server/routes.py)
+- aggregation support: [service.py](/RFFusion/src/webfusion/modules/host/service.py)
+- template: [server.html](/RFFusion/src/webfusion/templates/server/server.html)
+
+This is the global operational dashboard.
+
+It answers questions such as:
+
+- how many hosts are online, offline or busy
+- how much backup volume was consumed
+- how many files failed processing
+- which grouped processing errors are most common
+- whether shared services such as `appAnalise` and `/mnt/reposfi` look healthy
+
+### Host
+
+- route: `/host`
+- route code: [routes.py](/RFFusion/src/webfusion/modules/host/routes.py)
+- service: [service.py](/RFFusion/src/webfusion/modules/host/service.py)
+- template: [host.html](/RFFusion/src/webfusion/templates/host/host.html)
+
+This is the station-focused operational page.
+
+It is meant to answer:
+
+- is this host online
+- when was the last discovery, backup or processing event
+- what is pending or failing
+- which processing errors are common for this host
+- where this station has been observed over time
+
+### Task
+
+- route prefix: `/task`
+- route code: [routes.py](/RFFusion/src/webfusion/modules/task/routes.py)
+- service: [service.py](/RFFusion/src/webfusion/modules/task/service.py)
+- builder support: [builder.py](/RFFusion/src/webfusion/modules/task/builder.py)
+- templates:
+  - [task_builder.html](/RFFusion/src/webfusion/templates/task/task_builder.html)
+  - [task_list.html](/RFFusion/src/webfusion/templates/task/task_list.html)
+
+This is the write-oriented module of `webfusion`.
+
+Current contract:
+
+- the UI only exposes the conventional `CHECK` host task
+- internal task types such as connection checks or statistics refresh still
+  exist in the backend, but are not offered manually in the UI
+- the module reuses the backend queue philosophy instead of creating endless
+  new `HOST_TASK` rows
+
+That means:
+
+- one logical reusable row per `FK_HOST + NU_TYPE`
+- pending or terminal rows are refreshed in place
+- running rows are preserved
+
+### Popup Helper
+
+- route: `/popup`
+- template: [popup.html](/RFFusion/src/webfusion/templates/popup/popup.html)
+
+This is a small legacy helper still used to preview filter payloads while older
+operational flows coexist with the newer task builder.
 
 ## Async APIs
 
-Several pages now rely on small JSON endpoints to keep the first render fast.
-The most important ones are:
+Several pages rely on small JSON endpoints so the first render stays fast.
+
+The main ones are:
 
 - `/api/map/stations`
 - `/api/map/stations/<site_id>`
@@ -225,59 +177,107 @@ The most important ones are:
 - `/api/host/<host_id>/locations`
 - `/api/host/<host_id>/processing-errors`
 
-## Directory Layout
+## Application Structure
 
-```text
-src/webfusion/
-├── app.py
-├── db.py
-├── modules/
-│   ├── host/
-│   ├── map/
-│   ├── server/
-│   ├── spectrum/
-│   └── task/
-├── static/
-│   ├── css/
-│   ├── fonts/
-│   ├── img/
-│   └── js/
-└── templates/
-    ├── host/
-    ├── popup/
-    ├── server/
-    ├── spectrum/
-    └── task/
+The most important files are:
+
+### [app.py](/RFFusion/src/webfusion/app.py)
+
+This is the application entrypoint.
+
+It:
+
+- creates the Flask app
+- registers the feature blueprints
+- exposes `/health`
+- keeps the landing page and small cross-module routes
+
+### [db.py](/RFFusion/src/webfusion/db.py)
+
+Centralizes database access helpers.
+
+### `modules/`
+
+This directory contains the application feature modules.
+
+Active modules:
+
+- `host/`
+- `map/`
+- `server/`
+- `spectrum/`
+- `task/`
+
+Practical note:
+
+- `map/` is currently service-oriented and is consumed from `app.py`
+- `dashboard/` and `popup/` directories exist in the tree, but they are not
+  active feature modules in the same way as the directories above
+
+### `templates/`
+
+Main templates:
+
+- [base.html](/RFFusion/src/webfusion/templates/base.html)
+- [index.html](/RFFusion/src/webfusion/templates/index.html)
+- [host/host.html](/RFFusion/src/webfusion/templates/host/host.html)
+- [server/server.html](/RFFusion/src/webfusion/templates/server/server.html)
+- [spectrum/spectrum.html](/RFFusion/src/webfusion/templates/spectrum/spectrum.html)
+- [task/task_builder.html](/RFFusion/src/webfusion/templates/task/task_builder.html)
+- [task/task_list.html](/RFFusion/src/webfusion/templates/task/task_list.html)
+- [popup/popup.html](/RFFusion/src/webfusion/templates/popup/popup.html)
+
+### `static/`
+
+Static assets such as CSS, fonts, images and JavaScript.
+
+## Downloads
+
+Repository-backed downloads follow this preferred path:
+
+1. the query resolves the repository file path
+2. the page renders a direct `/downloads/...` URL when possible
+3. `nginx` serves the file from `/mnt/reposfi`
+
+Fallback Flask delivery still exists for some situations, but it is not the
+preferred path for large files.
+
+## How To Run
+
+For container deployment, see:
+
+- [/RFFusion/install/webserver/README.MD](/RFFusion/install/webserver/README.MD)
+
+For a local application-level run, the current entrypoint is:
+
+```bash
+cd /RFFusion/src/webfusion
+/opt/conda/envs/appdata/bin/python app.py
 ```
 
-## Screenshot
+By default, `waitress` listens on:
 
-If the home screen screenshot should live in the repository, the recommended
-path is:
+- host: `127.0.0.1`
+- port: `8000`
 
-`/RFFusion/src/webfusion/static/img/docs/webfusion-home-screen.png`
+The health endpoint is:
 
-And the Markdown reference is:
+- `/health`
 
-```md
-![WebFusion Home Screen](./static/img/docs/webfusion-home-screen.png)
-```
+## Current Limitations
 
-## Deployment
+These are the main realities of the current codebase.
 
-The production-oriented container for WebFusion is documented in:
+- database credentials are still embedded in [db.py](/RFFusion/src/webfusion/db.py)
+- the task module still uses bootstrap HTTP Basic Auth credentials in code
+- some `site -> host` associations remain heuristic because the schema does not
+  expose a direct FK for that relationship
+- application logs go to process `stdout` and `stderr`; there is no dedicated
+  application file log configured in Flask itself
 
-- [README.MD](/RFFusion/install/webserver/README.MD)
+## Related Documentation
 
-That container keeps `nginx`, `waitress`, and `sshd` in a single runtime.
-
-## Operational Notes
-
-- Database credentials are still embedded in
-  [db.py](/RFFusion/src/webfusion/db.py). This is practical, but not a strong
-  long-term security posture.
-- The task module still uses bootstrap Basic Auth credentials in code.
-- Some map host associations remain heuristic because the schema does not
-  expose a direct `site -> host` foreign key.
-- WebFusion logs go to the container/process `stdout` and `stderr`; no
-  application file log is configured inside the Flask app today.
+- [/RFFusion/README.md](/RFFusion/README.md)
+- [/RFFusion/install/webserver/README.MD](/RFFusion/install/webserver/README.MD)
+- [/RFFusion/src/appCataloga/README.md](/RFFusion/src/appCataloga/README.md)
+- [/RFFusion/src/mariadb/scripts/DB_INTERCONNECTIONS.md](/RFFusion/src/mariadb/scripts/DB_INTERCONNECTIONS.md)

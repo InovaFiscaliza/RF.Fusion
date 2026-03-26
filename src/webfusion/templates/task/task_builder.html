@@ -362,8 +362,6 @@
                 <div class="select-shell">
                     <select name="task_type" class="form-control" required>
                         <option value="1" {% if selected_task_type == "1" %}selected{% endif %}>Backup</option>
-                        <option value="3" {% if selected_task_type == "3" %}selected{% endif %}>Update Statistics</option>
-                        <option value="4" {% if selected_task_type == "4" %}selected{% endif %}>Check Connection</option>
                     </select>
                 </div>
             </div>
@@ -835,12 +833,6 @@
         }
 
         function buildFilterSummary() {
-            const taskTypeLabel = taskType.selectedOptions[0] ? taskType.selectedOptions[0].textContent.trim() : "-";
-
-            if (taskTypeLabel === "Update Statistics" || taskTypeLabel === "Check Connection") {
-                return "Sem filtro de arquivos para este tipo de task.";
-            }
-
             const parts = [];
             const modeLabel = modeSelect.selectedOptions[0] ? modeSelect.selectedOptions[0].textContent.trim() : "NONE";
             parts.push("Modo " + modeLabel);

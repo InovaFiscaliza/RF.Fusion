@@ -7,44 +7,21 @@ has changed since the last published snapshot. The loop stays intentionally
 small because it is operational glue, not a data-processing pipeline.
 """
 
-import inspect
 import os
 import random
-import signal
 import sys
 import time
 
-
-# =================================================
-# PROJECT ROOT (shared/, db/, stations/)
-# =================================================
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+from bootstrap_paths import bootstrap_app_paths
 
 
-# =================================================
-# Config directory (etc/appCataloga)
-# =================================================
-_CFG_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga")
-)
-if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
-    sys.path.append(_CFG_DIR)
-
-
-# =================================================
-# DB directory
-# =================================================
-_DB_DIR = os.path.join(PROJECT_ROOT, "db")
-if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
-    sys.path.append(_DB_DIR)
+PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 
 # Import appCataloga modules
 import config as k
 from db.dbHandlerRFM import dbHandlerRFM
+from server_handler import signal_runtime
 from shared import errors, logging_utils
 
 
@@ -55,35 +32,10 @@ log = logging_utils.log()
 process_status = {"running": True}
 
 
-# ============================================================
-# Signal handling
-# ============================================================
-def _signal_handler(signal_name: str) -> None:
-    """
-    Register shutdown intent for the publication loop.
-    """
-    current_function = inspect.currentframe().f_back.f_code.co_name
-    log.signal_received(signal_name, handler=current_function)
-    process_status["running"] = False
-
-
-def sigterm_handler(signal=None, frame=None) -> None:
-    """
-    Handle SIGTERM by requesting a graceful shutdown.
-    """
-    _signal_handler("SIGTERM")
-
-
-def sigint_handler(signal=None, frame=None) -> None:
-    """
-    Handle SIGINT by requesting a graceful shutdown.
-    """
-    _signal_handler("SIGINT")
-
-
-# Register the signal handler function, to handle system kill commands
-signal.signal(signal.SIGTERM, sigterm_handler)
-signal.signal(signal.SIGINT, sigint_handler)
+signal_runtime.install_shutdown_handlers(
+    process_status=process_status,
+    logger=log,
+)
 
 
 def ensure_parent_directory(file_name: str) -> None:

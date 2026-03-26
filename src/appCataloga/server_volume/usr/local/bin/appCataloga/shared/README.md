@@ -93,12 +93,6 @@ Responsibilities:
 - coordinate `HALT_FLAG` ownership
 - provide the `hostDaemon` abstraction used by discovery flows
 
-### `legacy.py`
-
-Compatibility wrappers for older call sites.
-
-This module should stay small and mostly delegate to the newer shared modules.
-
 ### `constants.py`
 
 Small stable constants and sentinel objects shared across layers.
@@ -106,11 +100,6 @@ Small stable constants and sentinel objects shared across layers.
 ### `timeout_utils.py`
 
 Minimal timeout helper for call sites that only need execution time limits.
-
-### `sleep.py`
-
-Legacy compatibility placeholder. It currently has no active logic beyond
-config/bootstrap compatibility and should not be expanded.
 
 ## Supporting Documentation
 
@@ -127,7 +116,8 @@ cleanup effort. When a module looks legacy, the expectation is:
 - migrate callers gradually instead of rewriting blindly
 
 `shared old.py` is intentionally excluded from the active shared-layer
-documentation because it is considered fully legacy.
+documentation because it is considered fully legacy. Host/runtime helpers that
+used to live here now belong in `host_handler/` and `server_handler/`.
 
 ## Usage Guidance
 

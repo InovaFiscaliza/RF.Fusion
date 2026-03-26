@@ -2,18 +2,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-RFM-domain database handler for spectrum persistence.
-
-`dbHandlerRFM` owns the analytical side of appCataloga: sites, geography,
-files, procedures, spectrum entities, bridge tables, and Parquet publication.
-It builds on `DBHandlerBase`, while adding explicit transaction control for the
-multi-step ingestion pipeline.
+Database handler for RFDATA persistence and publication.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Optional, Tuple
 from datetime import datetime
 import pandas as pd
 import unicodedata
@@ -24,21 +19,17 @@ from .dbHandlerBase import DBHandlerBase
 
 
 class dbHandlerRFM(DBHandlerBase):
-    """RFM domain handler for spectrum hosts, files, tasks and measurements.
-
-    This class exposes a focused API to manage spectrum ingestion and processing
-    workflows. It delegates all low-level SQL operations to `DBHandlerBase`.
-    """
+    """Handler for sites, files, dimensions, spectra and Parquet export."""
     
     # ======================================================================
     # Initialization
     # ======================================================================
     def __init__(self, database: str, log: Any) -> None:
-        """Initialize the handler with the target database key and logger.
+        """Initialize the RFDATA handler and its transaction state.
 
-        Args:
-            database (str): Logical key resolved by `config.DB`.
-            log (Any): Logger implementing `.entry()`, `.warning()`, `.error()`.
+        `DBHandlerBase` owns the connection primitives. This subclass only
+        tracks whether the caller opened an explicit transaction that should
+        survive multiple helper calls.
         """
         super().__init__(database=database, log=log)
         self.log.entry(f"[dbHandlerRFM] Initialized for DB '{database}'")
@@ -46,8 +37,10 @@ class dbHandlerRFM(DBHandlerBase):
         
     
     def begin_transaction(self) -> None:
-        """
-        Begin an explicit database transaction for a multi-step ingestion flow.
+        """Start an explicit transaction for a multi-step ingestion flow.
+
+        The appAnalise worker persists several related rows in sequence. This
+        flag tells the handler to defer commits until the outer flow finishes.
         """
         self.in_transaction = True
         self._connect()
@@ -56,10 +49,10 @@ class dbHandlerRFM(DBHandlerBase):
 
 
     def commit(self) -> None:
-        """
-        Commit the current transaction.
+        """Commit the active managed transaction, if one exists.
 
-        Only effective if a transaction is active.
+        Standalone helpers still commit on their own. This method is only for
+        callers that previously entered `begin_transaction()`.
         """
         if not self.in_transaction:
             return
@@ -67,16 +60,16 @@ class dbHandlerRFM(DBHandlerBase):
         try:
             self.db_connection.commit()
         finally:
-            # Always restore connection state
+            # Restore default connection mode for later standalone calls.
             self.db_connection.autocommit = True
             self.in_transaction = False
 
 
     def rollback(self) -> None:
-        """
-        Roll back the current transaction.
+        """Roll back the active managed transaction, if one exists.
 
-        Used when any error occurs during a transactional workflow.
+        This is the symmetric exit path for `begin_transaction()` when any
+        part of the ingestion flow fails.
         """
         if not self.in_transaction:
             return
@@ -84,16 +77,15 @@ class dbHandlerRFM(DBHandlerBase):
         try:
             self.db_connection.rollback()
         finally:
-            # Always restore connection state
+            # Restore default connection mode for later standalone calls.
             self.db_connection.autocommit = True
             self.in_transaction = False
             
-    def _ensure_transaction(self):
-        """
-        Reassert `autocommit=False` when a managed transaction is active.
+    def _ensure_transaction(self) -> None:
+        """Restore `autocommit=False` after reconnects in managed flows.
 
-        This helper exists because `DBHandlerBase._connect()` defaults to
-        autocommit for non-transactional callers.
+        Some helpers may call `_connect()` again while a managed transaction is
+        already open. This keeps the connection aligned with the outer flow.
         """
         if self.in_transaction:
             try:
@@ -106,37 +98,28 @@ class dbHandlerRFM(DBHandlerBase):
     # SITE OPERATIONS
     # ======================================================================
     def _normalize_site_data(self, data: dict) -> dict:
-        """
-        Normalize and minimally enrich site data before persistence.
+        """Apply cheap cleanup before geographic key resolution.
 
-        Responsibilities:
-        - Trim geographic strings.
-        - Remove redundant district equal to county.
-        - Infer missing state via authoritative county lookup.
-
-        The method may perform read-only DB lookups and must remain safe both
-        inside and outside managed transactions.
+        This helper only normalizes the payload enough for catalog lookup. It
+        does not create rows or call reverse geocoding.
         """
 
-        # --------------------------------------------------
-        # Track connection state
-        # --------------------------------------------------
+        # If this helper had to open the connection, it should also be the one
+        # to close it again unless a managed transaction is active.
         connection_was_open = self.db_connection is not None
 
         try:
             if not connection_was_open:
                 self._connect()
 
-            # --------------------------------------------------
-            # Basic string cleanup
-            # --------------------------------------------------
+            # Keep the incoming payload stable before matching against the
+            # geography dimensions.
             for key in ["state", "county", "district", "site_name"]:
                 if data.get(key):
                     data[key] = data[key].strip()
 
-            # --------------------------------------------------
-            # Infer state via county if missing (DB authoritative)
-            # --------------------------------------------------
+            # When only the county is present, use the existing catalog as the
+            # safest place to infer the missing parent state.
             if not data.get("state") and data.get("county"):
                 try:
                     rows = self._select_rows(
@@ -158,15 +141,12 @@ class dbHandlerRFM(DBHandlerBase):
                             data["state"] = state_row[0]["NA_STATE"]
 
                 except Exception:
-                    # Silent fallback — let _get_geographic_codes handle failure
+                    # Let `_get_geographic_codes()` decide whether the miss is fatal.
                     pass
 
             return data
 
         finally:
-            # --------------------------------------------------
-            # Close connection only if we opened it
-            # --------------------------------------------------
             if not connection_was_open and not self.in_transaction:
                 try:
                     self._disconnect()
@@ -174,37 +154,29 @@ class dbHandlerRFM(DBHandlerBase):
                     pass
 
     
-
-    def _normalize_string(self, value: str) -> str:
-        """
-        Normalize Brazilian geographic names for deterministic comparison.
-        """
+    def _normalize_string(self, value: str) -> Optional[str]:
+        """Normalize geographic text before deterministic comparisons."""
         if not value:
             return None
 
         value = value.strip().lower()
 
-        # Remove accents
+        # Match catalog names independent of accents, apostrophes and spacing.
         value = unicodedata.normalize("NFKD", value)
         value = "".join(c for c in value if not unicodedata.combining(c))
 
-        # Remove apostrophes
         value = re.sub(r"[’'`]", "", value)
 
-        # Normalize spaces
         value = re.sub(r"\s+", " ", value)
 
         return value
 
 
     def _resolve_site_name(self, data: dict) -> Optional[str]:
-        """
-        Resolve the best human-readable label for a site.
+        """Choose the display label stored in `NA_SITE`.
 
-        Priority:
-        - explicit site name, when provided by future enrichments
-        - district, when reverse geocoding resolved a finer locality
-        - county, as the last safe geographic fallback
+        The site row needs one stable human-readable label. Prefer an explicit
+        name first, then fall back to the best available locality.
         """
         for key in ["site_name", "district", "county"]:
             value = data.get(key)
@@ -218,28 +190,20 @@ class dbHandlerRFM(DBHandlerBase):
 
 
     def insert_site(self, data: dict) -> int:
-        """
-        Insert a new site into `DIM_SPECTRUM_SITE`.
+        """Insert one row into `DIM_SPECTRUM_SITE`.
 
-        The geographic point (GEO_POINT) is inserted using a raw SQL expression
-        (ST_GeomFromText), while all other fields use parameter binding.
-
-        This method is transaction-aware:
-        • If called inside an active transaction, commit is deferred
-        • If called standalone, changes are committed immediately
+        The caller provides the centroid, altitude and already-resolved site
+        summary. This method resolves the administrative foreign keys and
+        persists the geometry row.
         """
 
         if not isinstance(data, dict):
             raise ValueError("data must be a dict")
 
         try:
-            # Normalize and enrich the raw geographic payload before resolving
-            # foreign keys or writing the geometry record.
+            # Normalize first so geography resolution sees the cleaned payload.
             data = self._normalize_site_data(data)
             
-            # --------------------------------------------------
-            # Resolve geographic foreign keys
-            # --------------------------------------------------
             db_state_id, db_county_id, db_district_id = (
                 self._get_geographic_codes(data=data)
             )
@@ -255,6 +219,13 @@ class dbHandlerRFM(DBHandlerBase):
                 "NA_SITE": self._resolve_site_name(data),
             }
 
+            # Mobile captures may carry a prepared WKT path in addition to the
+            # centroid stored in `GEO_POINT`.
+            if data.get("geographic_path"):
+                insert_data["GEOGRAPHIC_PATH"] = data["geographic_path"]
+
+            # `GEO_POINT` is written as a spatial expression; the remaining
+            # columns still use regular parameter binding.
             geom_expr = (
                 f"ST_GeomFromText("
                 f"'POINT({data['longitude']} {data['latitude']})'"
@@ -271,9 +242,6 @@ class dbHandlerRFM(DBHandlerBase):
 
             self.cursor.execute(sql, tuple(insert_data.values()))
 
-            # --------------------------------------------------
-            # Commit only if NOT inside a managed transaction
-            # --------------------------------------------------
             if not self.in_transaction:
                 self.db_connection.commit()
 
@@ -312,51 +280,21 @@ class dbHandlerRFM(DBHandlerBase):
         latitude_raw: list[float],
         altitude_raw: list[float],
     ) -> None:
-        """
-        Update an existing site using weighted GNSS averages.
+        """Update a fixed site's centroid using new GNSS samples.
 
-        The site location is updated using weighted averages based on previous
-        measurements stored in the database and new raw GNSS samples provided
-        by the current acquisition.
-
-        Only the numeric GNSS aggregate is updated here. Geographic labels
-        already resolved for the site (state/county/district/name) are kept
-        untouched so a later processing pass cannot degrade the existing
-        mapping with a new reverse-geocoding answer.
-
-        Updates are skipped when the configured maximum number of GNSS
-        measurements is reached.
-
-        Args:
-            site (int):
-                ID_SITE of the record in DIM_SPECTRUM_SITE to be updated.
-
-            longitude_raw (list[float]):
-                List of longitude samples (in degrees) from the current BIN file.
-
-            latitude_raw (list[float]):
-                List of latitude samples (in degrees) from the current BIN file.
-
-            altitude_raw (list[float]):
-                List of altitude samples (in meters) from the current BIN file.
-
-        Raises:
-            Exception:
-                If the site does not exist or if the update operation fails.
+        This path is only for fixed stations. Mobile rows keep the prepared
+        path stable and are not refined here by repeated centroid averaging.
         """
 
         try:
-            # --------------------------------------------------
-            # 1) Open / reuse connection
-            # --------------------------------------------------
+            # This helper may run inside a larger ingestion transaction, so it
+            # must reuse the caller's connection contract instead of opening an
+            # autonomous write flow.
             self._connect()
-
-            # IMPORTANT: this is a WRITE-capable function
             self._ensure_transaction()
 
-            # --------------------------------------------------
-            # 2) Read current site state
-            # --------------------------------------------------
+            # Read the current centroid and historical GNSS count before mixing
+            # in the new raw samples from the file being processed.
             rows = self._select_rows(
                 table="DIM_SPECTRUM_SITE",
                 where={"ID_SITE": site},
@@ -378,9 +316,8 @@ class dbHandlerRFM(DBHandlerBase):
             db_altitude = float(site_data["NU_ALTITUDE"])
             db_nu_gnss = int(site_data["NU_GNSS_MEASUREMENTS"])
 
-            # --------------------------------------------------
-            # 3) Check GNSS limit
-            # --------------------------------------------------
+            # After enough observations, keep the site stable and stop moving
+            # the centroid on every new file.
             if db_nu_gnss >= k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS:
                 if hasattr(self, "log"):
                     self.log.entry(
@@ -389,9 +326,8 @@ class dbHandlerRFM(DBHandlerBase):
                     )
                 return
 
-            # --------------------------------------------------
-            # 4) Compute weighted averages
-            # --------------------------------------------------
+            # Fold the new samples into the historical centroid using the
+            # stored measurement count as the previous weight.
             lon_sum = sum(longitude_raw) + (db_longitude * db_nu_gnss)
             lat_sum = sum(latitude_raw) + (db_latitude * db_nu_gnss)
             alt_sum = sum(altitude_raw) + (db_altitude * db_nu_gnss)
@@ -401,9 +337,8 @@ class dbHandlerRFM(DBHandlerBase):
             new_latitude = lat_sum / nu_total
             new_altitude = alt_sum / nu_total
 
-            # --------------------------------------------------
-            # 5) Perform UPDATE (NO COMMIT HERE)
-            # --------------------------------------------------
+            # Update only the numeric GNSS aggregates. State/county/district
+            # remain untouched once the site row already exists.
             sql = (
                 "UPDATE DIM_SPECTRUM_SITE "
                 "SET GEO_POINT = ST_GeomFromText(%s), "
@@ -415,6 +350,7 @@ class dbHandlerRFM(DBHandlerBase):
             wkt_point = f"POINT({new_longitude} {new_latitude})"
             self.cursor.execute(sql, (wkt_point, new_altitude, nu_total, site))
 
+            # Commit stays with the caller when a managed transaction is open.
             if hasattr(self, "log"):
                 self.log.entry(
                     f"Updated site {site}: "
@@ -424,71 +360,81 @@ class dbHandlerRFM(DBHandlerBase):
                 )
 
         except Exception as e:
-            # DO NOT rollback here – let caller decide
             raise Exception(f"Error updating site {site}: {e}")
 
 
     def get_site_id(self, data: dict) -> int | bool:
-        """Return the nearest site ID when the coordinates fall within tolerance.
+        """Return the matching `ID_SITE`, or `False` when none matches.
 
-        Retrieves the nearest site from DIM_SPECTRUM_SITE using _select_rows and
-        checks whether it lies within the GNSS deviation threshold.
-
-        Args:
-            data (dict): {"latitude": float, "longitude": float}
-                Site information with required coordinates.
-
-        Raises:
-            Exception: Error retrieving location coordinates from database.
-
-        Returns:
-            int | bool: ID_SITE if location is valid and within deviation,
-                        otherwise False.
+        The lookup starts from the nearest stored sites and then applies the
+        RF.Fusion matching rule: fixed sites match by centroid tolerance;
+        mobile sites also require the same stored `GEOGRAPHIC_PATH`.
         """
         try:
-            # Ensure connection before querying
             self._connect()
 
-            # Prepare computed columns
+            # Ask the database for the nearest candidates first. The Python
+            # side then applies the fixed/mobile matching rules.
             cols = [
                 "ID_SITE",
                 "ST_X(GEO_POINT) AS LONGITUDE",
                 "ST_Y(GEO_POINT) AS LATITUDE",
+                "GEOGRAPHIC_PATH",
                 f"ST_Distance_Sphere(GEO_POINT, ST_GeomFromText('POINT({data['longitude']} {data['latitude']})', 4326)) AS DISTANCE"
             ]
 
-            # Select nearest site using helper
             rows = self._select_rows(
                 table="DIM_SPECTRUM_SITE",
                 order_by="DISTANCE ASC",
-                limit=1,
+                limit=20,
                 cols=cols
             )
 
             if not rows:
                 return False
 
-            nearest = rows[0]
+            incoming_path = data.get("geographic_path")
 
-            nearest_site_id = int(nearest["ID_SITE"])
-            nearest_longitude = float(nearest["LONGITUDE"])
-            nearest_latitude = float(nearest["LATITUDE"])
+            # The nearest row is not necessarily a valid match; a nearby site
+            # from a different locality or a different mobile polygon must be
+            # rejected.
+            for nearest in rows:
+                nearest_site_id = int(nearest["ID_SITE"])
+                nearest_longitude = float(nearest["LONGITUDE"])
+                nearest_latitude = float(nearest["LATITUDE"])
+                stored_path = nearest.get("GEOGRAPHIC_PATH")
 
-            # Validate coordinate proximity
-            near_in_longitude = abs(data["longitude"] - nearest_longitude) < k.MAXIMUM_GNSS_DEVIATION
-            near_in_latitude = abs(data["latitude"] - nearest_latitude) < k.MAXIMUM_GNSS_DEVIATION
-            location_exist_in_db = near_in_latitude and near_in_longitude
+                if isinstance(stored_path, bytes):
+                    stored_path = stored_path.decode("utf-8", errors="replace")
 
-            if location_exist_in_db:
-                return nearest_site_id
-            else:
-                return False
+                near_in_longitude = (
+                    abs(data["longitude"] - nearest_longitude)
+                    < k.MAXIMUM_GNSS_DEVIATION
+                )
+                near_in_latitude = (
+                    abs(data["latitude"] - nearest_latitude)
+                    < k.MAXIMUM_GNSS_DEVIATION
+                )
+                location_exist_in_db = near_in_latitude and near_in_longitude
+
+                if not location_exist_in_db:
+                    continue
+
+                # Mobile rows also require the same stored path.
+                if incoming_path:
+                    if stored_path == incoming_path:
+                        return nearest_site_id
+                    continue
+
+                if not stored_path:
+                    return nearest_site_id
+
+            return False
 
         except Exception as e:
             raise Exception(f"Error retrieving location coordinates from database: {e}")
 
         finally:
-            # Always close connection
             try:
                 self._disconnect()
             except Exception:
@@ -496,67 +442,18 @@ class dbHandlerRFM(DBHandlerBase):
 
 
     def _get_geographic_codes(self, data: dict) -> Tuple[int, int, int]:
-        """
-        Resolve foreign keys for state, county, and district.
+        """Resolve `FK_STATE`, `FK_COUNTY` and optional `FK_DISTRICT`.
 
-        This method performs robust normalization to safely match
-        Nominatim-derived values against authoritative IBGE-based tables.
-
-        Resolution Strategy
-        -------------------
-        1. STATE:
-        - Attempt direct match.
-        - If not found, perform normalized comparison
-            (accent-insensitive, apostrophe-insensitive).
-
-        2. COUNTY:
-        - Restricted to the resolved state.
-        - Uses normalized comparison.
-        - Applies a very small, controlled exception map
-            for known orthographic divergences (e.g. Assu → Açu).
-
-        3. DISTRICT:
-        - Optional.
-        - If present, attempts normalized lookup within county.
-        - Inserts new district only if not found.
-
-        Design Guarantees
-        -----------------
-        - No fuzzy matching.
-        - No phonetic heuristics.
-        - Deterministic resolution.
-        - Authoritative tables (DIM_SITE_STATE / DIM_SITE_COUNTY)
-        are treated as ground truth.
-        - Safe to call inside transactions.
-
-        Parameters
-        ----------
-        data : dict
-            Must contain at least:
-                {
-                    "state": str,
-                    "county": str,
-                    "district": Optional[str]
-                }
-
-        Returns
-        -------
-        Tuple[int, int, int]
-            (db_state_id, db_county_id, db_district_id)
-
-        Raises
-        ------
-        Exception
-            If state or county cannot be resolved.
+        Matching is deterministic: try the catalog value as-is first, then
+        fall back to normalized comparison. County is always resolved within
+        the chosen state. District is optional and may be auto-created when
+        that policy is enabled.
         """
 
         try:
             self._connect()
 
-            # ===========================================================
-            # 1️⃣ STATE RESOLUTION
-            # ===========================================================
-            # First attempt strict match (fast path)
+            # State: exact match first, normalized comparison as fallback.
             rows = self._select_rows(
                 table="DIM_SITE_STATE",
                 where={"NA_STATE": data["state"]},
@@ -565,11 +462,8 @@ class dbHandlerRFM(DBHandlerBase):
             )
 
             if not rows:
-                # -------------------------------------------------------
-                # Fallback: normalized comparison
-                # (handles accent differences such as:
-                #  "Sao Paulo" vs "São Paulo")
-                # -------------------------------------------------------
+                # Reverse geocoding often differs only by accents or apostrophe
+                # usage, so the fallback stays deterministic instead of fuzzy.
                 all_states = self._select_rows(
                     table="DIM_SITE_STATE",
                     cols=["ID_STATE", "NA_STATE"],
@@ -590,20 +484,13 @@ class dbHandlerRFM(DBHandlerBase):
             else:
                 db_state_id = int(rows[0]["ID_STATE"])
 
-            # ===========================================================
-            # 2️⃣ COUNTY RESOLUTION
-            # ===========================================================
-            # Special case: Federal District
+            # Federal District uses the synthetic county key from the catalog.
             if db_state_id == 53:
                 db_county_id = 5300108
             else:
                 normalized_input = self._normalize_string(data["county"])
 
-                # -------------------------------------------------------
-                # Controlled orthographic exceptions
-                # These handle known historical/OSM divergences
-                # without enabling fuzzy matching.
-                # -------------------------------------------------------
+                # Small map for known OSM/IBGE spelling differences.
                 COUNTY_EXCEPTIONS = {
                     "assu": "acu",        # Assu (OSM) → Açu (IBGE)
                     "iguassu": "iguacu",  # Iguassu → Iguaçu
@@ -620,6 +507,8 @@ class dbHandlerRFM(DBHandlerBase):
 
                 db_county_id = None
 
+                # County must be resolved inside the already-chosen state, so
+                # two states can safely have the same county name.
                 for row in rows:
                     normalized_db = self._normalize_string(row["NA_COUNTY"])
                     if normalized_db == normalized_input:
@@ -631,12 +520,11 @@ class dbHandlerRFM(DBHandlerBase):
                         f"County '{data['county']}' not found for state ID {db_state_id}"
                     )
 
-            # ===========================================================
-            # 3️⃣ DISTRICT RESOLUTION (OPTIONAL)
-            # ===========================================================
             db_district_id = None
 
             if data.get("district"):
+                # District is optional; when present, try to reuse the existing
+                # county-scoped catalog before considering auto-creation.
                 normalized_input = self._normalize_string(data["district"])
 
                 rows = self._select_rows(
@@ -650,18 +538,7 @@ class dbHandlerRFM(DBHandlerBase):
                         db_district_id = int(row["ID_DISTRICT"])
                         break
 
-                # -------------------------------------------------------
-                # A district equal to the county is not discarded here.
-                # Some curated legacy fixes intentionally use the municipal
-                # seat name as the district label, so the safe behavior is to
-                # try matching the catalog first and only leave FK_DISTRICT
-                # null when no deterministic district exists.
-                #
-                # Reverse geocoding is helpful, but not authoritative enough
-                # to silently expand the district dimension unless that policy
-                # is explicitly enabled. The conservative default is to keep
-                # FK_DISTRICT null when no deterministic match exists.
-                # -------------------------------------------------------
+                # Only create after a deterministic miss in the existing catalog.
                 if not db_district_id and k.SITE_DISTRICT_AUTO_CREATE:
                     db_district_id = self._insert_row(
                         table="DIM_SITE_DISTRICT",
@@ -671,9 +548,6 @@ class dbHandlerRFM(DBHandlerBase):
                         },
                     )
 
-            # ===========================================================
-            # Return resolved keys
-            # ===========================================================
             return db_state_id, db_county_id, db_district_id
 
         except Exception as e:
@@ -690,21 +564,16 @@ class dbHandlerRFM(DBHandlerBase):
     # FILE OPERATIONS
     # ======================================================================
     def build_path(self, site_id: int) -> str:
-        """Build the path to the site folder in the format "LC_STATE/county_id/site_id".
+        """Return the canonical repository subpath for one site.
 
-        Args:
-            site_id (int): DB key of the site.
-
-        Raises:
-            Exception: If site path retrieval fails.
-
-        Returns:
-            str: Formatted path string.
+        The path is derived from the site dimension itself so the filesystem
+        layout stays aligned with the geographic catalog.
         """
         try:
             self._connect()
 
-            # Use the standard select helper
+            # The path is built from the stored site/state keys, not from any
+            # caller-provided geography string.
             rows = self._select_rows(
                 table="DIM_SPECTRUM_SITE "
                     "JOIN DIM_SITE_STATE ON DIM_SPECTRUM_SITE.FK_STATE = DIM_SITE_STATE.ID_STATE",
@@ -732,32 +601,16 @@ class dbHandlerRFM(DBHandlerBase):
                 self._disconnect()
             except Exception:
                 pass
+
     def get_file_type_id_by_hostname(
         self,
         HOSTNAME: str,
     ) -> int:
-        """
-        Resolve ID_TYPE_FILE from DIM_FILE_TYPE based on hostname matching.
+        """Resolve `ID_TYPE_FILE` from hostname substring matching.
 
-        Matching rule:
-            DIM_FILE_TYPE.NA_EQUIPMENT must be a substring of hostname (case-insensitive).
-
-        Example:
-            hostname = 'rfeye002106'
-            matches NA_EQUIPMENT = 'rfeye'
-
-        Args:
-            HOSTNAME (str):
-                Hostname of the equipment (e.g. 'rfeye002106').
-
-        Returns:
-            int:
-                ID_TYPE_FILE
-
-        Raises:
-            Exception:
-                • If no file type matches hostname
-                • If more than one file type matches (ambiguous)
+        `DIM_FILE_TYPE` stores short equipment markers. This helper finds the
+        single marker that matches the given hostname and falls back to
+        `others` when no specific match exists.
         """
 
         if not isinstance(HOSTNAME, str) or not HOSTNAME:
@@ -774,6 +627,8 @@ class dbHandlerRFM(DBHandlerBase):
 
             matches = []
 
+            # File type rows store equipment fragments such as `rfeye` or
+            # `cwsm`, so the match is intentionally substring-based.
             for r in rows:
                 na_equipment = str(r["NA_EQUIPMENT"]).lower()
 
@@ -781,6 +636,19 @@ class dbHandlerRFM(DBHandlerBase):
                     matches.append(r)
 
             if not matches:
+                # Keep a deterministic fallback when the hostname is generic or
+                # not yet represented in the file type catalog.
+                fallback = next(
+                    (
+                        r for r in rows
+                        if str(r["NA_EQUIPMENT"]).strip().lower() == "others"
+                    ),
+                    None,
+                )
+
+                if fallback:
+                    return int(fallback["ID_TYPE_FILE"])
+
                 raise Exception(
                     f"No matching file type found for hostname '{HOSTNAME}'"
                 )
@@ -810,20 +678,13 @@ class dbHandlerRFM(DBHandlerBase):
         DT_FILE_CREATED: datetime | None = None,
         DT_FILE_MODIFIED: datetime | None = None,
     ) -> int:
-        """
-        Insert or retrieve a file entry in DIM_SPECTRUM_FILE.
+        """Insert or retrieve one row from `DIM_SPECTRUM_FILE`.
 
-        Uniqueness:
-            (NA_VOLUME, NA_PATH, NA_FILE)
-
-        Transaction behavior:
-            • If called inside an active transaction, insertion is deferred
-            • If called standalone, changes are committed immediately
+        The file row represents the stored artifact itself. Deduplication is
+        based on repository location, while `hostname` is only used to resolve
+        the file type dimension.
         """
 
-        # ------------------------------------------------------
-        # Validation
-        # ------------------------------------------------------
         if not isinstance(hostname, str) or not hostname:
             raise ValueError("hostname must be non-empty str")
 
@@ -838,16 +699,13 @@ class dbHandlerRFM(DBHandlerBase):
 
         self._connect()
         try:
-            # --------------------------------------------------
-            # Resolve file type
-            # --------------------------------------------------
+            # Resolve the type before checking file identity so a newly-seen
+            # artifact is always inserted with a complete dimension reference.
             ID_TYPE_FILE = self.get_file_type_id_by_hostname(
                 HOSTNAME=hostname
             )
 
-            # --------------------------------------------------
-            # Lookup existing file
-            # --------------------------------------------------
+            # Repository location is the file identity contract in RFDATA.
             rows = self._select_rows(
                 table="DIM_SPECTRUM_FILE",
                 where={
@@ -862,9 +720,7 @@ class dbHandlerRFM(DBHandlerBase):
             if rows:
                 return int(rows[0]["ID_FILE"])
 
-            # --------------------------------------------------
-            # Insert new file
-            # --------------------------------------------------
+            # Insert only when this exact repository artifact is still unknown.
             file_id = self._insert_row(
                 table="DIM_SPECTRUM_FILE",
                 data={
@@ -879,9 +735,6 @@ class dbHandlerRFM(DBHandlerBase):
                 },
             )
 
-            # --------------------------------------------------
-            # Commit only if not in a managed transaction
-            # --------------------------------------------------
             if not self.in_transaction:
                 self.db_connection.commit()
 
@@ -907,14 +760,10 @@ class dbHandlerRFM(DBHandlerBase):
     # PROCEDURE OPERATIONS
     # ======================================================================
     def insert_procedure(self, procedure_name: str) -> int:
-        """
-        Insert or retrieve a procedure entry in DIM_SPECTRUM_PROCEDURE.
+        """Insert or retrieve one row from `DIM_SPECTRUM_PROCEDURE`.
 
-        Args:
-            procedure_name (str): Name of the acquisition or processing procedure.
-
-        Returns:
-            int: ID_PROCEDURE
+        Procedure names are reused across many spectra, so this helper keeps
+        the dimension idempotent and cheap for repeated worker runs.
         """
 
         if not isinstance(procedure_name, str) or not procedure_name.strip():
@@ -922,9 +771,7 @@ class dbHandlerRFM(DBHandlerBase):
 
         self._connect()
         try:
-            # --------------------------------------------------
-            # Lookup existing procedure
-            # --------------------------------------------------
+            # Procedures are identified by name only.
             rows = self._select_rows(
                 table="DIM_SPECTRUM_PROCEDURE",
                 where={"NA_PROCEDURE": procedure_name},
@@ -935,15 +782,11 @@ class dbHandlerRFM(DBHandlerBase):
             if rows:
                 return int(rows[0]["ID_PROCEDURE"])
 
-            # --------------------------------------------------
-            # Insert new procedure
-            # --------------------------------------------------
             procedure_id = self._insert_row(
                 table="DIM_SPECTRUM_PROCEDURE",
                 data={"NA_PROCEDURE": procedure_name},
             )
 
-            # Commit only if not inside a managed transaction
             if not self.in_transaction:
                 self.db_connection.commit()
 
@@ -969,20 +812,10 @@ class dbHandlerRFM(DBHandlerBase):
     # ======================================================================
     
     def _get_equipment_types(self) -> dict:
-        """
-        Load all equipment types.
+        """Load equipment types keyed by normalized UID.
 
-        Returns:
-            dict:
-                {
-                    "rfeye": {
-                        "id": 1
-                    },
-                    "etm": {
-                        "id": 2
-                    },
-                    ...
-                }
+        This is a small lookup helper used by the spectrum equipment resolver
+        to infer `FK_EQUIPMENT_TYPE` from the payload receiver name.
         """
         try:
             self._connect()
@@ -995,6 +828,8 @@ class dbHandlerRFM(DBHandlerBase):
                 ],
             )
 
+            # Keep the shape lightweight because callers only need the type id
+            # after matching the UID inside the receiver string.
             equipment_types = {
                 str(r["NA_EQUIPMENT_TYPE_UID"]).strip().lower(): {
                     "id": int(r["ID_EQUIPMENT_TYPE"]),
@@ -1016,20 +851,10 @@ class dbHandlerRFM(DBHandlerBase):
         self,
         equipment_name: str
     ) -> int:
-        """
-        Retrieve or create a spectrum equipment in DIM_SPECTRUM_EQUIPMENT.
+        """Insert or retrieve one row from `DIM_SPECTRUM_EQUIPMENT`.
 
-        Model:
-            • One row per physical equipment
-            • No ports or sub-entities
-
-        Args:
-            equipment_name (str):
-                Logical equipment name (e.g. 'rfeye002106').
-
-        Returns:
-            int:
-                ID_EQUIPMENT
+        The payload may name different receivers even inside one processed
+        file. This helper keeps equipment identity per receiver string.
         """
 
         if not isinstance(equipment_name, str) or not equipment_name.strip():
@@ -1039,9 +864,8 @@ class dbHandlerRFM(DBHandlerBase):
         self._connect()
 
         try:
-            # --------------------------------------------------
-            # 1) Resolve equipment type
-            # --------------------------------------------------
+            # Equipment type is inferred from the normalized name using the
+            # type UID catalog, not from the operational host.
             equipment_types = self._get_equipment_types()
             eq_type = None
 
@@ -1057,9 +881,8 @@ class dbHandlerRFM(DBHandlerBase):
 
             equipment_type_id = eq_type["id"]
 
-            # --------------------------------------------------
-            # 2) Lookup existing equipment
-            # --------------------------------------------------
+            # Once the type is known, equipment identity is the normalized
+            # receiver string itself.
             rows = self._select_rows(
                 table="DIM_SPECTRUM_EQUIPMENT",
                 where={"NA_EQUIPMENT": name},
@@ -1070,9 +893,6 @@ class dbHandlerRFM(DBHandlerBase):
             if rows:
                 return int(rows[0]["ID_EQUIPMENT"])
 
-            # --------------------------------------------------
-            # 3) Insert new equipment
-            # --------------------------------------------------
             equipment_id = self._insert_row(
                 table="DIM_SPECTRUM_EQUIPMENT",
                 data={
@@ -1081,7 +901,6 @@ class dbHandlerRFM(DBHandlerBase):
                 },
             )
 
-            # Commit only if not part of a larger transaction
             if not self.in_transaction:
                 self.db_connection.commit()
 
@@ -1107,16 +926,10 @@ class dbHandlerRFM(DBHandlerBase):
     # DETECTOR OPERATIONS
     # ======================================================================
     def insert_detector_type(self, detector: str) -> int:
-        """
-        Insert or retrieve a detector type in DIM_SPECTRUM_DETECTOR.
+        """Insert or retrieve one row from `DIM_SPECTRUM_DETECTOR`.
 
-        Args:
-            detector (str):
-                Detector name (e.g. 'PMEC').
-
-        Returns:
-            int:
-                ID_DETECTOR
+        Detector names are treated as stable dimension values and reused
+        across files and equipment.
         """
 
         if not isinstance(detector, str) or not detector.strip():
@@ -1126,9 +939,7 @@ class dbHandlerRFM(DBHandlerBase):
         self._connect()
 
         try:
-            # --------------------------------------------------
-            # 1) Lookup existing detector
-            # --------------------------------------------------
+            # Detector identity is just the cleaned detector label.
             rows = self._select_rows(
                 table="DIM_SPECTRUM_DETECTOR",
                 where={"NA_DETECTOR": detector},
@@ -1139,15 +950,11 @@ class dbHandlerRFM(DBHandlerBase):
             if rows:
                 return int(rows[0]["ID_DETECTOR"])
 
-            # --------------------------------------------------
-            # 2) Insert new detector
-            # --------------------------------------------------
             detector_id = self._insert_row(
                 table="DIM_SPECTRUM_DETECTOR",
                 data={"NA_DETECTOR": detector},
             )
 
-            # Commit only if standalone
             if not self.in_transaction:
                 self.db_connection.commit()
 
@@ -1172,16 +979,10 @@ class dbHandlerRFM(DBHandlerBase):
     # MEASUREMENTS OPERATIONS
     # ======================================================================
     def insert_measure_unit(self, unit_name: str) -> int:
-        """
-        Insert or retrieve a measurement unit in DIM_SPECTRUM_UNIT.
+        """Insert or retrieve one row from `DIM_SPECTRUM_UNIT`.
 
-        Args:
-            unit_name (str):
-                Measurement unit (e.g. 'dBm').
-
-        Returns:
-            int:
-                ID_MEASURE_UNIT
+        Units such as `dBm` and `dBuV` are tiny dimensions but still need
+        deduplication because every spectrum references them.
         """
 
         if not isinstance(unit_name, str) or not unit_name.strip():
@@ -1191,9 +992,7 @@ class dbHandlerRFM(DBHandlerBase):
         self._connect()
 
         try:
-            # --------------------------------------------------
-            # 1) Lookup existing measurement unit
-            # --------------------------------------------------
+            # Measure unit identity is the cleaned unit label.
             rows = self._select_rows(
                 table="DIM_SPECTRUM_UNIT",
                 where={"NA_MEASURE_UNIT": unit_name},
@@ -1204,15 +1003,11 @@ class dbHandlerRFM(DBHandlerBase):
             if rows:
                 return int(rows[0]["ID_MEASURE_UNIT"])
 
-            # --------------------------------------------------
-            # 2) Insert new measurement unit
-            # --------------------------------------------------
             unit_id = self._insert_row(
                 table="DIM_SPECTRUM_UNIT",
                 data={"NA_MEASURE_UNIT": unit_name},
             )
 
-            # Commit only if standalone
             if not self.in_transaction:
                 self.db_connection.commit()
 
@@ -1237,20 +1032,10 @@ class dbHandlerRFM(DBHandlerBase):
     # SPECTRUM OPERATIONS
     # ======================================================================
     def insert_spectrum(self, data: dict) -> int:
-        """
-        Insert or retrieve a spectrum entry in FACT_SPECTRUM.
+        """Insert or retrieve one row from `FACT_SPECTRUM`.
 
-        Uniqueness is based on site, equipment, procedure,
-        temporal window and spectral range to avoid duplicates
-        during retries.
-
-        Args:
-            data (dict):
-                Fully resolved foreign keys and spectrum metadata.
-
-        Returns:
-            int:
-                ID_SPECTRUM
+        The lookup keys are chosen to make worker retries idempotent without
+        requiring a separate deduplication pass.
         """
 
         required_keys = (
@@ -1273,9 +1058,8 @@ class dbHandlerRFM(DBHandlerBase):
 
         self._connect()
         try:
-            # --------------------------------------------------
-            # 1) Lookup existing spectrum (idempotency)
-            # --------------------------------------------------
+            # The fact row is considered the same spectrum when the resolved
+            # site/equipment/procedure/time/frequency window already exists.
             rows = self._select_rows(
                 table="FACT_SPECTRUM",
                 where={
@@ -1296,16 +1080,13 @@ class dbHandlerRFM(DBHandlerBase):
             if rows:
                 return int(rows[0]["ID_SPECTRUM"])
 
-            # --------------------------------------------------
-            # 2) Normalize JSON metadata
-            # --------------------------------------------------
+            # Accept either serialized JSON or a dict.
             js_metadata = data.get("js_metadata")
             if isinstance(js_metadata, dict):
                 js_metadata = json.dumps(js_metadata)
 
-            # --------------------------------------------------
-            # 3) Insert new spectrum
-            # --------------------------------------------------
+            # At this point all foreign keys were already resolved by the
+            # caller, so this insert stays purely relational.
             spectrum_id = self._insert_row(
                 table="FACT_SPECTRUM",
                 data={
@@ -1330,7 +1111,6 @@ class dbHandlerRFM(DBHandlerBase):
                 },
             )
 
-            # Commit only if standalone
             if not self.in_transaction:
                 self.db_connection.commit()
 
@@ -1350,16 +1130,10 @@ class dbHandlerRFM(DBHandlerBase):
 
     
     def insert_trace_type(self, trace_name: str) -> int:
-        """
-        Insert or retrieve a trace type in DIM_SPECTRUM_TRACE_TYPE.
+        """Insert or retrieve one row from `DIM_SPECTRUM_TRACE_TYPE`.
 
-        Args:
-            trace_name (str):
-                Trace type name (e.g. 'peak').
-
-        Returns:
-            int:
-                ID_TRACE_TYPE
+        Trace labels are reused heavily, so this helper keeps them normalized
+        in one small dimension table.
         """
 
         if not isinstance(trace_name, str) or not trace_name.strip():
@@ -1369,9 +1143,7 @@ class dbHandlerRFM(DBHandlerBase):
         self._connect()
 
         try:
-            # --------------------------------------------------
-            # 1) Lookup existing trace type
-            # --------------------------------------------------
+            # Trace identity is just the cleaned trace label.
             rows = self._select_rows(
                 table="DIM_SPECTRUM_TRACE_TYPE",
                 where={"NA_TRACE_TYPE": trace_name},
@@ -1382,15 +1154,11 @@ class dbHandlerRFM(DBHandlerBase):
             if rows:
                 return int(rows[0]["ID_TRACE_TYPE"])
 
-            # --------------------------------------------------
-            # 2) Insert new trace type
-            # --------------------------------------------------
             trace_id = self._insert_row(
                 table="DIM_SPECTRUM_TRACE_TYPE",
                 data={"NA_TRACE_TYPE": trace_name},
             )
 
-            # Commit only if standalone
             if not self.in_transaction:
                 self.db_connection.commit()
 
@@ -1411,49 +1179,6 @@ class dbHandlerRFM(DBHandlerBase):
                 self._disconnect()
 
     # ======================================================================
-    # BRIDGE SPECTRUM OPERATIONS
-    # ======================================================================
-    def insert_bridge_spectrum_equipment(self, spectrum_lst: list) -> None:
-        """
-        Insert N:N relationships between spectrum and spectrum-equipment (antenna port).
-
-        Expected input:
-            spectrum_lst = [
-                {
-                    "spectrum": <ID_SPECTRUM>,
-                    "equipment": <ID_DIM_SPECTRUM_EQUIPMENT>
-                },
-                ...
-            ]
-
-        Transaction control:
-            - No commit
-            - No rollback
-            - Managed by caller
-        """
-
-        self._connect()
-
-        try:
-            for entry in spectrum_lst:
-                spectrum_id = entry["spectrum"]
-                dim_equipment_id = entry["equipment"]
-
-                self.cursor.execute(
-                    "INSERT IGNORE INTO BRIDGE_SPECTRUM_EQUIPMENT "
-                    "(FK_SPECTRUM, FK_EQUIPMENT) VALUES (%s, %s);",
-                    (spectrum_id, dim_equipment_id),
-                )
-
-        except Exception as e:
-            raise Exception(f"insert_bridge_spectrum_equipment failed: {e}")
-
-        finally:
-            if not self.in_transaction:
-                self._disconnect()
-
-
-    # ======================================================================
     # BRIDGE SPECTRUM FILE OPERATIONS
     # ======================================================================
     def insert_bridge_spectrum_file(
@@ -1461,25 +1186,19 @@ class dbHandlerRFM(DBHandlerBase):
         spectrum_ids: list[int],
         file_ids: list[int],
     ) -> None:
-        """
-        Insert N:N relationships between spectra and files.
+        """Insert many-to-many links between spectra and files.
 
-        Model:
-            • One file may contain multiple spectra
-            • One spectrum may be linked to multiple files (reprocessing)
-
-        Args:
-            spectrum_ids (list[int]):
-                List of ID_SPECTRUM values.
-            file_ids (list[int]):
-                List of ID_FILE values.
+        One processed artifact may map to many spectra, and the same spectrum
+        may later be linked to more than one file artifact.
         """
 
         if not spectrum_ids or not file_ids:
-            return  # nothing to do
+            return
 
         self._connect()
         try:
+            # `INSERT IGNORE` keeps retries safe and avoids duplicate bridge
+            # rows when the worker replays the same association.
             for spectrum_id in spectrum_ids:
                 for file_id in file_ids:
                     self.cursor.execute(
@@ -1491,7 +1210,6 @@ class dbHandlerRFM(DBHandlerBase):
                         (spectrum_id, file_id),
                     )
 
-            # Commit only if standalone
             if not self.in_transaction:
                 self.db_connection.commit()
 
@@ -1512,47 +1230,38 @@ class dbHandlerRFM(DBHandlerBase):
     # PARQUET OPERATIONS
     # ======================================================================
     def export_parquet(self, file_name: str) -> None:
-        """Export all database tables to Parquet files.
+        """Export every table from the current schema as Parquet files.
 
-        Each table is exported to a separate file in the format:
-            {file_name}.{table_name}.parquet
-
-        Args:
-            file_name (str): Base name for output files.
-
-        Raises:
-            Exception: If export or query execution fails.
+        This is used by the metadata publisher to materialize a filesystem
+        snapshot of the current RFDATA schema.
         """
         try:
             self._connect()
 
-            # --- Step 1: listar tabelas ---
+            # Export the whole schema table by table so a failure in one table
+            # does not discard the others.
             self.cursor.execute("SHOW TABLES;")
             tables = [t[0] for t in self.cursor.fetchall()]
 
             if not tables:
                 raise Exception("No tables found in the current database schema.")
 
-            # --- Step 2: exportar cada tabela ---
             for table_name in tables:
                 try:
-                    # Buscar todos os dados da tabela
+                    # Read rows and column names separately so the Parquet file
+                    # preserves the live table layout without hardcoded schema.
                     query = f"SELECT * FROM {table_name};"
                     self.cursor.execute(query)
                     table_data = self.cursor.fetchall()
 
-                    # Buscar os nomes das colunas
                     self.cursor.execute(f"SHOW COLUMNS FROM {table_name};")
                     columns = [c[0] for c in self.cursor.fetchall()]
 
-                    # Criar DataFrame
                     table_df = pd.DataFrame(table_data, columns=columns)
                     table_df = table_df.fillna("na")
 
-                    # Nome do arquivo parquet
                     composed_file_name = f"{file_name}.{table_name}.parquet"
 
-                    # Exportar para Parquet
                     table_df.to_parquet(composed_file_name)
 
                     if hasattr(self, "log"):
@@ -1561,7 +1270,8 @@ class dbHandlerRFM(DBHandlerBase):
                 except Exception as e:
                     if hasattr(self, "log"):
                         self.log.error(f"[EXPORT] Failed exporting '{table_name}': {e}")
-                    continue  # não aborta o loop, apenas pula tabela com erro
+                    # Keep exporting the remaining tables.
+                    continue
 
         except Exception as e:
             raise Exception(f"Error exporting database to parquet: {e}")
@@ -1573,10 +1283,17 @@ class dbHandlerRFM(DBHandlerBase):
                 pass
 
 
-    def get_latest_processing_time(self) -> datetime:
-        """Return the latest DT_FILE_LOGGED timestamp from DIM_SPECTRUM_FILE."""
+    def get_latest_processing_time(self):
+        """Return the newest `DT_FILE_LOGGED` value as a UNIX timestamp.
+
+        The metadata publisher compares this value with filesystem mtimes to
+        decide whether a new Parquet export is needed.
+        """
         try:
             self._connect()
+
+            # A single aggregate is enough here; the caller only needs a
+            # coarse "database changed or not" signal.
             rows = self._select_rows(
                 table="DIM_SPECTRUM_FILE",
                 cols=["MAX(DT_FILE_LOGGED) AS LATEST"],
@@ -1587,6 +1304,7 @@ class dbHandlerRFM(DBHandlerBase):
                 return None
 
             latest = rows[0]["LATEST"]
+            # Match the publisher's use of filesystem mtimes when possible.
             return latest.timestamp() if hasattr(latest, "timestamp") else latest
 
         except Exception as e:

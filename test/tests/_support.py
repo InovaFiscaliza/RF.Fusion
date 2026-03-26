@@ -20,7 +20,10 @@ APP_ROOT = Path("/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCatalo
 CONFIG_ROOT = Path("/RFFusion/src/appCataloga/server_volume/etc/appCataloga")
 SHARED_ROOT = APP_ROOT / "shared"
 DB_ROOT = APP_ROOT / "db"
-STATIONS_ROOT = APP_ROOT / "stations"
+APPANALISE_ROOT = APP_ROOT / "appAnalise"
+HOST_HANDLER_ROOT = APP_ROOT / "host_handler"
+SERVER_HANDLER_ROOT = APP_ROOT / "server_handler"
+STATIONS_LEGACY_ROOT = APP_ROOT / "stations_legacy"
 
 
 def ensure_app_paths() -> None:

@@ -7,30 +7,10 @@ This script must be executed only after stopping all appCataloga workers.
 
 from datetime import datetime
 import sys, os
+from bootstrap_paths import bootstrap_app_paths
 
-# ----------------------------------------------------------------------
-# Load configuration and database modules
-# ----------------------------------------------------------------------
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
-# =================================================
-# Config directory (etc/appCataloga)
-# =================================================
-_CFG_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../../../../etc/appCataloga")
-)
-if _CFG_DIR not in sys.path and os.path.isdir(_CFG_DIR):
-    sys.path.append(_CFG_DIR)
-
-# =================================================
-# DB directory
-# =================================================
-_DB_DIR = os.path.join(PROJECT_ROOT, "db")
-if _DB_DIR not in sys.path and os.path.isdir(_DB_DIR):
-    sys.path.append(_DB_DIR)
+PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 # Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
