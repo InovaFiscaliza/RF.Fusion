@@ -12,6 +12,7 @@ import sys
 import os
 import shlex
 import stat
+import threading
 import time
 import paramiko
 from datetime import datetime
@@ -246,12 +247,53 @@ class sftpConnection:
             raise
 
     
-    def transfer(self, remote_file: str, local_file: str) -> None:
-        """Download a remote file to a local path.
+    def abort_transfer(self, reason: Optional[str] = None) -> None:
+        """Force-close the active SFTP/SSH transport during a stalled transfer."""
+        if reason:
+            self.log.warning(
+                f"event=backup_transfer_abort host={self.host_uid} "
+                f"address={self.host_addr} reason={reason}"
+            )
+
+        try:
+            if self.sftp:
+                self.sftp.close()
+        except Exception:
+            pass
+
+        try:
+            if self.ssh_client:
+                transport = self.ssh_client.get_transport()
+                if transport:
+                    transport.close()
+        except Exception:
+            pass
+
+        try:
+            if self.ssh_client:
+                self.ssh_client.close()
+        except Exception:
+            pass
+
+    def transfer(
+        self,
+        remote_file: str,
+        local_file: str,
+        *,
+        max_seconds: Optional[float] = None,
+        stall_timeout_seconds: Optional[float] = None,
+        progress_poll_seconds: Optional[float] = None,
+        heartbeat_seconds: Optional[float] = None,
+    ) -> None:
+        """Download a remote file to a local path with progress watchdogs.
 
         Args:
             remote_file (str): Absolute remote path of the file.
             local_file (str): Local filesystem destination path.
+            max_seconds (float | None): Absolute transfer timeout.
+            stall_timeout_seconds (float | None): Maximum time without progress.
+            progress_poll_seconds (float | None): Poll interval for watchdog.
+            heartbeat_seconds (float | None): Periodic progress log interval.
 
         Returns:
             None
@@ -259,13 +301,139 @@ class sftpConnection:
         Raises:
             Exception: On SFTP I/O errors (e.g., permissions, network).
         """
+        max_seconds = float(
+            k.BACKUP_TRANSFER_MAX_SECONDS
+            if max_seconds is None else max_seconds
+        )
+        stall_timeout_seconds = float(
+            k.BACKUP_TRANSFER_STALL_TIMEOUT_SECONDS
+            if stall_timeout_seconds is None else stall_timeout_seconds
+        )
+        progress_poll_seconds = max(
+            0.1,
+            float(
+                k.BACKUP_TRANSFER_PROGRESS_POLL_SECONDS
+                if progress_poll_seconds is None else progress_poll_seconds
+            ),
+        )
+        heartbeat_seconds = float(
+            k.BACKUP_TRANSFER_HEARTBEAT_SECONDS
+            if heartbeat_seconds is None else heartbeat_seconds
+        )
+
+        started_at = time.monotonic()
+        stop_event = threading.Event()
+        state_lock = threading.Lock()
+        state = {
+            "bytes_transferred": 0,
+            "remote_total_bytes": 0,
+            "last_progress_at": started_at,
+            "last_log_at": started_at,
+            "last_local_size": 0,
+            "abort_exc": None,
+        }
+
+        def record_progress(transferred: int, total: int) -> None:
+            now = time.monotonic()
+            with state_lock:
+                if transferred > state["bytes_transferred"]:
+                    state["bytes_transferred"] = transferred
+                    state["last_progress_at"] = now
+                if total > state["remote_total_bytes"]:
+                    state["remote_total_bytes"] = total
+
+        def watchdog() -> None:
+            while not stop_event.wait(progress_poll_seconds):
+                now = time.monotonic()
+
+                try:
+                    local_size = os.path.getsize(local_file)
+                except OSError:
+                    local_size = 0
+
+                abort_exc = None
+                with state_lock:
+                    if local_size > state["last_local_size"]:
+                        state["last_local_size"] = local_size
+                        if local_size > state["bytes_transferred"]:
+                            state["bytes_transferred"] = local_size
+                        state["last_progress_at"] = now
+
+                    elapsed = now - started_at
+                    stalled_for = now - state["last_progress_at"]
+                    transferred = state["bytes_transferred"]
+                    total = state["remote_total_bytes"] or None
+
+                    if heartbeat_seconds > 0 and (now - state["last_log_at"]) >= heartbeat_seconds:
+                        state["last_log_at"] = now
+                        if hasattr(self.log, "event"):
+                            self.log.event(
+                                "backup_transfer_progress",
+                                host=self.host_uid,
+                                remote_file=remote_file,
+                                local_file=local_file,
+                                transferred_bytes=transferred,
+                                total_bytes=total,
+                                elapsed_seconds=round(elapsed, 1),
+                                stalled_for_seconds=round(stalled_for, 1),
+                            )
+
+                    if max_seconds > 0 and elapsed > max_seconds:
+                        abort_exc = TimeoutError(
+                            f"SFTP transfer exceeded {max_seconds:.0f}s without finishing"
+                        )
+                    elif stall_timeout_seconds > 0 and stalled_for > stall_timeout_seconds:
+                        abort_exc = TimeoutError(
+                            f"SFTP transfer stalled for {stalled_for:.1f}s without progress"
+                        )
+
+                    if abort_exc is not None and state["abort_exc"] is None:
+                        state["abort_exc"] = abort_exc
+
+                if abort_exc is None:
+                    continue
+
+                self.abort_transfer(reason=str(abort_exc))
+                return
+
+        watchdog_thread = None
+
         try:
-            self.sftp.get(remote_file, local_file)
+            watchdog_thread = threading.Thread(
+                target=watchdog,
+                name=f"sftp-watchdog-{self.host_uid}",
+                daemon=True,
+            )
+            watchdog_thread.start()
+            self.sftp.get(remote_file, local_file, callback=record_progress)
         except Exception as e:
+            stop_event.set()
+            if watchdog_thread is not None:
+                watchdog_thread.join(timeout=1.0)
+
+            with state_lock:
+                abort_exc = state["abort_exc"]
+
+            if abort_exc is not None:
+                raise abort_exc from e
+
             self.log.error(
                 f"Error transferring '{remote_file}' from '{self.host_uid}'({self.host_addr}) to '{local_file}'. {e}"
             )
             raise
+        finally:
+            stop_event.set()
+            try:
+                if watchdog_thread is not None:
+                    watchdog_thread.join(timeout=1.0)
+            except Exception:
+                pass
+
+        with state_lock:
+            abort_exc = state["abort_exc"]
+
+        if abort_exc is not None:
+            raise abort_exc
     
     
     def remove(self, filename: str) -> None:
@@ -307,8 +475,10 @@ class sftpConnection:
     def close(self) -> None:
         """Close SFTP and SSH sessions (best-effort)."""
         try:
-            self.sftp.close()
-            self.ssh_client.close()
+            if self.sftp:
+                self.sftp.close()
+            if self.ssh_client:
+                self.ssh_client.close()
         except Exception as e:
             self.log.error(
                 f"Error closing SFTP/SSH for "

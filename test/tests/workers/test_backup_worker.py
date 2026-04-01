@@ -263,6 +263,7 @@ class BackupFlowTests(unittest.TestCase):
         class FakeSFTP:
             def __init__(self) -> None:
                 self.log = FakeLog()
+                self.transfer_kwargs = None
 
             def read_file_metadata(self, filename: str):
                 return refreshed_metadata
@@ -270,7 +271,8 @@ class BackupFlowTests(unittest.TestCase):
             def size(self, filename: str) -> int:
                 return 5 * 1024
 
-            def transfer(self, remote_file: str, local_file: str) -> None:
+            def transfer(self, remote_file: str, local_file: str, **kwargs) -> None:
+                self.transfer_kwargs = kwargs
                 Path(local_file).write_bytes(b"x" * (5 * 1024))
 
         task = {
@@ -285,24 +287,32 @@ class BackupFlowTests(unittest.TestCase):
             # worker trusts the freshly read remote file details instead.
             final_file = Path(tmpdir) / "server.bin"
             final_file.write_bytes(b"y" * (10 * 1024))
+            fake_sftp = FakeSFTP()
 
-            with patch.object(
-                backup_worker.timeout_utils,
-                "run_with_timeout",
-                side_effect=lambda fn, timeout: fn(),
-            ):
-                local_size_kb, remote_metadata = backup_worker.transfer_file_task(
-                    sftp=FakeSFTP(),
-                    remote_dir="/remote",
-                    remote_filename="sample.bin",
-                    local_path=tmpdir,
-                    server_filename="server.bin",
-                    task=task,
-                )
+            local_size_kb, remote_metadata = backup_worker.transfer_file_task(
+                sftp=fake_sftp,
+                remote_dir="/remote",
+                remote_filename="sample.bin",
+                local_path=tmpdir,
+                server_filename="server.bin",
+                task=task,
+            )
 
             self.assertAlmostEqual(local_size_kb, 5.0)
             self.assertEqual(remote_metadata, refreshed_metadata)
             self.assertEqual(final_file.stat().st_size, 5 * 1024)
+            self.assertEqual(
+                fake_sftp.transfer_kwargs["max_seconds"],
+                backup_worker.k.BACKUP_TRANSFER_MAX_SECONDS,
+            )
+            self.assertEqual(
+                fake_sftp.transfer_kwargs["stall_timeout_seconds"],
+                backup_worker.k.BACKUP_TRANSFER_STALL_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(
+                fake_sftp.transfer_kwargs["progress_poll_seconds"],
+                backup_worker.k.BACKUP_TRANSFER_PROGRESS_POLL_SECONDS,
+            )
 
     def test_finalize_successful_backup_persists_refreshed_metadata(self) -> None:
         fake_db = FakeTaskDB()

@@ -344,13 +344,27 @@ def main():
                 )
                 file_was_processed = True
             except Exception as e:
-                err.capture(
-                    reason="Failed to finalize processed artifacts on disk",
-                    stage="FS",
-                    exc=e,
-                    host_id=host_id,
-                    task_id=file_task_id,
-                )
+                if task_flow.is_transient_filesystem_error(e):
+                    # Shared-storage hiccups (EBUSY, stale handles, etc.) do
+                    # not mean the payload is bad. Requeue the FILE_TASK so the
+                    # worker retries later instead of resolving it as a fatal
+                    # processing error.
+                    retry_later = True
+                    err.capture(
+                        reason="Transient filesystem finalization failure",
+                        stage="FS",
+                        exc=e,
+                        host_id=host_id,
+                        task_id=file_task_id,
+                    )
+                else:
+                    err.capture(
+                        reason="Failed to finalize processed artifacts on disk",
+                        stage="FS",
+                        exc=e,
+                        host_id=host_id,
+                        task_id=file_task_id,
+                    )
                 raise
 
         except Exception as e:
@@ -392,24 +406,45 @@ def main():
             # here so task deletion, trash handling, and history stay aligned.
             # Having one exit point avoids splitting queue state, history state,
             # and filesystem cleanup across many error branches above.
-            resolution = task_flow.finalize_task_resolution(
-                db_bp,
-                file_task_id=file_task_id,
-                host_id=host_id,
-                host_file_name=host_file_name,
-                host_path=host_path,
-                server_name=server_name,
-                extension=extension,
-                vl_file_size_kb=vl_file_size_kb,
-                dt_created=dt_created,
-                dt_modified=dt_modified,
-                file_was_processed=file_was_processed,
-                new_path=new_path,
-                file_meta=file_meta,
-                source_file_meta=source_file_meta,
-                export=export,
-                err=err,
-            )
+            try:
+                resolution = task_flow.finalize_task_resolution(
+                    db_bp,
+                    file_task_id=file_task_id,
+                    host_id=host_id,
+                    host_file_name=host_file_name,
+                    host_path=host_path,
+                    server_name=server_name,
+                    extension=extension,
+                    vl_file_size_kb=vl_file_size_kb,
+                    dt_created=dt_created,
+                    dt_modified=dt_modified,
+                    file_was_processed=file_was_processed,
+                    new_path=new_path,
+                    file_meta=file_meta,
+                    source_file_meta=source_file_meta,
+                    export=export,
+                    err=err,
+                )
+            except Exception as finalize_err:
+                # One FILE_TASK cleanup failure must not kill the daemon. When
+                # final resolution fails, keep the row for later recovery
+                # (requeue or stale-task sweep) and continue serving the queue.
+                if hasattr(log, "error_event"):
+                    log.error_event(
+                        "task_finalization_failed",
+                        host_id=host_id,
+                        task_id=file_task_id,
+                        error_type=type(finalize_err).__name__,
+                        exception=repr(finalize_err),
+                    )
+                else:
+                    log.error(
+                        "event=task_finalization_failed "
+                        f"host_id={host_id} task_id={file_task_id} "
+                        f"error={finalize_err!r}"
+                    )
+                runtime_sleep.random_jitter_sleep()
+                continue
 
             if resolution["status"] == k.TASK_ERROR:
                 log.error_event(

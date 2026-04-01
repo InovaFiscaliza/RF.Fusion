@@ -14,6 +14,7 @@ What is covered here:
 from __future__ import annotations
 
 import json
+import errno
 import os
 import tempfile
 import unittest
@@ -576,6 +577,38 @@ class FileMoveTests(unittest.TestCase):
             self.assertTrue(moved_file.exists())
             self.assertGreater(moved_file.stat().st_mtime, original_ts + 60)
 
+    def test_file_move_retries_transient_ebusy_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_dir = Path(tmpdir) / "source"
+            target_dir = Path(tmpdir) / "target"
+            source_dir.mkdir()
+            source_file = source_dir / "sample_DONE.bin"
+            source_file.write_text("payload", encoding="utf-8")
+
+            real_rename = os.rename
+            rename_calls = []
+            sleep_calls = []
+
+            def flaky_rename(source, target):
+                rename_calls.append((source, target))
+                if len(rename_calls) == 1:
+                    raise OSError(errno.EBUSY, "Device or resource busy")
+                return real_rename(source, target)
+
+            with patch.object(processing.os, "rename", side_effect=flaky_rename):
+                with patch.object(processing.time, "sleep", side_effect=sleep_calls.append):
+                    result = processing.file_move(
+                        filename=source_file.name,
+                        path=str(source_dir),
+                        new_path=str(target_dir),
+                    )
+
+            self.assertEqual(result["path"], str(target_dir))
+            self.assertEqual(len(rename_calls), 2)
+            self.assertEqual(sleep_calls, [0.5])
+            self.assertTrue((target_dir / source_file.name).exists())
+            self.assertFalse(source_file.exists())
+
 
 class RetryTests(unittest.TestCase):
     """Validate retry-only paths that must preserve the claimed FILE_TASK row."""
@@ -774,6 +807,137 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             self.assertTrue(trashed_export.exists())
             self.assertFalse(source_file.exists())
             self.assertFalse(exported_file.exists())
+
+    def test_main_requeues_when_final_filesystem_promotion_is_transient(self) -> None:
+        fake_log = FakeWorkerLog()
+        sleep_calls = []
+
+        class FakeDbBkpMain(FakeDbBkp):
+            last_instance = None
+
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__()
+                self._read_once = False
+                FakeDbBkpMain.last_instance = self
+
+            def read_file_task(self, **kwargs):
+                if self._read_once:
+                    return None
+                self._read_once = True
+                return (
+                    {
+                        "FILE_TASK__ID_FILE_TASK": 321,
+                        "FILE_TASK__NA_SERVER_FILE_PATH": "/mnt/reposfi/tmp/RFEye002211",
+                        "FILE_TASK__NA_SERVER_FILE_NAME": "sample.bin",
+                        "FILE_TASK__NA_HOST_FILE_PATH": "/mnt/internal/data/2026/PECAN",
+                        "FILE_TASK__NA_HOST_FILE_NAME": "sample.bin",
+                        "HOST__NA_HOST_NAME": "RFEye002211",
+                        "FILE_TASK__NA_EXTENSION": ".bin",
+                        "FILE_TASK__DT_FILE_CREATED": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__DT_FILE_MODIFIED": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__VL_FILE_SIZE_KB": 123,
+                    },
+                    10699,
+                    None,
+                )
+
+        class FakeDbRfmMain:
+            last_instance = None
+
+            def __init__(self, *args, **kwargs) -> None:
+                self.in_transaction = False
+                self.commit_calls = 0
+                self.rollback_calls = 0
+                FakeDbRfmMain.last_instance = self
+
+            def begin_transaction(self) -> None:
+                self.in_transaction = True
+
+            def commit(self) -> None:
+                self.commit_calls += 1
+                self.in_transaction = False
+
+            def rollback(self) -> None:
+                self.rollback_calls += 1
+                self.in_transaction = False
+
+        class FakeApp:
+            def check_connection(self) -> None:
+                return None
+
+            def process(self, **kwargs):
+                spectrum = SimpleNamespace(
+                    site_data={
+                        "longitude": -51.23,
+                        "latitude": -30.01,
+                        "altitude": 10.0,
+                        "longitude_raw": [-51.23],
+                        "latitude_raw": [-30.01],
+                        "altitude_raw": [10.0],
+                        "nu_gnss_measurements": 1,
+                        "geographic_path": None,
+                    },
+                    start_dateidx=datetime(2026, 2, 4, 7, 24, 15),
+                    site_id=219,
+                )
+                return (
+                    {"method": "Fixed logger", "spectrum": [spectrum]},
+                    {
+                        "file_path": "/mnt/reposfi/tmp/RFEye002211",
+                        "file_name": "sample.bin",
+                        "extension": ".bin",
+                        "size_kb": 123,
+                        "dt_created": datetime(2026, 2, 4, 7, 24, 15),
+                        "dt_modified": datetime(2026, 2, 4, 7, 24, 15),
+                        "full_path": "/mnt/reposfi/tmp/RFEye002211/sample.bin",
+                    },
+                )
+
+        def stop_after_iteration():
+            sleep_calls.append("slept")
+            worker.process_status["running"] = False
+
+        with patch.object(worker, "log", fake_log):
+            with patch.object(worker, "dbHandlerBKP", FakeDbBkpMain):
+                with patch.object(worker, "dbHandlerRFM", FakeDbRfmMain):
+                    with patch.object(worker, "AppAnaliseConnection", FakeApp):
+                        with patch.object(
+                            worker.task_flow,
+                            "resolve_spectrum_sites",
+                            return_value=[219],
+                        ):
+                            with patch.object(
+                                worker.task_flow,
+                                "insert_spectra_batch",
+                                return_value=[9001],
+                            ):
+                                with patch.object(
+                                    worker.task_flow,
+                                    "finalize_successful_processing",
+                                    side_effect=OSError(
+                                        errno.EBUSY,
+                                        "Device or resource busy",
+                                    ),
+                                ):
+                                    with patch.object(
+                                        worker.runtime_sleep,
+                                        "random_jitter_sleep",
+                                        side_effect=stop_after_iteration,
+                                    ):
+                                        worker.process_status["running"] = True
+                                        worker.main()
+
+        db_bp = FakeDbBkpMain.last_instance
+        db_rfm = FakeDbRfmMain.last_instance
+
+        self.assertEqual(db_rfm.commit_calls, 1)
+        self.assertEqual(len(db_bp.task_updates), 2)
+        self.assertEqual(db_bp.task_updates[0]["NU_STATUS"], worker.k.TASK_RUNNING)
+        self.assertEqual(db_bp.task_updates[1]["NU_STATUS"], worker.k.TASK_PENDING)
+        self.assertIn("task returned for retry", db_bp.task_updates[1]["NA_MESSAGE"])
+        self.assertEqual(len(db_bp.task_deletes), 0)
+        self.assertEqual(len(db_bp.history_updates), 0)
+        self.assertEqual(sleep_calls, ["slept"])
 
     def test_successful_export_promotes_mat_and_retires_original(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

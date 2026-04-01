@@ -304,6 +304,68 @@ def _set_cached_file_path(cache_key, value):
     }
 
 
+def _reduce_latest_repo_file_rows(repo_rows):
+    """
+    Keep only the newest repository file row for each spectrum.
+
+    `DIM_SPECTRUM_FILE.ID_FILE` is monotonic enough for this operational view.
+    Reducing in Python lets the main paginated spectrum query avoid a global
+    grouped subquery across the whole bridge table before `LIMIT/OFFSET`.
+    """
+
+    latest_by_spectrum = {}
+
+    for row in repo_rows:
+        spectrum_id = row["ID_SPECTRUM"]
+        current = latest_by_spectrum.get(spectrum_id)
+
+        if current is None or int(row.get("ID_FILE") or 0) > int(current.get("ID_FILE") or 0):
+            latest_by_spectrum[spectrum_id] = row
+
+    return latest_by_spectrum
+
+
+def _attach_repository_file_metadata(rows, latest_repo_files):
+    """Copy latest repository file metadata into the paginated spectrum rows."""
+
+    for row in rows:
+        file_row = latest_repo_files.get(row["ID_SPECTRUM"], {})
+        row["NA_PATH"] = file_row.get("NA_PATH")
+        row["NA_FILE"] = file_row.get("NA_FILE")
+        row["NA_EXTENSION"] = file_row.get("NA_EXTENSION")
+        row["VL_FILE_SIZE_KB"] = file_row.get("VL_FILE_SIZE_KB")
+
+    return rows
+
+
+def _fetch_latest_repo_files_for_spectra(cur, spectrum_ids):
+    """Load repository file metadata only for the spectra shown on the page."""
+
+    if not spectrum_ids:
+        return {}
+
+    placeholders = ", ".join(["%s"] * len(spectrum_ids))
+    cur.execute(
+        f"""
+        SELECT
+            b.FK_SPECTRUM AS ID_SPECTRUM,
+            d.ID_FILE,
+            d.NA_PATH,
+            d.NA_FILE,
+            d.NA_EXTENSION,
+            d.VL_FILE_SIZE_KB
+        FROM BRIDGE_SPECTRUM_FILE b
+        JOIN DIM_SPECTRUM_FILE d
+            ON d.ID_FILE = b.FK_FILE
+        WHERE d.NA_VOLUME = 'reposfi'
+          AND b.FK_SPECTRUM IN ({placeholders})
+        ORDER BY b.FK_SPECTRUM ASC, d.ID_FILE DESC
+        """,
+        spectrum_ids,
+    )
+    return _reduce_latest_repo_file_rows(cur.fetchall())
+
+
 def get_equipments():
     """Return the equipment list used by the spectrum filters."""
     now = time.time()
@@ -424,11 +486,7 @@ def get_spectrum_data(
             f.FK_SITE AS ID_SITE,
             {locality_display_sql} AS LOCALITY_LABEL,
             c.NA_COUNTY AS COUNTY_NAME,
-            st.LC_STATE AS STATE_CODE,
-            repos.NA_PATH,
-            repos.NA_FILE,
-            repos.NA_EXTENSION,
-            repos.VL_FILE_SIZE_KB
+            st.LC_STATE AS STATE_CODE
         FROM FACT_SPECTRUM f
         JOIN DIM_SPECTRUM_EQUIPMENT e
             ON e.ID_EQUIPMENT = f.FK_EQUIPMENT
@@ -440,21 +498,6 @@ def get_spectrum_data(
             ON c.ID_COUNTY = s.FK_COUNTY
         LEFT JOIN DIM_SITE_STATE st
             ON st.ID_STATE = s.FK_STATE
-
-        LEFT JOIN (
-            SELECT
-                b.FK_SPECTRUM,
-                MAX(d.ID_FILE) AS ID_FILE
-            FROM BRIDGE_SPECTRUM_FILE b
-            JOIN DIM_SPECTRUM_FILE d
-                ON d.ID_FILE = b.FK_FILE
-            WHERE d.NA_VOLUME = 'reposfi'
-            GROUP BY b.FK_SPECTRUM
-        ) latest
-            ON latest.FK_SPECTRUM = f.ID_SPECTRUM
-
-        LEFT JOIN DIM_SPECTRUM_FILE repos
-            ON repos.ID_FILE = latest.ID_FILE
 
         {where_sql}
         {order_sql}
@@ -472,6 +515,9 @@ def get_spectrum_data(
 
     cur.execute(data_query, data_params)
     rows = cur.fetchall()
+    spectrum_ids = [row["ID_SPECTRUM"] for row in rows]
+    latest_repo_files = _fetch_latest_repo_files_for_spectra(cur, spectrum_ids)
+    _attach_repository_file_metadata(rows, latest_repo_files)
 
     cur.execute(count_query, params)
     result = cur.fetchone()

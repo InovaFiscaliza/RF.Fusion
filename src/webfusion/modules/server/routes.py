@@ -1,8 +1,11 @@
 """Routes for the server-wide operational dashboard."""
 
+from datetime import datetime
+
 from flask import Blueprint, current_app, jsonify, render_template, request
 
 from modules.host.service import (
+    get_hosts,
     get_server_backup_error_overview,
     get_server_overview,
     get_server_processing_error_overview,
@@ -11,6 +14,23 @@ from modules.host.service import (
 
 
 server_bp = Blueprint("server", __name__)
+
+
+def _serialize_host_rows(rows):
+    """Normalize host-table rows for JSON transport to the browser."""
+
+    serialized = []
+
+    for row in rows:
+        clean_row = dict(row)
+
+        for key, value in list(clean_row.items()):
+            if isinstance(value, datetime):
+                clean_row[key] = value.strftime("%Y-%m-%d %H:%M:%S")
+
+        serialized.append(clean_row)
+
+    return serialized
 
 
 @server_bp.route("/server", methods=["GET"])
@@ -89,5 +109,34 @@ def server_summary_metrics():
                 "FACT_SPECTRUM_TOTAL": 0,
                 "PROCESSING_ERROR_FILES_TOTAL": 0,
                 "BACKUP_PENDING_GB_TOTAL": 0,
+            }
+        )
+
+
+@server_bp.route("/api/server/hosts", methods=["GET"])
+def server_hosts():
+    """Return the filtered station table only when the panel is expanded."""
+
+    search = request.args.get("search") or None
+    online_only = request.args.get("online_only", "0") == "1"
+
+    try:
+        rows = get_hosts(search=search, online_only=online_only)
+        return jsonify(
+            {
+                "rows": _serialize_host_rows(rows),
+                "count": len(rows),
+            }
+        )
+    except Exception:
+        current_app.logger.exception(
+            "failed_to_build_server_hosts_table search=%s online_only=%s",
+            search,
+            online_only,
+        )
+        return jsonify(
+            {
+                "rows": [],
+                "count": 0,
             }
         )

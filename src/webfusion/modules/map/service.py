@@ -24,6 +24,11 @@ POINT_WKT_RE = re.compile(
 )
 NON_ALNUM_RE = re.compile(r"[^a-z0-9]+", re.IGNORECASE)
 CWSM_KEY_RE = re.compile(r"^(cwsm)(\d+)$", re.IGNORECASE)
+CWSM_SIGNATURE_OVERRIDES = {
+    # Legacy Zabbix host naming for this fixed station diverges from the
+    # receiver name embedded in the processed payload.
+    "22010007": "211007",
+}
 
 MAP_CACHE_TTL_SECONDS = 300
 
@@ -74,15 +79,17 @@ def _build_cwsm_signature(normalized_key):
 
         But processed spectra may surface receiver identifiers such as:
             cwsm21100001
+            cwsm21120037
             cwsm22010040
 
-        A safe compromise is to compare:
-            - the CWSM prefix
-            - the first 3 digits
-            - the last 3 digits
+        The long receiver identifier uses one extra digit family in the middle.
+        For the fixed families we know today, the host-side 6-digit name is:
+            cwsm2110xxxx -> cwsm211xxx
+            cwsm2112xxxx -> cwsm212xxx
+            cwsm2201xxxx -> cwsm220xxx
 
-        This keeps the inference strict enough to avoid broad substring
-        matching while still reconciling the known CelPlan naming variants.
+        That keeps the comparison strict while still reconciling the known
+        CelPlan naming variants.
     """
     match = CWSM_KEY_RE.fullmatch(normalized_key or "")
 
@@ -93,6 +100,19 @@ def _build_cwsm_signature(normalized_key):
 
     if len(digits) < 6:
         return None
+
+    if digits in CWSM_SIGNATURE_OVERRIDES:
+        return f"cwsm{CWSM_SIGNATURE_OVERRIDES[digits]}"
+
+    if len(digits) >= 8:
+        family_prefix = {
+            "2110": "211",
+            "2112": "212",
+            "2201": "220",
+        }.get(digits[:4])
+
+        if family_prefix:
+            return f"cwsm{family_prefix}{digits[-3:]}"
 
     return f"cwsm{digits[:3]}{digits[-3:]}"
 
@@ -306,6 +326,7 @@ def _find_host_for_equipment(host_index, equipment_name):
         rfeye002264    <-> RFEye-002264
         cwsm211006     <-> CWSM211006.local
         cwsm21100001   <-> CWSM211001
+        cwsm21120037   <-> CWSM212037
         cwsm22010040   <-> CWSM220040
     """
     if not equipment_name:

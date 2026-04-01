@@ -12,6 +12,8 @@ What is covered here:
 from __future__ import annotations
 
 import socket
+import tempfile
+import time
 import unittest
 from pathlib import Path
 import sys
@@ -41,6 +43,7 @@ class FakeTransport:
 
     def __init__(self) -> None:
         self.keepalive = None
+        self.closed = False
         self.packetizer = type("Packetizer", (), {})()
         self.packetizer.REKEY_BYTES = None
         self.packetizer.REKEY_PACKETS = None
@@ -48,6 +51,9 @@ class FakeTransport:
 
     def set_keepalive(self, value) -> None:
         self.keepalive = value
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeSSHClient:
@@ -72,6 +78,32 @@ class FakeSSHClient:
 
     def close(self) -> None:
         self.closed = True
+        self.transport.close()
+
+
+class FakeTransferLog:
+    """Capture transfer watchdog logs without using the real logger."""
+
+    def __init__(self) -> None:
+        self.entries = []
+        self.errors = []
+        self.warnings = []
+
+    def entry(self, message: str, **kwargs) -> None:
+        if kwargs:
+            message = f"{message} {kwargs}".strip()
+        self.entries.append(message)
+
+    def event(self, message: str = "", **kwargs) -> None:
+        if kwargs:
+            message = f"{message} {kwargs}".strip()
+        self.entries.append(message)
+
+    def error(self, message: str) -> None:
+        self.errors.append(message)
+
+    def warning(self, message: str) -> None:
+        self.warnings.append(message)
 
 
 class SftpInitErrorClassificationTests(unittest.TestCase):
@@ -202,6 +234,103 @@ class SshConnectionResolutionTests(unittest.TestCase):
 
         self.assertEqual(conn.connect_addr, "172.24.1.147")
         self.assertEqual(fake_client.connect_calls[0]["hostname"], "172.24.1.147")
+
+
+class TransferWatchdogTests(unittest.TestCase):
+    """Validate the progress watchdog used by backup SFTP transfers."""
+
+    def _build_connection(self, *, sftp, ssh_client=None):
+        conn = ssh_utils.sftpConnection.__new__(ssh_utils.sftpConnection)
+        conn.host_uid = "RFEye002158"
+        conn.host_addr = "rfeye002158.anatel.gov.br"
+        conn.log = FakeTransferLog()
+        conn.sftp = sftp
+        conn.ssh_client = ssh_client or FakeSSHClient()
+        return conn
+
+    def test_transfer_allows_slow_but_progressing_download(self) -> None:
+        class StreamingSFTP:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def get(self, _remote_file, local_file, callback=None) -> None:
+                transferred = 0
+                total = 6
+                Path(local_file).write_bytes(b"")
+
+                for chunk_size in (2, 2, 2):
+                    if self.closed:
+                        raise OSError("channel closed")
+                    with open(local_file, "ab") as fh:
+                        fh.write(b"x" * chunk_size)
+                    transferred += chunk_size
+                    if callback is not None:
+                        callback(transferred, total)
+                    time.sleep(0.03)
+
+            def close(self) -> None:
+                self.closed = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_file = str(Path(tmpdir) / "sample.bin")
+            conn = self._build_connection(sftp=StreamingSFTP())
+
+            conn.transfer(
+                "/remote/sample.bin",
+                local_file,
+                max_seconds=1.0,
+                stall_timeout_seconds=0.2,
+                progress_poll_seconds=0.01,
+                heartbeat_seconds=0.02,
+            )
+
+            self.assertEqual(Path(local_file).read_bytes(), b"x" * 6)
+            self.assertFalse(
+                any("backup_transfer_abort" in warning for warning in conn.log.warnings)
+            )
+
+    def test_transfer_aborts_when_progress_stalls(self) -> None:
+        class StallingSFTP:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def get(self, _remote_file, local_file, callback=None) -> None:
+                Path(local_file).write_bytes(b"xx")
+                if callback is not None:
+                    callback(2, 6)
+
+                while not self.closed:
+                    time.sleep(0.01)
+
+                raise OSError("channel closed")
+
+            def close(self) -> None:
+                self.closed = True
+
+        fake_ssh = FakeSSHClient()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_file = str(Path(tmpdir) / "sample.bin")
+            conn = self._build_connection(
+                sftp=StallingSFTP(),
+                ssh_client=fake_ssh,
+            )
+
+            with self.assertRaises(TimeoutError):
+                conn.transfer(
+                    "/remote/sample.bin",
+                    local_file,
+                    max_seconds=1.0,
+                    stall_timeout_seconds=0.05,
+                    progress_poll_seconds=0.01,
+                    heartbeat_seconds=0,
+                )
+
+            self.assertTrue(conn.sftp.closed)
+            self.assertTrue(fake_ssh.closed)
+            self.assertTrue(
+                any("backup_transfer_abort" in warning for warning in conn.log.warnings)
+            )
 
 
 if __name__ == "__main__":

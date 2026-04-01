@@ -12,7 +12,7 @@ them together avoids duplicating SQL and business meaning in multiple places.
 import os
 import re
 import shutil
-import socket
+import subprocess
 import time
 from datetime import datetime
 
@@ -46,6 +46,9 @@ _GROUPED_BACKUP_ERRORS_CACHE = {
 
 _HOST_PROCESSING_ERRORS_CACHE = {}
 _HOST_BACKUP_ERRORS_CACHE = {}
+_HOST_LIST_CACHE = {}
+_SERVER_HOST_ROWS_CACHE = {}
+_HOST_FACT_SPECTRUM_TOTAL_CACHE = {}
 
 _RFDATA_EQUIPMENT_CACHE = {
     "expires_at": 0.0,
@@ -64,11 +67,19 @@ GROUPED_BACKUP_ERRORS_CACHE_TTL_SECONDS = 600.0
 RFDATA_EQUIPMENT_CACHE_TTL_SECONDS = 600.0
 HOST_PROCESSING_ERRORS_CACHE_TTL_SECONDS = 300.0
 HOST_BACKUP_ERRORS_CACHE_TTL_SECONDS = 300.0
+HOST_LIST_CACHE_TTL_SECONDS = 60.0
+SERVER_HOST_ROWS_CACHE_TTL_SECONDS = 60.0
+HOST_FACT_SPECTRUM_TOTAL_CACHE_TTL_SECONDS = 300.0
 HOST_LOCATION_HISTORY_CACHE_TTL_SECONDS = 600.0
 HOST_STATISTICS_CACHE_TTL_SECONDS = 60.0
 
 NON_ALNUM_RE = re.compile(r"[^a-z0-9]+", re.IGNORECASE)
 CWSM_KEY_RE = re.compile(r"^(cwsm)(\d+)$", re.IGNORECASE)
+CWSM_SIGNATURE_OVERRIDES = {
+    # Legacy Zabbix host naming for this fixed station diverges from the
+    # receiver name embedded in the processed payload.
+    "22010007": "211007",
+}
 
 
 def _format_bytes_human(num_bytes):
@@ -217,6 +228,19 @@ def _merge_grouped_processing_errors(rows):
         merged.values(),
         key=lambda item: (-item["ERROR_COUNT"], item["ERROR_MESSAGE"]),
     )
+
+
+def _clone_rows(rows):
+    """Return a shallow copy of row dictionaries kept inside TTL caches."""
+
+    return [dict(row) for row in rows]
+
+
+def _build_host_list_cache_key(*, online_only=False, search=None):
+    """Normalize filter inputs used by host-list TTL caches."""
+
+    normalized_search = (search or "").strip().lower()
+    return (bool(online_only), normalized_search)
 
 
 def _canonicalize_backup_error_message(message):
@@ -489,8 +513,25 @@ def _load_appanalise_settings():
     }
 
 
+def _extract_ping_latency_ms(output):
+    """Parse latency from a ping output line when available."""
+
+    if not output:
+        return None
+
+    match = re.search(r"time[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms", output, re.IGNORECASE)
+
+    if not match:
+        return None
+
+    try:
+        return round(float(match.group(1)), 1)
+    except (TypeError, ValueError):
+        return None
+
+
 def _check_appanalise_status():
-    """Run a short TCP preflight against the configured appAnalise endpoint."""
+    """Run a short ICMP preflight against the configured appAnalise host."""
 
     settings = _load_appanalise_settings()
     host = settings["host"]
@@ -506,17 +547,37 @@ def _check_appanalise_status():
         "error": None,
     }
 
-    if not host or not port:
-        status["error"] = "appAnalise endpoint is not configured"
+    if not host:
+        status["error"] = "appAnalise host is not configured"
         return status
 
     started_at = time.perf_counter()
+    timeout_seconds = max(1, int(round(timeout or 1)))
+    ping_command = ["ping", "-c", "1", "-W", str(timeout_seconds), host]
 
     try:
-        with socket.create_connection((host, port), timeout=timeout):
+        result = subprocess.run(
+            ping_command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds + 1,
+            check=False,
+        )
+
+        if result.returncode == 0:
             status["online"] = True
-            status["latency_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
-    except OSError as exc:
+            status["latency_ms"] = _extract_ping_latency_ms(result.stdout)
+
+            if status["latency_ms"] is None:
+                status["latency_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+        else:
+            error_message = (result.stderr or result.stdout or "").strip()
+            status["error"] = error_message or f"ping exited with code {result.returncode}"
+    except FileNotFoundError:
+        status["error"] = "ping command not available"
+    except subprocess.TimeoutExpired:
+        status["error"] = "ping timed out"
+    except Exception as exc:
         status["error"] = str(exc)
 
     return status
@@ -576,6 +637,96 @@ def _build_host_filters(prefix="", online_only=False, search=None):
     return where_clauses, params
 
 
+def _get_history_summary_for_host(cur, host_id, current_month_start, next_month_start):
+    """Read monthly and global FILE_TASK_HISTORY metrics in one pass."""
+
+    cur.execute(
+        """
+        SELECT
+            COUNT(*) AS DISCOVERED_FILES_TOTAL,
+            ROUND(COALESCE(SUM(VL_FILE_SIZE_KB), 0) / 1024 / 1024, 2) AS DISCOVERED_GB_TOTAL,
+            SUM(CASE WHEN NU_STATUS_BACKUP = 0 THEN 1 ELSE 0 END) AS BACKUP_DONE_FILES_TOTAL,
+            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = 0 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_DONE_GB_TOTAL,
+            SUM(CASE WHEN NU_STATUS_BACKUP = 1 THEN 1 ELSE 0 END) AS BACKUP_PENDING_FILES_TOTAL,
+            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_PENDING_GB_TOTAL,
+            SUM(CASE WHEN NU_STATUS_BACKUP = -1 THEN 1 ELSE 0 END) AS BACKUP_ERROR_FILES_TOTAL,
+            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = -1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_ERROR_GB_TOTAL,
+            SUM(CASE WHEN NU_STATUS_PROCESSING = 0 THEN 1 ELSE 0 END) AS PROCESSING_DONE_FILES_TOTAL,
+            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = 0 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_DONE_GB_TOTAL,
+            SUM(CASE WHEN NU_STATUS_PROCESSING = 1 THEN 1 ELSE 0 END) AS PROCESSING_PENDING_FILES_TOTAL,
+            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_PENDING_GB_TOTAL,
+            SUM(CASE WHEN NU_STATUS_PROCESSING = -1 THEN 1 ELSE 0 END) AS PROCESSING_ERROR_FILES_TOTAL,
+            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = -1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_ERROR_GB_TOTAL,
+            SUM(
+                CASE
+                    WHEN NU_STATUS_BACKUP = 0
+                     AND DT_BACKUP >= %s
+                     AND DT_BACKUP < %s
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS BACKUP_DONE_THIS_MONTH,
+            ROUND(
+                COALESCE(
+                    SUM(
+                        CASE
+                            WHEN NU_STATUS_BACKUP = 0
+                             AND DT_BACKUP >= %s
+                             AND DT_BACKUP < %s
+                            THEN VL_FILE_SIZE_KB
+                            ELSE 0
+                        END
+                    ),
+                    0
+                ) / 1024 / 1024,
+                2
+            ) AS BACKUP_DONE_GB_THIS_MONTH
+        FROM FILE_TASK_HISTORY
+        WHERE FK_HOST = %s
+        """,
+        (
+            current_month_start.strftime("%Y-%m-%d %H:%M:%S"),
+            next_month_start.strftime("%Y-%m-%d %H:%M:%S"),
+            current_month_start.strftime("%Y-%m-%d %H:%M:%S"),
+            next_month_start.strftime("%Y-%m-%d %H:%M:%S"),
+            host_id,
+        ),
+    )
+    return cur.fetchone() or {}
+
+
+def _get_yearly_status_breakdown_for_host(cur, host_id):
+    """Read backup and processing yearly breakdowns in one grouped scan."""
+
+    cur.execute(
+        """
+        SELECT
+            YEAR(DT_FILE_CREATED) AS REFERENCE_YEAR,
+            COUNT(*) AS DISCOVERED_FILES,
+            ROUND(COALESCE(SUM(VL_FILE_SIZE_KB), 0) / 1024 / 1024, 2) AS DISCOVERED_GB,
+            SUM(CASE WHEN NU_STATUS_BACKUP = 0 THEN 1 ELSE 0 END) AS BACKUP_DONE_FILES,
+            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = 0 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_DONE_GB,
+            SUM(CASE WHEN NU_STATUS_BACKUP = 1 THEN 1 ELSE 0 END) AS BACKUP_PENDING_FILES,
+            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_PENDING_GB,
+            SUM(CASE WHEN NU_STATUS_BACKUP = -1 THEN 1 ELSE 0 END) AS BACKUP_ERROR_FILES,
+            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = -1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_ERROR_GB,
+            SUM(CASE WHEN NU_STATUS_PROCESSING = 0 THEN 1 ELSE 0 END) AS PROCESSING_DONE_FILES,
+            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = 0 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_DONE_GB,
+            SUM(CASE WHEN NU_STATUS_PROCESSING = 1 THEN 1 ELSE 0 END) AS PROCESSING_PENDING_FILES,
+            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_PENDING_GB,
+            SUM(CASE WHEN NU_STATUS_PROCESSING = -1 THEN 1 ELSE 0 END) AS PROCESSING_ERROR_FILES,
+            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = -1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_ERROR_GB
+        FROM FILE_TASK_HISTORY
+        WHERE FK_HOST = %s
+          AND DT_FILE_CREATED IS NOT NULL
+        GROUP BY YEAR(DT_FILE_CREATED)
+        ORDER BY REFERENCE_YEAR DESC
+        """,
+        (host_id,),
+    )
+    return cur.fetchall()
+
+
 def _normalize_station_key(value):
     """Normalize host/equipment identifiers for tolerant matching."""
 
@@ -597,6 +748,19 @@ def _build_cwsm_signature(normalized_key):
 
     if len(digits) < 6:
         return None
+
+    if digits in CWSM_SIGNATURE_OVERRIDES:
+        return f"cwsm{CWSM_SIGNATURE_OVERRIDES[digits]}"
+
+    if len(digits) >= 8:
+        family_prefix = {
+            "2110": "211",
+            "2112": "212",
+            "2201": "220",
+        }.get(digits[:4])
+
+        if family_prefix:
+            return f"cwsm{family_prefix}{digits[-3:]}"
 
     return f"cwsm{digits[:3]}{digits[-3:]}"
 
@@ -828,9 +992,20 @@ def _get_host_location_history(host_name):
 def _get_host_fact_spectrum_total(host_name):
     """Count spectra in RFDATA for the equipments reconciled to one host."""
 
+    cache_key = _normalize_station_key(host_name)
+    now = time.monotonic()
+    cached = _HOST_FACT_SPECTRUM_TOTAL_CACHE.get(cache_key)
+
+    if cached and cached["expires_at"] > now:
+        return int(cached["payload"])
+
     equipment_matches = _get_host_equipment_matches(host_name)
 
     if not equipment_matches:
+        _HOST_FACT_SPECTRUM_TOTAL_CACHE[cache_key] = {
+            "expires_at": now + HOST_FACT_SPECTRUM_TOTAL_CACHE_TTL_SECONDS,
+            "payload": 0,
+        }
         return 0
 
     equipment_ids = [row["ID_EQUIPMENT"] for row in equipment_matches]
@@ -848,7 +1023,12 @@ def _get_host_fact_spectrum_total(host_name):
     )
     row = cur.fetchone() or {}
     conn.close()
-    return int(row.get("FACT_SPECTRUM_TOTAL") or 0)
+    total = int(row.get("FACT_SPECTRUM_TOTAL") or 0)
+    _HOST_FACT_SPECTRUM_TOTAL_CACHE[cache_key] = {
+        "expires_at": now + HOST_FACT_SPECTRUM_TOTAL_CACHE_TTL_SECONDS,
+        "payload": total,
+    }
+    return total
 
 
 def _get_grouped_processing_errors(cur, where_clause="", params=None):
@@ -1001,24 +1181,17 @@ def get_server_summary_metrics():
     cur.execute(
         """
         SELECT
-            COUNT(*) AS DISCOVERED_FILES_TOTAL,
-            ROUND(COALESCE(SUM(VL_FILE_SIZE_KB), 0) / 1024 / 1024, 2) AS DISCOVERED_GB_TOTAL,
-            SUM(CASE WHEN NU_STATUS_BACKUP = 0 THEN 1 ELSE 0 END) AS BACKUP_DONE_FILES_TOTAL,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = 0 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_DONE_GB_TOTAL,
-            SUM(CASE WHEN NU_STATUS_BACKUP = 1 THEN 1 ELSE 0 END) AS BACKUP_PENDING_FILES_TOTAL,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_PENDING_GB_TOTAL,
-            SUM(CASE WHEN NU_STATUS_BACKUP = -1 THEN 1 ELSE 0 END) AS BACKUP_ERROR_FILES_TOTAL,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = -1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_ERROR_GB_TOTAL,
-            SUM(CASE WHEN NU_STATUS_PROCESSING = 0 THEN 1 ELSE 0 END) AS PROCESSING_DONE_FILES_TOTAL,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = 0 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_DONE_GB_TOTAL,
-            SUM(CASE WHEN NU_STATUS_PROCESSING = 1 THEN 1 ELSE 0 END) AS PROCESSING_PENDING_FILES_TOTAL,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_PENDING_GB_TOTAL,
-            SUM(CASE WHEN NU_STATUS_PROCESSING = -1 THEN 1 ELSE 0 END) AS PROCESSING_ERROR_FILES_TOTAL,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = -1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_ERROR_GB_TOTAL
-        FROM FILE_TASK_HISTORY
+            SUM(COALESCE(NU_DONE_FILE_DISCOVERY_TASKS, 0) + COALESCE(NU_ERROR_FILE_DISCOVERY_TASKS, 0)) AS DISCOVERED_FILES_TOTAL,
+            SUM(COALESCE(NU_PENDING_FILE_BACKUP_TASKS, 0)) AS BACKUP_PENDING_FILES_TOTAL,
+            ROUND(COALESCE(SUM(VL_PENDING_BACKUP_KB), 0) / 1024 / 1024, 2) AS BACKUP_PENDING_GB_TOTAL,
+            SUM(COALESCE(NU_ERROR_FILE_BACKUP_TASKS, 0)) AS BACKUP_ERROR_FILES_TOTAL,
+            SUM(COALESCE(NU_PENDING_FILE_PROCESS_TASKS, 0)) AS PROCESSING_PENDING_FILES_TOTAL,
+            SUM(COALESCE(NU_DONE_FILE_PROCESS_TASKS, 0)) AS PROCESSING_DONE_FILES_TOTAL,
+            SUM(COALESCE(NU_ERROR_FILE_PROCESS_TASKS, 0)) AS PROCESSING_ERROR_FILES_TOTAL
+        FROM BPDATA.HOST
         """
     )
-    global_summary = cur.fetchone() or {}
+    host_summary = cur.fetchone() or {}
     conn.close()
 
     spectrum_summary = {}
@@ -1040,21 +1213,17 @@ def get_server_summary_metrics():
         "CURRENT_MONTH_LABEL": current_month_start.strftime("%Y-%m"),
         "BACKUP_DONE_THIS_MONTH": int(monthly_summary.get("BACKUP_DONE_THIS_MONTH") or 0),
         "BACKUP_DONE_GB_THIS_MONTH": float(monthly_summary.get("BACKUP_DONE_GB_THIS_MONTH") or 0),
-        "DISCOVERED_FILES_TOTAL": int(global_summary.get("DISCOVERED_FILES_TOTAL") or 0),
-        "DISCOVERED_GB_TOTAL": float(global_summary.get("DISCOVERED_GB_TOTAL") or 0),
-        "BACKUP_DONE_FILES_TOTAL": int(global_summary.get("BACKUP_DONE_FILES_TOTAL") or 0),
-        "BACKUP_DONE_GB_TOTAL": float(global_summary.get("BACKUP_DONE_GB_TOTAL") or 0),
-        "BACKUP_PENDING_FILES_TOTAL": int(global_summary.get("BACKUP_PENDING_FILES_TOTAL") or 0),
-        "BACKUP_PENDING_GB_TOTAL": float(global_summary.get("BACKUP_PENDING_GB_TOTAL") or 0),
-        "BACKUP_ERROR_FILES_TOTAL": int(global_summary.get("BACKUP_ERROR_FILES_TOTAL") or 0),
-        "BACKUP_ERROR_GB_TOTAL": float(global_summary.get("BACKUP_ERROR_GB_TOTAL") or 0),
-        "PROCESSING_DONE_FILES_TOTAL": int(global_summary.get("PROCESSING_DONE_FILES_TOTAL") or 0),
-        "PROCESSING_DONE_GB_TOTAL": float(global_summary.get("PROCESSING_DONE_GB_TOTAL") or 0),
+        # The server page only needs current operational totals here. Pulling
+        # them from HOST avoids a full FILE_TASK_HISTORY scan on every cache
+        # refresh because HOST already stores the live per-station aggregates.
+        "DISCOVERED_FILES_TOTAL": int(host_summary.get("DISCOVERED_FILES_TOTAL") or 0),
+        "BACKUP_PENDING_FILES_TOTAL": int(host_summary.get("BACKUP_PENDING_FILES_TOTAL") or 0),
+        "BACKUP_PENDING_GB_TOTAL": float(host_summary.get("BACKUP_PENDING_GB_TOTAL") or 0),
+        "BACKUP_ERROR_FILES_TOTAL": int(host_summary.get("BACKUP_ERROR_FILES_TOTAL") or 0),
+        "PROCESSING_DONE_FILES_TOTAL": int(host_summary.get("PROCESSING_DONE_FILES_TOTAL") or 0),
         "FACT_SPECTRUM_TOTAL": int(spectrum_summary.get("FACT_SPECTRUM_TOTAL") or 0),
-        "PROCESSING_PENDING_FILES_TOTAL": int(global_summary.get("PROCESSING_PENDING_FILES_TOTAL") or 0),
-        "PROCESSING_PENDING_GB_TOTAL": float(global_summary.get("PROCESSING_PENDING_GB_TOTAL") or 0),
-        "PROCESSING_ERROR_FILES_TOTAL": int(global_summary.get("PROCESSING_ERROR_FILES_TOTAL") or 0),
-        "PROCESSING_ERROR_GB_TOTAL": float(global_summary.get("PROCESSING_ERROR_GB_TOTAL") or 0),
+        "PROCESSING_PENDING_FILES_TOTAL": int(host_summary.get("PROCESSING_PENDING_FILES_TOTAL") or 0),
+        "PROCESSING_ERROR_FILES_TOTAL": int(host_summary.get("PROCESSING_ERROR_FILES_TOTAL") or 0),
     }
 
     _SERVER_SUMMARY_CACHE["payload"] = payload
@@ -1158,6 +1327,16 @@ def get_host_location_history_overview(host_id):
 def get_all_hosts(online_only=False, search=None):
     """Return the host picker list used by the host page."""
 
+    cache_key = _build_host_list_cache_key(
+        online_only=online_only,
+        search=search,
+    )
+    now = time.monotonic()
+    cached = _HOST_LIST_CACHE.get(cache_key)
+
+    if cached and cached["expires_at"] > now:
+        return _clone_rows(cached["payload"])
+
     conn = get_connection()
     cur = conn.cursor()
 
@@ -1181,6 +1360,10 @@ def get_all_hosts(online_only=False, search=None):
 
     conn.close()
 
+    _HOST_LIST_CACHE[cache_key] = {
+        "expires_at": now + HOST_LIST_CACHE_TTL_SECONDS,
+        "payload": _clone_rows(rows),
+    }
     return rows
 
 
@@ -1246,8 +1429,6 @@ def get_server_overview(online_only=False, search=None):
         _SERVER_OVERVIEW_CACHE["payload"] = dict(overview)
         _SERVER_OVERVIEW_CACHE["expires_at"] = now + SERVER_OVERVIEW_CACHE_TTL_SECONDS
 
-    # Keep the lower table filterable without mutating the global dashboard.
-    overview["HOST_ROWS"] = get_hosts(search=search, online_only=online_only)
     runtime_overview = _get_runtime_overview()
     overview["SERVER_MEMORY"] = runtime_overview["memory"]
     overview["REPOSFI_USAGE"] = runtime_overview["reposfi"]
@@ -1325,70 +1506,31 @@ def get_host_statistics(host_id):
     else:
         next_month_start = current_month_start.replace(month=current_month_start.month + 1)
 
-    # Monthly backup totals follow DT_BACKUP because that is the bandwidth event.
-    cur.execute(
-        """
-        SELECT
-            COUNT(*) AS BACKUP_DONE_THIS_MONTH,
-            ROUND(COALESCE(SUM(VL_FILE_SIZE_KB), 0) / 1024 / 1024, 2) AS BACKUP_DONE_GB_THIS_MONTH
-        FROM FILE_TASK_HISTORY
-        WHERE FK_HOST = %s
-          AND NU_STATUS_BACKUP = 0
-          AND DT_BACKUP >= %s
-          AND DT_BACKUP < %s
-        """,
-        (
-            normalized_host_id,
-            current_month_start.strftime("%Y-%m-%d %H:%M:%S"),
-            next_month_start.strftime("%Y-%m-%d %H:%M:%S"),
-        ),
+    history_summary = _get_history_summary_for_host(
+        cur,
+        normalized_host_id,
+        current_month_start,
+        next_month_start,
     )
-    monthly_summary = cur.fetchone() or {}
 
     row["CURRENT_MONTH_LABEL"] = current_month_start.strftime("%Y-%m")
-    row["BACKUP_DONE_THIS_MONTH"] = int(monthly_summary.get("BACKUP_DONE_THIS_MONTH") or 0)
-    row["BACKUP_DONE_GB_THIS_MONTH"] = float(monthly_summary.get("BACKUP_DONE_GB_THIS_MONTH") or 0)
+    row["BACKUP_DONE_THIS_MONTH"] = int(history_summary.get("BACKUP_DONE_THIS_MONTH") or 0)
+    row["BACKUP_DONE_GB_THIS_MONTH"] = float(history_summary.get("BACKUP_DONE_GB_THIS_MONTH") or 0)
 
-    # Global station summaries come from FILE_TASK_HISTORY because it preserves
-    # the final operational state of each discovered file.
-    cur.execute(
-        """
-        SELECT
-            COUNT(*) AS DISCOVERED_FILES_TOTAL,
-            ROUND(COALESCE(SUM(VL_FILE_SIZE_KB), 0) / 1024 / 1024, 2) AS DISCOVERED_GB_TOTAL,
-            SUM(CASE WHEN NU_STATUS_BACKUP = 0 THEN 1 ELSE 0 END) AS BACKUP_DONE_FILES_TOTAL,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = 0 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_DONE_GB_TOTAL,
-            SUM(CASE WHEN NU_STATUS_BACKUP = 1 THEN 1 ELSE 0 END) AS BACKUP_PENDING_FILES_TOTAL,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_PENDING_GB_TOTAL,
-            SUM(CASE WHEN NU_STATUS_BACKUP = -1 THEN 1 ELSE 0 END) AS BACKUP_ERROR_FILES_TOTAL,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = -1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_ERROR_GB_TOTAL,
-            SUM(CASE WHEN NU_STATUS_PROCESSING = 0 THEN 1 ELSE 0 END) AS PROCESSING_DONE_FILES_TOTAL,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = 0 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_DONE_GB_TOTAL,
-            SUM(CASE WHEN NU_STATUS_PROCESSING = 1 THEN 1 ELSE 0 END) AS PROCESSING_PENDING_FILES_TOTAL,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_PENDING_GB_TOTAL,
-            SUM(CASE WHEN NU_STATUS_PROCESSING = -1 THEN 1 ELSE 0 END) AS PROCESSING_ERROR_FILES_TOTAL,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = -1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_ERROR_GB_TOTAL
-        FROM FILE_TASK_HISTORY
-        WHERE FK_HOST = %s
-        """,
-        (normalized_host_id,),
-    )
-    global_summary = cur.fetchone() or {}
-
-    row["DISCOVERED_FILES_TOTAL"] = int(global_summary.get("DISCOVERED_FILES_TOTAL") or 0)
-    row["DISCOVERED_GB_TOTAL"] = float(global_summary.get("DISCOVERED_GB_TOTAL") or 0)
-    row["BACKUP_DONE_FILES_TOTAL"] = int(global_summary.get("BACKUP_DONE_FILES_TOTAL") or 0)
-    row["BACKUP_DONE_GB_TOTAL"] = float(global_summary.get("BACKUP_DONE_GB_TOTAL") or 0)
-    row["BACKUP_PENDING_FILES_TOTAL"] = int(global_summary.get("BACKUP_PENDING_FILES_TOTAL") or 0)
-    row["BACKUP_PENDING_GB_TOTAL"] = float(global_summary.get("BACKUP_PENDING_GB_TOTAL") or 0)
-    row["BACKUP_ERROR_FILES_TOTAL"] = int(global_summary.get("BACKUP_ERROR_FILES_TOTAL") or 0)
-    row["BACKUP_ERROR_GB_TOTAL"] = float(global_summary.get("BACKUP_ERROR_GB_TOTAL") or 0)
-    row["PROCESSING_DONE_FILES_TOTAL"] = int(global_summary.get("PROCESSING_DONE_FILES_TOTAL") or 0)
-    row["PROCESSING_DONE_GB_TOTAL"] = float(global_summary.get("PROCESSING_DONE_GB_TOTAL") or 0)
-    row["PROCESSING_PENDING_FILES_TOTAL"] = int(global_summary.get("PROCESSING_PENDING_FILES_TOTAL") or 0)
-    row["PROCESSING_PENDING_GB_TOTAL"] = float(global_summary.get("PROCESSING_PENDING_GB_TOTAL") or 0)
-    row["PROCESSING_ERROR_FILES_TOTAL"] = int(global_summary.get("PROCESSING_ERROR_FILES_TOTAL") or 0)
-    row["PROCESSING_ERROR_GB_TOTAL"] = float(global_summary.get("PROCESSING_ERROR_GB_TOTAL") or 0)
+    row["DISCOVERED_FILES_TOTAL"] = int(history_summary.get("DISCOVERED_FILES_TOTAL") or 0)
+    row["DISCOVERED_GB_TOTAL"] = float(history_summary.get("DISCOVERED_GB_TOTAL") or 0)
+    row["BACKUP_DONE_FILES_TOTAL"] = int(history_summary.get("BACKUP_DONE_FILES_TOTAL") or 0)
+    row["BACKUP_DONE_GB_TOTAL"] = float(history_summary.get("BACKUP_DONE_GB_TOTAL") or 0)
+    row["BACKUP_PENDING_FILES_TOTAL"] = int(history_summary.get("BACKUP_PENDING_FILES_TOTAL") or 0)
+    row["BACKUP_PENDING_GB_TOTAL"] = float(history_summary.get("BACKUP_PENDING_GB_TOTAL") or 0)
+    row["BACKUP_ERROR_FILES_TOTAL"] = int(history_summary.get("BACKUP_ERROR_FILES_TOTAL") or 0)
+    row["BACKUP_ERROR_GB_TOTAL"] = float(history_summary.get("BACKUP_ERROR_GB_TOTAL") or 0)
+    row["PROCESSING_DONE_FILES_TOTAL"] = int(history_summary.get("PROCESSING_DONE_FILES_TOTAL") or 0)
+    row["PROCESSING_DONE_GB_TOTAL"] = float(history_summary.get("PROCESSING_DONE_GB_TOTAL") or 0)
+    row["PROCESSING_PENDING_FILES_TOTAL"] = int(history_summary.get("PROCESSING_PENDING_FILES_TOTAL") or 0)
+    row["PROCESSING_PENDING_GB_TOTAL"] = float(history_summary.get("PROCESSING_PENDING_GB_TOTAL") or 0)
+    row["PROCESSING_ERROR_FILES_TOTAL"] = int(history_summary.get("PROCESSING_ERROR_FILES_TOTAL") or 0)
+    row["PROCESSING_ERROR_GB_TOTAL"] = float(history_summary.get("PROCESSING_ERROR_GB_TOTAL") or 0)
 
     # Spectrum totals enrich the host view, but the page should still render if
     # RFDATA is temporarily unavailable.
@@ -1397,50 +1539,33 @@ def get_host_statistics(host_id):
     except Exception:
         row["FACT_SPECTRUM_TOTAL"] = 0
 
-    # Annual backup reporting uses the file creation metadata, not the backup
-    # timestamp, so operators can understand the age of the cataloged files.
-    cur.execute(
-        """
-        SELECT
-            YEAR(DT_FILE_CREATED) AS REFERENCE_YEAR,
-            COUNT(*) AS DISCOVERED_FILES,
-            ROUND(COALESCE(SUM(VL_FILE_SIZE_KB), 0) / 1024 / 1024, 2) AS DISCOVERED_GB,
-            SUM(CASE WHEN NU_STATUS_BACKUP = 0 THEN 1 ELSE 0 END) AS BACKUP_DONE_FILES,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = 0 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_DONE_GB,
-            SUM(CASE WHEN NU_STATUS_BACKUP = 1 THEN 1 ELSE 0 END) AS BACKUP_PENDING_FILES,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_PENDING_GB,
-            SUM(CASE WHEN NU_STATUS_BACKUP = -1 THEN 1 ELSE 0 END) AS BACKUP_ERROR_FILES,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = -1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS BACKUP_ERROR_GB
-        FROM FILE_TASK_HISTORY
-        WHERE FK_HOST = %s
-          AND DT_FILE_CREATED IS NOT NULL
-        GROUP BY YEAR(DT_FILE_CREATED)
-        ORDER BY REFERENCE_YEAR DESC
-        """,
-        (normalized_host_id,),
-    )
-    row["BACKUP_YEARLY_BREAKDOWN"] = cur.fetchall()
-
-    # Processing follows the same yearly reference as backup for comparison.
-    cur.execute(
-        """
-        SELECT
-            YEAR(DT_FILE_CREATED) AS REFERENCE_YEAR,
-            SUM(CASE WHEN NU_STATUS_PROCESSING = 0 THEN 1 ELSE 0 END) AS PROCESSING_DONE_FILES,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = 0 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_DONE_GB,
-            SUM(CASE WHEN NU_STATUS_PROCESSING = 1 THEN 1 ELSE 0 END) AS PROCESSING_PENDING_FILES,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_PENDING_GB,
-            SUM(CASE WHEN NU_STATUS_PROCESSING = -1 THEN 1 ELSE 0 END) AS PROCESSING_ERROR_FILES,
-            ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = -1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS PROCESSING_ERROR_GB
-        FROM FILE_TASK_HISTORY
-        WHERE FK_HOST = %s
-          AND DT_FILE_CREATED IS NOT NULL
-        GROUP BY YEAR(DT_FILE_CREATED)
-        ORDER BY REFERENCE_YEAR DESC
-        """,
-        (normalized_host_id,),
-    )
-    row["PROCESSING_YEARLY_BREAKDOWN"] = cur.fetchall()
+    yearly_breakdown = _get_yearly_status_breakdown_for_host(cur, normalized_host_id)
+    row["BACKUP_YEARLY_BREAKDOWN"] = [
+        {
+            "REFERENCE_YEAR": yearly_row.get("REFERENCE_YEAR"),
+            "DISCOVERED_FILES": int(yearly_row.get("DISCOVERED_FILES") or 0),
+            "DISCOVERED_GB": float(yearly_row.get("DISCOVERED_GB") or 0),
+            "BACKUP_DONE_FILES": int(yearly_row.get("BACKUP_DONE_FILES") or 0),
+            "BACKUP_DONE_GB": float(yearly_row.get("BACKUP_DONE_GB") or 0),
+            "BACKUP_PENDING_FILES": int(yearly_row.get("BACKUP_PENDING_FILES") or 0),
+            "BACKUP_PENDING_GB": float(yearly_row.get("BACKUP_PENDING_GB") or 0),
+            "BACKUP_ERROR_FILES": int(yearly_row.get("BACKUP_ERROR_FILES") or 0),
+            "BACKUP_ERROR_GB": float(yearly_row.get("BACKUP_ERROR_GB") or 0),
+        }
+        for yearly_row in yearly_breakdown
+    ]
+    row["PROCESSING_YEARLY_BREAKDOWN"] = [
+        {
+            "REFERENCE_YEAR": yearly_row.get("REFERENCE_YEAR"),
+            "PROCESSING_DONE_FILES": int(yearly_row.get("PROCESSING_DONE_FILES") or 0),
+            "PROCESSING_DONE_GB": float(yearly_row.get("PROCESSING_DONE_GB") or 0),
+            "PROCESSING_PENDING_FILES": int(yearly_row.get("PROCESSING_PENDING_FILES") or 0),
+            "PROCESSING_PENDING_GB": float(yearly_row.get("PROCESSING_PENDING_GB") or 0),
+            "PROCESSING_ERROR_FILES": int(yearly_row.get("PROCESSING_ERROR_FILES") or 0),
+            "PROCESSING_ERROR_GB": float(yearly_row.get("PROCESSING_ERROR_GB") or 0),
+        }
+        for yearly_row in yearly_breakdown
+    ]
 
     cur.execute(
         """
@@ -1492,6 +1617,16 @@ def get_host_statistics(host_id):
 def get_hosts(search=None, online_only=False):
     """Return the filtered host table used by the server dashboard."""
 
+    cache_key = _build_host_list_cache_key(
+        online_only=online_only,
+        search=search,
+    )
+    now = time.monotonic()
+    cached = _SERVER_HOST_ROWS_CACHE.get(cache_key)
+
+    if cached and cached["expires_at"] > now:
+        return _clone_rows(cached["payload"])
+
     conn = get_connection()
     cur = conn.cursor()
 
@@ -1541,4 +1676,8 @@ def get_hosts(search=None, online_only=False):
         else:
             r["PENDING_BACKUP_MB"] = 0
 
+    _SERVER_HOST_ROWS_CACHE[cache_key] = {
+        "expires_at": now + SERVER_HOST_ROWS_CACHE_TTL_SECONDS,
+        "payload": _clone_rows(rows),
+    }
     return rows

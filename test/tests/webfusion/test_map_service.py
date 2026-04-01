@@ -67,6 +67,14 @@ class TestMapService(unittest.TestCase):
             "cwsm211001",
         )
         self.assertEqual(
+            self.module._build_cwsm_signature("cwsm21120037"),
+            "cwsm212037",
+        )
+        self.assertEqual(
+            self.module._build_cwsm_signature("cwsm22010007"),
+            "cwsm211007",
+        )
+        self.assertEqual(
             self.module._build_cwsm_signature("cwsm22010040"),
             "cwsm220040",
         )
@@ -82,6 +90,16 @@ class TestMapService(unittest.TestCase):
                 "cwsm220040": {
                     "host_id": 202,
                     "host_name": "CWSM220040",
+                    "is_offline": False,
+                },
+                "cwsm212037": {
+                    "host_id": 303,
+                    "host_name": "CWSM212037",
+                    "is_offline": False,
+                },
+                "cwsm211007": {
+                    "host_id": 404,
+                    "host_name": "CWSM211007",
                     "is_offline": False,
                 },
             },
@@ -100,6 +118,20 @@ class TestMapService(unittest.TestCase):
                         "is_offline": False,
                     }
                 ],
+                "cwsm212037": [
+                    {
+                        "host_id": 303,
+                        "host_name": "CWSM212037",
+                        "is_offline": False,
+                    }
+                ],
+                "cwsm211007": [
+                    {
+                        "host_id": 404,
+                        "host_name": "CWSM211007",
+                        "is_offline": False,
+                    }
+                ],
             },
         }
 
@@ -110,6 +142,14 @@ class TestMapService(unittest.TestCase):
         host = self.module._find_host_for_equipment(host_index, "cwsm22010040")
         self.assertIsNotNone(host)
         self.assertEqual(host["host_id"], 202)
+
+        host = self.module._find_host_for_equipment(host_index, "cwsm21120037")
+        self.assertIsNotNone(host)
+        self.assertEqual(host["host_id"], 303)
+
+        host = self.module._find_host_for_equipment(host_index, "cwsm22010007")
+        self.assertIsNotNone(host)
+        self.assertEqual(host["host_id"], 404)
 
 
 if __name__ == "__main__":

@@ -51,7 +51,7 @@ PROJECT_ROOT = bootstrap_app_paths(__file__)
 # Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
 from host_handler import bootstrap_flow, host_runtime
-from server_handler import signal_runtime, sleep as runtime_sleep, timeout_utils, worker_pool
+from server_handler import signal_runtime, sleep as runtime_sleep, worker_pool
 from shared import (
     errors,
     file_metadata,
@@ -631,7 +631,7 @@ def transfer_file_task(
         If integrity validation fails.
 
     TimeoutError
-        If the transfer exceeds HOST_BUSY_TIMEOUT.
+        If the transfer stalls or exceeds the configured watchdog limits.
     """
 
     remote_path = f"{remote_dir}/{remote_filename}"
@@ -703,9 +703,13 @@ def transfer_file_task(
     # ---------------------------------------------------------
     # 1) Transfer to temporary file
     # ---------------------------------------------------------
-    timeout_utils.run_with_timeout(
-        lambda: sftp.transfer(remote_path, tmp_file),
-        timeout=k.HOST_BUSY_TIMEOUT,
+    sftp.transfer(
+        remote_path,
+        tmp_file,
+        max_seconds=k.BACKUP_TRANSFER_MAX_SECONDS,
+        stall_timeout_seconds=k.BACKUP_TRANSFER_STALL_TIMEOUT_SECONDS,
+        progress_poll_seconds=k.BACKUP_TRANSFER_PROGRESS_POLL_SECONDS,
+        heartbeat_seconds=k.BACKUP_TRANSFER_HEARTBEAT_SECONDS,
     )
 
     # ---------------------------------------------------------

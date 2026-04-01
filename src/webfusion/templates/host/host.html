@@ -490,17 +490,14 @@
             <div class="summary-card">
                 <div class="summary-card-label">Mês de referência</div>
                 <div class="summary-card-value">{{ stats.CURRENT_MONTH_LABEL }}</div>
-                <div class="summary-card-note">Janela atual de controle da franquia</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos baixados no mês</div>
                 <div class="summary-card-value">{{ stats.BACKUP_DONE_THIS_MONTH }}</div>
-                <div class="summary-card-note">Backups concluídos no mês corrente</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume baixado no mês</div>
                 <div class="summary-card-value">{{ stats.BACKUP_DONE_GB_THIS_MONTH }} GB</div>
-                <div class="summary-card-note">Volume já consumido da franquia no mês</div>
             </div>
         </div>
 
@@ -553,98 +550,59 @@
             </tr>
         </table>
 
-        <!-- DISCOVERY -->
-        <div class="section-title">Descoberta de Arquivos</div>
-        <table class="stats-table">
-            <tr>
-                <th>Última varredura de arquivos</th>
-                <td>{{ stats.DT_LAST_DISCOVERY or "-" }}</td>
-            </tr>
-            <tr>
-                <th>Total de arquivos descobertos acumulado</th>
-                <td>{{ stats.NU_DONE_FILE_DISCOVERY_TASKS }}</td>
-            </tr>
-            <tr>
-                <th>Arquivos com erro na descoberta</th>
-                <td>{{ stats.NU_ERROR_FILE_DISCOVERY_TASKS }}</td>
-            </tr>
-        </table>
+        <div class="section-title">Últimas Atividades</div>
+        <div class="summary-grid">
+            <div class="summary-card">
+                <div class="summary-card-label">Última verificação</div>
+                <div class="summary-card-value">{{ stats.DT_LAST_CHECK or "-" }}</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Última descoberta</div>
+                <div class="summary-card-value">{{ stats.DT_LAST_DISCOVERY or "-" }}</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Último backup</div>
+                <div class="summary-card-value">{{ stats.DT_LAST_BACKUP or "-" }}</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Último processamento</div>
+                <div class="summary-card-value">{{ stats.DT_LAST_PROCESSING or "-" }}</div>
+            </div>
+        </div>
 
-        <!-- BACKUP -->
-        <div class="section-title">Backup</div>
-        <table class="stats-table">
-            <tr>
-                <th>Último backup concluído</th>
-                <td>{{ stats.DT_LAST_BACKUP or "-" }}</td>
-            </tr>
-            <tr>
-                <th>Backups pendentes</th>
-                <td>{{ stats.NU_PENDING_FILE_BACKUP_TASKS }}</td>
-            </tr>
-            <tr>
-                <th>Backups concluídos</th>
-                <td>{{ stats.NU_DONE_FILE_BACKUP_TASKS }}</td>
-            </tr>
-            <tr>
-                <th>Backups com erro</th>
-                <td>{{ stats.NU_ERROR_FILE_BACKUP_TASKS }}</td>
-            </tr>
-            <tr>
-                <th>Volume com erro de backup (GB)</th>
-                <td>{{ stats.BACKUP_ERROR_GB_TOTAL }}</td>
-            </tr>
-            <tr>
-                <th>Volume ainda pendente de backup (GB)</th>
-                <td>{{ stats.PENDING_GB }}</td>
-            </tr>
-            <tr>
-                <th>Volume total já baixado (GB)</th>
-                <td>{{ stats.DONE_GB }}</td>
-            </tr>
-        </table>
-
-        <!-- RESUMO GLOBAL -->
-        <div class="section-title">Resumo Global dos Backups</div>
+        <div class="section-title">Indicadores de Backup</div>
         <div class="summary-grid">
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos mapeados</div>
                 <div class="summary-card-value">{{ stats.DISCOVERED_FILES_TOTAL }}</div>
-                <div class="summary-card-note">Total conhecido no histórico da estação</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume mapeado</div>
                 <div class="summary-card-value">{{ stats.DISCOVERED_GB_TOTAL }} GB</div>
-                <div class="summary-card-note">Somatório do volume descoberto</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Backups concluídos</div>
                 <div class="summary-card-value">{{ stats.BACKUP_DONE_FILES_TOTAL }}</div>
-                <div class="summary-card-note">Arquivos já baixados da estação</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume já baixado</div>
                 <div class="summary-card-value">{{ stats.BACKUP_DONE_GB_TOTAL }} GB</div>
-                <div class="summary-card-note">Total transferido da estação</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Backups pendentes</div>
                 <div class="summary-card-value">{{ stats.BACKUP_PENDING_FILES_TOTAL }}</div>
-                <div class="summary-card-note">Arquivos ainda aguardando transferência</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume pendente</div>
                 <div class="summary-card-value">{{ stats.BACKUP_PENDING_GB_TOTAL }} GB</div>
-                <div class="summary-card-note">Volume ainda não baixado</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Backups com erro</div>
                 <div class="summary-card-value">{{ stats.BACKUP_ERROR_FILES_TOTAL }}</div>
-                <div class="summary-card-note">Arquivos que falharam no backup</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume com erro no backup</div>
                 <div class="summary-card-value">{{ stats.BACKUP_ERROR_GB_TOTAL }} GB</div>
-                <div class="summary-card-note">Volume associado a falhas de backup</div>
             </div>
         </div>
 
@@ -711,42 +669,35 @@
             </div>
         </details>
 
-        <div class="section-title">Resumo Global dos Processamentos</div>
+        <div class="section-title">Indicadores de Processamento</div>
         <div class="summary-grid">
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos com Processamento Concluído</div>
                 <div class="summary-card-value">{{ stats.PROCESSING_DONE_FILES_TOTAL }}</div>
-                <div class="summary-card-note">Arquivos concluídos no processamento</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Espectros Gerados</div>
                 <div class="summary-card-value">{{ stats.FACT_SPECTRUM_TOTAL }}</div>
-                <div class="summary-card-note">Total de espectros gravados na base analítica para esta estação</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume processado</div>
                 <div class="summary-card-value">{{ stats.PROCESSING_DONE_GB_TOTAL }} GB</div>
-                <div class="summary-card-note">Volume total já processado</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos com Processamento Pendente</div>
                 <div class="summary-card-value">{{ stats.PROCESSING_PENDING_FILES_TOTAL }}</div>
-                <div class="summary-card-note">Arquivos aguardando processamento</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume pendente</div>
                 <div class="summary-card-value">{{ stats.PROCESSING_PENDING_GB_TOTAL }} GB</div>
-                <div class="summary-card-note">Volume ainda não processado</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos com Erro de Processamento</div>
                 <div class="summary-card-value">{{ stats.PROCESSING_ERROR_FILES_TOTAL }}</div>
-                <div class="summary-card-note">Arquivos com falha de processamento</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume com erro</div>
                 <div class="summary-card-value">{{ stats.PROCESSING_ERROR_GB_TOTAL }} GB</div>
-                <div class="summary-card-note">Volume associado a falhas de processamento</div>
             </div>
         </div>
 
@@ -774,31 +725,6 @@
                 </div>
             </div>
         </details>
-
-        <!-- PROCESSAMENTO -->
-        <div class="section-title">Processamento</div>
-        <table class="stats-table">
-            <tr>
-                <th>Último processamento concluído</th>
-                <td>{{ stats.DT_LAST_PROCESSING or "-" }}</td>
-            </tr>
-            <tr>
-                <th>Processamentos pendentes</th>
-                <td>{{ stats.NU_PENDING_FILE_PROCESS_TASKS }}</td>
-            </tr>
-            <tr>
-                <th>Processamentos concluídos</th>
-                <td>{{ stats.NU_DONE_FILE_PROCESS_TASKS }}</td>
-            </tr>
-            <tr>
-                <th>Processamentos com erro</th>
-                <td>{{ stats.NU_ERROR_FILE_PROCESS_TASKS }}</td>
-            </tr>
-            <tr>
-                <th>Volume com erro de processamento (GB)</th>
-                <td>{{ stats.PROCESSING_ERROR_GB_TOTAL }}</td>
-            </tr>
-        </table>
 
         <div class="section-title">Histórico Anual de Processamento</div>
         <div class="annual-breakdown">

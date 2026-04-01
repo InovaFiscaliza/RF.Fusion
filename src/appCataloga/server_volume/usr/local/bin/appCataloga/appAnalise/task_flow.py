@@ -23,8 +23,10 @@ That split mirrors the worker lifecycle in
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import time
 from datetime import datetime
 import re
 
@@ -34,6 +36,22 @@ from shared import geolocation_utils, tools
 
 
 NON_ALNUM_RE = re.compile(r"[^a-z0-9]+", re.IGNORECASE)
+TRANSIENT_FILESYSTEM_ERRNOS = {
+    errno.EBUSY,
+    errno.EAGAIN,
+    errno.ESTALE,
+    errno.ETXTBSY,
+}
+
+
+def is_transient_filesystem_error(exc: Exception) -> bool:
+    """
+    Return whether a filesystem failure is worth retrying later.
+
+    These errors usually come from busy or stale files on shared storage. They
+    are operationally noisy, but they do not mean the payload itself is bad.
+    """
+    return isinstance(exc, OSError) and exc.errno in TRANSIENT_FILESYSTEM_ERRNOS
 
 
 def file_move(filename, path, new_path, *, refresh_mtime: bool = False):
@@ -55,9 +73,31 @@ def file_move(filename, path, new_path, *, refresh_mtime: bool = False):
     target = f"{new_path}/{filename}"
 
     os.makedirs(new_path, exist_ok=True)
-    os.rename(source, target)
+
+    for attempt in range(3):
+        try:
+            os.rename(source, target)
+            break
+        except OSError as exc:
+            if not is_transient_filesystem_error(exc) or attempt == 2:
+                raise OSError(
+                    exc.errno,
+                    f"{exc.strerror}: {source} -> {target}",
+                ) from exc
+            time.sleep(0.5)
+
     if refresh_mtime:
-        os.utime(target, None)
+        for attempt in range(3):
+            try:
+                os.utime(target, None)
+                break
+            except OSError as exc:
+                if not is_transient_filesystem_error(exc) or attempt == 2:
+                    raise OSError(
+                        exc.errno,
+                        f"{exc.strerror}: {target}",
+                    ) from exc
+                time.sleep(0.5)
 
     return {"filename": filename, "path": new_path}
 
@@ -740,4 +780,3 @@ def finalize_task_resolution(
             if history_server_path else None
         ),
     }
-

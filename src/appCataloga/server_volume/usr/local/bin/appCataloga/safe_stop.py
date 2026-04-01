@@ -19,6 +19,82 @@ import config as k
 
 log = logging_utils.log()
 
+def cleanup_repository_tmp_files(*, repo_tmp_root: str) -> int:
+    """
+    Delete stale backup temporary files left in the repository TMP area.
+
+    Why this belongs here:
+        `appCataloga_file_bkp.py` writes into `<repo>/tmp/<host_uid>/*.tmp`
+        while a transfer is still in progress. Those files are not retired
+        artifacts owned by the garbage collector; they are interrupted-transfer
+        leftovers. `safe_stop.py` runs only after all workers are stopped, so it
+        is the safest place to purge them without racing an active download.
+    """
+    if not os.path.isdir(repo_tmp_root):
+        log.entry(f"[CLEANUP] Repository TMP root not found: {repo_tmp_root}")
+        return 0
+
+    deleted = 0
+
+    for root, _, files in os.walk(repo_tmp_root):
+        for name in files:
+            if not name.endswith(".tmp"):
+                continue
+
+            path = os.path.join(root, name)
+
+            try:
+                os.remove(path)
+                deleted += 1
+                log.warning(f"[CLEANUP] Deleted stale TMP file: {path}")
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                log.error(f"[CLEANUP] Failed to delete TMP file {path}: {e}")
+
+    log.entry(
+        f"[CLEANUP] Deleted {deleted} stale repository TMP file(s) "
+        f"from {repo_tmp_root}"
+    )
+    return deleted
+
+
+def prune_empty_repository_tmp_dirs(*, repo_tmp_root: str) -> int:
+    """
+    Remove empty host directories left behind after TMP-file cleanup.
+
+    The repository TMP root itself is preserved. Only empty descendants are
+    pruned so the next backup cycle starts from a tidy layout.
+    """
+    if not os.path.isdir(repo_tmp_root):
+        return 0
+
+    removed = 0
+
+    for root, _, _ in os.walk(repo_tmp_root, topdown=False):
+        if os.path.normpath(root) == os.path.normpath(repo_tmp_root):
+            continue
+
+        try:
+            if not os.listdir(root):
+                os.rmdir(root)
+                removed += 1
+                log.warning(f"[CLEANUP] Removed empty TMP directory: {root}")
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+        except Exception as e:
+            log.error(f"[CLEANUP] Failed to prune TMP directory {root}: {e}")
+
+    if removed:
+        log.entry(
+            f"[CLEANUP] Removed {removed} empty repository TMP directorie(s)"
+        )
+
+    return removed
+
+
 def cleanup_hosts_and_tasks():
     log.entry("[CLEANUP] Starting forced cleanup (HOST + HOST_TASK + FILE_TASK)")
 
@@ -109,6 +185,13 @@ def cleanup_hosts_and_tasks():
             )
 
         log.entry(f"[CLEANUP] Released {len(hosts)} BUSY hosts")
+
+        # ---------------------------------------------------------
+        # 4) Purge stale repository TMP leftovers from backup
+        # ---------------------------------------------------------
+        repo_tmp_root = os.path.join(k.REPO_FOLDER, k.TMP_FOLDER)
+        cleanup_repository_tmp_files(repo_tmp_root=repo_tmp_root)
+        prune_empty_repository_tmp_dirs(repo_tmp_root=repo_tmp_root)
 
     except Exception as e:
         log.error(f"[CLEANUP] Failed during forced cleanup: {e}")

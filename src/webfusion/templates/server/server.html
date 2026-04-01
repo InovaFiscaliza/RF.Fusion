@@ -85,30 +85,6 @@
         font-size: 15px;
     }
 
-    .section-header-row {
-        display: flex;
-        align-items: flex-end;
-        justify-content: space-between;
-        gap: 16px;
-        margin-top: 32px;
-        margin-bottom: 8px;
-        flex-wrap: wrap;
-    }
-
-    .section-header-row .section-title {
-        margin: 0;
-        min-width: 0;
-    }
-
-    .section-header-copy {
-        min-width: 0;
-        flex: 1 1 420px;
-    }
-
-    .section-header-copy .summary-card-note {
-        margin-top: 8px;
-    }
-
     .section-online-filter {
         flex: 0 0 auto;
     }
@@ -160,12 +136,6 @@
         color: #334155;
     }
 
-    .summary-subsection-note {
-        margin-top: 4px;
-        font-size: 12px;
-        color: #64748b;
-    }
-
     .summary-card {
         border: 1px solid #e2e8f0;
         border-radius: 10px;
@@ -207,17 +177,6 @@
         margin-top: 4px;
         font-size: 12px;
         color: #64748b;
-    }
-
-    .page-intro {
-        margin-top: -6px;
-        margin-bottom: 18px;
-        font-size: 13px;
-        color: #475569;
-    }
-
-    .page-intro strong {
-        color: #0f172a;
     }
 
     .details-panel {
@@ -403,101 +362,80 @@
     Panorama do Servidor
 </h1>
 
-<div class="page-intro">
-    <strong>Escopo desta tela:</strong> a tabela desta página representa o catálogo de estações conhecido pelo Zabbix/Grafana.
-</div>
-
 <form id="server-filter-form" method="get" data-loading-message="Atualizando panorama do servidor..."></form>
 
 <div class="card background-neutral-0 padding-l border-radius-m margin-bottom-l">
     <div class="section-title section-title-tight">Consolidado do Servidor</div>
     <div class="summary-subsection">
         <div class="summary-subsection-title">Panorama das Estações</div>
-        <div class="summary-subsection-note">Visão geral do parque monitorado e do estado atual de conectividade.</div>
         <div class="summary-grid">
             <div class="summary-card">
                 <div class="summary-card-label">Estações Cadastradas</div>
                 <div class="summary-card-value">{{ server_overview.TOTAL_HOSTS }}</div>
-                <div class="summary-card-note">Total global conhecido pelo servidor</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Online</div>
                 <div class="summary-card-value">{{ server_overview.ONLINE_HOSTS }}</div>
-                <div class="summary-card-note">Estações com conectividade ativa no total global</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Offline</div>
                 <div class="summary-card-value">{{ server_overview.OFFLINE_HOSTS }}</div>
-                <div class="summary-card-note">Estações indisponíveis no total global</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Ocupadas</div>
                 <div class="summary-card-value">{{ server_overview.BUSY_HOSTS }}</div>
-                <div class="summary-card-note">Hosts atualmente em uso operacional</div>
             </div>
         </div>
     </div>
 
     <div class="summary-subsection">
         <div class="summary-subsection-title">Ciclo de Backup e Armazenamento</div>
-        <div class="summary-subsection-note">Acompanha descoberta de arquivos, transferência para o repositório e volume movimentado.</div>
         <div class="summary-grid">
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos mapeados</div>
                 <div class="summary-card-value summary-card-value-loading" id="server-summary-discovered-total">CARREGANDO</div>
-                <div class="summary-card-note">Total acumulado de descobertas</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Backups no mês</div>
                 <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-done-month">CARREGANDO</div>
-                <div class="summary-card-note">Mês de referência: <span id="server-summary-month-label">{{ server_overview.CURRENT_MONTH_LABEL }}</span></div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume no mês</div>
                 <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-done-gb-month">CARREGANDO</div>
-                <div class="summary-card-note">Consumo atual da franquia agregada</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Backups pendentes</div>
                 <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-pending-total">CARREGANDO</div>
-                <div class="summary-card-note">Arquivos aguardando transferência</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Backups com erro</div>
                 <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-error-total">CARREGANDO</div>
-                <div class="summary-card-note">Falhas conhecidas na etapa de backup</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume pendente de backup</div>
                 <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-pending-gb">CARREGANDO</div>
-                <div class="summary-card-note">Volume ainda não transferido</div>
             </div>
         </div>
     </div>
 
     <div class="summary-subsection">
         <div class="summary-subsection-title">Processamento e Base Analítica</div>
-        <div class="summary-subsection-note">Separa o status do processamento por arquivo do volume analítico final gerado em espectros.</div>
         <div class="summary-grid">
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos com Processamento Pendente</div>
                 <div class="summary-card-value summary-card-value-loading" id="server-summary-processing-pending-total">CARREGANDO</div>
-                <div class="summary-card-note">Arquivos já transferidos e ainda aguardando processamento</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos com Processamento Concluído</div>
                 <div class="summary-card-value summary-card-value-loading" id="server-summary-processing-done-total">CARREGANDO</div>
-                <div class="summary-card-note">Arquivos processados com sucesso no histórico global</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos com Erro de Processamento</div>
                 <div class="summary-card-value summary-card-value-loading" id="server-summary-processing-error-total">CARREGANDO</div>
-                <div class="summary-card-note">Arquivos que falharam na etapa de processamento</div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Espectros Gerados</div>
                 <div class="summary-card-value summary-card-value-loading" id="server-summary-fact-spectrum-total">CARREGANDO</div>
-                <div class="summary-card-note">Total de espectros gravados na base analítica; um arquivo pode gerar vários espectros</div>
             </div>
         </div>
     </div>
@@ -531,7 +469,7 @@
             </div>
         </div>
         <div class="summary-card">
-            <div class="summary-card-label">Status do appAnalise</div>
+            <div class="summary-card-label">Conectividade do appAnalise</div>
             <div class="summary-card-value {% if server_overview.APP_ANALISE_STATUS.online %}summary-card-value-online{% else %}summary-card-value-offline{% endif %}">
                 {% if server_overview.APP_ANALISE_STATUS.online %}
                 Online
@@ -540,9 +478,9 @@
                 {% endif %}
             </div>
             <div class="summary-card-note">
-                {{ server_overview.APP_ANALISE_STATUS.host or "-" }}:{{ server_overview.APP_ANALISE_STATUS.port or "-" }}
+                {{ server_overview.APP_ANALISE_STATUS.host or "-" }}
                 {% if server_overview.APP_ANALISE_STATUS.online %}
-                | {{ server_overview.APP_ANALISE_STATUS.latency_ms }} ms
+                | ping {{ server_overview.APP_ANALISE_STATUS.latency_ms }} ms
                 {% elif server_overview.APP_ANALISE_STATUS.error %}
                 | {{ server_overview.APP_ANALISE_STATUS.error }}
                 {% endif %}
@@ -603,12 +541,12 @@
     <details class="details-panel" id="server-host-table-panel">
         <summary>
             Clique para expandir a tabela de estações
-            <span class="details-summary-meta">{{ server_overview.HOST_ROWS|length }} estação(ões) no filtro atual</span>
+            <span class="details-summary-meta" id="server-host-table-meta">Carregamento sob demanda</span>
         </summary>
         <div class="details-panel-body">
             <div class="table-panel-toolbar">
                 <div class="summary-card-note">
-                    O consolidado acima é global. O filtro desta página afeta apenas a tabela abaixo, formada pelas estações catalogadas no Zabbix/Grafana.
+                    O consolidado acima é global. O filtro abaixo afeta apenas a tabela de estações.
                 </div>
                 <div class="table-panel-actions">
                     <div class="online-filter section-online-filter">
@@ -650,45 +588,10 @@
                             <th>Ação</th>
                         </tr>
                     </thead>
-                    <tbody>
-                    {% for row in server_overview.HOST_ROWS %}
+                    <tbody id="server-host-table-body">
                         <tr>
-                            <td>{{ row.NA_HOST_NAME }}</td>
-                            <td>
-                                {% if row.IS_OFFLINE %}
-                                <span class="status-badge status-offline">Offline</span>
-                                {% else %}
-                                <span class="status-badge status-online">Online</span>
-                                {% endif %}
-                            </td>
-                            <td>
-                                {% if row.IS_BUSY %}
-                                <span class="status-badge status-busy">Ocupada</span>
-                                {% else %}
-                                <span class="status-badge status-idle">Disponível</span>
-                                {% endif %}
-                            </td>
-                            <td>{{ row.DT_LAST_CHECK or "-" }}</td>
-                            <td>{{ row.NU_PENDING_FILE_BACKUP_TASKS }}</td>
-                            <td>{{ row.NU_ERROR_FILE_BACKUP_TASKS }}</td>
-                            <td>{{ row.NU_PENDING_FILE_PROCESS_TASKS }}</td>
-                            <td>{{ row.NU_ERROR_FILE_PROCESS_TASKS }}</td>
-                            <td>{{ row.PENDING_BACKUP_GB }}</td>
-                            <td>
-                                <a
-                                    class="link-action"
-                                    href="{{ url_for('host.host', host_id=row.ID_HOST, online_only='1' if online_only else '0') }}"
-                                    data-loading-message="Carregando panorama da estação..."
-                                >
-                                    Abrir
-                                </a>
-                            </td>
+                            <td colspan="10">Abra este painel para carregar a tabela de estações.</td>
                         </tr>
-                    {% else %}
-                        <tr>
-                            <td colspan="10">Nenhuma estação encontrada para o filtro atual.</td>
-                        </tr>
-                    {% endfor %}
                     </tbody>
                 </table>
             </div>
@@ -755,7 +658,20 @@
         const backupMeta = document.getElementById("server-backup-errors-meta");
         const backupBody = document.getElementById("server-backup-errors-body");
         const hostTablePanel = document.getElementById("server-host-table-panel");
+        const hostTableMeta = document.getElementById("server-host-table-meta");
+        const hostTableBody = document.getElementById("server-host-table-body");
         const serverFilterForm = document.getElementById("server-filter-form");
+        const hostDetailBaseUrl = "{{ url_for('host.host') }}";
+        const hostTableEndpointBase = "{{ url_for('server.server_hosts') }}";
+
+        function escapeHtml(value) {
+            return String(value ?? "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/\"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+        }
 
         if (hostTablePanel) {
             try {
@@ -765,10 +681,6 @@
             } catch (error) {
                 // Ignore storage access issues and keep the default collapsed state.
             }
-
-            hostTablePanel.addEventListener("toggle", function () {
-                persistServerHostTablePanelState(Boolean(hostTablePanel.open));
-            });
         }
 
         if (serverFilterForm && hostTablePanel) {
@@ -818,6 +730,57 @@
             });
         }
 
+        function renderHostRows(rows) {
+            if (!hostTableBody) {
+                return;
+            }
+
+            if (!Array.isArray(rows) || rows.length === 0) {
+                hostTableBody.innerHTML = `
+                    <tr>
+                        <td colspan="10">Nenhuma estação encontrada para o filtro atual.</td>
+                    </tr>
+                `;
+                return;
+            }
+
+            hostTableBody.innerHTML = rows.map((row) => {
+                const connectionBadge = row.IS_OFFLINE
+                    ? '<span class="status-badge status-offline">Offline</span>'
+                    : '<span class="status-badge status-online">Online</span>';
+                const busyBadge = row.IS_BUSY
+                    ? '<span class="status-badge status-busy">Ocupada</span>'
+                    : '<span class="status-badge status-idle">Disponível</span>';
+
+                const hostUrl = new URL(hostDetailBaseUrl, window.location.origin);
+                hostUrl.searchParams.set("host_id", row.ID_HOST);
+                hostUrl.searchParams.set("online_only", {{ 'true' if online_only else 'false' }} ? "1" : "0");
+
+                return `
+                    <tr>
+                        <td>${escapeHtml(row.NA_HOST_NAME || "-")}</td>
+                        <td>${connectionBadge}</td>
+                        <td>${busyBadge}</td>
+                        <td>${escapeHtml(row.DT_LAST_CHECK || "-")}</td>
+                        <td>${escapeHtml(row.NU_PENDING_FILE_BACKUP_TASKS || 0)}</td>
+                        <td>${escapeHtml(row.NU_ERROR_FILE_BACKUP_TASKS || 0)}</td>
+                        <td>${escapeHtml(row.NU_PENDING_FILE_PROCESS_TASKS || 0)}</td>
+                        <td>${escapeHtml(row.NU_ERROR_FILE_PROCESS_TASKS || 0)}</td>
+                        <td>${escapeHtml(row.PENDING_BACKUP_GB || 0)}</td>
+                        <td>
+                            <a
+                                class="link-action"
+                                href="${escapeHtml(hostUrl.toString())}"
+                                data-loading-message="Carregando panorama da estação..."
+                            >
+                                Abrir
+                            </a>
+                        </td>
+                    </tr>
+                `;
+            }).join("");
+        }
+
         function bindDiagnosticPanel(panelElement, metaElement, bodyElement, endpoint, options) {
             if (!panelElement || !metaElement || !bodyElement) {
                 return;
@@ -861,6 +824,66 @@
                     loadPanel();
                 }
             });
+        }
+
+        function bindHostTablePanel() {
+            if (!hostTablePanel || !hostTableMeta || !hostTableBody) {
+                return;
+            }
+
+            let loading = false;
+            let loaded = false;
+
+            function loadPanel() {
+                if (loading || loaded) {
+                    return;
+                }
+
+                loading = true;
+                hostTableMeta.textContent = "Carregando...";
+                hostTableBody.innerHTML = `
+                    <tr>
+                        <td colspan="10">Carregando tabela de estações...</td>
+                    </tr>
+                `;
+
+                const params = new URLSearchParams(window.location.search);
+                fetch(`${hostTableEndpointBase}?${params.toString()}`)
+                    .then((response) => {
+                        if (!response.ok) {
+                            throw new Error("request_failed");
+                        }
+                        return response.json();
+                    })
+                    .then((payload) => {
+                        renderHostRows(payload.rows || []);
+                        hostTableMeta.textContent = `${payload.count || 0} estação(ões) no filtro atual`;
+                        loaded = true;
+                    })
+                    .catch(() => {
+                        hostTableBody.innerHTML = `
+                            <tr>
+                                <td colspan="10">Não foi possível carregar a tabela de estações agora.</td>
+                            </tr>
+                        `;
+                        hostTableMeta.textContent = "Falha ao carregar";
+                    })
+                    .finally(() => {
+                        loading = false;
+                    });
+            }
+
+            hostTablePanel.addEventListener("toggle", function () {
+                persistServerHostTablePanelState(Boolean(hostTablePanel.open));
+
+                if (hostTablePanel.open) {
+                    loadPanel();
+                }
+            });
+
+            if (hostTablePanel.open) {
+                loadPanel();
+            }
         }
 
         function renderSummaryMetrics(payload) {
@@ -994,6 +1017,8 @@
                 failureMessage: "Não foi possível carregar os erros agrupados de backup agora."
             }
         );
+
+        bindHostTablePanel();
     })();
 </script>
 {% endblock %}

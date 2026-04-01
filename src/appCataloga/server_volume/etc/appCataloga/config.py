@@ -107,6 +107,10 @@ BKP_TASK_IDLE_EXIT_CYCLES       = 3         # extra workers exit after this many
 MIN_FILE_SIZE_KB                = 1         # minimum file size to be backed up in KB
 MIN_FILE_AGE_MINUTES            = 30        # minimum file age to be backed up in minutes
 FILE_THRESHOLD_SIZE_KB          = 100       # file size threshold for update file
+BACKUP_TRANSFER_MAX_SECONDS     = HOST_BUSY_TIMEOUT   # Absolute upper bound for one SFTP transfer
+BACKUP_TRANSFER_STALL_TIMEOUT_SECONDS = 900           # Abort when a transfer makes no progress for too long
+BACKUP_TRANSFER_PROGRESS_POLL_SECONDS = 30           # How often to inspect callback/local file growth
+BACKUP_TRANSFER_HEARTBEAT_SECONDS = 300              # Periodic progress log while a large transfer is still alive
 SFTP_BUSY_RETRY_DETAIL          = "sftp connection busy, will retry"
 SSH_TIMEOUT_RETRY_DETAIL        = "ssh init timeout, awaiting connectivity confirmation"
 
