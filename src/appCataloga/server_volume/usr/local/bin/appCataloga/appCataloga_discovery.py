@@ -4,11 +4,11 @@
 Discovery worker for the appCataloga ecosystem.
 
 This service scans remote hosts for candidate files, writes immutable discovery
-history, and promotes eligible items into the backup queue.
+history, and hands off backlog promotion to a dedicated worker.
 
 In the larger pipeline, discovery is the bridge between:
     - one HOST_TASK of type PROCESSING for a host
-    - many FILE_TASK rows of type BACKUP for the files found on that host
+    - many FILE_TASK rows of type DISCOVERY for the files found on that host
 
 That makes this worker both host-aware and file-aware. It owns one remote
 session at a time, but it can emit many downstream file tasks from that single
@@ -18,7 +18,7 @@ The loop is intentionally linear:
     1. claim PROCESSING host task
     2. bootstrap remote host context
     3. stream discovery batches into task/history tables
-    4. promote eligible rows into the backup queue
+    4. queue backlog management for downstream promotion
     5. release the host and schedule statistics refresh
 
 Keeping those steps explicit makes lock handling, retries, and backlog
@@ -271,7 +271,7 @@ def _stream_discovery_batches(
     return processed
 
 
-def _promote_discovery_backlog(
+def _queue_backlog_control_task(
     db: dbHandlerBKP,
     *,
     task: dict,
@@ -281,28 +281,26 @@ def _promote_discovery_backlog(
     processed: int,
 ) -> dict:
     """
-    Promote eligible discovery rows into BACKUP and close the HOST_TASK.
+    Queue backlog management after discovery and close the HOST_TASK.
 
-    Discovery and promotion are intentionally separate stages:
+    Discovery and backlog control are intentionally separate stages:
         1. discovery records what exists
-        2. promotion decides what should become backup work
+        2. backlog management decides what should become backup work
 
     Keeping those concerns separate makes re-runs and backlog diagnosis much
     easier in production.
     """
-    promotion_result = db.update_backlog_by_filter(
+    db.queue_host_task(
         host_id=host_id,
-        task_filter=task["host_filter"],
-        search_type=k.FILE_TASK_DISCOVERY,
-        search_status=k.TASK_DONE,
-        new_type=k.FILE_TASK_BACKUP_TYPE,
-        new_status=k.TASK_PENDING,
+        task_type=k.HOST_TASK_BACKLOG_CONTROL_TYPE,
+        task_status=k.TASK_PENDING,
+        filter_dict=task["host_filter"],
     )
 
     log.event(
-        "backlog_promoted",
+        "backlog_control_queued",
         host_id=host_id,
-        moved_to_backup=promotion_result["moved_to_backup"],
+        queued_backlog_tasks=1,
     )
 
     db.host_task_update(
@@ -315,7 +313,7 @@ def _promote_discovery_backlog(
             task_status=k.TASK_DONE,
             detail=(
                 f"host_id={host_id} "
-                f"moved_to_backup={promotion_result['moved_to_backup']}"
+                "queued_backlog_control=1"
             ),
         ),
     )
@@ -326,10 +324,12 @@ def _promote_discovery_backlog(
         task_id=task_id,
         host=hostname,
         discovered_files=processed,
-        moved_to_backup=promotion_result["moved_to_backup"],
+        queued_backlog_tasks=1,
     )
 
-    return promotion_result
+    return {
+        "queued_backlog_tasks": 1,
+    }
 
 
 def _persist_discovery_error(
@@ -340,7 +340,7 @@ def _persist_discovery_error(
     task_id: int,
     hostname: str | None,
     processed: int,
-    promotion_result: dict,
+    backlog_result: dict,
     ) -> None:
     """
     Persist TASK_ERROR state and schedule host reconciliation when needed.
@@ -357,7 +357,7 @@ def _persist_discovery_error(
         task_id=task_id,
         host=hostname,
         discovered_files=processed,
-        moved_to_backup=promotion_result.get("moved_to_backup", 0),
+        queued_backlog_tasks=backlog_result.get("queued_backlog_tasks", 0),
     )
 
     try:
@@ -405,7 +405,7 @@ def _persist_discovery_error(
         task_id=task_id,
         host=hostname,
         discovered_files=processed,
-        moved_to_backup=promotion_result.get("moved_to_backup", 0),
+        queued_backlog_tasks=backlog_result.get("queued_backlog_tasks", 0),
         error=err.format_error() or "Discovery failed",
     )
 
@@ -422,7 +422,7 @@ def main() -> None:
         1. claim PROCESSING work
         2. bootstrap SSH/SFTP
         3. persist discovery batches
-        4. promote eligible rows into BACKUP
+        4. queue backlog management
         5. finalize HOST_TASK state and release the host
 
     That split is intentional: the helpers hide repeated local policy, but the
@@ -451,7 +451,7 @@ def main() -> None:
         hostname = None
         preserve_host_busy_cooldown = False
         processed = 0
-        promotion_result = {"rows_updated": 0, "moved_to_backup": 0}
+        backlog_result = {"queued_backlog_tasks": 0}
 
         try:
             # ==========================================================
@@ -542,10 +542,10 @@ def main() -> None:
                 continue
 
             # ==========================================================
-            # ACT V — Promote eligible discovery rows into the backup queue
+            # ACT V — Hand off discovery backlog to the dedicated manager
             # ==========================================================
             try:
-                promotion_result = _promote_discovery_backlog(
+                backlog_result = _queue_backlog_control_task(
                     db,
                     task=task,
                     task_id=task_id,
@@ -555,7 +555,7 @@ def main() -> None:
                 )
             except Exception as e:
                 err.capture(
-                    "Backlog promotion failed",
+                    "Backlog handoff failed",
                     "BACKLOG",
                     e,
                     host_id=host_id,
@@ -591,7 +591,7 @@ def main() -> None:
                     task_id=task_id,
                     hostname=hostname,
                     processed=processed,
-                    promotion_result=promotion_result,
+                    backlog_result=backlog_result,
                 )
 
             # Phase 2 — Close transport objects defensively. Cleanup must never
@@ -621,9 +621,7 @@ def main() -> None:
                 # host is safely released. Statistics are secondary bookkeeping,
                 # not part of the critical path of discovery itself.
                 try:
-                    if (not err.triggered) and (
-                        promotion_result.get("rows_updated", 0) > 0 or processed > 0
-                    ):
+                    if (not err.triggered) and processed > 0:
                         # Statistics refresh stays deferred so lock release is
                         # not delayed by host aggregation work.
                         db.host_task_statistics_create(host_id=host_id)

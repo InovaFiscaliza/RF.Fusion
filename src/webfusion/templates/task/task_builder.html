@@ -186,6 +186,28 @@
         margin-top: 28px;
     }
 
+    .task-intent-shell {
+        margin-top: 18px;
+        border: 1px solid #dbe4f0;
+        border-radius: 12px;
+        background: #f8fafc;
+        padding: 16px 18px;
+    }
+
+    .task-intent-title {
+        margin: 0 0 6px;
+        font-size: 13px;
+        font-weight: 700;
+        color: #0f172a;
+    }
+
+    .task-intent-note {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.5;
+        color: #475569;
+    }
+
     .execution-config-shell {
         margin-top: 20px;
         border: 1px solid #e2e8f0;
@@ -358,10 +380,14 @@
 
             <!-- Task Type -->
             <div class="task-builder-field">
-                <label>Tipo da Task</label>
+                <label>Ação</label>
                 <div class="select-shell">
                     <select name="task_type" class="form-control" required>
-                        <option value="1" {% if selected_task_type == "1" %}selected{% endif %}>Backup</option>
+                        {% for task_type_id, task_type_label in exposed_task_types.items() %}
+                        <option value="{{ task_type_id }}" {% if selected_task_type == task_type_id|string %}selected{% endif %}>
+                            {{ task_type_label }}
+                        </option>
+                        {% endfor %}
                     </select>
                 </div>
             </div>
@@ -398,6 +424,13 @@
 
             </div>
 
+        </div>
+
+        <div class="task-intent-shell">
+            <h2 class="task-intent-title" id="task-type-note-title">Fluxo normal de backup</h2>
+            <p class="task-intent-note" id="task-type-note">
+                Cria a solicitacao normal de backup. A estacao passa por host check, discovery e, depois, o backlog elegivel entra na fila de backup.
+            </p>
         </div>
 
         <div class="execution-config-shell">
@@ -649,6 +682,8 @@
         const confirmationExecution = document.getElementById("task-confirm-execution");
         const confirmationScope = document.getElementById("task-confirm-scope");
         const confirmationFilter = document.getElementById("task-confirm-filter");
+        const taskTypeNoteTitle = document.getElementById("task-type-note-title");
+        const taskTypeNote = document.getElementById("task-type-note");
 
         const filterSection = document.getElementById("filter-section");
         const individualConfigPanel = document.getElementById("individual-config-panel");
@@ -832,6 +867,27 @@
                 : "Criar Task";
         }
 
+        function updateTaskTypeNote() {
+            if (!taskTypeNote) {
+                return;
+            }
+
+            const isStop = String(taskType.value) === "{{ stop_task_type }}";
+
+            if (isStop) {
+                if (taskTypeNoteTitle) {
+                    taskTypeNoteTitle.textContent = "Retirada da fila de backup";
+                }
+                taskTypeNote.textContent = "Retira da fila os arquivos que ainda estao em BACKUP/PENDING e os devolve para DISCOVERY/DONE dentro do filtro selecionado.";
+                return;
+            }
+
+            if (taskTypeNoteTitle) {
+                taskTypeNoteTitle.textContent = "Fluxo normal de backup";
+            }
+            taskTypeNote.textContent = "Cria a solicitacao normal de backup. A estacao passa por host check, discovery e, depois, o backlog elegivel entra na fila de backup.";
+        }
+
         function buildFilterSummary() {
             const parts = [];
             const modeLabel = modeSelect.selectedOptions[0] ? modeSelect.selectedOptions[0].textContent.trim() : "NONE";
@@ -956,13 +1012,11 @@
         }
 
         function toggleTaskType() {
-
-            if (taskType.value === "3" || taskType.value === "4") {
-                filterSection.style.display = "none";
-            } else {
+            if (filterSection) {
                 filterSection.style.display = "block";
             }
-
+            updateTaskTypeNote();
+            updateSubmitButtonLabel();
         }
 
         function toggleExecution() {

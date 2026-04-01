@@ -38,10 +38,11 @@ In broad terms:
 1. a host is known in `BPDATA.HOST`
 2. a durable `HOST_TASK` represents the current host-level work request
 3. discovery creates `FILE_TASK` rows for candidate files
-4. backup copies the file into `/mnt/reposfi`
-5. processing validates and catalogs the file
-6. `FILE_TASK_HISTORY` becomes the authoritative lifecycle record
-7. metadata publication and garbage collection operate on top of that record
+4. backlog management promotes or rolls back queued file work
+5. backup copies the file into `/mnt/reposfi`
+6. processing validates and catalogs the file
+7. `FILE_TASK_HISTORY` becomes the authoritative lifecycle record
+8. metadata publication and garbage collection operate on top of that record
 
 The important architectural split is:
 
@@ -61,13 +62,41 @@ Main entrypoint for host-facing requests.
 It is responsible for:
 
 - registering or refreshing host context
-- enqueueing conventional host work
+- enqueueing the first `HOST_TASK` for the requested action
 - serving as the operational front door of the runtime
+
+Current public command contract:
+
+- `backup`
+  - registers or refreshes the host
+  - queues `HOST_TASK_CHECK_TYPE`
+  - follows the normal connectivity -> discovery -> backlog -> backup flow
+
+- `stop`
+  - registers or refreshes the host
+  - queues `HOST_TASK_BACKLOG_ROLLBACK_TYPE`
+  - skips host connectivity checks because the action is DB-only
 
 ### `appCataloga_discovery.py`
 
 Discovers candidate files on remote hosts and creates `FILE_TASK` rows based on
 host filter configuration.
+
+Discovery no longer promotes directly into backup. Its responsibility now is:
+
+- discover remote candidates
+- persist `FILE_TASK` / `FILE_TASK_HISTORY`
+- hand off promotion to the backlog-management worker
+
+### `appCataloga_backlog_management.py`
+
+Applies DB-only backlog transitions after discovery or explicit operator action.
+
+This worker is responsible for:
+
+- promoting `DISCOVERY / DONE` into `BACKUP / PENDING`
+- rolling `BACKUP / PENDING` back into `DISCOVERY / DONE`
+- honoring explicit STOP-like requests without touching the remote host
 
 ### `appCataloga_file_bkp.py`
 
@@ -121,12 +150,26 @@ The active workflow is roughly:
 HOST
   -> HOST_TASK
   -> discovery
+  -> backlog management
   -> FILE_TASK
   -> backup into /mnt/reposfi
   -> processing
   -> FILE_TASK_HISTORY
   -> metadata publication / garbage collection
 ```
+
+Operationally, there are now two important queue paths:
+
+- normal backup path
+  - `appCataloga.py`
+  - `appCataloga_host_check.py`
+  - `appCataloga_discovery.py`
+  - `appCataloga_backlog_management.py`
+  - `appCataloga_file_bkp.py`
+
+- rollback / stop path
+  - `appCataloga.py`
+  - `appCataloga_backlog_management.py`
 
 For `appAnalise`-based processing, the important nuance is:
 
@@ -199,6 +242,11 @@ Current behavior is:
 This matters because both the backend and `webfusion` are expected to follow
 the same queue contract.
 
+It also matters because backlog control now has its own durable task types:
+
+- `HOST_TASK_BACKLOG_CONTROL_TYPE`
+- `HOST_TASK_BACKLOG_ROLLBACK_TYPE`
+
 ### `FILE_TASK` Is Transient, `FILE_TASK_HISTORY` Is Authoritative
 
 `FILE_TASK` is workflow state.
@@ -260,6 +308,9 @@ Inside the runtime directory, the practical operational scripts are:
 - [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_status_all.sh](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_status_all.sh)
 - [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_stop_all.sh](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_stop_all.sh)
 - [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/safe_stop.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/safe_stop.py)
+
+Those scripts now include the backlog-management daemon alongside the
+traditional discovery, backup and processing workers.
 
 Typical flow:
 

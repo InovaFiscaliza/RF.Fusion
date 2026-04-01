@@ -67,6 +67,7 @@ class FakeDB:
 
     def queue_host_task(self, **kwargs):
         self.queued_tasks.append(kwargs)
+        return {"HOST_TASK__ID_HOST_TASK": 99}
 
     def host_start_transient_busy_cooldown(self, **kwargs):
         self.cooldown_calls.append(kwargs)
@@ -139,7 +140,7 @@ class DiscoveryWorkerTests(unittest.TestCase):
                 task_id=44,
                 hostname="RFEye-test",
                 processed=0,
-                promotion_result={"rows_updated": 0, "moved_to_backup": 0},
+                backlog_result={"queued_backlog_tasks": 0},
             )
 
         # Definitive discovery failures should free the row from any worker PID
@@ -157,6 +158,32 @@ class DiscoveryWorkerTests(unittest.TestCase):
         self.assertEqual(
             fake_db.queued_tasks[0]["task_type"],
             discovery_worker.k.HOST_TASK_CHECK_CONNECTION_TYPE,
+        )
+
+    def test_queue_backlog_control_task_hands_off_promotion_to_dedicated_worker(self) -> None:
+        fake_db = FakeDB()
+        fake_log = FakeLog()
+
+        with patch.object(discovery_worker, "log", fake_log):
+            result = discovery_worker._queue_backlog_control_task(
+                fake_db,
+                task={"host_filter": {"mode": "ALL"}},
+                task_id=44,
+                host_id=33,
+                hostname="CWSM211004",
+                processed=12,
+            )
+
+        self.assertEqual(result["queued_backlog_tasks"], 1)
+        self.assertEqual(len(fake_db.queued_tasks), 1)
+        self.assertEqual(
+            fake_db.queued_tasks[0]["task_type"],
+            discovery_worker.k.HOST_TASK_BACKLOG_CONTROL_TYPE,
+        )
+        self.assertEqual(len(fake_db.host_task_updates), 1)
+        self.assertEqual(
+            fake_db.host_task_updates[0]["NU_STATUS"],
+            discovery_worker.k.TASK_DONE,
         )
 
 

@@ -68,6 +68,58 @@
         background: #ffffff;
     }
 
+    .task-list-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-bottom: 18px;
+    }
+
+    .task-list-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .task-list-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 40px;
+        padding: 0 16px;
+        border-radius: 8px;
+        font-weight: 600;
+        text-decoration: none;
+        cursor: pointer;
+        transition: background-color 0.2s ease, border-color 0.2s ease;
+    }
+
+    .task-list-button-primary {
+        border: 1px solid #1f4f8b;
+        background: #1f4f8b;
+        color: #ffffff;
+    }
+
+    .task-list-button-primary:hover {
+        background: #163a66;
+        border-color: #163a66;
+        color: #ffffff;
+    }
+
+    .task-list-button-secondary {
+        border: 1px solid #cbd5e1;
+        background: #ffffff;
+        color: #0f172a;
+    }
+
+    .task-list-button-secondary:hover {
+        background: #f8fafc;
+        border-color: #94a3b8;
+        color: #0f172a;
+    }
+
     .task-table {
         width: 100%;
         border-collapse: collapse;
@@ -140,6 +192,21 @@
 
 <h1 class="margin-bottom-l">Tasks Recentes</h1>
 
+<div class="card background-neutral-0 padding-l border-radius-m">
+
+<div class="task-list-header">
+    <div>
+        <h1 class="margin-bottom-s">Tasks Recentes</h1>
+        <div class="task-summary-text" style="margin-bottom: 0;">
+            Acompanhe as HOST_TASKs mais recentes e, se quiser, volte direto para criar uma nova ação.
+        </div>
+    </div>
+    <div class="task-list-actions">
+        <a href="{{ url_for('task.task_builder') }}" class="task-list-button task-list-button-primary">Criar outra task</a>
+        <a href="{{ url_for('index') }}" class="task-list-button task-list-button-secondary">Voltar ao início</a>
+    </div>
+</div>
+
 {% if show_creation_summary %}
 <div class="task-summary-backdrop" id="task-summary-backdrop">
     <div class="task-summary-modal">
@@ -153,13 +220,12 @@
         </div>
         {% endif %}
         <div class="task-summary-actions">
-            <button type="button" class="task-summary-close" onclick="closeTaskSummary()">Continuar</button>
+            <a href="{{ url_for('task.task_builder') }}" class="task-list-button task-list-button-secondary">Criar outra task</a>
+            <button type="button" class="task-summary-close" onclick="closeTaskSummary()">Ver lista</button>
         </div>
     </div>
 </div>
 {% endif %}
-
-<div class="card background-neutral-0 padding-l border-radius-m">
 
 <div class="task-table-wrap">
 
@@ -184,11 +250,17 @@
             <td>{{ t.NA_HOST_NAME }}</td>
             <td>
                 {% if t.NU_TYPE == 1 %}
-                    Backup
+                    Solicitar Backup
+                {% elif t.NU_TYPE == 2 %}
+                    Discovery
                 {% elif t.NU_TYPE == 3 %}
                     Update Statistics
                 {% elif t.NU_TYPE == 4 %}
                     Check Connection
+                {% elif t.NU_TYPE == 5 %}
+                    Promover para Backup
+                {% elif t.NU_TYPE == 6 %}
+                    Retirar da Fila
                 {% else %}
                     {{ t.NU_TYPE }}
                 {% endif %}

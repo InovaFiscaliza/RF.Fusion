@@ -48,6 +48,10 @@ not toward mock-heavy line coverage for its own sake.
 - `tests/workers/drive_test/`
   Static sample payloads used by the `appAnalise` worker tests.
 
+- `tools/`
+  Small manual helpers kept near the suite when they emulate production
+  contracts but are not part of the automated pytest surface.
+
 ## What Is Covered Today
 
 ### Shared helpers
@@ -86,6 +90,8 @@ Main contracts covered:
 
 Covered files:
 
+- `appCataloga.py`
+- `appCataloga_backlog_management.py`
 - `appCataloga_file_bin_proces_appAnalise.py`
 - `appCataloga_file_bkp.py`
 - `appCataloga_discovery.py`
@@ -95,6 +101,8 @@ Covered files:
 
 Main contracts covered:
 
+- socket-entrypoint routing for `backup` and `stop`
+- backlog promotion / rollback worker behavior
 - export decisions and artifact finalization for `appAnalise`
 - per-spectrum site resolution behavior
 - retry vs definitive processing failures
@@ -129,14 +137,17 @@ Main contracts covered:
 
 Covered files:
 
+- `modules/host/service.py`
 - `modules/map/service.py`
+- `modules/spectrum/service.py`
 - `modules/task/service.py`
 
 Main contracts covered:
 
+- host/server summary and connectivity presentation rules
 - map-side host reconciliation for Celplan/CWSM receiver naming
 - task builder reuse of durable `HOST_TASK` rows
-- refusal to expose ad-hoc internal task types through the UI service layer
+- exposure of only the public backup/stop actions through the UI service layer
 
 ## Main Coverage Gaps
 
@@ -152,10 +163,6 @@ The main gaps are:
 - rollback coverage in every insert helper
 - end-to-end DB behavior for real spatial SQL and Parquet export backends
 
-### `appCataloga.py` entrypoint
-
-The host-facing socket/bootstrap entrypoint still lacks direct validation.
-
 ### `appCataloga_pub_metadata.py`
 
 Publication behavior is not yet directly covered.
@@ -165,13 +172,12 @@ Publication behavior is not yet directly covered.
 Some process-control and runtime helpers are still only validated indirectly by
 worker tests.
 
-### `webfusion` modules beyond map/task
+### `webfusion` route/application behavior beyond service rules
 
-There are no direct tests yet for:
+Direct service coverage improved, but there are still no route-level or full
+app-level tests yet for:
 
-- `modules/host/service.py`
 - `modules/server/routes.py`
-- `modules/spectrum/service.py`
 - `app.py` route behavior
 
 ### True end-to-end integration
@@ -240,7 +246,10 @@ creating a one-off file for a tiny assertion.
 
 ## Rule
 
-This directory should contain automated validation artifacts only.
+`tests/` should contain automated validation artifacts only.
 
-Operational notebooks, ad-hoc SQL dumps, manual experiments and temporary lab
-scripts do not belong here.
+The only intentional exception is `tools/`, which may host small manual
+helpers when they emulate production contracts for operator troubleshooting.
+
+Operational notebooks, ad-hoc SQL dumps and temporary lab scraps still do not
+belong here.

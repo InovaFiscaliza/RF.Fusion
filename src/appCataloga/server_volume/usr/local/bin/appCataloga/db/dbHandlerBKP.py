@@ -966,7 +966,7 @@ class dbHandlerBKP(DBHandlerBase):
         stale_after_seconds: int,
     ) -> None:
         """
-        Recover stale host-dependent HOST_TASK rows without forcing SSH preemption.
+        Recover stale queue-owned HOST_TASK rows without forcing SSH preemption.
 
         This janitor focuses on HOST_TASK state itself:
             - PENDING rows with missing `DT_HOST_TASK` get normalized so the
@@ -976,14 +976,16 @@ class dbHandlerBKP(DBHandlerBase):
               (host unlocked, stale PID, or mismatched host/task owner).
 
         Host release remains conservative: only obviously stale host locks are
-        cleared here. Normal connectivity reconciliation still belongs to the
-        existing host cleanup / host_check paths.
+        cleared here. DB-only backlog tasks are also recovered by this janitor,
+        but they never claim `HOST.IS_BUSY` in the first place.
         """
         now = datetime.now()
         operational_types = (
             k.HOST_TASK_CHECK_TYPE,
             k.HOST_TASK_PROCESSING_TYPE,
             k.HOST_TASK_CHECK_CONNECTION_TYPE,
+            k.HOST_TASK_BACKLOG_CONTROL_TYPE,
+            k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
         )
 
         self._connect()
@@ -1000,7 +1002,7 @@ class dbHandlerBKP(DBHandlerBase):
                     H.NU_PID AS HOST_OWNER_PID
                 FROM HOST_TASK HT
                 JOIN HOST H ON H.ID_HOST = HT.FK_HOST
-                WHERE HT.NU_TYPE IN (%s, %s, %s)
+                WHERE HT.NU_TYPE IN (%s, %s, %s, %s, %s)
                   AND HT.NU_STATUS IN (%s, %s)
             """, (
                 *operational_types,
@@ -2640,7 +2642,11 @@ class dbHandlerBKP(DBHandlerBase):
 
             where = meta.get("where")
             extra_sql = meta.get("extra_sql", "")
-            msg_prefix = meta.get("msg_prefix")
+            msg_prefix = tools.compose_message(
+                new_type,
+                new_status,
+                prefix_only=True,
+            )
 
             # Some filter combinations intentionally resolve to "no-op".
             if not where:

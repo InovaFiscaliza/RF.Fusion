@@ -28,6 +28,7 @@ services=(
   appCataloga_file_bkp
   appCataloga_file_bin_proces
   appCataloga_file_bin_proces_appAnalise
+  appCataloga_backlog_management
   appCataloga_discovery
   appCataloga_host_maintenance
   appCataloga_host_check

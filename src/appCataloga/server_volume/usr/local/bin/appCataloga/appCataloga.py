@@ -35,6 +35,10 @@ from shared import errors, logging_utils
 SERVICE_NAME = "appCataloga"
 SCRIPT_NAME = "appCataloga.py"
 SHUTDOWN_PAYLOAD = {"status": 0, "message": "Server shutting down"}
+COMMAND_TASK_MAP = {
+    k.BACKUP_QUERY_TAG: k.HOST_TASK_CHECK_TYPE,
+    k.STOP_QUERY_TAG: k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+}
 
 
 # ======================================================================
@@ -145,7 +149,10 @@ def handle_host_request(host: dict, err, db) -> tuple[int | None, dict]:
         3. enqueue the initial HOST_TASK
         4. return `(host_id, response_payload)` for socket finalization
     """
-    if host.get("command") != k.BACKUP_QUERY_TAG:
+    command = str(host.get("command") or "").strip().lower()
+    task_type = COMMAND_TASK_MAP.get(command)
+
+    if task_type is None:
         err.capture("Unsupported command", stage="COMMAND")
         raise ValueError("Unsupported command")
 
@@ -180,12 +187,13 @@ def handle_host_request(host: dict, err, db) -> tuple[int | None, dict]:
         raise
 
     try:
-        # Phase 2: create or recycle the dedicated CHECK HOST_TASK. That row
-        # is the gate between "request accepted" and "host proved reachable"
-        # before discovery gets its own PROCESSING task.
+        # Phase 2: queue the entry task for the requested command.
+        #
+        # backup -> CHECK host task, which later opens discovery
+        # stop   -> direct backlog rollback task, without host connectivity hop
         task_result = db.queue_host_task(
             host_id=host_id,
-            task_type=k.HOST_TASK_CHECK_TYPE,
+            task_type=task_type,
             task_status=k.TASK_PENDING,
             filter_dict=host_filter,
         )

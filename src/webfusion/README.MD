@@ -10,7 +10,7 @@ In practical terms, `webfusion` is used for four recurring jobs:
 - inspect monitored localities on the Brazil-centered map
 - query spectra and repository files
 - inspect host and server operational state
-- request the conventional host-check flow that feeds `appCataloga`
+- request operator actions that feed `appCataloga`
 
 If the root [README.md](/RFFusion/README.md) explains the full platform, this
 file explains the `webfusion` application itself.
@@ -142,7 +142,9 @@ This is the write-oriented module of `webfusion`.
 
 Current contract:
 
-- the UI only exposes the conventional `CHECK` host task
+- the UI exposes only two operator-facing actions:
+  - request backup
+  - remove backup-pending files from the queue
 - internal task types such as connection checks or statistics refresh still
   exist in the backend, but are not offered manually in the UI
 - the module reuses the backend queue philosophy instead of creating endless
@@ -153,6 +155,17 @@ That means:
 - one logical reusable row per `FK_HOST + NU_TYPE`
 - pending or terminal rows are refreshed in place
 - running rows are preserved
+
+The important practical mapping is:
+
+- `Solicitar Backup`
+  - queues the conventional `HOST_TASK_CHECK_TYPE`
+  - follows the normal host-check -> discovery -> backlog-management flow
+
+- `Retirar da Fila de Backup`
+  - queues `HOST_TASK_BACKLOG_ROLLBACK_TYPE`
+  - acts only on queued `BACKUP / PENDING` work inside the selected filter
+  - does not need a host connectivity round-trip
 
 ### Popup Helper
 

@@ -12,12 +12,19 @@ HOST_TASK_CHECK_TYPE = 1
 HOST_TASK_PROCESSING_TYPE = 2
 HOST_TASK_UPDATE_STATISTICS_TYPE = 3
 HOST_TASK_CHECK_CONNECTION_TYPE = 4
+HOST_TASK_BACKLOG_CONTROL_TYPE = 5
+HOST_TASK_BACKLOG_ROLLBACK_TYPE = 6
 
 TASK_ERROR = -1
 TASK_DONE = 0
 TASK_PENDING = 1
 TASK_RUNNING = 2
 TASK_SUSPENDED = 3
+
+EXPOSED_TASK_TYPES = {
+    HOST_TASK_CHECK_TYPE: "Solicitar Backup",
+    HOST_TASK_BACKLOG_ROLLBACK_TYPE: "Retirar da Fila de Backup",
+}
 
 def _serialize_filter(filter_value: Any) -> str:
     """Return a deterministic JSON representation for HOST_TASK.FILTER."""
@@ -150,11 +157,22 @@ def queue_host_task_safe(db, host_id, task_type, filter_dict, message):
     return "created"
 
 
-def create_task(db, hosts, task_type, mode, filter_data):
-    """Create or refresh one or more conventional CHECK HOST_TASK rows."""
+def _build_task_action_name(task_type, mode):
+    """Return the human-facing action label stored in HOST_TASK.NA_MESSAGE."""
+    if task_type == HOST_TASK_CHECK_TYPE:
+        return f"Host Check | Backup ({mode})"
 
-    if task_type != HOST_TASK_CHECK_TYPE:
-        raise ValueError("WebFusion only exposes the conventional CHECK task.")
+    if task_type == HOST_TASK_BACKLOG_ROLLBACK_TYPE:
+        return f"Backlog Rollback | Stop ({mode})"
+
+    raise ValueError(f"Unsupported task type for WebFusion: {task_type}")
+
+
+def create_task(db, hosts, task_type, mode, filter_data):
+    """Create or refresh one or more HOST_TASK rows exposed by the UI."""
+
+    if task_type not in EXPOSED_TASK_TYPES:
+        raise ValueError("WebFusion only exposes backup and stop tasks.")
 
     collective = len(hosts) > 1
     queued_count = 0
@@ -170,7 +188,7 @@ def create_task(db, hosts, task_type, mode, filter_data):
             file_path=filter_data.get("file_path"),
             file_name=filter_data.get("file_name"),
         )
-        action_name = f"Host Check | Backup ({mode})"
+        action_name = _build_task_action_name(task_type, mode)
 
         scope = "Collective" if collective else "Individual"
 

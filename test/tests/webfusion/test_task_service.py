@@ -6,7 +6,7 @@ How to run:
 
 What is covered here:
     - safe reuse of durable `HOST_TASK` rows
-    - refusal to expose internal-only task types through the UI service layer
+    - exposure of only the public backup/stop task types through the UI layer
 """
 
 from __future__ import annotations
@@ -187,7 +187,7 @@ class TestTaskService(unittest.TestCase):
         self.assertTrue(insert_sql.startswith("INSERT INTO HOST_TASK"))
         self.assertEqual(insert_params[1], self.module.HOST_TASK_CHECK_TYPE)
 
-    def test_create_task_only_accepts_conventional_check_type(self):
+    def test_create_task_rejects_internal_only_task_types(self):
         with self.assertRaises(ValueError):
             self.module.create_task(
                 db=FakeDB(),
@@ -201,7 +201,7 @@ class TestTaskService(unittest.TestCase):
             self.module.create_task(
                 db=FakeDB(),
                 hosts=[1],
-                task_type=self.module.HOST_TASK_CHECK_CONNECTION_TYPE,
+                task_type=self.module.HOST_TASK_BACKLOG_CONTROL_TYPE,
                 mode="NONE",
                 filter_data={},
             )
@@ -229,6 +229,32 @@ class TestTaskService(unittest.TestCase):
         self.assertEqual(len(inserts), 2)
         self.assertTrue(all(params[1] == self.module.HOST_TASK_CHECK_TYPE for _, params in inserts))
         self.assertTrue(all("Host Check | Backup (LAST_N_FILES)" in params[-1] for _, params in inserts))
+
+    def test_create_task_builds_stop_request_for_selected_hosts(self):
+        db = FakeDB(select_results=[[]])
+
+        summary = self.module.create_task(
+            db=db,
+            hosts=[21],
+            task_type=self.module.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+            mode="RANGE",
+            filter_data={
+                "start_date": "2025-01-01",
+                "end_date": "2025-12-31",
+                "last_n_files": None,
+                "extension": ".zip",
+                "file_path": "C:/CelPlan/CellWireless RU/Spectrum/Completed",
+                "file_name": None,
+            },
+        )
+
+        self.assertEqual(summary, {"queued_count": 1, "skipped_count": 0})
+        inserts = [row for row in db.executions if row[0].startswith("INSERT INTO HOST_TASK")]
+        self.assertEqual(len(inserts), 1)
+        insert_sql, insert_params = inserts[0]
+        self.assertTrue(insert_sql.startswith("INSERT INTO HOST_TASK"))
+        self.assertEqual(insert_params[1], self.module.HOST_TASK_BACKLOG_ROLLBACK_TYPE)
+        self.assertIn("Backlog Rollback | Stop (RANGE)", insert_params[-1])
 
 
 if __name__ == "__main__":
