@@ -187,6 +187,8 @@ def create_task(db, hosts, task_type, mode, filter_data):
             extension=filter_data.get("extension"),
             file_path=filter_data.get("file_path"),
             file_name=filter_data.get("file_name"),
+            max_total_gb=filter_data.get("max_total_gb"),
+            sort_order=filter_data.get("sort_order"),
         )
         action_name = _build_task_action_name(task_type, mode)
 

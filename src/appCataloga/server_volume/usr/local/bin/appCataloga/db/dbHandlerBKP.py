@@ -2627,6 +2627,7 @@ class dbHandlerBKP(DBHandlerBase):
             "rows_updated": 0,
             "moved_to_backup": 0,
             "moved_to_discovery": 0,
+            "selected_total_kb": 0,
         }
 
         self._connect()
@@ -2642,6 +2643,9 @@ class dbHandlerBKP(DBHandlerBase):
 
             where = meta.get("where")
             extra_sql = meta.get("extra_sql", "")
+            order_by = meta.get("order_by")
+            limit = meta.get("limit")
+            max_total_kb = meta.get("max_total_kb")
             msg_prefix = tools.compose_message(
                 new_type,
                 new_status,
@@ -2657,21 +2661,67 @@ class dbHandlerBKP(DBHandlerBase):
 
             sql_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            rows_updated = self._update_row(
-                table="FILE_TASK",
-                data={
-                    "NU_TYPE": new_type,
-                    "NU_STATUS": new_status,
-                    "DT_FILE_TASK": sql_now,
-                    "NA_MESSAGE__expr": (
-                        f"CONCAT('{msg_prefix} of file ', "
-                        f"NA_HOST_FILE_PATH, '/', NA_HOST_FILE_NAME)"
-                    ),
-                },
-                where=where,
-                extra_sql=extra_sql,
-                commit=True,
-            )
+            update_payload = {
+                "NU_TYPE": new_type,
+                "NU_STATUS": new_status,
+                "DT_FILE_TASK": sql_now,
+                "NA_MESSAGE__expr": (
+                    f"CONCAT('{msg_prefix} of file ', "
+                    f"NA_HOST_FILE_PATH, '/', NA_HOST_FILE_NAME)"
+                ),
+            }
+
+            if new_type == k.FILE_TASK_BACKUP_TYPE and max_total_kb is not None:
+                candidate_rows = self._select_rows(
+                    table="FILE_TASK",
+                    where=where,
+                    order_by=order_by,
+                    limit=limit,
+                    cols=[
+                        "ID_FILE_TASK",
+                        "VL_FILE_SIZE_KB",
+                    ],
+                )
+
+                selected_ids: list[int] = []
+                selected_total_kb = 0
+
+                for row in candidate_rows:
+                    file_id = int(row["ID_FILE_TASK"])
+                    file_size_kb = max(0, int(row.get("VL_FILE_SIZE_KB") or 0))
+
+                    if selected_total_kb + file_size_kb > max_total_kb:
+                        break
+
+                    selected_ids.append(file_id)
+                    selected_total_kb += file_size_kb
+
+                summary["selected_total_kb"] = selected_total_kb
+
+                if not selected_ids:
+                    self.log.entry(
+                        "[update_backlog_by_filter] Budget-limited promotion selected no rows "
+                        f"(host_id={host_id}, max_total_kb={max_total_kb})"
+                    )
+                    return summary
+
+                update_where = dict(where)
+                update_where["ID_FILE_TASK__in"] = selected_ids
+
+                rows_updated = self._update_row(
+                    table="FILE_TASK",
+                    data=update_payload,
+                    where=update_where,
+                    commit=True,
+                )
+            else:
+                rows_updated = self._update_row(
+                    table="FILE_TASK",
+                    data=update_payload,
+                    where=where,
+                    extra_sql=extra_sql,
+                    commit=True,
+                )
 
             summary["rows_updated"] = rows_updated
 
@@ -2682,7 +2732,8 @@ class dbHandlerBKP(DBHandlerBase):
 
             self.log.entry(
                 f"[update_backlog_by_filter] Updated {rows_updated} FILE_TASK rows "
-                f"(new_type={new_type}, new_status={new_status}) for host {host_id}"
+                f"(new_type={new_type}, new_status={new_status}, "
+                f"selected_total_kb={summary['selected_total_kb']}) for host {host_id}"
             )
 
             return summary

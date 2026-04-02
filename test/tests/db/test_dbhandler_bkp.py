@@ -429,6 +429,70 @@ class FileTaskSelectionTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(captured["order_by"], "FT.ID_FILE_TASK ASC")
+
+
+class BacklogBudgetTests(unittest.TestCase):
+    """Validate budget-limited backlog promotion without a real database."""
+
+    def make_handler(self):
+        handler = object.__new__(db_bkp_module.dbHandlerBKP)
+        handler.log = FakeLog()
+        handler._connect = lambda: None
+        handler._disconnect = lambda: None
+        handler.db_connection = type(
+            "FakeConnection",
+            (),
+            {"rollback": lambda self: None},
+        )()
+        return handler
+
+    def test_update_backlog_by_filter_respects_max_total_gb_prefix_selection(self) -> None:
+        handler = self.make_handler()
+        captured = {}
+
+        handler._select_rows = lambda **kwargs: [
+            {"ID_FILE_TASK": 101, "VL_FILE_SIZE_KB": 20480},
+            {"ID_FILE_TASK": 102, "VL_FILE_SIZE_KB": 15360},
+            {"ID_FILE_TASK": 103, "VL_FILE_SIZE_KB": 10240},
+        ]
+
+        def fake_update_row(*, table, data, where, commit, extra_sql=""):
+            captured["table"] = table
+            captured["data"] = data
+            captured["where"] = where
+            captured["commit"] = commit
+            captured["extra_sql"] = extra_sql
+            return 1
+
+        handler._update_row = fake_update_row
+
+        summary = handler.update_backlog_by_filter(
+            host_id=33,
+            task_filter={
+                "mode": "RANGE",
+                "start_date": "2025-01-01",
+                "end_date": "2025-12-31",
+                "file_path": "/mnt/internal",
+                "extension": ".zip",
+                "max_total_gb": 0.03,
+                "sort_order": "newest_first",
+            },
+            search_type=db_bkp_module.k.FILE_TASK_DISCOVERY,
+            search_status=db_bkp_module.k.TASK_DONE,
+            new_type=db_bkp_module.k.FILE_TASK_BACKUP_TYPE,
+            new_status=db_bkp_module.k.TASK_PENDING,
+        )
+
+        self.assertEqual(summary["rows_updated"], 1)
+        self.assertEqual(summary["moved_to_backup"], 1)
+        self.assertEqual(summary["selected_total_kb"], 20480)
+        self.assertEqual(captured["table"], "FILE_TASK")
+        self.assertEqual(captured["where"]["FK_HOST"], 33)
+        self.assertEqual(captured["where"]["ID_FILE_TASK__in"], [101])
+        self.assertEqual(captured["where"]["NU_TYPE"], db_bkp_module.k.FILE_TASK_DISCOVERY)
+        self.assertEqual(captured["where"]["NU_STATUS"], db_bkp_module.k.TASK_DONE)
+        self.assertEqual(captured["commit"], True)
+        self.assertEqual(captured["extra_sql"], "")
         self.assertFalse(
             any(key.startswith("#CUSTOM#") for key in captured["where"])
         )

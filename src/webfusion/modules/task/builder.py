@@ -12,7 +12,8 @@ NONE_FILTER = {
     "extension": None,
     "file_path": "/mnt/internal/data",
     "file_name": None,
-    "agent": "local"
+    "max_total_gb": None,
+    "sort_order": "newest_first",
 }
 
 
@@ -24,6 +25,8 @@ def build_filter(
     extension=None,
     file_path=None,
     file_name=None,
+    max_total_gb=None,
+    sort_order="newest_first",
 ):
     """Build the filter payload stored in ``HOST_TASK.FILTER``."""
     return {
@@ -34,5 +37,6 @@ def build_filter(
         "extension": extension,
         "file_path": file_path,
         "file_name": file_name,
-        "agent": "local",
+        "max_total_gb": max_total_gb,
+        "sort_order": sort_order,
     }

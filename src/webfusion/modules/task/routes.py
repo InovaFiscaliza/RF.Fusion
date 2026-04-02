@@ -1,5 +1,6 @@
 """Routes for the task builder and recent task list."""
 
+import re
 from flask import Blueprint, Response, redirect, render_template, request, url_for
 from modules.task.service import (
     EXPOSED_TASK_TYPES,
@@ -15,6 +16,10 @@ task_bp = Blueprint("task", __name__, url_prefix="/task")
 TASK_AUTH_USERNAME = "admin"
 TASK_AUTH_PASSWORD = "admin"
 TASK_AUTH_REALM = "RF.Fusion Task"
+DEFAULT_LINUX_FILE_PATH = "/mnt/internal/data"
+DEFAULT_LINUX_EXTENSION = ".bin"
+DEFAULT_CWSM_FILE_PATH = "C:/CelPlan/CellWireless RU/Spectrum/Completed"
+DEFAULT_CWSM_EXTENSION = ".zip"
 
 
 def _task_auth_failed():
@@ -77,6 +82,167 @@ def _normalize_selected_task_type(raw_value):
     return HOST_TASK_CHECK_TYPE
 
 
+def _normalize_filter_mode(raw_value):
+    """Map legacy UI aliases to the canonical filter mode understood downstream."""
+    normalized = str(raw_value or "NONE").strip().upper()
+    if normalized in {"LAST_N", "LAST_N_FILES"}:
+        return "LAST"
+    return normalized or "NONE"
+
+
+def _extract_host_prefix(host_name):
+    """Return the leading alphabetical station family marker from a host name."""
+    match = re.match(r"^[A-Za-z]+", str(host_name or "").strip())
+    return match.group(0).upper() if match else ""
+
+
+def _station_profile_field_key(host_prefix):
+    """Build a stable HTML/form key for one station-family override row."""
+    return re.sub(r"[^A-Z0-9]+", "_", str(host_prefix or "").upper()).strip("_")
+
+
+def _resolve_filter_defaults_for_prefix(host_prefix):
+    """Return the default path/extension pair for a station family."""
+    if str(host_prefix or "").upper() == "CWSM":
+        return {
+            "file_path": DEFAULT_CWSM_FILE_PATH,
+            "extension": DEFAULT_CWSM_EXTENSION,
+        }
+
+    return {
+        "file_path": DEFAULT_LINUX_FILE_PATH,
+        "extension": DEFAULT_LINUX_EXTENSION,
+    }
+
+
+def _build_station_profile_rows(host_prefix_rows, selected_values=None):
+    """
+    Build the per-family rows rendered by the collective task builder.
+
+    Known families start prefilled with their operational defaults; the rest
+    inherit the generic Linux-like fallback until a dedicated family profile is
+    introduced.
+    """
+    selected_values = selected_values or {}
+    rows = []
+
+    for row in host_prefix_rows or []:
+        prefix = str(row.get("PREFIX") or "").strip()
+        if not prefix:
+            continue
+
+        field_key = _station_profile_field_key(prefix)
+        defaults = _resolve_filter_defaults_for_prefix(prefix)
+
+        rows.append(
+            {
+                "prefix": prefix,
+                "field_key": field_key,
+                "hosts": int(row.get("HOSTS") or 0),
+                "file_path": selected_values.get(
+                    f"profile_file_path__{field_key}",
+                    defaults["file_path"],
+                ),
+                "extension": selected_values.get(
+                    f"profile_extension__{field_key}",
+                    defaults["extension"],
+                ),
+            }
+        )
+
+    return rows
+
+
+def _extract_station_profile_overrides(form_data, station_profile_rows):
+    """Read per-family file-path and extension overrides from the submitted form."""
+    overrides = {}
+
+    for row in station_profile_rows:
+        field_key = row["field_key"]
+        overrides[row["prefix"].upper()] = {
+            "file_path": (form_data.get(f"profile_file_path__{field_key}") or "").strip(),
+            "extension": (form_data.get(f"profile_extension__{field_key}") or "").strip(),
+        }
+
+    return overrides
+
+
+def _looks_like_auto_filter_defaults(filter_data):
+    """
+    Detect whether the current filter fields still look auto-suggested.
+
+    When collective execution mixes station families, a single shared
+    `.bin`/Linux default is conceptually wrong. We only auto-split by family
+    when the operator still appears to be relying on the builder defaults
+    instead of having typed an explicit custom path/extension.
+    """
+    file_path = str(filter_data.get("file_path") or "").strip()
+    extension = str(filter_data.get("extension") or "").strip().lower()
+
+    auto_paths = {
+        "",
+        DEFAULT_LINUX_FILE_PATH,
+        DEFAULT_CWSM_FILE_PATH,
+    }
+    auto_extensions = {
+        "",
+        DEFAULT_LINUX_EXTENSION,
+        DEFAULT_CWSM_EXTENSION,
+    }
+
+    return file_path in auto_paths and extension in auto_extensions
+
+
+def _build_collective_task_batches(host_rows, filter_data, profile_overrides=None):
+    """
+    Split collective requests by station family when defaults are still implicit.
+
+    Mixed-family collective runs cannot safely reuse one shared path/extension
+    pair. In that case we fan out the request into one batch per family, each
+    with the correct default path/extension.
+    """
+    if not host_rows:
+        return []
+
+    if profile_overrides:
+        grouped_hosts = {}
+        for row in host_rows:
+            prefix = _extract_host_prefix(row.get("NA_HOST_NAME"))
+            grouped_hosts.setdefault(prefix, []).append(row["ID_HOST"])
+
+        batches = []
+        for prefix, host_ids in grouped_hosts.items():
+            merged_filter = dict(filter_data)
+            defaults = _resolve_filter_defaults_for_prefix(prefix)
+            override = profile_overrides.get(prefix, {})
+            merged_filter["file_path"] = override.get("file_path") or defaults["file_path"]
+            merged_filter["extension"] = override.get("extension") or defaults["extension"]
+            batches.append({"hosts": host_ids, "filter_data": merged_filter})
+
+        return batches
+
+    if not _looks_like_auto_filter_defaults(filter_data):
+        return [
+            {
+                "hosts": [row["ID_HOST"] for row in host_rows],
+                "filter_data": dict(filter_data),
+            }
+        ]
+
+    grouped_hosts = {}
+    for row in host_rows:
+        prefix = _extract_host_prefix(row.get("NA_HOST_NAME"))
+        grouped_hosts.setdefault(prefix, []).append(row["ID_HOST"])
+
+    batches = []
+    for prefix, host_ids in grouped_hosts.items():
+        merged_filter = dict(filter_data)
+        merged_filter.update(_resolve_filter_defaults_for_prefix(prefix))
+        batches.append({"hosts": host_ids, "filter_data": merged_filter})
+
+    return batches
+
+
 @task_bp.before_request
 def require_task_auth():
     """
@@ -122,13 +288,15 @@ def task_builder():
     )
     selected_execution_type = request.args.get("execution_type", "individual")
     selected_host_filter = request.args.get("host_filter", "ALL")
-    selected_mode = request.args.get("mode", "NONE")
+    selected_mode = _normalize_filter_mode(request.args.get("mode", "NONE"))
     selected_start_date = request.args.get("start_date", "")
     selected_end_date = request.args.get("end_date", "")
     selected_last_n_files = request.args.get("last_n_files", "")
     selected_extension = request.args.get("extension", "")
     selected_file_path = request.args.get("file_path", "/mnt/internal/data")
     selected_file_name = request.args.get("file_name", "")
+    selected_max_total_gb = request.args.get("max_total_gb", "")
+    selected_sort_order = request.args.get("sort_order", "newest_first")
     selected_collective_host_ids = [
         value
         for value in request.args.getlist("collective_host_ids")
@@ -148,6 +316,10 @@ def task_builder():
         ORDER BY PREFIX
     """)
     host_prefixes = cursor.fetchall()
+    station_profile_rows = _build_station_profile_rows(
+        host_prefix_rows=host_prefixes,
+        selected_values=request.args,
+    )
 
     # --------------------------------------------------
     # Determine checkbox state (online-only filter)
@@ -182,7 +354,7 @@ def task_builder():
 
         task_type = _normalize_selected_task_type(request.form.get("task_type"))
         execution_type = request.form.get("execution_type")
-        mode = request.form.get("mode")
+        mode = _normalize_filter_mode(request.form.get("mode"))
 
         # Task filter payload
         filter_data = {
@@ -192,6 +364,8 @@ def task_builder():
             "extension": request.form.get("extension") or None,
             "file_path": request.form.get("file_path") or None,
             "file_name": request.form.get("file_name") or None,
+            "max_total_gb": request.form.get("max_total_gb") or None,
+            "sort_order": request.form.get("sort_order") or "newest_first",
         }
 
         # ==================================================
@@ -207,7 +381,7 @@ def task_builder():
             }
 
             query = """
-                SELECT ID_HOST
+                SELECT ID_HOST, NA_HOST_NAME
                 FROM HOST
                 WHERE 1 = 1
             """
@@ -225,25 +399,39 @@ def task_builder():
 
             cursor.execute(query, tuple(params))
 
-            candidate_hosts = [h["ID_HOST"] for h in cursor.fetchall()]
+            candidate_hosts = cursor.fetchall()
             if selected_collective_host_ids:
-                all_hosts = [
-                    host_id
-                    for host_id in candidate_hosts
-                    if host_id in selected_collective_host_ids
+                selected_hosts = [
+                    host_row
+                    for host_row in candidate_hosts
+                    if host_row["ID_HOST"] in selected_collective_host_ids
                 ]
             else:
-                all_hosts = candidate_hosts
+                selected_hosts = candidate_hosts
 
             creation_summary = {"queued_count": 0, "skipped_count": 0}
-            if all_hosts:
-                creation_summary = create_task(
-                    db=db,
-                    hosts=all_hosts,
-                    task_type=task_type,
-                    mode=mode,
+            if selected_hosts:
+                profile_overrides = None
+                if host_filter == "ALL":
+                    profile_overrides = _extract_station_profile_overrides(
+                        request.form,
+                        station_profile_rows,
+                    )
+
+                for batch in _build_collective_task_batches(
+                    host_rows=selected_hosts,
                     filter_data=filter_data,
-                )
+                    profile_overrides=profile_overrides,
+                ):
+                    batch_summary = create_task(
+                        db=db,
+                        hosts=batch["hosts"],
+                        task_type=task_type,
+                        mode=mode,
+                        filter_data=batch["filter_data"],
+                    )
+                    creation_summary["queued_count"] += batch_summary["queued_count"]
+                    creation_summary["skipped_count"] += batch_summary["skipped_count"]
 
         # ==================================================
         # Individual execution
@@ -289,8 +477,11 @@ def task_builder():
         selected_extension=selected_extension,
         selected_file_path=selected_file_path,
         selected_file_name=selected_file_name,
+        selected_max_total_gb=selected_max_total_gb,
+        selected_sort_order=selected_sort_order,
         selected_collective_host_ids=selected_collective_host_ids,
         selected_collective_host_search=selected_collective_host_search,
+        station_profile_rows=station_profile_rows,
         exposed_task_types=EXPOSED_TASK_TYPES,
         stop_task_type=HOST_TASK_BACKLOG_ROLLBACK_TYPE,
     )

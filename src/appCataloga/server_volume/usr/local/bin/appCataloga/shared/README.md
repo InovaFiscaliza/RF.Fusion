@@ -89,9 +89,9 @@ High-level remote host orchestration helpers.
 
 Responsibilities:
 
-- load remote daemon configuration
-- coordinate `HALT_FLAG` ownership
-- provide the `hostDaemon` abstraction used by discovery flows
+- provide the `hostDaemon` abstraction used by server-side discovery flows
+- stream remote filesystem metadata through SSH/SFTP
+- keep discovery traversal decoupled from database callbacks
 
 ### `constants.py`
 

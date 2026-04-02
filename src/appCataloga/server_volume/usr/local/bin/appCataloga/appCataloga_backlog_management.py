@@ -200,6 +200,7 @@ def _apply_backlog_task(db: dbHandlerBKP, task: dict) -> dict:
         rows_updated=result.get("rows_updated", 0),
         moved_to_backup=result.get("moved_to_backup", 0),
         moved_to_discovery=result.get("moved_to_discovery", 0),
+        selected_total_kb=result.get("selected_total_kb", 0),
     )
 
     return {
@@ -207,6 +208,7 @@ def _apply_backlog_task(db: dbHandlerBKP, task: dict) -> dict:
         "rows_updated": result.get("rows_updated", 0),
         "moved_to_backup": result.get("moved_to_backup", 0),
         "moved_to_discovery": result.get("moved_to_discovery", 0),
+        "selected_total_kb": result.get("selected_total_kb", 0),
     }
 
 
@@ -224,7 +226,8 @@ def _finalize_backlog_success(
         DT_HOST_TASK=task["now"],
         NA_MESSAGE=(
             "Backlog management completed successfully "
-            f"(action={outcome['action']}, rows_updated={outcome['rows_updated']})"
+            f"(action={outcome['action']}, rows_updated={outcome['rows_updated']}, "
+            f"selected_total_kb={outcome['selected_total_kb']})"
         ),
     )
 

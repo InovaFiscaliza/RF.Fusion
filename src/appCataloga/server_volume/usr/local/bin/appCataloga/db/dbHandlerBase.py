@@ -601,8 +601,11 @@ class DBHandlerBase:
         """
         Select rows from a single table and return dictionaries.
 
-        The helper supports plain equality filters plus trusted SQL fragments
-        via keys prefixed with `#CUSTOM#`.
+        Supported WHERE suffix operators:
+        `__lt`, `__gt`, `__lte`, `__gte`, `__like`, `__between`, `__in`.
+
+        Trusted SQL fragments are also supported via keys prefixed with
+        `#CUSTOM#`.
         """
         c = ", ".join(cols) if cols else "*"
         sql = f"SELECT {c} FROM {table}"
@@ -614,6 +617,44 @@ class DBHandlerBase:
                 if key.startswith("#CUSTOM#"):
                     # Inject preformatted SQL fragment (e.g. "(NU_STATUS = 0 OR NU_STATUS = -1)")
                     conditions.append(value)
+                elif "__" in key:
+                    col, op = key.split("__", 1)
+
+                    if op == "lt":
+                        conditions.append(f"{col} < %s")
+                        params.append(value)
+
+                    elif op == "gt":
+                        conditions.append(f"{col} > %s")
+                        params.append(value)
+
+                    elif op == "lte":
+                        conditions.append(f"{col} <= %s")
+                        params.append(value)
+
+                    elif op == "gte":
+                        conditions.append(f"{col} >= %s")
+                        params.append(value)
+
+                    elif op == "like":
+                        conditions.append(f"{col} LIKE %s")
+                        params.append(value)
+
+                    elif op == "between":
+                        if not isinstance(value, (list, tuple)) or len(value) != 2:
+                            raise ValueError("BETWEEN operator requires (start, end)")
+                        conditions.append(f"{col} BETWEEN %s AND %s")
+                        params.extend([value[0], value[1]])
+
+                    elif op == "in":
+                        if not isinstance(value, (list, tuple)):
+                            raise ValueError("IN operator requires list/tuple")
+                        placeholders = ", ".join(["%s"] * len(value))
+                        conditions.append(f"{col} IN ({placeholders})")
+                        params.extend(list(value))
+
+                    else:
+                        raise ValueError(f"Unsupported operator '__{op}'")
                 else:
                     conditions.append(f"{key}=%s")
                     params.append(value)

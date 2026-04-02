@@ -241,6 +241,54 @@
         align-items: end;
     }
 
+    .station-profile-shell {
+        margin-top: 18px;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        background: #f8fafc;
+        padding: 18px;
+    }
+
+    .station-profile-title {
+        margin: 0 0 6px;
+        font-size: 14px;
+        font-weight: 700;
+        color: #0f172a;
+    }
+
+    .station-profile-note {
+        margin: 0 0 16px;
+        font-size: 12px;
+        color: #64748b;
+        line-height: 1.4;
+    }
+
+    .station-profile-row {
+        display: grid;
+        grid-template-columns: minmax(120px, 180px) minmax(260px, 1fr) minmax(140px, 180px);
+        gap: 14px;
+        align-items: end;
+        padding: 12px 0;
+        border-top: 1px solid #e2e8f0;
+    }
+
+    .station-profile-row:first-of-type {
+        border-top: none;
+        padding-top: 0;
+    }
+
+    .station-profile-label {
+        font-size: 13px;
+        font-weight: 700;
+        color: #0f172a;
+    }
+
+    .station-profile-meta {
+        margin-top: 4px;
+        font-size: 12px;
+        color: #64748b;
+    }
+
     .btn-primary-action {
         display: inline-flex;
         align-items: center;
@@ -509,6 +557,47 @@
                     </div>
                 </div>
             </div>
+
+            <div
+                class="station-profile-shell"
+                id="station-profiles-panel"
+                {% if selected_execution_type != "collective" or selected_host_filter != "ALL" %}hidden{% endif %}
+            >
+                <h2 class="station-profile-title">Perfis por Família de Estação</h2>
+                <p class="station-profile-note">
+                    Quando a execução coletiva estiver em <strong>Todas</strong>, cada família recebe seu próprio caminho e extensão.
+                    RFEye e CelPlan já vêm preenchidos; novas famílias podem ser ajustadas aqui conforme forem entrando no ambiente.
+                </p>
+
+                {% for row in station_profile_rows %}
+                <div class="station-profile-row">
+                    <div>
+                        <div class="station-profile-label">{{ row.prefix }}</div>
+                        <div class="station-profile-meta">{{ row.hosts }} host(s)</div>
+                    </div>
+
+                    <div class="task-builder-field">
+                        <label>Caminho</label>
+                        <input
+                            type="text"
+                            name="profile_file_path__{{ row.field_key }}"
+                            class="form-control"
+                            value="{{ row.file_path }}"
+                        >
+                    </div>
+
+                    <div class="task-builder-field">
+                        <label>Extensão</label>
+                        <input
+                            type="text"
+                            name="profile_extension__{{ row.field_key }}"
+                            class="form-control"
+                            value="{{ row.extension }}"
+                        >
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
         </div>
 
         <hr class="margin-y-l">
@@ -529,7 +618,7 @@
                             <option value="ALL" {% if selected_mode == "ALL" %}selected{% endif %}>ALL</option>
                             <option value="REDISCOVERY" {% if selected_mode == "REDISCOVERY" %}selected{% endif %}>REDISCOVERY</option>
                             <option value="RANGE" {% if selected_mode == "RANGE" %}selected{% endif %}>RANGE</option>
-                            <option value="LAST_N" {% if selected_mode == "LAST_N" %}selected{% endif %}>LAST_N</option>
+                            <option value="LAST" {% if selected_mode == "LAST" %}selected{% endif %}>LAST</option>
                             <option value="FILE" {% if selected_mode == "FILE" %}selected{% endif %}>FILE</option>
                         </select>
                     </div>
@@ -564,7 +653,7 @@
                         <input type="date" name="end_date" class="form-control" value="{{ selected_end_date }}">
                     </div>
 
-                    <div class="task-builder-field" id="last-n-wrapper" {% if selected_mode != "LAST_N" %}hidden{% endif %}>
+                    <div class="task-builder-field" id="last-n-wrapper" {% if selected_mode != "LAST" %}hidden{% endif %}>
                         <label>Last N Files</label>
                         <input type="number" name="last_n_files" class="form-control" value="{{ selected_last_n_files }}">
                     </div>
@@ -572,6 +661,34 @@
                     <div class="task-builder-field" id="file-name-wrapper" {% if selected_mode != "FILE" %}hidden{% endif %}>
                         <label>File Name</label>
                         <input type="text" name="file_name" class="form-control" value="{{ selected_file_name }}">
+                    </div>
+
+                    <div class="task-builder-field">
+                        <label>Limite Total (GB)</label>
+                        <input
+                            type="number"
+                            name="max_total_gb"
+                            class="form-control"
+                            min="0"
+                            step="0.1"
+                            value="{{ selected_max_total_gb }}"
+                        >
+                        <div class="field-help">
+                            Opcional. Na solicitação de backup, promove apenas o volume que couber neste teto.
+                        </div>
+                    </div>
+
+                    <div class="task-builder-field">
+                        <label>Prioridade</label>
+                        <div class="select-shell">
+                            <select name="sort_order" class="form-control">
+                                <option value="newest_first" {% if selected_sort_order == "newest_first" %}selected{% endif %}>Mais recentes primeiro</option>
+                                <option value="oldest_first" {% if selected_sort_order == "oldest_first" %}selected{% endif %}>Mais antigos primeiro</option>
+                            </select>
+                        </div>
+                        <div class="field-help">
+                            A ordenação só influencia a promoção quando houver limite total informado.
+                        </div>
                     </div>
                 </div>
             </div>
@@ -688,6 +805,7 @@
         const filterSection = document.getElementById("filter-section");
         const individualConfigPanel = document.getElementById("individual-config-panel");
         const collectiveConfigPanel = document.getElementById("collective-config-panel");
+        const stationProfilesPanel = document.getElementById("station-profiles-panel");
         const hostWrapper = document.getElementById("host-wrapper");
         const stationTypeWrapper = document.getElementById("station-type-wrapper");
 
@@ -722,7 +840,7 @@
                 title: "Janela por período",
                 note: "Defina a data inicial e a data final para limitar os arquivos considerados."
             },
-            LAST_N: {
+            LAST: {
                 title: "Recorte pelos últimos arquivos",
                 note: "Informe quantos arquivos mais recentes devem entrar na task."
             },
@@ -793,7 +911,7 @@
             });
         }
 
-        function currentSelectionLooksLikeCwsm() {
+        function currentSelectionProfile() {
 
             if (executionType.value === "collective") {
                 const selectedHosts = hostCatalog.filter((host) =>
@@ -801,18 +919,38 @@
                 );
 
                 if (selectedHosts.length > 0) {
-                    return selectedHosts.every((host) =>
-                        String(host.name || "").trim().toUpperCase().startsWith("CWSM")
+                    const prefixes = new Set(
+                        selectedHosts
+                            .map((host) => extractHostPrefix(host.name))
+                            .filter(Boolean)
                     );
+
+                    if (prefixes.size === 1 && prefixes.has("CWSM")) {
+                        return "cwsm";
+                    }
+
+                    if (prefixes.size <= 1) {
+                        return "default";
+                    }
+
+                    return "mixed";
                 }
 
-                return hostFilterSelect && hostFilterSelect.value === "CWSM";
+                if (hostFilterSelect && hostFilterSelect.value === "CWSM") {
+                    return "cwsm";
+                }
+
+                if (hostFilterSelect && hostFilterSelect.value !== "ALL") {
+                    return "default";
+                }
+
+                return "mixed";
             }
 
             const selected = hostSelect ? hostSelect.selectedOptions[0] : null;
             const hostName = selected ? (selected.dataset.hostName || selected.textContent || "") : "";
 
-            return hostName.trim().toUpperCase().startsWith("CWSM");
+            return hostName.trim().toUpperCase().startsWith("CWSM") ? "cwsm" : "default";
         }
 
         function syncSuggestedFilePath() {
@@ -821,7 +959,7 @@
                 return;
             }
 
-            const isCwsm = currentSelectionLooksLikeCwsm();
+            const selectionProfile = currentSelectionProfile();
             const currentValue = (filePathInput.value || "").trim();
             const followsDefaultMask = (
                 currentValue === "" ||
@@ -833,7 +971,12 @@
                 return;
             }
 
-            filePathInput.value = isCwsm ? cwsmFilePath : defaultFilePath;
+            if (selectionProfile === "mixed") {
+                filePathInput.value = "";
+                return;
+            }
+
+            filePathInput.value = selectionProfile === "cwsm" ? cwsmFilePath : defaultFilePath;
         }
 
         function syncSuggestedExtension() {
@@ -842,7 +985,7 @@
                 return;
             }
 
-            const isCwsm = currentSelectionLooksLikeCwsm();
+            const selectionProfile = currentSelectionProfile();
             const currentValue = (extensionInput.value || "").trim().toLowerCase();
             const followsDefaultMask = (
                 currentValue === "" ||
@@ -854,7 +997,12 @@
                 return;
             }
 
-            extensionInput.value = isCwsm ? cwsmExtension : defaultExtension;
+            if (selectionProfile === "mixed") {
+                extensionInput.value = "";
+                return;
+            }
+
+            extensionInput.value = selectionProfile === "cwsm" ? cwsmExtension : defaultExtension;
         }
 
         function updateSubmitButtonLabel() {
@@ -865,6 +1013,15 @@
             submitButton.textContent = executionType.value === "collective"
                 ? "Criar Tasks"
                 : "Criar Task";
+        }
+
+        function toggleStationProfilesPanel() {
+            if (!stationProfilesPanel || !hostFilterSelect) {
+                return;
+            }
+
+            const showProfiles = executionType.value === "collective" && hostFilterSelect.value === "ALL";
+            stationProfilesPanel.hidden = !showProfiles;
         }
 
         function updateTaskTypeNote() {
@@ -909,7 +1066,7 @@
                 if (startDate || endDate) {
                     parts.push("Período " + (startDate || "...") + " até " + (endDate || "..."));
                 }
-            } else if (modeSelect.value === "LAST_N") {
+            } else if (modeSelect.value === "LAST") {
                 const lastN = taskBuilderForm.elements.last_n_files ? String(taskBuilderForm.elements.last_n_files.value || "").trim() : "";
                 if (lastN) {
                     parts.push("Últimos " + lastN + " arquivo(s)");
@@ -918,6 +1075,21 @@
                 const fileName = taskBuilderForm.elements.file_name ? String(taskBuilderForm.elements.file_name.value || "").trim() : "";
                 if (fileName) {
                     parts.push("Arquivo " + fileName);
+                }
+            }
+
+            const maxTotalGb = taskBuilderForm.elements.max_total_gb ? String(taskBuilderForm.elements.max_total_gb.value || "").trim() : "";
+            if (maxTotalGb) {
+                parts.push("Limite " + maxTotalGb + " GB");
+
+                const sortOrder = taskBuilderForm.elements.sort_order
+                    ? String(taskBuilderForm.elements.sort_order.value || "").trim()
+                    : "newest_first";
+
+                if (sortOrder === "oldest_first") {
+                    parts.push("Prioridade mais antigos primeiro");
+                } else {
+                    parts.push("Prioridade mais recentes primeiro");
                 }
             }
 
@@ -1052,6 +1224,7 @@
             toggleModeFields();
             renderCollectiveHosts();
             updateSubmitButtonLabel();
+            toggleStationProfilesPanel();
             syncSuggestedFilePath();
             syncSuggestedExtension();
         }
@@ -1088,7 +1261,7 @@
                     setFieldVisibility(endWrapper, true);
                     break;
 
-                case "LAST_N":
+                case "LAST":
                     setFieldVisibility(lastNWrapper, true);
                     break;
 
@@ -1111,6 +1284,7 @@
         if (hostFilterSelect) {
             hostFilterSelect.addEventListener("change", function () {
                 renderCollectiveHosts();
+                toggleStationProfilesPanel();
                 syncSuggestedFilePath();
                 syncSuggestedExtension();
             });
@@ -1171,6 +1345,7 @@
         toggleModeFields();
         renderCollectiveHosts();
         updateSubmitButtonLabel();
+        toggleStationProfilesPanel();
         syncSuggestedFilePath();
         syncSuggestedExtension();
 

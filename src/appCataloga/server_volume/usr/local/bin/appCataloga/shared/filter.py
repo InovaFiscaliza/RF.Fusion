@@ -5,6 +5,11 @@ This module normalizes the filter contract used by discovery, backlog
 promotion, and maintenance tooling. It keeps both metadata-side and database-
 side evaluation logic in one place so the meaning of a filter does not drift
 between services.
+
+The old ``agent=local|remote`` selector was retired together with the station-
+side ``indexerD`` daemon. Incoming payloads may still carry that field for
+backward compatibility, but it is ignored and discovery is always
+server-driven.
 """
 
 from __future__ import annotations
@@ -46,6 +51,14 @@ class Filter:
     MODE_RANGE = "RANGE"
     MODE_LAST = "LAST"
     MODE_REDISCOVERY = "REDISCOVERY"  # reserved for future use
+    MODE_LAST_ALIASES = ("LAST_N", "LAST_N_FILES")
+
+    SORT_NEWEST_FIRST = "newest_first"
+    SORT_OLDEST_FIRST = "oldest_first"
+    VALID_SORT_ORDERS = (
+        SORT_NEWEST_FIRST,
+        SORT_OLDEST_FIRST,
+    )
 
     VALID_MODES = (
         MODE_NONE,
@@ -85,7 +98,8 @@ class Filter:
             extension=None,
             file_name=None,
             file_path=k.DEFAULT_DATA_FOLDER,
-            agent="local",
+            max_total_gb=None,
+            sort_order=Filter.SORT_NEWEST_FIRST,
         )
 
     def _parse_and_validate(self) -> Dict[str, Any]:
@@ -132,7 +146,8 @@ class Filter:
             "extension": f.get("extension"),
             "file_path": f.get("file_path",k.DEFAULT_DATA_FOLDER),
             "file_name": f.get("file_name"),
-            "agent": f.get("agent"),
+            "max_total_gb": f.get("max_total_gb"),
+            "sort_order": f.get("sort_order"),
         }
 
     def _validate(self, f: Dict[str, Any]) -> None:
@@ -142,16 +157,25 @@ class Filter:
         Each mode keeps only the fields that are semantically relevant to it.
         The remaining fields are explicitly nulled to simplify downstream logic.
         """
-        mode = f["mode"]
+        mode = str(f["mode"]).upper().strip()
+        if mode in self.MODE_LAST_ALIASES:
+            mode = Filter.MODE_LAST
+        elif mode not in self.VALID_MODES:
+            mode = Filter.MODE_NONE
+        f["mode"] = mode
 
-        # --- Normalize agent ---
-        agent = f.get("agent")
-        if isinstance(agent, str):
-            agent = agent.strip().lower()
-            if agent not in ("local", "remote"):
-                agent = "remote"
-        else:
-            agent = "remote"
+        sort_order = str(f.get("sort_order") or self.SORT_NEWEST_FIRST).strip().lower()
+        if sort_order not in self.VALID_SORT_ORDERS:
+            sort_order = self.SORT_NEWEST_FIRST
+        f["sort_order"] = sort_order
+
+        try:
+            max_total_gb = float(f.get("max_total_gb"))
+            if max_total_gb <= 0:
+                max_total_gb = None
+        except (TypeError, ValueError):
+            max_total_gb = None
+        f["max_total_gb"] = max_total_gb
 
         # --- RANGE mode ---
         if mode == Filter.MODE_RANGE:
@@ -162,7 +186,6 @@ class Filter:
 
         # --- FILE mode ---
         elif mode == Filter.MODE_FILE:
-            agent = "local"  # file mode sempre local
             file_name = (f.get("file_name") or "").strip().lower()
             if not file_name:
                 f["mode"] = Filter.MODE_NONE
@@ -188,21 +211,21 @@ class Filter:
         else:
             f["extension"] = None
 
-        # --- Update final agent value ---
-        f["agent"] = agent
-
         # --- Define active fields ---
         active_fields = {
-            Filter.MODE_RANGE:          {"start_date", "end_date", "extension", "agent", "file_path"},
-            Filter.MODE_FILE:           {"file_name", "extension", "agent","file_path"},
-            Filter.MODE_LAST:           {"last_n_files", "extension", "agent","file_path"},
-            Filter.MODE_ALL:            {"extension", "agent","file_path"},
-            Filter.MODE_NONE:           {"extension", "agent","file_path"},
-            Filter.MODE_REDISCOVERY:    {"extension", "agent","file_path"},
+            Filter.MODE_RANGE:          {"start_date", "end_date", "extension", "file_path", "max_total_gb", "sort_order"},
+            Filter.MODE_FILE:           {"file_name", "extension", "file_path", "max_total_gb", "sort_order"},
+            Filter.MODE_LAST:           {"last_n_files", "extension", "file_path", "max_total_gb", "sort_order"},
+            Filter.MODE_ALL:            {"extension", "file_path", "max_total_gb", "sort_order"},
+            # NONE and REDISCOVERY stay discovery-only on the DB side. They may
+            # still scope remote enumeration, but they do not carry backlog-
+            # promotion budget semantics.
+            Filter.MODE_NONE:           {"extension", "file_path"},
+            Filter.MODE_REDISCOVERY:    {"extension", "file_path"},
         }
 
         # --- Nullify unused fields ---
-        all_fields = {"start_date", "end_date", "last_n_files", "extension", "file_name", "agent","file_path"}
+        all_fields = {"start_date", "end_date", "last_n_files", "extension", "file_name", "file_path", "max_total_gb", "sort_order"}
         keep = active_fields.get(f["mode"], set())
         for key in all_fields - keep:
             f[key] = None
@@ -348,12 +371,28 @@ class Filter:
         Returns:
             {
                 "where": { ... },
+                "order_by": "DT_FILE_CREATED DESC, ID_FILE_TASK DESC",
+                "limit": 30,
+                "max_total_kb": 31457280,
                 "extra_sql": "ORDER BY ... LIMIT ...",
                 "msg_prefix": "Backup Pending"
             }
         """
 
         mode = (self.data.get("mode") or "").upper()
+        sort_order = self.data.get("sort_order") or self.SORT_NEWEST_FIRST
+        max_total_gb = self.data.get("max_total_gb")
+        max_total_kb = None
+        if max_total_gb is not None:
+            try:
+                max_total_kb = int(float(max_total_gb) * 1024 * 1024)
+            except (TypeError, ValueError):
+                max_total_kb = None
+
+        if sort_order == self.SORT_OLDEST_FIRST:
+            ordered_by_created = "DT_FILE_CREATED ASC, ID_FILE_TASK ASC"
+        else:
+            ordered_by_created = "DT_FILE_CREATED DESC, ID_FILE_TASK DESC"
 
         # ============================================================
         # Base WHERE (always FK_HOST)
@@ -388,7 +427,16 @@ class Filter:
         # ------------------------------------------------------------
         # Extra SQL
         # ------------------------------------------------------------
-        extra_sql = ""
+        order_by = ordered_by_created if max_total_kb is not None else None
+        limit = None
+
+        def build_extra_sql() -> str:
+            parts = []
+            if order_by:
+                parts.append(f"ORDER BY {order_by}")
+            if limit:
+                parts.append(f"LIMIT {limit}")
+            return " ".join(parts)
 
         # ------------------------------------------------------------
         # Message prefix
@@ -403,7 +451,10 @@ class Filter:
         if mode == Filter.MODE_ALL:
             return {
                 "where": where,
-                "extra_sql": extra_sql,
+                "order_by": order_by,
+                "limit": limit,
+                "max_total_kb": max_total_kb,
+                "extra_sql": build_extra_sql(),
                 "msg_prefix": msg_prefix,
             }
 
@@ -413,6 +464,9 @@ class Filter:
         if mode in (Filter.MODE_NONE, Filter.MODE_REDISCOVERY):
             return {
                 "where": None,
+                "order_by": None,
+                "limit": None,
+                "max_total_kb": None,
                 "extra_sql": "",
                 "msg_prefix": None,
             }
@@ -438,7 +492,10 @@ class Filter:
 
             return {
                 "where": where,
-                "extra_sql": extra_sql,
+                "order_by": order_by,
+                "limit": limit,
+                "max_total_kb": max_total_kb,
+                "extra_sql": build_extra_sql(),
                 "msg_prefix": msg_prefix,
             }
 
@@ -465,7 +522,10 @@ class Filter:
 
             return {
                 "where": where,
-                "extra_sql": extra_sql,
+                "order_by": order_by,
+                "limit": limit,
+                "max_total_kb": max_total_kb,
+                "extra_sql": build_extra_sql(),
                 "msg_prefix": msg_prefix,
             }
 
@@ -482,11 +542,15 @@ class Filter:
                     "msg_prefix": None,
                 }
 
-            extra_sql = f"ORDER BY DT_FILE_CREATED DESC LIMIT {last_n}"
+            order_by = "DT_FILE_CREATED DESC, ID_FILE_TASK DESC"
+            limit = last_n
 
             return {
                 "where": where,
-                "extra_sql": extra_sql,
+                "order_by": order_by,
+                "limit": limit,
+                "max_total_kb": max_total_kb,
+                "extra_sql": build_extra_sql(),
                 "msg_prefix": msg_prefix,
             }
 
@@ -495,7 +559,10 @@ class Filter:
         # ============================================================
         return {
             "where": where,
-            "extra_sql": extra_sql,
+            "order_by": order_by,
+            "limit": limit,
+            "max_total_kb": max_total_kb,
+            "extra_sql": build_extra_sql(),
             "msg_prefix": msg_prefix,
         }
 
@@ -630,7 +697,7 @@ class Filter:
         # LAST mode
         # ==================================================================
         if mode == "LAST":
-            last_n = int(self.data.get("last_n") or 0)
+            last_n = int(self.data.get("last_n_files") or 0)
 
             ordered = sorted(
                 metadata_list,

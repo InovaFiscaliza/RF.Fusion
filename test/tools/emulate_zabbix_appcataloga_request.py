@@ -18,7 +18,7 @@ Examples:
         "host_port=2828" \
         "user=celplan" \
         "passwd=secret" \
-        "filter_win={\"mode\":\"NONE\",\"start_date\":null,\"end_date\":null,\"last_n_files\":null,\"extension\":\".zip\",\"file_path\":\"C:/CelPlan/CellWireless RU/Spectrum/Completed\",\"file_name\":null,\"agent\":\"local\"}"
+        "filter_win={\"mode\":\"NONE\",\"start_date\":null,\"end_date\":null,\"last_n_files\":null,\"extension\":\".zip\",\"file_path\":\"C:/CelPlan/CellWireless RU/Spectrum/Completed\",\"file_name\":null}"
 
     /opt/conda/envs/appdata/bin/python /RFFusion/test/tools/emulate_zabbix_appcataloga_request.py \
         "query_tag=stop" \
@@ -28,7 +28,7 @@ Examples:
         "host_port=2828" \
         "user=celplan" \
         "passwd=secret" \
-        "filter_win={\"mode\":\"RANGE\",\"start_date\":\"2025-01-01\",\"end_date\":\"2025-12-31\",\"last_n_files\":null,\"extension\":\".zip\",\"file_path\":\"C:/CelPlan/CellWireless RU/Spectrum/Completed\",\"file_name\":null,\"agent\":\"local\"}"
+        "filter_win={\"mode\":\"RANGE\",\"start_date\":\"2025-01-01\",\"end_date\":\"2025-12-31\",\"last_n_files\":null,\"extension\":\".zip\",\"file_path\":\"C:/CelPlan/CellWireless RU/Spectrum/Completed\",\"file_name\":null}"
 """
 
 from __future__ import annotations
@@ -65,7 +65,6 @@ DEFAULTS = {
         "extension": ".bin",
         "file_path": "/mnt/internal",
         "file_name": None,
-        "agent": "local",
     },
     "filter_win": {
         "mode": "NONE",
@@ -75,7 +74,6 @@ DEFAULTS = {
         "extension": ".zip",
         "file_path": "C:/CelPlan/CellWireless RU/Spectrum/Completed",
         "file_name": None,
-        "agent": "local",
     },
 }
 

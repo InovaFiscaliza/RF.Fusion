@@ -83,7 +83,7 @@ class TestTaskService(unittest.TestCase):
                         "ID_HOST_TASK": 77,
                         "NU_TYPE": self.module.HOST_TASK_CHECK_TYPE,
                         "NU_STATUS": self.module.TASK_PENDING,
-                        "FILTER": '{"mode":"NONE","file_path":"/mnt/internal/data","agent":"local"}',
+                        "FILTER": '{"mode":"NONE","file_path":"/mnt/internal/data"}',
                     }
                 ]
             ]
@@ -96,7 +96,6 @@ class TestTaskService(unittest.TestCase):
             "extension": ".bin",
             "file_path": "/mnt/internal/data",
             "file_name": None,
-            "agent": "local",
         }
 
         result = self.module.queue_host_task_safe(
@@ -128,7 +127,7 @@ class TestTaskService(unittest.TestCase):
                         "ID_HOST_TASK": 88,
                         "NU_TYPE": self.module.HOST_TASK_CHECK_TYPE,
                         "NU_STATUS": self.module.TASK_RUNNING,
-                        "FILTER": '{"mode":"NONE","file_path":"/mnt/internal/data","agent":"local"}',
+                        "FILTER": '{"mode":"NONE","file_path":"/mnt/internal/data"}',
                     }
                 ]
             ]
@@ -146,7 +145,6 @@ class TestTaskService(unittest.TestCase):
                 "extension": None,
                 "file_path": "/mnt/internal/data",
                 "file_name": None,
-                "agent": "local",
             },
             message="Created by WebFusion | Host Check | Backup (NONE) | Individual",
         )
@@ -174,7 +172,6 @@ class TestTaskService(unittest.TestCase):
                 "extension": None,
                 "file_path": "/mnt/internal/data",
                 "file_name": None,
-                "agent": "local",
             },
             message="Created by WebFusion | Host Check | Backup (NONE) | Individual",
         )
@@ -255,6 +252,33 @@ class TestTaskService(unittest.TestCase):
         self.assertTrue(insert_sql.startswith("INSERT INTO HOST_TASK"))
         self.assertEqual(insert_params[1], self.module.HOST_TASK_BACKLOG_ROLLBACK_TYPE)
         self.assertIn("Backlog Rollback | Stop (RANGE)", insert_params[-1])
+
+    def test_create_task_serializes_budget_fields(self):
+        db = FakeDB(select_results=[[]])
+
+        self.module.create_task(
+            db=db,
+            hosts=[31],
+            task_type=self.module.HOST_TASK_CHECK_TYPE,
+            mode="RANGE",
+            filter_data={
+                "start_date": "2025-01-01",
+                "end_date": None,
+                "last_n_files": None,
+                "extension": ".zip",
+                "file_path": "C:/CelPlan/CellWireless RU/Spectrum/Completed",
+                "file_name": None,
+                "max_total_gb": "30",
+                "sort_order": "newest_first",
+            },
+        )
+
+        insert_sql, insert_params = next(
+            row for row in db.executions if row[0].startswith("INSERT INTO HOST_TASK")
+        )
+        self.assertTrue(insert_sql.startswith("INSERT INTO HOST_TASK"))
+        self.assertIn('"max_total_gb": "30"', insert_params[3])
+        self.assertIn('"sort_order": "newest_first"', insert_params[3])
 
 
 if __name__ == "__main__":

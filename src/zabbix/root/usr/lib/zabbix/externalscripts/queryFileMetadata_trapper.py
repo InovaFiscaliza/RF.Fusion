@@ -66,17 +66,34 @@ ARGUMENTS = {
         "value": k.ACAT_DEFAULT_TIMEOUT,
         "message": "Using default timeout",
     },
+    "filter": {
+        "set": False,
+        "value": (
+            '{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":null,"file_path":null,"file_name":null}'
+        ),
+        "message": "Using canonical filter payload",
+    },
+    "file_path": {
+        "set": False,
+        "value": "",
+        "message": "Using default file path from filter payload",
+    },
+    "extension": {
+        "set": False,
+        "value": "",
+        "message": "Using default extension from filter payload",
+    },
     "filter_lnx": {
         "set": False,
         "value": (
-            '{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".bin","file_path":"/mnt/internal","file_name":null,"agent":"local"}'
+            '{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".bin","file_path":"/mnt/internal","file_name":null}'
         ),
         "message": "Using Linux filter",
     },
     "filter_win": {
         "set": False,
         "value": (
-            '{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".dbm","file_path":"C:/CelPlan/CellWireless RU/Spectrum/Completed","file_name":null,"agent":"local"}'
+            '{"mode":"NONE","start_date":null,"end_date":null,"last_n_files":null,"extension":".dbm","file_path":"C:/CelPlan/CellWireless RU/Spectrum/Completed","file_name":null}'
         ),
         "message": "Using Windows filter",
     },
@@ -105,6 +122,56 @@ def normalize_json(value: str) -> Dict[str, Any]:
     v = v.replace('\\"', '"')
 
     return json.loads(v)
+
+
+def normalize_text(value: str) -> str:
+    """Normalize a plain macro value that may arrive wrapped or escaped."""
+    if value is None:
+        return ""
+
+    text = str(value).strip()
+
+    if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
+        text = text[1:-1]
+
+    text = text.replace('\\"', '"')
+    return text.strip()
+
+
+def build_filter_payload(arg_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build the final filter payload sent to appCataloga.
+
+    Preferred contract:
+        - `filter`: base JSON payload
+        - `file_path`: optional override
+        - `extension`: optional override
+
+    Legacy compatibility:
+        - if `filter` was not explicitly provided, keep accepting the old
+          `filter_lnx` / `filter_win` pair selected by the host heuristic.
+    """
+    if arg_data["filter"]["set"]:
+        filter_value = normalize_json(arg_data["filter"]["value"])
+    else:
+        host_uid = arg_data["host_uid"]["value"]
+        is_windows = "CW" in host_uid  # documented heuristic
+
+        if is_windows:
+            filter_value = normalize_json(arg_data["filter_win"]["value"])
+        else:
+            filter_value = normalize_json(arg_data["filter_lnx"]["value"])
+
+    file_path = normalize_text(arg_data["file_path"]["value"])
+    extension = normalize_text(arg_data["extension"]["value"])
+
+    if file_path:
+        filter_value["file_path"] = file_path
+
+    if extension:
+        filter_value["extension"] = extension
+
+    return filter_value
 
 
 def hide_sensitive_data(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -164,22 +231,12 @@ def main():
         client_socket.connect((k.ACAT_SERVER_ADD, k.ACAT_SERVER_PORT))
 
         # ------------------------------------------------------------------
-        # 2) Detect host OS (heuristic)
+        # 2) Build the final filter payload
         # ------------------------------------------------------------------
-        host_uid = arg.data["host_uid"]["value"]
-        is_windows = "CW" in host_uid  # documented heuristic
-        
+        filter_value = build_filter_payload(arg.data)
 
         # ------------------------------------------------------------------
-        # 3) Select and normalize filter (DICT, not string)
-        # ------------------------------------------------------------------
-        if is_windows:
-            filter_value = normalize_json(arg.data["filter_win"]["value"])
-        else:
-            filter_value = normalize_json(arg.data["filter_lnx"]["value"])
-
-        # ------------------------------------------------------------------
-        # 4) Build JSON payload
+        # 3) Build JSON payload
         # ------------------------------------------------------------------
         payload = {
             "query_tag": arg.data["query_tag"]["value"],
@@ -205,7 +262,7 @@ def main():
         return
 
     # ----------------------------------------------------------------------
-    # 5) Receive response
+    # 4) Receive response
     # ----------------------------------------------------------------------
     try:
         response_bytes = b""
@@ -228,7 +285,7 @@ def main():
         return
 
     # ----------------------------------------------------------------------
-    # 6) Extract JSON payload from server response
+    # 5) Extract JSON payload from server response
     # ----------------------------------------------------------------------
     start_index = response.lower().rfind(k.START_TAG.decode())
     end_index = response.lower().rfind(k.END_TAG.decode())

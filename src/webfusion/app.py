@@ -103,7 +103,6 @@ def popup():
             "extension": request.form.get("extension"),
             "file_path": request.form.get("file_path"),
             "file_name": None,
-            "agent": "local"
         }
 
         if mode == "RANGE":

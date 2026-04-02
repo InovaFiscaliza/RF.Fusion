@@ -92,7 +92,6 @@ HOST_CHECK_ALL_ICMP_TIMEOUT_SEC = 3        # Short ICMP timeout for background s
 #------------------------------------------
 MAX_HOST_TASK_WAIT_TIME         = 2         # seconds to wait for a new task. Minimum half, maximum equal to this value
 MAX_FILE_TASK_WAIT_TIME         = 30        # seconds to wait for a new task. Minimum half, maximum equal to this value
-HALT_FLAG_CHECK_CYCLES          = 6         # number of cycles to check for HALT_FLAG (6 x 300s = 30 minutes)
 HOST_BUSY_TIMEOUT               = 18000     # 18000 seconds or 5 hours
 HOST_CLEANUP_INTERVAL           = 300       # Interval in seconds to check for and clean up stale host locks
 HOST_CLEANUP_NO_TASK_GRACE_SEC  = 30        # Minimum BUSY age before releasing a host with no running tasks detected
@@ -120,10 +119,9 @@ SSH_TIMEOUT_RETRY_DETAIL        = "ssh init timeout, awaiting connectivity confi
 #------------------------------------------
 PUBLISH_FILE = "/mnt/reposfi/Metadata/rf_metadata"  # filename without extension
 #------------------------------------------
-# daemon standard indexerD configuration
+# discovery defaults
 #------------------------------------------
 DEFAULT_DATA_FOLDER     = "/mnt/internal"
-DAEMON_CFG_FILE         = "/etc/node/indexerD.cfg"
 DISCOVERY_BATCH_SIZE    = 1000
 #------------------------------------------
 # Folder configuration
@@ -179,7 +177,6 @@ NONE_FILTER = {
     "extension"     : None,
     "file_path"     : "/mnt/internal/data",
     "file_name"     : None,
-    "agent"         : "local"
 }
 #------------------------------------------
 # Database Tasks Type Constants
@@ -191,7 +188,7 @@ HOST_TASK_CHECK_CONNECTION_TYPE     = 4         # Create a Host Connectivity Che
 HOST_TASK_BACKLOG_CONTROL_TYPE      = 5         # Promote discovery backlog into backup
 HOST_TASK_BACKLOG_ROLLBACK_TYPE     = 6         # Return backup-pending backlog to discovery
 FILE_TASK_BACKUP_TYPE               = 1         # Create a backup task
-FILE_TASK_PROCESS_TYPE              = 2         # Process a backup task of indexerD mapped files
+FILE_TASK_PROCESS_TYPE              = 2         # Process a backup task already stored on the server
 FILE_TASK_DISCOVERY                 = 3         # Create a discovery task to get file metadata
 #------------------------------------------
 # Task Status Constants
