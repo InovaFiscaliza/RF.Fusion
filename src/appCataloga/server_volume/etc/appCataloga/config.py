@@ -56,6 +56,10 @@ APP_ANALISE_SOCKET_TIMEOUT  = 10
 APP_ANALISE_BUFFER_SIZE     = 4096
 APP_ANALISE_KEY             = "123456"
 APP_ANALISE_CLIENT_NAME     = "Matlab"
+# Timeout requested from appAnalise itself. Keep it lower than the RF.Fusion
+# socket timeout so appAnalise can return a structured ReadTimeout before this
+# client gives up on the connection.
+APP_ANALISE_REQUEST_TIMEOUT_SECONDS = 540
 APP_ANALISE_PROCESS_TIMEOUT = 600
 APP_ANALISE_CONNECT_TIMEOUT = 15
 APP_ANALISE_WORKER_DETAIL   = "worker=APP_ANALISE"
@@ -194,6 +198,7 @@ FILE_TASK_DISCOVERY                 = 3         # Create a discovery task to get
 # Task Status Constants
 #------------------------------------------
 TASK_SUSPENDED          = -2        # Task suspended by offline node
+TASK_FROZEN             = -3        # Task frozen for manual review / no automatic retry
 TASK_ERROR              = -1        # Task suspended by error manager
 TASK_DONE               = 0         # Task completed successfully
 TASK_PENDING            = 1         # Task pending execution

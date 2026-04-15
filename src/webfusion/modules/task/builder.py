@@ -28,7 +28,12 @@ def build_filter(
     max_total_gb=None,
     sort_order="newest_first",
 ):
-    """Build the filter payload stored in ``HOST_TASK.FILTER``."""
+    """Build the filter payload stored in ``HOST_TASK.FILTER``.
+
+    The builder route decides *which* values should exist; this helper keeps the
+    final filter shape deterministic so the payload matches what appCataloga
+    expects downstream.
+    """
     return {
         "mode": mode,
         "start_date": start_date,

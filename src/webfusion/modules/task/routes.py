@@ -1,4 +1,9 @@
-"""Routes for the task builder and recent task list."""
+"""Routes for the task builder and recent task list.
+
+This is the write-oriented corner of WebFusion. Instead of only reading
+operational state, these routes translate operator intent into `HOST_TASK`
+rows that appCataloga will later consume.
+"""
 
 import re
 from flask import Blueprint, Response, redirect, render_template, request, url_for
@@ -20,6 +25,10 @@ DEFAULT_LINUX_FILE_PATH = "/mnt/internal/data"
 DEFAULT_LINUX_EXTENSION = ".bin"
 DEFAULT_CWSM_FILE_PATH = "C:/CelPlan/CellWireless RU/Spectrum/Completed"
 DEFAULT_CWSM_EXTENSION = ".zip"
+
+# Different station families do not always share the same path/extension
+# conventions. These defaults let the UI suggest sensible values before the
+# operator customizes them.
 
 
 def _task_auth_failed():
@@ -88,6 +97,44 @@ def _normalize_filter_mode(raw_value):
     if normalized in {"LAST_N", "LAST_N_FILES"}:
         return "LAST"
     return normalized or "NONE"
+
+
+def _task_type_supports_backlog_budget(task_type):
+    """Return whether the UI should expose backlog budget fields."""
+
+    return int(task_type) == HOST_TASK_CHECK_TYPE
+
+
+def _filter_mode_supports_backlog_budget(raw_value):
+    """Return whether backlog budget fields make sense for the selected mode."""
+
+    normalized = _normalize_filter_mode(raw_value)
+    return normalized not in {"NONE", "REDISCOVERY"}
+
+
+def _selection_supports_backlog_budget(task_type, raw_mode):
+    """Return whether the current task/mode combination should expose budget UI."""
+
+    return (
+        _task_type_supports_backlog_budget(task_type)
+        and _filter_mode_supports_backlog_budget(raw_mode)
+    )
+
+
+def _normalize_filter_mode_for_task_type(raw_value, task_type):
+    """Coerce unsupported mode/task combinations to a safe visible fallback.
+
+    The route tolerates bookmarked or hand-edited URLs, but the visible builder
+    should stay within the smaller set of combinations that the UI explicitly
+    supports.
+    """
+
+    normalized = _normalize_filter_mode(raw_value)
+
+    if int(task_type) == HOST_TASK_BACKLOG_ROLLBACK_TYPE and normalized in {"NONE", "REDISCOVERY"}:
+        return "ALL"
+
+    return normalized
 
 
 def _extract_host_prefix(host_name):
@@ -288,7 +335,10 @@ def task_builder():
     )
     selected_execution_type = request.args.get("execution_type", "individual")
     selected_host_filter = request.args.get("host_filter", "ALL")
-    selected_mode = _normalize_filter_mode(request.args.get("mode", "NONE"))
+    selected_mode = _normalize_filter_mode_for_task_type(
+        request.args.get("mode", "NONE"),
+        selected_task_type,
+    )
     selected_start_date = request.args.get("start_date", "")
     selected_end_date = request.args.get("end_date", "")
     selected_last_n_files = request.args.get("last_n_files", "")
@@ -303,6 +353,10 @@ def task_builder():
         if str(value).strip()
     ]
     selected_collective_host_search = request.args.get("collective_host_search", "")
+
+    if not _selection_supports_backlog_budget(selected_task_type, selected_mode):
+        selected_max_total_gb = ""
+        selected_sort_order = "newest_first"
 
     # --------------------------------------------------
     # Discover host prefixes dynamically
@@ -335,7 +389,7 @@ def task_builder():
     # Load hosts for individual selection
     # --------------------------------------------------
     query = """
-        SELECT ID_HOST, NA_HOST_NAME
+        SELECT ID_HOST, NA_HOST_NAME, DT_LAST_DISCOVERY
         FROM HOST
     """
 
@@ -354,7 +408,10 @@ def task_builder():
 
         task_type = _normalize_selected_task_type(request.form.get("task_type"))
         execution_type = request.form.get("execution_type")
-        mode = _normalize_filter_mode(request.form.get("mode"))
+        mode = _normalize_filter_mode_for_task_type(
+            request.form.get("mode"),
+            task_type,
+        )
 
         # Task filter payload
         filter_data = {
@@ -367,6 +424,10 @@ def task_builder():
             "max_total_gb": request.form.get("max_total_gb") or None,
             "sort_order": request.form.get("sort_order") or "newest_first",
         }
+
+        if not _selection_supports_backlog_budget(task_type, mode):
+            filter_data["max_total_gb"] = None
+            filter_data["sort_order"] = None
 
         # ==================================================
         # Collective execution

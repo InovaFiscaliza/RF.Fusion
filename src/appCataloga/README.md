@@ -115,6 +115,7 @@ This worker is responsible for:
 - validating the returned payload semantically
 - cataloging sites, files, equipment and spectra
 - resolving the final artifact contract in `FILE_TASK_HISTORY`
+- distinguishing transport outages from structured `ReadTimeout` replies
 
 ### `appCataloga_host_check.py`
 
@@ -177,6 +178,322 @@ For `appAnalise`-based processing, the important nuance is:
 - RF.Fusion can still reject that artifact semantically afterwards
 - in that case the exported artifact becomes the canonical error artifact
 - the original source artifact becomes a resolved input and moves to `resolved_files`
+
+There is also a second nuance around long-running source files:
+
+- RF.Fusion now requests a remote `timeoutSeconds` in the appAnalise `FileRead`
+  request
+- `APP_ANALISE_REQUEST_TIMEOUT_SECONDS` should stay lower than the local
+  RF.Fusion socket timeout `APP_ANALISE_PROCESS_TIMEOUT`
+- that ordering lets appAnalise return a structured
+  `handlers:FileReadHandler:ReadTimeout` reply before the local socket layer
+  gives up
+- structured `ReadTimeout` is not treated as a transport outage and not treated
+  as a definitive payload error
+- instead, the live `FILE_TASK` and `FILE_TASK_HISTORY.NU_STATUS_PROCESSING`
+  move to `TASK_FROZEN = -3` for manual review
+
+## File Filter Modes
+
+The operational filter contract is centralized in:
+
+- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shared/filter.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shared/filter.py)
+
+This same contract is reused by:
+
+- host discovery
+- backlog promotion into backup
+- operator-triggered task creation from `webfusion`
+
+Canonical filter fields today are:
+
+- `mode`
+- `file_path`
+- `extension`
+- `start_date`
+- `end_date`
+- `last_n_files`
+- `file_name`
+- `max_total_gb`
+- `sort_order`
+
+Fields are normalized before evaluation. Irrelevant fields are explicitly
+nulled per mode so downstream workers can treat the filter as canonical state
+instead of guessing which keys still matter.
+
+### Field-by-Field Semantics
+
+- `mode`
+  Selects the semantic rule. Unknown values fall back to `NONE`. Legacy
+  aliases `LAST_N` and `LAST_N_FILES` are normalized to `LAST`.
+
+- `file_path`
+  Scopes remote enumeration during discovery and rediscovery. It is not the
+  main selector for DB-side backlog promotion once rows already exist in
+  `FILE_TASK`.
+
+- `extension`
+  Optional orthogonal filter. It is normalized to lowercase and gains a
+  leading dot when missing, so `bin` and `.BIN` both become `.bin`.
+
+- `start_date`
+  Lower bound used only by `RANGE`. On the DB side it filters
+  `DT_FILE_CREATED`.
+
+- `end_date`
+  Upper bound used only by `RANGE`. If `start_date > end_date`, the two bounds
+  are swapped during normalization.
+
+- `last_n_files`
+  Used only by `LAST`. It is normalized to a positive integer and represents
+  the latest N discovered files by `DT_FILE_CREATED`.
+
+- `file_name`
+  Used only by `FILE`. Supports wildcard-style matching. If the provided name
+  already contains an extension, the separate `extension` field is discarded to
+  avoid malformed patterns such as `*.bin.bin`.
+
+- `max_total_gb`
+  Backlog budget for promotion into backup. It is converted to KB internally.
+  `null`, invalid values, or values `<= 0` mean "no budget cap". In practice
+  that means "promote every eligible row that matches the filter".
+
+- `sort_order`
+  Accepted values are `newest_first` and `oldest_first`. It matters only when
+  the worker must choose an ordered slice of already discovered `FILE_TASK`
+  rows, especially for budgeted promotion into backup.
+
+Important shared semantics:
+
+- minimum file size and minimum file age protections run before the semantic
+  mode-specific metadata filter
+- `NONE` and `REDISCOVERY` are discovery-side modes; they do not define a
+  backlog-selection rule on the DB side
+- rollback / "Retirar da Fila de Backup" does not use `max_total_gb`
+- for `ALL`, `RANGE`, `FILE`, and `LAST`, leaving `max_total_gb = null` means
+  "do not stop by volume"
+- in `ALL`, leaving `max_total_gb = null` and using `extension = ".bin"` means
+  "promote all eligible discovered `.bin` rows for that host"
+
+The principal modes are:
+
+### `NONE`
+
+Default incremental discovery mode.
+
+Behavior:
+
+- scopes discovery by `file_path`
+- optionally narrows by `extension`
+- uses the last known DB timestamp as the incremental discovery cutoff
+- does not define a DB-side backlog selection rule on its own
+
+Use it when the operator wants the normal "keep discovering forward from the
+current point" behavior.
+
+### `ALL`
+
+Broad backlog-selection mode.
+
+Behavior:
+
+- keeps `file_path` and optional `extension`
+- selects all eligible discovered files for the current queue operation
+- if `max_total_gb` is set, it promotes only the ordered slice that fits the
+  budget
+- if `max_total_gb` is `null`, it promotes every eligible row
+- `sort_order` only changes which rows are preferred when a budgeted slice is
+  needed
+
+Use it when the operator wants to promote the whole eligible backlog, possibly
+with a volume ceiling.
+
+### `RANGE`
+
+Date-window mode.
+
+Behavior:
+
+- accepts `start_date`, `end_date`, or both
+- swaps the two bounds if the payload arrives inverted
+- keeps optional `extension`
+- can still honor `max_total_gb`
+- can still honor `sort_order` when a budgeted slice must be chosen
+
+Use it when the operator wants a created-date window instead of "all" or
+"latest N".
+
+### `LAST`
+
+Latest-N mode.
+
+Behavior:
+
+- uses `last_n_files`
+- orders by `DT_FILE_CREATED DESC, ID_FILE_TASK DESC`
+- keeps optional `extension`
+- can still honor `max_total_gb` after defining the latest-N slice
+
+Legacy aliases `LAST_N` and `LAST_N_FILES` are normalized to `LAST`.
+
+Use it when the operator wants only the most recent slice of the backlog.
+
+### `FILE`
+
+Explicit file / pattern mode.
+
+Behavior:
+
+- uses `file_name`
+- supports wildcard-style matching
+- if `file_name` has no extension and `extension` is provided, the extension is
+  appended automatically
+- discovery intentionally skips the normal deduplication shortcut for this mode
+  so a specifically targeted artifact can be revisited
+- can still honor `max_total_gb` and `sort_order` on the DB side when multiple
+  discovered rows match the pattern
+
+Use it when the operator needs one explicit artifact or a narrow filename
+pattern instead of a time-based rule.
+
+### `REDISCOVERY`
+
+Special-purpose rescan mode.
+
+Behavior:
+
+- keeps `file_path` and optional `extension`
+- disables the incremental `newer_than` cutoff during remote discovery
+- intentionally does not define a DB-side backlog-selection rule
+
+Use it when the operator needs a fresh rescan of a remote path instead of the
+normal incremental walk.
+
+### Practical Examples
+
+`NONE` for normal incremental discovery:
+
+```json
+{
+  "mode": "NONE",
+  "extension": ".bin",
+  "file_path": "/mnt/internal/data"
+}
+```
+
+Effect:
+
+- discovers forward from the current incremental cutoff
+- only for `.bin`
+- does not by itself define a backlog-promotion slice
+
+`ALL` without budget:
+
+```json
+{
+  "mode": "ALL",
+  "extension": ".bin",
+  "file_path": "/mnt/internal/data",
+  "max_total_gb": null,
+  "sort_order": "newest_first"
+}
+```
+
+Effect:
+
+- on discovery: scopes remote enumeration by path and extension
+- on backlog promotion: promotes all eligible discovered `.bin` rows for the
+  host
+- `sort_order` becomes operationally irrelevant because no budgeted choice is
+  needed
+
+`ALL` with backlog budget, oldest first:
+
+```json
+{
+  "mode": "ALL",
+  "extension": ".zip",
+  "file_path": "C:/CelPlan/CellWireless RU/Spectrum/Completed",
+  "max_total_gb": 50,
+  "sort_order": "oldest_first"
+}
+```
+
+Effect:
+
+- selects all eligible discovered `.zip` rows for the host
+- promotes only the oldest slice whose cumulative size still fits inside `50 GB`
+
+`RANGE` with backlog budget:
+
+```json
+{
+  "mode": "RANGE",
+  "start_date": "2026-04-01T00:00:00",
+  "end_date": "2026-04-07T23:59:59",
+  "extension": ".zip",
+  "file_path": "C:/CelPlan/CellWireless RU/Spectrum/Completed",
+  "max_total_gb": 50,
+  "sort_order": "newest_first"
+}
+```
+
+Effect:
+
+- restricts the selection to files created inside the given window
+- among that window, promotes the newest slice that still fits inside `50 GB`
+
+`LAST` for the newest 100 files:
+
+```json
+{
+  "mode": "LAST",
+  "last_n_files": 100,
+  "extension": ".zip",
+  "file_path": "C:/CelPlan/CellWireless RU/Spectrum/Completed",
+  "max_total_gb": null
+}
+```
+
+Effect:
+
+- defines the slice as the latest 100 discovered `.zip` rows
+- with no budget, promotes that whole slice
+- with a budget, promotes only the prefix of that slice that still fits
+
+`FILE` targeting one explicit artifact family:
+
+```json
+{
+  "mode": "FILE",
+  "file_name": "*rfeye002211*",
+  "extension": ".bin",
+  "file_path": "/mnt/internal/data"
+}
+```
+
+Effect:
+
+- discovery walks the configured path but only keeps filenames matching the
+  wildcard
+- DB-side backlog promotion can target the same filename family among already
+  discovered rows
+
+`REDISCOVERY` for a full rescan of one path:
+
+```json
+{
+  "mode": "REDISCOVERY",
+  "extension": ".bin",
+  "file_path": "/mnt/internal/data"
+}
+```
+
+Effect:
+
+- disables the normal incremental "newer than last seen" discovery cutoff
+- rescans the remote path from scratch
+- still does not define a DB-side backlog-promotion slice
 
 ## Directory Guide
 
@@ -259,6 +576,11 @@ That means:
 - `FILE_TASK` can be retried, suspended, resumed or removed
 - the final artifact recorded in `FILE_TASK_HISTORY` is what the system treats
   as canonical for history purposes
+- `TASK_FROZEN = -3` is the explicit exception to the normal retry/finalize
+  split for processing: the task remains live and the processing phase is put
+  on hold for manual review
+- frozen processing rows are intentionally not reactivated by
+  `file_task_resume_by_host()`
 
 ### Repository Paths Are Semantic
 
@@ -283,6 +605,8 @@ Current behavior:
 - equipment comes from the payload receiver per spectrum
 - bad spectra are discarded selectively when possible
 - the whole file only fails when no valid spectra remain
+- structured appAnalise `ReadTimeout` replies freeze the processing task
+  instead of trashing the artifact or retrying automatically forever
 
 ## Dependencies
 

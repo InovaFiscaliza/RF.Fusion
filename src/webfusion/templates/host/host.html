@@ -10,382 +10,12 @@
 {% endblock %}
 
 {% block extra_css %}
-<style>
-    html,
-    body {
-        overflow-y: auto !important;
-    }
-
-    body .layout.layout-top.fixed-header {
-        overflow: visible !important;
-    }
-
-    body .main-content {
-        overflow: visible !important;
-    }
-
-    .card {
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
-    }
-
-    .host-query-grid {
-        display: grid;
-        grid-template-columns: minmax(280px, 2fr) minmax(180px, 1fr) minmax(220px, 1fr);
-        gap: 20px;
-        align-items: end;
-    }
-
-    .host-query-field {
-        min-width: 0;
-    }
-
-    label {
-        display: block;
-        margin-bottom: 6px;
-        font-weight: 600;
-    }
-
-    .form-control {
-        width: 100%;
-        height: 38px;
-        padding: 8px 12px;
-        box-sizing: border-box;
-    }
-
-    .select-shell {
-        position: relative;
-    }
-
-    .select-shell::after {
-        content: "";
-        position: absolute;
-        top: 50%;
-        right: 14px;
-        width: 8px;
-        height: 8px;
-        border-right: 2px solid #475569;
-        border-bottom: 2px solid #475569;
-        transform: translateY(-65%) rotate(45deg);
-        pointer-events: none;
-    }
-
-    .select-shell .form-control {
-        appearance: none;
-        -webkit-appearance: none;
-        -moz-appearance: none;
-        padding-right: 40px;
-    }
-
-    .online-filter {
-        display: flex;
-        align-items: center;
-        min-height: 38px;
-        padding: 0 12px;
-        border-radius: 8px;
-        border: 1px solid #cbd5e1;
-        background: #ffffff;
-    }
-
-    .online-filter label {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        cursor: pointer;
-        font-weight: 500;
-        margin: 0;
-    }
-
-    .btn-search {
-        background-color: #1f4f8b;
-        color: #ffffff;
-        border: 1px solid #1f4f8b;
-        border-radius: 8px;
-        padding: 8px 18px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: background-color 0.2s ease;
-    }
-
-    .btn-search:hover {
-        background-color: #163a66;
-        border-color: #163a66;
-    }
-
-    .section-title {
-        font-weight: 600;
-        margin-top: 32px;
-        margin-bottom: 16px;
-        border-bottom: 1px solid #e5e7eb;
-        padding-bottom: 6px;
-        font-size: 15px;
-    }
-
-    .stats-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 13px;
-    }
-
-    .stats-table th,
-    .stats-table td {
-        padding: 10px 12px;
-    }
-
-    .stats-table th {
-        text-align: left;
-        width: 280px;
-        font-weight: 600;
-        color: #374151;
-    }
-
-    .stats-table td {
-        color: #111827;
-    }
-
-    .stats-table tr:not(:last-child) {
-        border-bottom: 1px solid #f1f5f9;
-    }
-
-    .status-badge {
-        display: inline-block;
-        padding: 3px 10px;
-        border-radius: 20px;
-        font-size: 12px;
-        font-weight: 600;
-    }
-
-    .status-online {
-        background: #dcfce7;
-        color: #166534;
-    }
-
-    .status-offline {
-        background: #fee2e2;
-        color: #991b1b;
-    }
-
-    .status-busy {
-        background: #fef3c7;
-        color: #92400e;
-    }
-
-.status-idle {
-        background: #dbeafe;
-        color: #1e40af;
-    }
-
-    .status-warning {
-        background: #ffedd5;
-        color: #9a3412;
-    }
-
-    .host-stats-scroll {
-        overflow: visible;
-        padding-right: 0;
-    }
-
-    .summary-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 14px;
-        margin-top: 14px;
-    }
-
-    .summary-card {
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        background: #f8fafc;
-        padding: 14px 16px;
-    }
-
-    .summary-card-label {
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.02em;
-        text-transform: uppercase;
-        color: #64748b;
-        margin-bottom: 6px;
-    }
-
-    .summary-card-value {
-        font-size: 22px;
-        font-weight: 700;
-        color: #0f172a;
-    }
-
-    .summary-card-value-loading {
-        font-size: 12px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: #64748b;
-    }
-
-    .summary-card-value-online {
-        color: #166534;
-    }
-
-    .summary-card-value-offline {
-        color: #9a3412;
-    }
-
-    .summary-card-note {
-        margin-top: 4px;
-        font-size: 12px;
-        color: #64748b;
-    }
-
-    .details-panel {
-        margin-top: 16px;
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        background: #ffffff;
-    }
-
-    .details-panel summary {
-        cursor: pointer;
-        list-style: none;
-        padding: 14px 16px;
-        font-weight: 600;
-        color: #1f2937;
-    }
-
-    .details-panel summary::-webkit-details-marker {
-        display: none;
-    }
-
-    .details-panel summary::before {
-        content: "▸";
-        display: inline-block;
-        margin-right: 8px;
-        color: #1f4f8b;
-    }
-
-    .details-panel[open] summary::before {
-        content: "▾";
-    }
-
-    .details-panel-body {
-        padding: 0 16px 16px;
-    }
-
-    .annual-breakdown {
-        margin-top: 16px;
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        background: #ffffff;
-        overflow-x: auto;
-    }
-
-    .diagnostic-breakdown {
-        margin-top: 16px;
-        border: 1px solid #e2e8f0;
-        border-radius: 10px;
-        background: #ffffff;
-        overflow: hidden;
-    }
-
-    .diagnostic-table {
-        width: 100%;
-        border-collapse: collapse;
-        table-layout: auto;
-        font-size: 13px;
-    }
-
-    .diagnostic-table th,
-    .diagnostic-table td {
-        padding: 10px 12px;
-        vertical-align: top;
-    }
-
-    .diagnostic-table th {
-        text-align: left;
-        font-weight: 600;
-        color: #374151;
-    }
-
-    .diagnostic-table tr:not(:last-child) {
-        border-bottom: 1px solid #f1f5f9;
-    }
-
-    .diagnostic-count-col {
-        width: 140px;
-        text-align: right !important;
-        white-space: nowrap;
-        font-variant-numeric: tabular-nums;
-        color: #475569;
-    }
-
-    .diagnostic-message-cell {
-        white-space: normal;
-        word-break: break-word;
-        color: #1f2937;
-        line-height: 1.5;
-        font-size: 13px;
-    }
-
-    .annual-breakdown .stats-table {
-        min-width: 1080px;
-        table-layout: fixed;
-    }
-
-    .annual-breakdown .stats-table th {
-        width: auto;
-        white-space: nowrap;
-        vertical-align: bottom;
-    }
-
-    .annual-breakdown .stats-table td,
-    .annual-breakdown .stats-table th {
-        font-size: 12px;
-    }
-
-    .annual-breakdown .stats-table th:first-child,
-    .annual-breakdown .stats-table td:first-child {
-        text-align: left;
-        width: 88px;
-    }
-
-    .annual-breakdown .stats-table th:not(:first-child),
-    .annual-breakdown .stats-table td:not(:first-child) {
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-    }
-
-    .overview-table th {
-        width: auto;
-        white-space: nowrap;
-    }
-
-    .overview-table td {
-        white-space: nowrap;
-    }
-
-    .link-action {
-        color: #1f4f8b;
-        font-weight: 600;
-        text-decoration: none;
-    }
-
-    .link-action:hover {
-        text-decoration: underline;
-    }
-
-    #online_only {
-        all: revert !important;
-        appearance: auto !important;
-        -webkit-appearance: checkbox !important;
-        display: inline-block !important;
-        position: static !important;
-        opacity: 1 !important;
-        visibility: visible !important;
-        width: 16px !important;
-        height: 16px !important;
-        margin: 0 !important;
-    }
-</style>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260415-page-css-extraction') }}">
 {% endblock %}
 
 {% block content %}
+
+<div id="host-page-root" {% if stats %}data-host-id="{{ stats.ID_HOST }}"{% endif %}>
 
 <h1 class="margin-bottom-l">
     Panorama da Estação
@@ -415,9 +45,14 @@
             <!-- BOTÃO -->
             <div class="host-query-field">
                 <label>&nbsp;</label>
-                <button type="submit" class="btn-search width-full">
-                    Pesquisar
-                </button>
+                <div class="host-query-actions">
+                    <button type="submit" class="btn-search width-full">
+                        Pesquisar
+                    </button>
+                    <a class="btn-secondary" href="{{ url_for('host.host') }}">
+                        Limpar filtros
+                    </a>
+                </div>
             </div>
 
             <!-- CHECKBOX FUNCIONAL -->
@@ -430,7 +65,6 @@
                             id="online_only"
                             name="online_only"
                             value="1"
-                            onchange="toggleHostOnlineFilter(this)"
                             {% if online_only %}checked{% endif %}
                         >
                         Apenas Online
@@ -597,6 +231,14 @@
                 <div class="summary-card-value">{{ stats.BACKUP_PENDING_GB_TOTAL }} GB</div>
             </div>
             <div class="summary-card">
+                <div class="summary-card-label">Arquivos na fila de backup</div>
+                <div class="summary-card-value">{{ stats.BACKUP_QUEUE_FILES_TOTAL }}</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Volume na fila de backup</div>
+                <div class="summary-card-value">{{ stats.BACKUP_QUEUE_GB_TOTAL }} GB</div>
+            </div>
+            <div class="summary-card">
                 <div class="summary-card-label">Backups com erro</div>
                 <div class="summary-card-value">{{ stats.BACKUP_ERROR_FILES_TOTAL }}</div>
             </div>
@@ -692,6 +334,14 @@
                 <div class="summary-card-value">{{ stats.PROCESSING_PENDING_GB_TOTAL }} GB</div>
             </div>
             <div class="summary-card">
+                <div class="summary-card-label">Arquivos na fila de processamento</div>
+                <div class="summary-card-value">{{ stats.PROCESSING_QUEUE_FILES_TOTAL }}</div>
+            </div>
+            <div class="summary-card">
+                <div class="summary-card-label">Volume na fila de processamento</div>
+                <div class="summary-card-value">{{ stats.PROCESSING_QUEUE_GB_TOTAL }} GB</div>
+            </div>
+            <div class="summary-card">
                 <div class="summary-card-label">Arquivos com Erro de Processamento</div>
                 <div class="summary-card-value">{{ stats.PROCESSING_ERROR_FILES_TOTAL }}</div>
             </div>
@@ -765,196 +415,10 @@
 </div>
 
 {% endif %}
+</div>
 
-<script>
-    function toggleHostOnlineFilter(checkbox) {
-        const url = new URL(window.location.href);
-        const hostSelect = document.querySelector("[name='host_id']");
+{% endblock %}
 
-        if (hostSelect && hostSelect.value) {
-            url.searchParams.set("host_id", hostSelect.value);
-        } else {
-            url.searchParams.delete("host_id");
-        }
-
-        url.searchParams.set("online_only", checkbox.checked ? "1" : "0");
-        if (window.showPageLoadingOverlay) {
-            window.showPageLoadingOverlay("Atualizando filtro de estações...");
-        }
-        window.location.href = url.toString();
-    }
-</script>
-
-{% if stats %}
-<script>
-    (function () {
-        const locationRows = document.getElementById("host-location-history-rows");
-        const processingPanel = document.querySelector("[data-host-error-panel='{{ stats.ID_HOST }}']");
-        const backupPanel = document.querySelector("[data-host-backup-error-panel='{{ stats.ID_HOST }}']");
-        let locationLoaded = false;
-
-        function escapeHtml(value) {
-            return String(value ?? "")
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/\"/g, "&quot;")
-                .replace(/'/g, "&#39;");
-        }
-
-        function renderLocationHistory(payload) {
-            const locationHistory = Array.isArray(payload.location_history) ? payload.location_history : [];
-
-            if (!locationRows) {
-                return;
-            }
-
-            if (locationHistory.length === 0) {
-                locationRows.innerHTML = `
-                    <tr>
-                        <td colspan="6">Sem histórico de localidades no catálogo espectral para esta estação.</td>
-                    </tr>
-                `;
-                return;
-            }
-
-            locationRows.innerHTML = locationHistory.map((row) => {
-                const countyState = row.COUNTY_NAME && row.STATE_CODE
-                    ? `${escapeHtml(row.COUNTY_NAME)}/${escapeHtml(row.STATE_CODE)}`
-                    : row.COUNTY_NAME
-                    ? escapeHtml(row.COUNTY_NAME)
-                    : "—";
-
-                return `
-                    <tr>
-                        <td>${escapeHtml(row.ID_SITE)}</td>
-                        <td>${escapeHtml(row.LOCALITY_LABEL || "—")}</td>
-                        <td>${countyState}</td>
-                        <td>${escapeHtml(row.FIRST_SEEN_AT || "—")}</td>
-                        <td>${escapeHtml(row.LAST_SEEN_AT || "—")}</td>
-                        <td>${escapeHtml(row.SPECTRUM_COUNT || 0)}</td>
-                    </tr>
-                `;
-            }).join("");
-        }
-
-        function loadLocationHistory() {
-            if (locationLoaded) {
-                return;
-            }
-
-            if (locationRows) {
-                locationRows.innerHTML = `
-                    <tr>
-                        <td colspan="6" class="summary-card-value-loading">CARREGANDO</td>
-                    </tr>
-                `;
-            }
-
-            fetch("/api/host/{{ stats.ID_HOST }}/locations")
-                .then((response) => response.json())
-                .then((payload) => {
-                    renderLocationHistory(payload);
-                    locationLoaded = true;
-                })
-                .catch(() => {
-                    if (locationRows) {
-                        locationRows.innerHTML = `
-                            <tr>
-                                <td colspan="6">Nao foi possivel carregar o histórico de localidades agora.</td>
-                            </tr>
-                        `;
-                    }
-                });
-        }
-
-        function bindDiagnosticPanel(panel, options) {
-            if (!panel) {
-                return;
-            }
-
-            const meta = panel.querySelector(options.metaSelector);
-            const rowsContainer = panel.querySelector(options.rowsSelector);
-            let loaded = false;
-            let loading = false;
-
-            function setMeta(message) {
-                if (meta) {
-                    meta.textContent = message;
-                }
-            }
-
-            function buildRows(rows) {
-                if (!Array.isArray(rows) || rows.length === 0) {
-                    rowsContainer.innerHTML = `
-                        <tr>
-                            <td colspan="2">${options.emptyMessage}</td>
-                        </tr>
-                    `;
-                    return;
-                }
-
-                rowsContainer.innerHTML = rows.map((row) => `
-                    <tr>
-                        <td class="diagnostic-message-cell">${escapeHtml(row.ERROR_MESSAGE || "(Sem mensagem)")}</td>
-                        <td class="diagnostic-count-col">${escapeHtml(row.ERROR_COUNT || 0)}</td>
-                    </tr>
-                `).join("");
-            }
-
-            panel.addEventListener("toggle", async () => {
-                if (!panel.open || loaded || loading) {
-                    return;
-                }
-
-                loading = true;
-                setMeta("Carregando...");
-                rowsContainer.innerHTML = `
-                    <tr>
-                        <td colspan="2">${options.loadingMessage}</td>
-                    </tr>
-                `;
-
-                try {
-                    const response = await fetch(options.url);
-                    const payload = await response.json();
-                    buildRows(payload.rows || []);
-                    setMeta(`${payload.error_group_count || 0} tipos / ${payload.error_total_occurrences || 0} ocorrências`);
-                    loaded = true;
-                } catch (error) {
-                    rowsContainer.innerHTML = `
-                        <tr>
-                            <td colspan="2">${options.failureMessage}</td>
-                        </tr>
-                    `;
-                    setMeta("Falha ao carregar");
-                } finally {
-                    loading = false;
-                }
-            });
-        }
-
-        bindDiagnosticPanel(processingPanel, {
-            metaSelector: "[data-host-error-meta]",
-            rowsSelector: "[data-host-error-rows]",
-            url: "/api/host/{{ stats.ID_HOST }}/processing-errors",
-            emptyMessage: "Nenhum erro de processamento agrupado para esta estação.",
-            loadingMessage: "Carregando erros agrupados desta estação...",
-            failureMessage: "Nao foi possivel carregar os erros agrupados agora."
-        });
-
-        bindDiagnosticPanel(backupPanel, {
-            metaSelector: "[data-host-backup-error-meta]",
-            rowsSelector: "[data-host-backup-error-rows]",
-            url: "/api/host/{{ stats.ID_HOST }}/backup-errors",
-            emptyMessage: "Nenhum erro de backup agrupado para esta estação.",
-            loadingMessage: "Carregando erros agrupados de backup desta estação...",
-            failureMessage: "Nao foi possivel carregar os erros agrupados de backup agora."
-        });
-
-        loadLocationHistory();
-    })();
-</script>
-{% endif %}
-
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/host_page.js', v='20260415-host-page-extraction') }}"></script>
 {% endblock %}

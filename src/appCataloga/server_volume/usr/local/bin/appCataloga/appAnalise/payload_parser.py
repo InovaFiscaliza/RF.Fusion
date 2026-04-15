@@ -21,6 +21,102 @@ import config as k
 from shared import errors
 
 
+RFEYE_CANONICAL_RE = re.compile(r"(rfeye\d{6})", re.IGNORECASE)
+CWSM_SHORT_RE = re.compile(r"^cwsm(\d{6})$", re.IGNORECASE)
+CWSM_LONG_RE = re.compile(r"^cwsm(\d{8})$", re.IGNORECASE)
+CWSM_SHORT_TO_LONG_PREFIX = {
+    "211": "2110",
+    "212": "2112",
+    "220": "2201",
+}
+CWSM_SHORT_TO_LONG_OVERRIDES = {
+    # Legacy host naming diverges from the canonical receiver emitted by the
+    # processing chain for this fixed station.
+    "211007": "22010007",
+}
+
+
+def _normalize_equipment_text(value: Any) -> str:
+    """
+    Normalize one candidate equipment/host label for matching.
+    """
+    if value is None:
+        return ""
+
+    return str(value).strip().lower()
+
+
+def _canonicalize_single_equipment_identifier(value: Any) -> str | None:
+    """
+    Resolve one raw identifier into the canonical RFDATA equipment key.
+
+    RFeye identifiers already expose a stable 1:1 key inside longer receiver
+    strings. CelPlan/CWSM identifiers can surface in two operational forms:
+        - short host form: `CWSM211005`
+        - long receiver form: `cwsm21100005`
+
+    The FACT layer should persist the long receiver form whenever the family is
+    known. Malformed CWSM values return `None` so the caller can fall back to a
+    more trustworthy host-level identifier instead of persisting garbage.
+    """
+    normalized = _normalize_equipment_text(value)
+
+    if not normalized or normalized in AppAnalisePayloadParser.INVALID_HOSTNAME_VALUES:
+        return None
+
+    rfeye_match = RFEYE_CANONICAL_RE.search(normalized)
+    if rfeye_match:
+        return rfeye_match.group(1).lower()
+
+    if not normalized.startswith("cwsm"):
+        return normalized
+
+    long_match = CWSM_LONG_RE.fullmatch(normalized)
+    if long_match:
+        return normalized
+
+    short_match = CWSM_SHORT_RE.fullmatch(normalized)
+    if not short_match:
+        return None
+
+    digits = short_match.group(1)
+    override = CWSM_SHORT_TO_LONG_OVERRIDES.get(digits)
+    if override:
+        return f"cwsm{override}"
+
+    family_prefix = CWSM_SHORT_TO_LONG_PREFIX.get(digits[:3])
+    if not family_prefix:
+        return None
+
+    station_suffix = f"{int(digits[-3:]):04d}"
+    return f"cwsm{family_prefix}{station_suffix}"
+
+
+def canonicalize_equipment_identifier(
+    raw_value: Any,
+    *,
+    fallback_hostname: Any = None,
+) -> str:
+    """
+    Return the canonical equipment identifier used by RFDATA persistence.
+
+    The per-spectrum receiver from appAnalise has priority. If that value is
+    malformed for a known family, the worker may safely fall back to the host
+    identifier already trusted by the orchestration layer.
+    """
+    primary = _canonicalize_single_equipment_identifier(raw_value)
+    if primary:
+        return primary
+
+    fallback = _canonicalize_single_equipment_identifier(fallback_hostname)
+    if fallback:
+        return fallback
+
+    raise errors.BinValidationError(
+        "Unable to resolve canonical equipment identifier"
+    )
+
+
 class AppAnalisePayloadParser:
     """
     Validate, normalize, and materialize appAnalise response payloads.
@@ -42,7 +138,10 @@ class AppAnalisePayloadParser:
         "cannotfindfile",
         "pathnotfound",
     )
-    RFEYE_CANONICAL_RE = re.compile(r"(rfeye\d{6})", re.IGNORECASE)
+    READ_TIMEOUT_SNIPPETS = (
+        "filereadhandler:readtimeout",
+        "readtimeout",
+    )
     GPS_SENTINEL_VALUE = -1
 
     @staticmethod
@@ -287,12 +386,21 @@ class AppAnalisePayloadParser:
             )
 
         resolved = raw_hostname.strip()
-        match = self.RFEYE_CANONICAL_RE.search(resolved)
+        match = RFEYE_CANONICAL_RE.search(resolved)
 
         # RFeye receivers often arrive with longer descriptive strings. Reduce
         # them to the stable equipment key already used across RF.Fusion.
         if match:
             resolved = match.group(1).lower()
+        elif resolved.strip().lower().startswith("cwsm"):
+            # Keep the payload-level hostname summary aligned with the
+            # canonical CelPlan receiver form whenever the identifier is valid.
+            # Malformed CWSM values are left untouched here so later worker
+            # logic can fall back to the trusted host-side identifier instead
+            # of discarding the whole payload prematurely.
+            canonical = _canonicalize_single_equipment_identifier(resolved)
+            if canonical:
+                resolved = canonical
 
         return resolved
 
@@ -472,6 +580,13 @@ class AppAnalisePayloadParser:
         """
         Classify string errors returned in `Answer`.
         """
+        normalized_error = str(answer_error).strip().lower()
+
+        if any(snippet in normalized_error for snippet in self.READ_TIMEOUT_SNIPPETS):
+            raise errors.AppAnaliseReadTimeoutError(
+                f"APP_ANALISE returned FileRead timeout: {answer_error}"
+            )
+
         if self._is_missing_source_file_error(answer_error):
             # When appAnalise says "file not found" but the source file still
             # exists locally, the most likely problem is service visibility or

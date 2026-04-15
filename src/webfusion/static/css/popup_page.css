@@ -1,0 +1,19 @@
+body {
+    font-family: Arial;
+    margin: 20px;
+}
+
+label {
+    display: block;
+    margin-top: 10px;
+}
+
+fieldset {
+    margin-top: 15px;
+    padding: 10px;
+}
+
+pre {
+    background: #f4f4f4;
+    padding: 10px;
+}

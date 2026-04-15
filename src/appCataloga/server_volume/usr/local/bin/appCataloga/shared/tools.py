@@ -80,6 +80,7 @@ def compose_message(
         k.FILE_TASK_PROCESS_TYPE: "Processing",
     }
     status_map = {
+        k.TASK_FROZEN: "Frozen",
         k.TASK_PENDING: "Pending",
         k.TASK_DONE: "Done",
         k.TASK_RUNNING: "Running",

@@ -1,432 +1,45 @@
 {% extends "base.html" %}
-{% block title %}Criar Task{% endblock %}
+{% block title %}Criar Tarefa{% endblock %}
 
 {% block breadcrumb %}
 
 <div class="breadcrumb">
-    <a href="{{ url_for('index') }}">Início</a>
+    <a href="{{ url_for('index') }}">Consulta</a>
     <span class="breadcrumb-separator">›</span>
-    <span>Task</span>
+    <span>Tarefas</span>
 </div>
 {% endblock %}
 
 {% block extra_css %}
-
-<style>
-    html,
-    body {
-        overflow-y: auto !important;
-    }
-
-    body .layout.layout-top.fixed-header {
-        overflow: visible !important;
-    }
-
-    body .main-content {
-        overflow: visible !important;
-    }
-
-    .card {
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
-    }
-
-    .task-builder-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 20px;
-        align-items: end;
-    }
-
-    .task-builder-field {
-        min-width: 0;
-    }
-
-    label {
-        display: block;
-        margin-bottom: 6px;
-        font-weight: 600;
-    }
-
-    .form-control {
-        width: 100%;
-        height: 38px;
-        padding: 8px 12px;
-        box-sizing: border-box;
-        border-radius: 8px;
-    }
-
-    .section-title {
-        font-weight: 600;
-        margin-top: 28px;
-        margin-bottom: 16px;
-        border-bottom: 1px solid #e5e7eb;
-        padding-bottom: 6px;
-        font-size: 15px;
-    }
-
-    .select-shell {
-        position: relative;
-    }
-
-    .select-shell::after {
-        content: "";
-        position: absolute;
-        top: 50%;
-        right: 14px;
-        width: 8px;
-        height: 8px;
-        border-right: 2px solid #475569;
-        border-bottom: 2px solid #475569;
-        transform: translateY(-65%) rotate(45deg);
-        pointer-events: none;
-    }
-
-    .select-shell .form-control {
-        appearance: none;
-        -webkit-appearance: none;
-        -moz-appearance: none;
-        padding-right: 40px;
-    }
-
-    .online-filter {
-        display: flex;
-        align-items: center;
-        min-height: 38px;
-        padding: 0 12px;
-        border-radius: 8px;
-        border: 1px solid #cbd5e1;
-        background: #ffffff;
-    }
-
-    .online-filter label {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        cursor: pointer;
-        font-weight: 500;
-        margin: 0;
-    }
-
-    .filter-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 18px 20px;
-        max-width: 980px;
-    }
-
-    .filter-base-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 18px 20px;
-        max-width: 980px;
-        align-items: end;
-    }
-
-    .filter-mode-shell {
-        margin-top: 18px;
-        border: 1px solid #e2e8f0;
-        border-radius: 12px;
-        background: #f8fafc;
-        padding: 18px;
-        min-height: 138px;
-    }
-
-    .filter-mode-title {
-        margin: 0 0 6px;
-        font-size: 14px;
-        font-weight: 700;
-        color: #0f172a;
-    }
-
-    .filter-mode-note {
-        margin: 0 0 16px;
-        font-size: 12px;
-        color: #64748b;
-        line-height: 1.4;
-    }
-
-    .filter-mode-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 18px 20px;
-        align-items: end;
-    }
-
-    .task-builder-field-full {
-        grid-column: 1 / -1;
-    }
-
-    .task-builder-stack {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-    }
-
-    .collective-host-search {
-        width: 100%;
-        height: 38px;
-        padding: 8px 12px;
-        box-sizing: border-box;
-        border-radius: 8px;
-    }
-
-    .collective-host-picker {
-        height: 220px;
-        max-height: 220px;
-        padding: 8px 10px;
-    }
-
-    .field-help {
-        font-size: 12px;
-        color: #64748b;
-        line-height: 1.4;
-    }
-
-    .task-builder-actions {
-        margin-top: 28px;
-    }
-
-    .task-intent-shell {
-        margin-top: 18px;
-        border: 1px solid #dbe4f0;
-        border-radius: 12px;
-        background: #f8fafc;
-        padding: 16px 18px;
-    }
-
-    .task-intent-title {
-        margin: 0 0 6px;
-        font-size: 13px;
-        font-weight: 700;
-        color: #0f172a;
-    }
-
-    .task-intent-note {
-        margin: 0;
-        font-size: 13px;
-        line-height: 1.5;
-        color: #475569;
-    }
-
-    .execution-config-shell {
-        margin-top: 20px;
-        border: 1px solid #e2e8f0;
-        border-radius: 12px;
-        background: #f8fafc;
-        padding: 18px;
-    }
-
-    .execution-panel[hidden] {
-        display: none !important;
-    }
-
-    .execution-panel-title {
-        margin: 0 0 6px;
-        font-size: 14px;
-        font-weight: 700;
-        color: #0f172a;
-    }
-
-    .execution-panel-note {
-        margin: 0 0 16px;
-        font-size: 12px;
-        color: #64748b;
-        line-height: 1.4;
-    }
-
-    .execution-config-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 18px 20px;
-        align-items: end;
-    }
-
-    .station-profile-shell {
-        margin-top: 18px;
-        border: 1px solid #e2e8f0;
-        border-radius: 12px;
-        background: #f8fafc;
-        padding: 18px;
-    }
-
-    .station-profile-title {
-        margin: 0 0 6px;
-        font-size: 14px;
-        font-weight: 700;
-        color: #0f172a;
-    }
-
-    .station-profile-note {
-        margin: 0 0 16px;
-        font-size: 12px;
-        color: #64748b;
-        line-height: 1.4;
-    }
-
-    .station-profile-row {
-        display: grid;
-        grid-template-columns: minmax(120px, 180px) minmax(260px, 1fr) minmax(140px, 180px);
-        gap: 14px;
-        align-items: end;
-        padding: 12px 0;
-        border-top: 1px solid #e2e8f0;
-    }
-
-    .station-profile-row:first-of-type {
-        border-top: none;
-        padding-top: 0;
-    }
-
-    .station-profile-label {
-        font-size: 13px;
-        font-weight: 700;
-        color: #0f172a;
-    }
-
-    .station-profile-meta {
-        margin-top: 4px;
-        font-size: 12px;
-        color: #64748b;
-    }
-
-    .btn-primary-action {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 42px;
-        padding: 0 18px;
-        border-radius: 8px;
-        border: 1px solid #1f4f8b;
-        background: #1f4f8b;
-        color: #ffffff;
-        font-weight: 600;
-        cursor: pointer;
-        transition: background-color 0.2s ease, border-color 0.2s ease;
-    }
-
-    .btn-primary-action:hover {
-        background: #163a66;
-        border-color: #163a66;
-    }
-
-    .btn-secondary-action {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 42px;
-        padding: 0 18px;
-        border-radius: 8px;
-        border: 1px solid #cbd5e1;
-        background: #ffffff;
-        color: #0f172a;
-        font-weight: 600;
-        cursor: pointer;
-        transition: background-color 0.2s ease, border-color 0.2s ease;
-    }
-
-    .btn-secondary-action:hover {
-        background: #f8fafc;
-        border-color: #94a3b8;
-    }
-
-    .confirm-dialog {
-        width: min(560px, calc(100vw - 32px));
-        border: none;
-        border-radius: 14px;
-        padding: 0;
-        box-shadow: 0 20px 50px rgba(15, 23, 42, 0.24);
-    }
-
-    .confirm-dialog::backdrop {
-        background: rgba(15, 23, 42, 0.42);
-    }
-
-    .confirm-dialog-card {
-        padding: 22px;
-        background: #ffffff;
-    }
-
-    .confirm-dialog-title {
-        margin: 0 0 8px;
-        font-size: 18px;
-        font-weight: 700;
-        color: #0f172a;
-    }
-
-    .confirm-dialog-note {
-        margin: 0 0 18px;
-        font-size: 13px;
-        color: #475569;
-        line-height: 1.5;
-    }
-
-    .confirm-dialog-summary {
-        display: grid;
-        gap: 10px;
-        margin-bottom: 20px;
-    }
-
-    .confirm-dialog-row {
-        display: grid;
-        grid-template-columns: minmax(140px, 180px) 1fr;
-        gap: 12px;
-        align-items: start;
-        font-size: 13px;
-    }
-
-    .confirm-dialog-label {
-        font-weight: 700;
-        color: #334155;
-    }
-
-    .confirm-dialog-value {
-        color: #0f172a;
-        word-break: break-word;
-    }
-
-    .confirm-dialog-actions {
-        display: flex;
-        justify-content: flex-end;
-        gap: 10px;
-        flex-wrap: wrap;
-    }
-
-    /* Checkbox reset */
-
-    /* Force native checkbox rendering */
-
-    input[type="checkbox"] {
-        appearance: auto !important;
-        -webkit-appearance: checkbox !important;
-        display: inline-block !important;
-        position: static !important;
-        opacity: 1 !important;
-        visibility: visible !important;
-        width: 16px !important;
-        height: 16px !important;
-        margin: 0 !important;
-    }
-
-    [hidden] {
-        display: none !important;
-    }
-</style>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/task_builder_page.css', v='20260415-page-css-extraction') }}">
 
 {% endblock %}
 
 {% block content %}
 
-<h1 class="margin-bottom-l">Criar Nova Task</h1>
+{# `task_builder_page.js` reads a tiny amount of boot data from this root
+   element so the template can stay declarative while the browser script
+   handles dynamic toggles, defaults and confirmation flow. #}
+<div
+    id="task-builder-root"
+    data-stop-task-type="{{ stop_task_type }}"
+    data-selected-collective-host-ids='{{ selected_collective_host_ids|tojson }}'
+>
+
+<h1 class="margin-bottom-l">Criar Nova Tarefa</h1>
 
 <div class="card background-neutral-0 padding-l border-radius-m">
 
     <form method="post" id="task-builder-form">
 
-        <!-- ===================== TOP LINE ===================== -->
+        {# Top-line intent:
+           define what action will be created, whether it targets one station
+           or a collective scope, and whether the host list should be trimmed
+           to online stations only. These are the highest-level decisions of
+           the builder, so they intentionally come before any filter details. #}
 
         <div class="task-builder-grid">
 
-            <!-- Task Type -->
             <div class="task-builder-field">
                 <label>Ação</label>
                 <div class="select-shell">
@@ -440,7 +53,6 @@
                 </div>
             </div>
 
-            <!-- Execution Mode -->
             <div class="task-builder-field">
                 <label>Execução</label>
                 <div class="select-shell">
@@ -451,8 +63,10 @@
                 </div>
             </div>
 
-            <!-- Station Type (Collective only) -->
-            <!-- ONLINE filter -->
+            {# The online-only flag is shared by both execution modes. It acts
+               as an operational narrowing hint, not as a second execution
+               type, so it lives beside the top-line selectors instead of deep
+               inside one specific panel. #}
             <div class="task-builder-field" id="online-wrapper">
 
                 <label>&nbsp;</label>
@@ -463,10 +77,9 @@
                             type="checkbox"
                             name="online_only"
                             value="1"
-                            onchange="toggleOnlineOnlyFilter(this)"
                             {% if online_only %}checked{% endif %}
                         >
-                        Apenas Online
+                        Apenas online
                     </label>
                 </div>
 
@@ -474,18 +87,26 @@
 
         </div>
 
+        {# This intent card is updated by JS when the task type changes. It is
+           here to translate low-level task codes into human-facing language
+           before the user commits to a potentially expensive operation. #}
         <div class="task-intent-shell">
             <h2 class="task-intent-title" id="task-type-note-title">Fluxo normal de backup</h2>
             <p class="task-intent-note" id="task-type-note">
-                Cria a solicitacao normal de backup. A estacao passa por host check, discovery e, depois, o backlog elegivel entra na fila de backup.
+                Cria a solicitação normal de backup. A estação passa por verificação do host, descoberta e, depois, o backlog elegível entra na fila de backup.
             </p>
         </div>
 
+        {# Execution scope shell:
+           the user first chooses between individual and collective execution,
+           and only then sees the panel that explains/configures that scope.
+           The JS toggles visibility, but both panels stay rendered here so
+           the template remains the source of truth for the form structure. #}
         <div class="execution-config-shell">
             <div class="execution-panel" id="individual-config-panel" {% if selected_execution_type == "collective" %}hidden{% endif %}>
                 <h2 class="execution-panel-title">Escopo Individual</h2>
                 <p class="execution-panel-note">
-                    Selecione uma estação específica para receber a task.
+                    Selecione uma estação específica para receber a tarefa.
                 </p>
                 <div class="execution-config-grid">
                     <div class="task-builder-field" id="host-wrapper" {% if selected_execution_type == "collective" %}hidden{% endif %}>
@@ -496,6 +117,7 @@
                                 <option
                                     value="{{ h.ID_HOST }}"
                                     data-host-name="{{ h.NA_HOST_NAME }}"
+                                    data-last-discovery="{{ h.DT_LAST_DISCOVERY or '' }}"
                                     {% if h.ID_HOST|string == selected_host %}selected{% endif %}
                                 >
                                     {{ h.NA_HOST_NAME }}
@@ -507,6 +129,10 @@
                 </div>
             </div>
 
+            {# Collective execution starts broad and then becomes more precise:
+               first by family/prefix, then optionally by an explicit subset of
+               hosts. This mirrors the operational workflow of "target a group,
+               then refine only if necessary". #}
             <div class="execution-panel" id="collective-config-panel" {% if selected_execution_type != "collective" %}hidden{% endif %}>
                 <h2 class="execution-panel-title">Escopo Coletivo</h2>
                 <p class="execution-panel-note">
@@ -533,7 +159,7 @@
                         id="collective-hosts-wrapper"
                         {% if selected_execution_type != "collective" %}hidden{% endif %}
                     >
-                        <label>Hosts Específicos</label>
+                        <label>Hosts específicos</label>
                         <div class="task-builder-stack">
                             <input
                                 type="text"
@@ -550,7 +176,7 @@
                                 multiple
                             ></select>
                             <div class="field-help">
-                                Opcional. Se nada for selecionado, a task será criada para todos os hosts do filtro acima.
+                                Opcional. Se nada for selecionado, a tarefa será criada para todos os hosts do filtro acima.
                                 Use Ctrl/Cmd para selecionar múltiplos hosts.
                             </div>
                         </div>
@@ -558,6 +184,10 @@
                 </div>
             </div>
 
+            {# Family-specific discovery defaults only matter in the special
+               collective-all scenario, because in that mode one single filter
+               form fans out into multiple station families with different path
+               and extension conventions. #}
             <div
                 class="station-profile-shell"
                 id="station-profiles-panel"
@@ -602,7 +232,11 @@
 
         <hr class="margin-y-l">
 
-        <!-- ===================== FILTER SECTION ===================== -->
+        {# Filter section:
+           this area describes *how* the selected action will search, discover
+           or promote files after the execution scope is already defined. The
+           base fields stay visible, while the mode-specific shell below is
+           progressively adapted by JS. #}
 
         <div id="filter-section">
 
@@ -611,59 +245,107 @@
             <div class="filter-base-grid">
 
                 <div class="task-builder-field">
-                    <label>Mode</label>
+                    <label>Modo</label>
                     <div class="select-shell">
                         <select name="mode" class="form-control">
-                            <option value="NONE" {% if selected_mode == "NONE" %}selected{% endif %}>NONE</option>
-                            <option value="ALL" {% if selected_mode == "ALL" %}selected{% endif %}>ALL</option>
-                            <option value="REDISCOVERY" {% if selected_mode == "REDISCOVERY" %}selected{% endif %}>REDISCOVERY</option>
-                            <option value="RANGE" {% if selected_mode == "RANGE" %}selected{% endif %}>RANGE</option>
-                            <option value="LAST" {% if selected_mode == "LAST" %}selected{% endif %}>LAST</option>
-                            <option value="FILE" {% if selected_mode == "FILE" %}selected{% endif %}>FILE</option>
+                            <option
+                                value="NONE"
+                                {% if selected_mode == "NONE" %}selected{% endif %}
+                                {% if selected_task_type == stop_task_type|string %}hidden disabled{% endif %}
+                            >Descoberta</option>
+                            <option value="ALL" {% if selected_mode == "ALL" %}selected{% endif %}>Todos os arquivos</option>
+                            <option
+                                value="REDISCOVERY"
+                                {% if selected_mode == "REDISCOVERY" %}selected{% endif %}
+                                {% if selected_task_type == stop_task_type|string %}hidden disabled{% endif %}
+                            >Redescoberta</option>
+                            <option value="RANGE" {% if selected_mode == "RANGE" %}selected{% endif %}>Faixa por período</option>
+                            <option value="LAST" {% if selected_mode == "LAST" %}selected{% endif %}>Últimos arquivos</option>
+                            <option value="FILE" {% if selected_mode == "FILE" %}selected{% endif %}>Arquivo específico</option>
                         </select>
                     </div>
                 </div>
 
                 <div class="task-builder-field">
-                    <label>Extension</label>
+                    <label>Extensão</label>
                     <input type="text" name="extension" class="form-control" value="{{ selected_extension }}">
                 </div>
 
                 <div class="task-builder-field">
-                    <label>File Path</label>
+                    <label>Caminho</label>
                     <input type="text" name="file_path" value="{{ selected_file_path }}" class="form-control">
                 </div>
 
             </div>
 
+            {# Mode shell:
+               one stable container that lets the page explain the chosen mode,
+               reveal only the relevant fields, and preserve layout continuity
+               while the user switches between discovery/backlog strategies. #}
             <div class="filter-mode-shell" id="filter-mode-shell">
                 <h2 class="filter-mode-title" id="filter-mode-title">Parâmetros do modo</h2>
                 <p class="filter-mode-note" id="filter-mode-note">
                     Este modo não exige parâmetros adicionais.
                 </p>
 
+                {# `DT_LAST_DISCOVERY` is informational context only. It helps
+                   operators understand the semantic difference between
+                   Descoberta and Redescoberta, but must never become an
+                   editable control in the builder. #}
+                <div
+                    class="readonly-context-shell"
+                    id="last-discovery-shell"
+                    {% if selected_execution_type == "collective" or selected_mode not in ["NONE", "REDISCOVERY"] %}hidden{% endif %}
+                >
+                    <div class="readonly-context-label">Última descoberta registrada</div>
+                    <div class="readonly-context-value" id="last-discovery-value">
+                        {% if selected_host and hosts %}
+                            {% set ns = namespace(value='-') %}
+                            {% for h in hosts %}
+                                {% if h.ID_HOST|string == selected_host|string %}
+                                    {% set ns.value = h.DT_LAST_DISCOVERY or '-' %}
+                                {% endif %}
+                            {% endfor %}
+                            {{ ns.value }}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </div>
+                    <div class="readonly-context-note" id="last-discovery-note">
+                        No modo <strong>Descoberta</strong>, a descoberta continua a partir deste marco.
+                    </div>
+                </div>
+
+                {# Only the fields that materially affect the chosen mode stay
+                   visible at once. This avoids mixing mutually irrelevant
+                   controls such as period range, last-N and exact-file lookup
+                   in one crowded form. #}
                 <div class="filter-mode-grid">
                     <div class="task-builder-field" id="start-date-wrapper" {% if selected_mode != "RANGE" %}hidden{% endif %}>
-                        <label>Start Date</label>
+                        <label>Data inicial</label>
                         <input type="date" name="start_date" class="form-control" value="{{ selected_start_date }}">
                     </div>
 
                     <div class="task-builder-field" id="end-date-wrapper" {% if selected_mode != "RANGE" %}hidden{% endif %}>
-                        <label>End Date</label>
+                        <label>Data final</label>
                         <input type="date" name="end_date" class="form-control" value="{{ selected_end_date }}">
                     </div>
 
                     <div class="task-builder-field" id="last-n-wrapper" {% if selected_mode != "LAST" %}hidden{% endif %}>
-                        <label>Last N Files</label>
+                        <label>Últimos arquivos</label>
                         <input type="number" name="last_n_files" class="form-control" value="{{ selected_last_n_files }}">
                     </div>
 
                     <div class="task-builder-field" id="file-name-wrapper" {% if selected_mode != "FILE" %}hidden{% endif %}>
-                        <label>File Name</label>
+                        <label>Nome do arquivo</label>
                         <input type="text" name="file_name" class="form-control" value="{{ selected_file_name }}">
                     </div>
 
-                    <div class="task-builder-field">
+                    <div
+                        class="task-builder-field"
+                        id="max-total-wrapper"
+                        {% if selected_task_type == stop_task_type|string or selected_mode in ["NONE", "REDISCOVERY"] %}hidden{% endif %}
+                    >
                         <label>Limite Total (GB)</label>
                         <input
                             type="number"
@@ -672,16 +354,25 @@
                             min="0"
                             step="0.1"
                             value="{{ selected_max_total_gb }}"
+                            {% if selected_task_type == stop_task_type|string or selected_mode in ["NONE", "REDISCOVERY"] %}disabled{% endif %}
                         >
                         <div class="field-help">
                             Opcional. Na solicitação de backup, promove apenas o volume que couber neste teto.
                         </div>
                     </div>
 
-                    <div class="task-builder-field">
+                    <div
+                        class="task-builder-field"
+                        id="sort-order-wrapper"
+                        {% if selected_task_type == stop_task_type|string or selected_mode in ["NONE", "REDISCOVERY"] %}hidden{% endif %}
+                    >
                         <label>Prioridade</label>
                         <div class="select-shell">
-                            <select name="sort_order" class="form-control">
+                            <select
+                                name="sort_order"
+                                class="form-control"
+                                {% if selected_task_type == stop_task_type|string or selected_mode in ["NONE", "REDISCOVERY"] %}disabled{% endif %}
+                            >
                                 <option value="newest_first" {% if selected_sort_order == "newest_first" %}selected{% endif %}>Mais recentes primeiro</option>
                                 <option value="oldest_first" {% if selected_sort_order == "oldest_first" %}selected{% endif %}>Mais antigos primeiro</option>
                             </select>
@@ -695,21 +386,30 @@
 
         </div>
 
+        {# Submit actions stay outside the filter shell on purpose: clearing or
+           confirming the whole builder should feel like acting on the entire
+           draft task, not only on the last subsection currently visible. #}
         <div class="task-builder-actions">
-            <button type="submit" class="btn-primary-action" id="task-submit-button">Criar Task</button>
+            <a class="btn-secondary-action" href="{{ url_for('task.task_builder') }}">Limpar formulário</a>
+            <button type="submit" class="btn-primary-action" id="task-submit-button">Criar Tarefa</button>
         </div>
 
     </form>
 
+    {# Confirmation dialog:
+       this final pause is intentional because task creation can fan out into
+       multiple hosts and multiple operational stages. The JS populates the
+       summary from the live form values so the user reviews one compact
+       narrative before committing. #}
     <dialog id="task-confirm-dialog" class="confirm-dialog">
         <div class="confirm-dialog-card">
-            <h2 class="confirm-dialog-title">Confirmar criação da task</h2>
+            <h2 class="confirm-dialog-title">Confirmar criação da tarefa</h2>
             <p class="confirm-dialog-note">
-                Revise o resumo abaixo antes de enviar. Esta ação vai criar a task com os parâmetros atualmente preenchidos.
+                Revise o resumo abaixo antes de enviar. Esta ação vai criar a tarefa com os parâmetros atualmente preenchidos.
             </p>
             <div class="confirm-dialog-summary">
                 <div class="confirm-dialog-row">
-                    <div class="confirm-dialog-label">Tipo da task</div>
+                    <div class="confirm-dialog-label">Ação</div>
                     <div class="confirm-dialog-value" id="task-confirm-type">-</div>
                 </div>
                 <div class="confirm-dialog-row">
@@ -734,622 +434,10 @@
 
 </div>
 
-<script>
-    function toggleOnlineOnlyFilter(checkbox) {
-        const url = new URL(window.location.href);
-        const form = checkbox.closest("form");
-        url.search = "";
+</div>
 
-        if (!form) {
-            url.searchParams.set("online_only", checkbox.checked ? "1" : "0");
-            window.location.href = url.toString();
-            return;
-        }
+{% endblock %}
 
-        const formData = new FormData(form);
-        formData.set("online_only", checkbox.checked ? "1" : "0");
-
-        for (const [key, value] of formData.entries()) {
-            if (key === "collective_host_ids") {
-                continue;
-            }
-
-            if (value === null || value === undefined) {
-                continue;
-            }
-
-            const text = String(value).trim();
-            if (!text) {
-                continue;
-            }
-
-            url.searchParams.append(key, text);
-        }
-
-        if (window.taskBuilderSelectedCollectiveHostIds) {
-            window.taskBuilderSelectedCollectiveHostIds.forEach((hostId) => {
-                const text = String(hostId).trim();
-                if (text) {
-                    url.searchParams.append("collective_host_ids", text);
-                }
-            });
-        }
-
-        window.location.href = url.toString();
-    }
-
-    document.addEventListener("DOMContentLoaded", function () {
-
-        const taskType = document.querySelector("[name='task_type']");
-        const executionType = document.querySelector("[name='execution_type']");
-        const hostSelect = document.querySelector("[name='host_id']");
-        const hostFilterSelect = document.querySelector("[name='host_filter']");
-        const modeSelect = document.querySelector("[name='mode']");
-        const filePathInput = document.querySelector("[name='file_path']");
-        const extensionInput = document.querySelector("[name='extension']");
-        const collectiveHostsSelect = document.getElementById("collective-hosts-select");
-        const collectiveHostsWrapper = document.getElementById("collective-hosts-wrapper");
-        const collectiveHostSearch = document.getElementById("collective-host-search");
-        const submitButton = document.getElementById("task-submit-button");
-        const taskBuilderForm = document.getElementById("task-builder-form");
-        const confirmationDialog = document.getElementById("task-confirm-dialog");
-        const confirmationCancelButton = document.getElementById("task-confirm-cancel");
-        const confirmationSubmitButton = document.getElementById("task-confirm-submit");
-        const confirmationType = document.getElementById("task-confirm-type");
-        const confirmationExecution = document.getElementById("task-confirm-execution");
-        const confirmationScope = document.getElementById("task-confirm-scope");
-        const confirmationFilter = document.getElementById("task-confirm-filter");
-        const taskTypeNoteTitle = document.getElementById("task-type-note-title");
-        const taskTypeNote = document.getElementById("task-type-note");
-
-        const filterSection = document.getElementById("filter-section");
-        const individualConfigPanel = document.getElementById("individual-config-panel");
-        const collectiveConfigPanel = document.getElementById("collective-config-panel");
-        const stationProfilesPanel = document.getElementById("station-profiles-panel");
-        const hostWrapper = document.getElementById("host-wrapper");
-        const stationTypeWrapper = document.getElementById("station-type-wrapper");
-
-        const filterModeTitle = document.getElementById("filter-mode-title");
-        const filterModeNote = document.getElementById("filter-mode-note");
-        const startWrapper = document.getElementById("start-date-wrapper");
-        const endWrapper = document.getElementById("end-date-wrapper");
-        const lastNWrapper = document.getElementById("last-n-wrapper");
-        const fileNameWrapper = document.getElementById("file-name-wrapper");
-
-        const fileOption = modeSelect.querySelector("option[value='FILE']");
-        const defaultFilePath = "/mnt/internal/data";
-        const cwsmFilePath = "C:/CelPlan/CellWireless RU/Spectrum/Completed";
-        const defaultExtension = ".bin";
-        const cwsmExtension = ".zip";
-        const selectedCollectiveHostIds = new Set({{ selected_collective_host_ids|tojson }});
-        window.taskBuilderSelectedCollectiveHostIds = selectedCollectiveHostIds;
-        const filterModeMeta = {
-            NONE: {
-                title: "Sem parâmetros adicionais",
-                note: "Este modo não exige filtros complementares."
-            },
-            ALL: {
-                title: "Cobertura completa",
-                note: "A task será criada sobre o conjunto completo dentro do caminho e extensão informados."
-            },
-            REDISCOVERY: {
-                title: "Redescoberta",
-                note: "Reexecuta a descoberta sem exigir parâmetros extras além dos campos-base."
-            },
-            RANGE: {
-                title: "Janela por período",
-                note: "Defina a data inicial e a data final para limitar os arquivos considerados."
-            },
-            LAST: {
-                title: "Recorte pelos últimos arquivos",
-                note: "Informe quantos arquivos mais recentes devem entrar na task."
-            },
-            FILE: {
-                title: "Arquivo específico",
-                note: "Informe o nome exato do arquivo dentro do caminho base selecionado."
-            }
-        };
-        const hostCatalog = [
-            {% for h in hosts %}
-            {
-                id: "{{ h.ID_HOST }}",
-                name: {{ h.NA_HOST_NAME|tojson }}
-            }{% if not loop.last %},{% endif %}
-            {% endfor %}
-        ];
-        let submitConfirmed = false;
-
-        function extractHostPrefix(hostName) {
-            const match = String(hostName || "").trim().match(/^[A-Za-z]+/);
-            return match ? match[0].toUpperCase() : "";
-        }
-
-        function syncCollectiveSelectionState() {
-            if (!collectiveHostsSelect) {
-                return;
-            }
-
-            const visibleIds = Array.from(collectiveHostsSelect.options).map((option) => option.value);
-            visibleIds.forEach((id) => selectedCollectiveHostIds.delete(id));
-
-            Array.from(collectiveHostsSelect.selectedOptions).forEach((option) => {
-                selectedCollectiveHostIds.add(option.value);
-            });
-        }
-
-        function renderCollectiveHosts() {
-
-            if (!collectiveHostsSelect) {
-                return;
-            }
-
-            syncCollectiveSelectionState();
-
-            const selectedPrefix = hostFilterSelect ? hostFilterSelect.value : "ALL";
-            const searchTerm = String(collectiveHostSearch ? collectiveHostSearch.value : "").trim().toLowerCase();
-
-            const filteredHosts = hostCatalog.filter((host) => {
-                if (selectedPrefix !== "ALL" && extractHostPrefix(host.name) !== selectedPrefix.toUpperCase()) {
-                    return false;
-                }
-
-                if (searchTerm && !host.name.toLowerCase().includes(searchTerm)) {
-                    return false;
-                }
-
-                return true;
-            });
-
-            collectiveHostsSelect.innerHTML = "";
-
-            filteredHosts.forEach((host) => {
-                const option = document.createElement("option");
-                option.value = host.id;
-                option.textContent = host.name;
-                option.selected = selectedCollectiveHostIds.has(host.id);
-                collectiveHostsSelect.appendChild(option);
-            });
-        }
-
-        function currentSelectionProfile() {
-
-            if (executionType.value === "collective") {
-                const selectedHosts = hostCatalog.filter((host) =>
-                    selectedCollectiveHostIds.has(host.id)
-                );
-
-                if (selectedHosts.length > 0) {
-                    const prefixes = new Set(
-                        selectedHosts
-                            .map((host) => extractHostPrefix(host.name))
-                            .filter(Boolean)
-                    );
-
-                    if (prefixes.size === 1 && prefixes.has("CWSM")) {
-                        return "cwsm";
-                    }
-
-                    if (prefixes.size <= 1) {
-                        return "default";
-                    }
-
-                    return "mixed";
-                }
-
-                if (hostFilterSelect && hostFilterSelect.value === "CWSM") {
-                    return "cwsm";
-                }
-
-                if (hostFilterSelect && hostFilterSelect.value !== "ALL") {
-                    return "default";
-                }
-
-                return "mixed";
-            }
-
-            const selected = hostSelect ? hostSelect.selectedOptions[0] : null;
-            const hostName = selected ? (selected.dataset.hostName || selected.textContent || "") : "";
-
-            return hostName.trim().toUpperCase().startsWith("CWSM") ? "cwsm" : "default";
-        }
-
-        function syncSuggestedFilePath() {
-
-            if (!filePathInput) {
-                return;
-            }
-
-            const selectionProfile = currentSelectionProfile();
-            const currentValue = (filePathInput.value || "").trim();
-            const followsDefaultMask = (
-                currentValue === "" ||
-                currentValue === defaultFilePath ||
-                currentValue === cwsmFilePath
-            );
-
-            if (!followsDefaultMask) {
-                return;
-            }
-
-            if (selectionProfile === "mixed") {
-                filePathInput.value = "";
-                return;
-            }
-
-            filePathInput.value = selectionProfile === "cwsm" ? cwsmFilePath : defaultFilePath;
-        }
-
-        function syncSuggestedExtension() {
-
-            if (!extensionInput) {
-                return;
-            }
-
-            const selectionProfile = currentSelectionProfile();
-            const currentValue = (extensionInput.value || "").trim().toLowerCase();
-            const followsDefaultMask = (
-                currentValue === "" ||
-                currentValue === defaultExtension ||
-                currentValue === cwsmExtension
-            );
-
-            if (!followsDefaultMask) {
-                return;
-            }
-
-            if (selectionProfile === "mixed") {
-                extensionInput.value = "";
-                return;
-            }
-
-            extensionInput.value = selectionProfile === "cwsm" ? cwsmExtension : defaultExtension;
-        }
-
-        function updateSubmitButtonLabel() {
-            if (!submitButton) {
-                return;
-            }
-
-            submitButton.textContent = executionType.value === "collective"
-                ? "Criar Tasks"
-                : "Criar Task";
-        }
-
-        function toggleStationProfilesPanel() {
-            if (!stationProfilesPanel || !hostFilterSelect) {
-                return;
-            }
-
-            const showProfiles = executionType.value === "collective" && hostFilterSelect.value === "ALL";
-            stationProfilesPanel.hidden = !showProfiles;
-        }
-
-        function updateTaskTypeNote() {
-            if (!taskTypeNote) {
-                return;
-            }
-
-            const isStop = String(taskType.value) === "{{ stop_task_type }}";
-
-            if (isStop) {
-                if (taskTypeNoteTitle) {
-                    taskTypeNoteTitle.textContent = "Retirada da fila de backup";
-                }
-                taskTypeNote.textContent = "Retira da fila os arquivos que ainda estao em BACKUP/PENDING e os devolve para DISCOVERY/DONE dentro do filtro selecionado.";
-                return;
-            }
-
-            if (taskTypeNoteTitle) {
-                taskTypeNoteTitle.textContent = "Fluxo normal de backup";
-            }
-            taskTypeNote.textContent = "Cria a solicitacao normal de backup. A estacao passa por host check, discovery e, depois, o backlog elegivel entra na fila de backup.";
-        }
-
-        function buildFilterSummary() {
-            const parts = [];
-            const modeLabel = modeSelect.selectedOptions[0] ? modeSelect.selectedOptions[0].textContent.trim() : "NONE";
-            parts.push("Modo " + modeLabel);
-
-            const extensionValue = String(extensionInput ? extensionInput.value : "").trim();
-            if (extensionValue) {
-                parts.push("Extensão " + extensionValue);
-            }
-
-            const filePathValue = String(filePathInput ? filePathInput.value : "").trim();
-            if (filePathValue) {
-                parts.push("Caminho " + filePathValue);
-            }
-
-            if (modeSelect.value === "RANGE") {
-                const startDate = taskBuilderForm.elements.start_date ? String(taskBuilderForm.elements.start_date.value || "").trim() : "";
-                const endDate = taskBuilderForm.elements.end_date ? String(taskBuilderForm.elements.end_date.value || "").trim() : "";
-                if (startDate || endDate) {
-                    parts.push("Período " + (startDate || "...") + " até " + (endDate || "..."));
-                }
-            } else if (modeSelect.value === "LAST") {
-                const lastN = taskBuilderForm.elements.last_n_files ? String(taskBuilderForm.elements.last_n_files.value || "").trim() : "";
-                if (lastN) {
-                    parts.push("Últimos " + lastN + " arquivo(s)");
-                }
-            } else if (modeSelect.value === "FILE") {
-                const fileName = taskBuilderForm.elements.file_name ? String(taskBuilderForm.elements.file_name.value || "").trim() : "";
-                if (fileName) {
-                    parts.push("Arquivo " + fileName);
-                }
-            }
-
-            const maxTotalGb = taskBuilderForm.elements.max_total_gb ? String(taskBuilderForm.elements.max_total_gb.value || "").trim() : "";
-            if (maxTotalGb) {
-                parts.push("Limite " + maxTotalGb + " GB");
-
-                const sortOrder = taskBuilderForm.elements.sort_order
-                    ? String(taskBuilderForm.elements.sort_order.value || "").trim()
-                    : "newest_first";
-
-                if (sortOrder === "oldest_first") {
-                    parts.push("Prioridade mais antigos primeiro");
-                } else {
-                    parts.push("Prioridade mais recentes primeiro");
-                }
-            }
-
-            return parts.join(" | ");
-        }
-
-        function buildScopeSummary() {
-            if (executionType.value === "collective") {
-                const filterLabel = hostFilterSelect && hostFilterSelect.selectedOptions[0]
-                    ? hostFilterSelect.selectedOptions[0].textContent.trim()
-                    : "Todas";
-                const selectedCount = selectedCollectiveHostIds.size;
-
-                if (selectedCount > 0) {
-                    return "Filtro " + filterLabel + " com " + selectedCount + " host(s) selecionado(s) manualmente.";
-                }
-
-                return "Filtro " + filterLabel + " sem seleção manual de hosts.";
-            }
-
-            const selectedHost = hostSelect && hostSelect.selectedOptions[0]
-                ? hostSelect.selectedOptions[0].textContent.trim()
-                : "-";
-            return selectedHost;
-        }
-
-        function buildConfirmationSummaryText() {
-            const taskTypeLabel = taskType.selectedOptions[0] ? taskType.selectedOptions[0].textContent.trim() : "-";
-            const executionLabel = executionType.selectedOptions[0] ? executionType.selectedOptions[0].textContent.trim() : "-";
-            const scopeLabel = buildScopeSummary();
-            const filterLabel = buildFilterSummary();
-
-            return {
-                taskTypeLabel,
-                executionLabel,
-                scopeLabel,
-                filterLabel,
-                confirmMessage:
-                    "Tipo da task: " + taskTypeLabel + "\n" +
-                    "Execução: " + executionLabel + "\n" +
-                    "Escopo: " + scopeLabel + "\n" +
-                    "Filtro: " + filterLabel + "\n\n" +
-                    "Deseja criar esta task?"
-            };
-        }
-
-        function openTaskConfirmation() {
-            const summary = buildConfirmationSummaryText();
-
-            if (confirmationType) {
-                confirmationType.textContent = summary.taskTypeLabel;
-            }
-
-            if (confirmationExecution) {
-                confirmationExecution.textContent = summary.executionLabel;
-            }
-
-            if (confirmationScope) {
-                confirmationScope.textContent = summary.scopeLabel;
-            }
-
-            if (confirmationFilter) {
-                confirmationFilter.textContent = summary.filterLabel;
-            }
-
-            if (confirmationDialog && typeof confirmationDialog.showModal === "function") {
-                confirmationDialog.showModal();
-                return;
-            }
-
-            if (window.confirm(summary.confirmMessage)) {
-                submitConfirmed = true;
-                if (taskBuilderForm.requestSubmit) {
-                    taskBuilderForm.requestSubmit();
-                } else {
-                    taskBuilderForm.submit();
-                }
-            }
-        }
-
-        function setFieldVisibility(wrapper, visible) {
-            if (!wrapper) {
-                return;
-            }
-
-            wrapper.hidden = !visible;
-
-            const controls = wrapper.querySelectorAll("input, select, textarea");
-            controls.forEach((control) => {
-                control.disabled = !visible;
-            });
-        }
-
-        function toggleTaskType() {
-            if (filterSection) {
-                filterSection.style.display = "block";
-            }
-            updateTaskTypeNote();
-            updateSubmitButtonLabel();
-        }
-
-        function toggleExecution() {
-
-            const collective = executionType.value === "collective";
-
-            if (individualConfigPanel) {
-                individualConfigPanel.hidden = collective;
-            }
-
-            if (collectiveConfigPanel) {
-                collectiveConfigPanel.hidden = !collective;
-            }
-
-            hostWrapper.hidden = collective;
-            stationTypeWrapper.hidden = !collective;
-            collectiveHostsWrapper.hidden = !collective;
-
-            if (collective) {
-
-                fileOption.disabled = true;
-
-                if (modeSelect.value === "FILE") {
-                    modeSelect.value = "NONE";
-                }
-
-            } else {
-
-                fileOption.disabled = false;
-
-            }
-
-            toggleModeFields();
-            renderCollectiveHosts();
-            updateSubmitButtonLabel();
-            toggleStationProfilesPanel();
-            syncSuggestedFilePath();
-            syncSuggestedExtension();
-        }
-
-        function toggleModeFields() {
-
-            const modeMeta = filterModeMeta[modeSelect.value] || filterModeMeta.NONE;
-
-            if (filterModeTitle) {
-                filterModeTitle.textContent = modeMeta.title;
-            }
-
-            if (filterModeNote) {
-                filterModeNote.textContent = modeMeta.note;
-            }
-
-            if (taskType.value === "3" || taskType.value === "4") {
-                setFieldVisibility(startWrapper, false);
-                setFieldVisibility(endWrapper, false);
-                setFieldVisibility(lastNWrapper, false);
-                setFieldVisibility(fileNameWrapper, false);
-                return;
-            }
-
-            setFieldVisibility(startWrapper, false);
-            setFieldVisibility(endWrapper, false);
-            setFieldVisibility(lastNWrapper, false);
-            setFieldVisibility(fileNameWrapper, false);
-
-            switch (modeSelect.value) {
-
-                case "RANGE":
-                    setFieldVisibility(startWrapper, true);
-                    setFieldVisibility(endWrapper, true);
-                    break;
-
-                case "LAST":
-                    setFieldVisibility(lastNWrapper, true);
-                    break;
-
-                case "FILE":
-                    setFieldVisibility(fileNameWrapper, true);
-                    break;
-            }
-
-        }
-
-        taskType.addEventListener("change", toggleTaskType);
-        executionType.addEventListener("change", toggleExecution);
-        modeSelect.addEventListener("change", toggleModeFields);
-        if (hostSelect) {
-            hostSelect.addEventListener("change", function () {
-                syncSuggestedFilePath();
-                syncSuggestedExtension();
-            });
-        }
-        if (hostFilterSelect) {
-            hostFilterSelect.addEventListener("change", function () {
-                renderCollectiveHosts();
-                toggleStationProfilesPanel();
-                syncSuggestedFilePath();
-                syncSuggestedExtension();
-            });
-        }
-        if (collectiveHostSearch) {
-            collectiveHostSearch.addEventListener("input", renderCollectiveHosts);
-        }
-        if (collectiveHostsSelect) {
-            collectiveHostsSelect.addEventListener("change", function () {
-                syncCollectiveSelectionState();
-                syncSuggestedFilePath();
-                syncSuggestedExtension();
-            });
-        }
-
-        if (taskBuilderForm) {
-            taskBuilderForm.addEventListener("submit", function (event) {
-                if (submitConfirmed) {
-                    submitConfirmed = false;
-                    return;
-                }
-
-                event.preventDefault();
-                openTaskConfirmation();
-            });
-        }
-
-        if (confirmationCancelButton && confirmationDialog) {
-            confirmationCancelButton.addEventListener("click", function () {
-                confirmationDialog.close();
-            });
-        }
-
-        if (confirmationSubmitButton) {
-            confirmationSubmitButton.addEventListener("click", function () {
-                if (confirmationDialog) {
-                    confirmationDialog.close();
-                }
-
-                submitConfirmed = true;
-
-                if (taskBuilderForm) {
-                    if (window.showPageLoadingOverlay) {
-                        window.showPageLoadingOverlay("Criando task...");
-                    }
-
-                    if (taskBuilderForm.requestSubmit) {
-                        taskBuilderForm.requestSubmit();
-                    } else {
-                        taskBuilderForm.submit();
-                    }
-                }
-            });
-        }
-
-        toggleTaskType();
-        toggleExecution();
-        toggleModeFields();
-        renderCollectiveHosts();
-        updateSubmitButtonLabel();
-        toggleStationProfilesPanel();
-        syncSuggestedFilePath();
-        syncSuggestedExtension();
-
-    });
-</script>
-
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/task_builder_page.js', v='20260415-task-builder-extraction') }}"></script>
 {% endblock %}

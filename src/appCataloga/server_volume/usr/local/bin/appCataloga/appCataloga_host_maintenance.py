@@ -34,6 +34,15 @@ import config as k
 
 SERVICE_NAME = "appCataloga_host_maintenance"
 log = logging_utils.log()
+# The maintenance daemon is intentionally high-frequency. Reusing the normal
+# DB logger would emit one informational "HOST updated successfully" line for
+# almost every row touched by the sweep, which quickly drowns the higher-signal
+# transition and failure events. Keep DB warnings/errors, but mute routine
+# success entries for this daemon only.
+db_log = logging_utils.log(
+    SERVICE_NAME,
+    verbose={"log": False, "warning": True, "error": True},
+)
 process_status = {"running": True}
 
 
@@ -66,7 +75,7 @@ def main() -> None:
     last_host_cleanup = datetime.min
 
     try:
-        db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+        db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=db_log)
     except Exception as e:
         log.error(f"event=db_init_failed service={SERVICE_NAME} error={e}")
         sys.exit(1)

@@ -166,16 +166,47 @@ def handle_host_request(host: dict, err, db) -> tuple[int | None, dict]:
     host_filter = host["filter"]
 
     try:
+        host_status = db.host_read_status(host_id=host_id) or {"status": 0}
+    except Exception as exc:
+        err.capture(
+            "Failed to read HOST status",
+            stage="HOST_READ",
+            exc=exc,
+            host_id=host_id,
+        )
+        raise
+
+    if (
+        command == k.BACKUP_QUERY_TAG
+        and int(host_status.get("status", 0)) == 1
+        and bool(host_status.get("IS_OFFLINE"))
+    ):
+        err.capture(
+            "Backup request skipped because HOST is offline",
+            stage="HOST_STATUS",
+            host_id=host_id,
+        )
+        raise ValueError("HOST is offline")
+
+    try:
         # Phase 1: ensure the HOST row exists and is refreshed with the
         # connection details received from the client.
         log.event("host_upsert", host_id=host_id, host_uid=host["host_uid"])
+        host_upsert_data = {
+            "ID_HOST": host_id,
+            "NA_HOST_NAME": host["host_uid"],
+            "NA_HOST_ADDRESS": host["host_addr"],
+            "NA_HOST_PORT": host["host_port"],
+            "NA_HOST_USER": host["user"],
+            "NA_HOST_PASSWORD": host["password"],
+        }
+        if int(host_status.get("status", 0)) != 1:
+            # New hosts bootstrap online and then immediately prove their real
+            # state through the downstream CHECK worker.
+            host_upsert_data["IS_OFFLINE"] = False
+
         db.host_upsert(
-            ID_HOST=host_id,
-            NA_HOST_NAME=host["host_uid"],
-            NA_HOST_ADDRESS=host["host_addr"],
-            NA_HOST_PORT=host["host_port"],
-            NA_HOST_USER=host["user"],
-            NA_HOST_PASSWORD=host["password"],
+            **host_upsert_data,
         )
     except Exception as exc:
         err.capture(

@@ -163,9 +163,13 @@ class dbHandlerBKP(DBHandlerBase):
         """
         Create or refresh a `HOST` row with safe UPSERT semantics.
 
-        Default counters are applied only for newly inserted hosts. Explicit
-        caller values always win, so operational code can refresh access data
-        and counters in one call without losing initialization safety.
+        This helper is intentionally conservative: it writes only the columns
+        explicitly provided by the caller. Operational fields such as
+        `IS_OFFLINE` must not be reset implicitly during routine access-data
+        refreshes performed by the TCP entrypoint.
+
+        MariaDB schema defaults remain responsible for first-insert
+        initialization when the caller omits a column.
         """
 
         try:
@@ -182,17 +186,10 @@ class dbHandlerBKP(DBHandlerBase):
                 if key not in valid_fields:
                     raise ValueError(f"Invalid field '{key}' for HOST table.")
 
-            # ------------------------------------------------------------------
-            # Default initialization (only used if record is NEW)
-            # ------------------------------------------------------------------
-            defaults = {
-                "IS_OFFLINE": False,
-                "NU_HOST_CHECK_ERROR": 0,
-                "NU_HOST_FILES": 0
-            }
-
-            # Caller-provided values always override the initialization defaults.
-            data = {**defaults, **kwargs}
+            # The caller decides exactly which fields should be refreshed.
+            # This avoids resetting operational state like `IS_OFFLINE` every
+            # time a new request arrives for an existing host.
+            data = dict(kwargs)
 
             # ------------------------------------------------------------------
             # Perform UPSERT

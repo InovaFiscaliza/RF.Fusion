@@ -11,6 +11,8 @@ only a few small routes that are truly cross-module:
 
 import os
 import logging
+import threading
+import time
 
 from flask import Flask, request, render_template, jsonify
 from waitress import serve
@@ -18,14 +20,23 @@ from modules.spectrum.routes import spectrum_bp
 from modules.host.routes import host_bp
 from modules.server.routes import server_bp
 from modules.task.routes import task_bp
+from modules.host.service import (
+    get_server_backup_error_overview,
+    get_server_processing_error_overview,
+    get_server_summary_metrics,
+)
 from modules.map.service import (
     get_station_map_points,
     get_station_map_site_detail,
+    start_station_map_background_refresh,
 )
 
 
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
+_STARTUP_PREWARM_LOCK = threading.Lock()
+_STARTUP_PREWARM_STARTED = False
+SERVER_PREWARM_POLL_SECONDS = 30.0
 
 # ----------------------------------------------------------
 # Registro de Blueprints
@@ -36,6 +47,55 @@ app.register_blueprint(host_bp)
 app.register_blueprint(server_bp)
 app.register_blueprint(task_bp)
 
+
+def _prime_server_dashboard_caches():
+    """Warm heavy server-side dashboard caches when they are due."""
+
+    cache_loaders = [
+        ("server_summary_metrics", get_server_summary_metrics),
+        ("server_processing_error_overview", get_server_processing_error_overview),
+        ("server_backup_error_overview", get_server_backup_error_overview),
+    ]
+
+    for cache_name, loader in cache_loaders:
+        try:
+            loader()
+        except Exception:
+            app.logger.exception("failed_to_prewarm_%s", cache_name)
+
+
+def _startup_prewarm_worker():
+    """Warm the most expensive shared UI caches in the background."""
+
+    try:
+        start_station_map_background_refresh()
+    except Exception:
+        app.logger.exception("failed_to_start_station_map_background_refresh")
+
+    while True:
+        _prime_server_dashboard_caches()
+        time.sleep(SERVER_PREWARM_POLL_SECONDS)
+
+
+def start_background_prewarm_services():
+    """Start one per-process background warm-up worker."""
+
+    global _STARTUP_PREWARM_STARTED
+
+    with _STARTUP_PREWARM_LOCK:
+        if _STARTUP_PREWARM_STARTED:
+            return False
+
+        _STARTUP_PREWARM_STARTED = True
+
+    worker = threading.Thread(
+        target=_startup_prewarm_worker,
+        name="webfusion-startup-prewarm",
+        daemon=True,
+    )
+    worker.start()
+    return True
+
 @app.route("/")
 def index():
     """Render the landing page shell.
@@ -43,6 +103,7 @@ def index():
     The heavy station data is loaded asynchronously by the browser so the page
     can appear quickly even when the map data takes longer to prepare.
     """
+    start_background_prewarm_services()
     return render_template("index.html")
 
 
@@ -52,6 +113,7 @@ def map_stations():
     Return station-map points without blocking the landing page render.
     """
     try:
+        start_background_prewarm_services()
         return jsonify({"points": get_station_map_points()})
     except Exception:
         app.logger.exception("failed_to_build_station_map")
@@ -133,6 +195,7 @@ def health():
     return {"status": "ok"}
 
 if __name__ == "__main__":
+    start_background_prewarm_services()
     serve(
         app,
         host=os.getenv("WEBFUSION_HOST", "127.0.0.1"),

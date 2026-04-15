@@ -67,6 +67,16 @@ class ComposeMessageTests(unittest.TestCase):
             "Discovery Pending | path=/mnt/reposfi/tmp",
         )
 
+    def test_compose_message_supports_frozen_status(self) -> None:
+        self.assertEqual(
+            tools.compose_message(
+                task_type=k.FILE_TASK_PROCESS_TYPE,
+                task_status=k.TASK_FROZEN,
+                detail="manual review",
+            ),
+            "Processing Frozen | manual review",
+        )
+
 
 class ParsePsIsoTests(unittest.TestCase):
     def test_parse_ps_iso_truncates_ticks_and_timezone(self) -> None:

@@ -1,0 +1,454 @@
+.station-map-card {
+    overflow: visible;
+}
+
+/* -------------------------------------------------------------
+ * Station map shell and toolbar
+ * ------------------------------------------------------------- */
+.station-map-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 14px;
+}
+
+.station-map-toolbar {
+    display: grid;
+    grid-template-columns: minmax(160px, 210px) minmax(280px, 1fr) minmax(160px, 210px) auto auto;
+    gap: 14px;
+    margin-bottom: 16px;
+    align-items: end;
+    position: relative;
+    z-index: 700;
+}
+
+.station-map-filter {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* Native selects keep browser behavior, but get a small custom arrow so
+ * the map controls share one visual language with the custom combobox. */
+.station-map-select-wrap {
+    position: relative;
+}
+
+.station-map-select-wrap::after {
+    content: "";
+    position: absolute;
+    right: 14px;
+    top: 50%;
+    width: 10px;
+    height: 10px;
+    border-right: 2px solid #475569;
+    border-bottom: 2px solid #475569;
+    transform: translateY(-70%) rotate(45deg);
+    pointer-events: none;
+    opacity: 0.9;
+}
+
+.station-map-field-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.station-map-filter select {
+    width: 100%;
+    min-height: 42px;
+    border-radius: 10px;
+    padding: 0 40px 0 12px;
+    font-size: 13px;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    cursor: pointer;
+}
+
+.station-map-filter input[type="text"] {
+    width: 100%;
+    min-height: 42px;
+    border-radius: 10px;
+    padding: 0 12px;
+    font-size: 13px;
+    box-sizing: border-box;
+}
+
+/* The station control behaves like a searchable combobox backed by
+ * `index_map.js`, so the template provides only the shell and dropdown. */
+.station-map-combobox-wrap {
+    position: relative;
+    z-index: 750;
+}
+
+.station-map-combobox-wrap::after {
+    content: "";
+    position: absolute;
+    right: 14px;
+    top: 50%;
+    width: 10px;
+    height: 10px;
+    border-right: 2px solid #475569;
+    border-bottom: 2px solid #475569;
+    transform: translateY(-70%) rotate(45deg);
+    pointer-events: none;
+    opacity: 0.9;
+}
+
+.station-map-combobox {
+    padding-right: 38px !important;
+}
+
+.station-map-combobox::placeholder {
+    color: #64748b;
+}
+
+.station-map-combobox-menu {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 900;
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid #cbd5e1;
+    border-radius: 12px;
+    background: #ffffff;
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+}
+
+.station-map-combobox-menu[hidden] {
+    display: none;
+}
+
+.station-map-combobox-option,
+.station-map-combobox-empty {
+    width: 100%;
+    display: block;
+    padding: 11px 12px;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    font-size: 13px;
+    color: #1e293b;
+}
+
+.station-map-combobox-option {
+    cursor: pointer;
+}
+
+.station-map-combobox-option:hover,
+.station-map-combobox-option.is-active {
+    background: #eff6ff;
+    color: #1d4ed8;
+}
+
+.station-map-combobox-empty {
+    color: #64748b;
+}
+
+.station-map-meta {
+    color: #64748b;
+    font-size: 13px;
+}
+
+/* The map background doubles as a lightweight loading/fallback state
+ * before Leaflet tiles finish painting. */
+#station-map {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    height: 68vh;
+    min-height: 460px;
+    border-radius: 12px;
+    border: 1px solid #dbe3ee;
+    background: linear-gradient(180deg, #f7fafc 0%, #eef4fb 100%);
+}
+
+/* The legend is intentionally simple because the marker-state semantics
+ * already live in JS. The container just needs a flexible shell here. */
+.map-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-top: 12px;
+    font-size: 12px;
+    color: #475569;
+}
+
+.map-legend[hidden] {
+    display: none;
+}
+
+.legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.legend-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(15, 23, 42, 0.18);
+    background: var(--marker-fill, #64748b);
+}
+
+.legend-swatch.is-historical {
+    background:
+        repeating-linear-gradient(
+            135deg,
+            rgba(255, 255, 255, 0) 0 4px,
+            var(--marker-stripe-color, rgba(255, 255, 255, 0.4)) 4px 7px
+        ),
+        var(--marker-fill, #64748b);
+}
+
+/* Marker icons are rendered as small HTML circles instead of Leaflet
+ * vector circles so we can encode "historical locality" with stripes
+ * without introducing a plugin dependency. */
+.station-map-marker-icon {
+    background: transparent !important;
+    border: 0 !important;
+}
+
+.station-map-marker {
+    position: relative;
+    display: block;
+    width: var(--marker-size, 16px);
+    height: var(--marker-size, 16px);
+    border-radius: 999px;
+    border: var(--marker-border-width, 2px) solid rgba(255, 255, 255, 0.94);
+    background: var(--marker-fill, #64748b);
+    box-shadow:
+        0 0 0 1px rgba(15, 23, 42, 0.1),
+        0 1px 3px rgba(15, 23, 42, var(--marker-shadow-opacity, 0.08));
+}
+
+.station-map-marker.is-historical {
+    background:
+        repeating-linear-gradient(
+            135deg,
+            rgba(255, 255, 255, 0) 0 4px,
+            var(--marker-stripe-color, rgba(255, 255, 255, 0.4)) 4px 7px
+        ),
+        var(--marker-fill, #64748b);
+}
+
+.station-map-marker.is-focus-zoom::before {
+    content: "";
+    position: absolute;
+    inset: calc(-1 * var(--marker-halo-width, 0px));
+    border-radius: 999px;
+    border: var(--marker-outline-width, 0px) solid rgba(15, 23, 42, 0.34);
+    box-shadow: 0 0 0 var(--marker-halo-width, 0px) rgba(255, 255, 255, 0.82);
+}
+
+.station-map-marker.is-focus-zoom::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: var(--marker-core-size, 0px);
+    height: var(--marker-core-size, 0px);
+    transform: translate(-50%, -50%);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.18);
+}
+
+#station-map .station-map-current-focus {
+    filter:
+        drop-shadow(0 0 0.8px rgba(15, 23, 42, 0.28))
+        drop-shadow(0 0 3px rgba(255, 255, 255, 0.82));
+}
+
+/* Custom SVG panes created in JS do not inherit Leaflet's default
+ * overlay-pane semantics automatically. Without this, the current-point
+ * SVG can behave like an invisible blanket above historical markers. */
+.wf-pane-current-points {
+    pointer-events: none;
+}
+
+.wf-pane-current-points svg,
+.wf-pane-historical-points svg {
+    pointer-events: none;
+}
+
+.wf-pane-current-points svg path.leaflet-interactive,
+.wf-pane-historical-points svg path.leaflet-interactive,
+.wf-pane-historical-points .leaflet-marker-icon,
+.wf-pane-historical-points .leaflet-marker-icon.leaflet-interactive,
+.wf-pane-historical-points .station-map-marker-icon,
+.wf-pane-historical-points .station-map-marker,
+.wf-pane-historical-points .station-map-marker.is-historical {
+    pointer-events: auto;
+}
+
+.wf-pane-current-points .leaflet-marker-icon,
+.wf-pane-current-points .leaflet-marker-icon.leaflet-interactive {
+    pointer-events: none;
+}
+
+/* -------------------------------------------------------------
+ * Popup content rendered by `index_map.js`
+ * ------------------------------------------------------------- */
+.station-popup {
+    min-width: 250px;
+}
+
+/* Popup repositioning is handled manually in JS because Leaflet auto-pan
+ * caused the map to scroll on hover near the top edge. */
+.station-popup-container {
+    transition: transform 0.12s ease-out;
+}
+
+.station-popup-title {
+    font-weight: 700;
+    font-size: 14px;
+    color: #0f172a;
+    margin-bottom: 6px;
+}
+
+.station-popup-meta {
+    font-size: 12px;
+    color: #475569;
+    margin-bottom: 10px;
+}
+
+.station-entry {
+    border-top: 1px solid #e2e8f0;
+    padding-top: 10px;
+    margin-top: 10px;
+}
+
+.station-entry:first-of-type {
+    border-top: 0;
+    padding-top: 0;
+    margin-top: 0;
+}
+
+.station-entry-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.station-entry-name {
+    font-weight: 600;
+    color: #1e293b;
+    font-size: 13px;
+}
+
+.station-entry-context {
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: #64748b;
+}
+
+.station-status {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.station-status-online {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.station-status-offline {
+    background: #ffedd5;
+    color: #9a3412;
+}
+
+.station-status-unknown {
+    background: #e2e8f0;
+    color: #475569;
+}
+
+.station-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.station-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 88px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: #eff6ff;
+    color: #1d4ed8;
+    border: 1px solid #bfdbfe;
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.station-action:hover {
+    background: #dbeafe;
+}
+
+/* -------------------------------------------------------------
+ * Module navigation cards
+ * ------------------------------------------------------------- */
+.module-card {
+    transition: 0.15s ease-in-out;
+    cursor: pointer;
+    height: 100%;
+}
+
+.module-link {
+    display: block;
+    height: 100%;
+    color: inherit;
+    text-decoration: none;
+}
+
+.module-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.06);
+}
+
+.module-icon {
+    font-size: 28px;
+}
+
+.module-description {
+    min-height: 40px;
+}
+
+.module-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 20px;
+    padding-left: 32px;
+    padding-right: 32px;
+    box-sizing: border-box;
+}
+
+/* On smaller screens the map controls stack vertically and the cards
+ * collapse to a single column to preserve tap targets. */
+@media (max-width: 880px) {
+    .station-map-toolbar {
+        grid-template-columns: 1fr;
+    }
+
+    .module-grid {
+        grid-template-columns: 1fr;
+        padding-left: 0;
+        padding-right: 0;
+    }
+}

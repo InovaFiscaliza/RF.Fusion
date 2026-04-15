@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -84,6 +85,19 @@ class DetectProtocolErrorTests(unittest.TestCase):
             self.parser.detect_protocol_error(payload)
 
         self.assertIn("APP_ANALISE returned error in Answer", str(ctx.exception))
+
+    def test_detect_protocol_error_raises_dedicated_timeout_error(self) -> None:
+        payload = {
+            "Request": {"type": "FileRead"},
+            "Answer": "handlers:FileReadHandler:ReadTimeout",
+        }
+
+        with self.assertRaises(
+            AppAnaliseErrors.AppAnaliseReadTimeoutError
+        ) as ctx:
+            self.parser.detect_protocol_error(payload)
+
+        self.assertIn("FileRead timeout", str(ctx.exception))
 
     def test_detect_protocol_error_retries_missing_file_when_source_still_exists(self) -> None:
         # If MATLAB says "FileNotFound" but the requested source file still
@@ -163,6 +177,34 @@ class DetectProtocolErrorTests(unittest.TestCase):
         self.assertIn("source file unavailable before request", str(ctx.exception))
         self.assertFalse(called["value"])
 
+    def test_build_request_payload_includes_configured_timeout_seconds(self) -> None:
+        with patch.object(
+            app_analise_module.k,
+            "APP_ANALISE_REQUEST_TIMEOUT_SECONDS",
+            540,
+        ):
+            payload = self.conn._build_request_payload("/tmp/example.bin", export=True)
+
+        self.assertEqual(payload["Request"]["timeoutSeconds"], 540)
+
+    def test_build_request_payload_clamps_timeout_below_socket_timeout(self) -> None:
+        with patch.object(
+            app_analise_module.k,
+            "APP_ANALISE_REQUEST_TIMEOUT_SECONDS",
+            600,
+        ):
+            with patch.object(
+                app_analise_module.k,
+                "APP_ANALISE_PROCESS_TIMEOUT",
+                600,
+            ):
+                payload = self.conn._build_request_payload(
+                    "/tmp/example.bin",
+                    export=False,
+                )
+
+        self.assertEqual(payload["Request"]["timeoutSeconds"], 599)
+
     def test_normalize_response_accepts_single_spectrum_dict(self) -> None:
         payload = {
             "Request": {"type": "FileRead"},
@@ -197,7 +239,7 @@ class DetectProtocolErrorTests(unittest.TestCase):
 
         result = self.parser.normalize_response(payload)
 
-        self.assertEqual(result["hostname"], "CWSM21100005")
+        self.assertEqual(result["hostname"], "cwsm21100005")
         self.assertEqual(len(result["spectrum"]), 1)
         self.assertEqual(result["spectrum"][0].trace_length, 720)
         self.assertFalse(result["spectrum"][0].site_data["is_mobile"])
@@ -320,8 +362,8 @@ class DetectProtocolErrorTests(unittest.TestCase):
 
         self.assertEqual(result["discarded_spectrum_count"], 1)
         self.assertEqual(len(result["spectrum"]), 1)
-        self.assertEqual(result["hostname"], "CWSM21100005")
-        self.assertEqual(result["hostnames"], ["CWSM21100005"])
+        self.assertEqual(result["hostname"], "cwsm21100005")
+        self.assertEqual(result["hostnames"], ["cwsm21100005"])
         self.assertEqual(result["gps"].latitude, -19.782451)
         self.assertEqual(
             result["spectrum"][0].metadata["antenna"]["Name"],
@@ -475,11 +517,11 @@ class DetectProtocolErrorTests(unittest.TestCase):
         self.assertEqual(
             result["hostnames"],
             [
-                "CWSM21100005",
+                "cwsm21100005",
                 "Keysight Technologies,N9936B,MY59221878,A.11.55",
             ],
         )
-        self.assertEqual(result["spectrum"][0].equipment_name, "CWSM21100005")
+        self.assertEqual(result["spectrum"][0].equipment_name, "cwsm21100005")
         self.assertEqual(
             result["spectrum"][1].equipment_name,
             "Keysight Technologies,N9936B,MY59221878,A.11.55",

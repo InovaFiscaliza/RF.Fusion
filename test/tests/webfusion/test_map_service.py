@@ -151,6 +151,133 @@ class TestMapService(unittest.TestCase):
         self.assertIsNotNone(host)
         self.assertEqual(host["host_id"], 404)
 
+    def test_classify_station_point_state_covers_all_status_and_location_cases(self):
+        online_host = {
+            "host_id": 11,
+            "host_name": "RFEye002129",
+            "is_offline": False,
+        }
+        offline_host = {
+            "host_id": 22,
+            "host_name": "RFEye002274",
+            "is_offline": True,
+        }
+
+        self.assertEqual(
+            self.module._classify_station_point_state(online_host, True),
+            self.module.POINT_STATE_ONLINE_CURRENT,
+        )
+        self.assertEqual(
+            self.module._classify_station_point_state(online_host, False),
+            self.module.POINT_STATE_ONLINE_PREVIOUS,
+        )
+        self.assertEqual(
+            self.module._classify_station_point_state(offline_host, True),
+            self.module.POINT_STATE_OFFLINE_CURRENT,
+        )
+        self.assertEqual(
+            self.module._classify_station_point_state(offline_host, False),
+            self.module.POINT_STATE_OFFLINE_PREVIOUS,
+        )
+        self.assertEqual(
+            self.module._classify_station_point_state(None, True),
+            self.module.POINT_STATE_NO_HOST,
+        )
+
+    def test_summarize_site_marker_state_prefers_current_online_marker(self):
+        stations = [
+            {"map_state": self.module.POINT_STATE_OFFLINE_PREVIOUS},
+            {"map_state": self.module.POINT_STATE_NO_HOST},
+            {"map_state": self.module.POINT_STATE_ONLINE_PREVIOUS},
+            {"map_state": self.module.POINT_STATE_ONLINE_CURRENT},
+        ]
+
+        self.assertEqual(
+            self.module._summarize_site_marker_state(stations),
+            self.module.POINT_STATE_ONLINE_CURRENT,
+        )
+
+    def test_sort_site_stations_keeps_highest_priority_states_first(self):
+        stations = [
+            {"map_state": self.module.POINT_STATE_OFFLINE_CURRENT, "host_name": "Zulu"},
+            {"map_state": self.module.POINT_STATE_ONLINE_PREVIOUS, "host_name": "Bravo"},
+            {"map_state": self.module.POINT_STATE_ONLINE_CURRENT, "host_name": "Alpha"},
+            {"map_state": self.module.POINT_STATE_NO_HOST, "equipment_name": "Charlie"},
+        ]
+
+        ordered = self.module._sort_site_stations(stations)
+
+        self.assertEqual(
+            [station["map_state"] for station in ordered],
+            [
+                self.module.POINT_STATE_ONLINE_CURRENT,
+                self.module.POINT_STATE_ONLINE_PREVIOUS,
+                self.module.POINT_STATE_OFFLINE_CURRENT,
+                self.module.POINT_STATE_NO_HOST,
+            ],
+        )
+
+    def test_get_station_map_points_returns_stale_cache_while_refresh_is_scheduled(self):
+        stale_points = [{"site_id": 10, "marker_state": self.module.POINT_STATE_OFFLINE_CURRENT}]
+        scheduled = []
+
+        original_points_cache = dict(self.module._MAP_POINTS_CACHE)
+        original_schedule = self.module._schedule_map_refresh_async
+        original_refresh = self.module._refresh_station_map_snapshot
+
+        self.module._MAP_POINTS_CACHE["value"] = stale_points
+        self.module._MAP_POINTS_CACHE["expires_at"] = 0.0
+        self.module._schedule_map_refresh_async = lambda force=False: scheduled.append(force) or True
+        self.module._refresh_station_map_snapshot = lambda: (_ for _ in ()).throw(
+            AssertionError("stale cache should avoid synchronous snapshot rebuild")
+        )
+
+        try:
+            result = self.module.get_station_map_points()
+        finally:
+            self.module._MAP_POINTS_CACHE.update(original_points_cache)
+            self.module._schedule_map_refresh_async = original_schedule
+            self.module._refresh_station_map_snapshot = original_refresh
+
+        self.assertEqual(result, stale_points)
+        self.assertEqual(scheduled, [False])
+
+    def test_get_station_map_site_detail_returns_stale_cache_while_refresh_is_scheduled(self):
+        stale_detail = {
+            "site_id": 77,
+            "stations": [],
+            "marker_state": self.module.POINT_STATE_NO_HOST,
+            "has_online_station": False,
+            "has_online_host": False,
+            "has_known_host": False,
+        }
+        scheduled = []
+
+        original_site_cache = dict(self.module._SITE_DETAILS_CACHE)
+        original_schedule = self.module._schedule_map_refresh_async
+        original_build = self.module._build_site_detail
+
+        self.module._SITE_DETAILS_CACHE.clear()
+        self.module._SITE_DETAILS_CACHE[77] = {
+            "expires_at": 0.0,
+            "value": stale_detail,
+        }
+        self.module._schedule_map_refresh_async = lambda force=False: scheduled.append(force) or True
+        self.module._build_site_detail = lambda site_id: (_ for _ in ()).throw(
+            AssertionError("stale site detail should avoid synchronous rebuild")
+        )
+
+        try:
+            result = self.module.get_station_map_site_detail(77)
+        finally:
+            self.module._SITE_DETAILS_CACHE.clear()
+            self.module._SITE_DETAILS_CACHE.update(original_site_cache)
+            self.module._schedule_map_refresh_async = original_schedule
+            self.module._build_site_detail = original_build
+
+        self.assertEqual(result, stale_detail)
+        self.assertEqual(scheduled, [False])
+
 
 if __name__ == "__main__":
     unittest.main()

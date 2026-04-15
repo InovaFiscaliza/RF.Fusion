@@ -849,28 +849,38 @@ class dbHandlerRFM(DBHandlerBase):
     
     def get_or_create_spectrum_equipment(
         self,
-        equipment_name: str
+        equipment_name: str,
+        *,
+        equipment_type_hint: str | None = None,
     ) -> int:
         """Insert or retrieve one row from `DIM_SPECTRUM_EQUIPMENT`.
 
         The payload may name different receivers even inside one processed
-        file. This helper keeps equipment identity per receiver string.
+        file. This helper keeps equipment identity and equipment-type inference
+        separate so hybrid station families can persist a stable operational
+        asset name while still classifying the embedded analyzer model.
         """
 
         if not isinstance(equipment_name, str) or not equipment_name.strip():
             raise ValueError("equipment_name must be a non-empty str")
 
         name = equipment_name.lower().strip()
+        type_source = (
+            equipment_type_hint.lower().strip()
+            if isinstance(equipment_type_hint, str) and equipment_type_hint.strip()
+            else name
+        )
         self._connect()
 
         try:
             # Equipment type is inferred from the normalized name using the
-            # type UID catalog, not from the operational host.
+            # type UID catalog. Hybrid stations may provide an explicit
+            # analyzer hint that differs from the persisted equipment name.
             equipment_types = self._get_equipment_types()
             eq_type = None
 
             for uid, meta in equipment_types.items():
-                if uid in name:
+                if uid in type_source:
                     eq_type = meta
                     break
 

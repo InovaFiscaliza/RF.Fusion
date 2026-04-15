@@ -1,208 +1,35 @@
 {% extends "base.html" %}
-{% block title %}Tasks Recentes{% endblock %}
+{% block title %}Tarefas Recentes{% endblock %}
 
 {% block extra_css %}
-<style>
-    .card {
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
-    }
-
-    .task-summary-backdrop {
-        position: fixed;
-        inset: 0;
-        background: rgba(15, 23, 42, 0.35);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 24px;
-        z-index: 999;
-    }
-
-    .task-summary-modal {
-        width: min(420px, 100%);
-        background: #ffffff;
-        border-radius: 14px;
-        padding: 22px 22px 18px;
-        box-shadow: 0 12px 36px rgba(15, 23, 42, 0.18);
-    }
-
-    .task-summary-title {
-        font-size: 16px;
-        font-weight: 700;
-        color: #0f172a;
-        margin-bottom: 10px;
-    }
-
-    .task-summary-text {
-        color: #475569;
-        font-size: 13px;
-        line-height: 1.5;
-        margin-bottom: 8px;
-    }
-
-    .task-summary-actions {
-        margin-top: 16px;
-        display: flex;
-        justify-content: flex-end;
-    }
-
-    .task-summary-close {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 40px;
-        padding: 0 16px;
-        border-radius: 8px;
-        border: 1px solid #1f4f8b;
-        background: #1f4f8b;
-        color: #ffffff;
-        font-weight: 600;
-        cursor: pointer;
-    }
-
-    .task-table-wrap {
-        max-height: 520px;
-        overflow-y: auto;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        background: #ffffff;
-    }
-
-    .task-list-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 16px;
-        flex-wrap: wrap;
-        margin-bottom: 18px;
-    }
-
-    .task-list-actions {
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-    }
-
-    .task-list-button {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 40px;
-        padding: 0 16px;
-        border-radius: 8px;
-        font-weight: 600;
-        text-decoration: none;
-        cursor: pointer;
-        transition: background-color 0.2s ease, border-color 0.2s ease;
-    }
-
-    .task-list-button-primary {
-        border: 1px solid #1f4f8b;
-        background: #1f4f8b;
-        color: #ffffff;
-    }
-
-    .task-list-button-primary:hover {
-        background: #163a66;
-        border-color: #163a66;
-        color: #ffffff;
-    }
-
-    .task-list-button-secondary {
-        border: 1px solid #cbd5e1;
-        background: #ffffff;
-        color: #0f172a;
-    }
-
-    .task-list-button-secondary:hover {
-        background: #f8fafc;
-        border-color: #94a3b8;
-        color: #0f172a;
-    }
-
-    .task-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 13px;
-    }
-
-    .task-table thead {
-        position: sticky;
-        top: 0;
-        background: #f8fafc;
-        z-index: 2;
-    }
-
-    .task-table th {
-        padding: 10px;
-        text-align: left;
-        font-size: 12px;
-        font-weight: 600;
-        border-bottom: 1px solid #e5e7eb;
-    }
-
-    .task-table td {
-        padding: 8px 10px;
-        vertical-align: top;
-    }
-
-    .task-table tbody tr {
-        border-bottom: 1px solid #e5e7eb;
-    }
-
-    .task-table tbody tr:hover {
-        background: #f8fafc;
-    }
-
-    .task-status {
-        font-weight: 600;
-    }
-
-    .task-status-pending {
-        color: #1d4ed8;
-    }
-
-    .task-status-running {
-        color: #b45309;
-    }
-
-    .task-status-error {
-        color: #b91c1c;
-    }
-
-    .task-message-cell {
-        max-width: 360px;
-        white-space: pre-wrap;
-        word-break: break-word;
-        line-height: 1.5;
-        color: #334155;
-    }
-</style>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/task_list_page.css', v='20260415-page-css-extraction') }}">
 {% endblock %}
 
 {% block breadcrumb %}
 <div class="breadcrumb">
     <a href="{{ url_for('index') }}">Início</a>
     <span class="breadcrumb-separator">›</span>
-    <span>Tasks</span>
+    <span>Tarefas</span>
 </div>
 {% endblock %}
 
 {% block content %}
 
-<h1 class="margin-bottom-l">Tasks Recentes</h1>
+<div id="task-list-page-root">
+
+<h1 class="margin-bottom-l">Tarefas Recentes</h1>
 
 <div class="card background-neutral-0 padding-l border-radius-m">
 
 <div class="task-list-header">
     <div>
-        <h1 class="margin-bottom-s">Tasks Recentes</h1>
-        <div class="task-summary-text" style="margin-bottom: 0;">
-            Acompanhe as HOST_TASKs mais recentes e, se quiser, volte direto para criar uma nova ação.
+        <h1 class="margin-bottom-s">Tarefas Recentes</h1>
+        <div class="task-summary-text is-compact">
+            Acompanhe as tarefas mais recentes e, se quiser, volte direto para criar uma nova ação.
         </div>
     </div>
     <div class="task-list-actions">
-        <a href="{{ url_for('task.task_builder') }}" class="task-list-button task-list-button-primary">Criar outra task</a>
+        <a href="{{ url_for('task.task_builder') }}" class="task-list-button task-list-button-primary">Criar outra tarefa</a>
         <a href="{{ url_for('index') }}" class="task-list-button task-list-button-secondary">Voltar ao início</a>
     </div>
 </div>
@@ -212,16 +39,16 @@
     <div class="task-summary-modal">
         <div class="task-summary-title">Resumo da criação</div>
         <div class="task-summary-text">
-            {{ queued_count or 0 }} task(s) criada(s) ou atualizada(s) para execução.
+            {{ queued_count or 0 }} tarefa(s) criada(s) ou atualizada(s) para execução.
         </div>
         {% if skipped_count %}
         <div class="task-summary-text">
-            {{ skipped_count }} task(s) já estavam pendentes ou em execução e foram mantidas como estavam.
+            {{ skipped_count }} tarefa(s) já estavam pendentes ou em execução e foram mantidas como estavam.
         </div>
         {% endif %}
         <div class="task-summary-actions">
-            <a href="{{ url_for('task.task_builder') }}" class="task-list-button task-list-button-secondary">Criar outra task</a>
-            <button type="button" class="task-summary-close" onclick="closeTaskSummary()">Ver lista</button>
+            <a href="{{ url_for('task.task_builder') }}" class="task-list-button task-list-button-secondary">Criar outra tarefa</a>
+            <button type="button" class="task-summary-close" id="task-summary-close-button">Ver lista</button>
         </div>
     </div>
 </div>
@@ -250,28 +77,28 @@
             <td>{{ t.NA_HOST_NAME }}</td>
             <td>
                 {% if t.NU_TYPE == 1 %}
-                    Solicitar Backup
+                    Solicitar backup
                 {% elif t.NU_TYPE == 2 %}
-                    Discovery
+                    Descoberta
                 {% elif t.NU_TYPE == 3 %}
-                    Update Statistics
+                    Atualizar estatísticas
                 {% elif t.NU_TYPE == 4 %}
-                    Check Connection
+                    Verificar conexão
                 {% elif t.NU_TYPE == 5 %}
-                    Promover para Backup
+                    Promover para backup
                 {% elif t.NU_TYPE == 6 %}
-                    Retirar da Fila
+                    Retirar da fila
                 {% else %}
                     {{ t.NU_TYPE }}
                 {% endif %}
             </td>
             <td>
                 {% if t.NU_STATUS == 1 %}
-                    <span class="task-status task-status-pending">Pending</span>
+                    <span class="task-status task-status-pending">Pendente</span>
                 {% elif t.NU_STATUS == 2 %}
-                    <span class="task-status task-status-running">Running</span>
+                    <span class="task-status task-status-running">Em execução</span>
                 {% elif t.NU_STATUS == -1 %}
-                    <span class="task-status task-status-error">Error</span>
+                    <span class="task-status task-status-error">Erro</span>
                 {% else %}
                     {{ t.NU_STATUS }}
                 {% endif %}
@@ -289,18 +116,10 @@
 
 </div>
 </div>
+</div>
 
 {% endblock %}
 
 {% block extra_js %}
-{% if show_creation_summary %}
-<script>
-    function closeTaskSummary() {
-        const backdrop = document.getElementById("task-summary-backdrop");
-        if (backdrop) {
-            backdrop.remove();
-        }
-    }
-</script>
-{% endif %}
+<script src="{{ url_for('static', filename='js/task_list_page.js', v='20260415-task-list-extraction') }}"></script>
 {% endblock %}

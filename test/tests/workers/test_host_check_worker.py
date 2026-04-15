@@ -607,6 +607,73 @@ class HostMaintenanceTests(unittest.TestCase):
         self.assertEqual(db.host_updates, [])
         self.assertEqual(db.queued_tasks, [])
 
+    def test_run_host_check_all_batch_emits_compact_summary_log(self) -> None:
+        now = datetime(2026, 3, 23, 12, 0, 0)
+        db = FakeDB(
+            hosts=[
+                {
+                    "ID_HOST": 100,
+                    "NA_HOST_NAME": "station-busy",
+                    "NA_HOST_ADDRESS": "172.24.1.100",
+                    "NA_HOST_PORT": 22,
+                    "NA_HOST_USER": "root",
+                    "NA_HOST_PASSWORD": "secret",
+                    "IS_BUSY": True,
+                    "IS_OFFLINE": False,
+                    "DT_LAST_CHECK": now - timedelta(hours=1),
+                },
+                {
+                    "ID_HOST": 101,
+                    "NA_HOST_NAME": "station-offline",
+                    "NA_HOST_ADDRESS": "172.24.1.101",
+                    "NA_HOST_PORT": 22,
+                    "NA_HOST_USER": "root",
+                    "NA_HOST_PASSWORD": "secret",
+                    "IS_BUSY": False,
+                    "IS_OFFLINE": False,
+                    "DT_LAST_CHECK": now - timedelta(hours=1),
+                },
+            ]
+        )
+        fake_log = FakeLog()
+
+        with patch.object(
+            host_maintenance_worker.host_connectivity,
+            "is_host_online",
+            return_value=False,
+        ):
+            checked = host_maintenance_worker.maintenance_flow.run_host_check_all_batch(
+                db=db,
+                log=fake_log,
+                now=now,
+                process_status=host_maintenance_worker.process_status,
+                stale_after_sec=host_maintenance_worker.k.HOST_CHECK_ALL_STALE_AFTER_SEC,
+                batch_size=host_maintenance_worker.k.HOST_CHECK_ALL_BATCH_SIZE,
+                icmp_timeout_sec=host_maintenance_worker.k.HOST_CHECK_ALL_ICMP_TIMEOUT_SEC,
+                connectivity_module=host_maintenance_worker.host_connectivity,
+            )
+
+        self.assertEqual(checked, 1)
+        self.assertNotIn("host_check_all", [name for name, _ in fake_log.events])
+        self.assertNotIn(
+            "host_check_all_skipped_busy",
+            [name for name, _ in fake_log.events],
+        )
+
+        summary_payload = None
+        for event_name, payload in fake_log.events:
+            if event_name == "host_check_all_batch_done":
+                summary_payload = payload
+                break
+
+        self.assertIsNotNone(summary_payload)
+        self.assertEqual(summary_payload["selected"], 2)
+        self.assertEqual(summary_payload["checked"], 1)
+        self.assertEqual(summary_payload["skipped_busy"], 1)
+        self.assertEqual(summary_payload["icmp_online"], 0)
+        self.assertEqual(summary_payload["icmp_offline"], 1)
+        self.assertEqual(summary_payload["recovery_probes"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

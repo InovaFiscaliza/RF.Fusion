@@ -115,6 +115,13 @@ def _canonicalize_error_reason(
     if raw_reason == "buffer size must be a multiple of element size":
         return "INVALID_BUFFER_SIZE", "Invalid binary buffer size", raw_reason
 
+    if raw_reason == "APP_ANALISE read timeout during processing":
+        return (
+            "APP_ANALISE_READ_TIMEOUT",
+            "APP_ANALISE read timeout during processing",
+            exc_text or None,
+        )
+
     # -------------------------------------------------------------
     # DIM / enrichment failures where the human-readable message is
     # too specific to use directly as the dashboard grouping key.
@@ -288,6 +295,17 @@ class ExternalServiceTransientError(Exception):
     These errors should not be interpreted as proof that the source
     file is invalid, because a retry may succeed once the dependency
     becomes healthy again.
+    """
+    pass
+
+
+class AppAnaliseReadTimeoutError(Exception):
+    """
+    Raised when appAnalise returns a structured FileRead timeout.
+
+    This is not the same as a transport/socket timeout from RF.Fusion's point
+    of view: the external service stayed responsive enough to answer, but it
+    could not finish this specific payload inside its own execution budget.
     """
     pass
 

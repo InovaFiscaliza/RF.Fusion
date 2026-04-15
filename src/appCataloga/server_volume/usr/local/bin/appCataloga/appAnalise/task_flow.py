@@ -31,6 +31,7 @@ from datetime import datetime
 import re
 
 import config as k
+from appAnalise.payload_parser import canonicalize_equipment_identifier
 from geopy.exc import GeocoderServiceError
 from shared import geolocation_utils, tools
 
@@ -42,6 +43,8 @@ TRANSIENT_FILESYSTEM_ERRNOS = {
     errno.ESTALE,
     errno.ETXTBSY,
 }
+
+ERMX_FAMILY_PREFIXES = ("ermx", "emrx")
 
 
 def is_transient_filesystem_error(exc: Exception) -> bool:
@@ -139,6 +142,45 @@ def should_map_host_source_file(hostname: str) -> bool:
         normalized.startswith(family)
         for family in k.APP_ANALISE_SOURCE_LINEAGE_FAMILIES
     )
+
+
+def resolve_equipment_persistence_identity(
+    *,
+    hostname_db: str,
+    spectrum_equipment_name: str | None,
+) -> tuple[str, str]:
+    """
+    Resolve the catalog identity and equipment-type hint for one spectrum.
+
+    Most station families can persist the same canonical identifier both as the
+    equipment name and as the type-inference source. ERMx/EMRx is different:
+    the operational asset is the Windows station itself, while the payload
+    receiver string names the analyzer model attached to that station.
+
+    Returns:
+        tuple[str, str]:
+            - equipment_name persisted in `DIM_SPECTRUM_EQUIPMENT.NA_EQUIPMENT`
+            - equipment_type_hint used to infer `FK_EQUIPMENT_TYPE`
+    """
+    normalized_host = (hostname_db or "").strip().lower()
+    raw_spectrum_name = (
+        str(spectrum_equipment_name).strip()
+        if spectrum_equipment_name is not None
+        else ""
+    )
+
+    if normalized_host.startswith(ERMX_FAMILY_PREFIXES):
+        if not normalized_host:
+            raise ValueError("hostname_db is required for ERMx/EMRx equipment resolution")
+
+        type_hint = raw_spectrum_name or hostname_db
+        return normalized_host, type_hint
+
+    canonical_name = canonicalize_equipment_identifier(
+        raw_spectrum_name or hostname_db,
+        fallback_hostname=hostname_db,
+    )
+    return canonical_name, canonical_name
 
 
 def _build_repository_hostname_key(hostname: str) -> str:
@@ -398,6 +440,10 @@ def insert_spectra_batch(
             getattr(spectrum, "equipment_name", None)
             or hostname_db
         )
+        persisted_equipment_name, equipment_type_hint = resolve_equipment_persistence_identity(
+            hostname_db=hostname_db,
+            spectrum_equipment_name=equipment_name,
+        )
 
         # appAnalise may carry per-spectrum metadata blobs such as Antenna and
         # Others that do not map to first-class RFDATA columns yet. We
@@ -418,7 +464,8 @@ def insert_spectra_batch(
                         spectrum.processing
                     ),
                     "id_equipment": db_rfm.get_or_create_spectrum_equipment(
-                        str(equipment_name).lower()
+                        persisted_equipment_name,
+                        equipment_type_hint=equipment_type_hint,
                     ),
                     "id_measure_unit": db_rfm.insert_measure_unit(
                         spectrum.level_unit
@@ -476,6 +523,10 @@ def return_task_to_pending(db_bp, file_task_id, err):
 
     This is the only retry path in the worker. It exists for dependency
     outages, not for definitive payload defects.
+
+    The helper is retained for future policies where transient failures should
+    return to the live queue automatically instead of being frozen for manual
+    review.
     """
     db_bp.file_task_update(
         task_id=file_task_id,
@@ -488,6 +539,79 @@ def return_task_to_pending(db_bp, file_task_id, err):
             detail="APP_ANALISE transient failure, task returned for retry",
             error=err.format_error(),
         ),
+    )
+
+
+def freeze_task_for_manual_review(
+    db_bp,
+    *,
+    file_task_id,
+    host_id,
+    host_file_name,
+    host_path,
+    err,
+    detail,
+):
+    """
+    Freeze one PROCESS FILE_TASK and its processing history for manual review.
+
+    This helper keeps the live row and `FILE_TASK_HISTORY` aligned on
+    `TASK_FROZEN` while preserving the underlying artifact on disk.
+    """
+    message = tools.compose_message(
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        task_status=k.TASK_FROZEN,
+        detail=detail,
+        error=err.format_error(),
+    )
+
+    db_bp.file_task_update(
+        task_id=file_task_id,
+        NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+        NU_STATUS=k.TASK_FROZEN,
+        NU_PID=None,
+        DT_FILE_TASK=datetime.now(),
+        NA_MESSAGE=message,
+    )
+
+    db_bp.file_history_update(
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        host_id=host_id,
+        host_file_path=host_path,
+        host_file_name=host_file_name,
+        NU_STATUS_PROCESSING=k.TASK_FROZEN,
+        NA_MESSAGE=message,
+    )
+
+    db_bp.host_task_statistics_create(host_id=host_id)
+
+
+def freeze_task_after_processing_timeout(
+    db_bp,
+    *,
+    file_task_id,
+    host_id,
+    host_file_name,
+    host_path,
+    err,
+):
+    """
+    Freeze one PROCESS FILE_TASK after appAnalise returned a structured timeout.
+
+    Unlike transport outages, a `ReadTimeout` reply means appAnalise stayed
+    responsive enough to answer, but this specific payload exceeded the remote
+    processing budget. We keep both the live FILE_TASK and the processing phase
+    in FILE_TASK_HISTORY on hold for manual review instead of retrying or
+    finalizing the file as a definitive processing error.
+    """
+    freeze_task_for_manual_review(
+        db_bp,
+        file_task_id=file_task_id,
+        host_id=host_id,
+        host_file_name=host_file_name,
+        host_path=host_path,
+        err=err,
+        detail="APP_ANALISE read timeout, task frozen for manual review",
     )
 
 

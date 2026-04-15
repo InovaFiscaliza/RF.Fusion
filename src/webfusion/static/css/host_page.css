@@ -1,0 +1,238 @@
+.host-query-grid {
+    display: grid;
+    grid-template-columns: minmax(280px, 2fr) minmax(180px, 1fr) minmax(220px, 1fr);
+    gap: 20px;
+    align-items: end;
+}
+
+.host-query-field {
+    min-width: 0;
+}
+
+.host-query-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.host-query-actions > * {
+    flex: 1 1 0;
+}
+
+@media (max-width: 920px) {
+    .host-query-grid {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 16px;
+    }
+
+    .host-query-field {
+        min-width: 0;
+    }
+
+    .host-query-field:first-child {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 640px) {
+    .host-query-grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 14px;
+    }
+
+    .host-query-field:first-child {
+        grid-column: auto;
+    }
+
+    .host-query-actions {
+        flex-direction: column;
+    }
+
+    .host-query-actions > * {
+        width: 100%;
+        flex: 1 1 auto;
+    }
+
+    .online-filter {
+        min-height: 42px;
+    }
+}
+
+.stats-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.stats-table th,
+.stats-table td {
+    padding: 10px 12px;
+}
+
+.stats-table th {
+    text-align: left;
+    width: 280px;
+    font-weight: 600;
+    color: #374151;
+}
+
+.stats-table td {
+    color: #111827;
+}
+
+.stats-table tr:not(:last-child) {
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.status-online {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.status-offline {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.status-busy {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.status-idle {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.status-warning {
+    background: #ffedd5;
+    color: #9a3412;
+}
+
+.host-stats-scroll {
+    overflow: visible;
+    padding-right: 0;
+}
+
+.annual-breakdown {
+    margin-top: 16px;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #ffffff;
+    overflow-x: auto;
+}
+
+.diagnostic-breakdown {
+    margin-top: 16px;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #ffffff;
+    overflow: hidden;
+}
+
+.diagnostic-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: auto;
+    font-size: 13px;
+}
+
+.diagnostic-table th,
+.diagnostic-table td {
+    padding: 10px 12px;
+    vertical-align: top;
+}
+
+.diagnostic-table th {
+    text-align: left;
+    font-weight: 600;
+    color: #374151;
+}
+
+.diagnostic-table tr:not(:last-child) {
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.diagnostic-count-col {
+    width: 140px;
+    text-align: right !important;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    color: #475569;
+}
+
+.diagnostic-message-cell {
+    white-space: normal;
+    word-break: break-word;
+    color: #1f2937;
+    line-height: 1.5;
+    font-size: 13px;
+}
+
+.annual-breakdown .stats-table {
+    min-width: 1080px;
+    table-layout: fixed;
+}
+
+.annual-breakdown .stats-table th {
+    width: auto;
+    white-space: nowrap;
+    vertical-align: bottom;
+}
+
+.annual-breakdown .stats-table td,
+.annual-breakdown .stats-table th {
+    font-size: 12px;
+}
+
+.annual-breakdown .stats-table th:first-child,
+.annual-breakdown .stats-table td:first-child {
+    text-align: left;
+    width: 88px;
+}
+
+.annual-breakdown .stats-table th:not(:first-child),
+.annual-breakdown .stats-table td:not(:first-child) {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.overview-table th {
+    width: auto;
+    white-space: nowrap;
+}
+
+.overview-table td {
+    white-space: nowrap;
+}
+
+.link-action {
+    color: #1f4f8b;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.link-action:hover {
+    text-decoration: underline;
+}
+
+#online_only {
+    all: revert !important;
+    appearance: auto !important;
+    -webkit-appearance: checkbox !important;
+    display: inline-block !important;
+    position: static !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    width: 16px !important;
+    height: 16px !important;
+    margin: 0 !important;
+}

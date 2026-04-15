@@ -92,14 +92,55 @@ class AppAnaliseConnection:
         self.last_answer = None
         self.last_output_meta = None
 
-    def _build_request_payload(self, full_path: str, export: bool) -> Dict:
+    def _resolve_request_timeout_seconds(
+        self,
+        timeout_seconds: Optional[int] = None,
+    ) -> Optional[int]:
+        """
+        Resolve the timeout forwarded to appAnalise's `FileRead` request.
+
+        The timeout requested from appAnalise should stay strictly below this
+        client's own socket processing timeout whenever it is enabled. That
+        lets appAnalise return a structured `ReadTimeout` reply before the
+        local socket layer gives up and classifies the request as transient
+        transport failure.
+        """
+        raw_value = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else getattr(k, "APP_ANALISE_REQUEST_TIMEOUT_SECONDS", None)
+        )
+
+        if raw_value is None:
+            return None
+
+        try:
+            resolved = int(raw_value)
+        except (TypeError, ValueError):
+            return None
+
+        if resolved <= 0:
+            return 0
+
+        process_timeout = int(getattr(k, "APP_ANALISE_PROCESS_TIMEOUT", 0) or 0)
+        if process_timeout > 0 and resolved >= process_timeout:
+            return max(1, process_timeout - 1)
+
+        return resolved
+
+    def _build_request_payload(
+        self,
+        full_path: str,
+        export: bool,
+        timeout_seconds: Optional[int] = None,
+    ) -> Dict:
         """
         Build the request payload expected by the appAnalise socket API.
 
         This helper is intentionally tiny: the socket contract should stay easy
         to audit here instead of being rebuilt ad hoc inside `_request_process`.
         """
-        return {
+        request = {
             "Key": k.APP_ANALISE_KEY,
             "ClientName": k.APP_ANALISE_CLIENT_NAME,
             "Request": {
@@ -108,6 +149,12 @@ class AppAnaliseConnection:
                 "export": export,
             },
         }
+
+        resolved_timeout = self._resolve_request_timeout_seconds(timeout_seconds)
+        if resolved_timeout is not None:
+            request["Request"]["timeoutSeconds"] = resolved_timeout
+
+        return request
 
     @staticmethod
     def _close_socket(sock: socket.socket) -> None:
@@ -147,7 +194,12 @@ class AppAnaliseConnection:
         finally:
             self._close_socket(sock)
 
-    def _request_process(self, full_path: str, export: bool = False) -> Dict:
+    def _request_process(
+        self,
+        full_path: str,
+        export: bool = False,
+        timeout_seconds: Optional[int] = None,
+    ) -> Dict:
         """
         Submit a processing request and return the decoded protocol payload.
 
@@ -155,7 +207,11 @@ class AppAnaliseConnection:
         not payload semantics. Once a complete JSON payload is received, the
         parser layer decides whether it is valid or defective.
         """
-        request_payload = self._build_request_payload(full_path, export)
+        request_payload = self._build_request_payload(
+            full_path,
+            export,
+            timeout_seconds=timeout_seconds,
+        )
         request_bytes = (
             json.dumps(request_payload, ensure_ascii=False) + "\r\n"
         ).encode("utf-8")
@@ -274,6 +330,7 @@ class AppAnaliseConnection:
         file_path: str,
         file_name: str,
         export: bool = False,
+        timeout_seconds: Optional[int] = None,
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Process one source file through the full appAnalise client pipeline.
@@ -305,7 +362,11 @@ class AppAnaliseConnection:
 
         # Phase 2: transport first, semantics second. The connection layer only
         # knows how to obtain one decoded payload from the socket server.
-        self.last_payload = self._request_process(full_path, export)
+        self.last_payload = self._request_process(
+            full_path,
+            export,
+            timeout_seconds=timeout_seconds,
+        )
 
         # Phase 3: from here on the payload exists, so failures are no longer
         # about TCP reachability. The parser now decides whether appAnalise

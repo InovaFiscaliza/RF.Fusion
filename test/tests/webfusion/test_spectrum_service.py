@@ -7,6 +7,7 @@ How to run:
 What is covered here:
     - reduction of repository-file rows to the newest file per spectrum
     - merge of paginated spectrum rows with repository download metadata
+    - frequency filters keep spectrum bands contained within the requested range
 """
 
 from __future__ import annotations
@@ -111,6 +112,37 @@ class TestSpectrumService(unittest.TestCase):
         self.assertIsNone(enriched[1]["NA_FILE"])
         self.assertIsNone(enriched[1]["NA_EXTENSION"])
         self.assertIsNone(enriched[1]["VL_FILE_SIZE_KB"])
+
+    def test_build_fact_filters_requires_band_within_full_frequency_interval(self):
+        where_clauses, params = self.module._build_fact_filters(
+            freq_start=100.0,
+            freq_end=200.0,
+            fact_alias="f",
+        )
+
+        self.assertEqual(
+            where_clauses,
+            [
+                "f.NU_FREQ_START >= %s",
+                "f.NU_FREQ_END <= %s",
+            ],
+        )
+        self.assertEqual(params, [100.0, 200.0])
+
+    def test_build_fact_filters_uses_same_bound_when_only_one_frequency_limit_exists(self):
+        lower_where, lower_params = self.module._build_fact_filters(
+            freq_start=100.0,
+            fact_alias="f",
+        )
+        upper_where, upper_params = self.module._build_fact_filters(
+            freq_end=200.0,
+            fact_alias="f",
+        )
+
+        self.assertEqual(lower_where, ["f.NU_FREQ_START >= %s"])
+        self.assertEqual(lower_params, [100.0])
+        self.assertEqual(upper_where, ["f.NU_FREQ_END <= %s"])
+        self.assertEqual(upper_params, [200.0])
 
 
 if __name__ == "__main__":

@@ -155,8 +155,13 @@ class FakeDbRfmIngest:
         self.procedure_calls.append(procedure_name)
         return 41
 
-    def get_or_create_spectrum_equipment(self, equipment_name):
-        self.equipment_calls.append(equipment_name)
+    def get_or_create_spectrum_equipment(self, equipment_name, *, equipment_type_hint=None):
+        self.equipment_calls.append(
+            {
+                "name": equipment_name,
+                "type_hint": equipment_type_hint,
+            }
+        )
         return len(self.equipment_calls)
 
     def insert_detector_type(self, detector_name):
@@ -449,6 +454,64 @@ class SpectrumInsertTests(unittest.TestCase):
         self.assertEqual(js_metadata["others"]["gpsType"], "Built-in")
         self.assertNotIn("discarded_spectrum_count", js_metadata)
 
+    def test_insert_spectra_batch_falls_back_to_host_for_malformed_cwsm_receiver(self) -> None:
+        db = FakeDbRfmIngest()
+        spectrum = self._build_spectrum(site_id=10, equipment_name="cwsm2110000")
+        bin_data = {
+            "method": "Fixed logger",
+            "spectrum": [spectrum],
+        }
+
+        processing.insert_spectra_batch(
+            db_rfm=db,
+            bin_data=bin_data,
+            hostname_db="CWSM211005",
+            host_path="/host/path",
+            host_file_name="source.zip",
+            extension=".zip",
+            vl_file_size_kb=1,
+            dt_created=datetime(2026, 1, 1, 12, 0, 0),
+            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
+        )
+
+        self.assertEqual(
+            db.equipment_calls,
+            [{"name": "cwsm21100005", "type_hint": "cwsm21100005"}],
+        )
+
+    def test_insert_spectra_batch_uses_host_identity_and_receiver_type_for_ermx(self) -> None:
+        db = FakeDbRfmIngest()
+        spectrum = self._build_spectrum(
+            site_id=10,
+            equipment_name="TEKTRONIX,SA2500,B040241,7.041",
+        )
+        bin_data = {
+            "method": "Fixed logger",
+            "spectrum": [spectrum],
+        }
+
+        processing.insert_spectra_batch(
+            db_rfm=db,
+            bin_data=bin_data,
+            hostname_db="ERMxES03",
+            host_path="/host/path",
+            host_file_name="source.bin",
+            extension=".bin",
+            vl_file_size_kb=1,
+            dt_created=datetime(2026, 1, 1, 12, 0, 0),
+            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
+        )
+
+        self.assertEqual(
+            db.equipment_calls,
+            [
+                {
+                    "name": "ermxes03",
+                    "type_hint": "TEKTRONIX,SA2500,B040241,7.041",
+                }
+            ],
+        )
+
 
 class FileMetadataTests(unittest.TestCase):
     """Validate which artifact FILE_TASK_HISTORY should point to."""
@@ -613,6 +676,9 @@ class FileMoveTests(unittest.TestCase):
 class RetryTests(unittest.TestCase):
     """Validate retry-only paths that must preserve the claimed FILE_TASK row."""
 
+    def setUp(self) -> None:
+        worker._reset_preflight_log_state()
+
     def test_preflight_app_analise_connection_returns_false_without_claiming_task(self) -> None:
         class FakeApp:
             def check_connection(self) -> None:
@@ -625,6 +691,51 @@ class RetryTests(unittest.TestCase):
 
         self.assertEqual(len(fake_log.warnings), 1)
         self.assertIn("appanalise_unavailable_retry", fake_log.warnings[0])
+
+    def test_preflight_app_analise_connection_throttles_repeated_identical_outage_logs(self) -> None:
+        class FakeApp:
+            def check_connection(self) -> None:
+                raise worker.errors.ExternalServiceTransientError("Connection refused")
+
+        fake_log = FakeWorkerLog()
+
+        with patch.object(worker, "log", fake_log):
+            with patch.object(worker.time, "monotonic", side_effect=[100.0, 110.0, 401.0]):
+                self.assertFalse(worker.preflight_app_analise_connection(FakeApp()))
+                self.assertFalse(worker.preflight_app_analise_connection(FakeApp()))
+                self.assertFalse(worker.preflight_app_analise_connection(FakeApp()))
+
+        self.assertEqual(len(fake_log.warnings), 2)
+        self.assertIn("appanalise_unavailable_retry", fake_log.warnings[0])
+        self.assertIn("Connection refused", fake_log.warnings[0])
+        self.assertIn("appanalise_unavailable_still_down", fake_log.warnings[1])
+        self.assertIn("suppressed_retries=1", fake_log.warnings[1])
+
+    def test_preflight_app_analise_connection_logs_recovery_after_suppressed_failures(self) -> None:
+        class FlakyApp:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def check_connection(self) -> None:
+                self.calls += 1
+                if self.calls < 3:
+                    raise worker.errors.ExternalServiceTransientError("Connection refused")
+
+        fake_log = FakeWorkerLog()
+        app = FlakyApp()
+
+        with patch.object(worker, "log", fake_log):
+            with patch.object(worker.time, "monotonic", side_effect=[200.0, 210.0, 260.0]):
+                self.assertFalse(worker.preflight_app_analise_connection(app))
+                self.assertFalse(worker.preflight_app_analise_connection(app))
+                self.assertTrue(worker.preflight_app_analise_connection(app))
+
+        self.assertEqual(len(fake_log.warnings), 1)
+        self.assertIn("appanalise_unavailable_retry", fake_log.warnings[0])
+        self.assertEqual(len(fake_log.entries), 1)
+        self.assertEqual(fake_log.entries[0][0], "appanalise_recovered")
+        self.assertEqual(fake_log.entries[0][1]["previous_error"], "Connection refused")
+        self.assertEqual(fake_log.entries[0][1]["suppressed_retries_total"], 1)
 
     def test_return_task_to_pending_requeues_with_standard_message(self) -> None:
         class FakeDb:
@@ -665,6 +776,57 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(len(db.statistics_updates), 0)
         self.assertEqual(db.task_updates[0]["NU_STATUS"], worker.k.TASK_PENDING)
         self.assertIn("task returned for retry", db.task_updates[0]["NA_MESSAGE"])
+
+    def test_freeze_task_after_processing_timeout_freezes_live_row_and_history(self) -> None:
+        db = FakeDbBkp()
+
+        processing.freeze_task_after_processing_timeout(
+            db,
+            file_task_id=321,
+            host_id=77,
+            host_file_name="sample.bin",
+            host_path="/host/path",
+            err=FakeErr("[ERROR] timeout", triggered=True),
+        )
+
+        self.assertEqual(len(db.task_updates), 1)
+        self.assertEqual(db.task_updates[0]["NU_STATUS"], worker.k.TASK_FROZEN)
+        self.assertIsNone(db.task_updates[0]["NU_PID"])
+        self.assertIn("Processing Frozen", db.task_updates[0]["NA_MESSAGE"])
+        self.assertIn("frozen for manual review", db.task_updates[0]["NA_MESSAGE"])
+
+        self.assertEqual(len(db.history_updates), 1)
+        self.assertEqual(
+            db.history_updates[0]["NU_STATUS_PROCESSING"],
+            worker.k.TASK_FROZEN,
+        )
+        self.assertNotIn("DT_PROCESSED", db.history_updates[0])
+
+        self.assertEqual(len(db.task_deletes), 0)
+        self.assertEqual(len(db.statistics_updates), 1)
+
+    def test_freeze_task_for_manual_review_freezes_live_row_and_history(self) -> None:
+        db = FakeDbBkp()
+
+        processing.freeze_task_for_manual_review(
+            db,
+            file_task_id=654,
+            host_id=88,
+            host_file_name="sample.bin",
+            host_path="/host/path",
+            err=FakeErr("[ERROR] connection refused", triggered=True),
+            detail="Transient appAnalise failure, task frozen for manual review",
+        )
+
+        self.assertEqual(len(db.task_updates), 1)
+        self.assertEqual(db.task_updates[0]["NU_STATUS"], worker.k.TASK_FROZEN)
+        self.assertEqual(len(db.history_updates), 1)
+        self.assertEqual(
+            db.history_updates[0]["NU_STATUS_PROCESSING"],
+            worker.k.TASK_FROZEN,
+        )
+        self.assertIn("Transient appAnalise failure", db.task_updates[0]["NA_MESSAGE"])
+        self.assertEqual(len(db.statistics_updates), 1)
 
 
 class PathRuleTests(unittest.TestCase):
@@ -933,11 +1095,108 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         self.assertEqual(db_rfm.commit_calls, 1)
         self.assertEqual(len(db_bp.task_updates), 2)
         self.assertEqual(db_bp.task_updates[0]["NU_STATUS"], worker.k.TASK_RUNNING)
-        self.assertEqual(db_bp.task_updates[1]["NU_STATUS"], worker.k.TASK_PENDING)
-        self.assertIn("task returned for retry", db_bp.task_updates[1]["NA_MESSAGE"])
+        self.assertEqual(db_bp.task_updates[1]["NU_STATUS"], worker.k.TASK_FROZEN)
+        self.assertIsNone(db_bp.task_updates[1]["NU_PID"])
+        self.assertIn("Transient appAnalise failure", db_bp.task_updates[1]["NA_MESSAGE"])
         self.assertEqual(len(db_bp.task_deletes), 0)
-        self.assertEqual(len(db_bp.history_updates), 0)
+        self.assertEqual(len(db_bp.history_updates), 1)
+        self.assertEqual(
+            db_bp.history_updates[0]["NU_STATUS_PROCESSING"],
+            worker.k.TASK_FROZEN,
+        )
+        self.assertEqual(len(db_bp.statistics_updates), 1)
         self.assertEqual(sleep_calls, ["slept"])
+        self.assertTrue(
+            any(
+                isinstance(item, tuple) and item[0] == "processing_frozen"
+                for item in fake_log.entries
+            )
+        )
+
+    def test_main_freezes_task_when_appanalise_returns_structured_read_timeout(self) -> None:
+        fake_log = FakeWorkerLog()
+        sleep_calls = []
+
+        class FakeDbBkpMain(FakeDbBkp):
+            last_instance = None
+
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__()
+                self._read_once = False
+                FakeDbBkpMain.last_instance = self
+
+            def read_file_task(self, **kwargs):
+                if self._read_once:
+                    return None
+                self._read_once = True
+                return (
+                    {
+                        "FILE_TASK__ID_FILE_TASK": 321,
+                        "FILE_TASK__NA_SERVER_FILE_PATH": "/mnt/reposfi/tmp/RFEye002211",
+                        "FILE_TASK__NA_SERVER_FILE_NAME": "sample.bin",
+                        "FILE_TASK__NA_HOST_FILE_PATH": "/mnt/internal/data/2026/PECAN",
+                        "FILE_TASK__NA_HOST_FILE_NAME": "sample.bin",
+                        "HOST__NA_HOST_NAME": "RFEye002211",
+                        "FILE_TASK__NA_EXTENSION": ".bin",
+                        "FILE_TASK__DT_FILE_CREATED": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__DT_FILE_MODIFIED": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__VL_FILE_SIZE_KB": 123,
+                    },
+                    10699,
+                    None,
+                )
+
+        class FakeDbRfmMain:
+            def __init__(self, *args, **kwargs) -> None:
+                self.in_transaction = False
+
+        class FakeApp:
+            def check_connection(self) -> None:
+                return None
+
+            def process(self, **kwargs):
+                raise worker.errors.AppAnaliseReadTimeoutError(
+                    "APP_ANALISE returned FileRead timeout: "
+                    "handlers:FileReadHandler:ReadTimeout"
+                )
+
+        def stop_after_iteration():
+            sleep_calls.append("slept")
+            worker.process_status["running"] = False
+
+        with patch.object(worker, "log", fake_log):
+            with patch.object(worker, "dbHandlerBKP", FakeDbBkpMain):
+                with patch.object(worker, "dbHandlerRFM", FakeDbRfmMain):
+                    with patch.object(worker, "AppAnaliseConnection", FakeApp):
+                        with patch.object(
+                            worker.runtime_sleep,
+                            "random_jitter_sleep",
+                            side_effect=stop_after_iteration,
+                        ):
+                            worker.process_status["running"] = True
+                            worker.main()
+
+        db_bp = FakeDbBkpMain.last_instance
+
+        self.assertEqual(len(db_bp.task_updates), 2)
+        self.assertEqual(db_bp.task_updates[0]["NU_STATUS"], worker.k.TASK_RUNNING)
+        self.assertEqual(db_bp.task_updates[1]["NU_STATUS"], worker.k.TASK_FROZEN)
+        self.assertIsNone(db_bp.task_updates[1]["NU_PID"])
+        self.assertIn("Processing Frozen", db_bp.task_updates[1]["NA_MESSAGE"])
+        self.assertEqual(len(db_bp.task_deletes), 0)
+        self.assertEqual(len(db_bp.history_updates), 1)
+        self.assertEqual(
+            db_bp.history_updates[0]["NU_STATUS_PROCESSING"],
+            worker.k.TASK_FROZEN,
+        )
+        self.assertEqual(len(db_bp.statistics_updates), 1)
+        self.assertEqual(sleep_calls, ["slept"])
+        self.assertTrue(
+            any(
+                isinstance(item, tuple) and item[0] == "processing_frozen"
+                for item in fake_log.entries
+            )
+        )
 
     def test_successful_export_promotes_mat_and_retires_original(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

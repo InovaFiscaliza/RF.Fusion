@@ -11,336 +11,16 @@
 {% endblock %}
 
 {% block extra_css %}
-<style>
-
-/* ===================== CARD ===================== */
-
-html,
-body {
-    overflow-y: auto !important;
-}
-
-body .layout.layout-top.fixed-header {
-    overflow: visible !important;
-}
-
-body .main-content {
-    overflow: visible !important;
-}
-
-.card {
-    box-shadow: 0 2px 6px rgba(0,0,0,0.04);
-}
-
-/* ===================== FORM ===================== */
-
-.spectrum-query-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 20px;
-    align-items: start;
-}
-
-.spectrum-query-field {
-    min-width: 0;
-}
-
-.spectrum-query-actions {
-    align-self: end;
-}
-
-.spectrum-query-submit-row {
-    margin-top: 18px;
-    display: flex;
-    justify-content: flex-end;
-}
-
-.spectrum-query-submit-row .btn-search {
-    min-width: 140px;
-}
-
-.filter-helper-text {
-    margin-top: 6px;
-    font-size: 12px;
-    color: #64748b;
-    line-height: 1.35;
-    min-height: 32px;
-}
-
-.form-control.is-refreshing {
-    background-color: #f8fafc;
-    color: #64748b;
-}
-
-label {
-    display: block;
-    margin-bottom: 6px;
-    font-weight: 600;
-}
-
-.form-control {
-    width: 100%;
-    height: 38px;
-    padding: 8px 12px;
-    box-sizing: border-box;
-    border-radius: 8px;
-}
-
-.select-shell {
-    position: relative;
-}
-
-.select-shell::after {
-    content: "";
-    position: absolute;
-    top: 50%;
-    right: 14px;
-    width: 8px;
-    height: 8px;
-    border-right: 2px solid #475569;
-    border-bottom: 2px solid #475569;
-    transform: translateY(-65%) rotate(45deg);
-    pointer-events: none;
-}
-
-.select-shell .form-control {
-    appearance: none;
-    -webkit-appearance: none;
-    -moz-appearance: none;
-    padding-right: 40px;
-}
-
-/* ===================== BOTÃO ===================== */
-
-.btn-search {
-    background-color: #1f4f8b;
-    color: #ffffff;
-    border: 1px solid #1f4f8b;
-    border-radius: 8px;
-    padding: 8px 18px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background-color 0.2s ease;
-}
-
-.btn-search:hover {
-    background-color: #163a66;
-    border-color: #163a66;
-}
-
-/* ===================== TABELA ===================== */
-
-.table-wrapper {
-    width: 100%;
-    overflow-x: auto;
-}
-
-.table-scroll {
-    width: 100%;
-    max-height: 440px;
-    overflow-y: auto;
-    border: 1px solid #e5e7eb;
-    border-radius: 6px;
-}
-
-.table-scroll table {
-    width: max(100%, 1280px);
-    min-width: 1100px;
-    border-collapse: collapse;
-    font-size: 13px;
-}
-
-.table-scroll th,
-.table-scroll td {
-    padding: 6px 10px;
-    white-space: nowrap;
-    text-align: left;
-}
-
-.table-scroll thead th {
-    position: sticky;
-    top: 0;
-    background: #f3f4f6;
-    z-index: 2;
-    font-size: 12px;
-    font-weight: 600;
-    border-bottom: 1px solid #e5e7eb;
-}
-
-.table-scroll tbody tr {
-    border-bottom: 1px solid #f1f5f9;
-}
-
-.table-scroll tbody tr:hover {
-    background-color: #f6f8fb;
-}
-
-.sort-link {
-    text-decoration: none;
-    color: inherit;
-}
-
-/* ===================== PAGINAÇÃO ===================== */
-
-.pagination-container {
-    margin: 16px 0;
-    display: grid;
-    grid-template-columns: minmax(180px, 1fr) auto;
-    align-items: center;
-    gap: 16px;
-}
-
-.pagination-buttons {
-    display: grid;
-    grid-template-columns: minmax(78px, auto) minmax(228px, auto) minmax(78px, auto);
-    align-items: center;
-    gap: 12px;
-    justify-items: center;
-    min-width: 420px;
-    font-variant-numeric: tabular-nums;
-}
-
-.pagination-nav-group,
-.pagination-slot-group {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    justify-content: center;
-}
-
-.pagination-nav-group {
-    min-width: 78px;
-}
-
-.pagination-slot-group {
-    min-width: 228px;
-}
-
-.btn-page {
-    background-color: #1f4f8b;
-    color: #ffffff;
-    border: 1px solid #1f4f8b;
-    border-radius: 8px;
-    padding: 4px 10px;
-    font-weight: 600;
-    cursor: pointer;
-    text-decoration: none;
-    font-size: 12px;
-    min-width: 32px;
-    text-align: center;
-}
-
-.btn-page {
-    min-width: 36px;
-}
-
-.btn-page:hover {
-    background-color: #163a66;
-    border-color: #163a66;
-}
-
-.btn-page-active {
-    background-color: #0f2a4d;
-    border-color: #0f2a4d;
-}
-
-.btn-page-disabled {
-    background-color: #e2e8f0;
-    border-color: #cbd5e1;
-    color: #94a3b8;
-    cursor: default;
-    pointer-events: none;
-}
-
-/* ===================== LINK DOWNLOAD ===================== */
-
-.file-link {
-    color: #1f4f8b;
-    text-decoration: none;
-    font-weight: 600;
-}
-
-.file-link:hover {
-    text-decoration: underline;
-}
-
-.file-size {
-    color: #6b7280;
-    font-size: 11px;
-    margin-left: 4px;
-}
-
-.file-expand-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    border: 1px solid #cbd5e1;
-    border-radius: 6px;
-    background: #ffffff;
-    color: #1f4f8b;
-    font-weight: 700;
-    cursor: pointer;
-}
-
-.file-expand-btn:hover {
-    background: #eff6ff;
-    border-color: #93c5fd;
-}
-
-.file-detail-row > td {
-    padding: 0 !important;
-    background: #f8fafc;
-}
-
-.file-detail-panel {
-    padding: 14px 16px;
-}
-
-.file-detail-header {
-    margin-bottom: 10px;
-    font-size: 12px;
-    color: #475569;
-    font-weight: 600;
-}
-
-.file-detail-table-wrap {
-    overflow-x: auto;
-}
-
-.file-detail-table {
-    width: 100%;
-    min-width: 780px;
-    border-collapse: collapse;
-    font-size: 12px;
-}
-
-.file-detail-table th,
-.file-detail-table td {
-    padding: 6px 8px;
-    border-bottom: 1px solid #e2e8f0;
-    text-align: left;
-    white-space: nowrap;
-}
-
-.file-detail-table th {
-    background: #eef2f7;
-    font-weight: 700;
-    color: #334155;
-}
-
-.file-detail-empty,
-.file-detail-loading,
-.file-detail-error {
-    font-size: 12px;
-    color: #475569;
-}
-
-</style>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260415-page-css-extraction') }}">
 {% endblock %}
 
 {% block content %}
+
+<div
+    id="spectrum-page-root"
+    data-localities-endpoint="{{ url_for('spectrum.spectrum_localities') }}"
+    data-file-spectra-endpoint-base="{{ url_for('spectrum.spectrum_file_spectra', file_id=0) | replace('/0/spectra', '') }}"
+>
 
 <h1 class="margin-bottom-l">
     Consulta de Espectros
@@ -438,6 +118,9 @@ label {
                        class="form-control"
                        step="0.001"
                        min="0">
+                <div class="filter-helper-text">
+                    Retorna apenas faixas contidas dentro do intervalo informado.
+                </div>
             </div>
 
             <div class="spectrum-query-field">
@@ -447,6 +130,7 @@ label {
                        value="{{ freq_end or '' }}"
                        class="form-control"
                        step="0.001"
+                       placeholder="Ex.: 100 a 200 inclui 105–140 e 155–165, mas exclui 70–110."
                        min="0">
             </div>
 
@@ -458,45 +142,45 @@ label {
                        class="form-control"
                        placeholder="Ex.: %PMEC% ou parte do nome do plano">
                 <div class="filter-helper-text">
-                    Para buscar um plano específico, você pode usar curingas SQL como <code>%PMEC%</code>.
+                    Para buscar um plano específico, você pode usar coringas SQL como <code>%PMEC%</code>.
                 </div>
             </div>
             {% endif %}
 
+            {% if query_mode == "file" %}
             <div class="spectrum-query-field">
-                <label>Ordenar por</label>
+                <label>Ordenação</label>
                 <div class="select-shell">
                     <select name="sort_by" class="form-control">
-                        {% if query_mode == "file" %}
-                        <option value="date_start" {% if sort_by == "date_start" %}selected{% endif %}>Data inicial</option>
-                        <option value="date_end" {% if sort_by == "date_end" %}selected{% endif %}>Data final</option>
-                        <option value="file_name" {% if sort_by == "file_name" %}selected{% endif %}>Arquivo</option>
-                        <option value="spectrum_count" {% if sort_by == "spectrum_count" %}selected{% endif %}>Qtd. espectros</option>
-                        {% else %}
-                        <option value="date_start" {% if sort_by == "date_start" %}selected{% endif %}>Data inicial</option>
-                        <option value="date_end" {% if sort_by == "date_end" %}selected{% endif %}>Data final</option>
-                        <option value="freq_start" {% if sort_by == "freq_start" %}selected{% endif %}>Frequência inicial</option>
-                        <option value="freq_end" {% if sort_by == "freq_end" %}selected{% endif %}>Frequência final</option>
-                        <option value="rbw" {% if sort_by == "rbw" %}selected{% endif %}>RBW</option>
-                        <option value="trace_count" {% if sort_by == "trace_count" %}selected{% endif %}>Traces</option>
-                        {% endif %}
+                        <option value="recent" {% if selected_file_sort == "recent" %}selected{% endif %}>Mais recentes</option>
+                        <option value="oldest" {% if selected_file_sort == "oldest" %}selected{% endif %}>Mais antigos</option>
+                        <option value="file_name_asc" {% if selected_file_sort == "file_name_asc" %}selected{% endif %}>Arquivo A-Z</option>
+                        <option value="file_name_desc" {% if selected_file_sort == "file_name_desc" %}selected{% endif %}>Arquivo Z-A</option>
+                        <option value="spectrum_count_desc" {% if selected_file_sort == "spectrum_count_desc" %}selected{% endif %}>Mais espectros</option>
+                        <option value="spectrum_count_asc" {% if selected_file_sort == "spectrum_count_asc" %}selected{% endif %}>Menos espectros</option>
                     </select>
                 </div>
             </div>
-
+            {% else %}
             <div class="spectrum-query-field">
-                <label>Ordem</label>
+                <label>Ordenação</label>
                 <div class="select-shell">
-                    <select name="sort_order" class="form-control">
-                        <option value="DESC" {% if sort_order == "DESC" %}selected{% endif %}>Decrescente</option>
-                        <option value="ASC" {% if sort_order == "ASC" %}selected{% endif %}>Crescente</option>
+                    <select name="sort_by" class="form-control">
+                        <option value="recent" {% if selected_spectrum_sort == "recent" %}selected{% endif %}>Mais recentes</option>
+                        <option value="oldest" {% if selected_spectrum_sort == "oldest" %}selected{% endif %}>Mais antigos</option>
+                        <option value="freq_start" {% if selected_spectrum_sort == "freq_start" %}selected{% endif %}>Frequência inicial</option>
+                        <option value="freq_end" {% if selected_spectrum_sort == "freq_end" %}selected{% endif %}>Frequência final</option>
                     </select>
                 </div>
             </div>
+            {% endif %}
 
         </div>
 
         <div class="spectrum-query-submit-row">
+            <a class="btn-secondary" href="{{ url_for('spectrum.spectrum') }}">
+                Limpar filtros
+            </a>
             <button type="submit" class="btn-search">
                 Pesquisar
             </button>
@@ -701,323 +385,10 @@ label {
 
 {% endif %}
 
+</div>
+
 {% endblock %}
 
 {% block extra_js %}
-<script>
-    (function () {
-        const queryForm = document.getElementById("spectrum-query-form");
-        const equipmentField = document.getElementById("equipment_id");
-        const siteField = document.getElementById("site_id");
-        const queryModeField = document.getElementById("query_mode");
-        const siteHint = document.getElementById("site-filter-hint");
-        let requestSerial = 0;
-        let refreshTimer = null;
-        const localityCache = new Map();
-        const hasInitialLocalityOptions = siteField.options.length > 1;
-
-        if (!queryForm || !equipmentField || !siteField || !queryModeField) {
-            return;
-        }
-
-        function setSiteHint(message) {
-            if (siteHint) {
-                siteHint.textContent = message;
-            }
-        }
-
-        function buildLocationQuery() {
-            const params = new URLSearchParams();
-            const equipmentId = equipmentField.value.trim();
-
-            if (equipmentId) {
-                params.set("equipment_id", equipmentId);
-            }
-
-            params.set("query_mode", queryModeField.value || "spectrum");
-
-            return params;
-        }
-
-        function buildModeChangeUrl(nextQueryMode) {
-            const params = new URLSearchParams();
-            const formData = new FormData(queryForm);
-
-            for (const [key, rawValue] of formData.entries()) {
-                const value = typeof rawValue === "string" ? rawValue.trim() : rawValue;
-
-                if (!value) {
-                    continue;
-                }
-
-                params.set(key, value);
-            }
-
-            params.set("query_mode", nextQueryMode || "spectrum");
-            params.delete("page");
-
-            if (nextQueryMode === "file") {
-                params.delete("freq_start");
-                params.delete("freq_end");
-                params.delete("description");
-
-                if (!["date_start", "date_end", "file_name", "spectrum_count"].includes(params.get("sort_by"))) {
-                    params.set("sort_by", "date_start");
-                }
-            } else if (!["date_start", "date_end", "freq_start", "freq_end", "rbw", "trace_count"].includes(params.get("sort_by"))) {
-                params.set("sort_by", "date_start");
-            }
-
-            const query = params.toString();
-            return `${queryForm.getAttribute("action") || window.location.pathname}${query ? `?${query}` : ""}`;
-        }
-
-        function hasEquipmentSelection() {
-            return Boolean(equipmentField && equipmentField.value.trim());
-        }
-
-        function resetSiteOptions(message) {
-            siteField.innerHTML = '<option value="">Todas as localidades</option>';
-            siteField.value = "";
-            setSiteHint(message);
-        }
-
-        function markSiteOptionsStale(message) {
-            setSiteHint(message);
-        }
-
-        function setSiteFieldRefreshing(isRefreshing) {
-            siteField.classList.toggle("is-refreshing", isRefreshing);
-        }
-
-        function getCurrentSelectionSnapshot() {
-            const selectedOption = siteField.options[siteField.selectedIndex];
-
-            return {
-                value: siteField.value ? String(siteField.value) : "",
-                label: selectedOption ? selectedOption.textContent : "",
-            };
-        }
-
-        function populateSiteOptions(rows, selectedValue, selectedLabel) {
-            siteField.innerHTML = '<option value="">Todas as localidades</option>';
-
-            rows.forEach((row) => {
-                const option = document.createElement("option");
-                option.value = String(row.ID_SITE);
-                option.textContent = row.OPTION_LABEL;
-                siteField.appendChild(option);
-            });
-
-            const hasSelectedValue = selectedValue
-                && rows.some((row) => String(row.ID_SITE) === String(selectedValue));
-
-            if (selectedValue && !hasSelectedValue && selectedLabel) {
-                const option = document.createElement("option");
-                option.value = String(selectedValue);
-                option.textContent = selectedLabel;
-                siteField.appendChild(option);
-            }
-
-            if (selectedValue) {
-                siteField.value = String(selectedValue);
-            } else {
-                siteField.value = "";
-            }
-
-            setSiteHint(
-                rows.length
-                    ? `${rows.length} localidades disponíveis.`
-                    : "Nenhuma localidade encontrada para os filtros atuais."
-            );
-        }
-
-        async function refreshLocalities(options = {}) {
-            const { force = false } = options;
-
-            if (!hasEquipmentSelection()) {
-                resetSiteOptions("Selecione uma estação para listar as localidades conhecidas.");
-                return;
-            }
-
-            const params = buildLocationQuery();
-            const cacheKey = params.toString();
-            const selectionSnapshot = getCurrentSelectionSnapshot();
-            const currentRequest = ++requestSerial;
-
-            if (!force && localityCache.has(cacheKey)) {
-                populateSiteOptions(
-                    localityCache.get(cacheKey),
-                    selectionSnapshot.value,
-                    selectionSnapshot.label,
-                );
-                return;
-            }
-
-            setSiteFieldRefreshing(true);
-            setSiteHint("Atualizando localidades observadas...");
-
-            try {
-                const response = await fetch(`/api/spectrum/localities?${params.toString()}`);
-                const payload = await response.json();
-
-                if (currentRequest !== requestSerial) {
-                    return;
-                }
-
-                const rows = Array.isArray(payload.rows) ? payload.rows : [];
-                localityCache.set(cacheKey, rows);
-                populateSiteOptions(
-                    rows,
-                    selectionSnapshot.value,
-                    selectionSnapshot.label,
-                );
-            } catch (error) {
-                if (currentRequest !== requestSerial) {
-                    return;
-                }
-                markSiteOptionsStale("Nao foi possivel atualizar as localidades agora.");
-            } finally {
-                if (currentRequest === requestSerial) {
-                    setSiteFieldRefreshing(false);
-                }
-            }
-        }
-
-        function scheduleLocalityRefresh(message) {
-            if (!hasEquipmentSelection()) {
-                resetSiteOptions("Selecione uma estação para listar as localidades conhecidas.");
-                return;
-            }
-
-            markSiteOptionsStale(message || "Atualizando localidades observadas...");
-
-            if (refreshTimer) {
-                window.clearTimeout(refreshTimer);
-            }
-
-            refreshTimer = window.setTimeout(() => {
-                refreshLocalities();
-            }, 450);
-        }
-
-        equipmentField.addEventListener("change", () => {
-            resetSiteOptions("Estação alterada. Carregando localidades conhecidas...");
-            scheduleLocalityRefresh("Estação alterada. Carregando localidades conhecidas...");
-        });
-        queryModeField.addEventListener("change", () => {
-            if (window.showPageLoadingOverlay) {
-                window.showPageLoadingOverlay("Atualizando modo de consulta...");
-            }
-
-            window.location.href = buildModeChangeUrl(queryModeField.value || "spectrum");
-        });
-
-        if (hasEquipmentSelection()) {
-            if (!hasInitialLocalityOptions || siteField.options.length <= 2) {
-                refreshLocalities();
-            } else {
-                setSiteHint(`${Math.max(siteField.options.length - 1, 0)} localidades disponíveis.`);
-            }
-        } else if (!hasInitialLocalityOptions) {
-            resetSiteOptions("Selecione uma estação para listar as localidades conhecidas.");
-        }
-    })();
-</script>
-{% if query_mode == "file" and rows %}
-<script>
-    (function () {
-        const detailCache = new Map();
-
-        function escapeHtml(value) {
-            return String(value ?? "")
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/\"/g, "&quot;")
-                .replace(/'/g, "&#39;");
-        }
-
-        function buildDetailHtml(rows) {
-            if (!Array.isArray(rows) || rows.length === 0) {
-                return '<div class="file-detail-empty">Nenhum espectro vinculado a este arquivo.</div>';
-            }
-
-            const body = rows.map((row) => `
-                <tr>
-                    <td>${escapeHtml(row.ID_SPECTRUM)}</td>
-                    <td>${escapeHtml(row.NA_DESCRIPTION || "—")}</td>
-                    <td>${escapeHtml(row.NU_FREQ_START)} – ${escapeHtml(row.NU_FREQ_END)}</td>
-                    <td>${escapeHtml(row.DT_TIME_START || "—")}</td>
-                    <td>${escapeHtml(row.DT_TIME_END || "—")}</td>
-                    <td>${escapeHtml(row.NU_RBW || "—")}</td>
-                    <td>${escapeHtml(row.NU_TRACE_COUNT || "—")}</td>
-                </tr>
-            `).join("");
-
-            return `
-                <div class="file-detail-header">Espectros internos do arquivo</div>
-                <div class="file-detail-table-wrap">
-                    <table class="file-detail-table">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Plano</th>
-                                <th>Faixa (MHz)</th>
-                                <th>Início</th>
-                                <th>Fim</th>
-                                <th>RBW</th>
-                                <th>Traces</th>
-                            </tr>
-                        </thead>
-                        <tbody>${body}</tbody>
-                    </table>
-                </div>
-            `;
-        }
-
-        async function loadFileDetail(fileId) {
-            if (detailCache.has(fileId)) {
-                return detailCache.get(fileId);
-            }
-
-            const response = await fetch(`/api/spectrum/file/${fileId}/spectra`);
-            const payload = await response.json();
-            const rows = Array.isArray(payload.rows) ? payload.rows : [];
-            detailCache.set(fileId, rows);
-            return rows;
-        }
-
-        document.querySelectorAll("[data-file-toggle]").forEach((button) => {
-            button.addEventListener("click", async () => {
-                const fileId = button.getAttribute("data-file-toggle");
-                const detailRow = document.querySelector(`[data-file-detail="${fileId}"]`);
-
-                if (!detailRow) {
-                    return;
-                }
-
-                const isOpen = !detailRow.hidden;
-                detailRow.hidden = isOpen;
-                button.textContent = isOpen ? "+" : "−";
-                button.setAttribute("aria-expanded", isOpen ? "false" : "true");
-
-                if (isOpen || detailRow.dataset.loaded === "1") {
-                    return;
-                }
-
-                const panel = detailRow.querySelector(".file-detail-panel");
-
-                try {
-                    const rows = await loadFileDetail(fileId);
-                    panel.innerHTML = buildDetailHtml(rows);
-                    detailRow.dataset.loaded = "1";
-                } catch (error) {
-                    panel.innerHTML = '<div class="file-detail-error">Nao foi possivel carregar os espectros deste arquivo.</div>';
-                }
-            });
-        });
-    })();
-</script>
-{% endif %}
+<script src="{{ url_for('static', filename='js/spectrum_page.js', v='20260415-spectrum-page-extraction') }}"></script>
 {% endblock %}

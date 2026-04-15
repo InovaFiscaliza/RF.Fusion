@@ -59,6 +59,9 @@ _HOST_LOCATION_HISTORY_CACHE = {}
 
 _HOST_STATISTICS_CACHE = {}
 
+# Runtime probes, grouped diagnostics and per-host detail views have different
+# costs and different freshness expectations, so the service keeps them on
+# separate TTL buckets instead of one shared cache.
 RUNTIME_OVERVIEW_CACHE_TTL_SECONDS = 300.0
 SERVER_OVERVIEW_CACHE_TTL_SECONDS = 600.0
 SERVER_SUMMARY_CACHE_TTL_SECONDS = 600.0
@@ -97,12 +100,23 @@ def _format_bytes_human(num_bytes):
 
 
 def _canonicalize_processing_error_message(message):
-    """Collapse volatile processing-error variants into a stable display key."""
+    """Collapse volatile processing-error variants into a stable display key.
+
+    Operators usually care about the failure class, not about file-specific
+    details embedded in the raw message. Canonicalizing here prevents the UI
+    from showing dozens of nearly identical buckets for one logical issue.
+    """
 
     normalized = (message or "(Sem mensagem)").strip() or "(Sem mensagem)"
 
     if normalized == "(Sem mensagem)":
         return normalized
+
+    if normalized.lower() == "processing error":
+        return (
+            "Processing Error | [ERROR] [stage=PROCESS] "
+            "[code=UNCLASSIFIED] Processing failed without structured detail"
+        )
 
     if " | [detail=" in normalized:
         normalized = normalized.split(" | [detail=", 1)[0]
@@ -202,11 +216,35 @@ def _canonicalize_processing_error_message(message):
             "Error inserting site in DIM_SPECTRUM_SITE: geographic codes not found"
         )
 
+    if (
+        "[type=binvalidationerror]" in lowered
+        and "app_analise returned invalid answer.spectra type:" in lowered
+    ):
+        return (
+            "Processing Error | [ERROR] [stage=PROCESS] "
+            "[code=APP_ANALISE_INVALID_SPECTRA_TYPE] "
+            "APP_ANALISE returned invalid Answer.Spectra type"
+        )
+
+    if (
+        "[type=binvalidationerror]" in lowered
+        and "payload validation failed during processing" in lowered
+    ):
+        return (
+            "Processing Error | [ERROR] [stage=PROCESS] "
+            "[code=BIN_PAYLOAD_VALIDATION_FAILED] "
+            "Payload validation failed during processing"
+        )
+
     return normalized
 
 
 def _merge_grouped_processing_errors(rows):
-    """Merge raw message buckets into canonical processing-error groups."""
+    """Merge raw message buckets into canonical processing-error groups.
+
+    SQL groups by the literal message first; this second pass folds those raw
+    buckets into the more stable categories used by the dashboards.
+    """
 
     merged = {}
 
@@ -695,6 +733,32 @@ def _get_history_summary_for_host(cur, host_id, current_month_start, next_month_
     return cur.fetchone() or {}
 
 
+def _get_live_queue_summary_for_host(cur, host_id):
+    """Read the current FILE_TASK queue snapshot for one host."""
+
+    cur.execute(
+        """
+        SELECT
+            SUM(CASE WHEN NU_TYPE = 1 AND NU_STATUS = 1 THEN 1 ELSE 0 END) AS BACKUP_QUEUE_FILES_TOTAL,
+            ROUND(
+                COALESCE(SUM(CASE WHEN NU_TYPE = 1 AND NU_STATUS = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0)
+                / 1024 / 1024,
+                2
+            ) AS BACKUP_QUEUE_GB_TOTAL,
+            SUM(CASE WHEN NU_TYPE = 2 AND NU_STATUS = 1 THEN 1 ELSE 0 END) AS PROCESSING_QUEUE_FILES_TOTAL,
+            ROUND(
+                COALESCE(SUM(CASE WHEN NU_TYPE = 2 AND NU_STATUS = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0)
+                / 1024 / 1024,
+                2
+            ) AS PROCESSING_QUEUE_GB_TOTAL
+        FROM FILE_TASK
+        WHERE FK_HOST = %s
+        """,
+        (host_id,),
+    )
+    return cur.fetchone() or {}
+
+
 def _get_yearly_status_breakdown_for_host(cur, host_id):
     """Read backup and processing yearly breakdowns in one grouped scan."""
 
@@ -783,7 +847,12 @@ def _build_station_alias_keys(value):
 
 
 def _load_rfdata_equipments():
-    """Load spectrum equipment once for host/locality reconciliation."""
+    """Load spectrum equipment once for host/locality reconciliation.
+
+    The host/server pages bridge operational hosts from `BPDATA` with measured
+    spectra from `RFDATA`. The equipment list is the first step in that
+    reconciliation because there is no direct cross-database foreign key.
+    """
 
     conn = get_connection_rfdata()
     cur = conn.cursor()
@@ -876,7 +945,12 @@ def _get_host_equipment_matches(host_name):
 
 
 def _get_host_location_history(host_name):
-    """Return the locality timeline observed for one host in RFDATA."""
+    """Return the locality timeline observed for one host in RFDATA.
+
+    This helper is one of the main integration points between the two
+    databases: the host exists operationally in `BPDATA`, but its geographic
+    history exists analytically in `RFDATA`.
+    """
 
     normalized_host_name = str(host_name or "").strip()
 
@@ -905,6 +979,8 @@ def _get_host_location_history(host_name):
         }
         return payload
 
+    # Once the host/equipment reconciliation is done, the rest of the query is
+    # purely analytical and can stay on the RFDATA side.
     equipment_ids = [row["ID_EQUIPMENT"] for row in equipment_matches]
     placeholders = ", ".join(["%s"] * len(equipment_ids))
     site_differs_from_county_sql = """
@@ -1181,6 +1257,26 @@ def get_server_summary_metrics():
     cur.execute(
         """
         SELECT
+            SUM(CASE WHEN NU_TYPE = 1 AND NU_STATUS = 1 THEN 1 ELSE 0 END) AS BACKUP_QUEUE_FILES_TOTAL,
+            ROUND(
+                COALESCE(SUM(CASE WHEN NU_TYPE = 1 AND NU_STATUS = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0)
+                / 1024 / 1024,
+                2
+            ) AS BACKUP_QUEUE_GB_TOTAL,
+            SUM(CASE WHEN NU_TYPE = 2 AND NU_STATUS = 1 THEN 1 ELSE 0 END) AS PROCESSING_QUEUE_FILES_TOTAL,
+            ROUND(
+                COALESCE(SUM(CASE WHEN NU_TYPE = 2 AND NU_STATUS = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0)
+                / 1024 / 1024,
+                2
+            ) AS PROCESSING_QUEUE_GB_TOTAL
+        FROM FILE_TASK
+        """
+    )
+    queue_summary = cur.fetchone() or {}
+
+    cur.execute(
+        """
+        SELECT
             SUM(COALESCE(NU_DONE_FILE_DISCOVERY_TASKS, 0) + COALESCE(NU_ERROR_FILE_DISCOVERY_TASKS, 0)) AS DISCOVERED_FILES_TOTAL,
             SUM(COALESCE(NU_PENDING_FILE_BACKUP_TASKS, 0)) AS BACKUP_PENDING_FILES_TOTAL,
             ROUND(COALESCE(SUM(VL_PENDING_BACKUP_KB), 0) / 1024 / 1024, 2) AS BACKUP_PENDING_GB_TOTAL,
@@ -1213,16 +1309,19 @@ def get_server_summary_metrics():
         "CURRENT_MONTH_LABEL": current_month_start.strftime("%Y-%m"),
         "BACKUP_DONE_THIS_MONTH": int(monthly_summary.get("BACKUP_DONE_THIS_MONTH") or 0),
         "BACKUP_DONE_GB_THIS_MONTH": float(monthly_summary.get("BACKUP_DONE_GB_THIS_MONTH") or 0),
-        # The server page only needs current operational totals here. Pulling
-        # them from HOST avoids a full FILE_TASK_HISTORY scan on every cache
-        # refresh because HOST already stores the live per-station aggregates.
+        # HOST keeps the server-wide operational totals already consolidated
+        # per station, so these cards remain the broad "pending total" view.
         "DISCOVERED_FILES_TOTAL": int(host_summary.get("DISCOVERED_FILES_TOTAL") or 0),
         "BACKUP_PENDING_FILES_TOTAL": int(host_summary.get("BACKUP_PENDING_FILES_TOTAL") or 0),
         "BACKUP_PENDING_GB_TOTAL": float(host_summary.get("BACKUP_PENDING_GB_TOTAL") or 0),
         "BACKUP_ERROR_FILES_TOTAL": int(host_summary.get("BACKUP_ERROR_FILES_TOTAL") or 0),
+        "BACKUP_QUEUE_FILES_TOTAL": int(queue_summary.get("BACKUP_QUEUE_FILES_TOTAL") or 0),
+        "BACKUP_QUEUE_GB_TOTAL": float(queue_summary.get("BACKUP_QUEUE_GB_TOTAL") or 0),
+        "PROCESSING_PENDING_FILES_TOTAL": int(host_summary.get("PROCESSING_PENDING_FILES_TOTAL") or 0),
         "PROCESSING_DONE_FILES_TOTAL": int(host_summary.get("PROCESSING_DONE_FILES_TOTAL") or 0),
         "FACT_SPECTRUM_TOTAL": int(spectrum_summary.get("FACT_SPECTRUM_TOTAL") or 0),
-        "PROCESSING_PENDING_FILES_TOTAL": int(host_summary.get("PROCESSING_PENDING_FILES_TOTAL") or 0),
+        "PROCESSING_QUEUE_FILES_TOTAL": int(queue_summary.get("PROCESSING_QUEUE_FILES_TOTAL") or 0),
+        "PROCESSING_QUEUE_GB_TOTAL": float(queue_summary.get("PROCESSING_QUEUE_GB_TOTAL") or 0),
         "PROCESSING_ERROR_FILES_TOTAL": int(host_summary.get("PROCESSING_ERROR_FILES_TOTAL") or 0),
     }
 
@@ -1298,7 +1397,12 @@ def get_host_backup_error_overview(host_id):
 
 
 def get_host_location_history_overview(host_id):
-    """Return reconciled locality history for one host on demand."""
+    """Return reconciled locality history for one host on demand.
+
+    Routes call this helper with a numeric host id, but the reconciliation
+    logic itself works from the host name. Keeping that translation here keeps
+    the route layer thin.
+    """
 
     conn = get_connection()
     cur = conn.cursor()
@@ -1325,7 +1429,11 @@ def get_host_location_history_overview(host_id):
 
 
 def get_all_hosts(online_only=False, search=None):
-    """Return the host picker list used by the host page."""
+    """Return the host picker list used by the host page.
+
+    This is intentionally narrower than the server dashboard table because the
+    host page mainly needs a quick navigation list, not a full operational grid.
+    """
 
     cache_key = _build_host_list_cache_key(
         online_only=online_only,
@@ -1429,6 +1537,8 @@ def get_server_overview(online_only=False, search=None):
         _SERVER_OVERVIEW_CACHE["payload"] = dict(overview)
         _SERVER_OVERVIEW_CACHE["expires_at"] = now + SERVER_OVERVIEW_CACHE_TTL_SECONDS
 
+    # Runtime probes are appended after the cached SQL summary because they
+    # age faster than the historical counters and deserve a shorter TTL.
     runtime_overview = _get_runtime_overview()
     overview["SERVER_MEMORY"] = runtime_overview["memory"]
     overview["REPOSFI_USAGE"] = runtime_overview["reposfi"]
@@ -1512,6 +1622,7 @@ def get_host_statistics(host_id):
         current_month_start,
         next_month_start,
     )
+    queue_summary = _get_live_queue_summary_for_host(cur, normalized_host_id)
 
     row["CURRENT_MONTH_LABEL"] = current_month_start.strftime("%Y-%m")
     row["BACKUP_DONE_THIS_MONTH"] = int(history_summary.get("BACKUP_DONE_THIS_MONTH") or 0)
@@ -1523,12 +1634,16 @@ def get_host_statistics(host_id):
     row["BACKUP_DONE_GB_TOTAL"] = float(history_summary.get("BACKUP_DONE_GB_TOTAL") or 0)
     row["BACKUP_PENDING_FILES_TOTAL"] = int(history_summary.get("BACKUP_PENDING_FILES_TOTAL") or 0)
     row["BACKUP_PENDING_GB_TOTAL"] = float(history_summary.get("BACKUP_PENDING_GB_TOTAL") or 0)
+    row["BACKUP_QUEUE_FILES_TOTAL"] = int(queue_summary.get("BACKUP_QUEUE_FILES_TOTAL") or 0)
+    row["BACKUP_QUEUE_GB_TOTAL"] = float(queue_summary.get("BACKUP_QUEUE_GB_TOTAL") or 0)
     row["BACKUP_ERROR_FILES_TOTAL"] = int(history_summary.get("BACKUP_ERROR_FILES_TOTAL") or 0)
     row["BACKUP_ERROR_GB_TOTAL"] = float(history_summary.get("BACKUP_ERROR_GB_TOTAL") or 0)
     row["PROCESSING_DONE_FILES_TOTAL"] = int(history_summary.get("PROCESSING_DONE_FILES_TOTAL") or 0)
     row["PROCESSING_DONE_GB_TOTAL"] = float(history_summary.get("PROCESSING_DONE_GB_TOTAL") or 0)
     row["PROCESSING_PENDING_FILES_TOTAL"] = int(history_summary.get("PROCESSING_PENDING_FILES_TOTAL") or 0)
     row["PROCESSING_PENDING_GB_TOTAL"] = float(history_summary.get("PROCESSING_PENDING_GB_TOTAL") or 0)
+    row["PROCESSING_QUEUE_FILES_TOTAL"] = int(queue_summary.get("PROCESSING_QUEUE_FILES_TOTAL") or 0)
+    row["PROCESSING_QUEUE_GB_TOTAL"] = float(queue_summary.get("PROCESSING_QUEUE_GB_TOTAL") or 0)
     row["PROCESSING_ERROR_FILES_TOTAL"] = int(history_summary.get("PROCESSING_ERROR_FILES_TOTAL") or 0)
     row["PROCESSING_ERROR_GB_TOTAL"] = float(history_summary.get("PROCESSING_ERROR_GB_TOTAL") or 0)
 
@@ -1539,6 +1654,8 @@ def get_host_statistics(host_id):
     except Exception:
         row["FACT_SPECTRUM_TOTAL"] = 0
 
+    # One yearly grouped query feeds both backup and processing historical
+    # sections; splitting it afterward keeps the database pass single.
     yearly_breakdown = _get_yearly_status_breakdown_for_host(cur, normalized_host_id)
     row["BACKUP_YEARLY_BREAKDOWN"] = [
         {
@@ -1615,7 +1732,11 @@ def get_host_statistics(host_id):
 
 
 def get_hosts(search=None, online_only=False):
-    """Return the filtered host table used by the server dashboard."""
+    """Return the filtered host table used by the server dashboard.
+
+    Unlike `get_all_hosts()`, this table is meant for richer server-wide
+    navigation and therefore carries more operational columns.
+    """
 
     cache_key = _build_host_list_cache_key(
         online_only=online_only,

@@ -4,13 +4,7 @@ HTML_POPUP = """
 <head>
 <meta charset="utf-8">
 <title>RF.Fusion – Filtro de Arquivos</title>
-
-<style>
-body { font-family: Arial; margin: 20px; }
-label { display: block; margin-top: 10px; }
-fieldset { margin-top: 15px; padding: 10px; }
-pre { background: #f4f4f4; padding: 10px; }
-</style>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/popup_page.css', v='20260415-page-css-extraction') }}">
 
 <script>
 function updateMode() {

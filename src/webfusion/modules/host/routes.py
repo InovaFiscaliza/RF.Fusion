@@ -1,4 +1,13 @@
-"""Routes for the station-focused host page."""
+"""Routes for the station-focused host page.
+
+This module follows the common WebFusion pattern:
+
+- render the page shell once with the host selector
+- defer heavier diagnostics to focused JSON endpoints
+
+That keeps the first render lightweight while still allowing rich drill-down
+once the operator expands the host details.
+"""
 
 from flask import Blueprint, current_app, jsonify, render_template, request
 from modules.host.service import (

@@ -11,6 +11,8 @@ What is covered here:
       builder is still using auto-suggested defaults
     - explicit per-family overrides drive batch-specific path/extension values
     - explicit custom path/extension keeps a shared collective request intact
+    - stop/rollback tasks do not expose backlog-budget semantics
+    - stop/rollback tasks normalize unsupported filter modes to ALL
 """
 
 from __future__ import annotations
@@ -195,6 +197,73 @@ class TestTaskRoutes(unittest.TestCase):
         self.assertEqual(batches[0]["hosts"], [21, 22])
         self.assertEqual(batches[0]["filter_data"]["file_path"], "/custom/shared/path")
         self.assertEqual(batches[0]["filter_data"]["extension"], ".zip")
+
+    def test_task_type_supports_backlog_budget_only_for_backup_requests(self):
+        self.assertTrue(
+            self.module._task_type_supports_backlog_budget(
+                self.module.HOST_TASK_CHECK_TYPE
+            )
+        )
+        self.assertFalse(
+            self.module._task_type_supports_backlog_budget(
+                self.module.HOST_TASK_BACKLOG_ROLLBACK_TYPE
+            )
+        )
+
+    def test_filter_mode_supports_backlog_budget_hides_budget_for_none_and_rediscovery(self):
+        self.assertFalse(self.module._filter_mode_supports_backlog_budget("NONE"))
+        self.assertFalse(self.module._filter_mode_supports_backlog_budget("REDISCOVERY"))
+        self.assertTrue(self.module._filter_mode_supports_backlog_budget("ALL"))
+        self.assertTrue(self.module._filter_mode_supports_backlog_budget("RANGE"))
+
+    def test_selection_supports_backlog_budget_requires_supported_task_and_mode(self):
+        self.assertFalse(
+            self.module._selection_supports_backlog_budget(
+                self.module.HOST_TASK_CHECK_TYPE,
+                "NONE",
+            )
+        )
+        self.assertFalse(
+            self.module._selection_supports_backlog_budget(
+                self.module.HOST_TASK_CHECK_TYPE,
+                "REDISCOVERY",
+            )
+        )
+        self.assertFalse(
+            self.module._selection_supports_backlog_budget(
+                self.module.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+                "RANGE",
+            )
+        )
+        self.assertTrue(
+            self.module._selection_supports_backlog_budget(
+                self.module.HOST_TASK_CHECK_TYPE,
+                "LAST",
+            )
+        )
+
+    def test_normalize_filter_mode_for_stop_replaces_none_and_rediscovery(self):
+        self.assertEqual(
+            self.module._normalize_filter_mode_for_task_type(
+                "NONE",
+                self.module.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+            ),
+            "ALL",
+        )
+        self.assertEqual(
+            self.module._normalize_filter_mode_for_task_type(
+                "REDISCOVERY",
+                self.module.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+            ),
+            "ALL",
+        )
+        self.assertEqual(
+            self.module._normalize_filter_mode_for_task_type(
+                "RANGE",
+                self.module.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+            ),
+            "RANGE",
+        )
 
 
 if __name__ == "__main__":

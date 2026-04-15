@@ -12,7 +12,12 @@ from socket_client import send_socket_payload  # você vai criar
 
 
 def run_worker():
-    """Poll pending tasks and forward them to the socket layer."""
+    """Poll pending tasks and forward them to the socket layer.
+
+    This file is mainly useful as a reference bridge between the database task
+    contract and a socket-execution model. It is not part of the normal Flask
+    request lifecycle.
+    """
 
     while True:
         db = get_connection()

@@ -3,414 +3,7 @@
 {% block title %}RF.Fusion - Módulos{% endblock %}
 
 {% block extra_css %}
-<style>
-    html,
-    body {
-        overflow-y: auto !important;
-    }
-
-    body .layout.layout-top.fixed-header {
-        overflow: visible !important;
-    }
-
-    body .main-content {
-        overflow: visible !important;
-    }
-
-    .station-map-card {
-        overflow: visible;
-    }
-
-    .station-map-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 16px;
-        margin-bottom: 14px;
-    }
-
-    .station-map-toolbar {
-        display: grid;
-        grid-template-columns: minmax(180px, 220px) minmax(320px, 1fr) auto;
-        gap: 14px;
-        margin-bottom: 16px;
-        align-items: end;
-        position: relative;
-        z-index: 700;
-    }
-
-    .station-map-filter {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-    }
-
-    .station-map-select-wrap {
-        position: relative;
-    }
-
-    .station-map-select-wrap::after {
-        content: "";
-        position: absolute;
-        right: 14px;
-        top: 50%;
-        width: 10px;
-        height: 10px;
-        border-right: 2px solid #475569;
-        border-bottom: 2px solid #475569;
-        transform: translateY(-70%) rotate(45deg);
-        pointer-events: none;
-        opacity: 0.9;
-    }
-
-    .station-map-field-label {
-        font-size: 12px;
-        font-weight: 700;
-        color: #475569;
-        text-transform: uppercase;
-        letter-spacing: 0.02em;
-    }
-
-    .station-map-filter select {
-        width: 100%;
-        min-height: 42px;
-        border-radius: 10px;
-        padding: 0 40px 0 12px;
-        font-size: 13px;
-        appearance: none;
-        -webkit-appearance: none;
-        -moz-appearance: none;
-        cursor: pointer;
-    }
-
-    .station-map-filter input[type="text"] {
-        width: 100%;
-        min-height: 42px;
-        border-radius: 10px;
-        padding: 0 12px;
-        font-size: 13px;
-        box-sizing: border-box;
-    }
-
-    .station-map-combobox-wrap {
-        position: relative;
-        z-index: 750;
-    }
-
-    .station-map-combobox-wrap::after {
-        content: "";
-        position: absolute;
-        right: 14px;
-        top: 50%;
-        width: 10px;
-        height: 10px;
-        border-right: 2px solid #475569;
-        border-bottom: 2px solid #475569;
-        transform: translateY(-70%) rotate(45deg);
-        pointer-events: none;
-        opacity: 0.9;
-    }
-
-    .station-map-combobox {
-        padding-right: 38px !important;
-    }
-
-    .station-map-combobox::placeholder {
-        color: #64748b;
-    }
-
-    .station-map-combobox-menu {
-        position: absolute;
-        left: 0;
-        right: 0;
-        top: calc(100% + 6px);
-        z-index: 900;
-        max-height: 320px;
-        overflow-y: auto;
-        border: 1px solid #cbd5e1;
-        border-radius: 12px;
-        background: #ffffff;
-        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
-    }
-
-    .station-map-combobox-menu[hidden] {
-        display: none;
-    }
-
-    .station-map-combobox-option,
-    .station-map-combobox-empty {
-        width: 100%;
-        display: block;
-        padding: 11px 12px;
-        border: 0;
-        background: transparent;
-        text-align: left;
-        font-size: 13px;
-        color: #1e293b;
-    }
-
-    .station-map-combobox-option {
-        cursor: pointer;
-    }
-
-    .station-map-combobox-option:hover,
-    .station-map-combobox-option.is-active {
-        background: #eff6ff;
-        color: #1d4ed8;
-    }
-
-    .station-map-combobox-empty {
-        color: #64748b;
-    }
-
-    .station-map-checkbox {
-        display: inline-flex;
-        align-items: center;
-        gap: 10px;
-        min-height: 42px;
-        padding: 0 12px;
-        border-radius: 10px;
-        border: 1px solid #cbd5e1;
-        background: #ffffff;
-        cursor: pointer;
-        user-select: none;
-        white-space: nowrap;
-    }
-
-    .station-map-checkbox input {
-        accent-color: #1d4ed8;
-        cursor: pointer;
-    }
-
-    .station-map-checkbox-label {
-        font-size: 13px;
-        font-weight: 600;
-        color: #334155;
-    }
-
-    #station-map-online-only {
-        all: revert !important;
-        appearance: auto !important;
-        -webkit-appearance: checkbox !important;
-        display: inline-block !important;
-        position: static !important;
-        opacity: 1 !important;
-        visibility: visible !important;
-        width: 16px !important;
-        height: 16px !important;
-        margin: 0 !important;
-        accent-color: #1d4ed8;
-        cursor: pointer;
-    }
-
-    .station-map-meta {
-        color: #64748b;
-        font-size: 13px;
-    }
-
-    #station-map {
-        position: relative;
-        z-index: 1;
-        width: 100%;
-        height: 68vh;
-        min-height: 460px;
-        border-radius: 12px;
-        border: 1px solid #dbe3ee;
-        background: linear-gradient(180deg, #f7fafc 0%, #eef4fb 100%);
-    }
-
-    .map-legend {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 14px;
-        margin-top: 12px;
-        font-size: 12px;
-        color: #475569;
-    }
-
-    .legend-item {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-    }
-
-    .legend-swatch {
-        width: 12px;
-        height: 12px;
-        border-radius: 999px;
-        border: 1px solid rgba(15, 23, 42, 0.18);
-    }
-
-    .legend-online {
-        background: #1d9b5f;
-    }
-
-    .legend-offline {
-        background: #d97706;
-    }
-
-    .legend-unknown {
-        background: #2563eb;
-    }
-
-    .station-popup {
-        min-width: 250px;
-    }
-
-    .station-popup-title {
-        font-weight: 700;
-        font-size: 14px;
-        color: #0f172a;
-        margin-bottom: 6px;
-    }
-
-    .station-popup-meta {
-        font-size: 12px;
-        color: #475569;
-        margin-bottom: 10px;
-    }
-
-    .station-entry {
-        border-top: 1px solid #e2e8f0;
-        padding-top: 10px;
-        margin-top: 10px;
-    }
-
-    .station-entry:first-of-type {
-        border-top: 0;
-        padding-top: 0;
-        margin-top: 0;
-    }
-
-    .station-entry-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        margin-bottom: 8px;
-    }
-
-    .station-entry-name {
-        font-weight: 600;
-        color: #1e293b;
-        font-size: 13px;
-    }
-
-    .station-entry-context {
-        margin-bottom: 8px;
-        font-size: 12px;
-        color: #64748b;
-    }
-
-    .station-status {
-        display: inline-flex;
-        align-items: center;
-        padding: 2px 8px;
-        border-radius: 999px;
-        font-size: 11px;
-        font-weight: 600;
-    }
-
-    .station-status-online {
-        background: #dcfce7;
-        color: #166534;
-    }
-
-    .station-status-offline {
-        background: #ffedd5;
-        color: #9a3412;
-    }
-
-    .station-status-unknown {
-        background: #dbeafe;
-        color: #1d4ed8;
-    }
-
-    .station-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-    }
-
-    .station-action {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-width: 88px;
-        padding: 6px 10px;
-        border-radius: 8px;
-        background: #eff6ff;
-        color: #1d4ed8;
-        border: 1px solid #bfdbfe;
-        font-size: 12px;
-        font-weight: 600;
-        text-decoration: none;
-    }
-
-    .station-action:hover {
-        background: #dbeafe;
-    }
-
-    .module-card {
-        transition: 0.15s ease-in-out;
-        cursor: pointer;
-        height: 100%;
-    }
-
-    .module-link {
-        display: block;
-        height: 100%;
-        color: inherit;
-        text-decoration: none;
-    }
-
-    .module-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 10px rgba(0,0,0,0.06);
-    }
-
-    .module-icon {
-        font-size: 28px;
-    }
-
-    .module-description {
-        min-height: 40px;
-    }
-
-    .home-footer-note {
-        margin-top: 28px;
-        padding: 8px 32px 0;
-        font-size: 12px;
-        color: #64748b;
-        text-align: center;
-    }
-
-    .module-grid {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 20px;
-        padding-left: 32px;
-        padding-right: 32px;
-        box-sizing: border-box;
-    }
-
-    @media (max-width: 880px) {
-        .station-map-toolbar {
-            grid-template-columns: 1fr;
-        }
-
-        .module-grid {
-            grid-template-columns: 1fr;
-            padding-left: 0;
-            padding-right: 0;
-        }
-
-        .home-footer-note {
-            padding-left: 0;
-            padding-right: 0;
-        }
-    }
-</style>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/index_page.css', v='20260415-page-css-extraction') }}">
 <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -421,6 +14,9 @@
 
 {% block content %}
 
+{# Home combines two roles in one page:
+   1. a quick operational map of stations/localities
+   2. the primary navigation grid for the WebFusion modules. #}
 <h1 class="margin-bottom-l">
     Módulos do Sistema
 </h1>
@@ -430,7 +26,7 @@
         <div>
             <div class="font-semi-bold">Mapa das Estações</div>
             <div class="station-map-meta">
-                Visão de estação por localidade, disponível apenas para estações com binários já processados.
+                Visão de estação por localidade, disponível apenas para estações com arquivos já processados.
             </div>
         </div>
         <div class="station-map-meta">
@@ -438,6 +34,9 @@
         </div>
     </div>
 
+    {# Toolbar controls are data-driven by the summary map payload. Only the
+       state/station options are rebuilt em JS, while the scope controls below
+       stay intentionally static. #}
     <div class="station-map-toolbar">
         <div class="station-map-filter">
             <label class="station-map-field-label" for="station-map-state-filter">Estado</label>
@@ -450,6 +49,9 @@
         <div class="station-map-filter">
             <label class="station-map-field-label" for="station-map-site-filter">Estação</label>
             <div class="station-map-combobox-wrap">
+                {# This is not a native select. The JS turns it into a
+                   searchable combobox so users can find a point by station or
+                   geography without downloading a massive option list first. #}
                 <input
                     type="text"
                     id="station-map-site-filter"
@@ -461,37 +63,54 @@
             </div>
         </div>
         <div class="station-map-filter">
-            <div class="station-map-field-label">&nbsp;</div>
-            <label class="station-map-checkbox" for="station-map-online-only">
-                <input type="checkbox" id="station-map-online-only">
-                <span class="station-map-checkbox-label">Apenas Online</span>
-            </label>
+            <label class="station-map-field-label" for="station-map-theme-select">Tema do mapa</label>
+            <div class="station-map-select-wrap">
+                <select id="station-map-theme-select">
+                    <option value="classic">Clássico</option>
+                    <option value="light">Claro</option>
+                    <option value="dark">Escuro</option>
+                    <option value="satellite">Satélite</option>
+                </select>
+            </div>
+        </div>
+        <div class="station-map-filter">
+            <label class="station-map-field-label" for="station-map-status-filter">Status</label>
+            <div class="station-map-select-wrap">
+                <select id="station-map-status-filter">
+                    <option value="all">Todos</option>
+                    <option value="online_only">Apenas online</option>
+                    <option value="offline_only">Apenas offline</option>
+                </select>
+            </div>
+        </div>
+        <div class="station-map-filter">
+            <label class="station-map-field-label" for="station-map-locality-filter">Localidades</label>
+            <div class="station-map-select-wrap">
+                <select id="station-map-locality-filter">
+                    <option value="include_history">Todas</option>
+                    <option value="current_only">Apenas atuais</option>
+                    <option value="historical_only">Apenas históricas</option>
+                </select>
+            </div>
         </div>
     </div>
 
+    {# Leaflet mounts the interactive map into this container. Point data comes
+       from `/api/map/stations`, while popup details are lazy-loaded per site. #}
     <div id="station-map"></div>
 
-    <div class="map-legend">
-        <span class="legend-item">
-            <span class="legend-swatch legend-online"></span>
-            Host online disponível
-        </span>
-        <span class="legend-item">
-            <span class="legend-swatch legend-offline"></span>
-            Apenas hosts offline
-        </span>
-        <span class="legend-item">
-            <span class="legend-swatch legend-unknown"></span>
-            Sem host vinculado
-        </span>
-    </div>
+    {# The legend is filled dynamically so only marker states present in the
+       current filtered view are shown. #}
+    <div id="station-map-legend" class="map-legend" hidden></div>
 </div>
 
+{# The module grid is intentionally hand-curated instead of generated from a
+   registry because each card also carries copy and loading messaging. #}
 <div class="module-grid">
 
     <!-- ======================= SPECTRUM ======================= -->
     <div>
-        <a href="{{ url_for('spectrum.spectrum') }}" class="module-link" data-loading-message="Abrindo consulta de binários...">
+        <a href="{{ url_for('spectrum.spectrum') }}" class="module-link" data-loading-message="Abrindo consulta de arquivos...">
             <div class="card background-neutral-0 padding-l border-radius-m module-card">
 
                 <div class="display-flex align-items-center gap-m">
@@ -502,7 +121,7 @@
 
                     <div>
                         <div class="font-semi-bold">
-                            Consulta de Binários
+                            Consulta de Arquivos
                         </div>
                         <div class="font-size-s text-neutral-6 margin-top-xs module-description">
                             Pesquisa, paginação e download de espectros coletados.
@@ -517,7 +136,7 @@
 
     <!-- ======================= HOST ======================= -->
     <div>
-        <a href="{{ url_for('server.server') }}" class="module-link" data-loading-message="Carregando panorama do servidor...">
+        <a href="{{ url_for('server.server') }}" class="module-link" data-loading-message="Carregando panorama da máquina virtual...">
             <div class="card background-neutral-0 padding-l border-radius-m module-card">
 
                 <div class="display-flex align-items-center gap-m">
@@ -528,7 +147,7 @@
 
                     <div>
                         <div class="font-semi-bold">
-                            Panorama do Servidor
+                            Panorama da Máquina Virtual
                         </div>
                         <div class="font-size-s text-neutral-6 margin-top-xs module-description">
                             Consolidado global, infraestrutura compartilhada e visão agregada das estações.
@@ -595,720 +214,16 @@
 
 </div>
 
-<div class="home-footer-note">
-    Desenvolvido por LITE - Laboratório de Inovação Tecnológica - ANATEL
-</div>
-
 {% endblock %}
 
 {% block extra_js %}
+{# Leaflet is loaded only on this page because the station map is the only
+   index-specific interactive dependency. Page behavior then lives in the
+   dedicated static controller instead of inline script. #}
 <script
     src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
 ></script>
-<script>
-    (function () {
-        const ALL_SITES_LABEL = "Todas as estações";
-        const defaultCenter = [-14.2350, -51.9253];
-        const brazilBounds = [[-35.5, -74.5], [7.5, -29.0]];
-        const pointCount = document.getElementById("station-map-count");
-        const stateFilter = document.getElementById("station-map-state-filter");
-        const siteFilter = document.getElementById("station-map-site-filter");
-        const siteMenu = document.getElementById("station-map-site-menu");
-        const onlineOnlyToggle = document.getElementById("station-map-online-only");
-        const map = L.map("station-map", {
-            preferCanvas: true,
-            zoomControl: true,
-            scrollWheelZoom: true,
-            minZoom: 3,
-            maxBounds: brazilBounds,
-            maxBoundsViscosity: 1.0,
-            worldCopyJump: false
-        }).setView(defaultCenter, 4);
-        const markerLayer = L.layerGroup().addTo(map);
-        let allStationPoints = [];
-        let warmCycleId = 0;
-        let rerenderTimer = null;
-        let siteOptionRecords = [];
-        let siteOptionIndex = new Map();
-        let selectedSiteId = "";
-
-        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-            maxZoom: 18,
-            noWrap: true,
-            attribution: "&copy; OpenStreetMap contributors"
-        }).addTo(map);
-
-        const bounds = [];
-
-        function escapeHtml(value) {
-            return String(value ?? "")
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/\"/g, "&quot;")
-                .replace(/'/g, "&#39;");
-        }
-
-        function normalizeSearchText(value) {
-            return String(value || "")
-                .normalize("NFD")
-                .replace(/[\u0300-\u036f]/g, "")
-                .trim()
-                .toLowerCase();
-        }
-
-        function isDistinctText(value, reference) {
-            return Boolean(value) && normalizeSearchText(value) !== normalizeSearchText(reference);
-        }
-
-        function getPointSearchText(point) {
-            const parts = [
-                point.site_label,
-                point.county_name,
-                point.district_name,
-                getPointDisplayName(point)
-            ];
-
-            if (Array.isArray(point.stations)) {
-                point.stations.forEach((station) => {
-                    parts.push(station.host_name || station.equipment_name || "");
-                });
-            }
-
-            return normalizeSearchText(parts.join(" "));
-        }
-
-        function getPointCountyStateLabel(point) {
-            if (point.county_name && point.state_code) {
-                return `${point.county_name}/${point.state_code}`;
-            }
-
-            if (point.county_name) {
-                return point.county_name;
-            }
-
-            return point.state_code || "";
-        }
-
-        function getPointLocalityLabel(point) {
-            const countyState = getPointCountyStateLabel(point);
-
-            if (point.site_label && countyState && point.site_label !== point.county_name) {
-                return `${point.site_label} · ${countyState}`;
-            }
-
-            if (point.site_label && !countyState) {
-                return point.site_label;
-            }
-
-            return countyState || point.site_label;
-        }
-
-        function getPointOptionBaseLabel(point) {
-            const pointLabel = getPointDisplayName(point);
-            const countyState = getPointCountyStateLabel(point);
-
-            if (countyState) {
-                return `${pointLabel} · ${countyState}`;
-            }
-
-            return pointLabel;
-        }
-
-        function getPointOptionDisambiguator(point) {
-            if (isDistinctText(point.district_name, point.county_name)) {
-                return point.district_name;
-            }
-
-            if (isDistinctText(point.site_label, point.county_name) && isDistinctText(point.site_label, point.district_name)) {
-                return point.site_label;
-            }
-
-            return `ponto ${point.site_id}`;
-        }
-
-        function getSelectedSiteId() {
-            return selectedSiteId;
-        }
-
-        function stationStatusClass(station) {
-            if (station.host_id === null || station.host_id === undefined) {
-                return "station-status-unknown";
-            }
-
-            return station.is_offline ? "station-status-offline" : "station-status-online";
-        }
-
-        function stationStatusLabel(station) {
-            if (station.host_id === null || station.host_id === undefined) {
-                return "Sem host";
-            }
-
-            return station.is_offline ? "Offline" : "Online";
-        }
-
-        function markerColor(point) {
-            if (point.has_online_host) {
-                return "#1d9b5f";
-            }
-
-            if (point.has_known_host) {
-                return "#d97706";
-            }
-
-            return "#2563eb";
-        }
-
-        function buildPopupHtml(point) {
-            const meta = [
-                `ID_SITE ${point.site_id}`,
-                getPointLocalityLabel(point) ? `Localidade ${getPointLocalityLabel(point)}` : null,
-                point.altitude !== null && point.altitude !== undefined ? `Alt ${point.altitude} m` : null,
-                point.gnss_measurements ? `${point.gnss_measurements} medições GNSS` : null
-            ].filter(Boolean).join(" | ");
-
-            if (point.loadingDetails) {
-                return `
-                    <div class="station-popup">
-                        <div class="station-popup-title">${escapeHtml(point.site_label)}</div>
-                        <div class="station-popup-meta">${escapeHtml(meta)}</div>
-                        <div class="station-popup-meta">Carregando ações da estação...</div>
-                    </div>
-                `;
-            }
-
-            if (point.detailsError) {
-                return `
-                    <div class="station-popup">
-                        <div class="station-popup-title">${escapeHtml(point.site_label)}</div>
-                        <div class="station-popup-meta">${escapeHtml(meta)}</div>
-                        <div class="station-popup-meta">Nao foi possivel carregar os detalhes desta estação.</div>
-                    </div>
-                `;
-            }
-
-            if (!Array.isArray(point.stations) || point.stations.length === 0) {
-                return `
-                    <div class="station-popup">
-                        <div class="station-popup-title">${escapeHtml(point.site_label)}</div>
-                        <div class="station-popup-meta">${escapeHtml(meta)}</div>
-                        <div class="station-popup-meta">Sem equipamento/host vinculado para ações rápidas.</div>
-                    </div>
-                `;
-            }
-
-            const entries = point.stations.map((station) => {
-                const equipmentName = escapeHtml(station.equipment_name || "Equipamento");
-                const localityContext = escapeHtml(getPointLocalityLabel(point) || "Localidade não identificada");
-                const hostHref = station.host_id ? `/host?host_id=${station.host_id}&online_only=0` : null;
-                const hostSearchHref = !station.host_id && station.equipment_name
-                    ? `/host?search=${encodeURIComponent(station.equipment_name)}&online_only=0`
-                    : null;
-                const taskHref = station.host_id ? `/task/?host_id=${station.host_id}&online_only=0` : null;
-                const spectrumHref = station.equipment_id
-                    ? `/spectrum?equipment_id=${station.equipment_id}&site_id=${point.site_id}&sort_by=date_start&sort_order=DESC`
-                    : null;
-
-                return `
-                    <div class="station-entry">
-                        <div class="station-entry-header">
-                            <span class="station-entry-name">${equipmentName}</span>
-                            <span class="station-status ${stationStatusClass(station)}">${stationStatusLabel(station)}</span>
-                        </div>
-                        <div class="station-entry-context">${localityContext}</div>
-                        <div class="station-actions">
-                            ${spectrumHref ? `<a class="station-action" href="${spectrumHref}" data-loading-message="Abrindo consulta de binários...">Binários</a>` : ""}
-                            ${hostHref ? `<a class="station-action" href="${hostHref}" data-loading-message="Carregando panorama da estação...">Host</a>` : ""}
-                            ${hostSearchHref ? `<a class="station-action" href="${hostSearchHref}" data-loading-message="Abrindo consulta de host...">Buscar Host</a>` : ""}
-                            ${taskHref ? `<a class="station-action" href="${taskHref}" data-loading-message="Abrindo criação de task...">Criar Task</a>` : ""}
-                        </div>
-                    </div>
-                `;
-            }).join("");
-
-            return `
-                <div class="station-popup">
-                    <div class="station-popup-title">${escapeHtml(point.site_label)}</div>
-                    <div class="station-popup-meta">${escapeHtml(meta)}</div>
-                    ${entries}
-                </div>
-            `;
-        }
-
-        function updateMarkerColor(marker, point) {
-            marker.setStyle({
-                fillColor: markerColor(point)
-            });
-        }
-
-        function loadPointDetails(point, marker) {
-            if (point.detailsLoaded) {
-                return Promise.resolve(point);
-            }
-
-            if (point.loadingPromise) {
-                return point.loadingPromise;
-            }
-
-            point.loadingDetails = true;
-            marker.setPopupContent(buildPopupHtml(point));
-
-            point.loadingPromise = fetch(`/api/map/stations/${point.site_id}`)
-                .then((response) => response.json())
-                .then((payload) => {
-                    point.loadingDetails = false;
-                    point.detailsLoaded = true;
-                    point.detailsError = false;
-                    point.stations = Array.isArray(payload.stations) ? payload.stations : [];
-                    point.has_online_host = Boolean(payload.has_online_host);
-                    point.has_known_host = Boolean(payload.has_known_host);
-                    updateMarkerColor(marker, point);
-                    marker.setPopupContent(buildPopupHtml(point));
-                    populateSiteFilter(allStationPoints, stateFilter.value);
-
-                    if (onlineOnlyToggle.checked) {
-                        scheduleFilteredRerender();
-                    }
-
-                    return point;
-                })
-                .catch(() => {
-                    point.loadingDetails = false;
-                    point.detailsError = true;
-                    marker.setPopupContent(buildPopupHtml(point));
-                    return point;
-                })
-                .finally(() => {
-                    point.loadingPromise = null;
-                });
-
-            return point.loadingPromise;
-        }
-
-        function ensurePointDetails(point, marker) {
-            if (point.detailsLoaded || point.loadingDetails) {
-                return;
-            }
-
-            loadPointDetails(point, marker);
-        }
-
-        function warmStationDetails(points) {
-            const cycleId = ++warmCycleId;
-            const queue = points.filter((point) => point && point._marker);
-            const total = queue.length;
-            const concurrency = 6;
-            let active = 0;
-            let cursor = 0;
-            let completed = 0;
-
-            if (total === 0) {
-                return;
-            }
-
-            function updateProgress() {
-                if (cycleId !== warmCycleId) {
-                    return;
-                }
-                pointCount.textContent = `${total} ponto(s) plotado(s) | estados ${completed}/${total}`;
-            }
-
-            function scheduleNext() {
-                if (cycleId !== warmCycleId) {
-                    return;
-                }
-
-                while (active < concurrency && cursor < total) {
-                    const point = queue[cursor++];
-                    active += 1;
-
-                    loadPointDetails(point, point._marker)
-                        .finally(() => {
-                            if (cycleId !== warmCycleId) {
-                                return;
-                            }
-
-                            active -= 1;
-                            completed += 1;
-                            updateProgress();
-
-                            if (completed === total) {
-                                pointCount.textContent = `${total} ponto(s) plotado(s)`;
-                                return;
-                            }
-
-                            window.setTimeout(scheduleNext, 80);
-                        });
-                }
-            }
-
-            updateProgress();
-            window.setTimeout(scheduleNext, 150);
-        }
-
-        function addPointToMap(point) {
-            if (typeof point.latitude !== "number" || typeof point.longitude !== "number") {
-                return;
-            }
-
-            const marker = L.circleMarker([point.latitude, point.longitude], {
-                radius: 7,
-                color: "#ffffff",
-                weight: 2,
-                fillColor: markerColor(point),
-                fillOpacity: 0.95
-            }).addTo(markerLayer);
-
-            point._marker = marker;
-
-            marker.bindPopup(buildPopupHtml(point), {
-                closeButton: false,
-                autoClose: false,
-                closeOnClick: false,
-                className: "station-popup-container"
-            });
-
-            let closeTimer = null;
-
-            function cancelClose() {
-                if (closeTimer) {
-                    window.clearTimeout(closeTimer);
-                    closeTimer = null;
-                }
-            }
-
-            function scheduleClose() {
-                cancelClose();
-                closeTimer = window.setTimeout(() => marker.closePopup(), 180);
-            }
-
-            marker.on("mouseover", function () {
-                cancelClose();
-                ensurePointDetails(point, marker);
-                marker.openPopup();
-            });
-
-            marker.on("mouseout", scheduleClose);
-
-            marker.on("popupopen", function (event) {
-                ensurePointDetails(point, marker);
-                const popupElement = event.popup.getElement();
-                if (!popupElement) {
-                    return;
-                }
-
-                popupElement.addEventListener("mouseenter", cancelClose);
-                popupElement.addEventListener("mouseleave", scheduleClose);
-            });
-
-            marker.bindTooltip(getPointOptionBaseLabel(point), {
-                direction: "top",
-                offset: [0, -8],
-                opacity: 0.95
-            });
-
-            bounds.push([point.latitude, point.longitude]);
-        }
-
-        function sortSites(points) {
-            return [...points].sort((a, b) => {
-                const labelA = String(getPointDisplayName(a) || "").toLowerCase();
-                const labelB = String(getPointDisplayName(b) || "").toLowerCase();
-
-                if (labelA === labelB) {
-                    return a.site_id - b.site_id;
-                }
-
-                return labelA.localeCompare(labelB, "pt-BR");
-            });
-        }
-
-        function getPointDisplayName(point) {
-            if (Array.isArray(point.stations) && point.stations.length > 0) {
-                const namedStations = point.stations
-                    .map((station) => station.host_name || station.equipment_name)
-                    .filter(Boolean);
-
-                if (namedStations.length === 1) {
-                    return namedStations[0];
-                }
-
-                if (namedStations.length > 1) {
-                    return `${namedStations[0]} (+${namedStations.length - 1})`;
-                }
-            }
-
-            return point.site_label;
-        }
-
-        function populateStateFilter(points) {
-            const states = [...new Map(
-                points
-                    .filter((point) => point.state_code)
-                    .map((point) => [
-                        point.state_code,
-                        {
-                            code: point.state_code,
-                            name: point.state_name || point.state_code,
-                        }
-                    ])
-            ).values()].sort((a, b) => a.code.localeCompare(b.code, "pt-BR"));
-
-            stateFilter.innerHTML = '<option value="">Todos os estados</option>';
-
-            states.forEach((state) => {
-                const option = document.createElement("option");
-                option.value = state.code;
-                option.textContent = `${state.code} - ${state.name}`;
-                stateFilter.appendChild(option);
-            });
-        }
-
-        function populateSiteFilter(points, selectedStateCode) {
-            const filteredByState = selectedStateCode
-                ? points.filter((point) => point.state_code === selectedStateCode)
-                : points;
-            const sortedPoints = sortSites(filteredByState);
-            const baseLabelCounts = new Map();
-
-            sortedPoints.forEach((point) => {
-                const baseLabel = getPointOptionBaseLabel(point);
-                baseLabelCounts.set(baseLabel, (baseLabelCounts.get(baseLabel) || 0) + 1);
-            });
-
-            siteOptionRecords = [];
-            siteOptionIndex = new Map();
-            siteOptionRecords.push({site_id: "", label: ALL_SITES_LABEL});
-
-            sortedPoints.forEach((point) => {
-                const baseLabel = getPointOptionBaseLabel(point);
-                const optionLabel = baseLabelCounts.get(baseLabel) > 1
-                    ? `${baseLabel} · ${getPointOptionDisambiguator(point)}`
-                    : baseLabel;
-                siteOptionRecords.push({
-                    site_id: String(point.site_id),
-                    label: optionLabel
-                });
-                siteOptionIndex.set(normalizeSearchText(optionLabel), String(point.site_id));
-            });
-
-            if (selectedSiteId) {
-                const selectedOption = siteOptionRecords.find((option) => option.site_id === String(selectedSiteId));
-
-                if (selectedOption) {
-                    siteFilter.value = selectedOption.label;
-                } else {
-                    selectedSiteId = "";
-                }
-            }
-
-            renderSiteMenu();
-        }
-
-        function renderSiteMenu() {
-            if (!siteMenu) {
-                return;
-            }
-
-            const searchTerm = normalizeSearchText(siteFilter.value);
-            const visibleOptions = siteOptionRecords.filter((option) => {
-                if (!option.site_id) {
-                    return true;
-                }
-
-                if (!searchTerm) {
-                    return true;
-                }
-
-                return normalizeSearchText(option.label).includes(searchTerm);
-            }).slice(0, 120);
-
-            if (visibleOptions.length === 0) {
-                siteMenu.innerHTML = '<div class="station-map-combobox-empty">Nenhuma estação encontrada para esse filtro.</div>';
-                return;
-            }
-
-            siteMenu.innerHTML = visibleOptions.map((option) => {
-                const isActive = option.site_id && option.site_id === String(selectedSiteId);
-                return `
-                    <button
-                        type="button"
-                        class="station-map-combobox-option${isActive ? " is-active" : ""}"
-                        data-site-option="${option.site_id}"
-                    >
-                        ${escapeHtml(option.label)}
-                    </button>
-                `;
-            }).join("");
-        }
-
-        function openSiteMenu() {
-            renderSiteMenu();
-            siteMenu.hidden = false;
-        }
-
-        function closeSiteMenu() {
-            siteMenu.hidden = true;
-        }
-
-        function applySiteSelection(siteId, label) {
-            selectedSiteId = String(siteId || "");
-            siteFilter.value = selectedSiteId ? label : "";
-            closeSiteMenu();
-            renderFilteredPoints();
-        }
-
-        function getFilteredPoints() {
-            const selectedStateCode = stateFilter.value;
-            const selectedSiteId = getSelectedSiteId();
-            const siteSearchTerm = selectedSiteId
-                ? ""
-                : normalizeSearchText(siteFilter.value) === normalizeSearchText(ALL_SITES_LABEL)
-                ? ""
-                : normalizeSearchText(siteFilter.value);
-            const onlineOnly = onlineOnlyToggle.checked;
-
-            return allStationPoints.filter((point) => {
-                if (selectedStateCode && point.state_code !== selectedStateCode) {
-                    return false;
-                }
-
-                if (selectedSiteId) {
-                    if (String(point.site_id) !== selectedSiteId) {
-                        return false;
-                    }
-                } else if (siteSearchTerm && !getPointSearchText(point).includes(siteSearchTerm)) {
-                    return false;
-                }
-
-                if (onlineOnly && point.detailsLoaded && !point.has_online_host) {
-                    return false;
-                }
-
-                return true;
-            });
-        }
-
-        function renderFilteredPoints(options = {}) {
-            const warmDetails = options.warmDetails !== false;
-            const filteredPoints = getFilteredPoints();
-            markerLayer.clearLayers();
-            bounds.length = 0;
-
-            filteredPoints.forEach((point) => addPointToMap(point));
-
-            pointCount.textContent = `${filteredPoints.length} ponto(s) plotado(s)`;
-
-            if (filteredPoints.length > 0 && bounds.length > 0) {
-                map.fitBounds(bounds, {
-                    padding: [30, 30],
-                    maxZoom: getSelectedSiteId() ? 11 : 8
-                });
-            } else {
-                map.setView(defaultCenter, 4);
-            }
-
-            if (warmDetails) {
-                warmStationDetails(filteredPoints);
-            }
-        }
-
-        function scheduleFilteredRerender() {
-            if (rerenderTimer) {
-                window.clearTimeout(rerenderTimer);
-            }
-
-            rerenderTimer = window.setTimeout(() => {
-                rerenderTimer = null;
-                renderFilteredPoints({warmDetails: false});
-            }, 120);
-        }
-
-        stateFilter.addEventListener("change", () => {
-            selectedSiteId = "";
-            siteFilter.value = "";
-            populateSiteFilter(allStationPoints, stateFilter.value);
-            renderFilteredPoints();
-        });
-
-        siteFilter.addEventListener("focus", () => {
-            openSiteMenu();
-        });
-
-        siteFilter.addEventListener("input", () => {
-            selectedSiteId = siteOptionIndex.get(normalizeSearchText(siteFilter.value)) || "";
-            openSiteMenu();
-            renderFilteredPoints();
-        });
-
-        siteFilter.addEventListener("change", () => {
-            const normalizedValue = normalizeSearchText(siteFilter.value);
-
-            if (!normalizedValue || normalizedValue === normalizeSearchText(ALL_SITES_LABEL)) {
-                selectedSiteId = "";
-                siteFilter.value = "";
-            } else if (siteOptionIndex.has(normalizedValue)) {
-                selectedSiteId = siteOptionIndex.get(normalizedValue) || "";
-            }
-
-            closeSiteMenu();
-            renderFilteredPoints();
-        });
-
-        siteFilter.addEventListener("keydown", (event) => {
-            if (event.key === "Escape") {
-                closeSiteMenu();
-            }
-
-            if (event.key === "Enter") {
-                const normalizedValue = normalizeSearchText(siteFilter.value);
-                const matchedSiteId = siteOptionIndex.get(normalizedValue) || "";
-
-                if (matchedSiteId) {
-                    event.preventDefault();
-                    applySiteSelection(matchedSiteId, siteFilter.value);
-                }
-            }
-        });
-
-        siteMenu.addEventListener("mousedown", (event) => {
-            const button = event.target.closest("[data-site-option]");
-
-            if (!button) {
-                return;
-            }
-
-            event.preventDefault();
-            applySiteSelection(
-                button.getAttribute("data-site-option"),
-                button.textContent.trim()
-            );
-        });
-
-        document.addEventListener("click", (event) => {
-            if (!event.target.closest(".station-map-combobox-wrap")) {
-                closeSiteMenu();
-            }
-        });
-
-        onlineOnlyToggle.addEventListener("change", () => {
-            renderFilteredPoints();
-        });
-
-        fetch("/api/map/stations")
-            .then((response) => response.json())
-            .then((payload) => {
-                const stationPoints = Array.isArray(payload.points) ? payload.points : [];
-                allStationPoints = stationPoints;
-                populateStateFilter(allStationPoints);
-                populateSiteFilter(allStationPoints, "");
-                renderFilteredPoints();
-            })
-            .catch(() => {
-                pointCount.textContent = "Mapa em modo degradado";
-            });
-    })();
-</script>
+<script src="{{ url_for('static', filename='js/index_map.js', v='20260414-map-zoom-focus-markers') }}"></script>
 {% endblock %}

@@ -1,4 +1,9 @@
-"""Routes for the server-wide operational dashboard."""
+"""Routes for the server-wide operational dashboard.
+
+The server page mixes one server-rendered dashboard shell with several lazy
+JSON endpoints. The initial route stays fast, while the heavier panels are only
+computed when the operator actually opens them.
+"""
 
 from datetime import datetime
 
@@ -17,7 +22,11 @@ server_bp = Blueprint("server", __name__)
 
 
 def _serialize_host_rows(rows):
-    """Normalize host-table rows for JSON transport to the browser."""
+    """Normalize host-table rows for JSON transport to the browser.
+
+    Jinja can render Python datetimes directly on the initial page load, but
+    browser-side rendering of lazy table data needs plain JSON-friendly values.
+    """
 
     serialized = []
 
@@ -104,7 +113,11 @@ def server_summary_metrics():
                 "DISCOVERED_FILES_TOTAL": 0,
                 "BACKUP_PENDING_FILES_TOTAL": 0,
                 "BACKUP_ERROR_FILES_TOTAL": 0,
+                "BACKUP_QUEUE_FILES_TOTAL": 0,
+                "BACKUP_QUEUE_GB_TOTAL": 0,
                 "PROCESSING_PENDING_FILES_TOTAL": 0,
+                "PROCESSING_QUEUE_FILES_TOTAL": 0,
+                "PROCESSING_QUEUE_GB_TOTAL": 0,
                 "PROCESSING_DONE_FILES_TOTAL": 0,
                 "FACT_SPECTRUM_TOTAL": 0,
                 "PROCESSING_ERROR_FILES_TOTAL": 0,
@@ -115,7 +128,11 @@ def server_summary_metrics():
 
 @server_bp.route("/api/server/hosts", methods=["GET"])
 def server_hosts():
-    """Return the filtered station table only when the panel is expanded."""
+    """Return the filtered station table only when the panel is expanded.
+
+    This endpoint exists so navigation filters can affect only the host table,
+    without changing the meaning of the server-wide summary cards.
+    """
 
     search = request.args.get("search") or None
     online_only = request.args.get("online_only", "0") == "1"

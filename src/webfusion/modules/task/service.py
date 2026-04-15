@@ -1,4 +1,9 @@
-"""Task-creation helpers for the WebFusion task builder."""
+"""Task-creation helpers for the WebFusion task builder.
+
+The route layer handles HTTP and form semantics; this module handles the queue
+contract. In practice that means turning normalized form input into durable
+`HOST_TASK` rows without creating endless duplicate logical work.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +30,7 @@ EXPOSED_TASK_TYPES = {
     HOST_TASK_CHECK_TYPE: "Solicitar Backup",
     HOST_TASK_BACKLOG_ROLLBACK_TYPE: "Retirar da Fila de Backup",
 }
+
 
 def _serialize_filter(filter_value: Any) -> str:
     """Return a deterministic JSON representation for HOST_TASK.FILTER."""
@@ -55,7 +61,11 @@ def _select_candidate_host_tasks(db, host_id, task_type):
 
 
 def _find_reusable_singleton_host_task(tasks):
-    """Mirror appCataloga's singleton-per-host-type reuse rule."""
+    """Mirror appCataloga's singleton-per-host-type reuse rule.
+
+    WebFusion follows the backend rule of reusing the logical row for one
+    `host + task type` pair instead of inserting a fresh row every time.
+    """
     pending = next(
         (task for task in tasks if task.get("NU_STATUS") == TASK_PENDING),
         None,
@@ -169,7 +179,11 @@ def _build_task_action_name(task_type, mode):
 
 
 def create_task(db, hosts, task_type, mode, filter_data):
-    """Create or refresh one or more HOST_TASK rows exposed by the UI."""
+    """Create or refresh one or more HOST_TASK rows exposed by the UI.
+
+    A single browser submission can fan out into multiple host-specific queue
+    updates, especially for collective execution.
+    """
 
     if task_type not in EXPOSED_TASK_TYPES:
         raise ValueError("WebFusion only exposes backup and stop tasks.")

@@ -23,6 +23,10 @@ ALLOWED_SORT_FIELDS = {
     "trace_count": "f.NU_TRACE_COUNT"
 }
 
+# These maps act as the server-side contract for URL/query-string sort options.
+# Keeping them explicit here prevents the route layer from interpolating raw
+# field names into SQL and makes it clear which columns the UI is allowed to
+# expose as sortable.
 ALLOWED_SORT_ORDERS = ["ASC", "DESC"]
 
 ALLOWED_FILE_SORT_FIELDS = {
@@ -36,6 +40,9 @@ SPECTRUM_QUERY_CACHE_TTL_SECONDS = 30
 EQUIPMENT_CACHE_TTL_SECONDS = 300
 FILE_PATH_CACHE_TTL_SECONDS = 300
 
+# These are intentionally tiny in-process caches. They smooth repeated clicks
+# and back/forward navigation in one worker process, but they are not meant to
+# be treated as a shared or authoritative cache layer.
 _EQUIPMENT_CACHE = {"expires_at": 0.0, "value": None}
 _SPECTRUM_QUERY_CACHE = {}
 _FILE_PATH_CACHE = {}
@@ -151,7 +158,17 @@ def _build_fact_filters(
     include_freq=True,
     include_description=True,
 ):
-    """Build reusable ``FACT_SPECTRUM`` WHERE clauses."""
+    """Build reusable ``FACT_SPECTRUM`` WHERE clauses.
+
+    The spectrum page has two personalities:
+
+    - spectrum mode: one row per spectrum, so frequency/description are valid
+    - file mode: one row per repository file, so those filters would be
+      misleading because one file may contain multiple different spectra
+
+    ``include_freq`` and ``include_description`` let the callers reuse the same
+    filter builder while staying faithful to the semantics of each mode.
+    """
 
     where_clauses = []
     params = []
@@ -172,12 +189,16 @@ def _build_fact_filters(
         where_clauses.append(f"{fact_alias}.DT_TIME_START <= %s")
         params.append(end_date + " 23:59:59")
 
-    if include_freq and freq_start is not None:
-        where_clauses.append(f"{fact_alias}.NU_FREQ_END >= %s")
+    if include_freq and freq_start is not None and freq_end is not None:
+        where_clauses.append(f"{fact_alias}.NU_FREQ_START >= %s")
         params.append(freq_start)
-
-    if include_freq and freq_end is not None:
-        where_clauses.append(f"{fact_alias}.NU_FREQ_START <= %s")
+        where_clauses.append(f"{fact_alias}.NU_FREQ_END <= %s")
+        params.append(freq_end)
+    elif include_freq and freq_start is not None:
+        where_clauses.append(f"{fact_alias}.NU_FREQ_START >= %s")
+        params.append(freq_start)
+    elif include_freq and freq_end is not None:
+        where_clauses.append(f"{fact_alias}.NU_FREQ_END <= %s")
         params.append(freq_end)
 
     if include_description and description:
@@ -197,7 +218,17 @@ def _build_where_sql(where_clauses):
 
 
 def _postprocess_file_rows(rows):
-    """Normalize aggregated locality labels for file-mode rows."""
+    """Normalize aggregated locality labels for file-mode rows.
+
+    SQL groups file-mode results by repository file, so locality labels arrive
+    as a concatenated list. The UI wants two different presentations:
+
+    - a short display label for the main table cell
+    - a verbose list for tooltip/detail style surfaces
+
+    Doing that split in Python keeps the SQL readable and avoids embedding UI
+    phrasing such as ``"X localidades"`` inside the query itself.
+    """
 
     for row in rows:
         raw_labels = [
@@ -218,7 +249,13 @@ def _postprocess_file_rows(rows):
 
 
 def _finalize_locality_options(rows):
-    """Add stable option labels for the dynamic locality filter."""
+    """Add stable option labels for the dynamic locality filter.
+
+    Different ``ID_SITE`` values can collapse to the same human label after the
+    locality formatter runs. When that happens the select box would otherwise
+    show visually duplicated options, so the site id is appended only in the
+    ambiguous cases.
+    """
 
     label_counts = {}
 
@@ -253,8 +290,11 @@ def _finalize_locality_options(rows):
 
 
 def _get_cached_query(cache_key):
-    """
-    Return a cached query result when it is still fresh.
+    """Return a cached query result when it is still fresh.
+
+    These helpers are deliberately dumb: TTL-only, in-memory, and per-process.
+    That keeps the service layer predictable while still saving repeated trips
+    during quick filter tweaks or page navigation.
     """
     cached = _SPECTRUM_QUERY_CACHE.get(cache_key)
 
@@ -269,9 +309,7 @@ def _get_cached_query(cache_key):
 
 
 def _set_cached_query(cache_key, value):
-    """
-    Cache a query result for a short TTL.
-    """
+    """Cache a query result for a short TTL."""
     _SPECTRUM_QUERY_CACHE[cache_key] = {
         "expires_at": time.time() + SPECTRUM_QUERY_CACHE_TTL_SECONDS,
         "value": value,
@@ -279,9 +317,7 @@ def _set_cached_query(cache_key, value):
 
 
 def _get_cached_file_path(cache_key):
-    """
-    Return a cached repository file path when still fresh.
-    """
+    """Return a cached repository file path when still fresh."""
     cached = _FILE_PATH_CACHE.get(cache_key)
 
     if not cached:
@@ -295,9 +331,7 @@ def _get_cached_file_path(cache_key):
 
 
 def _set_cached_file_path(cache_key, value):
-    """
-    Cache repository file resolution for repeated download clicks.
-    """
+    """Cache repository file resolution for repeated download clicks."""
     _FILE_PATH_CACHE[cache_key] = {
         "expires_at": time.time() + FILE_PATH_CACHE_TTL_SECONDS,
         "value": value,
@@ -339,7 +373,13 @@ def _attach_repository_file_metadata(rows, latest_repo_files):
 
 
 def _fetch_latest_repo_files_for_spectra(cur, spectrum_ids):
-    """Load repository file metadata only for the spectra shown on the page."""
+    """Load repository file metadata only for the spectra shown on the page.
+
+    The main spectrum query intentionally stays focused on spectrum facts and
+    locality context. Repository file metadata is attached in a second, narrow
+    query scoped to the current page so pagination stays cheap and the primary
+    query does not need an expensive bridge-table reduction across all rows.
+    """
 
     if not spectrum_ids:
         return {}
@@ -367,7 +407,11 @@ def _fetch_latest_repo_files_for_spectra(cur, spectrum_ids):
 
 
 def get_equipments():
-    """Return the equipment list used by the spectrum filters."""
+    """Return the equipment list used by the spectrum filters.
+
+    This list changes rarely compared with the pace of page navigation, so a
+    slightly longer cache is acceptable here and keeps the filter chrome fast.
+    """
     now = time.time()
 
     if (
@@ -411,9 +455,14 @@ def get_spectrum_data(
 ):
     """Return paginated spectrum rows plus the total count.
 
-    Frequency filters are treated as range intersection, not strict equality,
-    so a wide user filter can still find spectra that overlap the requested
-    interval.
+    Frequency filters keep only spectra whose band is contained within the
+    user-provided interval.
+
+    This is the "true spectrum" query used by the default mode of the page:
+
+    - one output row represents one spectrum
+    - ordering is spectrum-centric
+    - file metadata is attached afterward only for the visible page
     """
     if sort_by not in ALLOWED_SORT_FIELDS:
         sort_by = "date_start"
@@ -428,6 +477,8 @@ def get_spectrum_data(
     except Exception:
         page = 1
 
+    # The cache key mirrors the full user-visible query state so back/forward
+    # navigation and repeated submits can reuse the exact same page payload.
     cache_key = (
         "spectrum",
         equipment_id,
@@ -469,6 +520,8 @@ def get_spectrum_data(
     limit_sql = "LIMIT %s OFFSET %s"
     data_params = params + [page_size, offset]
 
+    # Data and count stay separate on purpose. The table needs a paginated,
+    # richly joined rowset, while the paginator only needs the filtered total.
     data_query = f"""
         SELECT
             f.ID_SPECTRUM,
@@ -516,6 +569,9 @@ def get_spectrum_data(
     cur.execute(data_query, data_params)
     rows = cur.fetchall()
     spectrum_ids = [row["ID_SPECTRUM"] for row in rows]
+
+    # File metadata is fetched only for the rows already chosen by pagination.
+    # That keeps the expensive bridge lookup proportional to the visible page.
     latest_repo_files = _fetch_latest_repo_files_for_spectra(cur, spectrum_ids)
     _attach_repository_file_metadata(rows, latest_repo_files)
 
@@ -545,6 +601,12 @@ def get_spectrum_file_data(
     File mode intentionally stops at file-level filters such as equipment and
     time window. It does not filter by frequency because one file may contain
     several spectra spanning different ranges.
+
+    The result shape is intentionally different from ``get_spectrum_data``:
+
+    - one output row represents one repository file
+    - multiple linked spectra collapse into file-level aggregates
+    - locality information becomes summarized instead of singular
     """
     if sort_by not in ALLOWED_FILE_SORT_FIELDS:
         sort_by = "date_start"
@@ -601,6 +663,9 @@ def get_spectrum_file_data(
     )
     fact_where_sql = _build_where_sql(fact_where_clauses)
 
+    # The filtered FACT_SPECTRUM subquery narrows the working set before the
+    # bridge/file joins. That keeps file mode faithful to the active filters
+    # without turning the outer grouped query into a giant unfiltered scan.
     data_query = f"""
         SELECT
             repos.ID_FILE,
@@ -695,7 +760,13 @@ def get_spectrum_locality_options(
     description=None,
     query_mode="spectrum",
 ):
-    """Return dynamic locality options for the current spectrum filters."""
+    """Return dynamic locality options for the current spectrum filters.
+
+    The locality select is dependent on the other filters. In spectrum mode it
+    should reflect the full active query, including frequency/description. In
+    file mode it intentionally ignores those spectrum-specific filters so the
+    locality list stays aligned with the file-centric result set.
+    """
 
     cache_key = (
         "locality_options",
@@ -712,6 +783,8 @@ def get_spectrum_locality_options(
     if cached is not None:
         return cached
 
+    # Keep the dependent locality select semantically aligned with whichever
+    # query mode the page is currently rendering.
     include_freq = query_mode == "spectrum"
     include_description = query_mode == "spectrum"
     where_clauses, params = _build_fact_filters(
@@ -770,7 +843,12 @@ def get_spectrum_locality_options(
 
 
 def get_spectrum_site_option(site_id):
-    """Return one locality option by site id for preselected map navigation."""
+    """Return one locality option by site id for preselected map navigation.
+
+    This supports deep-link scenarios where the route already knows ``site_id``
+    and needs to rehydrate the select option even before the full dependent
+    locality query runs in the browser.
+    """
 
     if site_id in (None, ""):
         return None
@@ -807,7 +885,12 @@ def get_spectrum_site_option(site_id):
 
 
 def get_spectrum_site_availability_range(*, equipment_id=None, site_id=None):
-    """Return the observed date range for one equipment/locality pair."""
+    """Return the observed date range for one equipment/locality pair.
+
+    The route uses this as a lightweight hint when a preselected site no longer
+    appears in the current locality list. The goal is explanatory UX
+    ("available from X to Y here"), not a full result query.
+    """
 
     if equipment_id in (None, "") or site_id in (None, ""):
         return None
@@ -859,8 +942,15 @@ def get_spectrum_site_availability_range(*, equipment_id=None, site_id=None):
     _set_cached_query(cache_key, row)
     return row
 
+
 def get_file_by_spectrum_id(spectrum_id):
-    """Resolve the repository path for a single spectrum result."""
+    """Resolve the repository path for a single spectrum result.
+
+    Spectrum mode may show a download action per spectrum even though the file
+    relationship is many-to-one over time. This helper resolves the newest
+    repository file associated with that spectrum for the operational download
+    flow used by the UI.
+    """
     cache_key = ("spectrum_file_path", spectrum_id)
     cached = _get_cached_file_path(cache_key)
 
@@ -869,6 +959,9 @@ def get_file_by_spectrum_id(spectrum_id):
     conn = get_connection()
     cur = conn.cursor()
 
+    # The inner reduction picks the newest reposfi file linked to the spectrum.
+    # That matches the same "latest file wins" operational assumption used in
+    # the paginated spectrum view.
     query = """
         SELECT
             repos.NA_PATH,
@@ -914,7 +1007,12 @@ def get_file_by_spectrum_id(spectrum_id):
 
 
 def get_file_by_file_id(file_id):
-    """Resolve the repository path for a file-mode result."""
+    """Resolve the repository path for a file-mode result.
+
+    File mode already works with repository-file rows, so the lookup is much
+    simpler than the spectrum-mode variant: just resolve the reposfi path for
+    the selected file id.
+    """
     cache_key = ("file_id_path", file_id)
     cached = _get_cached_file_path(cache_key)
 
@@ -957,7 +1055,8 @@ def get_spectra_by_file_id(file_id):
     Return the spectra linked to a single repository file.
 
     This supports the expandable "file mode" view without forcing the main
-    query to repeat one line per spectrum.
+    query to repeat one line per spectrum. The page loads these details lazily
+    only when an operator expands one file row.
     """
     cache_key = ("file_spectra", file_id)
     cached = _get_cached_query(cache_key)

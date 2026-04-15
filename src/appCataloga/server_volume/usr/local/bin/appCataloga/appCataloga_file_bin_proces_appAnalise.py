@@ -10,7 +10,9 @@ definitive payload failures.
 """
 
 import os
+import re
 import sys
+import time
 from datetime import datetime
 
 from bootstrap_paths import bootstrap_app_paths
@@ -43,6 +45,17 @@ from db.dbHandlerRFM import dbHandlerRFM
 SERVICE_NAME = "appCataloga_file_bin_proces_appAnalise"
 log = logging_utils.log(target_screen=False)
 process_status = {"running": True}
+APP_ANALISE_PREFLIGHT_LOG_INTERVAL_SEC = int(
+    getattr(k, "APP_ANALISE_PREFLIGHT_LOG_INTERVAL_SEC", 300)
+)
+_APP_ANALISE_PREFLIGHT_LOG_STATE = {
+    "down": False,
+    "current_error": None,
+    "first_failure_monotonic": None,
+    "last_warning_monotonic": None,
+    "suppressed_since_last_warning": 0,
+    "suppressed_total": 0,
+}
 
 
 # ===============================================================
@@ -66,6 +79,148 @@ signal_runtime.install_shutdown_handlers(
 )
 
 
+def _reset_preflight_log_state() -> None:
+    """Reset the appAnalise preflight outage log state."""
+    _APP_ANALISE_PREFLIGHT_LOG_STATE.update(
+        {
+            "down": False,
+            "current_error": None,
+            "first_failure_monotonic": None,
+            "last_warning_monotonic": None,
+            "suppressed_since_last_warning": 0,
+            "suppressed_total": 0,
+        }
+    )
+
+
+def _format_structured_event(event: str, **fields) -> str:
+    """Build a structured event string even when the active logger is mocked."""
+    if hasattr(log, "format_event"):
+        return log.format_event(event, **fields)
+
+    def stringify(value):
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (list, tuple, set)):
+            return "[" + ",".join(str(item) for item in value) + "]"
+        return str(value)
+
+    parts = [f"event={event}"]
+    for key, value in fields.items():
+        if value is None:
+            continue
+        normalized_key = re.sub(r"[^A-Za-z0-9_]+", "_", str(key)).strip("_")
+        if not normalized_key:
+            continue
+        parts.append(f"{normalized_key}={stringify(value)}")
+    return " ".join(parts)
+
+
+def _log_warning_event(event: str, **fields) -> None:
+    """Emit a structured warning that also works with lightweight test doubles."""
+    if hasattr(log, "warning_event"):
+        log.warning_event(event, **fields)
+        return
+    log.warning(_format_structured_event(event, **fields))
+
+
+def _log_preflight_outage(error_text: str) -> None:
+    """
+    Throttle repeated preflight outage warnings for the same appAnalise failure.
+
+    The first failure is always logged immediately. Repeated identical failures
+    are suppressed until either:
+        - the configured interval elapses, or
+        - the worker recovers and can emit one summary recovery event.
+    """
+    now_monotonic = time.monotonic()
+    state = _APP_ANALISE_PREFLIGHT_LOG_STATE
+
+    if not state["down"]:
+        state.update(
+            {
+                "down": True,
+                "current_error": error_text,
+                "first_failure_monotonic": now_monotonic,
+                "last_warning_monotonic": now_monotonic,
+                "suppressed_since_last_warning": 0,
+                "suppressed_total": 0,
+            }
+        )
+        _log_warning_event("appanalise_unavailable_retry", error=error_text)
+        return
+
+    if state["current_error"] != error_text:
+        outage_sec = int(
+            max(
+                0.0,
+                now_monotonic - float(state["first_failure_monotonic"] or now_monotonic),
+            )
+        )
+        _log_warning_event(
+            "appanalise_unavailable_retry",
+            error=error_text,
+            previous_error=state["current_error"],
+            outage_sec=outage_sec,
+            suppressed_retries=state["suppressed_since_last_warning"],
+            suppressed_retries_total=state["suppressed_total"],
+        )
+        state["current_error"] = error_text
+        state["last_warning_monotonic"] = now_monotonic
+        state["suppressed_since_last_warning"] = 0
+        return
+
+    if (
+        state["last_warning_monotonic"] is not None
+        and (
+            now_monotonic - float(state["last_warning_monotonic"])
+            < APP_ANALISE_PREFLIGHT_LOG_INTERVAL_SEC
+        )
+    ):
+        state["suppressed_since_last_warning"] += 1
+        state["suppressed_total"] += 1
+        return
+
+    outage_sec = int(
+        max(
+            0.0,
+            now_monotonic - float(state["first_failure_monotonic"] or now_monotonic),
+        )
+    )
+    _log_warning_event(
+        "appanalise_unavailable_still_down",
+        error=error_text,
+        outage_sec=outage_sec,
+        suppressed_retries=state["suppressed_since_last_warning"],
+        suppressed_retries_total=state["suppressed_total"],
+    )
+    state["last_warning_monotonic"] = now_monotonic
+    state["suppressed_since_last_warning"] = 0
+
+
+def _log_preflight_recovery_if_needed() -> None:
+    """Emit one recovery event after a throttled outage and reset the state."""
+    state = _APP_ANALISE_PREFLIGHT_LOG_STATE
+    if not state["down"]:
+        return
+
+    now_monotonic = time.monotonic()
+    outage_sec = int(
+        max(
+            0.0,
+            now_monotonic - float(state["first_failure_monotonic"] or now_monotonic),
+        )
+    )
+    log.event(
+        "appanalise_recovered",
+        outage_sec=outage_sec,
+        previous_error=state["current_error"],
+        suppressed_retries=state["suppressed_since_last_warning"],
+        suppressed_retries_total=state["suppressed_total"],
+    )
+    _reset_preflight_log_state()
+
+
 def preflight_app_analise_connection(app_analise) -> bool:
     """
     Check appAnalise availability before claiming a FILE_TASK.
@@ -76,9 +231,10 @@ def preflight_app_analise_connection(app_analise) -> bool:
     """
     try:
         app_analise.check_connection()
+        _log_preflight_recovery_if_needed()
         return True
     except errors.ExternalServiceTransientError as e:
-        log.warning(f"event=appanalise_unavailable_retry error={e}")
+        _log_preflight_outage(str(e))
         return False
 
 
@@ -95,6 +251,7 @@ def main():
     failures are requeued for retry; definitive validation failures
     follow the normal trash/history finalization path.
     """
+    _reset_preflight_log_state()
     log.service_start(SERVICE_NAME)
 
     db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
@@ -109,6 +266,7 @@ def main():
         host_id = None
         file_meta = None
         retry_later = False
+        freeze_task = False
         export = None
         source_file_meta = None
         resolved_site_ids = None
@@ -209,12 +367,28 @@ def main():
                     export=export,
                 )
 
+            except errors.AppAnaliseReadTimeoutError as e:
+                # This is neither a plain transport outage nor a definitive
+                # payload defect. appAnalise stayed alive long enough to reply,
+                # but the specific file exceeded its remote processing budget.
+                # Freeze the queue row for manual review instead of retrying or
+                # trashing the artifact automatically.
+                freeze_task = True
+                err.capture(
+                    reason="APP_ANALISE read timeout during processing",
+                    stage="PROCESS",
+                    exc=e,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                )
+                raise
             except errors.ExternalServiceTransientError as e:
-                # appAnalise availability problems are retryable. They are the
-                # only processing failures that should requeue the FILE_TASK
-                # instead of resolving it as a definitive payload error.
-                # Keeping this branch explicit prevents generic "Processing
-                # Error" rows when the external service is merely unavailable.
+                # appAnalise availability problems stay classified as transient
+                # for diagnostics, but the current operational policy freezes
+                # these rows for manual review instead of requeueing them
+                # immediately. This avoids hot loops on payloads that tend to
+                # wedge appAnalise until the service-side timeout behavior is
+                # improved.
                 retry_later = True
                 err.capture(
                     reason="Transient appAnalise processing failure",
@@ -346,9 +520,10 @@ def main():
             except Exception as e:
                 if task_flow.is_transient_filesystem_error(e):
                     # Shared-storage hiccups (EBUSY, stale handles, etc.) do
-                    # not mean the payload is bad. Requeue the FILE_TASK so the
-                    # worker retries later instead of resolving it as a fatal
-                    # processing error.
+                    # not mean the payload is bad. Treat them with the same
+                    # temporary operational policy as transient appAnalise
+                    # outages: freeze the FILE_TASK for manual review instead
+                    # of churning on automatic retries.
                     retry_later = True
                     err.capture(
                         reason="Transient filesystem finalization failure",
@@ -389,16 +564,57 @@ def main():
             # ---------------------------------------------------
             if retry_later:
                 try:
-                    # Transient dependency failures keep the queue row alive.
-                    task_flow.return_task_to_pending(db_bp, file_task_id, err)
+                    # Temporary operational policy: freeze transient failures
+                    # instead of requeueing them so problematic files do not
+                    # churn in tight loops while appAnalise-side protections
+                    # are still evolving.
+                    task_flow.freeze_task_for_manual_review(
+                        db_bp,
+                        file_task_id=file_task_id,
+                        host_id=host_id,
+                        host_file_name=host_file_name,
+                        host_path=host_path,
+                        err=err,
+                        detail=(
+                            "Transient appAnalise failure, task frozen for "
+                            "manual review"
+                        ),
+                    )
+                    log.event(
+                        "processing_frozen",
+                        file=filename,
+                        error=err.format_error() or "Transient appAnalise failure",
+                    )
                 except Exception as update_err:
                     log.error(
-                        f"event=retry_requeue_failed error={update_err}"
+                        f"event=retry_freeze_failed host_id={host_id} "
+                        f"task_id={file_task_id} error={update_err}"
                     )
 
-                # Even retryable outages deserve a short pause so a sick
-                # dependency does not cause this worker to churn through the
-                # same queue rows at maximum speed.
+                runtime_sleep.random_jitter_sleep()
+                continue
+
+            if freeze_task:
+                try:
+                    task_flow.freeze_task_after_processing_timeout(
+                        db_bp,
+                        file_task_id=file_task_id,
+                        host_id=host_id,
+                        host_file_name=host_file_name,
+                        host_path=host_path,
+                        err=err,
+                    )
+                    log.event(
+                        "processing_frozen",
+                        file=filename,
+                        error=err.format_error() or "APP_ANALISE read timeout",
+                    )
+                except Exception as update_err:
+                    log.error(
+                        f"event=freeze_task_failed host_id={host_id} "
+                        f"task_id={file_task_id} error={update_err}"
+                    )
+
                 runtime_sleep.random_jitter_sleep()
                 continue
 

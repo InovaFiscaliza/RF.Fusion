@@ -65,23 +65,6 @@ def select_due_hosts(
     return due_hosts
 
 
-def _log_icmp_sweep_result(log: Any, host: dict, *, online: bool) -> None:
-    """
-    Emit the coarse ICMP-only result for the recurring sweep.
-
-    This log is intentionally narrower than the recovery probe below. During
-    the regular sweep we first answer only "does the host still answer ICMP?"
-    and defer the more expensive SSH confirmation to the offline-recovery path.
-    """
-    log.event(
-        "host_check_all",
-        host_id=host["ID_HOST"],
-        host=host.get("NA_HOST_NAME"),
-        address=host["NA_HOST_ADDRESS"],
-        online=online,
-    )
-
-
 def _recover_offline_host_if_operational(
     *,
     db: Any,
@@ -142,6 +125,7 @@ def _recover_offline_host_if_operational(
         DT_LAST_CHECK=checked_at,
         DT_LAST_FAIL=checked_at,
     )
+    return
 
 
 def process_due_host(
@@ -152,7 +136,7 @@ def process_due_host(
     checked_at: datetime,
     icmp_timeout_sec: float,
     connectivity_module: Any = host_connectivity,
-) -> bool:
+) -> dict[str, Any]:
     """
     Process one stale host snapshot from the recurring maintenance sweep.
 
@@ -162,30 +146,33 @@ def process_due_host(
         3. if the host was offline and now pings, run the strict recovery probe
         4. otherwise persist the steady-state online/offline refresh
 
-    Returns True when the host was actually checked, False when it was skipped
-    because the host is currently BUSY with real discovery/backup work.
+    Return a small structured result used by the batch summary.
+
+    The maintenance daemon is high-frequency, so the caller aggregates these
+    per-host outcomes into one compact batch log instead of emitting a
+    standalone steady-state line for every touched host.
     """
     if bool(host.get("IS_BUSY")):
         # The recurring sweep must not compete with the data plane for the
         # same SSH endpoint. Busy hosts are deferred to a later maintenance pass.
-        log.event(
-            "host_check_all_skipped_busy",
-            host_id=host["ID_HOST"],
-            host=host.get("NA_HOST_NAME"),
-            address=host["NA_HOST_ADDRESS"],
-        )
-        return False
+        return {
+            "checked": False,
+            "skipped_busy": True,
+            "icmp_online": False,
+            "recovery_probe": False,
+        }
 
     online = connectivity_module.is_host_online(
         host["NA_HOST_ADDRESS"],
         timeout_sec=icmp_timeout_sec,
     )
-    _log_icmp_sweep_result(log, host, online=online)
+    recovery_probe = False
 
     if online and bool(host.get("IS_OFFLINE")):
         # This is the only branch that attempts a real recovery. A host that
         # was already offline needs stronger proof than ICMP before queues are
         # resumed.
+        recovery_probe = True
         _recover_offline_host_if_operational(
             db=db,
             log=log,
@@ -213,7 +200,12 @@ def process_due_host(
             now=checked_at,
         )
 
-    return True
+    return {
+        "checked": True,
+        "skipped_busy": False,
+        "icmp_online": bool(online),
+        "recovery_probe": recovery_probe,
+    }
 
 
 def run_host_check_all_batch(
@@ -257,17 +249,11 @@ def run_host_check_all_batch(
     if not due_hosts:
         return 0
 
-    # Phase 3: announce the bounded sweep batch once before touching any host.
-    # This gives operations one log line that explains why the next per-host
-    # events are happening and what policy values drove the selection.
-    log.event(
-        "host_check_all_batch",
-        batch_size=len(due_hosts),
-        stale_after_sec=stale_after_sec,
-        timeout_sec=icmp_timeout_sec,
-    )
-
     checked = 0
+    skipped_busy = 0
+    icmp_online = 0
+    icmp_offline = 0
+    recovery_probes = 0
 
     # Phase 4: process each due host independently. One bad station must not
     # abort the rest of the maintenance batch.
@@ -278,15 +264,27 @@ def run_host_check_all_batch(
             break
 
         try:
-            if process_due_host(
+            result = process_due_host(
                 db=db,
                 log=log,
                 host=host,
                 checked_at=now,
                 icmp_timeout_sec=icmp_timeout_sec,
                 connectivity_module=connectivity_module,
-            ):
+            )
+
+            if result["skipped_busy"]:
+                skipped_busy += 1
+                continue
+
+            if result["checked"]:
                 checked += 1
+                if result["icmp_online"]:
+                    icmp_online += 1
+                else:
+                    icmp_offline += 1
+                if result["recovery_probe"]:
+                    recovery_probes += 1
         except Exception as e:
             # A per-host maintenance failure is logged with enough identity to
             # investigate later, while the batch keeps moving forward.
@@ -296,10 +294,20 @@ def run_host_check_all_batch(
                 f"address={host['NA_HOST_ADDRESS']} error={e}"
             )
 
-    if checked:
-        # Emit one compact batch summary only when at least one host was
-        # actually processed in this pass.
-        log.event("host_check_all_done", checked=checked)
+    # Emit one compact batch summary for the whole maintenance pass instead of
+    # one steady-state event per host. Recovery probes and state transitions
+    # still keep their own dedicated logs where that extra detail matters.
+    log.event(
+        "host_check_all_batch_done",
+        selected=len(due_hosts),
+        checked=checked,
+        skipped_busy=skipped_busy,
+        icmp_online=icmp_online,
+        icmp_offline=icmp_offline,
+        recovery_probes=recovery_probes,
+        stale_after_sec=stale_after_sec,
+        timeout_sec=icmp_timeout_sec,
+    )
 
     return checked
 

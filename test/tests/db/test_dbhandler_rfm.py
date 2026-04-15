@@ -476,6 +476,29 @@ class ProcedureAndEquipmentTests(DbHandlerRfmBaseTests):
 
         self.assertIn("Unable to infer equipment type", str(ctx.exception))
 
+    def test_get_or_create_spectrum_equipment_uses_explicit_type_hint(self) -> None:
+        handler = self.make_handler()
+        inserted = {}
+        handler._get_equipment_types = lambda: {"sa2500": {"id": 8}}
+        handler._select_rows = lambda **kwargs: []
+
+        def fake_insert_row(*, table, data):
+            inserted["table"] = table
+            inserted["data"] = data
+            return 777
+
+        handler._insert_row = fake_insert_row
+
+        equipment_id = handler.get_or_create_spectrum_equipment(
+            "ERMxES03",
+            equipment_type_hint="TEKTRONIX,SA2500,B040241,7.041",
+        )
+
+        self.assertEqual(equipment_id, 777)
+        self.assertEqual(inserted["table"], "DIM_SPECTRUM_EQUIPMENT")
+        self.assertEqual(inserted["data"]["FK_EQUIPMENT_TYPE"], 8)
+        self.assertEqual(inserted["data"]["NA_EQUIPMENT"], "ermxes03")
+
 
 class SmallDimensionInsertTests(DbHandlerRfmBaseTests):
     """Validate small idempotent dimensions used by FACT_SPECTRUM."""

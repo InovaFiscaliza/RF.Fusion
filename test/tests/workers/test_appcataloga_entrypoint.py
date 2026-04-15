@@ -44,6 +44,10 @@ class FakeDB:
         self.host_upserts = []
         self.queued_tasks = []
         self.host_updates = []
+        self.host_status = {"status": 0}
+
+    def host_read_status(self, host_id: int):
+        return dict(self.host_status)
 
     def host_upsert(self, **kwargs):
         self.host_upserts.append(kwargs)
@@ -88,6 +92,7 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
 
         self.assertEqual(fake_db.queued_tasks[0]["task_type"], appcataloga.k.HOST_TASK_CHECK_TYPE)
         self.assertEqual(response["status"], 1)
+        self.assertFalse(fake_db.host_upserts[0]["IS_OFFLINE"])
 
     def test_stop_query_queues_backlog_rollback_task(self) -> None:
         fake_db = FakeDB()
@@ -105,6 +110,43 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
             fake_db.queued_tasks[0]["task_type"],
             appcataloga.k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
         )
+        self.assertEqual(response["status"], 1)
+
+    def test_backup_query_rejects_known_offline_host(self) -> None:
+        fake_db = FakeDB()
+        fake_db.host_status = {"status": 1, "IS_OFFLINE": True}
+        fake_log = FakeLog()
+        err = appcataloga.errors.ErrorHandler(fake_log)
+
+        with patch.object(appcataloga, "log", fake_log):
+            with self.assertRaises(ValueError):
+                appcataloga.handle_host_request(
+                    self._build_host_payload("backup"),
+                    err,
+                    fake_db,
+                )
+
+        self.assertEqual(fake_db.host_upserts, [])
+        self.assertEqual(fake_db.queued_tasks, [])
+
+    def test_stop_query_allows_known_offline_host(self) -> None:
+        fake_db = FakeDB()
+        fake_db.host_status = {"status": 1, "IS_OFFLINE": True}
+        fake_log = FakeLog()
+        err = appcataloga.errors.ErrorHandler(fake_log)
+
+        with patch.object(appcataloga, "log", fake_log):
+            _, response = appcataloga.handle_host_request(
+                self._build_host_payload("stop"),
+                err,
+                fake_db,
+            )
+
+        self.assertEqual(
+            fake_db.queued_tasks[0]["task_type"],
+            appcataloga.k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+        )
+        self.assertNotIn("IS_OFFLINE", fake_db.host_upserts[0])
         self.assertEqual(response["status"], 1)
 
 
