@@ -270,6 +270,7 @@ def main():
         export = None
         source_file_meta = None
         resolved_site_ids = None
+        skip_to_next_iteration = False
 
         try:
             # ===================================================
@@ -326,18 +327,23 @@ def main():
             # ACT III — Mark the FILE_TASK as RUNNING
             # ===================================================
             try:
+                claim_message = tools.compose_message(
+                    task_type=k.FILE_TASK_PROCESS_TYPE,
+                    task_status=k.TASK_RUNNING,
+                    path=server_path,
+                    name=server_name,
+                    detail=k.APP_ANALISE_WORKER_DETAIL,
+                )
+
                 db_bp.file_task_update(
                     task_id=file_task_id,
                     NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
                     DT_FILE_TASK=datetime.now(),
                     NU_STATUS=k.TASK_RUNNING,
                     NU_PID=os.getpid(),
-                    NA_MESSAGE=tools.compose_message(
-                        task_type=k.FILE_TASK_PROCESS_TYPE,
-                        task_status=k.TASK_RUNNING,
-                        path=server_path,
-                        name=server_name,
-                        detail=k.APP_ANALISE_WORKER_DETAIL,
+                    NA_MESSAGE=claim_message,
+                    **errors.persisted_error_fields_from_handler(
+                        message=claim_message,
                     ),
                 )
             except Exception as e:
@@ -557,124 +563,128 @@ def main():
 
         finally:
             if not file_task_id:
-                continue
+                skip_to_next_iteration = True
+            else:
+                # ---------------------------------------------------
+                # Phase 1 — Resolve the queue row through one exit point
+                # ---------------------------------------------------
+                if retry_later:
+                    try:
+                        # Temporary operational policy: freeze transient failures
+                        # instead of requeueing them so problematic files do not
+                        # churn in tight loops while appAnalise-side protections
+                        # are still evolving.
+                        task_flow.freeze_task_for_manual_review(
+                            db_bp,
+                            file_task_id=file_task_id,
+                            host_id=host_id,
+                            host_file_name=host_file_name,
+                            host_path=host_path,
+                            err=err,
+                            detail=(
+                                "Transient appAnalise failure, task frozen for "
+                                "manual review"
+                            ),
+                        )
+                        log.event(
+                            "processing_frozen",
+                            file=filename,
+                            error=err.format_error() or "Transient appAnalise failure",
+                        )
+                    except Exception as update_err:
+                        log.error(
+                            f"event=retry_freeze_failed host_id={host_id} "
+                            f"task_id={file_task_id} error={update_err}"
+                        )
 
-            # ---------------------------------------------------
-            # Phase 1 — Resolve the queue row through one exit point
-            # ---------------------------------------------------
-            if retry_later:
-                try:
-                    # Temporary operational policy: freeze transient failures
-                    # instead of requeueing them so problematic files do not
-                    # churn in tight loops while appAnalise-side protections
-                    # are still evolving.
-                    task_flow.freeze_task_for_manual_review(
-                        db_bp,
-                        file_task_id=file_task_id,
-                        host_id=host_id,
-                        host_file_name=host_file_name,
-                        host_path=host_path,
-                        err=err,
-                        detail=(
-                            "Transient appAnalise failure, task frozen for "
-                            "manual review"
-                        ),
-                    )
-                    log.event(
-                        "processing_frozen",
-                        file=filename,
-                        error=err.format_error() or "Transient appAnalise failure",
-                    )
-                except Exception as update_err:
-                    log.error(
-                        f"event=retry_freeze_failed host_id={host_id} "
-                        f"task_id={file_task_id} error={update_err}"
-                    )
+                    runtime_sleep.random_jitter_sleep()
+                    skip_to_next_iteration = True
 
-                runtime_sleep.random_jitter_sleep()
-                continue
+                elif freeze_task:
+                    try:
+                        task_flow.freeze_task_after_processing_timeout(
+                            db_bp,
+                            file_task_id=file_task_id,
+                            host_id=host_id,
+                            host_file_name=host_file_name,
+                            host_path=host_path,
+                            err=err,
+                        )
+                        log.event(
+                            "processing_frozen",
+                            file=filename,
+                            error=err.format_error() or "APP_ANALISE read timeout",
+                        )
+                    except Exception as update_err:
+                        log.error(
+                            f"event=freeze_task_failed host_id={host_id} "
+                            f"task_id={file_task_id} error={update_err}"
+                        )
 
-            if freeze_task:
-                try:
-                    task_flow.freeze_task_after_processing_timeout(
-                        db_bp,
-                        file_task_id=file_task_id,
-                        host_id=host_id,
-                        host_file_name=host_file_name,
-                        host_path=host_path,
-                        err=err,
-                    )
-                    log.event(
-                        "processing_frozen",
-                        file=filename,
-                        error=err.format_error() or "APP_ANALISE read timeout",
-                    )
-                except Exception as update_err:
-                    log.error(
-                        f"event=freeze_task_failed host_id={host_id} "
-                        f"task_id={file_task_id} error={update_err}"
-                    )
+                    runtime_sleep.random_jitter_sleep()
+                    skip_to_next_iteration = True
 
-                runtime_sleep.random_jitter_sleep()
-                continue
-
-            # Definitive outcomes (success or fatal payload error) are closed
-            # here so task deletion, trash handling, and history stay aligned.
-            # Having one exit point avoids splitting queue state, history state,
-            # and filesystem cleanup across many error branches above.
-            try:
-                resolution = task_flow.finalize_task_resolution(
-                    db_bp,
-                    file_task_id=file_task_id,
-                    host_id=host_id,
-                    host_file_name=host_file_name,
-                    host_path=host_path,
-                    server_name=server_name,
-                    extension=extension,
-                    vl_file_size_kb=vl_file_size_kb,
-                    dt_created=dt_created,
-                    dt_modified=dt_modified,
-                    file_was_processed=file_was_processed,
-                    new_path=new_path,
-                    file_meta=file_meta,
-                    source_file_meta=source_file_meta,
-                    export=export,
-                    err=err,
-                )
-            except Exception as finalize_err:
-                # One FILE_TASK cleanup failure must not kill the daemon. When
-                # final resolution fails, keep the row for later recovery
-                # (requeue or stale-task sweep) and continue serving the queue.
-                if hasattr(log, "error_event"):
-                    log.error_event(
-                        "task_finalization_failed",
-                        host_id=host_id,
-                        task_id=file_task_id,
-                        error_type=type(finalize_err).__name__,
-                        exception=repr(finalize_err),
-                    )
                 else:
-                    log.error(
-                        "event=task_finalization_failed "
-                        f"host_id={host_id} task_id={file_task_id} "
-                        f"error={finalize_err!r}"
-                    )
-                runtime_sleep.random_jitter_sleep()
-                continue
+                    # Definitive outcomes (success or fatal payload error) are closed
+                    # here so task deletion, trash handling, and history stay aligned.
+                    # Having one exit point avoids splitting queue state, history state,
+                    # and filesystem cleanup across many error branches above.
+                    try:
+                        resolution = task_flow.finalize_task_resolution(
+                            db_bp,
+                            file_task_id=file_task_id,
+                            host_id=host_id,
+                            host_file_name=host_file_name,
+                            host_path=host_path,
+                            server_name=server_name,
+                            extension=extension,
+                            vl_file_size_kb=vl_file_size_kb,
+                            dt_created=dt_created,
+                            dt_modified=dt_modified,
+                            file_was_processed=file_was_processed,
+                            new_path=new_path,
+                            file_meta=file_meta,
+                            source_file_meta=source_file_meta,
+                            export=export,
+                            err=err,
+                        )
+                    except Exception as finalize_err:
+                        # One FILE_TASK cleanup failure must not kill the daemon. When
+                        # final resolution fails, keep the row for later recovery
+                        # (requeue or stale-task sweep) and continue serving the queue.
+                        if hasattr(log, "error_event"):
+                            log.error_event(
+                                "task_finalization_failed",
+                                host_id=host_id,
+                                task_id=file_task_id,
+                                error_type=type(finalize_err).__name__,
+                                exception=repr(finalize_err),
+                            )
+                        else:
+                            log.error(
+                                "event=task_finalization_failed "
+                                f"host_id={host_id} task_id={file_task_id} "
+                                f"error={finalize_err!r}"
+                            )
+                        runtime_sleep.random_jitter_sleep()
+                        skip_to_next_iteration = True
+                    else:
+                        if resolution["status"] == k.TASK_ERROR:
+                            log.error_event(
+                                "processing_error",
+                                file=filename,
+                                export=export,
+                                final_file=resolution["final_file"],
+                                error=err.format_error() or "Processing failed",
+                            )
 
-            if resolution["status"] == k.TASK_ERROR:
-                log.error_event(
-                    "processing_error",
-                    file=filename,
-                    export=export,
-                    final_file=resolution["final_file"],
-                    error=err.format_error() or "Processing failed",
-                )
+                        # Phase 2 — End the iteration with the same jitter contract used by
+                        # the other workers so success and fatal payload paths do not spin
+                        # more aggressively than idle or retry paths.
+                        runtime_sleep.random_jitter_sleep()
 
-            # Phase 2 — End the iteration with the same jitter contract used by
-            # the other workers so success and fatal payload paths do not spin
-            # more aggressively than idle or retry paths.
-            runtime_sleep.random_jitter_sleep()
+        if skip_to_next_iteration:
+            continue
 
 
 if __name__ == "__main__":

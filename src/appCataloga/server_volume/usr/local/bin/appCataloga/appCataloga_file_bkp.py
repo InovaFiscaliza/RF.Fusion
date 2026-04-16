@@ -187,17 +187,20 @@ def _requeue_transient_bootstrap_failure(
 
     # The live FILE_TASK goes back to PENDING so another worker can retry the
     # same artifact later without creating a second queue row for it.
+    message = tools.compose_message(
+        task_type=k.FILE_TASK_BACKUP_TYPE,
+        task_status=k.TASK_PENDING,
+        path=input_path,
+        name=input_name,
+        detail=retry_detail,
+    )
+
     db.file_task_update(
         task_id=file_task_id,
         DT_FILE_TASK=datetime.now(),
         NU_STATUS=k.TASK_PENDING,
-        NA_MESSAGE=tools.compose_message(
-            task_type=k.FILE_TASK_BACKUP_TYPE,
-            task_status=k.TASK_PENDING,
-            path=input_path,
-            name=input_name,
-            detail=retry_detail,
-        ),
+        NA_MESSAGE=message,
+        **errors.persisted_error_fields_from_handler(message=message),
     )
 
     preserve_host_busy_cooldown = db.host_start_transient_busy_cooldown(
@@ -251,18 +254,21 @@ def _claim_backup_task(
     Claim and pool-growth live together here because they are one policy
     bundle: backup only scales out after a worker has secured concrete work.
     """
+    message = tools.compose_message(
+        task_type=k.FILE_TASK_BACKUP_TYPE,
+        task_status=k.TASK_RUNNING,
+        path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+        name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+    )
+
     result = db.file_task_update(
         task_id=file_task_id,
         expected_status=k.TASK_PENDING,
         DT_FILE_TASK=datetime.now(),
         NU_STATUS=k.TASK_RUNNING,
         NU_PID=os.getpid(),
-        NA_MESSAGE=tools.compose_message(
-            task_type=k.FILE_TASK_BACKUP_TYPE,
-            task_status=k.TASK_RUNNING,
-            path=task["FILE_TASK__NA_HOST_FILE_PATH"],
-            name=task["FILE_TASK__NA_HOST_FILE_NAME"],
-        ),
+        NA_MESSAGE=message,
+        **errors.persisted_error_fields_from_handler(message=message),
     )
 
     if result["rows_affected"] != 1:
@@ -360,6 +366,12 @@ def _finalize_successful_backup(
     this step persists the refreshed remote snapshot gathered during transfer.
     """
     backup_completed_at = datetime.now()
+    history_message = tools.compose_message(
+        task_type=k.FILE_TASK_BACKUP_TYPE,
+        task_status=k.TASK_DONE,
+        path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+        name=task["FILE_TASK__NA_HOST_FILE_NAME"],
+    )
 
     # First write the immutable history snapshot of the completed transfer.
     db.file_history_update(
@@ -375,12 +387,8 @@ def _finalize_successful_backup(
         VL_FILE_SIZE_KB=updated_size_kb,
         DT_FILE_CREATED=refreshed_metadata.DT_FILE_CREATED,
         DT_FILE_MODIFIED=refreshed_metadata.DT_FILE_MODIFIED,
-        NA_MESSAGE=tools.compose_message(
-            task_type=k.FILE_TASK_BACKUP_TYPE,
-            task_status=k.TASK_DONE,
-            path=task["FILE_TASK__NA_HOST_FILE_PATH"],
-            name=task["FILE_TASK__NA_HOST_FILE_NAME"],
-        ),
+        NA_MESSAGE=history_message,
+        **errors.persisted_error_fields_from_handler(message=history_message),
     )
 
     # Then move the live queue row forward to PROCESS using the same file
@@ -396,12 +404,8 @@ def _finalize_successful_backup(
         VL_FILE_SIZE_KB=updated_size_kb,
         DT_FILE_CREATED=refreshed_metadata.DT_FILE_CREATED,
         DT_FILE_MODIFIED=refreshed_metadata.DT_FILE_MODIFIED,
-        NA_MESSAGE=tools.compose_message(
-            task_type=k.FILE_TASK_BACKUP_TYPE,
-            task_status=k.TASK_DONE,
-            path=task["FILE_TASK__NA_HOST_FILE_PATH"],
-            name=task["FILE_TASK__NA_HOST_FILE_NAME"],
-        ),
+        NA_MESSAGE=history_message,
+        **errors.persisted_error_fields_from_handler(message=history_message),
     )
 
     log.event(
@@ -502,6 +506,10 @@ def _persist_backup_error(
         error=err.format_error(),
     )
     error_at = datetime.now()
+    structured_error_fields = errors.persisted_error_fields_from_handler(
+        err,
+        message=na_message,
+    )
 
     try:
         # The live FILE_TASK returns to BACKUP/ERROR because this worker owns
@@ -514,6 +522,7 @@ def _persist_backup_error(
             NU_STATUS=k.TASK_ERROR,
             NU_PID=None,
             NA_MESSAGE=na_message,
+            **structured_error_fields,
         )
 
         # FILE_TASK_HISTORY mirrors the same backup-stage error so audit
@@ -528,6 +537,7 @@ def _persist_backup_error(
             NA_SERVER_FILE_PATH=server_file_path,
             NU_STATUS_BACKUP=k.TASK_ERROR,
             NA_MESSAGE=na_message,
+            **structured_error_fields,
         )
 
         # Fatal bootstrap failures ask host_check to reconcile host state out of

@@ -2,10 +2,11 @@
 
 This directory contains the RF.Fusion database bootstrap material.
 
-In practice, these files define and seed the two project databases:
+In practice, these files define and seed the three project databases:
 
 - `BPDATA`, used for operational state
 - `RFDATA`, used for analytical cataloging
+- `RFFUSION_SUMMARY`, used for materialized cross-database summaries
 
 The MariaDB container deployment applies these scripts after the database
 service is up. So this directory is the schema source of truth for the project
@@ -23,6 +24,26 @@ bootstrap process.
   Builds `RFDATA`.
   This is the measurement and catalog database used by `appCataloga` and
   queried by `webfusion`.
+
+- [createFusionSummaryDB-v1.sql](/RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql)
+  Builds `RFFUSION_SUMMARY`.
+  This is the materialized summary layer intended to serve `webfusion` and
+  external consumers without repeatedly scanning the heaviest source tables.
+
+### Migration scripts
+
+- [alterProcessingDB-v10-error-fields.sql](/RFFusion/src/mariadb/scripts/alterProcessingDB-v10-error-fields.sql)
+  Adds structured error fields to the operational processing tables in
+  `BPDATA`.
+
+- [alterFusionSummaryDB-v2-error-aggregation.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v2-error-aggregation.sql)
+  Refines the `RFFUSION_SUMMARY` error layer by removing the persisted
+  per-event staging table and aggregating directly from a virtual canonical
+  error view.
+
+- [alterFusionSummaryDB-v3-refresh-events.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v3-refresh-events.sql)
+  Enables periodic `RFFUSION_SUMMARY` refreshes through MariaDB Events with a
+  named lock to prevent overlapping runs.
 
 ### Seed files
 
@@ -44,8 +65,8 @@ bootstrap process.
 ### Documentation and support
 
 - [DB_INTERCONNECTIONS.md](/RFFusion/src/mariadb/scripts/DB_INTERCONNECTIONS.md)
-  Explains how `BPDATA` and `RFDATA` complement each other at the application
-  level.
+  Explains how `BPDATA`, `RFDATA` and `RFFUSION_SUMMARY` complement each other
+  at the application level.
 
 - [environment.yml](/RFFusion/src/mariadb/scripts/environment.yml)
   Conda environment file historically used by the project runtime. It is not
@@ -90,23 +111,54 @@ This database answers questions such as:
 - which equipment produced it
 - which repository file contains it
 
+### `RFFUSION_SUMMARY`
+
+`RFFUSION_SUMMARY` stores materialized, cross-database read models.
+
+Main areas:
+
+- host/equipment reconciliation
+- site/equipment observation summaries
+- map-ready site and station snapshots
+- host monthly metrics
+- canonicalized error events and grouped error summaries
+- server-wide current snapshot cards
+
+This database answers questions such as:
+
+- which host most plausibly owns one measurement equipment
+- what the current and historical locality of a host is
+- which marker state the map should render for a site
+- which grouped backup or processing errors are most frequent
+- which server-wide counters should be shown without re-scanning history
+
 ## Bootstrap Order
 
 The normal order is:
 
 1. create `BPDATA`
 2. create `RFDATA`
+3. create `RFFUSION_SUMMARY`
 
 That means:
 
 ```bash
 mysql -u root -p < /RFFusion/src/mariadb/scripts/createProcessingDB-v9.sql
 mysql -u root -p < /RFFusion/src/mariadb/scripts/createMeasureDB-v5.sql
+mysql -u root -p < /RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql
 ```
 
 In practice, the supported path is still the MariaDB container deployment:
 
 - [/RFFusion/install/mariaDB/README.md](/RFFusion/install/mariaDB/README.md)
+
+For an environment that already has `RFFUSION_SUMMARY` `v1`, apply the error
+aggregation refinement after the bootstrap:
+
+```bash
+mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v2-error-aggregation.sql
+mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v3-refresh-events.sql
+```
 
 ## Important Operational Notes
 
@@ -129,7 +181,7 @@ from the IBGE CSV files.
 If those files are missing, broken or not loaded, `RFDATA` site insertion can
 fail later even if the schema itself was created successfully.
 
-### `BPDATA` and `RFDATA` are complementary, not FK-linked
+### `BPDATA`, `RFDATA` and `RFFUSION_SUMMARY` are complementary, not FK-linked
 
 There is no direct cross-database foreign key bridge between them.
 
@@ -137,6 +189,7 @@ The relationship is application-level:
 
 - `appCataloga` writes to both
 - `webfusion` reads both
+- `RFFUSION_SUMMARY` materializes cross-database joins and grouped aggregates
 - repository artifacts help reconcile the operational and analytical worlds
 
 That design is documented in:

@@ -57,8 +57,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends net-tools && \
 
 
 # --- Config MariaDB ---
-RUN sed -ri "s/^(bind-address\s*=).*$/\\1 0.0.0.0/" /etc/mysql/mariadb.conf.d/50-server.cnf || \
-    echo -e "[mysqld]\nbind-address=0.0.0.0" > /etc/mysql/mariadb.conf.d/50-server.cnf
+RUN set -eux; \
+    conf="/etc/mysql/mariadb.conf.d/50-server.cnf"; \
+    if [ ! -f "${conf}" ]; then \
+        printf "[mysqld]\n" > "${conf}"; \
+    fi; \
+    grep -q '^\[mysqld\]' "${conf}" || sed -i '1i[mysqld]' "${conf}"; \
+    if grep -q '^bind-address' "${conf}"; then \
+        sed -ri "s/^(bind-address\s*=).*$/\\1 0.0.0.0/" "${conf}"; \
+    else \
+        printf "bind-address=0.0.0.0\n" >> "${conf}"; \
+    fi; \
+    if grep -q '^event_scheduler' "${conf}"; then \
+        sed -ri "s/^(event_scheduler\s*=).*$/\\1 ON/" "${conf}"; \
+    else \
+        printf "event_scheduler=ON\n" >> "${conf}"; \
+    fi
 
 # --- Config SSH ---
 RUN sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config \

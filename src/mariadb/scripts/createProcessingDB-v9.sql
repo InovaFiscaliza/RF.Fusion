@@ -82,6 +82,12 @@ CREATE TABLE FILE_TASK (
     DT_FILE_CREATED DATETIME COMMENT 'File creation timestamp',
     DT_FILE_MODIFIED DATETIME COMMENT 'File last modification timestamp',
     NA_MESSAGE TEXT COMMENT 'Error message and other information',
+    NA_ERROR_DOMAIN VARCHAR(32) DEFAULT NULL COMMENT 'Structured error domain for grouping/reporting',
+    NA_ERROR_STAGE VARCHAR(32) DEFAULT NULL COMMENT 'Structured error stage extracted from the persisted message',
+    NA_ERROR_CODE VARCHAR(64) DEFAULT NULL COMMENT 'Stable canonical error code',
+    NA_ERROR_SUMMARY TEXT COMMENT 'Stable aggregation-friendly error summary',
+    NA_ERROR_DETAIL TEXT COMMENT 'Volatile contextual detail kept apart from the grouping summary',
+    NU_ERROR_CLASSIFIER_VERSION SMALLINT DEFAULT NULL COMMENT 'Version of the classifier used to populate the structured error fields',
     CONSTRAINT FK_FILE_TASK_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST (ID_HOST)
 );
 
@@ -91,6 +97,15 @@ UNIQUE (
     FK_HOST,
     NA_HOST_FILE_PATH,
     NA_HOST_FILE_NAME
+);
+
+CREATE INDEX idx_file_task_error_group
+ON FILE_TASK (
+    NU_STATUS,
+    NU_TYPE,
+    NA_ERROR_DOMAIN,
+    NA_ERROR_STAGE,
+    NA_ERROR_CODE
 );
 
 
@@ -112,9 +127,15 @@ CREATE TABLE FILE_TASK_HISTORY (
     NA_SERVER_FILE_NAME VARCHAR(512),
     VL_FILE_SIZE_KB BIGINT,
 	DT_FILE_CREATED DATETIME COMMENT 'File creation timestamp',
-    DT_FILE_MODIFIED DATETIME COMMENT 'File last modification timestamp',
+	DT_FILE_MODIFIED DATETIME COMMENT 'File last modification timestamp',
 	NA_EXTENSION VARCHAR(20) COMMENT 'File extension (.txt, .csv, .log, etc.)',
     NA_MESSAGE TEXT COMMENT 'Optional message',
+    NA_ERROR_DOMAIN VARCHAR(32) DEFAULT NULL COMMENT 'Structured error domain for grouping/reporting',
+    NA_ERROR_STAGE VARCHAR(32) DEFAULT NULL COMMENT 'Structured error stage extracted from the persisted message',
+    NA_ERROR_CODE VARCHAR(64) DEFAULT NULL COMMENT 'Stable canonical error code',
+    NA_ERROR_SUMMARY TEXT COMMENT 'Stable aggregation-friendly error summary',
+    NA_ERROR_DETAIL TEXT COMMENT 'Volatile contextual detail kept apart from the grouping summary',
+    NU_ERROR_CLASSIFIER_VERSION SMALLINT DEFAULT NULL COMMENT 'Version of the classifier used to populate the structured error fields',
     IS_PAYLOAD_DELETED TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'Flag indicating payload removed from repository',
     DT_PAYLOAD_DELETED DATETIME DEFAULT NULL COMMENT 'Timestamp when payload was deleted',
     CONSTRAINT FK_HISTORY_HOST FOREIGN KEY (FK_HOST) REFERENCES HOST(ID_HOST)
@@ -126,6 +147,22 @@ ON FILE_TASK_HISTORY (
     NA_HOST_FILE_NAME,
     DT_FILE_CREATED,
     VL_FILE_SIZE_KB
+);
+
+CREATE INDEX idx_fth_backup_error_group
+ON FILE_TASK_HISTORY (
+    NU_STATUS_BACKUP,
+    NA_ERROR_DOMAIN,
+    NA_ERROR_STAGE,
+    NA_ERROR_CODE
+);
+
+CREATE INDEX idx_fth_processing_error_group
+ON FILE_TASK_HISTORY (
+    NU_STATUS_PROCESSING,
+    NA_ERROR_DOMAIN,
+    NA_ERROR_STAGE,
+    NA_ERROR_CODE
 );
 
 ALTER TABLE FILE_TASK_HISTORY

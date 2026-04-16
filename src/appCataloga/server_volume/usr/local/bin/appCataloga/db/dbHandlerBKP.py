@@ -33,7 +33,7 @@ if PROJECT_ROOT not in sys.path:
 # =================================================
 import config as k
 from .dbHandlerBase import DBHandlerBase
-from shared import filter, constants, tools
+from shared import errors, filter, constants, tools
 from shared.file_metadata import FileMetadata
 
 
@@ -104,6 +104,12 @@ class dbHandlerBKP(DBHandlerBase):
         "DT_FILE_CREATED",
         "DT_FILE_MODIFIED",
         "NA_MESSAGE",
+        "NA_ERROR_DOMAIN",
+        "NA_ERROR_STAGE",
+        "NA_ERROR_CODE",
+        "NA_ERROR_SUMMARY",
+        "NA_ERROR_DETAIL",
+        "NU_ERROR_CLASSIFIER_VERSION",
     }
 
     VALID_FIELDS_HOST_TASK = {
@@ -135,6 +141,12 @@ class dbHandlerBKP(DBHandlerBase):
         "DT_FILE_MODIFIED",
         "NA_EXTENSION",
         "NA_MESSAGE",
+        "NA_ERROR_DOMAIN",
+        "NA_ERROR_STAGE",
+        "NA_ERROR_CODE",
+        "NA_ERROR_SUMMARY",
+        "NA_ERROR_DETAIL",
+        "NU_ERROR_CLASSIFIER_VERSION",
         "IS_PAYLOAD_DELETED",
         "DT_PAYLOAD_DELETED",
     }
@@ -154,6 +166,28 @@ class dbHandlerBKP(DBHandlerBase):
         """
         super().__init__(database=database, log=log)
         self.log.entry(f"[dbHandlerBKP] Initialized for DB '{database}'")
+
+    def _merge_structured_error_fields(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Keep explicit error columns synchronized with `NA_MESSAGE`.
+
+        FILE_TASK and FILE_TASK_HISTORY still persist the human-readable audit
+        message, but downstream consumers should read the structured columns
+        whenever possible instead of reparsing text repeatedly.
+        """
+        normalized = dict(payload)
+
+        if "NA_MESSAGE" in normalized:
+            normalized.update(
+                errors.classify_persisted_error_message(normalized.get("NA_MESSAGE"))
+            )
+            return normalized
+
+        if "NA_MESSAGE__expr" in normalized:
+            normalized.update(errors.empty_persisted_error_fields(classified=True))
+            return normalized
+
+        return normalized
 
     # ======================================================================
     # HOST OPERATIONS
@@ -1990,7 +2024,7 @@ class dbHandlerBKP(DBHandlerBase):
             rows: list[dict] = []
 
             for file in file_metadata:
-                rows.append({
+                row = {
                     "FK_HOST": host_id,
                     "NA_HOST_FILE_PATH": file.NA_PATH,
                     "NA_HOST_FILE_NAME": file.NA_FILE,
@@ -2008,7 +2042,8 @@ class dbHandlerBKP(DBHandlerBase):
                         path=file.NA_PATH,
                         name=file.NA_FILE,
                     ),
-                })
+                }
+                rows.append(self._merge_structured_error_fields(row))
 
             if len(rows) == 1:
                 self._upsert_row(
@@ -2112,6 +2147,8 @@ class dbHandlerBKP(DBHandlerBase):
                 kwargs["NU_PID"] = None
             elif status == k.TASK_RUNNING and "NU_PID" not in kwargs:
                 kwargs["NU_PID"] = getattr(self.log, "pid", None)
+
+        kwargs = self._merge_structured_error_fields(kwargs)
 
         # -------------------------------------------------
         # Build deterministic WHERE clause
@@ -2275,10 +2312,10 @@ class dbHandlerBKP(DBHandlerBase):
             for status in (k.TASK_PENDING, k.TASK_RUNNING):
                 affected += self._update_row(
                     table="FILE_TASK",
-                    data={
+                    data=self._merge_structured_error_fields({
                         "NU_STATUS": k.TASK_SUSPENDED,
                         "NA_MESSAGE": message,
-                    },
+                    }),
                     where={
                         "FK_HOST": host_id,
                         "NU_STATUS": status,
@@ -2336,12 +2373,12 @@ class dbHandlerBKP(DBHandlerBase):
             # -----------------------------------------------------------------
             resumed_suspended = self._update_row(
                 table="FILE_TASK",
-                data={
+                data=self._merge_structured_error_fields({
                     "NU_STATUS": k.TASK_PENDING,
                     "NA_MESSAGE": (
                         "Host reachable again — suspended file task resumed automatically"
                     ),
-                },
+                }),
                 where={
                     "FK_HOST": host_id,
                     "NU_STATUS": k.TASK_SUSPENDED,
@@ -2354,12 +2391,12 @@ class dbHandlerBKP(DBHandlerBase):
             # -----------------------------------------------------------------
             resumed_error = self._update_row(
                 table="FILE_TASK",
-                data={
+                data=self._merge_structured_error_fields({
                     "NU_STATUS": k.TASK_PENDING,
                     "NA_MESSAGE": (
                         "Host reachable again — previously failed file task resubmitted"
                     ),
-                },
+                }),
                 where={
                     "FK_HOST": host_id,
                     "NU_STATUS": k.TASK_ERROR,
@@ -2376,13 +2413,13 @@ class dbHandlerBKP(DBHandlerBase):
             # -----------------------------------------------------------------
             resumed_stale_running = self._update_row(
                 table="FILE_TASK",
-                data={
+                data=self._merge_structured_error_fields({
                     "NU_STATUS": k.TASK_PENDING,
                     "NA_MESSAGE": (
                         f"Detected stale running file task (> {busy_timeout_seconds}s) — "
                         f"resubmitted automatically"
                     ),
-                },
+                }),
                 where={
                     "FK_HOST": host_id,
                     "NU_STATUS": k.TASK_RUNNING,
@@ -2430,10 +2467,10 @@ class dbHandlerBKP(DBHandlerBase):
 
             suspended_discovery = self._update_row(
                 table="FILE_TASK_HISTORY",
-                data={
+                data=self._merge_structured_error_fields({
                     "NU_STATUS_DISCOVERY": k.TASK_SUSPENDED,
                     "NA_MESSAGE": message,
-                },
+                }),
                 where={
                     "FK_HOST": host_id,
                     "NU_STATUS_DISCOVERY__in": (
@@ -2446,10 +2483,10 @@ class dbHandlerBKP(DBHandlerBase):
 
             suspended_backup = self._update_row(
                 table="FILE_TASK_HISTORY",
-                data={
+                data=self._merge_structured_error_fields({
                     "NU_STATUS_BACKUP": k.TASK_SUSPENDED,
                     "NA_MESSAGE": message,
-                },
+                }),
                 where={
                     "FK_HOST": host_id,
                     "NU_STATUS_BACKUP__in": (
@@ -2492,12 +2529,12 @@ class dbHandlerBKP(DBHandlerBase):
             # -------------------------------------------------------------
             resumed_discovery = self._update_row(
                 table="FILE_TASK_HISTORY",
-                data={
+                data=self._merge_structured_error_fields({
                     "NU_STATUS_DISCOVERY": k.TASK_PENDING,
                     "NA_MESSAGE": (
                         "Host reachable again — discovery resumed automatically"
                     ),
-                },
+                }),
                 where={
                     "FK_HOST": host_id,
                     "NU_STATUS_DISCOVERY__in": (
@@ -2513,12 +2550,12 @@ class dbHandlerBKP(DBHandlerBase):
             # -------------------------------------------------------------
             resumed_backup = self._update_row(
                 table="FILE_TASK_HISTORY",
-                data={
+                data=self._merge_structured_error_fields({
                     "NU_STATUS_BACKUP": k.TASK_PENDING,
                     "NA_MESSAGE": (
                         "Host reachable again — backup resumed automatically"
                     ),
-                },
+                }),
                 where={
                     "FK_HOST": host_id,
                     "NU_STATUS_BACKUP__in": (
@@ -2667,6 +2704,7 @@ class dbHandlerBKP(DBHandlerBase):
                     f"NA_HOST_FILE_PATH, '/', NA_HOST_FILE_NAME)"
                 ),
             }
+            update_payload = self._merge_structured_error_fields(update_payload)
 
             if new_type == k.FILE_TASK_BACKUP_TYPE and max_total_kb is not None:
                 candidate_rows = self._select_rows(
@@ -2776,7 +2814,7 @@ class dbHandlerBKP(DBHandlerBase):
                     name=file.NA_FILE,
                 )
 
-                rows.append({
+                row = {
                     "FK_HOST": host_id,
                     "NA_HOST_FILE_PATH": file.NA_PATH,
                     "NA_HOST_FILE_NAME": file.NA_FILE,
@@ -2796,7 +2834,8 @@ class dbHandlerBKP(DBHandlerBase):
                     "NU_STATUS_PROCESSING": k.TASK_PENDING,
 
                     "NA_MESSAGE": msg,
-                })
+                }
+                rows.append(self._merge_structured_error_fields(row))
 
             if len(rows) == 1:
                 self._upsert_row(
@@ -2953,6 +2992,8 @@ class dbHandlerBKP(DBHandlerBase):
                 "updated_fields": {},
                 "where_used": where_dict,
             }
+
+        update_data = self._merge_structured_error_fields(update_data)
 
         # -------------------------------------------------
         # Execute UPDATE

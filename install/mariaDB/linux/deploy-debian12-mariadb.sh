@@ -23,6 +23,9 @@ HostDBPort="9081"
 # ------------------------------
 sqlProcessing="/RFFusion/src/mariadb/scripts/createProcessingDB-v9.sql"
 sqlMeasure="/RFFusion/src/mariadb/scripts/createMeasureDB-v5.sql"
+sqlFusionSummary="/RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql"
+sqlFusionSummaryV2="/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v2-error-aggregation.sql"
+sqlFusionSummaryV3="/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v3-refresh-events.sql"
 
 # ------------------------------
 # Caminhos do host
@@ -104,5 +107,8 @@ echo "✅ Container is running."
 echo "=== [6/6] Initializing MariaDB databases ==="
 podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlProcessing}" || true
 podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlMeasure}" || true
+podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlFusionSummary}" || true
+podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlFusionSummaryV2}" || true
+podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlFusionSummaryV3}" || true
 
 echo "=== ✅ Deployment completed successfully ==="

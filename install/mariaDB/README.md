@@ -8,6 +8,8 @@ especially:
 
 - `BPDATA`, used by `appCataloga`
 - `RFDATA`, used by `webfusion`, spectrum cataloging, and measurement storage
+- `RFFUSION_SUMMARY`, used by `webfusion` and external consumers for
+  materialized summary reads
 
 ## Directory Layout
 
@@ -38,6 +40,9 @@ After the container is up, the deployment script applies the project schemas:
 
 - [/RFFusion/src/mariadb/scripts/createProcessingDB-v9.sql](/RFFusion/src/mariadb/scripts/createProcessingDB-v9.sql)
 - [/RFFusion/src/mariadb/scripts/createMeasureDB-v5.sql](/RFFusion/src/mariadb/scripts/createMeasureDB-v5.sql)
+- [/RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql](/RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql)
+- [/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v2-error-aggregation.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v2-error-aggregation.sql)
+- [/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v3-refresh-events.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v3-refresh-events.sql)
 
 ## Host Prerequisites
 
@@ -96,6 +101,11 @@ The deployment script then loads the RF.Fusion schemas:
 
 - `BPDATA` from `createProcessingDB-v9.sql`
 - `RFDATA` from `createMeasureDB-v5.sql`
+- `RFFUSION_SUMMARY` from `createFusionSummaryDB-v1.sql`
+- `RFFUSION_SUMMARY` refinements from the `v2` and `v3` migration scripts
+
+The MariaDB container is also configured with `event_scheduler=ON`, which is
+required for the periodic `RFFUSION_SUMMARY` refresh event.
 
 This means the deploy script is responsible for turning the generic MariaDB
 container into the RF.Fusion project database.

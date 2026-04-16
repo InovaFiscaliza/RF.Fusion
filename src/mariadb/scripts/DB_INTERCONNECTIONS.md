@@ -1,10 +1,11 @@
 # RF.Fusion Database Interconnections
 
-This document summarizes the practical relationships between the two main
+This document summarizes the practical relationships between the three main
 project databases:
 
 - `BPDATA`
 - `RFDATA`
+- `RFFUSION_SUMMARY`
 
 It focuses on the tables that are most relevant to `appCataloga` and
 `webfusion`.
@@ -20,21 +21,26 @@ flowchart LR
     webfusion[webfusion]
     bp[(BPDATA)]
     rf[(RFDATA)]
+    rs[(RFFUSION_SUMMARY)]
     repos[/reposfi repository/]
 
     appCataloga -->|queue, host state, file tasks, history| bp
     appCataloga -->|spectra, files, sites, equipment| rf
     appCataloga -->|reads/writes payloads| repos
 
-    webfusion -->|host query, task creation, operational views| bp
-    webfusion -->|spectrum query, map, file lookup| rf
+    rs -->|materialized joins, grouped errors, map snapshots| webfusion
+    rs -->|materialized summaries for Matlab and other clients| appCataloga
+    bp -->|source operational data| rs
+    rf -->|source analytical data| rs
+    webfusion -->|runtime probes, task creation, operational fallback| bp
+    webfusion -->|catalog fallback, file lookup| rf
     webfusion -->|download through nginx| repos
 ```
 
 ## 2. Important Architectural Note
 
-There is currently **no direct foreign key bridge between `BPDATA` and
-`RFDATA`**.
+There is currently **no direct foreign key bridge between `BPDATA`,
+`RFDATA` and `RFFUSION_SUMMARY`**.
 
 The interconnection between both databases is mostly **application-level**:
 
@@ -42,6 +48,8 @@ The interconnection between both databases is mostly **application-level**:
 - `BPDATA` stores queue and operational state
 - `RFDATA` stores measurement catalog data and repository file metadata
 - `webfusion` reads both worlds and reconciles them when needed
+- `RFFUSION_SUMMARY` can materialize that reconciliation into stable read
+  models
 
 This is why some integrations, especially station-to-host correlation, still
 depend on naming heuristics rather than explicit relational keys.
@@ -237,6 +245,112 @@ This database answers catalog and analysis questions such as:
 - which equipment produced the measurement
 - which spectra belong to a site or equipment
 - which repository file is linked to one or more spectra
+
+## 5. RFFUSION_SUMMARY Core Relationships
+
+`RFFUSION_SUMMARY` is the materialized read-model database for the heaviest
+cross-database views.
+
+```mermaid
+erDiagram
+    HOST_EQUIPMENT_LINK {
+        BIGINT ID_LINK PK
+        INT FK_HOST
+        INT FK_EQUIPMENT
+        VARCHAR NA_MATCH_TYPE
+        DECIMAL VL_MATCH_CONFIDENCE
+        BOOLEAN IS_PRIMARY_LINK
+    }
+
+    SITE_EQUIPMENT_OBS_SUMMARY {
+        INT FK_SITE PK
+        INT FK_EQUIPMENT PK
+        DATETIME DT_FIRST_SEEN_AT
+        DATETIME DT_LAST_SEEN_AT
+        BIGINT NU_SPECTRUM_COUNT
+        BOOLEAN IS_CURRENT_LOCATION
+    }
+
+    HOST_LOCATION_SUMMARY {
+        INT FK_HOST PK
+        INT FK_SITE PK
+        DATETIME DT_FIRST_SEEN_AT
+        DATETIME DT_LAST_SEEN_AT
+        BIGINT NU_SPECTRUM_COUNT
+        BOOLEAN IS_CURRENT_LOCATION
+    }
+
+    MAP_SITE_STATION_SUMMARY {
+        INT FK_SITE PK
+        INT FK_EQUIPMENT PK
+        INT FK_HOST
+        VARCHAR NA_MAP_STATE
+    }
+
+    MAP_SITE_SUMMARY {
+        INT FK_SITE PK
+        VARCHAR NA_MARKER_STATE
+        INT NU_STATION_COUNT
+    }
+
+    HOST_MONTHLY_METRIC {
+        INT FK_HOST PK
+        DATE DT_REFERENCE_MONTH PK
+    }
+
+    ERROR_EVENT_CANONICAL {
+        BIGINT ID_ERROR_EVENT PK
+        VARCHAR NA_SOURCE_TABLE
+        BIGINT ID_SOURCE_ROW
+        VARCHAR NA_ERROR_SCOPE
+        INT FK_HOST
+        VARCHAR NA_ERROR_CODE
+    }
+
+    HOST_ERROR_SUMMARY {
+        BIGINT ID_HOST_ERROR_SUMMARY PK
+        INT FK_HOST
+        VARCHAR NA_ERROR_SCOPE
+        VARCHAR NA_ERROR_CODE
+        BIGINT NU_ERROR_COUNT
+    }
+
+    SERVER_ERROR_SUMMARY {
+        BIGINT ID_SERVER_ERROR_SUMMARY PK
+        VARCHAR NA_ERROR_SCOPE
+        VARCHAR NA_ERROR_CODE
+        BIGINT NU_ERROR_COUNT
+    }
+
+    HOST_CURRENT_SNAPSHOT {
+        INT ID_HOST PK
+        INT FK_CURRENT_SITE
+        BIGINT NU_FACT_SPECTRUM_TOTAL
+    }
+
+    SERVER_CURRENT_SUMMARY {
+        TINYINT ID_SUMMARY PK
+    }
+
+    HOST_EQUIPMENT_LINK ||--o{ HOST_LOCATION_SUMMARY : drives
+    SITE_EQUIPMENT_OBS_SUMMARY ||--o{ HOST_LOCATION_SUMMARY : aggregates
+    SITE_EQUIPMENT_OBS_SUMMARY ||--o{ MAP_SITE_STATION_SUMMARY : feeds
+    MAP_SITE_STATION_SUMMARY ||--o{ MAP_SITE_SUMMARY : collapses
+    ERROR_EVENT_CANONICAL ||--o{ HOST_ERROR_SUMMARY : groups
+    ERROR_EVENT_CANONICAL ||--o{ SERVER_ERROR_SUMMARY : groups
+    HOST_LOCATION_SUMMARY ||--o| HOST_CURRENT_SNAPSHOT : enriches
+```
+
+### RFFUSION_SUMMARY Role
+
+This database answers consumer-oriented questions such as:
+
+- which host is currently associated with one equipment
+- which locality is current or historical for a host
+- which marker state the map should render for a site
+- which grouped backup and processing errors dominate the environment
+- which server-wide metrics should be available without repeated scans over
+  `FILE_TASK_HISTORY` and `FACT_SPECTRUM`
 
 ## 5. Practical Interconnection Points Between BPDATA and RFDATA
 

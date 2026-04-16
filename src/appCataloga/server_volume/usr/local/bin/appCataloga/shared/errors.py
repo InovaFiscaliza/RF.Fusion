@@ -16,6 +16,7 @@ shared operational semantics, not just pretty error strings.
 
 from __future__ import annotations
 import errno
+import re
 import socket
 import sys
 import os
@@ -40,6 +41,82 @@ if CONFIG_PATH not in sys.path:
     sys.path.insert(0, CONFIG_PATH)
 
 import config as k  # noqa: E402  (must be available at runtime)
+
+
+ERROR_CLASSIFIER_VERSION = 1
+PERSISTED_ERROR_STAGE_RE = re.compile(r"\[stage=([^\]]+)\]", re.IGNORECASE)
+PERSISTED_ERROR_CODE_RE = re.compile(r"\[code=([^\]]+)\]", re.IGNORECASE)
+PERSISTED_ERROR_DETAIL_RE = re.compile(r"\[detail=([^\]]+)\]", re.IGNORECASE)
+PERSISTED_ERROR_TOKEN_RE = re.compile(r"\[[^\]]+\]")
+
+ERROR_DOMAIN_BY_PREFIX = {
+    "backup error": "BACKUP",
+    "processing error": "PROCESSING",
+    "discovery error": "DISCOVERY",
+    "host check error": "HOST_CHECK",
+    "backlog management error": "BACKLOG",
+}
+
+ERROR_DOMAIN_BY_STAGE = {
+    "AUTH": "BACKUP",
+    "SSH": "BACKUP",
+    "CONNECT": "BACKUP",
+    "TRANSFER": "BACKUP",
+    "FINALIZE": "BACKUP",
+    "LOCK": "BACKUP",
+    "HOST_READ": "BACKUP",
+    "PROCESS": "PROCESSING",
+    "SITE": "PROCESSING",
+    "DB": "PROCESSING",
+    "FS": "PROCESSING",
+    "DISCOVERY": "DISCOVERY",
+    "BACKLOG": "BACKLOG",
+    "CONNECTIVITY": "HOST_CHECK",
+    "UPDATE_STATS": "HOST_CHECK",
+    "TRANSACTION": "SYSTEM",
+    "QUEUE": "API",
+    "HOST_CREATE": "API",
+    "COMMAND": "API",
+    "PARSE": "API",
+    "READ": "API",
+    "MAIN": "SYSTEM",
+}
+
+ERROR_DOMAIN_BY_CODE = {
+    "GPS_GNSS_UNAVAILABLE": "PROCESSING",
+    "NO_VALID_SPECTRA": "PROCESSING",
+    "SPECTRUM_LIST_EMPTY": "PROCESSING",
+    "HOSTNAME_MISSING": "PROCESSING",
+    "INVALID_DATETIME_MONTH": "PROCESSING",
+    "INVALID_BUFFER_SIZE": "PROCESSING",
+    "SITE_GEOGRAPHIC_CODES_NOT_FOUND": "PROCESSING",
+    "APP_ANALISE_READ_TIMEOUT": "PROCESSING",
+    "APP_ANALISE_INVALID_SPECTRA_TYPE": "PROCESSING",
+    "BIN_PAYLOAD_VALIDATION_FAILED": "PROCESSING",
+    "AUTH_FAILED": "BACKUP",
+    "SSH_AUTH_TIMEOUT": "BACKUP",
+    "SSH_NEGOTIATION_FAILED": "BACKUP",
+    "SSH_CONNECT_TIMEOUT": "BACKUP",
+    "SFTP_INIT_FAILED": "BACKUP",
+    "TRANSFER_TIMEOUT": "BACKUP",
+    "TRANSFER_PERMISSION_DENIED": "BACKUP",
+    "SSH_TRANSFER_FAILED": "BACKUP",
+    "TRANSFER_IO_ERROR": "BACKUP",
+    "FILE_TRANSFER_FAILED": "BACKUP",
+    "FINALIZE_UPDATE_FAILED": "BACKUP",
+    "TASK_LOCK_FAILED": "BACKUP",
+    "HOST_NOT_FOUND": "BACKUP",
+    "DISCOVERY_FAILED": "DISCOVERY",
+    "BACKLOG_PROMOTION_FAILED": "BACKLOG",
+    "CONNECTIVITY_CHECK_FAILED": "HOST_CHECK",
+    "DB_TRANSACTION_FAILED": "SYSTEM",
+    "STATS_UPDATE_FAILED": "HOST_CHECK",
+    "HOST_CREATE_FAILED": "API",
+    "HOST_TASK_QUEUE_FAILED": "API",
+    "EMPTY_REQUEST": "API",
+    "UNSUPPORTED_COMMAND": "API",
+    "INVALID_HOST_ID": "API",
+}
 
 
 def _canonicalize_error_reason(
@@ -277,6 +354,185 @@ def _canonicalize_error_reason(
         return "INVALID_HOST_ID", "Invalid host_id", None
 
     return None, raw_reason, None
+
+
+def empty_persisted_error_fields(*, classified: bool = False) -> Dict[str, Any]:
+    """
+    Return the structured FILE_TASK / FILE_TASK_HISTORY error columns.
+
+    `classified=True` lets callers explicitly clear stale error metadata when a
+    row transitions back to a non-error state.
+    """
+    return {
+        "NA_ERROR_DOMAIN": None,
+        "NA_ERROR_STAGE": None,
+        "NA_ERROR_CODE": None,
+        "NA_ERROR_SUMMARY": None,
+        "NA_ERROR_DETAIL": None,
+        "NU_ERROR_CLASSIFIER_VERSION": (
+            ERROR_CLASSIFIER_VERSION if classified else None
+        ),
+    }
+
+
+def _infer_error_domain(
+    *,
+    prefix: Optional[str],
+    stage: Optional[str],
+    code: Optional[str],
+) -> Optional[str]:
+    """Infer a coarse error domain from the message wrapper and parsed tags."""
+    normalized_prefix = (prefix or "").split("|", 1)[0].strip().lower()
+
+    if normalized_prefix in ERROR_DOMAIN_BY_PREFIX:
+        return ERROR_DOMAIN_BY_PREFIX[normalized_prefix]
+
+    if code:
+        normalized_code = str(code).strip().upper()
+        if normalized_code in ERROR_DOMAIN_BY_CODE:
+            return ERROR_DOMAIN_BY_CODE[normalized_code]
+
+    if stage:
+        normalized_stage = str(stage).strip().upper()
+        if normalized_stage in ERROR_DOMAIN_BY_STAGE:
+            return ERROR_DOMAIN_BY_STAGE[normalized_stage]
+
+    return None
+
+
+def _extract_embedded_error_fragment(message: str) -> tuple[str, Optional[str]]:
+    """
+    Split a persisted audit message into `(prefix, error_fragment)`.
+
+    Non-error task messages return `(prefix, None)`.
+    """
+    normalized = (message or "").strip()
+
+    if not normalized:
+        return "", None
+
+    if "[ERROR]" in normalized:
+        prefix, fragment = normalized.split("[ERROR]", 1)
+        return prefix.strip(" |"), fragment.strip()
+
+    lowered = normalized.lower()
+    looks_structured = "[stage=" in lowered or "[code=" in lowered
+    has_error_prefix = any(prefix in lowered for prefix in ERROR_DOMAIN_BY_PREFIX)
+
+    if looks_structured or has_error_prefix:
+        return "", normalized
+
+    return normalized, None
+
+
+def _extract_error_summary(error_fragment: str) -> Optional[str]:
+    """Strip bracketed tokens and keep only the stable human summary."""
+    if not error_fragment:
+        return None
+
+    summary = PERSISTED_ERROR_TOKEN_RE.sub(" ", error_fragment)
+    summary = re.sub(r"\s+", " ", summary).strip(" |")
+    return summary or None
+
+
+def classify_persisted_error_message(message: Optional[str]) -> Dict[str, Any]:
+    """
+    Parse one persisted task/history message into structured error columns.
+
+    The parser accepts both the current `ErrorHandler.format_error()` output and
+    older task messages that already contained partial `[stage=...]` / `[code=...]`
+    markup inside `NA_MESSAGE`.
+    """
+    normalized = (message or "").strip()
+
+    if not normalized:
+        return empty_persisted_error_fields(classified=False)
+
+    prefix, error_fragment = _extract_embedded_error_fragment(normalized)
+    payload = empty_persisted_error_fields(classified=True)
+
+    if error_fragment is None:
+        return payload
+
+    stage_match = PERSISTED_ERROR_STAGE_RE.search(error_fragment)
+    code_match = PERSISTED_ERROR_CODE_RE.search(error_fragment)
+    detail_match = PERSISTED_ERROR_DETAIL_RE.search(error_fragment)
+
+    stage = stage_match.group(1).strip() if stage_match else None
+    code = code_match.group(1).strip() if code_match else None
+    detail = detail_match.group(1).strip() if detail_match else None
+    summary = _extract_error_summary(error_fragment)
+
+    fallback_code = None
+    fallback_summary = None
+    fallback_detail = None
+
+    if summary or stage:
+        fallback_code, fallback_summary, fallback_detail = _canonicalize_error_reason(
+            summary or normalized,
+            None,
+            stage=stage,
+        )
+
+    if not code and fallback_code:
+        code = fallback_code
+
+    if fallback_summary and (not summary or summary == normalized):
+        summary = fallback_summary
+
+    if not detail and fallback_detail:
+        detail = fallback_detail
+
+    if not code and (stage or summary or prefix):
+        code = "UNCLASSIFIED"
+
+    if not summary:
+        summary = prefix or normalized
+
+    payload.update(
+        {
+            "NA_ERROR_DOMAIN": _infer_error_domain(
+                prefix=prefix,
+                stage=stage,
+                code=code,
+            ) or "UNKNOWN",
+            "NA_ERROR_STAGE": stage,
+            "NA_ERROR_CODE": code,
+            "NA_ERROR_SUMMARY": summary,
+            "NA_ERROR_DETAIL": detail,
+        }
+    )
+    return payload
+
+
+def persisted_error_fields_from_handler(
+    handler: Optional["ErrorHandler"] = None,
+    *,
+    message: Optional[str] = None,
+    clear_when_empty: bool = True,
+) -> Dict[str, Any]:
+    """
+    Build the structured FILE_TASK / FILE_TASK_HISTORY error columns.
+
+    Workers should persist these fields explicitly so the row already carries
+    the canonical error payload before any downstream aggregation reads it.
+    """
+    if handler is not None:
+        triggered = getattr(handler, "triggered", None)
+        format_error = getattr(handler, "format_error", None)
+
+        if triggered:
+            return classify_persisted_error_message(handler.format_error())
+
+        if triggered is None and callable(format_error):
+            formatted = format_error()
+            if formatted:
+                return classify_persisted_error_message(formatted)
+
+    if message is not None:
+        return classify_persisted_error_message(message)
+
+    return empty_persisted_error_fields(classified=clear_when_empty)
 
 class BinValidationError(ValueError):
     """

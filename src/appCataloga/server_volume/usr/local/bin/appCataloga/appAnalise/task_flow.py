@@ -33,7 +33,7 @@ import re
 import config as k
 from appAnalise.payload_parser import canonicalize_equipment_identifier
 from geopy.exc import GeocoderServiceError
-from shared import geolocation_utils, tools
+from shared import errors, geolocation_utils, tools
 
 
 NON_ALNUM_RE = re.compile(r"[^a-z0-9]+", re.IGNORECASE)
@@ -45,6 +45,15 @@ TRANSIENT_FILESYSTEM_ERRNOS = {
 }
 
 ERMX_FAMILY_PREFIXES = ("ermx", "emrx")
+
+
+def _structured_error_fields_for_handler(err, *, message=None):
+    """Build explicit structured error fields for worker persistence."""
+    return errors.persisted_error_fields_from_handler(
+        err,
+        message=message,
+        clear_when_empty=True,
+    )
 
 
 def is_transient_filesystem_error(exc: Exception) -> bool:
@@ -528,17 +537,20 @@ def return_task_to_pending(db_bp, file_task_id, err):
     return to the live queue automatically instead of being frozen for manual
     review.
     """
+    message = tools.compose_message(
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        task_status=k.TASK_PENDING,
+        detail="APP_ANALISE transient failure, task returned for retry",
+        error=err.format_error(),
+    )
+
     db_bp.file_task_update(
         task_id=file_task_id,
         NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
         NU_STATUS=k.TASK_PENDING,
         DT_FILE_TASK=datetime.now(),
-        NA_MESSAGE=tools.compose_message(
-            task_type=k.FILE_TASK_PROCESS_TYPE,
-            task_status=k.TASK_PENDING,
-            detail="APP_ANALISE transient failure, task returned for retry",
-            error=err.format_error(),
-        ),
+        NA_MESSAGE=message,
+        **_structured_error_fields_for_handler(err, message=message),
     )
 
 
@@ -572,6 +584,7 @@ def freeze_task_for_manual_review(
         NU_PID=None,
         DT_FILE_TASK=datetime.now(),
         NA_MESSAGE=message,
+        **_structured_error_fields_for_handler(err, message=message),
     )
 
     db_bp.file_history_update(
@@ -581,6 +594,7 @@ def freeze_task_for_manual_review(
         host_file_name=host_file_name,
         NU_STATUS_PROCESSING=k.TASK_FROZEN,
         NA_MESSAGE=message,
+        **_structured_error_fields_for_handler(err, message=message),
     )
 
     db_bp.host_task_statistics_create(host_id=host_id)
@@ -875,6 +889,10 @@ def finalize_task_resolution(
         error=err.format_error() if err.triggered else None,
     )
     processed_at = datetime.now()
+    structured_error_fields = _structured_error_fields_for_handler(
+        err if err.triggered else None,
+        message=na_message,
+    )
 
     db_bp.file_history_update(
         host_id=host_id,
@@ -890,6 +908,7 @@ def finalize_task_resolution(
         DT_FILE_MODIFIED=history_meta["dt_modified"],
         NU_STATUS_PROCESSING=status,
         NA_MESSAGE=na_message,
+        **structured_error_fields,
     )
 
     # Statistics are updated after history so host-level counters see the same

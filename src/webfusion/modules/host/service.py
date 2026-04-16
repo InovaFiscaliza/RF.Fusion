@@ -249,9 +249,17 @@ def _merge_grouped_processing_errors(rows):
     merged = {}
 
     for row in rows:
-        raw_message = row.get("ERROR_MESSAGE") or "(Sem mensagem)"
+        structured_message = _format_structured_error_bucket(
+            row,
+            default_label="Processing Error",
+        )
+        raw_message = row.get("ERROR_SUMMARY") or row.get("ERROR_MESSAGE") or "(Sem mensagem)"
         error_count = int(row.get("ERROR_COUNT") or 0)
-        canonical_message = _canonicalize_processing_error_message(raw_message)
+        canonical_message = (
+            structured_message
+            if structured_message
+            else _canonicalize_processing_error_message(raw_message)
+        )
 
         bucket = merged.setdefault(
             canonical_message,
@@ -279,6 +287,27 @@ def _build_host_list_cache_key(*, online_only=False, search=None):
 
     normalized_search = (search or "").strip().lower()
     return (bool(online_only), normalized_search)
+
+
+def _format_structured_error_bucket(row, *, default_label):
+    """Render one grouped structured-error row into the legacy dashboard label."""
+    summary = str(row.get("ERROR_SUMMARY") or "").strip()
+    stage = str(row.get("ERROR_STAGE") or "").strip()
+    code = str(row.get("ERROR_CODE") or "").strip()
+
+    if not summary or not (stage or code):
+        return None
+
+    parts = [f"{default_label} |", "[ERROR]"]
+
+    if stage:
+        parts.append(f"[stage={stage}]")
+
+    if code:
+        parts.append(f"[code={code}]")
+
+    parts.append(summary)
+    return " ".join(parts)
 
 
 def _canonicalize_backup_error_message(message):
@@ -439,9 +468,17 @@ def _merge_grouped_backup_errors(rows):
     merged = {}
 
     for row in rows:
-        raw_message = row.get("ERROR_MESSAGE") or "(Sem mensagem)"
+        structured_message = _format_structured_error_bucket(
+            row,
+            default_label="Backup Error",
+        )
+        raw_message = row.get("ERROR_SUMMARY") or row.get("ERROR_MESSAGE") or "(Sem mensagem)"
         error_count = int(row.get("ERROR_COUNT") or 0)
-        canonical_message = _canonicalize_backup_error_message(raw_message)
+        canonical_message = (
+            structured_message
+            if structured_message
+            else _canonicalize_backup_error_message(raw_message)
+        )
 
         bucket = merged.setdefault(
             canonical_message,
@@ -1112,7 +1149,12 @@ def _get_grouped_processing_errors(cur, where_clause="", params=None):
 
     query = """
         SELECT
-            COALESCE(NULLIF(TRIM(NA_MESSAGE), ''), '(Sem mensagem)') AS ERROR_MESSAGE,
+            NULLIF(TRIM(NA_ERROR_STAGE), '') AS ERROR_STAGE,
+            NULLIF(TRIM(NA_ERROR_CODE), '') AS ERROR_CODE,
+            COALESCE(
+                NULLIF(TRIM(NA_ERROR_SUMMARY), ''),
+                COALESCE(NULLIF(TRIM(NA_MESSAGE), ''), '(Sem mensagem)')
+            ) AS ERROR_SUMMARY,
             COUNT(*) AS ERROR_COUNT
         FROM FILE_TASK_HISTORY
         WHERE NU_STATUS_PROCESSING = -1
@@ -1122,8 +1164,14 @@ def _get_grouped_processing_errors(cur, where_clause="", params=None):
         query += f" AND {where_clause}"
 
     query += """
-        GROUP BY COALESCE(NULLIF(TRIM(NA_MESSAGE), ''), '(Sem mensagem)')
-        ORDER BY ERROR_COUNT DESC, ERROR_MESSAGE ASC
+        GROUP BY
+            NULLIF(TRIM(NA_ERROR_STAGE), ''),
+            NULLIF(TRIM(NA_ERROR_CODE), ''),
+            COALESCE(
+                NULLIF(TRIM(NA_ERROR_SUMMARY), ''),
+                COALESCE(NULLIF(TRIM(NA_MESSAGE), ''), '(Sem mensagem)')
+            )
+        ORDER BY ERROR_COUNT DESC, ERROR_SUMMARY ASC
     """
 
     cur.execute(query, params or [])
@@ -1135,7 +1183,12 @@ def _get_grouped_backup_errors(cur, where_clause="", params=None):
 
     query = """
         SELECT
-            COALESCE(NULLIF(TRIM(NA_MESSAGE), ''), '(Sem mensagem)') AS ERROR_MESSAGE,
+            NULLIF(TRIM(NA_ERROR_STAGE), '') AS ERROR_STAGE,
+            NULLIF(TRIM(NA_ERROR_CODE), '') AS ERROR_CODE,
+            COALESCE(
+                NULLIF(TRIM(NA_ERROR_SUMMARY), ''),
+                COALESCE(NULLIF(TRIM(NA_MESSAGE), ''), '(Sem mensagem)')
+            ) AS ERROR_SUMMARY,
             COUNT(*) AS ERROR_COUNT
         FROM FILE_TASK_HISTORY
         WHERE NU_STATUS_BACKUP = -1
@@ -1145,8 +1198,14 @@ def _get_grouped_backup_errors(cur, where_clause="", params=None):
         query += f" AND {where_clause}"
 
     query += """
-        GROUP BY COALESCE(NULLIF(TRIM(NA_MESSAGE), ''), '(Sem mensagem)')
-        ORDER BY ERROR_COUNT DESC, ERROR_MESSAGE ASC
+        GROUP BY
+            NULLIF(TRIM(NA_ERROR_STAGE), ''),
+            NULLIF(TRIM(NA_ERROR_CODE), ''),
+            COALESCE(
+                NULLIF(TRIM(NA_ERROR_SUMMARY), ''),
+                COALESCE(NULLIF(TRIM(NA_MESSAGE), ''), '(Sem mensagem)')
+            )
+        ORDER BY ERROR_COUNT DESC, ERROR_SUMMARY ASC
     """
 
     cur.execute(query, params or [])
