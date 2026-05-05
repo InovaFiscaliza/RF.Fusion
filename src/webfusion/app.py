@@ -1,18 +1,18 @@
 """Application entrypoint for the WebFusion web interface.
 
-This module creates the Flask app, registers the feature blueprints, and keeps
-only a few small routes that are truly cross-module:
+This module owns only the routes that do not fit cleanly inside one feature
+package:
 
-- the landing page
-- the station-map JSON APIs
-- a small legacy popup helper
-- the health endpoint used by the container
+- the landing page shell
+- the summary-backed station-map APIs used by that page
+- the small legacy popup helper used by older task flows
+- the container health endpoint
+
+All feature-specific pages live in blueprints under ``modules/``.
 """
 
 import os
 import logging
-import threading
-import time
 
 from flask import Flask, request, render_template, jsonify
 from waitress import serve
@@ -20,101 +20,52 @@ from modules.spectrum.routes import spectrum_bp
 from modules.host.routes import host_bp
 from modules.server.routes import server_bp
 from modules.task.routes import task_bp
-from modules.host.service import (
-    get_server_backup_error_overview,
-    get_server_processing_error_overview,
-    get_server_summary_metrics,
-)
 from modules.map.service import (
     get_station_map_points,
     get_station_map_site_detail,
-    start_station_map_background_refresh,
 )
 
 
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
-_STARTUP_PREWARM_LOCK = threading.Lock()
-_STARTUP_PREWARM_STARTED = False
-SERVER_PREWARM_POLL_SECONDS = 30.0
 
-# ----------------------------------------------------------
-# Registro de Blueprints
-# ----------------------------------------------------------
+# Register feature blueprints first; the app-level routes below are kept only
+# for the landing page and a few small cross-module helpers.
 
 app.register_blueprint(spectrum_bp)
 app.register_blueprint(host_bp)
 app.register_blueprint(server_bp)
 app.register_blueprint(task_bp)
 
-
-def _prime_server_dashboard_caches():
-    """Warm heavy server-side dashboard caches when they are due."""
-
-    cache_loaders = [
-        ("server_summary_metrics", get_server_summary_metrics),
-        ("server_processing_error_overview", get_server_processing_error_overview),
-        ("server_backup_error_overview", get_server_backup_error_overview),
-    ]
-
-    for cache_name, loader in cache_loaders:
-        try:
-            loader()
-        except Exception:
-            app.logger.exception("failed_to_prewarm_%s", cache_name)
-
-
-def _startup_prewarm_worker():
-    """Warm the most expensive shared UI caches in the background."""
-
-    try:
-        start_station_map_background_refresh()
-    except Exception:
-        app.logger.exception("failed_to_start_station_map_background_refresh")
-
-    while True:
-        _prime_server_dashboard_caches()
-        time.sleep(SERVER_PREWARM_POLL_SECONDS)
-
-
-def start_background_prewarm_services():
-    """Start one per-process background warm-up worker."""
-
-    global _STARTUP_PREWARM_STARTED
-
-    with _STARTUP_PREWARM_LOCK:
-        if _STARTUP_PREWARM_STARTED:
-            return False
-
-        _STARTUP_PREWARM_STARTED = True
-
-    worker = threading.Thread(
-        target=_startup_prewarm_worker,
-        name="webfusion-startup-prewarm",
-        daemon=True,
-    )
-    worker.start()
-    return True
-
 @app.route("/")
 def index():
     """Render the landing page shell.
 
-    The heavy station data is loaded asynchronously by the browser so the page
-    can appear quickly even when the map data takes longer to prepare.
+    The station data is loaded asynchronously by the browser so the page can
+    appear quickly while the map API resolves in parallel.
     """
-    start_background_prewarm_services()
     return render_template("index.html")
 
 
 @app.route("/api/map/stations")
 def map_stations():
+    """Return the cached summary-backed station map payload.
+
+    The page intentionally renders before this endpoint resolves, so failures
+    should degrade to an empty map instead of breaking the whole landing page.
     """
-    Return station-map points without blocking the landing page render.
-    """
+    start_date = request.args.get("start_date") or None
+    end_date = request.args.get("end_date") or None
+
     try:
-        start_background_prewarm_services()
-        return jsonify({"points": get_station_map_points()})
+        return jsonify(
+            {
+                "points": get_station_map_points(
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            }
+        )
     except Exception:
         app.logger.exception("failed_to_build_station_map")
         # The UI treats an empty dataset as a degraded-but-usable state.
@@ -123,11 +74,23 @@ def map_stations():
 
 @app.route("/api/map/stations/<int:site_id>")
 def map_station_detail(site_id):
+    """Return popup metadata for one map point.
+
+    The popup is loaded on demand after the operator focuses a site, which
+    keeps the initial map payload smaller than embedding every station detail
+    into the first HTML response.
     """
-    Return popup actions for a single station point.
-    """
+    start_date = request.args.get("start_date") or None
+    end_date = request.args.get("end_date") or None
+
     try:
-        return jsonify(get_station_map_site_detail(site_id))
+        return jsonify(
+            get_station_map_site_detail(
+                site_id,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        )
     except Exception:
         app.logger.exception("failed_to_build_station_map_site_detail", extra={"site_id": site_id})
         return jsonify(
@@ -191,11 +154,10 @@ def popup():
 
 @app.route("/health")
 def health():
-    """Return a tiny response used by container health checks."""
+    """Return the minimal liveness response used by container health checks."""
     return {"status": "ok"}
 
 if __name__ == "__main__":
-    start_background_prewarm_services()
     serve(
         app,
         host=os.getenv("WEBFUSION_HOST", "127.0.0.1"),

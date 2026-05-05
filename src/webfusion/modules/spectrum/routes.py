@@ -695,7 +695,12 @@ def spectrum_localities():
             query_mode,
             equipment_id,
         )
-        return jsonify({"rows": []})
+        return jsonify(
+            {
+                "rows": [],
+                "error": "localities_temporarily_unavailable",
+            }
+        ), 503
 
 
 @spectrum_bp.route("/spectrum/download/<int:spectrum_id>")

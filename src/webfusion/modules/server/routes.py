@@ -54,10 +54,17 @@ def server():
     search = request.args.get("search") or None
     online_only = request.args.get("online_only", "0") == "1"
     server_overview = get_server_overview(online_only=online_only, search=search)
+    server_summary_metrics_payload = None
+
+    try:
+        server_summary_metrics_payload = get_server_summary_metrics()
+    except Exception:
+        current_app.logger.exception("failed_to_build_server_summary_metrics_initial")
 
     return render_template(
         "server/server.html",
         server_overview=server_overview,
+        server_summary_metrics=server_summary_metrics_payload,
         online_only=online_only,
         search=search,
     )
@@ -71,12 +78,14 @@ def server_processing_errors():
         return jsonify(get_server_processing_error_overview())
     except Exception:
         current_app.logger.exception("failed_to_build_server_processing_errors")
-        return jsonify(
-            {
-                "rows": [],
-                "error_group_count": 0,
-                "error_total_occurrences": 0,
-            }
+        return (
+            jsonify(
+                {
+                    "rows": [],
+                    "error": "failed_to_build_server_processing_errors",
+                }
+            ),
+            503,
         )
 
 
@@ -88,12 +97,14 @@ def server_backup_errors():
         return jsonify(get_server_backup_error_overview())
     except Exception:
         current_app.logger.exception("failed_to_build_server_backup_errors")
-        return jsonify(
-            {
-                "rows": [],
-                "error_group_count": 0,
-                "error_total_occurrences": 0,
-            }
+        return (
+            jsonify(
+                {
+                    "rows": [],
+                    "error": "failed_to_build_server_backup_errors",
+                }
+            ),
+            503,
         )
 
 
@@ -105,24 +116,13 @@ def server_summary_metrics():
         return jsonify(get_server_summary_metrics())
     except Exception:
         current_app.logger.exception("failed_to_build_server_summary_metrics")
-        return jsonify(
-            {
-                "CURRENT_MONTH_LABEL": None,
-                "BACKUP_DONE_THIS_MONTH": 0,
-                "BACKUP_DONE_GB_THIS_MONTH": 0,
-                "DISCOVERED_FILES_TOTAL": 0,
-                "BACKUP_PENDING_FILES_TOTAL": 0,
-                "BACKUP_ERROR_FILES_TOTAL": 0,
-                "BACKUP_QUEUE_FILES_TOTAL": 0,
-                "BACKUP_QUEUE_GB_TOTAL": 0,
-                "PROCESSING_PENDING_FILES_TOTAL": 0,
-                "PROCESSING_QUEUE_FILES_TOTAL": 0,
-                "PROCESSING_QUEUE_GB_TOTAL": 0,
-                "PROCESSING_DONE_FILES_TOTAL": 0,
-                "FACT_SPECTRUM_TOTAL": 0,
-                "PROCESSING_ERROR_FILES_TOTAL": 0,
-                "BACKUP_PENDING_GB_TOTAL": 0,
-            }
+        return (
+            jsonify(
+                {
+                    "error": "failed_to_build_server_summary_metrics",
+                }
+            ),
+            503,
         )
 
 

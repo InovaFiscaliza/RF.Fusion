@@ -23,6 +23,7 @@
     data-processing-errors-endpoint="{{ url_for('server.server_processing_errors') }}"
     data-backup-errors-endpoint="{{ url_for('server.server_backup_errors') }}"
     data-summary-metrics-endpoint="{{ url_for('server.server_summary_metrics') }}"
+    data-summary-metrics-initial-loaded="{{ '1' if server_summary_metrics else '0' }}"
 >
 
 <h1 class="margin-bottom-l">
@@ -60,39 +61,57 @@
         <div class="summary-grid">
             <div class="summary-card">
                 <div class="summary-card-label">Mês de referência</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-month-label">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-month-label">
+                    {{ server_summary_metrics.CURRENT_MONTH_LABEL if server_summary_metrics else 'CARREGANDO' }}
+                </div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos mapeados</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-discovered-total">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-discovered-total">
+                    {{ server_summary_metrics.DISCOVERED_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                </div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Backups no mês</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-done-month">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-done-month">
+                    {{ server_summary_metrics.BACKUP_DONE_THIS_MONTH if server_summary_metrics else 'CARREGANDO' }}
+                </div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume no mês</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-done-gb-month">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-done-gb-month">
+                    {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_DONE_GB_THIS_MONTH }} GB{% else %}CARREGANDO{% endif %}
+                </div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Backups pendentes</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-pending-total">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-pending-total">
+                    {{ server_summary_metrics.BACKUP_PENDING_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                </div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Backups com erro</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-error-total">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-error-total">
+                    {{ server_summary_metrics.BACKUP_ERROR_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                </div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume pendente de backup</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-pending-gb">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-pending-gb">
+                    {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_PENDING_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                </div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos na fila de backup</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-queue-total">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-queue-total">
+                    {{ server_summary_metrics.BACKUP_QUEUE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                </div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume na fila de backup</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-backup-queue-gb">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-queue-gb">
+                    {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_QUEUE_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                </div>
             </div>
         </div>
     </div>
@@ -102,27 +121,39 @@
         <div class="summary-grid">
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos com Processamento Pendente</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-processing-pending-total">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-pending-total">
+                    {{ server_summary_metrics.PROCESSING_PENDING_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                </div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos na fila de processamento</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-processing-queue-total">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-queue-total">
+                    {{ server_summary_metrics.PROCESSING_QUEUE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                </div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Volume na fila de processamento</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-processing-queue-gb">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-queue-gb">
+                    {% if server_summary_metrics %}{{ server_summary_metrics.PROCESSING_QUEUE_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                </div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos com Processamento Concluído</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-processing-done-total">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-done-total">
+                    {{ server_summary_metrics.PROCESSING_DONE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                </div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Arquivos com Erro de Processamento</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-processing-error-total">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-error-total">
+                    {{ server_summary_metrics.PROCESSING_ERROR_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                </div>
             </div>
             <div class="summary-card">
                 <div class="summary-card-label">Espectros Gerados</div>
-                <div class="summary-card-value summary-card-value-loading" id="server-summary-fact-spectrum-total">CARREGANDO</div>
+                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-fact-spectrum-total">
+                    {{ server_summary_metrics.FACT_SPECTRUM_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                </div>
             </div>
         </div>
     </div>
@@ -179,7 +210,7 @@
     <details class="details-panel" id="server-processing-errors-panel">
         <summary>
             Clique para carregar detalhes sobre erros agrupados de processamento
-            <span class="details-summary-meta" id="server-processing-errors-meta">Cache aquecida em segundo plano</span>
+            <span class="details-summary-meta" id="server-processing-errors-meta">Consulta sob demanda</span>
         </summary>
         <div class="details-panel-body">
             <div class="diagnostic-breakdown">
@@ -192,7 +223,7 @@
                     </thead>
                     <tbody id="server-processing-errors-body">
                         <tr>
-                            <td colspan="2">Abra este painel para exibir os erros agrupados. A consulta é mantida aquecida em segundo plano.</td>
+                            <td colspan="2">Abra este painel para exibir os erros agrupados consultados no banco de resumo.</td>
                         </tr>
                     </tbody>
                 </table>
@@ -204,7 +235,7 @@
     <details class="details-panel" id="server-backup-errors-panel">
         <summary>
             Clique para carregar detalhes sobre erros agrupados de backup
-            <span class="details-summary-meta" id="server-backup-errors-meta">Cache aquecida em segundo plano</span>
+            <span class="details-summary-meta" id="server-backup-errors-meta">Consulta sob demanda</span>
         </summary>
         <div class="details-panel-body">
             <div class="diagnostic-breakdown">
@@ -217,7 +248,7 @@
                     </thead>
                     <tbody id="server-backup-errors-body">
                         <tr>
-                            <td colspan="2">Abra este painel para exibir os erros agrupados de backup. A consulta é mantida aquecida em segundo plano.</td>
+                            <td colspan="2">Abra este painel para exibir os erros agrupados de backup consultados no banco de resumo.</td>
                         </tr>
                     </tbody>
                 </table>
@@ -293,5 +324,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/server_page.js', v='20260415-server-page-extraction') }}"></script>
+<script src="{{ url_for('static', filename='js/server_page.js', v='20260428-server-diagnostics-fix') }}"></script>
 {% endblock %}

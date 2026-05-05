@@ -51,6 +51,7 @@
     const backupErrorsEndpoint      = root.dataset.backupErrorsEndpoint || "";
     const summaryMetricsEndpoint    = root.dataset.summaryMetricsEndpoint || "";
     const currentOnlineOnly         = root.dataset.onlineOnly === "1";
+    const hasInitialSummaryMetrics  = root.dataset.summaryMetricsInitialLoaded === "1";
 
     /* Several panels on this page still render rows through small HTML
      * fragments. This helper keeps those fragments safe before interpolation,
@@ -294,6 +295,10 @@
                 loadPanel();
             }
         });
+
+        if (panelElement.open) {
+            loadPanel();
+        }
     }
 
     /* The station table is intentionally lazy because it is a navigation aid.
@@ -450,6 +455,24 @@
         );
     }
 
+    function renderSummaryMetricsUnavailable() {
+        Object.entries(summaryBindings).forEach(([key, element]) => {
+            if (!element) {
+                return;
+            }
+
+            if (key === "CURRENT_MONTH_LABEL") {
+                element.textContent = "INDISPONIVEL";
+            } else if (key.endsWith("_GB_TOTAL") || key === "BACKUP_DONE_GB_THIS_MONTH") {
+                element.textContent = "- GB";
+            } else {
+                element.textContent = "-";
+            }
+
+            element.classList.remove("summary-card-value-loading");
+        });
+    }
+
     /* Summary metrics degrade to zeros instead of a hard failure banner.
      *
      * This dashboard is still usable if the heavy consolidated endpoint is
@@ -471,23 +494,9 @@
             const payload = await response.json();
             renderSummaryMetrics(payload);
         } catch (error) {
-            renderSummaryMetrics({
-                CURRENT_MONTH_LABEL         : null,
-                BACKUP_DONE_THIS_MONTH      : 0,
-                BACKUP_DONE_GB_THIS_MONTH   : 0,
-                DISCOVERED_FILES_TOTAL      : 0,
-                BACKUP_PENDING_FILES_TOTAL  : 0,
-                BACKUP_ERROR_FILES_TOTAL    : 0,
-                BACKUP_QUEUE_FILES_TOTAL    : 0,
-                BACKUP_QUEUE_GB_TOTAL       : 0,
-                PROCESSING_PENDING_FILES_TOTAL  : 0,
-                PROCESSING_QUEUE_FILES_TOTAL    : 0,
-                PROCESSING_QUEUE_GB_TOTAL       : 0,
-                PROCESSING_DONE_FILES_TOTAL     : 0,
-                FACT_SPECTRUM_TOTAL             : 0,
-                PROCESSING_ERROR_FILES_TOTAL    : 0,
-                BACKUP_PENDING_GB_TOTAL         : 0,
-            });
+            if (!hasInitialSummaryMetrics) {
+                renderSummaryMetricsUnavailable();
+            }
         }
     }
 

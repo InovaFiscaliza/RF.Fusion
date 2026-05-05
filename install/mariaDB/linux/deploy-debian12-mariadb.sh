@@ -26,6 +26,7 @@ sqlMeasure="/RFFusion/src/mariadb/scripts/createMeasureDB-v5.sql"
 sqlFusionSummary="/RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql"
 sqlFusionSummaryV2="/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v2-error-aggregation.sql"
 sqlFusionSummaryV3="/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v3-refresh-events.sql"
+sqlFusionSummaryV4="/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v4-discovered-files.sql"
 
 # ------------------------------
 # Caminhos do host
@@ -110,5 +111,6 @@ podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sql
 podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlFusionSummary}" || true
 podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlFusionSummaryV2}" || true
 podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlFusionSummaryV3}" || true
+podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlFusionSummaryV4}" || true
 
 echo "=== ✅ Deployment completed successfully ==="

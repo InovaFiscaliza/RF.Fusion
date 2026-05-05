@@ -26,6 +26,7 @@ def load_spectrum_service():
     """Import the spectrum service with lightweight DB stubs only."""
     stub_db = types.ModuleType("db")
     stub_db.get_connection_rfdata = lambda: None
+    stub_db.get_connection_summary = lambda: None
 
     previous_db = sys.modules.get("db")
     sys.modules["db"] = stub_db
@@ -143,6 +144,104 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(lower_params, [100.0])
         self.assertEqual(upper_where, ["f.NU_FREQ_END <= %s"])
         self.assertEqual(upper_params, [200.0])
+
+    def test_get_spectrum_locality_options_uses_summary_rows(self):
+        class FakeCursor:
+            def __init__(self):
+                self.executed = []
+
+            def execute(self, query, params):
+                self.executed.append((query, params))
+
+            def fetchall(self):
+                return [
+                    {
+                        "ID_SITE": 12,
+                        "LOCALITY_LABEL": "Brasilia",
+                        "COUNTY_NAME": "Brasilia",
+                        "STATE_CODE": "DF",
+                        "DATE_START": "2024-01-01 00:00:00",
+                        "DATE_END": "2024-01-31 23:59:59",
+                        "SPECTRUM_COUNT": 25,
+                    },
+                    {
+                        "ID_SITE": 13,
+                        "LOCALITY_LABEL": "Brasilia",
+                        "COUNTY_NAME": "Brasilia",
+                        "STATE_CODE": "DF",
+                        "DATE_START": "2024-02-01 00:00:00",
+                        "DATE_END": "2024-02-29 23:59:59",
+                        "SPECTRUM_COUNT": 10,
+                    },
+                ]
+
+            def fetchone(self):
+                return None
+
+        class FakeConnection:
+            def __init__(self, cursor):
+                self._cursor = cursor
+                self.closed = False
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                self.closed = True
+
+        fake_cursor = FakeCursor()
+        fake_connection = FakeConnection(fake_cursor)
+        self.module.get_connection_summary = lambda: fake_connection
+        self.module._SPECTRUM_QUERY_CACHE.clear()
+
+        rows = self.module.get_spectrum_locality_options(equipment_id=99, query_mode="spectrum")
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["ID_SITE"], 12)
+        self.assertEqual(rows[0]["OPTION_LABEL"], "Brasilia (site 12)")
+        self.assertEqual(rows[1]["OPTION_LABEL"], "Brasilia (site 13)")
+        self.assertIn("SITE_EQUIPMENT_OBS_SUMMARY", fake_cursor.executed[0][0])
+        self.assertEqual(fake_cursor.executed[0][1], (99,))
+        self.assertTrue(fake_connection.closed)
+
+    def test_get_spectrum_site_availability_range_uses_summary_rows(self):
+        class FakeCursor:
+            def __init__(self):
+                self.executed = []
+
+            def execute(self, query, params):
+                self.executed.append((query, params))
+
+            def fetchone(self):
+                return {
+                    "ID_SITE": 44,
+                    "LOCALITY_LABEL": "Manaus/AM",
+                    "DATE_START": "2024-03-01 00:00:00",
+                    "DATE_END": "2024-03-15 23:59:59",
+                    "SPECTRUM_COUNT": 7,
+                }
+
+        class FakeConnection:
+            def __init__(self, cursor):
+                self._cursor = cursor
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                pass
+
+        fake_cursor = FakeCursor()
+        self.module.get_connection_summary = lambda: FakeConnection(fake_cursor)
+        self.module._SPECTRUM_QUERY_CACHE.clear()
+
+        row = self.module.get_spectrum_site_availability_range(equipment_id=7, site_id=44)
+
+        self.assertEqual(row["ID_SITE"], 44)
+        self.assertEqual(row["LOCALITY_LABEL"], "Manaus/AM")
+        self.assertEqual(row["SPECTRUM_COUNT"], 7)
+        self.assertIn("SITE_EQUIPMENT_OBS_SUMMARY", fake_cursor.executed[0][0])
+        self.assertEqual(fake_cursor.executed[0][1], (7, 44))
 
 
 if __name__ == "__main__":

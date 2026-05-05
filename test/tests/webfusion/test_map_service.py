@@ -1,13 +1,4 @@
-"""
-Validation tests for `webfusion.modules.map.service`.
-
-How to run:
-    /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_map_service.py -q
-
-What is covered here:
-    - normalization of Celplan/CWSM receiver naming
-    - map-side host reconciliation against `BPDATA`
-"""
+"""Validation tests for `webfusion.modules.map.service`."""
 
 from __future__ import annotations
 
@@ -16,6 +7,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 MODULE_PATH = Path("/RFFusion/src/webfusion/modules/map/service.py")
@@ -26,6 +18,7 @@ def load_map_service():
     stub_db = types.ModuleType("db")
     stub_db.get_connection_bpdata = lambda: None
     stub_db.get_connection_rfdata = lambda: None
+    stub_db.get_connection_summary = lambda: None
 
     previous_db = sys.modules.get("db")
     sys.modules["db"] = stub_db
@@ -49,140 +42,11 @@ def load_map_service():
 
 
 class TestMapService(unittest.TestCase):
-    """Validate the receiver-to-host matching rules used by the map popup."""
+    """Validate the summary-backed landing-page map behavior."""
 
     @classmethod
     def setUpClass(cls):
         cls.module = load_map_service()
-
-    def test_build_cwsm_signature_handles_short_host_name(self):
-        self.assertEqual(
-            self.module._build_cwsm_signature("cwsm211001"),
-            "cwsm211001",
-        )
-
-    def test_build_cwsm_signature_handles_long_receiver_name(self):
-        self.assertEqual(
-            self.module._build_cwsm_signature("cwsm21100001"),
-            "cwsm211001",
-        )
-        self.assertEqual(
-            self.module._build_cwsm_signature("cwsm21120037"),
-            "cwsm212037",
-        )
-        self.assertEqual(
-            self.module._build_cwsm_signature("cwsm22010007"),
-            "cwsm211007",
-        )
-        self.assertEqual(
-            self.module._build_cwsm_signature("cwsm22010040"),
-            "cwsm220040",
-        )
-
-    def test_find_host_for_equipment_matches_celplan_receiver_variants(self):
-        host_index = {
-            "raw": {
-                "cwsm211001": {
-                    "host_id": 101,
-                    "host_name": "CWSM211001",
-                    "is_offline": False,
-                },
-                "cwsm220040": {
-                    "host_id": 202,
-                    "host_name": "CWSM220040",
-                    "is_offline": False,
-                },
-                "cwsm212037": {
-                    "host_id": 303,
-                    "host_name": "CWSM212037",
-                    "is_offline": False,
-                },
-                "cwsm211007": {
-                    "host_id": 404,
-                    "host_name": "CWSM211007",
-                    "is_offline": False,
-                },
-            },
-            "normalized": {
-                "cwsm211001": [
-                    {
-                        "host_id": 101,
-                        "host_name": "CWSM211001",
-                        "is_offline": False,
-                    }
-                ],
-                "cwsm220040": [
-                    {
-                        "host_id": 202,
-                        "host_name": "CWSM220040",
-                        "is_offline": False,
-                    }
-                ],
-                "cwsm212037": [
-                    {
-                        "host_id": 303,
-                        "host_name": "CWSM212037",
-                        "is_offline": False,
-                    }
-                ],
-                "cwsm211007": [
-                    {
-                        "host_id": 404,
-                        "host_name": "CWSM211007",
-                        "is_offline": False,
-                    }
-                ],
-            },
-        }
-
-        host = self.module._find_host_for_equipment(host_index, "cwsm21100001")
-        self.assertIsNotNone(host)
-        self.assertEqual(host["host_id"], 101)
-
-        host = self.module._find_host_for_equipment(host_index, "cwsm22010040")
-        self.assertIsNotNone(host)
-        self.assertEqual(host["host_id"], 202)
-
-        host = self.module._find_host_for_equipment(host_index, "cwsm21120037")
-        self.assertIsNotNone(host)
-        self.assertEqual(host["host_id"], 303)
-
-        host = self.module._find_host_for_equipment(host_index, "cwsm22010007")
-        self.assertIsNotNone(host)
-        self.assertEqual(host["host_id"], 404)
-
-    def test_classify_station_point_state_covers_all_status_and_location_cases(self):
-        online_host = {
-            "host_id": 11,
-            "host_name": "RFEye002129",
-            "is_offline": False,
-        }
-        offline_host = {
-            "host_id": 22,
-            "host_name": "RFEye002274",
-            "is_offline": True,
-        }
-
-        self.assertEqual(
-            self.module._classify_station_point_state(online_host, True),
-            self.module.POINT_STATE_ONLINE_CURRENT,
-        )
-        self.assertEqual(
-            self.module._classify_station_point_state(online_host, False),
-            self.module.POINT_STATE_ONLINE_PREVIOUS,
-        )
-        self.assertEqual(
-            self.module._classify_station_point_state(offline_host, True),
-            self.module.POINT_STATE_OFFLINE_CURRENT,
-        )
-        self.assertEqual(
-            self.module._classify_station_point_state(offline_host, False),
-            self.module.POINT_STATE_OFFLINE_PREVIOUS,
-        )
-        self.assertEqual(
-            self.module._classify_station_point_state(None, True),
-            self.module.POINT_STATE_NO_HOST,
-        )
 
     def test_summarize_site_marker_state_prefers_current_online_marker(self):
         stations = [
@@ -277,6 +141,55 @@ class TestMapService(unittest.TestCase):
 
         self.assertEqual(result, stale_detail)
         self.assertEqual(scheduled, [False])
+
+    def test_build_station_map_dataset_prefers_materialized_summary_tables(self):
+        site_rows = [
+            {
+                "ID_SITE": 77,
+                "SITE_LABEL": "Site Teste",
+                "COUNTY_NAME": "Brasilia",
+                "DISTRICT_NAME": "Plano Piloto",
+                "ID_STATE": 53,
+                "NA_STATE": "Distrito Federal",
+                "LC_STATE": "DF",
+                "VL_LATITUDE": -15.793889,
+                "VL_LONGITUDE": -47.882778,
+                "VL_ALTITUDE": 1172.0,
+                "NU_GNSS_MEASUREMENTS": 12,
+                "NA_MARKER_STATE": self.module.POINT_STATE_ONLINE_CURRENT,
+                "HAS_ONLINE_STATION": 1,
+                "HAS_ONLINE_HOST": 1,
+                "HAS_KNOWN_HOST": 1,
+            }
+        ]
+        station_rows = [
+            {
+                "ID_SITE": 77,
+                "ID_EQUIPMENT": 501,
+                "ID_HOST": 101,
+                "NA_EQUIPMENT": "RFEye002129",
+                "NA_HOST_NAME": "RFEye002129",
+                "IS_OFFLINE": 0,
+                "IS_CURRENT_LOCATION": 1,
+                "NA_MAP_STATE": self.module.POINT_STATE_ONLINE_CURRENT,
+                "FIRST_SEEN_AT": "2026-04-01 00:00:00",
+                "LAST_SEEN_AT": "2026-04-16 00:00:00",
+                "NU_SPECTRUM_COUNT": 10,
+            }
+        ]
+
+        with patch.object(self.module, "_load_summary_site_rows", return_value=site_rows):
+            with patch.object(self.module, "_load_summary_station_rows", return_value=station_rows):
+                points, site_details = self.module._build_station_map_dataset()
+
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0]["site_id"], 77)
+        self.assertEqual(points[0]["marker_state"], self.module.POINT_STATE_ONLINE_CURRENT)
+        self.assertEqual(points[0]["station_names"], ["RFEye002129"])
+        self.assertTrue(points[0]["has_online_station"])
+        self.assertEqual(len(site_details[77]["stations"]), 1)
+        self.assertEqual(site_details[77]["stations"][0]["host_id"], 101)
+        self.assertTrue(site_details[77]["stations"][0]["is_current_location"])
 
 
 if __name__ == "__main__":

@@ -121,7 +121,10 @@ class FakeDbRfmIngest:
 
     def __init__(self, *, site_id=501) -> None:
         self.site_id = site_id
+        self.site_geography = {"FK_DISTRICT": 1}
         self.get_site_id_calls = []
+        self.get_site_geography_calls = []
+        self.refresh_site_geography_calls = []
         self.update_site_calls = []
         self.insert_site_calls = []
         self.insert_file_calls = []
@@ -137,11 +140,37 @@ class FakeDbRfmIngest:
         self.get_site_id_calls.append(dict(data))
         return self.site_id
 
+    def get_site_geography(self, site_id):
+        self.get_site_geography_calls.append(site_id)
+        return dict(self.site_geography)
+
+    def refresh_site_geography(self, site_id, data, *, force_create_district=False):
+        self.refresh_site_geography_calls.append(
+            {
+                "site_id": site_id,
+                "data": dict(data),
+                "force_create_district": force_create_district,
+            }
+        )
+        return {
+            "action": "updated",
+            "site_id": site_id,
+            "fk_district": 1000,
+            "site_name": data.get("district"),
+            "district_name": data.get("district"),
+            "would_create_district": False,
+        }
+
     def update_site(self, **kwargs):
         self.update_site_calls.append(kwargs)
 
-    def insert_site(self, data):
-        self.insert_site_calls.append(dict(data))
+    def insert_site(self, data, *, force_create_district=False):
+        self.insert_site_calls.append(
+            {
+                "data": dict(data),
+                "force_create_district": force_create_district,
+            }
+        )
         return self.site_id
 
     def insert_file(self, **kwargs):
@@ -227,6 +256,78 @@ class ShouldExportTests(unittest.TestCase):
 
 class SiteResolutionTests(unittest.TestCase):
     """Validate per-spectrum SITE resolution and selective discard behavior."""
+
+    def test_upsert_site_refreshes_existing_site_when_district_is_missing(self) -> None:
+        db = FakeDbRfmIngest(site_id=77)
+        db.site_geography = {"FK_DISTRICT": None}
+        fixed_site = {
+            "longitude": -46.633308,
+            "latitude": -23.55052,
+            "altitude": 760.0,
+            "longitude_raw": [-46.633308],
+            "latitude_raw": [-23.55052],
+            "altitude_raw": [760.0],
+            "nu_gnss_measurements": 1,
+            "geographic_path": None,
+        }
+        enriched_site = {
+            **fixed_site,
+            "state": "São Paulo",
+            "county": "São Paulo",
+            "district": "Campo Belo",
+            "district_candidates": ["Campo Belo"],
+        }
+
+        with patch.object(
+            processing.geolocation_utils,
+            "reverse_geocode_site_data",
+            return_value=enriched_site,
+        ):
+            site_id = processing.upsert_site(db, dict(fixed_site))
+
+        self.assertEqual(site_id, 77)
+        self.assertEqual(db.get_site_geography_calls, [77])
+        self.assertEqual(len(db.refresh_site_geography_calls), 1)
+        self.assertTrue(
+            db.refresh_site_geography_calls[0]["force_create_district"]
+        )
+        self.assertEqual(len(db.update_site_calls), 1)
+
+    def test_upsert_site_inserts_new_site_with_forced_district_creation(self) -> None:
+        db = FakeDbRfmIngest(site_id=812)
+        db.get_site_id = lambda data: False
+        fixed_site = {
+            "longitude": -46.633308,
+            "latitude": -23.55052,
+            "altitude": 760.0,
+            "longitude_raw": [-46.633308],
+            "latitude_raw": [-23.55052],
+            "altitude_raw": [760.0],
+            "nu_gnss_measurements": 1,
+            "geographic_path": None,
+        }
+        enriched_site = {
+            **fixed_site,
+            "state": "São Paulo",
+            "county": "São Paulo",
+            "district": "Campo Belo",
+            "district_candidates": ["Campo Belo"],
+        }
+
+        with patch.object(
+            processing.geolocation_utils,
+            "reverse_geocode_site_data",
+            return_value=enriched_site,
+        ):
+            site_id = processing.upsert_site(db, dict(fixed_site))
+
+        self.assertEqual(site_id, 812)
+        self.assertEqual(len(db.insert_site_calls), 1)
+        self.assertTrue(db.insert_site_calls[0]["force_create_district"])
+        self.assertEqual(
+            db.insert_site_calls[0]["data"]["district"],
+            "Campo Belo",
+        )
 
     def test_resolve_spectrum_sites_reuses_fixed_site_once(self) -> None:
         db = FakeDbRfmIngest(site_id=77)
@@ -595,6 +696,41 @@ class FileMoveTests(unittest.TestCase):
             self.assertTrue((target_dir / source_file.name).exists())
             self.assertFalse(source_file.exists())
 
+    def test_move_file_if_present_logs_successful_move(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_dir = Path(tmpdir) / "source"
+            target_dir = Path(tmpdir) / "target"
+            source_dir.mkdir()
+            source_file = source_dir / "sample_DONE.mat"
+            source_file.write_text("payload", encoding="utf-8")
+            fake_log = FakeWorkerLog()
+
+            file_meta = {
+                "file_path": str(source_dir),
+                "file_name": source_file.name,
+                "extension": ".mat",
+                "size_kb": 1,
+                "dt_created": datetime.now(),
+                "dt_modified": datetime.now(),
+                "full_path": str(source_file),
+            }
+
+            moved = processing.move_file_if_present(
+                file_meta,
+                str(target_dir),
+                logger=fake_log,
+            )
+
+            self.assertIsNotNone(moved)
+            self.assertEqual(fake_log.entries[-1][0], "file_move")
+            self.assertEqual(fake_log.entries[-1][1]["file"], source_file.name)
+            self.assertEqual(
+                fake_log.entries[-1][1]["source_dir"],
+                str(source_dir),
+            )
+            self.assertEqual(fake_log.entries[-1][1]["destiny_dir"], str(target_dir))
+            self.assertTrue(fake_log.entries[-1][1]["success"])
+
     def test_move_file_if_present_ignores_absent_file(self) -> None:
         file_meta = {
             "file_path": "/tmp",
@@ -639,6 +775,42 @@ class FileMoveTests(unittest.TestCase):
             self.assertIsNotNone(moved)
             self.assertTrue(moved_file.exists())
             self.assertGreater(moved_file.stat().st_mtime, original_ts + 60)
+
+    def test_move_file_if_present_logs_failed_move(self) -> None:
+        fake_log = FakeWorkerLog()
+        file_meta = {
+            "file_path": "/tmp",
+            "file_name": "broken.mat",
+            "extension": ".mat",
+            "size_kb": 1,
+            "dt_created": datetime.now(),
+            "dt_modified": datetime.now(),
+            "full_path": "/tmp/broken.mat",
+        }
+
+        with patch.object(processing.os.path, "exists", return_value=True):
+            with patch.object(
+                processing,
+                "file_move",
+                side_effect=OSError(errno.EIO, "simulated failure"),
+            ):
+                with self.assertRaises(OSError):
+                    processing.move_file_if_present(
+                        file_meta,
+                        "/tmp/target",
+                        logger=fake_log,
+                    )
+
+        self.assertEqual(fake_log.errors[-1][0], "file_move")
+        self.assertEqual(fake_log.errors[-1][1]["file"], "broken.mat")
+        self.assertEqual(fake_log.errors[-1][1]["source_dir"], "/tmp")
+        self.assertEqual(fake_log.errors[-1][1]["destiny_dir"], "/tmp/target")
+        self.assertEqual(fake_log.errors[-1][1]["source"], "/tmp/broken.mat")
+        self.assertEqual(
+            fake_log.errors[-1][1]["destiny"],
+            "/tmp/target/broken.mat",
+        )
+        self.assertFalse(fake_log.errors[-1][1]["success"])
 
     def test_file_move_retries_transient_ebusy_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1274,9 +1446,11 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             self.assertEqual(result["status"], worker.k.TASK_DONE)
             self.assertEqual(len(db_rfm.insert_file_calls), 1)
             self.assertEqual(db_rfm.insert_file_calls[0]["NA_FILE"], "sample_DONE.mat")
+            self.assertFalse(db_rfm.insert_file_calls[0]["log_success"])
             self.assertEqual(len(db_rfm.bridge_calls), 1)
             self.assertEqual(len(db_bp.task_deletes), 1)
             self.assertEqual(len(db_bp.history_updates), 1)
+            self.assertFalse(db_bp.statistics_updates[0]["log_if_active"])
             self.assertEqual(
                 db_bp.history_updates[0]["NA_SERVER_FILE_NAME"],
                 "sample_DONE.mat",

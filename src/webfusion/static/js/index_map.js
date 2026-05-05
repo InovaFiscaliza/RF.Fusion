@@ -40,6 +40,8 @@
     const themeSelect = document.getElementById("station-map-theme-select");
     const statusFilter = document.getElementById("station-map-status-filter");
     const localityFilter = document.getElementById("station-map-locality-filter");
+    const startDateFilter = document.getElementById("station-map-start-date");
+    const endDateFilter = document.getElementById("station-map-end-date");
     const legendContainer = document.getElementById("station-map-legend");
 
     const map = L.map("station-map", {
@@ -63,6 +65,7 @@
     let currentBaseLayer = null;
     let currentOverlayLayer = null;
     let isSyncingNearbyTooltips = false;
+    let latestDatasetRequestId = 0;
 
     const MAP_THEME_STORAGE_KEY = "webfusion.station_map_theme";
     const POPUP_HOVER_OPEN_DELAY_MS = 140;
@@ -436,6 +439,75 @@
      */
     function getSelectedSiteId() {
         return selectedSiteId;
+    }
+
+    /**
+     * Normalize the optional temporal controls into query parameters.
+     *
+     * The browser date input already emits `YYYY-MM-DD`, so lexical order is
+     * safe when we need to repair an inverted range quickly in the UI.
+     */
+    function getTemporalFilterQueryParams() {
+        let startDate = startDateFilter ? startDateFilter.value : "";
+        let endDate = endDateFilter ? endDateFilter.value : "";
+
+        if (startDate && endDate && startDate > endDate) {
+            const swappedStart = endDate;
+            const swappedEnd = startDate;
+            startDate = swappedStart;
+            endDate = swappedEnd;
+
+            if (startDateFilter) {
+                startDateFilter.value = startDate;
+            }
+
+            if (endDateFilter) {
+                endDateFilter.value = endDate;
+            }
+        }
+
+        const params = new URLSearchParams();
+
+        if (startDate) {
+            params.set("start_date", startDate);
+        }
+
+        if (endDate) {
+            params.set("end_date", endDate);
+        }
+
+        return params;
+    }
+
+    /**
+     * Append the active temporal filter to one map API path.
+     */
+    function buildMapApiUrl(pathname) {
+        const params = getTemporalFilterQueryParams();
+        const queryString = params.toString();
+        return queryString ? `${pathname}?${queryString}` : pathname;
+    }
+
+    /**
+     * Build the spectrum-page URL for one popup entry, preserving map dates.
+     */
+    function buildSpectrumHref(point, station) {
+        if (
+            !station
+            || station.equipment_id === null
+            || station.equipment_id === undefined
+            || point.site_id === null
+            || point.site_id === undefined
+        ) {
+            return null;
+        }
+
+        const params = getTemporalFilterQueryParams();
+        params.set("equipment_id", String(station.equipment_id));
+        params.set("site_id", String(point.site_id));
+        params.set("sort_by", "recent");
+
+        return `/spectrum?${params.toString()}`;
     }
 
     /**
@@ -1013,9 +1085,7 @@
                 ? `/host?search=${encodeURIComponent(station.equipment_name)}&online_only=0`
                 : null;
             const taskHref = station.host_id ? `/task/?host_id=${station.host_id}&online_only=0` : null;
-            const spectrumHref = station.equipment_id
-                ? `/spectrum?equipment_id=${station.equipment_id}&site_id=${point.site_id}&sort_by=recent`
-                : null;
+            const spectrumHref = buildSpectrumHref(point, station);
 
             return `
                 <div class="station-entry">
@@ -1172,7 +1242,7 @@
         point.loadingDetails = true;
         marker.setPopupContent(buildPopupHtml(point));
 
-        point.loadingPromise = fetch(`/api/map/stations/${point.site_id}`)
+        point.loadingPromise = fetch(buildMapApiUrl(`/api/map/stations/${point.site_id}`))
             .then((response) => response.json())
             .then((payload) => {
                 point.loadingDetails = false;
@@ -1650,6 +1720,67 @@
         }
     }
 
+    /**
+     * Reload the summary-backed point dataset using the current temporal range.
+     *
+     * State/site/status/locality controls continue to run client-side on top of
+     * this dataset, but the time window is applied server-side so the marker
+     * universe itself matches the requested observation interval.
+     */
+    function loadStationPoints() {
+        const requestId = ++latestDatasetRequestId;
+        const previousStateCode = stateFilter ? stateFilter.value : "";
+        const previousSiteSearch = siteFilter ? siteFilter.value : "";
+        const previousSelectedSiteId = selectedSiteId;
+
+        pointCount.textContent = "Carregando pontos...";
+
+        return fetch(buildMapApiUrl("/api/map/stations"))
+            .then((response) => response.json())
+            .then((payload) => {
+                if (requestId !== latestDatasetRequestId) {
+                    return;
+                }
+
+                const stationPoints = Array.isArray(payload.points) ? payload.points : [];
+                allStationPoints = stationPoints;
+                populateStateFilter(allStationPoints);
+
+                if (
+                    previousStateCode
+                    && Array.from(stateFilter.options).some((option) => option.value === previousStateCode)
+                ) {
+                    stateFilter.value = previousStateCode;
+                } else {
+                    stateFilter.value = "";
+                }
+
+                selectedSiteId = previousSelectedSiteId;
+                populateSiteFilter(allStationPoints, stateFilter.value);
+
+                if (!selectedSiteId && siteFilter) {
+                    siteFilter.value = previousSiteSearch;
+                }
+
+                renderFilteredPoints();
+            })
+            .catch(() => {
+                if (requestId !== latestDatasetRequestId) {
+                    return;
+                }
+
+                allStationPoints = [];
+                selectedSiteId = "";
+                markerLayer.clearLayers();
+                renderedMarkers = [];
+                bounds.length = 0;
+                populateStateFilter(allStationPoints);
+                populateSiteFilter(allStationPoints, "");
+                renderLegend([]);
+                pointCount.textContent = "Mapa em modo degradado";
+            });
+    }
+
     // ---------------------------------------------------------------------
     // Event wiring
     // ---------------------------------------------------------------------
@@ -1749,6 +1880,18 @@
         });
     }
 
+    if (startDateFilter) {
+        startDateFilter.addEventListener("change", () => {
+            loadStationPoints();
+        });
+    }
+
+    if (endDateFilter) {
+        endDateFilter.addEventListener("change", () => {
+            loadStationPoints();
+        });
+    }
+
     if (themeSelect) {
         // Theme is shell state rather than data state, so it is restored once
         // and then left independent from the filter/render cycle.
@@ -1776,20 +1919,5 @@
 
     // The first payload is intentionally summary-only. Full station actions are
     // deferred to the lazy popup requests so the home page stays responsive.
-    fetch("/api/map/stations")
-        .then((response) => response.json())
-        .then((payload) => {
-            const stationPoints = Array.isArray(payload.points) ? payload.points : [];
-            allStationPoints = stationPoints;
-            // Both controls are data-driven by the backend snapshot, so they
-            // are only populated after the summary payload arrives.
-            populateStateFilter(allStationPoints);
-            populateSiteFilter(allStationPoints, "");
-            renderFilteredPoints();
-        })
-        .catch(() => {
-            // Degrade quietly: the rest of the dashboard still works even when
-            // the map endpoint is temporarily unavailable.
-            pointCount.textContent = "Mapa em modo degradado";
-        });
+    loadStationPoints();
 })();

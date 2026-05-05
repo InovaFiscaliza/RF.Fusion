@@ -1,18 +1,22 @@
 """Service queries for the spectrum and file views.
 
-This module keeps SQL close to the feature because the meaning of the query
-matters to the UI:
+This module keeps the SQL close to the feature because the result grain matters
+to the user interface:
 
-- spectrum mode is intentionally spectrum-oriented
-- file mode is intentionally repository-file-oriented
+- spectrum mode is intentionally one-row-per-spectrum
+- file mode is intentionally one-row-per-repository-file
 
-Short in-memory caches help repeated navigation without pretending to be a
-full caching layer.
+Those are not interchangeable queries with a different template. Each mode has
+different allowed filters, grouping rules, sorting semantics, and download
+behavior, so the service layer documents those differences explicitly.
 """
 
+import logging
 import os
 import time
-from db import get_connection_rfdata as get_connection
+from db import get_connection_rfdata as get_connection, get_connection_summary
+
+LOGGER = logging.getLogger(__name__)
 
 ALLOWED_SORT_FIELDS = {
     "date_start": "f.DT_TIME_START",
@@ -46,6 +50,105 @@ FILE_PATH_CACHE_TTL_SECONDS = 300
 _EQUIPMENT_CACHE = {"expires_at": 0.0, "value": None}
 _SPECTRUM_QUERY_CACHE = {}
 _FILE_PATH_CACHE = {}
+
+
+def _load_summary_locality_rows(equipment_id):
+    """Load locality options for one equipment from ``SITE_EQUIPMENT_OBS_SUMMARY``.
+
+    The locality selector only needs one row per ``equipment + site`` with the
+    observed date range and spectrum count. The summary table already stores
+    exactly that shape, so the selector no longer needs to aggregate directly
+    over ``FACT_SPECTRUM`` for each equipment change.
+    """
+
+    conn = get_connection_summary()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            FK_SITE AS ID_SITE,
+            NA_SITE_LABEL AS LOCALITY_LABEL,
+            NA_COUNTY_NAME AS COUNTY_NAME,
+            NA_STATE_CODE AS STATE_CODE,
+            DT_FIRST_SEEN_AT AS DATE_START,
+            DT_LAST_SEEN_AT AS DATE_END,
+            NU_SPECTRUM_COUNT AS SPECTRUM_COUNT
+        FROM SITE_EQUIPMENT_OBS_SUMMARY
+        WHERE FK_EQUIPMENT = %s
+        ORDER BY DT_LAST_SEEN_AT DESC, NA_SITE_LABEL ASC, FK_SITE ASC
+        """,
+        (equipment_id,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def _load_summary_site_availability_row(equipment_id, site_id):
+    """Load one equipment/site availability row from ``SITE_EQUIPMENT_OBS_SUMMARY``."""
+
+    conn = get_connection_summary()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            FK_SITE AS ID_SITE,
+            NA_SITE_LABEL AS LOCALITY_LABEL,
+            DT_FIRST_SEEN_AT AS DATE_START,
+            DT_LAST_SEEN_AT AS DATE_END,
+            NU_SPECTRUM_COUNT AS SPECTRUM_COUNT
+        FROM SITE_EQUIPMENT_OBS_SUMMARY
+        WHERE FK_EQUIPMENT = %s
+          AND FK_SITE = %s
+        LIMIT 1
+        """,
+        (equipment_id, site_id),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def _load_summary_equipment_rows():
+    """Load the equipment selector from summary-backed observations."""
+
+    conn = get_connection_summary()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT DISTINCT
+            FK_EQUIPMENT AS ID_EQUIPMENT,
+            NA_EQUIPMENT
+        FROM SITE_EQUIPMENT_OBS_SUMMARY
+        WHERE NA_EQUIPMENT IS NOT NULL
+          AND NA_EQUIPMENT <> ''
+        ORDER BY NA_EQUIPMENT
+        """
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def _load_fact_equipment_rows():
+    """Load the equipment selector directly from ``RFDATA`` as a fallback."""
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT DISTINCT
+            e.ID_EQUIPMENT,
+            e.NA_EQUIPMENT
+        FROM DIM_SPECTRUM_EQUIPMENT e
+        JOIN FACT_SPECTRUM f
+            ON f.FK_EQUIPMENT = e.ID_EQUIPMENT
+        ORDER BY e.NA_EQUIPMENT
+        """
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 
 def _coerce_text(value):
@@ -309,7 +412,7 @@ def _get_cached_query(cache_key):
 
 
 def _set_cached_query(cache_key, value):
-    """Cache a query result for a short TTL."""
+    """Cache one query result for a short per-process TTL."""
     _SPECTRUM_QUERY_CACHE[cache_key] = {
         "expires_at": time.time() + SPECTRUM_QUERY_CACHE_TTL_SECONDS,
         "value": value,
@@ -317,7 +420,7 @@ def _set_cached_query(cache_key, value):
 
 
 def _get_cached_file_path(cache_key):
-    """Return a cached repository file path when still fresh."""
+    """Return a cached repository file path when the lookup is still fresh."""
     cached = _FILE_PATH_CACHE.get(cache_key)
 
     if not cached:
@@ -331,7 +434,7 @@ def _get_cached_file_path(cache_key):
 
 
 def _set_cached_file_path(cache_key, value):
-    """Cache repository file resolution for repeated download clicks."""
+    """Cache repository file resolution for repeated download actions."""
     _FILE_PATH_CACHE[cache_key] = {
         "expires_at": time.time() + FILE_PATH_CACHE_TTL_SECONDS,
         "value": value,
@@ -420,23 +523,19 @@ def get_equipments():
     ):
         return _EQUIPMENT_CACHE["value"]
 
-    conn = get_connection()
-    cur = conn.cursor()
+    result = []
 
-    cur.execute("""
-        SELECT DISTINCT
-            e.ID_EQUIPMENT,
-            e.NA_EQUIPMENT
-        FROM DIM_SPECTRUM_EQUIPMENT e
-        JOIN FACT_SPECTRUM f
-            ON f.FK_EQUIPMENT = e.ID_EQUIPMENT
-        ORDER BY e.NA_EQUIPMENT
-    """)
+    try:
+        result = _load_summary_equipment_rows()
+    except Exception:
+        LOGGER.exception("failed_to_load_summary_spectrum_equipments")
 
-    result = cur.fetchall()
-    conn.close()
-    _EQUIPMENT_CACHE["value"] = result
-    _EQUIPMENT_CACHE["expires_at"] = now + EQUIPMENT_CACHE_TTL_SECONDS
+    if not result:
+        result = _load_fact_equipment_rows()
+
+    if result:
+        _EQUIPMENT_CACHE["value"] = result
+        _EQUIPMENT_CACHE["expires_at"] = now + EQUIPMENT_CACHE_TTL_SECONDS
     return result
 
 
@@ -607,6 +706,10 @@ def get_spectrum_file_data(
     - one output row represents one repository file
     - multiple linked spectra collapse into file-level aggregates
     - locality information becomes summarized instead of singular
+
+    This is the query behind the repository-oriented operational workflow:
+    operators inspect one file row first and only expand linked spectra on
+    demand.
     """
     if sort_by not in ALLOWED_FILE_SORT_FIELDS:
         sort_by = "date_start"
@@ -750,7 +853,7 @@ def get_spectrum_file_data(
     return result
 
 
-def get_spectrum_locality_options(
+def _load_fact_locality_rows(
     *,
     equipment_id=None,
     start_date=None,
@@ -760,31 +863,8 @@ def get_spectrum_locality_options(
     description=None,
     query_mode="spectrum",
 ):
-    """Return dynamic locality options for the current spectrum filters.
+    """Load locality options directly from ``FACT_SPECTRUM`` as a fallback."""
 
-    The locality select is dependent on the other filters. In spectrum mode it
-    should reflect the full active query, including frequency/description. In
-    file mode it intentionally ignores those spectrum-specific filters so the
-    locality list stays aligned with the file-centric result set.
-    """
-
-    cache_key = (
-        "locality_options",
-        query_mode,
-        equipment_id,
-        start_date,
-        end_date,
-        freq_start,
-        freq_end,
-        description,
-    )
-    cached = _get_cached_query(cache_key)
-
-    if cached is not None:
-        return cached
-
-    # Keep the dependent locality select semantically aligned with whichever
-    # query mode the page is currently rendering.
     include_freq = query_mode == "spectrum"
     include_description = query_mode == "spectrum"
     where_clauses, params = _build_fact_filters(
@@ -836,9 +916,114 @@ def get_spectrum_locality_options(
     cur.execute(query, params)
     rows = cur.fetchall()
     conn.close()
+    return rows
+
+
+def _load_fact_site_availability_row(equipment_id, site_id):
+    """Load one equipment/site availability row directly from ``FACT_SPECTRUM``."""
+
+    locality_display_sql = _build_locality_display_sql()
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT
+            s.ID_SITE,
+            {locality_display_sql} AS LOCALITY_LABEL,
+            MIN(f.DT_TIME_START) AS DATE_START,
+            MAX(f.DT_TIME_END) AS DATE_END,
+            COUNT(*) AS SPECTRUM_COUNT
+        FROM FACT_SPECTRUM f
+        JOIN DIM_SPECTRUM_SITE s
+            ON s.ID_SITE = f.FK_SITE
+        LEFT JOIN DIM_SITE_DISTRICT d
+            ON d.ID_DISTRICT = s.FK_DISTRICT
+        LEFT JOIN DIM_SITE_COUNTY c
+            ON c.ID_COUNTY = s.FK_COUNTY
+        LEFT JOIN DIM_SITE_STATE st
+            ON st.ID_STATE = s.FK_STATE
+        WHERE f.FK_EQUIPMENT = %s
+          AND f.FK_SITE = %s
+        GROUP BY
+            s.ID_SITE,
+            s.NA_SITE,
+            d.NA_DISTRICT,
+            c.NA_COUNTY,
+            st.LC_STATE
+        LIMIT 1
+        """,
+        (equipment_id, site_id),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_spectrum_locality_options(
+    *,
+    equipment_id=None,
+    start_date=None,
+    end_date=None,
+    freq_start=None,
+    freq_end=None,
+    description=None,
+    query_mode="spectrum",
+):
+    """Return dynamic locality options for the current spectrum filters.
+
+    The locality select is dependent on the other filters. In spectrum mode it
+    should reflect the full active query, including frequency/description. In
+    file mode it intentionally ignores those spectrum-specific filters so the
+    locality list stays aligned with the file-centric result set.
+    """
+
+    cache_key = (
+        "locality_options",
+        query_mode,
+        equipment_id,
+        start_date,
+        end_date,
+        freq_start,
+        freq_end,
+        description,
+    )
+    cached = _get_cached_query(cache_key)
+
+    if cached is not None:
+        return cached
+
+    rows = []
+
+    # Prefer the summary-backed selector because it avoids a grouped
+    # FACT_SPECTRUM scan on every equipment change. When that read model is
+    # temporarily unavailable or stale for one equipment, fall back to the
+    # live catalog query instead of leaving the UI empty.
+    try:
+        _ = start_date, end_date, freq_start, freq_end, description, query_mode
+        rows = _load_summary_locality_rows(equipment_id)
+    except Exception:
+        LOGGER.exception(
+            "failed_to_load_summary_spectrum_localities equipment_id=%s query_mode=%s",
+            equipment_id,
+            query_mode,
+        )
+
+    if not rows:
+        rows = _load_fact_locality_rows(
+            equipment_id=equipment_id,
+            start_date=start_date,
+            end_date=end_date,
+            freq_start=freq_start,
+            freq_end=freq_end,
+            description=description,
+            query_mode=query_mode,
+        )
 
     result = _finalize_locality_options(rows)
-    _set_cached_query(cache_key, result)
+
+    if result:
+        _set_cached_query(cache_key, result)
+
     return result
 
 
@@ -901,45 +1086,26 @@ def get_spectrum_site_availability_range(*, equipment_id=None, site_id=None):
     if cached is not None:
         return cached
 
-    locality_display_sql = _build_locality_display_sql()
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        f"""
-        SELECT
-            s.ID_SITE,
-            {locality_display_sql} AS LOCALITY_LABEL,
-            MIN(f.DT_TIME_START) AS DATE_START,
-            MAX(f.DT_TIME_END) AS DATE_END,
-            COUNT(*) AS SPECTRUM_COUNT
-        FROM FACT_SPECTRUM f
-        JOIN DIM_SPECTRUM_SITE s
-            ON s.ID_SITE = f.FK_SITE
-        LEFT JOIN DIM_SITE_DISTRICT d
-            ON d.ID_DISTRICT = s.FK_DISTRICT
-        LEFT JOIN DIM_SITE_COUNTY c
-            ON c.ID_COUNTY = s.FK_COUNTY
-        LEFT JOIN DIM_SITE_STATE st
-            ON st.ID_STATE = s.FK_STATE
-        WHERE f.FK_EQUIPMENT = %s
-          AND f.FK_SITE = %s
-        GROUP BY
-            s.ID_SITE,
-            s.NA_SITE,
-            d.NA_DISTRICT,
-            c.NA_COUNTY,
-            st.LC_STATE
-        LIMIT 1
-        """,
-        (equipment_id, site_id),
-    )
-    row = cur.fetchone()
-    conn.close()
+    row = None
+
+    try:
+        row = _load_summary_site_availability_row(equipment_id, site_id)
+    except Exception:
+        LOGGER.exception(
+            "failed_to_load_summary_spectrum_site_availability equipment_id=%s site_id=%s",
+            equipment_id,
+            site_id,
+        )
+
+    if not row:
+        row = _load_fact_site_availability_row(equipment_id, site_id)
 
     if row:
         row["SPECTRUM_COUNT"] = int(row.get("SPECTRUM_COUNT") or 0)
 
-    _set_cached_query(cache_key, row)
+    if row:
+        _set_cached_query(cache_key, row)
+
     return row
 
 
@@ -1051,8 +1217,7 @@ def get_file_by_file_id(file_id):
 
 
 def get_spectra_by_file_id(file_id):
-    """
-    Return the spectra linked to a single repository file.
+    """Return the spectra linked to a single repository file.
 
     This supports the expandable "file mode" view without forcing the main
     query to repeat one line per spectrum. The page loads these details lazily

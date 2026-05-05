@@ -51,6 +51,7 @@ DB_PASSWORD             = secret["DB_PASSWORD"]
 # APP_ANALISE remote processing service
 # =================================================
 APP_ANALISE_HOST_ADD        = "WIMATLABPDIN01"
+#APP_ANALISE_HOST_ADD        = "192.168.104.81"
 APP_ANALISE_HOST_PORT       = 8910
 APP_ANALISE_SOCKET_TIMEOUT  = 10
 APP_ANALISE_BUFFER_SIZE     = 4096

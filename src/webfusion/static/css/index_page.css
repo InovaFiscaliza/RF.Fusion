@@ -15,7 +15,13 @@
 
 .station-map-toolbar {
     display: grid;
-    grid-template-columns: minmax(160px, 210px) minmax(280px, 1fr) minmax(160px, 210px) auto auto;
+    grid-template-columns:
+        minmax(150px, 190px)
+        minmax(260px, 1.35fr)
+        minmax(150px, 190px)
+        minmax(150px, 180px)
+        minmax(150px, 180px)
+        minmax(220px, 260px);
     gap: 14px;
     margin-bottom: 16px;
     align-items: end;
@@ -27,12 +33,14 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+    min-width: 0;
 }
 
 /* Native selects keep browser behavior, but get a small custom arrow so
  * the map controls share one visual language with the custom combobox. */
 .station-map-select-wrap {
     position: relative;
+    min-width: 0;
 }
 
 .station-map-select-wrap::after {
@@ -78,11 +86,34 @@
     box-sizing: border-box;
 }
 
+.station-map-filter input[type="date"] {
+    width: 100%;
+    min-height: 42px;
+    border-radius: 10px;
+    padding: 0 12px;
+    font-size: 13px;
+    box-sizing: border-box;
+    min-width: 0;
+}
+
+.station-map-filter-period {
+    min-width: 0;
+}
+
+.station-map-date-range {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+    position: relative;
+    min-width: 0;
+}
+
 /* The station control behaves like a searchable combobox backed by
  * `index_map.js`, so the template provides only the shell and dropdown. */
 .station-map-combobox-wrap {
     position: relative;
     z-index: 750;
+    min-width: 0;
 }
 
 .station-map-combobox-wrap::after {
@@ -441,8 +472,28 @@
 
 /* On smaller screens the map controls stack vertically and the cards
  * collapse to a single column to preserve tap targets. */
+@media (max-width: 1360px) {
+    .station-map-toolbar {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .station-map-toolbar .station-map-filter:nth-child(2),
+    .station-map-filter-period {
+        grid-column: span 2;
+    }
+}
+
 @media (max-width: 880px) {
     .station-map-toolbar {
+        grid-template-columns: 1fr;
+    }
+
+    .station-map-toolbar .station-map-filter:nth-child(2),
+    .station-map-filter-period {
+        grid-column: auto;
+    }
+
+    .station-map-date-range {
         grid-template-columns: 1fr;
     }
 
@@ -450,5 +501,16 @@
         grid-template-columns: 1fr;
         padding-left: 0;
         padding-right: 0;
+    }
+}
+
+@media (max-width: 1120px) {
+    .station-map-toolbar {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .station-map-toolbar .station-map-filter:nth-child(2),
+    .station-map-filter-period {
+        grid-column: span 2;
     }
 }

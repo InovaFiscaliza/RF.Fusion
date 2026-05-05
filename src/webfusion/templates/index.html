@@ -93,6 +93,23 @@
                 </select>
             </div>
         </div>
+        <div class="station-map-filter station-map-filter-period">
+            <label class="station-map-field-label" for="station-map-start-date">Período observado</label>
+            <div class="station-map-date-range">
+                <input
+                    type="date"
+                    id="station-map-start-date"
+                    class="station-map-date-input"
+                    aria-label="Data inicial do mapa"
+                >
+                <input
+                    type="date"
+                    id="station-map-end-date"
+                    class="station-map-date-input"
+                    aria-label="Data final do mapa"
+                >
+            </div>
+        </div>
     </div>
 
     {# Leaflet mounts the interactive map into this container. Point data comes

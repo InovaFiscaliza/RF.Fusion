@@ -1,14 +1,4 @@
-"""
-Validation tests for `webfusion.modules.host.service`.
-
-How to run:
-    /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_host_service.py -q
-
-What is covered here:
-    - normalization of CelPlan/CWSM receiver naming on the host page
-    - boolean host/equipment reconciliation for fixed monitoring stations
-    - live FILE_TASK queue metrics on the host detail page
-"""
+"""Validation tests for `webfusion.modules.host.service`."""
 
 from __future__ import annotations
 
@@ -29,6 +19,7 @@ def load_host_service():
     stub_db = types.ModuleType("db")
     stub_db.get_connection_bpdata = lambda: None
     stub_db.get_connection_rfdata = lambda: None
+    stub_db.get_connection_summary = lambda: None
 
     previous_db = sys.modules.get("db")
     sys.modules["db"] = stub_db
@@ -229,7 +220,7 @@ class TestHostService(unittest.TestCase):
             ],
         )
 
-    def test_get_server_summary_metrics_keeps_totals_and_adds_live_queue_metrics(self):
+    def test_get_server_summary_metrics_reads_materialized_server_summary(self):
         class FakeCursor:
             def __init__(self, rows):
                 self.rows = list(rows)
@@ -254,39 +245,28 @@ class TestHostService(unittest.TestCase):
             def close(self):
                 self.closed = True
 
-        bp_cursor = FakeCursor(
+        summary_cursor = FakeCursor(
             [
                 {
-                    "BACKUP_DONE_THIS_MONTH": 12,
-                    "BACKUP_DONE_GB_THIS_MONTH": 3.75,
-                },
-                {
-                    "BACKUP_QUEUE_FILES_TOTAL": 7,
-                    "BACKUP_QUEUE_GB_TOTAL": 15.5,
-                    "PROCESSING_QUEUE_FILES_TOTAL": 4,
-                    "PROCESSING_QUEUE_GB_TOTAL": 8.25,
-                },
-                {
-                    "DISCOVERED_FILES_TOTAL": 120,
-                    "BACKUP_PENDING_FILES_TOTAL": 19,
-                    "BACKUP_PENDING_GB_TOTAL": 22.5,
-                    "BACKUP_ERROR_FILES_TOTAL": 3,
-                    "PROCESSING_PENDING_FILES_TOTAL": 11,
-                    "PROCESSING_DONE_FILES_TOTAL": 44,
-                    "PROCESSING_ERROR_FILES_TOTAL": 2,
-                },
-            ]
-        )
-        rf_cursor = FakeCursor(
-            [
-                {
-                    "FACT_SPECTRUM_TOTAL": 987,
+                    "NA_CURRENT_MONTH_LABEL": "2026-04",
+                    "NU_BACKUP_DONE_THIS_MONTH": 12,
+                    "VL_BACKUP_DONE_GB_THIS_MONTH": 3.75,
+                    "NU_DISCOVERED_FILES_TOTAL": 120,
+                    "NU_BACKUP_PENDING_FILES_TOTAL": 19,
+                    "VL_BACKUP_PENDING_GB_TOTAL": 22.5,
+                    "NU_BACKUP_ERROR_FILES_TOTAL": 3,
+                    "NU_BACKUP_QUEUE_FILES_TOTAL": 7,
+                    "VL_BACKUP_QUEUE_GB_TOTAL": 15.5,
+                    "NU_PROCESSING_PENDING_FILES_TOTAL": 11,
+                    "NU_PROCESSING_DONE_FILES_TOTAL": 44,
+                    "NU_PROCESSING_ERROR_FILES_TOTAL": 2,
+                    "NU_PROCESSING_QUEUE_FILES_TOTAL": 4,
+                    "VL_PROCESSING_QUEUE_GB_TOTAL": 8.25,
+                    "NU_FACT_SPECTRUM_TOTAL": 987,
                 }
             ]
         )
-
-        bp_connection = FakeConnection(bp_cursor)
-        rf_connection = FakeConnection(rf_cursor)
+        summary_connection = FakeConnection(summary_cursor)
 
         self.module._SERVER_SUMMARY_CACHE["payload"] = None
         self.module._SERVER_SUMMARY_CACHE["expires_at"] = 0.0
@@ -294,16 +274,12 @@ class TestHostService(unittest.TestCase):
         with patch.object(self.module.time, "monotonic", return_value=100.0):
             with patch.object(
                 self.module,
-                "get_connection",
-                return_value=bp_connection,
+                "get_connection_summary",
+                return_value=summary_connection,
             ):
-                with patch.object(
-                    self.module,
-                    "get_connection_rfdata",
-                    return_value=rf_connection,
-                ):
-                    summary = self.module.get_server_summary_metrics()
+                summary = self.module.get_server_summary_metrics()
 
+        self.assertEqual(summary["CURRENT_MONTH_LABEL"], "2026-04")
         self.assertEqual(summary["BACKUP_DONE_THIS_MONTH"], 12)
         self.assertEqual(summary["BACKUP_DONE_GB_THIS_MONTH"], 3.75)
         self.assertEqual(summary["DISCOVERED_FILES_TOTAL"], 120)
@@ -317,11 +293,128 @@ class TestHostService(unittest.TestCase):
         self.assertEqual(summary["PROCESSING_QUEUE_FILES_TOTAL"], 4)
         self.assertEqual(summary["PROCESSING_QUEUE_GB_TOTAL"], 8.25)
         self.assertEqual(summary["FACT_SPECTRUM_TOTAL"], 987)
-        self.assertTrue(bp_connection.closed)
-        self.assertTrue(rf_connection.closed)
-        self.assertEqual(len(bp_cursor.executed), 3)
-        self.assertIn("FROM FILE_TASK", bp_cursor.executed[1][0])
-        self.assertIn("NU_TYPE = 2", bp_cursor.executed[1][0])
+        self.assertTrue(summary_connection.closed)
+        self.assertEqual(len(summary_cursor.executed), 1)
+        self.assertIn("FROM SERVER_CURRENT_SUMMARY", summary_cursor.executed[0][0])
+
+    def test_get_server_processing_error_overview_reads_summary_only(self):
+        class FakeCursor:
+            def __init__(self, rows):
+                self.rows = list(rows)
+                self.executed = []
+
+            def execute(self, query, params=None):
+                self.executed.append((query, params))
+
+            def fetchall(self):
+                if not self.rows:
+                    return []
+                return self.rows.pop(0)
+
+        class FakeConnection:
+            def __init__(self, cursor):
+                self._cursor = cursor
+                self.closed = False
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                self.closed = True
+
+        summary_cursor = FakeCursor(
+            [[
+                {
+                    "ERROR_DOMAIN": "PROCESSING",
+                    "ERROR_STAGE": "PROCESS",
+                    "ERROR_CODE": "NO_VALID_SPECTRA",
+                    "ERROR_SUMMARY": "BIN discarded: no valid spectra after validation",
+                    "ERROR_COUNT": 5,
+                }
+            ]]
+        )
+        summary_connection = FakeConnection(summary_cursor)
+
+        self.module._GROUPED_PROCESSING_ERRORS_CACHE["payload"] = None
+        self.module._GROUPED_PROCESSING_ERRORS_CACHE["expires_at"] = 0.0
+
+        with patch.object(self.module.time, "monotonic", return_value=100.0):
+            with patch.object(
+                self.module,
+                "get_connection_summary",
+                return_value=summary_connection,
+            ):
+                payload = self.module.get_server_processing_error_overview()
+
+        self.assertEqual(payload["error_group_count"], 1)
+        self.assertEqual(payload["error_total_occurrences"], 5)
+        self.assertEqual(payload["rows"][0]["ERROR_COUNT"], 5)
+        self.assertIn("NO_VALID_SPECTRA", payload["rows"][0]["ERROR_MESSAGE"])
+        self.assertTrue(summary_connection.closed)
+
+    def test_get_server_overview_reads_materialized_host_totals(self):
+        class FakeCursor:
+            def __init__(self, rows):
+                self.rows = list(rows)
+                self.executed = []
+
+            def execute(self, query, params=None):
+                self.executed.append((query, params))
+
+            def fetchone(self):
+                if not self.rows:
+                    return {}
+                return self.rows.pop(0)
+
+        class FakeConnection:
+            def __init__(self, cursor):
+                self._cursor = cursor
+                self.closed = False
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                self.closed = True
+
+        summary_cursor = FakeCursor(
+            [
+                {
+                    "NA_CURRENT_MONTH_LABEL": "2026-04",
+                    "NU_TOTAL_HOSTS": 20,
+                    "NU_ONLINE_HOSTS": 13,
+                    "NU_OFFLINE_HOSTS": 7,
+                    "NU_BUSY_HOSTS": 2,
+                }
+            ]
+        )
+        summary_connection = FakeConnection(summary_cursor)
+
+        self.module._SERVER_OVERVIEW_CACHE["payload"] = None
+        self.module._SERVER_OVERVIEW_CACHE["expires_at"] = 0.0
+
+        with patch.object(self.module.time, "monotonic", return_value=100.0):
+            with patch.object(
+                self.module,
+                "get_connection_summary",
+                return_value=summary_connection,
+            ):
+                with patch.object(
+                    self.module,
+                    "_get_runtime_overview",
+                    return_value={
+                        "memory": {"used_human": "1 GB", "total_human": "2 GB", "available_human": "1 GB", "use_percent": 50},
+                        "reposfi": {"mounted": True, "used_human": "1 GB", "total_human": "4 GB", "free_human": "3 GB", "use_percent": 25, "path": "/mnt/reposfi"},
+                        "appanalise": {"online": True, "host": "appanalise.local", "latency_ms": 10.0, "error": None},
+                    },
+                ):
+                    overview = self.module.get_server_overview()
+
+        self.assertEqual(overview["TOTAL_HOSTS"], 20)
+        self.assertEqual(overview["ONLINE_HOSTS"], 13)
+        self.assertEqual(overview["OFFLINE_HOSTS"], 7)
+        self.assertEqual(overview["BUSY_HOSTS"], 2)
+        self.assertTrue(summary_connection.closed)
 
     def test_get_host_statistics_keeps_totals_and_adds_host_queue_metrics(self):
         class FakeCursor:
@@ -445,6 +538,74 @@ class TestHostService(unittest.TestCase):
         self.assertEqual(len(bp_cursor.executed), 3)
         self.assertIn("FROM FILE_TASK", bp_cursor.executed[1][0])
         self.assertEqual(bp_cursor.executed[1][1], (42,))
+
+    def test_get_hosts_reads_summary_snapshot_rows(self):
+        class FakeCursor:
+            def __init__(self, rows):
+                self.rows = list(rows)
+                self.executed = []
+
+            def execute(self, query, params=None):
+                self.executed.append((query, params))
+
+            def fetchall(self):
+                if not self.rows:
+                    return []
+                return self.rows.pop(0)
+
+        class FakeConnection:
+            def __init__(self, cursor):
+                self._cursor = cursor
+                self.closed = False
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                self.closed = True
+
+        summary_cursor = FakeCursor(
+            [[
+                {
+                    "ID_HOST": 42,
+                    "NA_HOST_NAME": "rfeye002274",
+                    "NA_HOST_ADDRESS": "10.0.0.42",
+                    "NA_HOST_PORT": 22,
+                    "IS_OFFLINE": 0,
+                    "IS_BUSY": 1,
+                    "DT_LAST_CHECK": "2026-04-08 12:00:00",
+                    "DT_LAST_DISCOVERY": "2026-04-08 11:00:00",
+                    "DT_LAST_BACKUP": "2026-04-08 10:00:00",
+                    "DT_LAST_PROCESSING": "2026-04-08 09:00:00",
+                    "NU_PENDING_FILE_BACKUP_TASKS": 5,
+                    "NU_ERROR_FILE_BACKUP_TASKS": 1,
+                    "NU_PENDING_FILE_PROCESS_TASKS": 4,
+                    "NU_ERROR_FILE_PROCESS_TASKS": 3,
+                    "PENDING_BACKUP_GB": 1.5,
+                }
+            ]]
+        )
+        summary_connection = FakeConnection(summary_cursor)
+
+        self.module._SERVER_HOST_ROWS_CACHE.clear()
+
+        with patch.object(self.module.time, "monotonic", return_value=100.0):
+            with patch.object(
+                self.module,
+                "get_connection_summary",
+                return_value=summary_connection,
+            ):
+                rows = self.module.get_hosts(search="rfeye", online_only=True)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["PENDING_BACKUP_GB"], 1.5)
+        self.assertEqual(rows[0]["PENDING_BACKUP_MB"], 1536.0)
+        self.assertEqual(rows[0]["STATUS_LABEL"], "Online")
+        self.assertEqual(rows[0]["BUSY_LABEL"], "Busy")
+        self.assertTrue(summary_connection.closed)
+        self.assertEqual(len(summary_cursor.executed), 1)
+        self.assertIn("FROM HOST_CURRENT_SNAPSHOT", summary_cursor.executed[0][0])
+        self.assertEqual(summary_cursor.executed[0][1], ["%rfeye%"])
 
 
 if __name__ == "__main__":

@@ -257,7 +257,14 @@
 
         try {
             const response = await fetch(`${localitiesEndpoint}?${params.toString()}`);
+            if (!response.ok) {
+                throw new Error(`localities request failed with status ${response.status}`);
+            }
+
             const payload = await response.json();
+            if (payload && payload.error) {
+                throw new Error(payload.error);
+            }
 
             if (currentRequest !== localityRequestSerial) {
                 return;

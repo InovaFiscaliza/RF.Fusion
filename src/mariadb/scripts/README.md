@@ -45,6 +45,24 @@ bootstrap process.
   Enables periodic `RFFUSION_SUMMARY` refreshes through MariaDB Events with a
   named lock to prevent overlapping runs.
 
+- [alterFusionSummaryDB-v4-discovered-files.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v4-discovered-files.sql)
+  Fixes the discovered-file totals in `HOST_CURRENT_SNAPSHOT` so the server
+  dashboard no longer depends on the stale `BPDATA.HOST.NU_HOST_FILES`
+  counter.
+
+- [alterFusionSummaryDB-v5-atomic-read-refresh.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v5-atomic-read-refresh.sql)
+  Replaces the read-facing summary refreshes used by `webfusion` with
+  shadow-table swaps so the UI keeps seeing the previous snapshot while the
+  next one is being rebuilt.
+
+- [alterFusionSummaryDB-v6-safe-refresh-diagnostics.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v6-safe-refresh-diagnostics.sql)
+  Improves the scheduled `RFFUSION_SUMMARY` refresh wrapper so lock skips are
+  reported correctly and real SQL failures carry the original database error.
+
+- [alterMeasureDB-v6-fact-spectrum-performance.sql](/RFFusion/src/mariadb/scripts/alterMeasureDB-v6-fact-spectrum-performance.sql)
+  Adds the composite lookup index used by the appAnalise worker idempotency
+  check on `RFDATA.FACT_SPECTRUM`.
+
 ### Seed files
 
 - [equipmentType.csv](/RFFusion/src/mariadb/scripts/equipmentType.csv)
@@ -158,6 +176,10 @@ aggregation refinement after the bootstrap:
 ```bash
 mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v2-error-aggregation.sql
 mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v3-refresh-events.sql
+mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v4-discovered-files.sql
+mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v5-atomic-read-refresh.sql
+mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v6-safe-refresh-diagnostics.sql
+mysql -u root -p < /RFFusion/src/mariadb/scripts/alterMeasureDB-v6-fact-spectrum-performance.sql
 ```
 
 ## Important Operational Notes

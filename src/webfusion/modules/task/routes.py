@@ -1,8 +1,14 @@
 """Routes for the task builder and recent task list.
 
-This is the write-oriented corner of WebFusion. Instead of only reading
-operational state, these routes translate operator intent into `HOST_TASK`
-rows that appCataloga will later consume.
+This is the write-oriented corner of WebFusion. Instead of only reading the
+current state, these routes collect operator intent and translate it into
+durable ``HOST_TASK`` rows that appCataloga will later consume.
+
+The route layer keeps three concerns local:
+
+- lightweight HTTP auth for this module
+- form normalization and UI defaults
+- batching rules for individual versus collective task creation
 """
 
 import re
@@ -32,9 +38,7 @@ DEFAULT_CWSM_EXTENSION = ".zip"
 
 
 def _task_auth_failed():
-    """
-    Trigger a browser basic-auth challenge for the task module.
-    """
+    """Trigger the browser basic-auth challenge used by the task module."""
     return Response(
         "Authentication required.",
         401,
@@ -62,9 +66,7 @@ def _has_valid_task_credentials():
 
 
 def _safe_int_arg(name):
-    """
-    Parse an optional integer query parameter without crashing the page.
-    """
+    """Parse an optional integer query parameter without breaking the page."""
     raw_value = request.args.get(name)
 
     if raw_value in (None, ""):
@@ -301,30 +303,16 @@ def require_task_auth():
 
 @task_bp.route("/", methods=["GET", "POST"])
 def task_builder():
-    """
-    WebFusion Task Builder.
+    """Render and process the task-builder form.
 
-    This view allows the creation of HOST_TASK entries either:
-        • Individually (single host)
-        • Collectively (multiple hosts)
+    The builder supports two execution styles:
 
-    Collective execution can optionally be filtered by host prefix.
-    The prefix is automatically detected from the HOST table using
-    the alphabetical portion of NA_HOST_NAME.
+    - individual execution for one selected host
+    - collective execution across many hosts, optionally split by station family
 
-    Example hostnames:
-        RFEye002264  → prefix "RFEye"
-        CWSM211006   → prefix "CWSM"
-
-    Workflow:
-        1. Discover host prefixes dynamically from database
-        2. Load host list (optionally only online hosts)
-        3. Render builder interface
-        4. Process POST submission
-        5. Create tasks via create_task()
-
-    Returns:
-        HTML page or redirect to task list.
+    A key responsibility here is keeping the submitted filter payload aligned
+    with the station family defaults that appCataloga expects downstream,
+    especially when one collective action spans both Linux-like and CWSM hosts.
     """
 
     db = get_connection()
@@ -550,7 +538,12 @@ def task_builder():
 
 @task_bp.route("/list")
 def task_list():
-    """Render the most recent HOST_TASK rows and optional creation summary."""
+    """Render the latest ``HOST_TASK`` rows and any creation-result summary.
+
+    The redirect from the builder includes ``queued_count`` and
+    ``skipped_count`` so the page can confirm how many logical tasks were
+    actually created or refreshed.
+    """
 
     db = get_connection()
     cursor = db.cursor()

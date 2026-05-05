@@ -118,6 +118,34 @@ class dbHandlerRFM(DBHandlerBase):
                 if data.get(key):
                     data[key] = data[key].strip()
 
+            for key in ["state_candidates", "county_candidates", "district_candidates"]:
+                values = data.get(key)
+                if not isinstance(values, (list, tuple)):
+                    continue
+
+                cleaned_values = []
+                seen = set()
+
+                for value in values:
+                    if value is None:
+                        continue
+
+                    cleaned = str(value).strip()
+                    if not cleaned:
+                        continue
+
+                    normalized = self._normalize_string(cleaned)
+                    if not normalized or normalized in seen:
+                        continue
+
+                    cleaned_values.append(cleaned)
+                    seen.add(normalized)
+
+                if cleaned_values:
+                    data[key] = cleaned_values
+                else:
+                    data.pop(key, None)
+
             # When only the county is present, use the existing catalog as the
             # safest place to infer the missing parent state.
             if not data.get("state") and data.get("county"):
@@ -188,8 +216,228 @@ class dbHandlerRFM(DBHandlerBase):
         return None
 
 
+    def _iter_normalized_field_candidates(
+        self,
+        data: dict,
+        field: str,
+    ) -> list[tuple[str, str]]:
+        """Return one deduplicated candidate list for a geographic field."""
+        raw_candidates = []
+        direct_value = data.get(field)
+        if direct_value:
+            raw_candidates.append(direct_value)
 
-    def insert_site(self, data: dict) -> int:
+        listed_values = data.get(f"{field}_candidates")
+        if isinstance(listed_values, (list, tuple)):
+            raw_candidates.extend(listed_values)
+
+        candidates = []
+        seen = set()
+
+        for value in raw_candidates:
+            cleaned = str(value).strip()
+            if not cleaned:
+                continue
+
+            normalized = self._normalize_string(cleaned)
+            if not normalized or normalized in seen:
+                continue
+
+            candidates.append((cleaned, normalized))
+            seen.add(normalized)
+
+        return candidates
+
+
+    def get_site_geography(self, site_id: int) -> dict:
+        """Return the stored geographic metadata and centroid for one site."""
+        try:
+            self._connect()
+
+            rows = self._select_rows(
+                table="DIM_SPECTRUM_SITE",
+                where={"ID_SITE": site_id},
+                cols=[
+                    "ID_SITE",
+                    "FK_STATE",
+                    "FK_COUNTY",
+                    "FK_DISTRICT",
+                    "NA_SITE",
+                    "ST_X(GEO_POINT) AS LONGITUDE",
+                    "ST_Y(GEO_POINT) AS LATITUDE",
+                    "NU_ALTITUDE",
+                    "GEOGRAPHIC_PATH",
+                ],
+                limit=1,
+            )
+
+            if not rows:
+                raise Exception(f"Site {site_id} not found in DIM_SPECTRUM_SITE")
+
+            return rows[0]
+
+        except Exception as e:
+            raise Exception(f"Error retrieving geography for site {site_id}: {e}")
+
+        finally:
+            if not self.in_transaction:
+                try:
+                    self._disconnect()
+                except Exception:
+                    pass
+
+
+    def refresh_site_geography(
+        self,
+        site_id: int,
+        data: dict,
+        *,
+        force_create_district: bool = False,
+        dry_run: bool = False,
+    ) -> dict:
+        """Re-resolve and update one site's administrative foreign keys."""
+        try:
+            self._connect()
+            self._ensure_transaction()
+
+            rows = self._select_rows(
+                table="DIM_SPECTRUM_SITE",
+                where={"ID_SITE": site_id},
+                cols=[
+                    "FK_STATE",
+                    "FK_COUNTY",
+                    "FK_DISTRICT",
+                    "NA_SITE",
+                ],
+                limit=1,
+            )
+
+            if not rows:
+                raise Exception(f"Site {site_id} not found in DIM_SPECTRUM_SITE")
+
+            current = rows[0]
+            data = self._normalize_site_data(dict(data))
+            db_state_id, db_county_id, db_district_id = self._get_geographic_codes(
+                data=data,
+                force_create_district=force_create_district,
+                dry_run=dry_run,
+            )
+            self._connect()
+            self._ensure_transaction()
+            resolved_site_name = self._resolve_site_name(data)
+            district_candidates = self._iter_normalized_field_candidates(
+                data,
+                "district",
+            )
+            district_name = district_candidates[0][0] if district_candidates else None
+            would_create_district = (
+                dry_run
+                and force_create_district
+                and db_district_id is None
+                and district_name is not None
+            )
+            candidate_district_for_comparison = (
+                "__pending_district_create__"
+                if would_create_district
+                else db_district_id
+            )
+
+            current_tuple = (
+                current.get("FK_STATE"),
+                current.get("FK_COUNTY"),
+                current.get("FK_DISTRICT"),
+                current.get("NA_SITE"),
+            )
+            candidate_tuple = (
+                db_state_id,
+                db_county_id,
+                candidate_district_for_comparison,
+                resolved_site_name,
+            )
+
+            if current_tuple == candidate_tuple:
+                return {
+                    "action": "unchanged",
+                    "site_id": int(site_id),
+                    "fk_state": int(db_state_id),
+                    "fk_county": int(db_county_id),
+                    "fk_district": (
+                        int(db_district_id)
+                        if db_district_id is not None
+                        else None
+                    ),
+                    "site_name": resolved_site_name,
+                    "district_name": district_name,
+                    "would_create_district": would_create_district,
+                }
+
+            if dry_run:
+                return {
+                    "action": "dry_run",
+                    "site_id": int(site_id),
+                    "fk_state": int(db_state_id),
+                    "fk_county": int(db_county_id),
+                    "fk_district": (
+                        int(db_district_id)
+                        if db_district_id is not None
+                        else None
+                    ),
+                    "site_name": resolved_site_name,
+                    "district_name": district_name,
+                    "would_create_district": would_create_district,
+                }
+
+            self._update_row(
+                table="DIM_SPECTRUM_SITE",
+                data={
+                    "FK_STATE": db_state_id,
+                    "FK_COUNTY": db_county_id,
+                    "FK_DISTRICT": db_district_id,
+                    "NA_SITE": resolved_site_name,
+                },
+                where={"ID_SITE": site_id},
+                commit=not self.in_transaction,
+            )
+
+            if hasattr(self, "log"):
+                self.log.entry(
+                    f"[dbHandlerRFM] Refreshed geography for site ID={site_id} "
+                    f"(state={db_state_id}, county={db_county_id}, district={db_district_id})"
+                )
+
+            return {
+                "action": "updated",
+                "site_id": int(site_id),
+                "fk_state": int(db_state_id),
+                "fk_county": int(db_county_id),
+                "fk_district": (
+                    int(db_district_id)
+                    if db_district_id is not None
+                    else None
+                ),
+                "site_name": resolved_site_name,
+                "district_name": district_name,
+                "would_create_district": False,
+            }
+
+        except Exception as e:
+            raise Exception(f"Error refreshing geography for site {site_id}: {e}")
+
+        finally:
+            if not self.in_transaction:
+                try:
+                    self._disconnect()
+                except Exception:
+                    pass
+
+
+
+    def insert_site(
+        self,
+        data: dict,
+        *,
+        force_create_district: bool = False,
+    ) -> int:
         """Insert one row into `DIM_SPECTRUM_SITE`.
 
         The caller provides the centroid, altitude and already-resolved site
@@ -205,7 +453,10 @@ class dbHandlerRFM(DBHandlerBase):
             data = self._normalize_site_data(data)
             
             db_state_id, db_county_id, db_district_id = (
-                self._get_geographic_codes(data=data)
+                self._get_geographic_codes(
+                    data=data,
+                    force_create_district=force_create_district,
+                )
             )
 
             self._connect()
@@ -279,7 +530,9 @@ class dbHandlerRFM(DBHandlerBase):
         longitude_raw: list[float],
         latitude_raw: list[float],
         altitude_raw: list[float],
-    ) -> None:
+        *,
+        log_result: bool = True,
+    ) -> dict:
         """Update a fixed site's centroid using new GNSS samples.
 
         This path is only for fixed stations. Mobile rows keep the prepared
@@ -319,12 +572,18 @@ class dbHandlerRFM(DBHandlerBase):
             # After enough observations, keep the site stable and stop moving
             # the centroid on every new file.
             if db_nu_gnss >= k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS:
-                if hasattr(self, "log"):
+                result = {
+                    "action": "skipped_limit",
+                    "site_id": int(site),
+                    "existing_gnss": db_nu_gnss,
+                    "limit": int(k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS),
+                }
+                if log_result and hasattr(self, "log"):
                     self.log.entry(
                         f"Site {site} reached {db_nu_gnss} GNSS measurements "
                         f"(limit={k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS}). No update performed."
                     )
-                return
+                return result
 
             # Fold the new samples into the historical centroid using the
             # stored measurement count as the previous weight.
@@ -350,14 +609,23 @@ class dbHandlerRFM(DBHandlerBase):
             wkt_point = f"POINT({new_longitude} {new_latitude})"
             self.cursor.execute(sql, (wkt_point, new_altitude, nu_total, site))
 
-            # Commit stays with the caller when a managed transaction is open.
-            if hasattr(self, "log"):
+            result = {
+                "action": "updated",
+                "site_id": int(site),
+                "latitude": float(new_latitude),
+                "longitude": float(new_longitude),
+                "altitude": float(new_altitude),
+                "total_gnss": int(nu_total),
+                "previous_gnss": db_nu_gnss,
+            }
+            if log_result and hasattr(self, "log"):
                 self.log.entry(
                     f"Updated site {site}: "
                     f"lat={new_latitude:.6f}, "
                     f"lon={new_longitude:.6f}, "
                     f"alt={new_altitude:.2f}"
                 )
+            return result
 
         except Exception as e:
             raise Exception(f"Error updating site {site}: {e}")
@@ -441,7 +709,13 @@ class dbHandlerRFM(DBHandlerBase):
                 pass
 
 
-    def _get_geographic_codes(self, data: dict) -> Tuple[int, int, int]:
+    def _get_geographic_codes(
+        self,
+        data: dict,
+        *,
+        force_create_district: bool = False,
+        dry_run: bool = False,
+    ) -> Tuple[int, int, int]:
         """Resolve `FK_STATE`, `FK_COUNTY` and optional `FK_DISTRICT`.
 
         Matching is deterministic: try the catalog value as-is first, then
@@ -522,31 +796,49 @@ class dbHandlerRFM(DBHandlerBase):
 
             db_district_id = None
 
-            if data.get("district"):
+            district_candidates = self._iter_normalized_field_candidates(
+                data,
+                "district",
+            )
+
+            if district_candidates:
                 # District is optional; when present, try to reuse the existing
                 # county-scoped catalog before considering auto-creation.
-                normalized_input = self._normalize_string(data["district"])
-
                 rows = self._select_rows(
                     table="DIM_SITE_DISTRICT",
                     where={"FK_COUNTY": db_county_id},
                     cols=["ID_DISTRICT", "NA_DISTRICT"],
                 )
 
-                for row in rows:
-                    if self._normalize_string(row["NA_DISTRICT"]) == normalized_input:
-                        db_district_id = int(row["ID_DISTRICT"])
+                for original_value, normalized_input in district_candidates:
+                    for row in rows:
+                        if (
+                            self._normalize_string(row["NA_DISTRICT"])
+                            == normalized_input
+                        ):
+                            db_district_id = int(row["ID_DISTRICT"])
+                            data["district"] = original_value
+                            break
+
+                    if db_district_id:
                         break
 
                 # Only create after a deterministic miss in the existing catalog.
-                if not db_district_id and k.SITE_DISTRICT_AUTO_CREATE:
-                    db_district_id = self._insert_row(
-                        table="DIM_SITE_DISTRICT",
-                        data={
+                if not db_district_id and (
+                    force_create_district or k.SITE_DISTRICT_AUTO_CREATE
+                ) and not dry_run:
+                    district_name = district_candidates[0][0]
+                    insert_kwargs = {
+                        "table": "DIM_SITE_DISTRICT",
+                        "data": {
                             "FK_COUNTY": db_county_id,
-                            "NA_DISTRICT": data["district"],
+                            "NA_DISTRICT": district_name,
                         },
-                    )
+                    }
+                    if self.in_transaction:
+                        insert_kwargs["commit"] = False
+                    db_district_id = self._insert_row(**insert_kwargs)
+                    data["district"] = district_name
 
             return db_state_id, db_county_id, db_district_id
 
@@ -554,10 +846,11 @@ class dbHandlerRFM(DBHandlerBase):
             raise Exception(f"Error retrieving geographic codes: {e}")
 
         finally:
-            try:
-                self._disconnect()
-            except Exception:
-                pass
+            if not self.in_transaction:
+                try:
+                    self._disconnect()
+                except Exception:
+                    pass
 
 
     # ======================================================================
@@ -677,6 +970,8 @@ class dbHandlerRFM(DBHandlerBase):
         VL_FILE_SIZE_KB: int | None = None,
         DT_FILE_CREATED: datetime | None = None,
         DT_FILE_MODIFIED: datetime | None = None,
+        *,
+        log_success: bool = True,
     ) -> int:
         """Insert or retrieve one row from `DIM_SPECTRUM_FILE`.
 
@@ -721,9 +1016,9 @@ class dbHandlerRFM(DBHandlerBase):
                 return int(rows[0]["ID_FILE"])
 
             # Insert only when this exact repository artifact is still unknown.
-            file_id = self._insert_row(
-                table="DIM_SPECTRUM_FILE",
-                data={
+            insert_kwargs = {
+                "table": "DIM_SPECTRUM_FILE",
+                "data": {
                     "ID_TYPE_FILE": ID_TYPE_FILE,
                     "NA_VOLUME": NA_VOLUME.lower(),
                     "NA_PATH": NA_PATH,
@@ -733,7 +1028,11 @@ class dbHandlerRFM(DBHandlerBase):
                     "DT_FILE_CREATED": DT_FILE_CREATED,
                     "DT_FILE_MODIFIED": DT_FILE_MODIFIED,
                 },
-            )
+                "log_success": log_success,
+            }
+            if self.in_transaction:
+                insert_kwargs["commit"] = False
+            file_id = self._insert_row(**insert_kwargs)
 
             if not self.in_transaction:
                 self.db_connection.commit()
@@ -782,10 +1081,13 @@ class dbHandlerRFM(DBHandlerBase):
             if rows:
                 return int(rows[0]["ID_PROCEDURE"])
 
-            procedure_id = self._insert_row(
-                table="DIM_SPECTRUM_PROCEDURE",
-                data={"NA_PROCEDURE": procedure_name},
-            )
+            insert_kwargs = {
+                "table": "DIM_SPECTRUM_PROCEDURE",
+                "data": {"NA_PROCEDURE": procedure_name},
+            }
+            if self.in_transaction:
+                insert_kwargs["commit"] = False
+            procedure_id = self._insert_row(**insert_kwargs)
 
             if not self.in_transaction:
                 self.db_connection.commit()
@@ -903,13 +1205,16 @@ class dbHandlerRFM(DBHandlerBase):
             if rows:
                 return int(rows[0]["ID_EQUIPMENT"])
 
-            equipment_id = self._insert_row(
-                table="DIM_SPECTRUM_EQUIPMENT",
-                data={
+            insert_kwargs = {
+                "table": "DIM_SPECTRUM_EQUIPMENT",
+                "data": {
                     "FK_EQUIPMENT_TYPE": equipment_type_id,
                     "NA_EQUIPMENT": name,
                 },
-            )
+            }
+            if self.in_transaction:
+                insert_kwargs["commit"] = False
+            equipment_id = self._insert_row(**insert_kwargs)
 
             if not self.in_transaction:
                 self.db_connection.commit()
@@ -960,10 +1265,13 @@ class dbHandlerRFM(DBHandlerBase):
             if rows:
                 return int(rows[0]["ID_DETECTOR"])
 
-            detector_id = self._insert_row(
-                table="DIM_SPECTRUM_DETECTOR",
-                data={"NA_DETECTOR": detector},
-            )
+            insert_kwargs = {
+                "table": "DIM_SPECTRUM_DETECTOR",
+                "data": {"NA_DETECTOR": detector},
+            }
+            if self.in_transaction:
+                insert_kwargs["commit"] = False
+            detector_id = self._insert_row(**insert_kwargs)
 
             if not self.in_transaction:
                 self.db_connection.commit()
@@ -1013,10 +1321,13 @@ class dbHandlerRFM(DBHandlerBase):
             if rows:
                 return int(rows[0]["ID_MEASURE_UNIT"])
 
-            unit_id = self._insert_row(
-                table="DIM_SPECTRUM_UNIT",
-                data={"NA_MEASURE_UNIT": unit_name},
-            )
+            insert_kwargs = {
+                "table": "DIM_SPECTRUM_UNIT",
+                "data": {"NA_MEASURE_UNIT": unit_name},
+            }
+            if self.in_transaction:
+                insert_kwargs["commit"] = False
+            unit_id = self._insert_row(**insert_kwargs)
 
             if not self.in_transaction:
                 self.db_connection.commit()
@@ -1097,9 +1408,9 @@ class dbHandlerRFM(DBHandlerBase):
 
             # At this point all foreign keys were already resolved by the
             # caller, so this insert stays purely relational.
-            spectrum_id = self._insert_row(
-                table="FACT_SPECTRUM",
-                data={
+            insert_kwargs = {
+                "table": "FACT_SPECTRUM",
+                "data": {
                     "FK_SITE": data["id_site"],
                     "FK_EQUIPMENT": data["id_equipment"],
                     "FK_PROCEDURE": data["id_procedure"],
@@ -1119,7 +1430,10 @@ class dbHandlerRFM(DBHandlerBase):
                     "NU_ATT_GAIN": data.get("nu_att_gain"),
                     "JS_METADATA": js_metadata,
                 },
-            )
+            }
+            if self.in_transaction:
+                insert_kwargs["commit"] = False
+            spectrum_id = self._insert_row(**insert_kwargs)
 
             if not self.in_transaction:
                 self.db_connection.commit()
@@ -1164,10 +1478,13 @@ class dbHandlerRFM(DBHandlerBase):
             if rows:
                 return int(rows[0]["ID_TRACE_TYPE"])
 
-            trace_id = self._insert_row(
-                table="DIM_SPECTRUM_TRACE_TYPE",
-                data={"NA_TRACE_TYPE": trace_name},
-            )
+            insert_kwargs = {
+                "table": "DIM_SPECTRUM_TRACE_TYPE",
+                "data": {"NA_TRACE_TYPE": trace_name},
+            }
+            if self.in_transaction:
+                insert_kwargs["commit"] = False
+            trace_id = self._insert_row(**insert_kwargs)
 
             if not self.in_transaction:
                 self.db_connection.commit()
@@ -1209,16 +1526,20 @@ class dbHandlerRFM(DBHandlerBase):
         try:
             # `INSERT IGNORE` keeps retries safe and avoids duplicate bridge
             # rows when the worker replays the same association.
-            for spectrum_id in spectrum_ids:
-                for file_id in file_ids:
-                    self.cursor.execute(
-                        """
-                        INSERT IGNORE INTO BRIDGE_SPECTRUM_FILE
-                            (FK_SPECTRUM, FK_FILE)
-                        VALUES (%s, %s);
-                        """,
-                        (spectrum_id, file_id),
-                    )
+            values = [
+                (spectrum_id, file_id)
+                for spectrum_id in spectrum_ids
+                for file_id in file_ids
+            ]
+
+            self.cursor.executemany(
+                """
+                INSERT IGNORE INTO BRIDGE_SPECTRUM_FILE
+                    (FK_SPECTRUM, FK_FILE)
+                VALUES (%s, %s);
+                """,
+                values,
+            )
 
             if not self.in_transaction:
                 self.db_connection.commit()

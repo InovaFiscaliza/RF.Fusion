@@ -45,6 +45,7 @@ TRANSIENT_FILESYSTEM_ERRNOS = {
 }
 
 ERMX_FAMILY_PREFIXES = ("ermx", "emrx")
+_FIXED_SITE_UPDATE_AGGREGATOR = None
 
 
 def _structured_error_fields_for_handler(err, *, message=None):
@@ -261,28 +262,113 @@ def upsert_site(db_rfm, site_data):
     site_id = db_rfm.get_site_id(site_data)
 
     if site_id:
+        stored_site = db_rfm.get_site_geography(site_id)
+
+        if stored_site.get("FK_DISTRICT") is None:
+            refreshed_site_data = geolocation_utils.reverse_geocode_site_data(
+                site_data,
+                user_agent=k.NOMINATIM_USER,
+                required_address_field=k.REQUIRED_ADDRESS_FIELD,
+            )
+            db_rfm.refresh_site_geography(
+                site_id,
+                refreshed_site_data,
+                force_create_district=True,
+            )
+
         # Fixed stations still refine their centroid over time. Mobile captures
         # carry a prepared GEOGRAPHIC_PATH and therefore keep the stored site
         # geometry stable once the summary polygon is already known.
         if not site_data.get("geographic_path"):
-            db_rfm.update_site(
-                site=site_id,
-                longitude_raw=site_data["longitude_raw"],
-                latitude_raw=site_data["latitude_raw"],
-                altitude_raw=site_data["altitude_raw"],
-            )
+            if _FIXED_SITE_UPDATE_AGGREGATOR is not None:
+                _queue_fixed_site_update(
+                    _FIXED_SITE_UPDATE_AGGREGATOR,
+                    site_id,
+                    site_data,
+                )
+            else:
+                db_rfm.update_site(
+                    site=site_id,
+                    longitude_raw=site_data["longitude_raw"],
+                    latitude_raw=site_data["latitude_raw"],
+                    altitude_raw=site_data["altitude_raw"],
+                )
         return site_id
 
-    location = geolocation_utils.reverse_geocode_with_retry(
+    site_data = geolocation_utils.reverse_geocode_site_data(
         site_data,
         user_agent=k.NOMINATIM_USER,
+        required_address_field=k.REQUIRED_ADDRESS_FIELD,
     )
-    site_data = geolocation_utils.map_location_to_site_data(
-        location,
+    return db_rfm.insert_site(
         site_data,
-        k.REQUIRED_ADDRESS_FIELD,
+        force_create_district=True,
     )
-    return db_rfm.insert_site(site_data)
+
+
+def _queue_fixed_site_update(site_updates, site_id, site_data):
+    """Aggregate fixed-site raw GNSS samples for one later `update_site()`."""
+    update_bucket = site_updates.setdefault(
+        int(site_id),
+        {
+            "longitude_raw": [],
+            "latitude_raw": [],
+            "altitude_raw": [],
+            "occurrences": 0,
+        },
+    )
+    update_bucket["longitude_raw"].extend(site_data["longitude_raw"])
+    update_bucket["latitude_raw"].extend(site_data["latitude_raw"])
+    update_bucket["altitude_raw"].extend(site_data["altitude_raw"])
+    update_bucket["occurrences"] += 1
+
+
+def _flush_fixed_site_updates(db_rfm, site_updates, *, logger=None):
+    """Apply one aggregated centroid update per fixed site and log once."""
+    for site_id, payload in site_updates.items():
+        update_result = db_rfm.update_site(
+            site=site_id,
+            longitude_raw=payload["longitude_raw"],
+            latitude_raw=payload["latitude_raw"],
+            altitude_raw=payload["altitude_raw"],
+            log_result=False,
+        )
+
+        if logger is None:
+            continue
+
+        occurrences = int(payload["occurrences"])
+        if update_result["action"] == "skipped_limit":
+            logger.entry(
+                f"Site {site_id} reached {update_result['existing_gnss']} GNSS "
+                f"measurements (limit={update_result['limit']}). No update "
+                f"performed. occurrences={occurrences}"
+            )
+            continue
+
+        logger.entry(
+            f"Updated site {site_id}: "
+            f"lat={update_result['latitude']:.6f}, "
+            f"lon={update_result['longitude']:.6f}, "
+            f"alt={update_result['altitude']:.2f}, "
+            f"occurrences={occurrences}, "
+            f"gnss_samples={len(payload['longitude_raw'])}"
+        )
+
+
+def _build_spectrum_identity_key(spectrum_row):
+    """Build the in-memory idempotence key used during one payload insert."""
+    return (
+        spectrum_row["id_site"],
+        spectrum_row["id_equipment"],
+        spectrum_row["id_procedure"],
+        spectrum_row["id_trace_type"],
+        spectrum_row["nu_freq_start"],
+        spectrum_row["nu_freq_end"],
+        spectrum_row["dt_time_start"],
+        spectrum_row["dt_time_end"],
+        spectrum_row["nu_trace_length"],
+    )
 
 
 def _build_site_cache_key(site_data):
@@ -336,69 +422,83 @@ def resolve_spectrum_sites(db_rfm, bin_data, *, logger=None):
     # One processed payload can repeat the same fixed point or the same mobile
     # bounding geometry many times. Cache the SITE resolution locally so a
     # single file does not geocode or touch the same SITE more than once.
+    global _FIXED_SITE_UPDATE_AGGREGATOR
+
     site_cache = {}
+    fixed_site_updates = {}
     resolved_ids = []
     resolved_spectra = []
     discarded_here = 0
+    previous_site_update_aggregator = _FIXED_SITE_UPDATE_AGGREGATOR
+    _FIXED_SITE_UPDATE_AGGREGATOR = fixed_site_updates
 
-    # SITE ownership is now a property of each normalized spectrum row, not of
-    # the file as a whole. That keeps mixed-location payloads honest when they
-    # eventually become FACT_SPECTRUM rows.
-    for spectrum in bin_data["spectrum"]:
-        site_data = getattr(spectrum, "site_data", None)
+    try:
+        # SITE ownership is now a property of each normalized spectrum row, not of
+        # the file as a whole. That keeps mixed-location payloads honest when they
+        # eventually become FACT_SPECTRUM rows.
+        for spectrum in bin_data["spectrum"]:
+            site_data = getattr(spectrum, "site_data", None)
 
-        if not isinstance(site_data, dict):
-            raise ValueError("spectrum.site_data must be a dict")
+            if not isinstance(site_data, dict):
+                raise ValueError("spectrum.site_data must be a dict")
 
-        site_key = _build_site_cache_key(site_data)
+            site_key = _build_site_cache_key(site_data)
 
-        try:
-            if site_key not in site_cache:
-                # The first time a spatial summary appears in this payload, resolve
-                # it against DIM_SPECTRUM_SITE and keep the resulting ID cached for
-                # all later spectra that share the same summary.
-                site_cache[site_key] = upsert_site(db_rfm, dict(site_data))
-        except Exception as exc:
-            # Site detection can fail for one spectrum because that one GPS
-            # summary does not map cleanly to a locality. In that case we
-            # discard only the bad spectrum and preserve the rest of the file.
-            #
-            # Shared infrastructure failures are still fatal because discarding
-            # around a DB/geocoder outage would silently hide a system problem.
-            if _is_infrastructure_site_resolution_error(exc):
-                raise
+            try:
+                if site_key not in site_cache:
+                    # The first time a spatial summary appears in this payload, resolve
+                    # it against DIM_SPECTRUM_SITE and keep the resulting ID cached for
+                    # all later spectra that share the same summary.
+                    site_cache[site_key] = int(upsert_site(db_rfm, dict(site_data)))
+            except Exception as exc:
+                # Site detection can fail for one spectrum because that one GPS
+                # summary does not map cleanly to a locality. In that case we
+                # discard only the bad spectrum and preserve the rest of the file.
+                #
+                # Shared infrastructure failures are still fatal because discarding
+                # around a DB/geocoder outage would silently hide a system problem.
+                if _is_infrastructure_site_resolution_error(exc):
+                    raise
 
-            discarded_here += 1
+                discarded_here += 1
 
-            if logger is not None:
-                logger.warning(
-                    "appanalise_site_resolution_discard "
-                    f"spectrum={getattr(spectrum, 'description', None)!r} "
-                    f"reason={exc}"
-                )
-            continue
+                if logger is not None:
+                    logger.warning(
+                        "appanalise_site_resolution_discard "
+                        f"spectrum={getattr(spectrum, 'description', None)!r} "
+                        f"reason={exc}"
+                    )
+                continue
 
-        # Persist the resolved SITE directly on the spectrum object so the
-        # insert phase can stay simple and purely relational.
-        spectrum.site_id = site_cache[site_key]
-        resolved_ids.append(spectrum.site_id)
-        resolved_spectra.append(spectrum)
+            # Persist the resolved SITE directly on the spectrum object so the
+            # insert phase can stay simple and purely relational.
+            spectrum.site_id = site_cache[site_key]
+            resolved_ids.append(spectrum.site_id)
+            resolved_spectra.append(spectrum)
 
-    if not resolved_spectra:
-        raise ValueError(
-            "No spectra remained after SITE resolution filtering"
+        if not resolved_spectra:
+            raise ValueError(
+                "No spectra remained after SITE resolution filtering"
+            )
+
+        if discarded_here:
+            # Keep the normalized payload self-describing in memory without pushing
+            # discard bookkeeping into JS_METADATA or relational columns.
+            bin_data["discarded_spectrum_count"] = (
+                int(bin_data.get("discarded_spectrum_count", 0)) + discarded_here
+            )
+
+        _flush_fixed_site_updates(
+            db_rfm,
+            fixed_site_updates,
+            logger=logger,
         )
 
-    if discarded_here:
-        # Keep the normalized payload self-describing in memory without pushing
-        # discard bookkeeping into JS_METADATA or relational columns.
-        bin_data["discarded_spectrum_count"] = (
-            int(bin_data.get("discarded_spectrum_count", 0)) + discarded_here
-        )
+        bin_data["spectrum"] = resolved_spectra
 
-    bin_data["spectrum"] = resolved_spectra
-
-    return resolved_ids
+        return resolved_ids
+    finally:
+        _FIXED_SITE_UPDATE_AGGREGATOR = previous_site_update_aggregator
 
 
 def insert_spectra_batch(
@@ -420,6 +520,13 @@ def insert_spectra_batch(
     resolve to a different `ID_SITE`.
     """
     host_file_id = None
+    detector_id = db_rfm.insert_detector_type(k.DEFAULT_DETECTOR)
+    trace_type_cache = {}
+    equipment_cache = {}
+    measure_unit_cache = {}
+    spectrum_id_cache = {}
+    duplicate_spectrum_hits = 0
+    spectrum_batch_started = time.monotonic()
 
     if should_map_host_source_file(hostname_db):
         # Only 1:1 station families register a host-side lineage file. Mobile
@@ -453,6 +560,28 @@ def insert_spectra_batch(
             hostname_db=hostname_db,
             spectrum_equipment_name=equipment_name,
         )
+        equipment_cache_key = (
+            persisted_equipment_name,
+            equipment_type_hint,
+        )
+        trace_name = spectrum.processing
+        measure_unit = spectrum.level_unit
+
+        if trace_name not in trace_type_cache:
+            trace_type_cache[trace_name] = db_rfm.insert_trace_type(trace_name)
+
+        if equipment_cache_key not in equipment_cache:
+            equipment_cache[equipment_cache_key] = (
+                db_rfm.get_or_create_spectrum_equipment(
+                    persisted_equipment_name,
+                    equipment_type_hint=equipment_type_hint,
+                )
+            )
+
+        if measure_unit not in measure_unit_cache:
+            measure_unit_cache[measure_unit] = db_rfm.insert_measure_unit(
+                measure_unit
+            )
 
         # appAnalise may carry per-spectrum metadata blobs such as Antenna and
         # Others that do not map to first-class RFDATA columns yet. We
@@ -460,42 +589,51 @@ def insert_spectra_batch(
         # stays lossless without mixing in worker-side telemetry like discard
         # counters.
         metadata = spectrum.metadata if hasattr(spectrum, "metadata") else {}
+        spectrum_row = {
+            "id_site": site_id,
+            "id_procedure": procedure_id,
+            "id_detector_type": detector_id,
+            "id_trace_type": trace_type_cache[trace_name],
+            "id_equipment": equipment_cache[equipment_cache_key],
+            "id_measure_unit": measure_unit_cache[measure_unit],
+            "na_description": getattr(spectrum, "description", None),
+            "nu_freq_start": spectrum.start_mega,
+            "nu_freq_end": spectrum.stop_mega,
+            "dt_time_start": spectrum.start_dateidx,
+            "dt_time_end": spectrum.stop_dateidx,
+            "nu_sample_duration": k.DEFAULT_SAMPLE_DURATION,
+            "nu_trace_count": spectrum.trace_length,
+            "nu_trace_length": spectrum.ndata,
+            "nu_rbw": getattr(spectrum, "bw", None),
+            "nu_att_gain": k.DEFAULT_ATTENUATION_GAIN,
+            "js_metadata": json.dumps(metadata),
+        }
+        spectrum_identity_key = _build_spectrum_identity_key(spectrum_row)
 
-        spectrum_ids.append(
-            db_rfm.insert_spectrum(
-                {
-                    "id_site": site_id,
-                    "id_procedure": procedure_id,
-                    "id_detector_type": db_rfm.insert_detector_type(
-                        k.DEFAULT_DETECTOR
-                    ),
-                    "id_trace_type": db_rfm.insert_trace_type(
-                        spectrum.processing
-                    ),
-                    "id_equipment": db_rfm.get_or_create_spectrum_equipment(
-                        persisted_equipment_name,
-                        equipment_type_hint=equipment_type_hint,
-                    ),
-                    "id_measure_unit": db_rfm.insert_measure_unit(
-                        spectrum.level_unit
-                    ),
-                    "na_description": getattr(spectrum, "description", None),
-                    "nu_freq_start": spectrum.start_mega,
-                    "nu_freq_end": spectrum.stop_mega,
-                    "dt_time_start": spectrum.start_dateidx,
-                    "dt_time_end": spectrum.stop_dateidx,
-                    "nu_sample_duration": k.DEFAULT_SAMPLE_DURATION,
-                    "nu_trace_count": spectrum.trace_length,
-                    "nu_trace_length": spectrum.ndata,
-                    "nu_rbw": getattr(spectrum, "bw", None),
-                    "nu_att_gain": k.DEFAULT_ATTENUATION_GAIN,
-                    "js_metadata": json.dumps(metadata),
-                }
-            )
-        )
+        if spectrum_identity_key in spectrum_id_cache:
+            spectrum_ids.append(spectrum_id_cache[spectrum_identity_key])
+            duplicate_spectrum_hits += 1
+            continue
+
+        spectrum_id = db_rfm.insert_spectrum(spectrum_row)
+        spectrum_id_cache[spectrum_identity_key] = spectrum_id
+        spectrum_ids.append(spectrum_id)
 
     if host_file_id is not None:
         db_rfm.insert_bridge_spectrum_file(spectrum_ids, [host_file_id])
+
+    if hasattr(db_rfm, "log"):
+        db_rfm.log.event(
+            "fact_spectrum_batch_staged",
+            spectra=len(spectrum_ids),
+            unique_spectrum_keys=len(spectrum_id_cache),
+            duplicate_spectrum_hits=duplicate_spectrum_hits,
+            unique_trace_types=len(trace_type_cache),
+            unique_equipments=len(equipment_cache),
+            unique_measure_units=len(measure_unit_cache),
+            bridge_file_links=(len(spectrum_ids) if host_file_id is not None else 0),
+            duration_sec=round(time.monotonic() - spectrum_batch_started, 3),
+        )
     return spectrum_ids
 
 
@@ -597,7 +735,7 @@ def freeze_task_for_manual_review(
         **_structured_error_fields_for_handler(err, message=message),
     )
 
-    db_bp.host_task_statistics_create(host_id=host_id)
+    db_bp.host_task_statistics_create(host_id=host_id, log_if_active=False)
 
 
 def freeze_task_after_processing_timeout(
@@ -646,6 +784,8 @@ def move_file_if_present(
     destination_path,
     *,
     refresh_mtime: bool = False,
+    move_kind: str | None = None,
+    logger=None,
 ):
     """
     Move a file when it still exists and return its new metadata.
@@ -660,12 +800,43 @@ def move_file_if_present(
     if not file_meta or not os.path.exists(file_meta["full_path"]):
         return None
 
-    file_move(
-        filename=file_meta["file_name"],
-        path=file_meta["file_path"],
-        new_path=destination_path,
-        refresh_mtime=refresh_mtime,
-    )
+    source_path = file_meta["full_path"]
+    target_path = os.path.join(destination_path, file_meta["file_name"])
+    event_fields = {
+        "file": file_meta["file_name"],
+        "source_dir": file_meta["file_path"],
+        "destiny_dir": destination_path,
+        "success": False,
+        "refresh_mtime": refresh_mtime,
+    }
+    if move_kind:
+        event_fields["kind"] = move_kind
+
+    try:
+        file_move(
+            filename=file_meta["file_name"],
+            path=file_meta["file_path"],
+            new_path=destination_path,
+            refresh_mtime=refresh_mtime,
+        )
+    except Exception as exc:
+        if logger is not None and hasattr(logger, "error_event"):
+            logger.error_event(
+                "file_move",
+                **event_fields,
+                source=source_path,
+                destiny=target_path,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+        raise
+
+    if logger is not None:
+        event_fields["success"] = True
+        logger.event(
+            "file_move",
+            **event_fields,
+        )
 
     moved_meta = dict(file_meta)
     moved_meta["file_path"] = destination_path
@@ -717,7 +888,12 @@ def finalize_successful_processing(
         bin_data=bin_data,
         hostname_db=hostname_db,
     )
-    final_file_meta = move_file_if_present(file_meta, new_path)
+    final_file_meta = move_file_if_present(
+        file_meta,
+        new_path,
+        move_kind="promote_final",
+        logger=logger,
+    )
 
     if final_file_meta is None:
         raise FileNotFoundError(
@@ -733,6 +909,7 @@ def finalize_successful_processing(
         VL_FILE_SIZE_KB=final_file_meta["size_kb"],
         DT_FILE_CREATED=final_file_meta["dt_created"],
         DT_FILE_MODIFIED=final_file_meta["dt_modified"],
+        log_success=False,
     )
 
     db_rfm.insert_bridge_spectrum_file(spectrum_ids, [server_file_id])
@@ -747,6 +924,8 @@ def finalize_successful_processing(
             source_file_meta,
             build_resolved_files_trash_path(),
             refresh_mtime=True,
+            move_kind="quarantine_source",
+            logger=logger,
         )
 
     if logger is not None:
@@ -778,6 +957,7 @@ def finalize_task_resolution(
     source_file_meta,
     export,
     err,
+    logger=None,
 ):
     """
     Apply the final FILE_TASK resolution once retry is no longer an option.
@@ -816,10 +996,14 @@ def finalize_task_resolution(
                 source_file_meta,
                 resolved_trash_path,
                 refresh_mtime=True,
+                move_kind="quarantine_source",
+                logger=logger,
             )
             trashed_export_meta = move_file_if_present(
                 file_meta,
                 trash_path,
+                move_kind="quarantine_error_export",
+                logger=logger,
             )
 
             if trashed_export_meta:
@@ -836,6 +1020,8 @@ def finalize_task_resolution(
                 trashed_source_meta = move_file_if_present(
                     fallback_source_meta,
                     trash_path,
+                    move_kind="quarantine_error_source",
+                    logger=logger,
                 )
                 if trashed_source_meta:
                     new_path = trashed_source_meta["file_path"]
@@ -846,6 +1032,8 @@ def finalize_task_resolution(
             trashed_source_meta = move_file_if_present(
                 source_file_meta,
                 trash_path,
+                move_kind="quarantine_error_source",
+                logger=logger,
             )
 
             if trashed_source_meta:
@@ -913,7 +1101,7 @@ def finalize_task_resolution(
 
     # Statistics are updated after history so host-level counters see the same
     # finalized state that the operator would read from FILE_TASK_HISTORY.
-    db_bp.host_task_statistics_create(host_id=host_id)
+    db_bp.host_task_statistics_create(host_id=host_id, log_if_active=False)
     return {
         "status": status,
         "new_path": history_server_path,

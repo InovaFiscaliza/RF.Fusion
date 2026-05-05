@@ -1408,7 +1408,12 @@ class dbHandlerBKP(DBHandlerBase):
         finally:
             self._disconnect()
 
-    def host_task_statistics_create(self, host_id: int) -> int:
+    def host_task_statistics_create(
+        self,
+        host_id: int,
+        *,
+        log_if_active: bool = True,
+    ) -> int:
         """
         Create or reactivate the singleton statistics task for a host.
 
@@ -1448,10 +1453,11 @@ class dbHandlerBKP(DBHandlerBase):
                 status = existing.get("HOST_TASK__NU_STATUS", k.TASK_PENDING)
 
                 if status in (k.TASK_PENDING, k.TASK_RUNNING):
-                    self.log.entry(
-                        f"[DBHandlerBKP] Statistics HOST_TASK already active "
-                        f"(host={host_id}, ID={tid}, status={status}). No action taken."
-                    )
+                    if log_if_active:
+                        self.log.entry(
+                            f"[DBHandlerBKP] Statistics HOST_TASK already active "
+                            f"(host={host_id}, ID={tid}, status={status}). No action taken."
+                        )
                     return tid
 
                 # Reactivate the existing singleton row instead of creating

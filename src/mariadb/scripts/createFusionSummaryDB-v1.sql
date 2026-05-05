@@ -1913,7 +1913,7 @@ BEGIN
         h.NU_PENDING_FILE_PROCESS_TASKS,
         h.NU_DONE_FILE_PROCESS_TASKS,
         h.NU_ERROR_FILE_PROCESS_TASKS,
-        h.NU_HOST_FILES,
+        COALESCE(monthly_stats.NU_DISCOVERED_FILES_TOTAL, h.NU_HOST_FILES, 0),
         COALESCE(queue.NU_BACKUP_QUEUE_FILES_TOTAL, 0),
         COALESCE(queue.VL_BACKUP_QUEUE_GB_TOTAL, 0.00),
         COALESCE(queue.NU_PROCESSING_QUEUE_FILES_TOTAL, 0),
@@ -1943,6 +1943,14 @@ BEGIN
         GROUP BY t.FK_HOST
     ) queue
       ON queue.FK_HOST = h.ID_HOST
+    LEFT JOIN (
+        SELECT
+            metric.FK_HOST,
+            SUM(metric.NU_DISCOVERED_FILES) AS NU_DISCOVERED_FILES_TOTAL
+        FROM HOST_MONTHLY_METRIC metric
+        GROUP BY metric.FK_HOST
+    ) monthly_stats
+      ON monthly_stats.FK_HOST = h.ID_HOST
     LEFT JOIN (
         SELECT
             l.FK_HOST,

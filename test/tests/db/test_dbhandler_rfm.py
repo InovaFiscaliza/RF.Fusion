@@ -69,10 +69,15 @@ class FakeCursor:
         self.fetch_batches = list(fetch_batches or [])
         self.executed: list[tuple[str, tuple | None]] = []
         self.lastrowid = lastrowid
+        self.rowcount = 1
 
     def execute(self, sql, params=None) -> None:
         compact_sql = " ".join(str(sql).split())
         self.executed.append((compact_sql, params))
+
+    def executemany(self, sql, seq_of_params) -> None:
+        compact_sql = " ".join(str(sql).split())
+        self.executed.append((compact_sql, list(seq_of_params)))
 
     def fetchall(self):
         if self.fetch_batches:
@@ -149,7 +154,7 @@ class SiteWriteTests(DbHandlerRfmBaseTests):
         handler = self.make_handler()
         handler.cursor = FakeCursor(lastrowid=123)
         handler._normalize_site_data = lambda data: dict(data)
-        handler._get_geographic_codes = lambda data: (35, 3550308, None)
+        handler._get_geographic_codes = lambda **kwargs: (35, 3550308, None)
 
         site_id = handler.insert_site(
             {
@@ -180,7 +185,7 @@ class SiteWriteTests(DbHandlerRfmBaseTests):
         handler = self.make_handler()
         handler.cursor = FakeCursor(lastrowid=124)
         handler._normalize_site_data = lambda data: dict(data)
-        handler._get_geographic_codes = lambda data: (25, 2507507, None)
+        handler._get_geographic_codes = lambda **kwargs: (25, 2507507, None)
 
         site_id = handler.insert_site(
             {
@@ -215,7 +220,7 @@ class SiteWriteTests(DbHandlerRfmBaseTests):
     def test_insert_site_rolls_back_and_wraps_error(self) -> None:
         handler = self.make_handler()
         handler._normalize_site_data = lambda data: dict(data)
-        handler._get_geographic_codes = lambda data: (_ for _ in ()).throw(
+        handler._get_geographic_codes = lambda **kwargs: (_ for _ in ()).throw(
             Exception("bad geography")
         )
 
@@ -293,6 +298,84 @@ class SiteWriteTests(DbHandlerRfmBaseTests):
 
         self.assertIn("Error updating site 91", str(ctx.exception))
 
+    def test_refresh_site_geography_updates_admin_fields(self) -> None:
+        handler = self.make_handler()
+        handler.cursor = FakeCursor()
+        handler._normalize_site_data = lambda data: dict(data)
+
+        def fake_select_rows(*, table, where=None, cols=None, limit=None):
+            if table == "DIM_SPECTRUM_SITE" and where == {"ID_SITE": 77}:
+                return [
+                    {
+                        "FK_STATE": 35,
+                        "FK_COUNTY": 3550308,
+                        "FK_DISTRICT": None,
+                        "NA_SITE": "Sao Paulo",
+                    }
+                ]
+            raise AssertionError(f"Unexpected select_rows call: {table=} {where=}")
+
+        handler._select_rows = fake_select_rows
+        handler._get_geographic_codes = (
+            lambda **kwargs: (35, 3550308, 9001)
+        )
+
+        result = handler.refresh_site_geography(
+            77,
+            {
+                "state": "São Paulo",
+                "county": "São Paulo",
+                "district": "Campo Belo",
+                "district_candidates": ["Campo Belo"],
+            },
+            force_create_district=True,
+        )
+
+        self.assertEqual(result["action"], "updated")
+        self.assertEqual(result["fk_district"], 9001)
+        self.assertEqual(len(handler.cursor.executed), 1)
+        sql, params = handler.cursor.executed[0]
+        self.assertIn("UPDATE DIM_SPECTRUM_SITE SET", sql)
+        self.assertEqual(params, [35, 3550308, 9001, "Campo Belo", 77])
+
+    def test_refresh_site_geography_dry_run_reports_pending_district_create(self) -> None:
+        handler = self.make_handler()
+        handler.cursor = FakeCursor()
+        handler._normalize_site_data = lambda data: dict(data)
+
+        def fake_select_rows(*, table, where=None, cols=None, limit=None):
+            if table == "DIM_SPECTRUM_SITE" and where == {"ID_SITE": 77}:
+                return [
+                    {
+                        "FK_STATE": 35,
+                        "FK_COUNTY": 3550308,
+                        "FK_DISTRICT": None,
+                        "NA_SITE": "Campo Belo",
+                    }
+                ]
+            raise AssertionError(f"Unexpected select_rows call: {table=} {where=}")
+
+        handler._select_rows = fake_select_rows
+        handler._get_geographic_codes = (
+            lambda **kwargs: (35, 3550308, None)
+        )
+
+        result = handler.refresh_site_geography(
+            77,
+            {
+                "state": "São Paulo",
+                "county": "São Paulo",
+                "district": "Campo Belo",
+                "district_candidates": ["Campo Belo"],
+            },
+            force_create_district=True,
+            dry_run=True,
+        )
+
+        self.assertEqual(result["action"], "dry_run")
+        self.assertTrue(result["would_create_district"])
+        self.assertEqual(handler.cursor.executed, [])
+
 
 class GeographicCodeTests(DbHandlerRfmBaseTests):
     """Validate deterministic geography resolution before site insert."""
@@ -330,6 +413,39 @@ class GeographicCodeTests(DbHandlerRfmBaseTests):
             )
 
         self.assertEqual((state_id, county_id, district_id), (35, 3550308, 9001))
+
+    def test_get_geographic_codes_tries_secondary_district_candidate_before_create(self) -> None:
+        handler = self.make_handler()
+
+        def fake_select_rows(*, table, where=None, cols=None, limit=None):
+            if table == "DIM_SITE_STATE" and where == {"NA_STATE": "São Paulo"}:
+                return [{"ID_STATE": 35, "NA_STATE": "São Paulo"}]
+            if table == "DIM_SITE_COUNTY":
+                return [
+                    {"ID_COUNTY": 3550308, "NA_COUNTY": "São Paulo"},
+                ]
+            if table == "DIM_SITE_DISTRICT":
+                return [
+                    {"ID_DISTRICT": 141, "NA_DISTRICT": "Campo Belo"},
+                ]
+            raise AssertionError(f"Unexpected select_rows call: {table=} {where=}")
+
+        handler._select_rows = fake_select_rows
+        handler._insert_row = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("district should be matched before auto-create")
+        )
+
+        state_id, county_id, district_id = handler._get_geographic_codes(
+            {
+                "state": "São Paulo",
+                "county": "São Paulo",
+                "district": "Brooklin",
+                "district_candidates": ["Brooklin", "Campo Belo"],
+            },
+            force_create_district=True,
+        )
+
+        self.assertEqual((state_id, county_id, district_id), (35, 3550308, 141))
 
 
 class FileDimensionTests(DbHandlerRfmBaseTests):
@@ -397,7 +513,7 @@ class FileDimensionTests(DbHandlerRfmBaseTests):
         handler.get_file_type_id_by_hostname = lambda HOSTNAME: 41
         handler._select_rows = lambda **kwargs: []
 
-        def fake_insert_row(*, table, data):
+        def fake_insert_row(*, table, data, **kwargs):
             inserted["table"] = table
             inserted["data"] = data
             return 701
@@ -593,7 +709,10 @@ class SpectrumAndBridgeTests(DbHandlerRfmBaseTests):
 
         handler.insert_bridge_spectrum_file([1, 2], [10, 11])
 
-        self.assertEqual(len(handler.cursor.executed), 4)
+        self.assertEqual(len(handler.cursor.executed), 1)
+        sql, params = handler.cursor.executed[0]
+        self.assertIn("INSERT IGNORE INTO BRIDGE_SPECTRUM_FILE", sql)
+        self.assertEqual(params, [(1, 10), (1, 11), (2, 10), (2, 11)])
         self.assertEqual(handler.db_connection.commits, 1)
 
 

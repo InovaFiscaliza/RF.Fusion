@@ -252,7 +252,8 @@ class DBHandlerBase:
         data: Dict[str, Any],
         *,
         ignore: bool = False,
-        commit: bool = True
+        commit: bool = True,
+        log_success: bool = True,
     ) -> int:
         """Insert a new record into a table with optional IGNORE behavior.
 
@@ -285,6 +286,7 @@ class DBHandlerBase:
         vals = ", ".join(["%s"] * len(data))
         insert_kw = "INSERT IGNORE" if ignore else "INSERT"
         sql = f"{insert_kw} INTO {table} ({cols}) VALUES ({vals});"
+        manage_own_transaction = commit or not getattr(self, "in_transaction", False)
 
         try:
             # Execute parameterized query safely
@@ -294,11 +296,19 @@ class DBHandlerBase:
                 self.db_connection.commit()
 
             last_id = int(self.cursor.lastrowid or 0)
-            self.log.entry(f"[DBHandlerBase] {insert_kw} executed successfully on {table} (ID={last_id}).")
+            if manage_own_transaction and log_success:
+                self.log.entry(
+                    f"[DBHandlerBase] {insert_kw} executed successfully on {table} "
+                    f"(ID={last_id})."
+                )
             return last_id
 
         except Exception as e:
-            self.db_connection.rollback()
+            if manage_own_transaction:
+                try:
+                    self.db_connection.rollback()
+                except Exception:
+                    pass
             self.log.error(f"[DBHandlerBase] {insert_kw} failed on {table}: {e}")
             raise
 

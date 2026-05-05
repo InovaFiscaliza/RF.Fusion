@@ -1,0 +1,17 @@
+USE RFDATA;
+
+SET @ddl = IF(
+    EXISTS (
+        SELECT 1
+        FROM information_schema.statistics
+        WHERE table_schema = DATABASE()
+          AND table_name = 'FACT_SPECTRUM'
+          AND index_name = 'IX_FACT_SPECTRUM_IDEMPOTENCY'
+    ),
+    "SELECT 'IX_FACT_SPECTRUM_IDEMPOTENCY already exists' AS message",
+    "ALTER TABLE FACT_SPECTRUM ADD INDEX IX_FACT_SPECTRUM_IDEMPOTENCY (FK_SITE, FK_EQUIPMENT, FK_PROCEDURE, FK_TRACE_TYPE, NU_FREQ_START, NU_FREQ_END, DT_TIME_START, DT_TIME_END, NU_TRACE_LENGTH)"
+);
+
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;

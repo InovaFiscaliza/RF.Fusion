@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime
 
 from bootstrap_paths import bootstrap_app_paths
@@ -238,6 +239,52 @@ def preflight_app_analise_connection(app_analise) -> bool:
         return False
 
 
+@contextmanager
+def _timed_phase(phase_durations: dict, phase_name: str):
+    """Measure one worker phase locally without changing shared logging APIs."""
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        phase_durations[phase_name] = round(time.monotonic() - started, 3)
+
+
+def _log_processing_phase_timings(
+    *,
+    filename,
+    outcome,
+    task_started_monotonic,
+    phase_durations,
+    bin_data=None,
+    resolved_site_ids=None,
+    spectrum_ids=None,
+):
+    """Emit one local timing summary for the current FILE_TASK iteration."""
+    if not filename or task_started_monotonic is None:
+        return
+
+    spectrum_count = None
+    if isinstance(bin_data, dict) and isinstance(bin_data.get("spectrum"), list):
+        spectrum_count = len(bin_data["spectrum"])
+
+    log.event(
+        "processing_phase_timings",
+        file=filename,
+        outcome=outcome,
+        total_sec=round(time.monotonic() - task_started_monotonic, 3),
+        claim_sec=phase_durations.get("claim"),
+        process_sec=phase_durations.get("process"),
+        site_sec=phase_durations.get("site_resolution"),
+        db_open_sec=phase_durations.get("db_open"),
+        db_persist_sec=phase_durations.get("db_persist"),
+        finalize_sec=phase_durations.get("finalize_fs"),
+        task_resolution_sec=phase_durations.get("task_resolution"),
+        spectra=spectrum_count,
+        resolved_sites=(len(set(resolved_site_ids or [])) if resolved_site_ids else None),
+        persisted_spectra=(len(spectrum_ids) if spectrum_ids else None),
+    )
+
+
 # ===============================================================
 # MAIN LOOP
 # ===============================================================
@@ -271,6 +318,11 @@ def main():
         source_file_meta = None
         resolved_site_ids = None
         skip_to_next_iteration = False
+        resolution = None
+        bin_data = None
+        spectrum_ids = None
+        task_started_monotonic = None
+        phase_durations = {}
 
         try:
             # ===================================================
@@ -302,6 +354,7 @@ def main():
             # Everything below must either requeue this row explicitly or
             # finalize it through the single resolution helper in `finally`.
             row, host_id, _ = result
+            task_started_monotonic = time.monotonic()
             file_task_id    = row["FILE_TASK__ID_FILE_TASK"]
             server_path     = row["FILE_TASK__NA_SERVER_FILE_PATH"]
             server_name     = row["FILE_TASK__NA_SERVER_FILE_NAME"]
@@ -327,25 +380,26 @@ def main():
             # ACT III — Mark the FILE_TASK as RUNNING
             # ===================================================
             try:
-                claim_message = tools.compose_message(
-                    task_type=k.FILE_TASK_PROCESS_TYPE,
-                    task_status=k.TASK_RUNNING,
-                    path=server_path,
-                    name=server_name,
-                    detail=k.APP_ANALISE_WORKER_DETAIL,
-                )
+                with _timed_phase(phase_durations, "claim"):
+                    claim_message = tools.compose_message(
+                        task_type=k.FILE_TASK_PROCESS_TYPE,
+                        task_status=k.TASK_RUNNING,
+                        path=server_path,
+                        name=server_name,
+                        detail=k.APP_ANALISE_WORKER_DETAIL,
+                    )
 
-                db_bp.file_task_update(
-                    task_id=file_task_id,
-                    NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
-                    DT_FILE_TASK=datetime.now(),
-                    NU_STATUS=k.TASK_RUNNING,
-                    NU_PID=os.getpid(),
-                    NA_MESSAGE=claim_message,
-                    **errors.persisted_error_fields_from_handler(
-                        message=claim_message,
-                    ),
-                )
+                    db_bp.file_task_update(
+                        task_id=file_task_id,
+                        NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+                        DT_FILE_TASK=datetime.now(),
+                        NU_STATUS=k.TASK_RUNNING,
+                        NU_PID=os.getpid(),
+                        NA_MESSAGE=claim_message,
+                        **errors.persisted_error_fields_from_handler(
+                            message=claim_message,
+                        ),
+                    )
             except Exception as e:
                 err.capture(
                     reason="Failed to claim processing FILE_TASK",
@@ -360,18 +414,19 @@ def main():
             # ACT IV — Delegate parsing to appAnalise and validate the result
             # ===================================================
             try:
-                export = task_flow.should_export(hostname_db)
-                log.event(
-                    "processing_started",
-                    file=filename,
-                    export=export,
-                )
+                with _timed_phase(phase_durations, "process"):
+                    export = task_flow.should_export(hostname_db)
+                    log.event(
+                        "processing_started",
+                        file=filename,
+                        export=export,
+                    )
 
-                bin_data, file_meta = app_analise.process(
-                    file_path=server_path,
-                    file_name=server_name,
-                    export=export,
-                )
+                    bin_data, file_meta = app_analise.process(
+                        file_path=server_path,
+                        file_name=server_name,
+                        export=export,
+                    )
 
             except errors.AppAnaliseReadTimeoutError as e:
                 # This is neither a plain transport outage nor a definitive
@@ -439,16 +494,17 @@ def main():
             # ACT V — Resolve or create every spectrum SITE outside the DB transaction
             # ===================================================
             try:
-                # SITE resolution stays outside the RFDATA transaction, matching
-                # the existing BIN worker behavior and keeping geocoding latency
-                # out of the DB critical section. The ownership is now per
-                # spectrum, not per file, so mixed-location payloads can be
-                # persisted without forcing a single synthetic `site_id`.
-                resolved_site_ids = task_flow.resolve_spectrum_sites(
-                    db_rfm,
-                    bin_data,
-                    logger=log,
-                )
+                with _timed_phase(phase_durations, "site_resolution"):
+                    # SITE resolution stays outside the RFDATA transaction, matching
+                    # the existing BIN worker behavior and keeping geocoding latency
+                    # out of the DB critical section. The ownership is now per
+                    # spectrum, not per file, so mixed-location payloads can be
+                    # persisted without forcing a single synthetic `site_id`.
+                    resolved_site_ids = task_flow.resolve_spectrum_sites(
+                        db_rfm,
+                        bin_data,
+                        logger=log,
+                    )
             except Exception as e:
                 err.capture(
                     reason="Failed to resolve SITE ownership for processed spectra",
@@ -463,7 +519,8 @@ def main():
             # ACT VI — Begin the RFDATA transaction
             # ===================================================
             try:
-                db_rfm.begin_transaction()
+                with _timed_phase(phase_durations, "db_open"):
+                    db_rfm.begin_transaction()
             except Exception as e:
                 err.capture(
                     reason="Failed to open RFDATA transaction",
@@ -478,23 +535,24 @@ def main():
             # ACT VII — Insert spectra and related metadata
             # ===================================================
             try:
-                # The host-side source file and all derived spectra must be
-                # committed as one unit for consistent lineage.
-                spectrum_ids = task_flow.insert_spectra_batch(
-                    db_rfm=db_rfm,
-                    bin_data=bin_data,
-                    hostname_db=hostname_db,
-                    host_path=host_path,
-                    host_file_name=host_file_name,
-                    extension=extension,
-                    vl_file_size_kb=vl_file_size_kb,
-                    dt_created=dt_created,
-                    dt_modified=dt_modified,
-                )
-                # After this commit, the payload is already part of RFDATA.
-                # Filesystem finalization below must therefore preserve a
-                # canonical artifact path instead of retrying DB writes.
-                db_rfm.commit()
+                with _timed_phase(phase_durations, "db_persist"):
+                    # The host-side source file and all derived spectra must be
+                    # committed as one unit for consistent lineage.
+                    spectrum_ids = task_flow.insert_spectra_batch(
+                        db_rfm=db_rfm,
+                        bin_data=bin_data,
+                        hostname_db=hostname_db,
+                        host_path=host_path,
+                        host_file_name=host_file_name,
+                        extension=extension,
+                        vl_file_size_kb=vl_file_size_kb,
+                        dt_created=dt_created,
+                        dt_modified=dt_modified,
+                    )
+                    # After this commit, the payload is already part of RFDATA.
+                    # Filesystem finalization below must therefore preserve a
+                    # canonical artifact path instead of retrying DB writes.
+                    db_rfm.commit()
             except Exception as e:
                 err.capture(
                     reason="Failed to persist processed spectra batch",
@@ -509,20 +567,21 @@ def main():
             # ACT VIII — Finalize files on disk and register the canonical output
             # ===================================================
             try:
-                # Success resolution decides which artifact becomes canonical
-                # (`.mat` export or original file) and retires superseded input.
-                new_path, file_meta = task_flow.finalize_successful_processing(
-                    db_rfm=db_rfm,
-                    spectrum_ids=spectrum_ids,
-                    bin_data=bin_data,
-                    hostname_db=hostname_db,
-                    file_meta=file_meta,
-                    source_file_meta=source_file_meta,
-                    export=export,
-                    filename=filename,
-                    logger=log,
-                )
-                file_was_processed = True
+                with _timed_phase(phase_durations, "finalize_fs"):
+                    # Success resolution decides which artifact becomes canonical
+                    # (`.mat` export or original file) and retires superseded input.
+                    new_path, file_meta = task_flow.finalize_successful_processing(
+                        db_rfm=db_rfm,
+                        spectrum_ids=spectrum_ids,
+                        bin_data=bin_data,
+                        hostname_db=hostname_db,
+                        file_meta=file_meta,
+                        source_file_meta=source_file_meta,
+                        export=export,
+                        filename=filename,
+                        logger=log,
+                    )
+                    file_was_processed = True
             except Exception as e:
                 if task_flow.is_transient_filesystem_error(e):
                     # Shared-storage hiccups (EBUSY, stale handles, etc.) do
@@ -574,22 +633,32 @@ def main():
                         # instead of requeueing them so problematic files do not
                         # churn in tight loops while appAnalise-side protections
                         # are still evolving.
-                        task_flow.freeze_task_for_manual_review(
-                            db_bp,
-                            file_task_id=file_task_id,
-                            host_id=host_id,
-                            host_file_name=host_file_name,
-                            host_path=host_path,
-                            err=err,
-                            detail=(
-                                "Transient appAnalise failure, task frozen for "
-                                "manual review"
-                            ),
-                        )
+                        with _timed_phase(phase_durations, "task_resolution"):
+                            task_flow.freeze_task_for_manual_review(
+                                db_bp,
+                                file_task_id=file_task_id,
+                                host_id=host_id,
+                                host_file_name=host_file_name,
+                                host_path=host_path,
+                                err=err,
+                                detail=(
+                                    "Transient appAnalise failure, task frozen for "
+                                    "manual review"
+                                ),
+                            )
                         log.event(
                             "processing_frozen",
                             file=filename,
                             error=err.format_error() or "Transient appAnalise failure",
+                        )
+                        _log_processing_phase_timings(
+                            filename=filename,
+                            outcome="frozen_transient",
+                            task_started_monotonic=task_started_monotonic,
+                            phase_durations=phase_durations,
+                            bin_data=bin_data,
+                            resolved_site_ids=resolved_site_ids,
+                            spectrum_ids=spectrum_ids,
                         )
                     except Exception as update_err:
                         log.error(
@@ -602,18 +671,28 @@ def main():
 
                 elif freeze_task:
                     try:
-                        task_flow.freeze_task_after_processing_timeout(
-                            db_bp,
-                            file_task_id=file_task_id,
-                            host_id=host_id,
-                            host_file_name=host_file_name,
-                            host_path=host_path,
-                            err=err,
-                        )
+                        with _timed_phase(phase_durations, "task_resolution"):
+                            task_flow.freeze_task_after_processing_timeout(
+                                db_bp,
+                                file_task_id=file_task_id,
+                                host_id=host_id,
+                                host_file_name=host_file_name,
+                                host_path=host_path,
+                                err=err,
+                            )
                         log.event(
                             "processing_frozen",
                             file=filename,
                             error=err.format_error() or "APP_ANALISE read timeout",
+                        )
+                        _log_processing_phase_timings(
+                            filename=filename,
+                            outcome="frozen_timeout",
+                            task_started_monotonic=task_started_monotonic,
+                            phase_durations=phase_durations,
+                            bin_data=bin_data,
+                            resolved_site_ids=resolved_site_ids,
+                            spectrum_ids=spectrum_ids,
                         )
                     except Exception as update_err:
                         log.error(
@@ -630,24 +709,26 @@ def main():
                     # Having one exit point avoids splitting queue state, history state,
                     # and filesystem cleanup across many error branches above.
                     try:
-                        resolution = task_flow.finalize_task_resolution(
-                            db_bp,
-                            file_task_id=file_task_id,
-                            host_id=host_id,
-                            host_file_name=host_file_name,
-                            host_path=host_path,
-                            server_name=server_name,
-                            extension=extension,
-                            vl_file_size_kb=vl_file_size_kb,
-                            dt_created=dt_created,
-                            dt_modified=dt_modified,
-                            file_was_processed=file_was_processed,
-                            new_path=new_path,
-                            file_meta=file_meta,
-                            source_file_meta=source_file_meta,
-                            export=export,
-                            err=err,
-                        )
+                        with _timed_phase(phase_durations, "task_resolution"):
+                            resolution = task_flow.finalize_task_resolution(
+                                db_bp,
+                                file_task_id=file_task_id,
+                                host_id=host_id,
+                                host_file_name=host_file_name,
+                                host_path=host_path,
+                                server_name=server_name,
+                                extension=extension,
+                                vl_file_size_kb=vl_file_size_kb,
+                                dt_created=dt_created,
+                                dt_modified=dt_modified,
+                                file_was_processed=file_was_processed,
+                                new_path=new_path,
+                                file_meta=file_meta,
+                                source_file_meta=source_file_meta,
+                                export=export,
+                                err=err,
+                                logger=log,
+                            )
                     except Exception as finalize_err:
                         # One FILE_TASK cleanup failure must not kill the daemon. When
                         # final resolution fails, keep the row for later recovery
@@ -677,6 +758,20 @@ def main():
                                 final_file=resolution["final_file"],
                                 error=err.format_error() or "Processing failed",
                             )
+
+                        _log_processing_phase_timings(
+                            filename=filename,
+                            outcome=(
+                                "done"
+                                if resolution["status"] == k.TASK_DONE
+                                else "error"
+                            ),
+                            task_started_monotonic=task_started_monotonic,
+                            phase_durations=phase_durations,
+                            bin_data=bin_data,
+                            resolved_site_ids=resolved_site_ids,
+                            spectrum_ids=spectrum_ids,
+                        )
 
                         # Phase 2 — End the iteration with the same jitter contract used by
                         # the other workers so success and fatal payload paths do not spin
