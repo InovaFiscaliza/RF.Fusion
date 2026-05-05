@@ -39,9 +39,13 @@ h1 {
     width: 100%;
 }
 
+body .layout.layout-top.fixed-header .header {
+    z-index: 1100;
+}
+
 body .main-content {
     overflow: visible !important;
-    padding-top: 40px;
+    padding-top: calc(var(--header-size, 56px) + var(--os-safe-area-top, 0px) + 16px);
     padding-bottom: 80px;
 }
 

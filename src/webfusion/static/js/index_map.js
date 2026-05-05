@@ -64,26 +64,12 @@
     let selectedSiteId = "";
     let currentBaseLayer = null;
     let currentOverlayLayer = null;
-    let isSyncingNearbyTooltips = false;
     let latestDatasetRequestId = 0;
 
     const MAP_THEME_STORAGE_KEY = "webfusion.station_map_theme";
     const POPUP_HOVER_OPEN_DELAY_MS = 140;
     const MARKER_FOCUS_ZOOM_THRESHOLD = 7;
-    const TOOLTIP_MULTI_MARKER_DISTANCE_PX = 42;
-    const TOOLTIP_CLUSTER_DISTANCE_PX = 24;
-    const MAX_NEARBY_TOOLTIP_MARKERS = 2;
-    const DEFAULT_TOOLTIP_LAYOUT = {offsetX: 0, offsetY: -8, direction: "top"};
-    const NEARBY_TOOLTIP_LAYOUTS = [
-        {offsetX: 24, offsetY: -18, direction: "right"},
-        {offsetX: -24, offsetY: -18, direction: "left"},
-        {offsetX: 28, offsetY: 4, direction: "right"},
-        {offsetX: -28, offsetY: 4, direction: "left"},
-        {offsetX: 16, offsetY: 22, direction: "bottom"},
-        {offsetX: -16, offsetY: 22, direction: "bottom"},
-        {offsetX: 0, offsetY: -26, direction: "top"},
-        {offsetX: 0, offsetY: 24, direction: "bottom"},
-    ];
+    const MAX_NEARBY_POPUP_POINTS = 5;
     const POINT_STATE_ORDER = [
         "online_current",
         "online_previous",
@@ -576,6 +562,25 @@
     }
 
     /**
+     * Order marker rendering so current online points are painted last.
+     *
+     * We intentionally keep this as a simple insertion-order rule instead of
+     * relying on pane-level priority tricks, because the latter made nearby
+     * markers harder to interact with in dense areas.
+     */
+    function getPointRenderPriority(point) {
+        const priority = {
+            online_previous: 0,
+            offline_previous: 1,
+            no_host: 2,
+            offline_current: 3,
+            online_current: 4,
+        };
+
+        return priority[getPointStateKey(point)] ?? 99;
+    }
+
+    /**
      * Derive marker sizing from the current zoom level.
      *
      * The map should feel a bit more tactile as the user zooms in, but the
@@ -605,7 +610,6 @@
             iconSize,
             iconAnchor: iconSize / 2,
             popupOffsetY: Math.round(iconSize * 0.75),
-            tooltipOffsetY: Math.round(iconSize * 0.75),
             circleRadius,
             strokeWeight,
             borderWidth: Math.max(2, Math.min(4.1, 2 + (zoom - 4) * 0.08 + (isFocusZoom ? 0.85 : 0))),
@@ -656,80 +660,33 @@
             iconSize: [metrics.iconSize, metrics.iconSize],
             iconAnchor: [metrics.iconAnchor, metrics.iconAnchor],
             popupAnchor: [0, -metrics.popupOffsetY],
-            tooltipAnchor: [0, -metrics.tooltipOffsetY],
         });
-    }
-
-    /**
-     * Build the lightweight vector style used for current/non-historical
-     * localities.
-     *
-     * Keeping these points as `circleMarker` allows Leaflet to use its faster
-     * vector pipeline instead of one DOM node per marker.
-     */
-    function getCircleMarkerStyle(point) {
-        const metrics = getMarkerVisualMetrics();
-        return {
-            radius: metrics.circleRadius,
-            color: "#ffffff",
-            weight: metrics.strokeWeight,
-            fillColor: getPointStateMeta(point).color,
-            fillOpacity: metrics.isFocusZoom ? 0.98 : 0.95,
-            opacity: 1,
-            className: metrics.isFocusZoom ? "station-map-current-focus" : "station-map-current-base",
-        };
     }
 
     /**
      * Create the concrete Leaflet marker object for one point.
      *
-     * Historical localities keep the striped HTML icon, while current points
-     * use the lighter vector marker for better map interaction performance.
+     * All markers use the same `divIcon` pipeline so stacking follows the
+     * insertion order consistently across current and historical localities.
      */
     function createLeafletMarker(point) {
-        /* The map deliberately uses a mixed marker strategy.
-         *
-         * Historical points need stripes, which are much easier to express in
-         * an HTML marker. Current points do not need that extra DOM structure,
-         * so they stay as lighter vector circles. This split is the
-         * performance/expressiveness compromise that kept pan and zoom usable
-         * while preserving the "historical locality" visual cue.
-         */
-        if (isHistoricalPoint(point)) {
-            const marker = L.marker([point.latitude, point.longitude], {
-                icon: createMarkerIcon(point),
-                interactive: true,
-                bubblingMouseEvents: false,
-                riseOnHover: true,
-            });
-            marker.__wfMarkerMode = "icon";
-            return marker;
-        }
-
-        const marker = L.circleMarker(
-            [point.latitude, point.longitude],
-            getCircleMarkerStyle(point)
-        );
-        marker.__wfMarkerMode = "vector";
+        const marker = L.marker([point.latitude, point.longitude], {
+            icon: createMarkerIcon(point),
+            interactive: true,
+            bubblingMouseEvents: false,
+            riseOnHover: true,
+        });
+        marker.__wfMarkerMode = "icon";
         return marker;
     }
 
     /**
-     * Reinforce DOM interactivity for historical `divIcon` markers.
+     * Reinforce DOM interactivity for `divIcon` markers.
      *
-     * In custom panes, some browsers/Leaflet combinations can end up with the
-     * icon visible but not actually hoverable. Wiring the DOM element directly
-     * keeps historical localities responsive without affecting vector markers.
+     * Wiring the DOM element directly keeps hover/click behavior predictable
+     * even when markers are visually tight.
      */
-    function ensureHistoricalMarkerElementInteractivity(marker) {
-        /* Historical markers are the one place where DOM hit-testing matters
-         * more than usual.
-         *
-         * Because these points are rendered as `divIcon`, small CSS or pane
-         * changes can leave the marker visible but hard to hover. This helper
-         * normalizes pointer behavior on the actual DOM node so historical
-         * points keep behaving like first-class interactive markers.
-         */
+    function ensureMarkerElementInteractivity(marker) {
         if (!marker || marker.__wfMarkerMode !== "icon") {
             return;
         }
@@ -747,11 +704,11 @@
             innerMarker.style.pointerEvents = "none";
         }
 
-        if (element.dataset.wfHistoricalHoverBound === "1") {
+        if (element.dataset.wfMarkerHoverBound === "1") {
             return;
         }
 
-        element.dataset.wfHistoricalHoverBound = "1";
+        element.dataset.wfMarkerHoverBound = "1";
         element.addEventListener("mouseenter", () => marker.fire("mouseover"));
         element.addEventListener("mouseleave", () => marker.fire("mouseout"));
         element.addEventListener("click", () => marker.openPopup());
@@ -760,10 +717,10 @@
     /**
      * Measure the on-screen distance between two markers.
      *
-     * Tooltip concurrency is decided in pixel space, not geographic distance,
-     * because the clutter problem is visual: if two labels are far apart on
-     * the screen, keeping both open adds noise even if the coordinates are
-     * relatively near in the real world.
+     * Nearby-point grouping is decided in pixel space, not geographic
+     * distance, because the ambiguity problem is visual: if two markers look
+     * far apart on the screen, they no longer compete for the same hover
+     * intent even when the coordinates are geographically close.
      */
     function getMarkerPixelDistance(markerA, markerB) {
         const pointA = map.latLngToContainerPoint(markerA.getLatLng());
@@ -772,192 +729,198 @@
     }
 
     /**
-     * Weight tooltip-cluster ordering so hidden offline/historical markers are
-     * surfaced before less surprising neighbors.
+     * Resolve the semantic group label used inside zoomed-out cluster popups.
      *
-     * This helps when an `Atual online` marker sits on top of other points:
-     * the nearby tooltip slots should first reveal the markers that the user
-     * would otherwise struggle to notice, especially offline ones.
+     * Site/locality labels are preferred because that is what operators tend
+     * to recognize first when multiple nearby geopoints collapse visually.
      */
-    function getTooltipClusterPriority(marker) {
-        const stateKey = getPointStateKey(marker.__wfPoint || {});
-        const priority = {
-            offline_current: 0,
-            offline_previous: 1,
-            no_host: 2,
-            online_previous: 3,
-            online_current: 4,
-        };
+    function getClusterGroupDescriptor(point) {
+        const districtName = String(point?.district_name || "").trim();
+        const siteLabel = String(point?.site_label || "").trim();
+        const countyName = String(point?.county_name || "").trim();
+        const stateCode = String(point?.state_code || "").trim();
+        const countyStateLabel = getPointCountyStateLabel(point) || countyName || stateCode;
+        const districtKey = normalizeSearchText(districtName);
+        const siteKey = normalizeSearchText(siteLabel);
+        const countyKey = normalizeSearchText(countyName);
+        const stateKey = normalizeSearchText(stateCode);
 
-        return priority[stateKey] ?? 99;
+        if (siteKey && siteKey !== countyKey) {
+            return {
+                key: `${stateKey}|${countyKey}|site|${siteKey}`,
+                label: siteLabel,
+                context: countyStateLabel,
+            };
+        }
+
+        if (districtKey && districtKey !== countyKey) {
+            return {
+                key: `${stateKey}|${countyKey}|district|${districtKey}`,
+                label: districtName,
+                context: countyStateLabel,
+            };
+        }
+
+        return {
+            key: `${stateKey}|${countyKey || siteKey || districtKey || "fallback"}`,
+            label: countyStateLabel || `ID_SITE ${point.site_id}`,
+            context: countyStateLabel,
+        };
     }
 
     /**
-     * Keep far-away tooltips from piling up across the whole map.
+     * Resolve the clustering radius used by the zoom-aware popup summary.
      *
-     * We intentionally allow multiple open tooltips only when markers are
-     * visually close, because in those cases the user is usually comparing a
-     * small locality cluster. Outside that radius, the map is easier to read
-     * when only the active tooltip stays open.
+     * The lower the zoom, the more points appear visually glued together, so
+     * the popup can summarize a slightly wider on-screen neighborhood.
      */
-    function reconcileOpenTooltips(activeMarker) {
-        renderedMarkers.forEach((marker) => {
-            if (marker === activeMarker || !marker.isTooltipOpen()) {
+    function getClusterPopupDistancePx() {
+        const zoom = map.getZoom();
+
+        if (zoom <= 4) {
+            return 150;
+        }
+
+        if (zoom === 5) {
+            return 122;
+        }
+
+        if (zoom === 6) {
+            return 96;
+        }
+
+        if (zoom === 7) {
+            return 74;
+        }
+
+        if (zoom === 8) {
+            return 58;
+        }
+
+        return 42;
+    }
+
+    /**
+     * Decide how many points the zoomed-out cluster popup should list.
+     */
+    function getNearbyPopupMaxItems() {
+        return MAX_NEARBY_POPUP_POINTS;
+    }
+
+    /**
+     * Sort one popup-cluster point so the most operationally relevant entries
+     * appear first inside each locality group.
+     */
+    function compareClusterPointPriority(pointA, pointB) {
+        const priorityDiff = getPointRenderPriority(pointB) - getPointRenderPriority(pointA);
+
+        if (priorityDiff !== 0) {
+            return priorityDiff;
+        }
+
+        return (pointA.site_id || 0) - (pointB.site_id || 0);
+    }
+
+    /**
+     * Build the zoom-aware popup-cluster summary for one hovered marker.
+     *
+     * At long zooms the popup intentionally summarizes multiple nearby points
+     * grouped by locality. As the user zooms in and those points separate on
+     * screen, the popup naturally falls back to the detailed single-point view.
+     */
+    function buildNearbyPopupSummary(activeMarker) {
+        const maxDistance = getClusterPopupDistancePx();
+        const clusteredEntries = renderedMarkers
+            .map((marker) => ({
+                marker,
+                point: marker.__wfPoint || {},
+                distance: marker === activeMarker ? 0 : getMarkerPixelDistance(activeMarker, marker),
+            }))
+            .filter((entry) => entry.marker === activeMarker || entry.distance <= maxDistance)
+            .sort((entryA, entryB) => {
+                if (entryA.distance !== entryB.distance) {
+                    return entryA.distance - entryB.distance;
+                }
+
+                return compareClusterPointPriority(entryA.point, entryB.point);
+            });
+
+        if (clusteredEntries.length <= 1) {
+            return {
+                useCluster: false,
+                title: "",
+                meta: "",
+                groups: [],
+                hiddenCount: 0,
+            };
+        }
+
+        const maxItems = getNearbyPopupMaxItems();
+        const visibleEntries = clusteredEntries.slice(0, maxItems);
+        const hiddenCount = Math.max(0, clusteredEntries.length - visibleEntries.length);
+        const groupsByKey = new Map();
+
+        visibleEntries.forEach((entry) => {
+            const descriptor = getClusterGroupDescriptor(entry.point);
+            const existingGroup = groupsByKey.get(descriptor.key);
+
+            if (existingGroup) {
+                existingGroup.points.push(entry.point);
+                existingGroup.distance = Math.min(existingGroup.distance, entry.distance);
+                existingGroup.isActiveGroup = existingGroup.isActiveGroup || entry.marker === activeMarker;
                 return;
             }
 
-            if (getMarkerPixelDistance(activeMarker, marker) > TOOLTIP_MULTI_MARKER_DISTANCE_PX) {
-                marker.closeTooltip();
-            }
+            groupsByKey.set(descriptor.key, {
+                key: descriptor.key,
+                label: descriptor.label,
+                context: descriptor.context,
+                distance: entry.distance,
+                isActiveGroup: entry.marker === activeMarker,
+                points: [entry.point],
+            });
         });
-    }
 
-    /**
-     * Apply one tooltip layout preset to a marker.
-     *
-     * Nearby-cluster tooltips need slight offsets so overlapping stations do
-     * not render all labels on top of each other.
-     */
-    function applyTooltipLayout(marker, layout) {
-        const tooltip = marker.getTooltip();
-
-        if (!tooltip) {
-            return;
-        }
-
-        tooltip.options.offset = L.point(layout.offsetX, layout.offsetY);
-        tooltip.options.direction = layout.direction;
-
-        if (marker.isTooltipOpen()) {
-            tooltip.update();
-        }
-    }
-
-    /**
-     * Restore the default tooltip geometry for a marker.
-     */
-    function resetTooltipLayout(marker) {
-        applyTooltipLayout(marker, DEFAULT_TOOLTIP_LAYOUT);
-    }
-
-    /**
-     * Open tooltips for markers that are visually almost stacked together.
-     *
-     * This is the compromise between two competing UX needs:
-     *   - avoid dozens of tooltips across the whole map
-     *   - still expose lower-priority markers that sit under a top marker
-     *     such as an `Atual online` point hiding a nearby/offline one
-     */
-    function syncNearbyTooltipCluster(activeMarker) {
-        /* Nearby tooltip clustering is intentionally biased, not symmetric.
-         *
-         * We do not want every hover to explode into a cloud of labels. The
-         * cluster exists mainly to reveal markers that are visually hidden
-         * under an `Atual online` point. That is why the logic only activates
-         * from that state and excludes other `online_current` markers from the
-         * helper cluster.
-         */
-        if (isSyncingNearbyTooltips) {
-            return;
-        }
-
-        isSyncingNearbyTooltips = true;
-
-        try {
-            const activeStateKey = getPointStateKey(activeMarker.__wfPoint || {});
-            const nearbyMarkers = renderedMarkers
-                .filter((marker) => marker !== activeMarker)
-                .filter((marker) => activeStateKey === "online_current")
-                .filter((marker) => getPointStateKey(marker.__wfPoint || {}) !== "online_current")
-                .filter((marker) => getMarkerPixelDistance(activeMarker, marker) <= TOOLTIP_CLUSTER_DISTANCE_PX)
-                .sort((markerA, markerB) => {
-                    const distanceA = getMarkerPixelDistance(activeMarker, markerA);
-                    const distanceB = getMarkerPixelDistance(activeMarker, markerB);
-                    if (distanceA !== distanceB) {
-                        return distanceA - distanceB;
-                    }
-
-                    return getTooltipClusterPriority(markerA) - getTooltipClusterPriority(markerB);
-                })
-                .slice(0, MAX_NEARBY_TOOLTIP_MARKERS);
-
-            resetTooltipLayout(activeMarker);
-
-            renderedMarkers.forEach((marker) => {
-                if (marker === activeMarker) {
-                    marker.__wfPinnedByNearbyTooltip = false;
-                    return;
+        const groups = [...groupsByKey.values()]
+            .map((group) => ({
+                ...group,
+                points: [...group.points].sort(compareClusterPointPriority),
+            }))
+            .sort((groupA, groupB) => {
+                if (groupA.isActiveGroup !== groupB.isActiveGroup) {
+                    return groupA.isActiveGroup ? -1 : 1;
                 }
 
-                const nearbyIndex = nearbyMarkers.indexOf(marker);
-
-                if (nearbyIndex >= 0) {
-                    const layout = NEARBY_TOOLTIP_LAYOUTS[
-                        nearbyIndex % NEARBY_TOOLTIP_LAYOUTS.length
-                    ];
-
-                    marker.__wfPinnedByNearbyTooltip = true;
-                    applyTooltipLayout(marker, layout);
-
-                    if (!marker.isTooltipOpen()) {
-                        marker.openTooltip();
-                    }
-
-                    return;
+                if (groupA.distance !== groupB.distance) {
+                    return groupA.distance - groupB.distance;
                 }
 
-                if (marker.__wfPinnedByNearbyTooltip) {
-                    marker.__wfPinnedByNearbyTooltip = false;
-                    resetTooltipLayout(marker);
-
-                    if (marker.isTooltipOpen()) {
-                        marker.closeTooltip();
-                    }
-                }
+                return String(groupA.label || "").localeCompare(String(groupB.label || ""), "pt-BR");
             });
-        } finally {
-            isSyncingNearbyTooltips = false;
-        }
-    }
 
-    /**
-     * Close the nearby-cluster tooltips that were opened programmatically.
-     *
-     * The actively hovered tooltip remains managed by Leaflet; this helper only
-     * cleans up the extra labels that were surfaced to reveal overlapping
-     * markers.
-     */
-    function clearPinnedNearbyTooltips() {
-        if (isSyncingNearbyTooltips) {
-            return;
-        }
+        const pointCount = clusteredEntries.length;
+        const localityCount = groups.length;
+        const title = localityCount === 1
+            ? groups[0].label
+            : `${pointCount} pontos nesta região`;
+        const meta = localityCount === 1
+            ? [groups[0].context, `${pointCount} ponto(s) agrupado(s) neste zoom`].filter(Boolean).join(" · ")
+            : `${localityCount} localidades agrupadas neste zoom`;
 
-        isSyncingNearbyTooltips = true;
-
-        try {
-            renderedMarkers.forEach((marker) => {
-                if (!marker.__wfPinnedByNearbyTooltip) {
-                    return;
-                }
-
-                marker.__wfPinnedByNearbyTooltip = false;
-                resetTooltipLayout(marker);
-
-                if (marker.isTooltipOpen()) {
-                    marker.closeTooltip();
-                }
-            });
-        } finally {
-            isSyncingNearbyTooltips = false;
-        }
+        return {
+            useCluster: true,
+            title,
+            meta,
+            groups,
+            hiddenCount,
+        };
     }
 
     /**
      * Keep popup clutter under control by allowing only one popup at a time.
      *
-     * Tooltips may coexist for nearby markers because they are lightweight, but
-     * popups carry actions and async loading states, so multiple open cards
-     * quickly pollute the map during hover exploration.
+     * Popup cards carry actions and lazy-loading states, so multiple open
+     * cards quickly pollute the map during hover exploration.
      */
     function closeOtherPopups(activeMarker) {
         renderedMarkers.forEach((marker) => {
@@ -977,6 +940,176 @@
         }
 
         return "Localidade histórica";
+    }
+
+    /**
+     * Compose the compact metadata line shown under a popup title.
+     */
+    function getPointPopupMeta(point, separator = " | ") {
+        return [
+            `ID_SITE ${point.site_id}`,
+            getPointLocalityLabel(point) ? `Localidade ${getPointLocalityLabel(point)}` : null,
+            point.altitude !== null && point.altitude !== undefined ? `Alt ${point.altitude} m` : null,
+            point.gnss_measurements ? `${point.gnss_measurements} medições GNSS` : null
+        ].filter(Boolean).join(separator);
+    }
+
+    /**
+     * Render the station-action entries for one point.
+     */
+    function buildPointStationEntriesHtml(point) {
+        if (!Array.isArray(point.stations) || point.stations.length === 0) {
+            return "";
+        }
+
+        return point.stations.map((station) => {
+            const equipmentName = escapeHtml(station.equipment_name || "Equipamento");
+            const localityContext = escapeHtml(
+                [
+                    getPointLocalityLabel(point) || "Localidade não identificada",
+                    getStationLocationRoleLabel(station)
+                ].join(" · ")
+            );
+            const hostHref = station.host_id ? `/host?host_id=${station.host_id}&online_only=0` : null;
+            const hostSearchHref = !station.host_id && station.equipment_name
+                ? `/host?search=${encodeURIComponent(station.equipment_name)}&online_only=0`
+                : null;
+            const taskHref = station.host_id ? `/task/?host_id=${station.host_id}&online_only=0` : null;
+            const spectrumHref = buildSpectrumHref(point, station);
+
+            return `
+                <div class="station-entry">
+                    <div class="station-entry-header">
+                        <span class="station-entry-name">${equipmentName}</span>
+                        <span class="station-status ${stationStatusClass(station)}">${stationStatusLabel(station)}</span>
+                    </div>
+                    <div class="station-entry-context">${localityContext}</div>
+                    <div class="station-actions">
+                        ${spectrumHref ? `<a class="station-action" href="${spectrumHref}" data-loading-message="Abrindo consulta de arquivos...">Arquivos</a>` : ""}
+                        ${hostHref ? `<a class="station-action" href="${hostHref}" data-loading-message="Carregando panorama da estação...">Host</a>` : ""}
+                        ${hostSearchHref ? `<a class="station-action" href="${hostSearchHref}" data-loading-message="Abrindo consulta de host...">Buscar Host</a>` : ""}
+                        ${taskHref ? `<a class="station-action" href="${taskHref}" data-loading-message="Abrindo criação de task...">Criar Task</a>` : ""}
+                    </div>
+                </div>
+            `;
+        }).join("");
+    }
+
+    /**
+     * Render the action area for one point in either detailed or clustered mode.
+     */
+    function buildPointActionAreaHtml(point, options = {}) {
+        const isCluster = Boolean(options.cluster);
+        const messageClass = isCluster
+            ? "station-popup-cluster-point-message"
+            : "station-popup-meta";
+
+        if (point.loadingDetails || (!point.detailsLoaded && !point.detailsError)) {
+            return `<div class="${messageClass}">Carregando ações da estação...</div>`;
+        }
+
+        if (point.detailsError) {
+            return `<div class="${messageClass}">Não foi possível carregar os detalhes desta estação.</div>`;
+        }
+
+        if (!Array.isArray(point.stations) || point.stations.length === 0) {
+            return `<div class="${messageClass}">Sem equipamento/host vinculado para ações rápidas.</div>`;
+        }
+
+        const entriesHtml = buildPointStationEntriesHtml(point);
+
+        if (isCluster) {
+            return `
+                <div class="station-popup-cluster-point-section-label">Estações neste ponto</div>
+                <div class="station-popup-cluster-point-details">
+                    ${entriesHtml}
+                </div>
+            `;
+        }
+
+        return `
+            <div class="station-popup-section station-popup-primary">
+                ${entriesHtml}
+            </div>
+        `;
+    }
+
+    /**
+     * Render the summary popup used when several points collapse together at
+     * the current zoom level.
+     */
+    function buildClusterPopupHtml(clusterSummary) {
+        const groupsHtml = clusterSummary.groups.map((group) => {
+            const pointRowsHtml = group.points.map((point) => {
+                const stateKey = getPointStateKey(point);
+                const stateMeta = POINT_STATE_META[stateKey] || POINT_STATE_META.no_host;
+                const pointScopeLabel = group.points.length > 1
+                    ? `Ponto geográfico em ${group.label}`
+                    : "Ponto geográfico";
+                const stationCount = Array.isArray(point.stations)
+                    ? point.stations.length
+                    : null;
+                const stationCountLabel = stationCount === null
+                    ? null
+                    : `${stationCount} estação${stationCount === 1 ? "" : "ões"}`;
+                const altitudeLabel = point.altitude !== null && point.altitude !== undefined
+                    ? `Alt ${point.altitude} m`
+                    : null;
+                const gnssLabel = point.gnss_measurements
+                    ? `${point.gnss_measurements} medições GNSS`
+                    : null;
+                const locationMode = isHistoricalPoint(point) ? "Histórico" : "Atual";
+                const metaParts = [
+                    altitudeLabel,
+                    gnssLabel,
+                    locationMode,
+                ].filter(Boolean);
+                const pointActionsHtml = buildPointActionAreaHtml(point, { cluster: true });
+
+                return `
+                    <div class="station-popup-cluster-point">
+                        <div class="station-popup-cluster-point-kind">${escapeHtml(pointScopeLabel)}</div>
+                        <div class="station-popup-cluster-point-header">
+                            <span class="station-popup-cluster-point-name">${escapeHtml(`ID_SITE ${point.site_id}`)}</span>
+                            <div class="station-popup-cluster-point-badges">
+                                ${stationCountLabel ? `<span class="station-popup-cluster-point-count">${escapeHtml(stationCountLabel)}</span>` : ""}
+                                <span class="station-popup-cluster-point-state state-${escapeHtml(stateKey)}">${escapeHtml(stateMeta.legendLabel)}</span>
+                            </div>
+                        </div>
+                        <div class="station-popup-cluster-point-meta">${escapeHtml(metaParts.join(" · "))}</div>
+                        ${pointActionsHtml}
+                    </div>
+                `;
+            }).join("");
+
+            return `
+                <div class="station-popup-cluster-group">
+                    <div class="station-popup-cluster-group-header">
+                        <span class="station-popup-cluster-group-title">${escapeHtml(group.label)}</span>
+                        <span class="station-popup-cluster-group-count">${escapeHtml(`${group.points.length} ponto(s)`)}</span>
+                    </div>
+                    ${group.context ? `<div class="station-popup-cluster-group-context">${escapeHtml(group.context)}</div>` : ""}
+                    <div class="station-popup-cluster-point-list">
+                        ${pointRowsHtml}
+                    </div>
+                </div>
+            `;
+        }).join("");
+
+        const overflowHtml = clusterSummary.hiddenCount > 0
+            ? `<div class="station-popup-cluster-hint">+${clusterSummary.hiddenCount} ponto(s) adicional(is) neste zoom.</div>`
+            : "";
+
+        return `
+            <div class="station-popup station-popup-cluster">
+                <div class="station-popup-title">${escapeHtml(clusterSummary.title)}</div>
+                <div class="station-popup-meta">${escapeHtml(clusterSummary.meta)}</div>
+                <div class="station-popup-cluster-groups">
+                    ${groupsHtml}
+                </div>
+                ${overflowHtml}
+            </div>
+        `;
     }
 
     // ---------------------------------------------------------------------
@@ -1027,6 +1160,10 @@
      *   - full station action list once detail data is available
      */
     function buildPopupHtml(point) {
+        if (point.popupClusterSummary?.useCluster) {
+            return buildClusterPopupHtml(point.popupClusterSummary);
+        }
+
         // Popups have three rendering phases:
         //   1. skeleton/loading
         //   2. graceful degradation on detail error
@@ -1035,80 +1172,14 @@
         // That staged rendering is intentional: hovering a point should feel
         // immediate even before the detailed station payload arrives, but the
         // popup must still degrade cleanly when the detail request fails.
-        const meta = [
-            `ID_SITE ${point.site_id}`,
-            getPointLocalityLabel(point) ? `Localidade ${getPointLocalityLabel(point)}` : null,
-            point.altitude !== null && point.altitude !== undefined ? `Alt ${point.altitude} m` : null,
-            point.gnss_measurements ? `${point.gnss_measurements} medições GNSS` : null
-        ].filter(Boolean).join(" | ");
-
-        if (point.loadingDetails) {
-            return `
-                <div class="station-popup">
-                    <div class="station-popup-title">${escapeHtml(point.site_label)}</div>
-                    <div class="station-popup-meta">${escapeHtml(meta)}</div>
-                    <div class="station-popup-meta">Carregando ações da estação...</div>
-                </div>
-            `;
-        }
-
-        if (point.detailsError) {
-            return `
-                <div class="station-popup">
-                    <div class="station-popup-title">${escapeHtml(point.site_label)}</div>
-                    <div class="station-popup-meta">${escapeHtml(meta)}</div>
-                    <div class="station-popup-meta">Não foi possível carregar os detalhes desta estação.</div>
-                </div>
-            `;
-        }
-
-        if (!Array.isArray(point.stations) || point.stations.length === 0) {
-            return `
-                <div class="station-popup">
-                    <div class="station-popup-title">${escapeHtml(point.site_label)}</div>
-                    <div class="station-popup-meta">${escapeHtml(meta)}</div>
-                    <div class="station-popup-meta">Sem equipamento/host vinculado para ações rápidas.</div>
-                </div>
-            `;
-        }
-
-        const entries = point.stations.map((station) => {
-            const equipmentName = escapeHtml(station.equipment_name || "Equipamento");
-            const localityContext = escapeHtml(
-                [
-                    getPointLocalityLabel(point) || "Localidade não identificada",
-                    getStationLocationRoleLabel(station)
-                ].join(" · ")
-            );
-            const hostHref = station.host_id ? `/host?host_id=${station.host_id}&online_only=0` : null;
-            const hostSearchHref = !station.host_id && station.equipment_name
-                ? `/host?search=${encodeURIComponent(station.equipment_name)}&online_only=0`
-                : null;
-            const taskHref = station.host_id ? `/task/?host_id=${station.host_id}&online_only=0` : null;
-            const spectrumHref = buildSpectrumHref(point, station);
-
-            return `
-                <div class="station-entry">
-                    <div class="station-entry-header">
-                        <span class="station-entry-name">${equipmentName}</span>
-                        <span class="station-status ${stationStatusClass(station)}">${stationStatusLabel(station)}</span>
-                    </div>
-                    <div class="station-entry-context">${localityContext}</div>
-                    <div class="station-actions">
-                        ${spectrumHref ? `<a class="station-action" href="${spectrumHref}" data-loading-message="Abrindo consulta de arquivos...">Arquivos</a>` : ""}
-                        ${hostHref ? `<a class="station-action" href="${hostHref}" data-loading-message="Carregando panorama da estação...">Host</a>` : ""}
-                        ${hostSearchHref ? `<a class="station-action" href="${hostSearchHref}" data-loading-message="Abrindo consulta de host...">Buscar Host</a>` : ""}
-                        ${taskHref ? `<a class="station-action" href="${taskHref}" data-loading-message="Abrindo criação de task...">Criar Task</a>` : ""}
-                    </div>
-                </div>
-            `;
-        }).join("");
+        const meta = getPointPopupMeta(point);
+        const actionAreaHtml = buildPointActionAreaHtml(point);
 
         return `
             <div class="station-popup">
                 <div class="station-popup-title">${escapeHtml(point.site_label)}</div>
                 <div class="station-popup-meta">${escapeHtml(meta)}</div>
-                ${entries}
+                ${actionAreaHtml}
             </div>
         `;
     }
@@ -1121,24 +1192,13 @@
      * can also refine the visual state.
      */
     function updateMarkerAppearance(marker, point) {
-        /* Lazy detail responses can refine both popup content and the visual
-         * marker state. Updating the existing marker in place preserves the
-         * hover/popup context the user is already in, instead of tearing down
-         * and recreating the point after the async fetch resolves.
+        /* Lazy detail responses can refine both popup content and marker
+         * state. Updating the existing icon in place preserves the current
+         * hover/popup context instead of tearing the marker down.
          */
-        if (isHistoricalPoint(point)) {
-            if (typeof marker.setIcon === "function") {
-                marker.setIcon(createMarkerIcon(point));
-            }
-            return;
-        }
-
-        if (typeof marker.setStyle === "function") {
-            marker.setStyle(getCircleMarkerStyle(point));
-        }
-
-        if (typeof marker.setRadius === "function") {
-            marker.setRadius(getCircleMarkerStyle(point).radius);
+        if (typeof marker.setIcon === "function") {
+            marker.setIcon(createMarkerIcon(point));
+            ensureMarkerElementInteractivity(marker);
         }
     }
 
@@ -1194,16 +1254,26 @@
             popupElement.dataset.baseTransform = baseTransform;
             popupElement.style.transform = baseTransform;
 
+            const contentWrapper = popupElement.querySelector(".leaflet-popup-content-wrapper");
+            if (contentWrapper) {
+                const baseWrapperTransform = contentWrapper.dataset.baseTransform || contentWrapper.style.transform || "";
+                contentWrapper.dataset.baseTransform = baseWrapperTransform;
+                contentWrapper.style.transform = baseWrapperTransform;
+            }
+
             const mapRect = map.getContainer().getBoundingClientRect();
             const popupRect = popupElement.getBoundingClientRect();
+            const contentWrapperRect = contentWrapper
+                ? contentWrapper.getBoundingClientRect()
+                : popupRect;
             const padding = 14;
             let shiftX = 0;
             let shiftY = 0;
 
-            if (popupRect.left < mapRect.left + padding) {
-                shiftX = mapRect.left + padding - popupRect.left;
-            } else if (popupRect.right > mapRect.right - padding) {
-                shiftX = mapRect.right - padding - popupRect.right;
+            if (contentWrapperRect.left < mapRect.left + padding) {
+                shiftX = mapRect.left + padding - contentWrapperRect.left;
+            } else if (contentWrapperRect.right > mapRect.right - padding) {
+                shiftX = mapRect.right - padding - contentWrapperRect.right;
             }
 
             if (popupRect.top < mapRect.top + padding) {
@@ -1212,8 +1282,91 @@
                 shiftY = mapRect.bottom - padding - popupRect.bottom;
             }
 
-            const shiftTransform = `translate(${Math.round(shiftX)}px, ${Math.round(shiftY)}px)`;
-            popupElement.style.transform = baseTransform ? `${baseTransform} ${shiftTransform}` : shiftTransform;
+            if (shiftY) {
+                const verticalTransform = `translateY(${Math.round(shiftY)}px)`;
+                popupElement.style.transform = baseTransform
+                    ? `${baseTransform} ${verticalTransform}`
+                    : verticalTransform;
+            }
+
+            if (contentWrapper && shiftX) {
+                const baseWrapperTransform = contentWrapper.dataset.baseTransform || contentWrapper.style.transform || "";
+                const horizontalTransform = `translateX(${Math.round(shiftX)}px)`;
+                contentWrapper.style.transform = baseWrapperTransform
+                    ? `${baseWrapperTransform} ${horizontalTransform}`
+                    : horizontalTransform;
+            }
+        });
+    }
+
+    /**
+     * Refresh the nearby-point summary attached to one popup marker.
+     */
+    function refreshPopupNearbySummary(marker) {
+        const point = marker?.__wfPoint;
+
+        if (!point) {
+            return;
+        }
+
+        const nearbySummary = buildNearbyPopupSummary(marker);
+        point.popupClusterSummary = nearbySummary.useCluster ? nearbySummary : null;
+        marker.setPopupContent(buildPopupHtml(point));
+        fitPopupWithinMap(marker);
+    }
+
+    /**
+     * Lazy-load details for every point currently listed inside a cluster popup.
+     */
+    function ensureClusterPointDetails(marker) {
+        const clusterSummary = marker?.__wfPoint?.popupClusterSummary;
+
+        if (!clusterSummary?.useCluster) {
+            return;
+        }
+
+        const seenPoints = new Set();
+        clusterSummary.groups.forEach((group) => {
+            group.points.forEach((point) => {
+                if (seenPoints.has(point)) {
+                    return;
+                }
+
+                seenPoints.add(point);
+                ensurePointDetails(point, marker);
+            });
+        });
+    }
+
+    /**
+     * Bind hover and click behavior to the live popup DOM element.
+     */
+    function bindPopupElementInteractions(popupElement, cancelClose, scheduleClose) {
+        if (!popupElement || popupElement.dataset.wfPopupBound === "1") {
+            return;
+        }
+
+        popupElement.dataset.wfPopupBound = "1";
+        popupElement.addEventListener("mouseenter", cancelClose);
+        popupElement.addEventListener("mouseleave", scheduleClose);
+    }
+
+    /**
+     * Keep open popups aligned with the current zoom-level nearby summary.
+     */
+    function refreshOpenPopupNearbyPoints() {
+        renderedMarkers.forEach((marker) => {
+            if (!marker.isPopupOpen()) {
+                return;
+            }
+
+            refreshPopupNearbySummary(marker);
+
+            if (marker.__wfPoint?.popupClusterSummary?.useCluster) {
+                ensureClusterPointDetails(marker);
+            } else {
+                ensurePointDetails(marker.__wfPoint, marker);
+            }
         });
     }
 
@@ -1223,7 +1376,7 @@
      * The home page first paints from a summary payload. Detailed station
      * actions are lazy-loaded on hover to keep the initial page load light.
      */
-    function loadPointDetails(point, marker) {
+    function loadPointDetails(point, popupMarker) {
         // Cache per point so repeated hover/open interactions do not keep
         // hammering `/api/map/stations/<site_id>`.
         //
@@ -1240,7 +1393,9 @@
         }
 
         point.loadingDetails = true;
-        marker.setPopupContent(buildPopupHtml(point));
+        if (popupMarker) {
+            refreshPopupNearbySummary(popupMarker);
+        }
 
         point.loadingPromise = fetch(buildMapApiUrl(`/api/map/stations/${point.site_id}`))
             .then((response) => response.json())
@@ -1256,16 +1411,18 @@
                 point.station_names = point.stations
                     .map((station) => station.host_name || station.equipment_name || "")
                     .filter(Boolean);
-                updateMarkerAppearance(marker, point);
-                marker.setPopupContent(buildPopupHtml(point));
-                fitPopupWithinMap(marker);
+                updateMarkerAppearance(point._marker || popupMarker, point);
+                if (popupMarker) {
+                    refreshPopupNearbySummary(popupMarker);
+                }
                 return point;
             })
             .catch(() => {
                 point.loadingDetails = false;
                 point.detailsError = true;
-                marker.setPopupContent(buildPopupHtml(point));
-                fitPopupWithinMap(marker);
+                if (popupMarker) {
+                    refreshPopupNearbySummary(popupMarker);
+                }
                 return point;
             })
             .finally(() => {
@@ -1290,7 +1447,7 @@
     }
 
     /**
-     * Create one Leaflet marker, its popup, tooltip, hover behavior and bounds
+     * Create one Leaflet marker, its popup, hover behavior and bounds
      * contribution for a filtered point.
      *
      * Markers are intentionally rebuilt after each filter change because the
@@ -1303,16 +1460,15 @@
         // and it keeps the rendering logic simple and predictable.
         //
         // In exchange for that simpler lifecycle, this function becomes the
-        // single source of truth for marker wiring: popup, tooltip, hover
-        // delay, nearby-cluster reveal, lazy detail fetch and bounds
-        // contribution all live here instead of being spread across several
-        // render/update phases.
+        // single source of truth for marker wiring: popup, hover delay, lazy
+        // detail fetch, nearby-point helper and bounds contribution all live
+        // here instead of being spread across several render/update phases.
         if (typeof point.latitude !== "number" || typeof point.longitude !== "number") {
             return;
         }
 
         const marker = createLeafletMarker(point).addTo(markerLayer);
-        ensureHistoricalMarkerElementInteractivity(marker);
+        ensureMarkerElementInteractivity(marker);
 
         point._marker = marker;
         marker.__wfPoint = point;
@@ -1323,6 +1479,8 @@
             autoClose: false,
             closeOnClick: false,
             autoPan: false,
+            minWidth: 320,
+            maxWidth: 400,
             className: "station-popup-container"
         });
 
@@ -1367,27 +1525,25 @@
 
         marker.on("mouseover", function () {
             cancelClose();
-            marker.openTooltip();
 
             if (typeof marker.bringToFront === "function") {
                 marker.bringToFront();
             }
 
-            reconcileOpenTooltips(marker);
-            syncNearbyTooltipCluster(marker);
             scheduleOpen();
         });
 
         marker.on("mouseout", scheduleClose);
 
-        marker.on("mouseout", function () {
-            clearPinnedNearbyTooltips();
-        });
-
         marker.on("popupopen", function (event) {
             closeOtherPopups(marker);
-            ensurePointDetails(point, marker);
-            const popupElement = event.popup.getElement();
+            refreshPopupNearbySummary(marker);
+            if (point.popupClusterSummary?.useCluster) {
+                ensureClusterPointDetails(marker);
+            } else {
+                ensurePointDetails(point, marker);
+            }
+            const popupElement = marker.getPopup()?.getElement() || event.popup.getElement();
             if (!popupElement) {
                 return;
             }
@@ -1397,14 +1553,7 @@
             // time the popup mounts.
             popupElement.dataset.baseTransform = popupElement.style.transform || "";
             fitPopupWithinMap(marker);
-            popupElement.addEventListener("mouseenter", cancelClose);
-            popupElement.addEventListener("mouseleave", scheduleClose);
-        });
-
-        marker.bindTooltip(getPointOptionBaseLabel(point), {
-            direction: DEFAULT_TOOLTIP_LAYOUT.direction,
-            offset: [DEFAULT_TOOLTIP_LAYOUT.offsetX, DEFAULT_TOOLTIP_LAYOUT.offsetY],
-            opacity: 0.95
+            bindPopupElementInteractions(popupElement, cancelClose, scheduleClose);
         });
 
         bounds.push([point.latitude, point.longitude]);
@@ -1693,11 +1842,20 @@
         // filter or combobox change funnels through here so the markers,
         // legend, counter and zoom behavior always reflect the same state.
         const filteredPoints = getFilteredPoints();
+        const orderedPoints = [...filteredPoints].sort((pointA, pointB) => {
+            const priorityDiff = getPointRenderPriority(pointA) - getPointRenderPriority(pointB);
+
+            if (priorityDiff !== 0) {
+                return priorityDiff;
+            }
+
+            return (pointA.site_id || 0) - (pointB.site_id || 0);
+        });
         markerLayer.clearLayers();
         bounds.length = 0;
         renderedMarkers = [];
 
-        filteredPoints.forEach((point) => addPointToMap(point));
+        orderedPoints.forEach((point) => addPointToMap(point));
         renderLegend(filteredPoints);
 
         pointCount.textContent = `${filteredPoints.length} ponto(s) plotado(s)`;
@@ -1903,6 +2061,7 @@
 
     map.on("zoomend", () => {
         refreshRenderedMarkerAppearance();
+        refreshOpenPopupNearbyPoints();
     });
 
     // ---------------------------------------------------------------------

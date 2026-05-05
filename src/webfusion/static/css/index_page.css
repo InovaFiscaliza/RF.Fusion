@@ -26,7 +26,7 @@
     margin-bottom: 16px;
     align-items: end;
     position: relative;
-    z-index: 700;
+    z-index: 10;
 }
 
 .station-map-filter {
@@ -112,7 +112,7 @@
  * `index_map.js`, so the template provides only the shell and dropdown. */
 .station-map-combobox-wrap {
     position: relative;
-    z-index: 750;
+    z-index: 20;
     min-width: 0;
 }
 
@@ -143,7 +143,7 @@
     left: 0;
     right: 0;
     top: calc(100% + 6px);
-    z-index: 900;
+    z-index: 30;
     max-height: 320px;
     overflow-y: auto;
     border: 1px solid #cbd5e1;
@@ -292,44 +292,43 @@
     box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.18);
 }
 
-#station-map .station-map-current-focus {
-    filter:
-        drop-shadow(0 0 0.8px rgba(15, 23, 42, 0.28))
-        drop-shadow(0 0 3px rgba(255, 255, 255, 0.82));
-}
-
-/* Custom SVG panes created in JS do not inherit Leaflet's default
- * overlay-pane semantics automatically. Without this, the current-point
- * SVG can behave like an invisible blanket above historical markers. */
-.wf-pane-current-points {
-    pointer-events: none;
-}
-
-.wf-pane-current-points svg,
-.wf-pane-historical-points svg {
-    pointer-events: none;
-}
-
-.wf-pane-current-points svg path.leaflet-interactive,
-.wf-pane-historical-points svg path.leaflet-interactive,
-.wf-pane-historical-points .leaflet-marker-icon,
-.wf-pane-historical-points .leaflet-marker-icon.leaflet-interactive,
-.wf-pane-historical-points .station-map-marker-icon,
-.wf-pane-historical-points .station-map-marker,
-.wf-pane-historical-points .station-map-marker.is-historical {
-    pointer-events: auto;
-}
-
-.wf-pane-current-points .leaflet-marker-icon,
-.wf-pane-current-points .leaflet-marker-icon.leaflet-interactive {
-    pointer-events: none;
-}
-
 /* -------------------------------------------------------------
  * Popup content rendered by `index_map.js`
  * ------------------------------------------------------------- */
 .station-popup {
-    min-width: 250px;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    max-height: min(60vh, 430px);
+    padding: 15px 16px;
+    box-sizing: border-box;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.station-popup-container {
+    max-width: min(400px, calc(100vw - 32px));
+}
+
+.station-popup::-webkit-scrollbar {
+    width: 9px;
+}
+
+.station-popup::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 999px;
+    border: 2px solid #ffffff;
+}
+
+.station-popup-container .leaflet-popup-content-wrapper {
+    border-radius: 18px;
+    width: min(400px, calc(100vw - 32px));
+    box-sizing: border-box;
+}
+
+.station-popup-container .leaflet-popup-content {
+    margin: 0;
+    width: 100% !important;
 }
 
 /* Popup repositioning is handled manually in JS because Leaflet auto-pan
@@ -351,10 +350,203 @@
     margin-bottom: 10px;
 }
 
+.station-popup-section {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #e2e8f0;
+}
+
+.station-popup-primary {
+    margin-top: 12px;
+}
+
+.station-popup-cluster-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.station-popup-cluster-group {
+    padding: 10px 11px;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    background: #fbfdff;
+}
+
+.station-popup-cluster-group-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+    min-width: 0;
+}
+
+.station-popup-cluster-group-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f172a;
+    overflow-wrap: anywhere;
+}
+
+.station-popup-cluster-group-count {
+    font-size: 11px;
+    font-weight: 700;
+    color: #475569;
+    white-space: nowrap;
+}
+
+.station-popup-cluster-group-context {
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: #64748b;
+}
+
+.station-popup-cluster-point-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.station-popup-cluster-point {
+    padding: 10px 11px;
+    border: 1px solid #dbe4f0;
+    border-radius: 10px;
+    background: #ffffff;
+}
+
+.station-popup-cluster-point-kind {
+    margin-bottom: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #64748b;
+}
+
+.station-popup-cluster-point-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+    min-width: 0;
+}
+
+.station-popup-cluster-point-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 12px;
+    font-weight: 700;
+    color: #1e293b;
+    overflow-wrap: anywhere;
+}
+
+.station-popup-cluster-point-badges {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+}
+
+.station-popup-cluster-point-count {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #eff6ff;
+    color: #1d4ed8;
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.station-popup-cluster-point-state {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.station-popup-cluster-point-state.state-online_current {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.station-popup-cluster-point-state.state-online_previous {
+    background: #edf7ef;
+    color: #3f6f55;
+}
+
+.station-popup-cluster-point-state.state-offline_current {
+    background: #ffedd5;
+    color: #9a3412;
+}
+
+.station-popup-cluster-point-state.state-offline_previous {
+    background: #fff5ea;
+    color: #9a5b24;
+}
+
+.station-popup-cluster-point-state.state-no_host {
+    background: #e2e8f0;
+    color: #475569;
+}
+
+.station-popup-cluster-point-meta,
+.station-popup-cluster-hint {
+    font-size: 11px;
+    color: #64748b;
+}
+
+.station-popup-cluster-point-details {
+    margin-top: 8px;
+}
+
+.station-popup-cluster-point-section-label {
+    margin-top: 8px;
+    margin-bottom: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #475569;
+}
+
+.station-popup-cluster-point-message {
+    margin-top: 8px;
+    font-size: 11px;
+    color: #64748b;
+}
+
+.station-popup-cluster-point .station-entry {
+    margin-top: 8px;
+    padding-top: 8px;
+}
+
+.station-popup-cluster-point .station-entry-header {
+    margin-bottom: 6px;
+}
+
+.station-popup-cluster-point .station-entry-name {
+    font-size: 12px;
+}
+
+.station-popup-cluster-point .station-actions {
+    grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+}
+
+.station-popup-cluster-hint {
+    margin-top: 12px;
+}
+
 .station-entry {
     border-top: 1px solid #e2e8f0;
-    padding-top: 10px;
-    margin-top: 10px;
+    padding-top: 11px;
+    margin-top: 11px;
 }
 
 .station-entry:first-of-type {
@@ -369,12 +561,16 @@
     justify-content: space-between;
     gap: 8px;
     margin-bottom: 8px;
+    min-width: 0;
 }
 
 .station-entry-name {
+    flex: 1 1 auto;
+    min-width: 0;
     font-weight: 600;
     color: #1e293b;
     font-size: 13px;
+    overflow-wrap: anywhere;
 }
 
 .station-entry-context {
@@ -408,17 +604,18 @@
 }
 
 .station-actions {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
     gap: 8px;
 }
 
 .station-action {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     justify-content: center;
-    min-width: 88px;
-    padding: 6px 10px;
+    width: 100%;
+    min-width: 0;
+    padding: 6px 8px;
     border-radius: 8px;
     background: #eff6ff;
     color: #1d4ed8;
@@ -426,6 +623,8 @@
     font-size: 12px;
     font-weight: 600;
     text-decoration: none;
+    white-space: nowrap;
+    box-sizing: border-box;
 }
 
 .station-action:hover {
