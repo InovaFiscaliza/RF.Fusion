@@ -24,7 +24,11 @@ def release_busy_hosts_for_current_pid(
     try:
         pid = os.getpid()
         logger.event("cleanup_busy_hosts", pid=pid)
-        db = db_factory(database=database_name, log=logger)
+        db = db_factory(
+            database=database_name,
+            log=logger,
+            reuse_connection=False,
+        )
         db.host_release_by_pid(pid)
     except Exception as exc:
         logger.error(f"event=cleanup_busy_hosts_failed error={exc}")

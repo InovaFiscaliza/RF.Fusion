@@ -154,17 +154,28 @@ class dbHandlerBKP(DBHandlerBase):
     # ======================================================================
     # Initialization
     # ======================================================================
-    def __init__(self, database: str, log: Any):
+    def __init__(
+        self,
+        database: str,
+        log: Any,
+        reuse_connection: bool = True,
+    ):
         """Initialize the BKP handler with the target logical database and logger.
 
         Args:
             database (str): Logical database key. Resolved via `config.DB` mapping.
             log (Any): Logger implementing `.entry()`, `.warning()`, `.error()`.
+            reuse_connection (bool, optional): Keep one live DB session for
+                long-lived workers. Defaults to True.
 
         Raises:
             Exception: If initialization logic needs to validate inputs.
         """
-        super().__init__(database=database, log=log)
+        super().__init__(
+            database=database,
+            log=log,
+            reuse_connection=reuse_connection,
+        )
         self.log.entry(f"[dbHandlerBKP] Initialized for DB '{database}'")
 
     def _merge_structured_error_fields(self, payload: Dict[str, Any]) -> Dict[str, Any]:

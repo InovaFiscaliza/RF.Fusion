@@ -24,14 +24,23 @@ class dbHandlerRFM(DBHandlerBase):
     # ======================================================================
     # Initialization
     # ======================================================================
-    def __init__(self, database: str, log: Any) -> None:
+    def __init__(
+        self,
+        database: str,
+        log: Any,
+        reuse_connection: bool = True,
+    ) -> None:
         """Initialize the RFDATA handler and its transaction state.
 
         `DBHandlerBase` owns the connection primitives. This subclass only
         tracks whether the caller opened an explicit transaction that should
         survive multiple helper calls.
         """
-        super().__init__(database=database, log=log)
+        super().__init__(
+            database=database,
+            log=log,
+            reuse_connection=reuse_connection,
+        )
         self.log.entry(f"[dbHandlerRFM] Initialized for DB '{database}'")
         self.in_transaction: bool = False
         

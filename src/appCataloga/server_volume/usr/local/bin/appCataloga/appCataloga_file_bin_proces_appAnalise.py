@@ -622,6 +622,11 @@ def main():
 
         finally:
             if not file_task_id:
+                if err.triggered:
+                    # When the database is saturated we can fail before
+                    # claiming any FILE_TASK. Sleep here to avoid hammering
+                    # MySQL with a tight reconnect loop.
+                    runtime_sleep.random_jitter_sleep()
                 skip_to_next_iteration = True
             else:
                 # ---------------------------------------------------

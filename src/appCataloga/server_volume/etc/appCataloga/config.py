@@ -47,6 +47,7 @@ RFM_DATABASE_NAME       = "RFDATA"
 BKP_DATABASE_NAME       = "BPDATA"
 DB_USER_NAME            = secret["DB_USER_NAME"]
 DB_PASSWORD             = secret["DB_PASSWORD"]
+DB_LOG_CONNECTION_LIFECYCLE = False   # Log connect/close/reconnect lifecycle only when explicitly debugging DB sessions
 # =================================================
 # APP_ANALISE remote processing service
 # =================================================

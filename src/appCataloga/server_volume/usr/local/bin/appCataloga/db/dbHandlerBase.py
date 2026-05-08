@@ -23,21 +23,40 @@ class DBHandlerBase:
     # ======================================================================
     # Initialization
     # ======================================================================
-    def __init__(self, database: str, log: Any) -> None:
+    def __init__(
+        self,
+        database: str,
+        log: Any,
+        *,
+        reuse_connection: bool = True,
+    ) -> None:
         """Initialize the base handler.
 
         Args:
             database (str): Logical key for database credentials (config.DB).
             log (Any): Logger instance implementing .entry(), .warning(), .error().
+            reuse_connection (bool, optional): Keep the session open across
+                helper calls on long-lived handlers. One-shot callers can pass
+                `False` to make `_disconnect()` tear the session down
+                immediately. Defaults to True.
         """
         self.database = database
         self.log = log
+        self.reuse_connection = reuse_connection
+        self.log_connection_lifecycle = bool(
+            getattr(k, "DB_LOG_CONNECTION_LIFECYCLE", False)
+        )
         self.db_connection = None
         self.cursor = None
 
     # ======================================================================
     # Connection Management
     # ======================================================================
+    def _log_connection_lifecycle(self, message: str, *, force: bool = False) -> None:
+        """Write low-level DB session lifecycle logs only when explicitly enabled."""
+        if force or self.log_connection_lifecycle:
+            self.log.entry(message)
+
     def _get_db_config(self) -> Dict[str, Any]:
         """Retrieve database credentials from `config`.
 
@@ -157,7 +176,9 @@ class DBHandlerBase:
                             pass
 
                     self.cursor = self.db_connection.cursor()
-                    self.log.entry("Database reconnected successfully.")
+                    self._log_connection_lifecycle(
+                        "Database reconnected successfully."
+                    )
 
                     # Cleanup unread results post-reconnect
                     try:
@@ -193,7 +214,9 @@ class DBHandlerBase:
                     pass
 
             self.cursor = self.db_connection.cursor()
-            self.log.entry("Database connection established successfully.")
+            self._log_connection_lifecycle(
+                "Database connection established successfully."
+            )
 
             # Final cleanup for safety
             try:
@@ -216,28 +239,52 @@ class DBHandlerBase:
 
     def _disconnect(self, force: bool = False, verbose: bool = False) -> None:
         """
-        Close the current database connection when requested or invalid.
+        Close the current database connection.
 
         Args:
-            force (bool, optional): If True, forces disconnection regardless
-                of connection state. Defaults to False.
-            verbose (bool, optional): If True, logs kept-alive connections
-                for debugging. Defaults to False.
+            force (bool, optional): If True, always tears the session down
+                regardless of the handler reuse policy. Defaults to False.
+            verbose (bool, optional): If True, logs whether the connection was
+                closed or intentionally kept alive for reuse. Defaults to False.
 
         Returns:
             None
         """
         try:
             if hasattr(self, "db_connection") and self.db_connection:
-                if force or not self.db_connection.is_connected():
-                    self.db_connection.close()
-                    self.db_connection = None
-                    self.cursor = None
-                    self.log.entry("Database connection closed.")
-                else:
-                    # Only log if explicitly requested (e.g., debugging mode)
-                    if verbose:
-                        self.log.entry("Database connection kept alive (reuse enabled).")
+                was_connected = False
+                should_close = force or not self.reuse_connection
+
+                try:
+                    was_connected = self.db_connection.is_connected()
+                except Exception:
+                    was_connected = False
+
+                if not should_close and not was_connected:
+                    should_close = True
+
+                if should_close:
+                    try:
+                        self.db_connection.close()
+                    finally:
+                        self.db_connection = None
+                        self.cursor = None
+
+                    if was_connected or force:
+                        self._log_connection_lifecycle(
+                            "Database connection closed.",
+                            force=verbose,
+                        )
+                    elif verbose:
+                        self._log_connection_lifecycle(
+                            "Database connection already closed.",
+                            force=True,
+                        )
+                elif verbose:
+                    self._log_connection_lifecycle(
+                        "Database connection kept alive (reuse enabled).",
+                        force=True,
+                    )
 
         except Exception as e:
             self.log.warning(f"Error while closing database connection: {e}")
