@@ -34,6 +34,7 @@
     const defaultCenter = [-14.2350, -51.9253];
     const brazilBounds = [[-35.5, -74.5], [7.5, -29.0]];
     const pointCount = document.getElementById("station-map-count");
+    const clearFiltersButton = document.getElementById("station-map-clear-filters");
     const stateFilter = document.getElementById("station-map-state-filter");
     const siteFilter = document.getElementById("station-map-site-filter");
     const siteMenu = document.getElementById("station-map-site-menu");
@@ -41,8 +42,22 @@
     const statusFilter = document.getElementById("station-map-status-filter");
     const localityFilter = document.getElementById("station-map-locality-filter");
     const startDateFilter = document.getElementById("station-map-start-date");
+    const startDateNativePicker = document.getElementById("station-map-start-date-native");
     const endDateFilter = document.getElementById("station-map-end-date");
+    const endDateNativePicker = document.getElementById("station-map-end-date-native");
     const legendContainer = document.getElementById("station-map-legend");
+    const temporalFilterFields = [
+        {
+            queryKey: "start_date",
+            textInput: startDateFilter,
+            nativeInput: startDateNativePicker,
+        },
+        {
+            queryKey: "end_date",
+            textInput: endDateFilter,
+            nativeInput: endDateNativePicker,
+        },
+    ];
 
     const map = L.map("station-map", {
         preferCanvas: true,
@@ -70,6 +85,8 @@
     const POPUP_HOVER_OPEN_DELAY_MS = 140;
     const MARKER_FOCUS_ZOOM_THRESHOLD = 7;
     const MAX_NEARBY_POPUP_POINTS = 5;
+    const DEFAULT_STATUS_FILTER_VALUE = "all";
+    const DEFAULT_LOCALITY_FILTER_VALUE = "include_history";
     const POINT_STATE_ORDER = [
         "online_current",
         "online_previous",
@@ -428,39 +445,367 @@
     }
 
     /**
+     * Left-pad numeric date parts so UI formatting stays stable.
+     */
+    function padDateNumber(value, size = 2) {
+        return String(value).padStart(size, "0");
+    }
+
+    /**
+     * Tell whether one `(year, month, day)` triple is a real calendar date.
+     */
+    function isValidDateParts(year, month, day) {
+        if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+            return false;
+        }
+
+        const candidate = new Date(Date.UTC(year, month - 1, day));
+        return (
+            candidate.getUTCFullYear() === year
+            && candidate.getUTCMonth() === month - 1
+            && candidate.getUTCDate() === day
+        );
+    }
+
+    /**
+     * Format an ISO date as `DD/MM/YYYY` for the manual text inputs.
+     */
+    function formatIsoDateForDisplay(isoValue) {
+        const match = String(isoValue || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+        if (!match) {
+            return "";
+        }
+
+        return `${match[3]}/${match[2]}/${match[1]}`;
+    }
+
+    /**
+     * Build one normalized ISO date from already-validated parts.
+     */
+    function buildIsoDateValue(year, month, day) {
+        return [
+            padDateNumber(year, 4),
+            padDateNumber(month),
+            padDateNumber(day),
+        ].join("-");
+    }
+
+    /**
+     * Parse one manual map-date field, accepting Brazilian and ISO formats.
+     *
+     * Native `type="date"` controls segment the input in some browsers, which
+     * made manual typing frustrating. We now accept plain text and normalize
+     * it only when the user commits the field.
+     */
+    function normalizeManualDateValue(value) {
+        const rawValue = String(value || "").trim();
+
+        if (!rawValue) {
+            return {
+                rawValue,
+                isoValue: "",
+                displayValue: "",
+                isEmpty: true,
+                isValid: true,
+            };
+        }
+
+        const compactDigits = rawValue.replace(/\D/g, "");
+        let year = null;
+        let month = null;
+        let day = null;
+        let match = rawValue.match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})$/);
+
+        if (match) {
+            year = Number(match[1]);
+            month = Number(match[2]);
+            day = Number(match[3]);
+        } else {
+            match = rawValue.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+
+            if (match) {
+                day = Number(match[1]);
+                month = Number(match[2]);
+                year = Number(match[3]);
+            } else if (compactDigits.length === 8) {
+                day = Number(compactDigits.slice(0, 2));
+                month = Number(compactDigits.slice(2, 4));
+                year = Number(compactDigits.slice(4, 8));
+            }
+        }
+
+        if (!isValidDateParts(year, month, day)) {
+            return {
+                rawValue,
+                isoValue: "",
+                displayValue: rawValue,
+                isEmpty: false,
+                isValid: false,
+            };
+        }
+
+        const isoValue = buildIsoDateValue(year, month, day);
+
+        return {
+            rawValue,
+            isoValue,
+            displayValue: formatIsoDateForDisplay(isoValue),
+            isEmpty: false,
+            isValid: true,
+        };
+    }
+
+    /**
+     * Clear temporary invalid styling while the user is still typing.
+     */
+    function clearDateInputValidation(input) {
+        if (!input) {
+            return;
+        }
+
+        input.classList.remove("is-invalid");
+        input.removeAttribute("aria-invalid");
+        input.setCustomValidity("");
+    }
+
+    /**
+     * Keep plain-digit typing comfortable without rejecting slash-based input.
+     *
+     * If the user types only digits we progressively format as `DD/MM/YYYY`.
+     * When separators are already present, we keep the raw shape and only
+     * normalize on commit so `01/01/2025` and `2025-01-01` both stay usable.
+     */
+    function formatManualDateValueWhileTyping(value) {
+        const rawValue = String(value || "").replace(/\s+/g, "");
+
+        if (!rawValue) {
+            return "";
+        }
+
+        if (/[./-]/.test(rawValue)) {
+            return rawValue.slice(0, 10);
+        }
+
+        const digits = rawValue.replace(/\D/g, "").slice(0, 8);
+
+        if (!digits) {
+            return "";
+        }
+
+        if (digits.length <= 2) {
+            return digits;
+        }
+
+        if (digits.length <= 4) {
+            return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+        }
+
+        return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+    }
+
+    /**
+     * Push one canonical ISO date into both temporal widgets.
+     */
+    function setTemporalFieldIsoValue(field, isoValue) {
+        if (!field) {
+            return;
+        }
+
+        if (field.textInput) {
+            field.textInput.value = formatIsoDateForDisplay(isoValue);
+            field.textInput.dataset.isoValue = isoValue || "";
+            clearDateInputValidation(field.textInput);
+        }
+
+        if (field.nativeInput) {
+            field.nativeInput.value = isoValue || "";
+        }
+    }
+
+    /**
+     * Normalize one temporal field and keep both widgets synchronized.
+     */
+    function syncTemporalField(field, options = {}) {
+        const input = field?.textInput;
+        const normalizedDate = normalizeManualDateValue(input ? input.value : "");
+
+        if (!input) {
+            return normalizedDate;
+        }
+
+        input.dataset.isoValue = normalizedDate.isoValue;
+        input.classList.toggle("is-invalid", !normalizedDate.isValid && !normalizedDate.isEmpty);
+
+        if (!normalizedDate.isValid && !normalizedDate.isEmpty) {
+            input.setAttribute("aria-invalid", "true");
+            input.setCustomValidity("Use o formato dd/mm/aaaa ou aaaa-mm-dd.");
+        } else {
+            input.removeAttribute("aria-invalid");
+            input.setCustomValidity("");
+
+            if (options.syncDisplay && input.value !== normalizedDate.displayValue) {
+                input.value = normalizedDate.displayValue;
+            }
+        }
+
+        if (field.nativeInput) {
+            field.nativeInput.value = normalizedDate.isValid ? normalizedDate.isoValue : "";
+        }
+
+        return normalizedDate;
+    }
+
+    /**
+     * Keep the visible text field pleasant while the user is still typing.
+     */
+    function handleTemporalFieldTyping(field) {
+        if (!field?.textInput) {
+            return;
+        }
+
+        const formattedValue = formatManualDateValueWhileTyping(field.textInput.value);
+
+        if (field.textInput.value !== formattedValue) {
+            field.textInput.value = formattedValue;
+        }
+
+        clearDateInputValidation(field.textInput);
+
+        if (field.nativeInput) {
+            field.nativeInput.value = normalizeManualDateValue(field.textInput.value).isoValue;
+        }
+
+        updateClearFiltersButtonState();
+    }
+
+    /**
+     * Return the normalized state of all temporal filters in one pass.
+     */
+    function syncTemporalFields(options = {}) {
+        return temporalFilterFields.map((field) => ({
+            field,
+            state: syncTemporalField(field, options),
+        }));
+    }
+
+    /**
+     * Tell whether any non-theme map filter currently deviates from defaults.
+     */
+    function hasActiveMapFilters() {
+        return Boolean(
+            (stateFilter && stateFilter.value)
+            || (siteFilter && String(siteFilter.value || "").trim())
+            || (statusFilter && statusFilter.value !== DEFAULT_STATUS_FILTER_VALUE)
+            || (localityFilter && localityFilter.value !== DEFAULT_LOCALITY_FILTER_VALUE)
+            || temporalFilterFields.some((field) => String(field?.textInput?.value || "").trim())
+        );
+    }
+
+    /**
+     * Keep the clear-filters button enabled only when it has work to do.
+     */
+    function updateClearFiltersButtonState() {
+        if (!clearFiltersButton) {
+            return;
+        }
+
+        clearFiltersButton.disabled = !hasActiveMapFilters();
+    }
+
+    /**
+     * Normalize both temporal fields and apply the map filter when valid.
+     */
+    function commitTemporalFilterChange() {
+        const temporalStates = syncTemporalFields({syncDisplay: true});
+        const invalidEntry = temporalStates.find(({state}) => !state.isValid && !state.isEmpty);
+
+        updateClearFiltersButtonState();
+
+        if (
+            invalidEntry
+            && invalidEntry.field.textInput
+            && typeof invalidEntry.field.textInput.reportValidity === "function"
+        ) {
+            invalidEntry.field.textInput.reportValidity();
+            return;
+        }
+
+        loadStationPoints();
+    }
+
+    /**
+     * Restore the operational map filters to their initial all-data state.
+     *
+     * Theme is intentionally preserved because it behaves like a shell/user
+     * preference rather than a data filter.
+     */
+    function clearMapFilters() {
+        const hadTemporalFilters = temporalFilterFields.some((field) =>
+            String(field?.textInput?.value || "").trim()
+        );
+
+        if (stateFilter) {
+            stateFilter.value = "";
+        }
+
+        selectedSiteId = "";
+
+        if (siteFilter) {
+            siteFilter.value = "";
+        }
+
+        closeSiteMenu();
+
+        if (statusFilter) {
+            statusFilter.value = DEFAULT_STATUS_FILTER_VALUE;
+        }
+
+        if (localityFilter) {
+            localityFilter.value = DEFAULT_LOCALITY_FILTER_VALUE;
+        }
+
+        temporalFilterFields.forEach((field) => setTemporalFieldIsoValue(field, ""));
+
+        if (allStationPoints.length > 0) {
+            populateSiteFilter(allStationPoints, "");
+        }
+
+        updateClearFiltersButtonState();
+
+        if (hadTemporalFilters) {
+            loadStationPoints();
+            return;
+        }
+
+        renderFilteredPoints();
+    }
+
+    /**
      * Normalize the optional temporal controls into query parameters.
      *
-     * The browser date input already emits `YYYY-MM-DD`, so lexical order is
-     * safe when we need to repair an inverted range quickly in the UI.
+     * Once the manual fields are parsed, ISO lexical order is still safe when
+     * we need to repair an inverted range quickly in the UI.
      */
     function getTemporalFilterQueryParams() {
-        let startDate = startDateFilter ? startDateFilter.value : "";
-        let endDate = endDateFilter ? endDateFilter.value : "";
+        const temporalStates = syncTemporalFields({syncDisplay: true});
+        let startDate = temporalStates[0].state.isoValue;
+        let endDate = temporalStates[1].state.isoValue;
 
         if (startDate && endDate && startDate > endDate) {
-            const swappedStart = endDate;
-            const swappedEnd = startDate;
-            startDate = swappedStart;
-            endDate = swappedEnd;
-
-            if (startDateFilter) {
-                startDateFilter.value = startDate;
-            }
-
-            if (endDateFilter) {
-                endDateFilter.value = endDate;
-            }
+            [startDate, endDate] = [endDate, startDate];
+            setTemporalFieldIsoValue(temporalFilterFields[0], startDate);
+            setTemporalFieldIsoValue(temporalFilterFields[1], endDate);
         }
 
         const params = new URLSearchParams();
+        const temporalValues = [startDate, endDate];
 
-        if (startDate) {
-            params.set("start_date", startDate);
-        }
-
-        if (endDate) {
-            params.set("end_date", endDate);
-        }
+        temporalFilterFields.forEach((field, index) => {
+            if (temporalValues[index]) {
+                params.set(field.queryKey, temporalValues[index]);
+            }
+        });
 
         return params;
     }
@@ -1620,12 +1965,8 @@
      * lookup logic can stay simple.
      */
     function populateSiteFilter(points, selectedStateCode) {
-        // The site combobox is state-aware: changing the state filter rebuilds
-        // the candidate list so users do not see impossible station choices.
-        //
-        // We also disambiguate duplicate human labels here, because this is
-        // the one place where we have full context to keep the selector clean
-        // without leaking that complexity into later lookup/render paths.
+        // Changing the state rebuilds the candidate list so the combobox never
+        // offers stations that are impossible under the current geography.
         const filteredByState = selectedStateCode
             ? points.filter((point) => point.state_code === selectedStateCode)
             : points;
@@ -1678,12 +2019,7 @@
         }
 
         // Keep the synthetic "all stations" option always present so the user
-        // can get back to the unfiltered state even while typing in the box.
-        //
-        // The menu is intentionally capped because the combobox is meant to be
-        // a practical operational picker, not an infinite-scroll directory.
-        // Search correctness still comes from the normalized option index, so
-        // limiting the rendered subset does not break exact resolution.
+        // can get back to the unfiltered state even while typing.
         const searchTerm = normalizeSearchText(siteFilter.value);
         const visibleOptions = siteOptionRecords.filter((option) => {
             if (!option.site_id) {
@@ -1696,9 +2032,6 @@
 
             return normalizeSearchText(option.label).includes(searchTerm);
         }).slice(0, 120);
-        // Cap visible options to keep DOM work bounded. Exact matches still
-        // resolve correctly because `siteOptionIndex` is independent of this
-        // rendered subset.
 
         if (visibleOptions.length === 0) {
             siteMenu.innerHTML = '<div class="station-map-combobox-empty">Nenhuma estação encontrada para esse filtro.</div>';
@@ -1748,15 +2081,8 @@
      * exact `site_id` understood by the map filters and zoom heuristics.
      */
     function applySiteSelection(siteId, label) {
-        /* Selection is synchronized in three places:
-         * - the internal exact `selectedSiteId`
-         * - the visible combobox text
-         * - the filtered marker render
-         *
-         * Keeping that synchronization explicit here makes the combobox easier
-         * to reason about than spreading partial updates across multiple input
-         * and click handlers.
-         */
+        // This is the only path that upgrades a human-facing label into the
+        // exact `site_id` used by the map filters.
         selectedSiteId = String(siteId || "");
         siteFilter.value = selectedSiteId ? label : "";
         closeSiteMenu();
@@ -1775,15 +2101,6 @@
      *   5. locality scope
      */
     function getFilteredPoints() {
-        // Filtering order matters only for readability here, not correctness:
-        // state -> exact selected site -> free-text site search -> status -> locality.
-        //
-        // Those layers are intentionally orthogonal:
-        // - geography (`Estado`)
-        // - exact target (`Estação`)
-        // - semantic scope (`Status`, `Localidades`)
-        // That keeps the toolbar mentally consistent and prevents one control
-        // from silently changing the meaning of another.
         const selectedStateCode = stateFilter.value;
         const activeSiteId = getSelectedSiteId();
         const siteSearchTerm = activeSiteId
@@ -1835,12 +2152,8 @@
      * the map, point count, legend and zoom behavior stay consistent.
      */
     function renderFilteredPoints() {
-        // Re-render also refreshes the legend and map bounds so every control
-        // change produces one coherent visual update.
-        //
-        // This is the central reconciliation step of the home map: every
-        // filter or combobox change funnels through here so the markers,
-        // legend, counter and zoom behavior always reflect the same state.
+        // Every toolbar change funnels through here so markers, legend, count
+        // and zoom always reflect the same filtered dataset.
         const filteredPoints = getFilteredPoints();
         const orderedPoints = [...filteredPoints].sort((pointA, pointB) => {
             const priorityDiff = getPointRenderPriority(pointA) - getPointRenderPriority(pointB);
@@ -1859,18 +2172,11 @@
         renderLegend(filteredPoints);
 
         pointCount.textContent = `${filteredPoints.length} ponto(s) plotado(s)`;
+        updateClearFiltersButtonState();
 
         if (filteredPoints.length > 0 && bounds.length > 0) {
-            /* Zoom behavior is intentionally contextual:
-             * - when one station/locality is explicitly selected, zoom in
-             *   enough to make that target feel chosen
-             * - otherwise fit the filtered extent while preserving the more
-             *   exploratory character of the home map
-             */
             map.fitBounds(bounds, {
                 padding: [30, 30],
-                // A single explicit site selection signals stronger navigation
-                // intent than browsing all points, so allow a tighter zoom.
                 maxZoom: getSelectedSiteId() ? 11 : 8
             });
         } else {
@@ -1936,16 +2242,10 @@
                 populateSiteFilter(allStationPoints, "");
                 renderLegend([]);
                 pointCount.textContent = "Mapa em modo degradado";
+                updateClearFiltersButtonState();
             });
     }
 
-    // ---------------------------------------------------------------------
-    // Event wiring
-    // ---------------------------------------------------------------------
-    // Event wiring is intentionally explicit because the toolbar mixes native
-    // selects with a custom searchable combobox. Each control keeps the
-    // interaction model users would expect from that specific UI pattern.
-    //
     // Changing the state invalidates the previous site choice because the site
     // list is rebuilt from the state-scoped subset of points.
     stateFilter.addEventListener("change", () => {
@@ -2026,6 +2326,22 @@
         }
     });
 
+    if (clearFiltersButton) {
+        clearFiltersButton.addEventListener("mousedown", (event) => {
+            event.preventDefault();
+            clearMapFilters();
+        });
+
+        clearFiltersButton.addEventListener("click", (event) => {
+            if (event.detail !== 0) {
+                return;
+            }
+
+            event.preventDefault();
+            clearMapFilters();
+        });
+    }
+
     if (statusFilter) {
         statusFilter.addEventListener("change", () => {
             renderFilteredPoints();
@@ -2038,17 +2354,29 @@
         });
     }
 
-    if (startDateFilter) {
-        startDateFilter.addEventListener("change", () => {
-            loadStationPoints();
-        });
-    }
+    temporalFilterFields.forEach((field) => {
+        if (field.textInput) {
+            field.textInput.addEventListener("input", () => {
+                handleTemporalFieldTyping(field);
+            });
+            field.textInput.addEventListener("change", () => {
+                commitTemporalFilterChange();
+            });
+            field.textInput.addEventListener("keydown", (event) => {
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    event.currentTarget.blur();
+                }
+            });
+        }
 
-    if (endDateFilter) {
-        endDateFilter.addEventListener("change", () => {
-            loadStationPoints();
-        });
-    }
+        if (field.nativeInput) {
+            field.nativeInput.addEventListener("change", () => {
+                setTemporalFieldIsoValue(field, field.nativeInput.value);
+                commitTemporalFilterChange();
+            });
+        }
+    });
 
     if (themeSelect) {
         // Theme is shell state rather than data state, so it is restored once
@@ -2064,17 +2392,10 @@
         refreshOpenPopupNearbyPoints();
     });
 
-    // ---------------------------------------------------------------------
-    // Initial load
-    // ---------------------------------------------------------------------
-    // Startup order matters:
-    //   1. restore the persisted basemap
-    //   2. wire the toolbar interactions
-    //   3. fetch the summary point payload
-    //
-    // That sequence ensures the first visible render already respects the
-    // operator's saved theme and the controls are live before data arrives.
+    // Startup restores the shell theme first, then normalizes the temporal
+    // controls, then loads the initial summary-backed point dataset.
     applyMapTheme(loadSavedMapTheme());
+    syncTemporalFields({syncDisplay: true});
 
     // The first payload is intentionally summary-only. Full station actions are
     // deferred to the lazy popup requests so the home page stays responsive.

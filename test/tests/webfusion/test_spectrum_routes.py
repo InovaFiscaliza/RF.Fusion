@@ -6,7 +6,8 @@ How to run:
 
 What is covered here:
     - inverted frequency intervals return a user-facing validation error
-    - spectrum sort normalization keeps old links compatible with the new UI
+    - file sort normalization keeps old links compatible with the new UI
+    - file-detail endpoint forwards the active search filters
 """
 
 from __future__ import annotations
@@ -47,12 +48,11 @@ def load_spectrum_routes():
         info=lambda *args, **kwargs: None,
         exception=lambda *args, **kwargs: None,
     ))
-    fake_flask.jsonify = lambda *args, **kwargs: None
+    fake_flask.jsonify = lambda payload: payload
     fake_flask.render_template = lambda *args, **kwargs: None
     fake_flask.request = SimpleNamespace(args={}, method="GET")
 
     fake_service = ModuleType("modules.spectrum.service")
-    fake_service.get_spectrum_data = lambda *args, **kwargs: ([], 0)
     fake_service.get_spectrum_file_data = lambda *args, **kwargs: ([], 0)
     fake_service.get_equipments = lambda: []
     fake_service.get_spectrum_locality_options = lambda *args, **kwargs: []
@@ -91,36 +91,6 @@ class TestSpectrumRoutes(unittest.TestCase):
             message,
             "Frequência inicial deve ser menor ou igual à frequência final.",
         )
-
-    def test_normalize_spectrum_sort_accepts_new_compact_choices(self):
-        selected_key, sort_by, sort_order = self.module._normalize_spectrum_sort(
-            "oldest",
-            None,
-        )
-
-        self.assertEqual(selected_key, "oldest")
-        self.assertEqual(sort_by, "date_start")
-        self.assertEqual(sort_order, "ASC")
-
-    def test_normalize_spectrum_sort_maps_legacy_date_links_to_recentness(self):
-        selected_key, sort_by, sort_order = self.module._normalize_spectrum_sort(
-            "date_end",
-            "DESC",
-        )
-
-        self.assertEqual(selected_key, "recent")
-        self.assertEqual(sort_by, "date_start")
-        self.assertEqual(sort_order, "DESC")
-
-    def test_normalize_spectrum_sort_maps_legacy_frequency_links_to_frequency_fields(self):
-        selected_key, sort_by, sort_order = self.module._normalize_spectrum_sort(
-            "freq_end",
-            "DESC",
-        )
-
-        self.assertEqual(selected_key, "freq_end")
-        self.assertEqual(sort_by, "freq_end")
-        self.assertEqual(sort_order, "ASC")
 
     def test_normalize_file_sort_rejects_unknown_choices(self):
         selected_key, sort_by, sort_order = self.module._normalize_file_sort(
@@ -161,6 +131,47 @@ class TestSpectrumRoutes(unittest.TestCase):
         self.assertEqual(selected_key, "spectrum_count_asc")
         self.assertEqual(sort_by, "spectrum_count")
         self.assertEqual(sort_order, "ASC")
+
+    def test_parse_frequency_value_returns_float_or_none(self):
+        self.assertEqual(self.module._parse_frequency_value("70.5"), 70.5)
+        self.assertIsNone(self.module._parse_frequency_value("abc"))
+        self.assertIsNone(self.module._parse_frequency_value(None))
+
+    def test_spectrum_file_spectra_passes_active_filters_to_service(self):
+        captured = {}
+
+        def fake_get_spectra_by_file_id(file_id, **kwargs):
+            captured["file_id"] = file_id
+            captured["kwargs"] = kwargs
+            return [{"ID_SPECTRUM": 1, "IS_MATCH": 1}]
+
+        self.module.get_spectra_by_file_id = fake_get_spectra_by_file_id
+        self.module.request.args = {
+            "equipment_id": "338",
+            "site_id": "12",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-07",
+            "freq_start": "50",
+            "freq_end": "120",
+            "description": "PMRD",
+        }
+
+        payload = self.module.spectrum_file_spectra(436239)
+
+        self.assertEqual(payload["rows"][0]["ID_SPECTRUM"], 1)
+        self.assertEqual(captured["file_id"], 436239)
+        self.assertEqual(
+            captured["kwargs"],
+            {
+                "equipment_id": "338",
+                "site_id": "12",
+                "start_date": "2026-05-01",
+                "end_date": "2026-05-07",
+                "freq_start": 50.0,
+                "freq_end": 120.0,
+                "description": "PMRD",
+            },
+        )
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 {% block title %}RF.Fusion - Módulos{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/index_page.css', v='20260415-page-css-extraction') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/index_page.css', v='20260511-map-filter-cleanup') }}">
 <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -94,20 +94,64 @@
             </div>
         </div>
         <div class="station-map-filter station-map-filter-period">
-            <label class="station-map-field-label" for="station-map-start-date">Período observado</label>
+            <div class="station-map-filter-head">
+                <label class="station-map-field-label" for="station-map-start-date">Período observado</label>
+                <button
+                    type="button"
+                    id="station-map-clear-filters"
+                    class="station-map-clear-button"
+                    disabled
+                >
+                    Limpar filtros
+                </button>
+            </div>
             <div class="station-map-date-range">
-                <input
-                    type="date"
-                    id="station-map-start-date"
-                    class="station-map-date-input"
-                    aria-label="Data inicial do mapa"
-                >
-                <input
-                    type="date"
-                    id="station-map-end-date"
-                    class="station-map-date-input"
-                    aria-label="Data final do mapa"
-                >
+                <div class="station-map-date-control">
+                    <input
+                        type="text"
+                        id="station-map-start-date"
+                        class="station-map-date-input"
+                        aria-label="Data inicial do mapa"
+                        placeholder="dd/mm/aaaa"
+                        maxlength="10"
+                        autocomplete="off"
+                        spellcheck="false"
+                    >
+                    <div class="station-map-date-picker-wrap">
+                        <span class="station-map-date-picker-button" aria-hidden="true">
+                            <i class="fa fa-calendar-o"></i>
+                        </span>
+                        <input
+                            type="date"
+                            id="station-map-start-date-native"
+                            class="station-map-date-native-picker"
+                            aria-label="Abrir calendário da data inicial"
+                        >
+                    </div>
+                </div>
+                <div class="station-map-date-control">
+                    <input
+                        type="text"
+                        id="station-map-end-date"
+                        class="station-map-date-input"
+                        aria-label="Data final do mapa"
+                        placeholder="dd/mm/aaaa"
+                        maxlength="10"
+                        autocomplete="off"
+                        spellcheck="false"
+                    >
+                    <div class="station-map-date-picker-wrap">
+                        <span class="station-map-date-picker-button" aria-hidden="true">
+                            <i class="fa fa-calendar-o"></i>
+                        </span>
+                        <input
+                            type="date"
+                            id="station-map-end-date-native"
+                            class="station-map-date-native-picker"
+                            aria-label="Abrir calendário da data final"
+                        >
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -242,5 +286,5 @@
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
 ></script>
-<script src="{{ url_for('static', filename='js/index_map.js', v='20260414-map-zoom-focus-markers') }}"></script>
+<script src="{{ url_for('static', filename='js/index_map.js', v='20260511-map-filter-cleanup') }}"></script>
 {% endblock %}

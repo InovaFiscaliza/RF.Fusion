@@ -1,4 +1,4 @@
-"""Routes for spectrum browsing, file mode, and repository downloads.
+"""Routes for the unified spectrum/file search and repository downloads.
 
 This module has two complementary responsibilities:
 
@@ -19,7 +19,6 @@ from urllib.parse import urlencode
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from werkzeug.wsgi import wrap_file
 from modules.spectrum.service import (
-    get_spectrum_data,
     get_spectrum_file_data,
     get_equipments,
     get_spectrum_locality_options,
@@ -31,29 +30,6 @@ from modules.spectrum.service import (
 )
 
 spectrum_bp = Blueprint("spectrum", __name__)
-
-# The UI exposes compact sort presets such as "recent" or "file_name_desc",
-# but the data services still need the underlying column + direction pair.
-# These maps are the contract between the user-facing selectors and the
-# lower-level query functions.
-SPECTRUM_SORT_PRESETS = {
-    "recent": {
-        "sort_by": "date_start",
-        "sort_order": "DESC",
-    },
-    "oldest": {
-        "sort_by": "date_start",
-        "sort_order": "ASC",
-    },
-    "freq_start": {
-        "sort_by": "freq_start",
-        "sort_order": "ASC",
-    },
-    "freq_end": {
-        "sort_by": "freq_end",
-        "sort_order": "ASC",
-    },
-}
 
 FILE_SORT_PRESETS = {
     "recent": {
@@ -82,9 +58,6 @@ FILE_SORT_PRESETS = {
     },
 }
 
-FILE_SORT_FIELDS = {"date_start", "date_end", "file_name", "spectrum_count"}
-FILE_SORT_ORDERS = {"ASC", "DESC"}
-
 
 def _validate_frequency_bounds(freq_start_value, freq_end_value):
     """Return a user-facing error when the frequency interval is inverted."""
@@ -98,44 +71,12 @@ def _validate_frequency_bounds(freq_start_value, freq_end_value):
     return None
 
 
-def _normalize_spectrum_sort(raw_sort_by, raw_sort_order):
-    """Map query params to the compact sort choices shown in spectrum mode.
-
-    The route accepts both:
-    - the explicit compact preset keys used by the current UI
-    - a few legacy/raw combinations still worth tolerating for bookmarked URLs
-
-    That keeps the page resilient when users reload old links or manually
-    tweak query strings.
-    """
-
-    normalized_by = (raw_sort_by or "").strip()
-    normalized_order = (raw_sort_order or "").strip().upper()
-
-    if normalized_by in SPECTRUM_SORT_PRESETS:
-        preset = SPECTRUM_SORT_PRESETS[normalized_by]
-        return normalized_by, preset["sort_by"], preset["sort_order"]
-
-    if normalized_by in {"date_start", "date_end"}:
-        selected_key = "oldest" if normalized_order == "ASC" else "recent"
-        preset = SPECTRUM_SORT_PRESETS[selected_key]
-        return selected_key, preset["sort_by"], preset["sort_order"]
-
-    if normalized_by in {"freq_start", "freq_end"}:
-        preset = SPECTRUM_SORT_PRESETS[normalized_by]
-        return normalized_by, preset["sort_by"], preset["sort_order"]
-
-    preset = SPECTRUM_SORT_PRESETS["recent"]
-    return "recent", preset["sort_by"], preset["sort_order"]
-
-
 def _normalize_file_sort(raw_sort_by, raw_sort_order):
-    """Map query params to the compact sort choices shown in file mode.
+    """Map query params to the compact sort choices shown in the unified search.
 
-    File mode has its own sort vocabulary because the result grain changes
-    from "one row per spectrum" to "one row per repository file". This helper
-    normalizes both modern preset names and older raw combinations into one
-    consistent internal pair.
+    The page now always renders one row per repository file, but bookmarked
+    URLs may still contain older raw combinations. This helper keeps those
+    links working while the UI exposes only compact presets.
     """
 
     normalized_by = (raw_sort_by or "").strip()
@@ -352,28 +293,25 @@ def _normalize_optional_arg(value):
     return normalized
 
 
+def _parse_frequency_value(value):
+    """Convert one optional frequency field into ``float`` or ``None``."""
+
+    if value in (None, ""):
+        return None
+
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
 @spectrum_bp.route("/spectrum", methods=["GET"])
 def spectrum():
     """Render the spectrum query page.
 
-    The page supports two different grains:
-
-    - ``spectrum``: one row per spectrum
-    - ``file``: one row per repository file, with expandable linked spectra
-
-    The route intentionally does more normalization than a naive filter page
-    because the browser can arrive here from:
-    - a clean first visit
-    - a bookmarked URL
-    - a mode switch triggered by ``spectrum_page.js``
-
-    That means we need to reconcile query-string intent into one predictable
-    server-side context before rendering the template.
+    The page is spectrum-aware on the filter side, but file-oriented on the
+    result side: one matching file per row, with expandable internal spectra.
     """
-    query_mode = request.args.get("query_mode", "spectrum")
-    if query_mode not in {"spectrum", "file"}:
-        query_mode = "spectrum"
-
     equipment_id = _normalize_optional_arg(request.args.get("equipment_id"))
     site_id = _normalize_optional_arg(request.args.get("site_id"))
     start_date = _normalize_optional_arg(request.args.get("start_date"))
@@ -382,26 +320,12 @@ def spectrum():
     freq_end = _normalize_optional_arg(request.args.get("freq_end"))
     description = _normalize_optional_arg(request.args.get("description"))
 
-    if query_mode == "file":
-        freq_start = None
-        freq_end = None
-        description = None
-
     raw_sort_by = request.args.get("sort_by", "date_start")
     raw_sort_order = request.args.get("sort_order", "DESC")
-
-    if query_mode == "file":
-        selected_spectrum_sort = None
-        selected_file_sort, sort_by, sort_order = _normalize_file_sort(
-            raw_sort_by,
-            raw_sort_order,
-        )
-    else:
-        selected_file_sort = None
-        selected_spectrum_sort, sort_by, sort_order = _normalize_spectrum_sort(
-            raw_sort_by,
-            raw_sort_order,
-        )
+    selected_file_sort, sort_by, sort_order = _normalize_file_sort(
+        raw_sort_by,
+        raw_sort_order,
+    )
 
     # Basic page-query sanitation. The page should degrade to sane defaults
     # rather than fail hard because of a malformed `page`, `freq_start` or
@@ -415,20 +339,8 @@ def spectrum():
 
     page_size = 50
     query_error_message = None
-    freq_start_value = None
-    freq_end_value = None
-
-    try:
-        if freq_start:
-            freq_start_value = float(freq_start)
-    except Exception:
-        freq_start = None
-
-    try:
-        if freq_end:
-            freq_end_value = float(freq_end)
-    except Exception:
-        freq_end = None
+    freq_start_value = _parse_frequency_value(freq_start)
+    freq_end_value = _parse_frequency_value(freq_end)
 
     query_error_message = _validate_frequency_bounds(freq_start_value, freq_end_value)
 
@@ -456,19 +368,28 @@ def spectrum():
     if equipment_id and not query_error_message:
         query_started_at = time.perf_counter()
         try:
-            if query_mode == "file":
+            rows, total = get_spectrum_file_data(
+                equipment_id=equipment_id,
+                site_id=site_id,
+                start_date=start_date,
+                end_date=end_date,
+                freq_start=freq_start_value,
+                freq_end=freq_end_value,
+                description=description,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                page=page,
+                page_size=page_size,
+            )
+
+            total_pages = ((total + page_size - 1) // page_size) if total > 0 else 0
+
+            # If the user asks for a page beyond the new filtered result set,
+            # clamp to the last valid page and rerun the query once so the
+            # rendered table and paginator stay coherent.
+            if total_pages > 0 and page > total_pages:
+                page = total_pages
                 rows, total = get_spectrum_file_data(
-                    equipment_id=equipment_id,
-                    site_id=site_id,
-                    start_date=start_date,
-                    end_date=end_date,
-                    sort_by=sort_by,
-                    sort_order=sort_order,
-                    page=page,
-                    page_size=page_size
-                )
-            else:
-                rows, total = get_spectrum_data(
                     equipment_id=equipment_id,
                     site_id=site_id,
                     start_date=start_date,
@@ -479,41 +400,8 @@ def spectrum():
                     sort_by=sort_by,
                     sort_order=sort_order,
                     page=page,
-                    page_size=page_size
+                    page_size=page_size,
                 )
-
-            total_pages = ((total + page_size - 1) // page_size) if total > 0 else 0
-
-            # If the user asks for a page beyond the new filtered result set,
-            # clamp to the last valid page and rerun the query once so the
-            # rendered table and paginator stay coherent.
-            if total_pages > 0 and page > total_pages:
-                page = total_pages
-                if query_mode == "file":
-                    rows, total = get_spectrum_file_data(
-                        equipment_id=equipment_id,
-                        site_id=site_id,
-                        start_date=start_date,
-                        end_date=end_date,
-                        sort_by=sort_by,
-                        sort_order=sort_order,
-                        page=page,
-                        page_size=page_size
-                    )
-                else:
-                    rows, total = get_spectrum_data(
-                        equipment_id=equipment_id,
-                        site_id=site_id,
-                        start_date=start_date,
-                        end_date=end_date,
-                        freq_start=freq_start_value,
-                        freq_end=freq_end_value,
-                        description=description,
-                        sort_by=sort_by,
-                        sort_order=sort_order,
-                        page=page,
-                        page_size=page_size
-                    )
 
             # Build a stable numeric paginator window so the template can keep
             # a predictable footprint even near the beginning/end of the page
@@ -521,32 +409,33 @@ def spectrum():
             if total_pages > 0:
                 visible_pages = _build_visible_page_slots(page, total_pages)
 
-            if query_mode == "file":
-                selected_equipment_name = equipment_name_by_id.get(str(equipment_id))
+            selected_equipment_name = equipment_name_by_id.get(str(equipment_id))
 
-                for row in rows:
-                    row["NA_EQUIPMENT"] = selected_equipment_name
+            for row in rows:
+                row["NA_EQUIPMENT"] = selected_equipment_name
 
             _annotate_download_urls(rows)
 
             current_app.logger.info(
-                "spectrum_query_completed query_mode=%s equipment_id=%s site_id=%s "
-                "start_date=%s end_date=%s rows=%s total=%s elapsed_ms=%.1f",
-                query_mode,
+                "spectrum_query_completed equipment_id=%s site_id=%s start_date=%s "
+                "end_date=%s freq_start=%s freq_end=%s description=%s rows=%s total=%s "
+                "elapsed_ms=%.1f",
                 equipment_id,
                 site_id,
                 start_date,
                 end_date,
+                freq_start,
+                freq_end,
+                description,
                 len(rows),
                 total,
                 (time.perf_counter() - query_started_at) * 1000.0,
             )
         except Exception:
             current_app.logger.exception(
-                "failed_to_query_spectrum_page query_mode=%s equipment_id=%s site_id=%s "
-                "start_date=%s end_date=%s freq_start=%s freq_end=%s description=%s "
-                "sort_by=%s sort_order=%s page=%s",
-                query_mode,
+                "failed_to_query_spectrum_page equipment_id=%s site_id=%s start_date=%s "
+                "end_date=%s freq_start=%s freq_end=%s description=%s sort_by=%s "
+                "sort_order=%s page=%s",
                 equipment_id,
                 site_id,
                 start_date,
@@ -580,10 +469,9 @@ def spectrum():
                 localities = [selected_locality]
         except Exception:
             current_app.logger.exception(
-                "failed_to_load_selected_spectrum_locality site_id=%s equipment_id=%s query_mode=%s",
+                "failed_to_load_selected_spectrum_locality site_id=%s equipment_id=%s",
                 site_id,
                 equipment_id,
-                query_mode,
             )
 
     # Availability hints are only useful in a narrow scenario: the user picked
@@ -606,18 +494,13 @@ def spectrum():
     query_params = {
         "equipment_id": equipment_id,
         "site_id": site_id,
-        "query_mode": query_mode,
         "start_date": start_date,
         "end_date": end_date,
         "freq_start": freq_start,
         "freq_end": freq_end,
         "description": description,
+        "sort_by": selected_file_sort,
     }
-
-    if query_mode == "file":
-        query_params["sort_by"] = selected_file_sort
-    else:
-        query_params["sort_by"] = selected_spectrum_sort
 
     query_base = urlencode(
         {
@@ -633,7 +516,6 @@ def spectrum():
         equipments=equipments,
         localities=localities,
         rows=rows,
-        query_mode=query_mode,
         equipment_id=equipment_id,
         site_id=site_id,
         start_date=start_date,
@@ -643,7 +525,6 @@ def spectrum():
         description=description,
         sort_by=sort_by,
         sort_order=sort_order,
-        selected_spectrum_sort=selected_spectrum_sort,
         selected_file_sort=selected_file_sort,
         page=page,
         total_pages=total_pages,
@@ -660,18 +541,20 @@ def spectrum_localities():
     """Return known localities for one equipment.
 
     This endpoint exists for the dependent locality selector in
-    ``spectrum_page.js``. It is intentionally narrow: only equipment and query
-    mode influence the locality universe, so the payload stays compact and easy
-    to cache on the client side.
+    ``spectrum_page.js``. The locality universe follows the same active
+    spectrum-aware filters as the main page, except for the locality itself.
     """
-
-    query_mode = request.args.get("query_mode", "spectrum")
-    if query_mode not in {"spectrum", "file"}:
-        query_mode = "spectrum"
-
     equipment_id = _normalize_optional_arg(request.args.get("equipment_id"))
+    start_date = _normalize_optional_arg(request.args.get("start_date"))
+    end_date = _normalize_optional_arg(request.args.get("end_date"))
+    freq_start = _parse_frequency_value(_normalize_optional_arg(request.args.get("freq_start")))
+    freq_end = _parse_frequency_value(_normalize_optional_arg(request.args.get("freq_end")))
+    description = _normalize_optional_arg(request.args.get("description"))
 
     if not equipment_id:
+        return jsonify({"rows": []})
+
+    if _validate_frequency_bounds(freq_start, freq_end):
         return jsonify({"rows": []})
 
     started_at = time.perf_counter()
@@ -679,11 +562,14 @@ def spectrum_localities():
     try:
         rows = get_spectrum_locality_options(
             equipment_id=equipment_id,
-            query_mode=query_mode,
+            start_date=start_date,
+            end_date=end_date,
+            freq_start=freq_start,
+            freq_end=freq_end,
+            description=description,
         )
         current_app.logger.info(
-            "spectrum_localities_loaded query_mode=%s equipment_id=%s rows=%s elapsed_ms=%.1f",
-            query_mode,
+            "spectrum_localities_loaded equipment_id=%s rows=%s elapsed_ms=%.1f",
             equipment_id,
             len(rows),
             (time.perf_counter() - started_at) * 1000.0,
@@ -691,8 +577,7 @@ def spectrum_localities():
         return jsonify({"rows": rows})
     except Exception:
         current_app.logger.exception(
-            "failed_to_load_spectrum_localities query_mode=%s equipment_id=%s",
-            query_mode,
+            "failed_to_load_spectrum_localities equipment_id=%s",
             equipment_id,
         )
         return jsonify(
@@ -705,11 +590,11 @@ def spectrum_localities():
 
 @spectrum_bp.route("/spectrum/download/<int:spectrum_id>")
 def download_spectrum(spectrum_id):
-    """Download the repository file linked to one spectrum row.
+    """Download a repository file starting from a spectrum id.
 
-    Spectrum mode knows a spectrum id first, so this route resolves that id
-    into the repository file path and then hands the actual transfer off to
-    the optimized streaming/internal-redirect helper.
+    The unified page no longer lists one row per spectrum, but older deep
+    links and operational tools may still resolve downloads through a spectrum
+    identifier first.
     """
 
     file_path = get_file_by_spectrum_id(spectrum_id)
@@ -722,12 +607,7 @@ def download_spectrum(spectrum_id):
 
 @spectrum_bp.route("/spectrum/download-file/<int:file_id>")
 def download_spectrum_file(file_id):
-    """Download a repository file directly from file-mode results.
-
-    File mode already works with repository-file rows, so it can resolve the
-    path from a file id directly without the extra spectrum-to-file hop used by
-    the route above.
-    """
+    """Download a repository file directly from unified search results."""
 
     file_path = get_file_by_file_id(file_id)
 
@@ -739,15 +619,32 @@ def download_spectrum_file(file_id):
 
 @spectrum_bp.route("/api/spectrum/file/<int:file_id>/spectra")
 def spectrum_file_spectra(file_id):
-    """Return the spectra listed in the expandable file-mode detail row.
+    """Return the spectra listed in the expandable file detail row.
 
-    The main file-mode table stays intentionally compact. This endpoint powers
-    the on-demand expansion that reveals the spectra aggregated under one file
-    only when the operator asks for that detail.
+    The page expands one file lazily at a time. The payload includes every
+    linked spectrum plus an ``IS_MATCH`` flag so the browser can emphasize the
+    rows that satisfied the active search.
     """
 
     try:
-        return jsonify({"rows": get_spectra_by_file_id(file_id)})
+        return jsonify(
+            {
+                "rows": get_spectra_by_file_id(
+                    file_id,
+                    equipment_id=_normalize_optional_arg(request.args.get("equipment_id")),
+                    site_id=_normalize_optional_arg(request.args.get("site_id")),
+                    start_date=_normalize_optional_arg(request.args.get("start_date")),
+                    end_date=_normalize_optional_arg(request.args.get("end_date")),
+                    freq_start=_parse_frequency_value(
+                        _normalize_optional_arg(request.args.get("freq_start"))
+                    ),
+                    freq_end=_parse_frequency_value(
+                        _normalize_optional_arg(request.args.get("freq_end"))
+                    ),
+                    description=_normalize_optional_arg(request.args.get("description")),
+                )
+            }
+        )
     except Exception:
         current_app.logger.exception(
             "failed_to_load_spectrum_file_detail file_id=%s",

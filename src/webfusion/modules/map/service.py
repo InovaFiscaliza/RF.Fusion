@@ -1,27 +1,17 @@
 """Station-map helpers used by the WebFusion landing page.
 
-The home page is intentionally fast to open, so this module works from the
-materialized ``RFFUSION_SUMMARY`` tables instead of rebuilding the old
-cross-database joins on every request.
+The home page works from the materialized ``RFFUSION_SUMMARY`` tables instead
+of rebuilding the old cross-database joins on every request.
 
-The service publishes two closely related payloads:
-
-- the point list plotted on the map
-- the per-site popup details loaded on demand
-
-Both are cached from the same snapshot so the browser does not observe a point
-state that disagrees with the popup opened immediately afterward.
+The summary queries are intentionally cheap, so this module rebuilds the map
+snapshot directly from the database instead of carrying an in-process cache
+with TTLs, locks and background refresh state. That keeps the execution flow
+linear and much easier to debug in production.
 """
 
-import logging
-import threading
-import time
 from datetime import datetime, timedelta
 
 from db import get_connection_summary
-
-MAP_CACHE_TTL_SECONDS = 300
-MAP_BACKGROUND_REFRESH_LEAD_SECONDS = 30.0
 
 # The landing page communicates two independent ideas through marker state:
 # online/offline and current/historical locality. Keeping the state taxonomy
@@ -39,44 +29,40 @@ POINT_STATE_PRIORITY = {
     POINT_STATE_OFFLINE_PREVIOUS: 3,
     POINT_STATE_NO_HOST: 4,
 }
-
-_MAP_POINTS_CACHE = {"expires_at": 0.0, "value": None}
-_SITE_DETAILS_CACHE = {}
-_MAP_CACHE_WRITE_LOCK = threading.Lock()
-_MAP_REFRESH_STATE_LOCK = threading.Lock()
-_MAP_REFRESH_RUNNING = False
-
-LOGGER = logging.getLogger(__name__)
+ONLINE_MARKER_STATES = {
+    POINT_STATE_ONLINE_CURRENT,
+    POINT_STATE_ONLINE_PREVIOUS,
+}
 
 
-def _normalize_map_date_value(value):
+def _parse_map_date_value(value):
     """Parse one optional ``YYYY-MM-DD`` filter value from the request layer."""
 
-    normalized_value = str(value or "").strip()
+    value = str(value or "").strip()
 
-    if not normalized_value:
-        return None, None
+    if not value:
+        return None
 
     try:
-        parsed_value = datetime.strptime(normalized_value, "%Y-%m-%d")
+        return datetime.strptime(value, "%Y-%m-%d")
     except ValueError:
-        return None, None
-
-    return normalized_value, parsed_value
+        return None
 
 
 def _parse_map_date_range(start_date=None, end_date=None):
     """Normalize the temporal filter into comparable datetime boundaries."""
 
-    normalized_start, start_dt = _normalize_map_date_value(start_date)
-    normalized_end, end_dt = _normalize_map_date_value(end_date)
+    start_dt = _parse_map_date_value(start_date)
+    end_dt = _parse_map_date_value(end_date)
 
+    # The UI can submit inverted ranges while the user is editing manually.
+    # Swapping the bounds keeps the filter forgiving without changing the
+    # semantics of the requested period.
     if start_dt and end_dt and start_dt > end_dt:
         start_dt, end_dt = end_dt, start_dt
-        normalized_start, normalized_end = normalized_end, normalized_start
 
     end_before = end_dt + timedelta(days=1) if end_dt else None
-    return normalized_start, normalized_end, start_dt, end_before
+    return start_dt, end_before
 
 
 def _load_summary_site_rows():
@@ -173,12 +159,6 @@ def _build_map_point_station(row):
     }
 
 
-def _clone_station(station):
-    """Copy one station payload kept inside the cached snapshot."""
-
-    return dict(station)
-
-
 def _build_public_point_station(station):
     """Strip cached-only fields before returning point payloads to the browser."""
 
@@ -193,163 +173,57 @@ def _build_public_point_station(station):
     }
 
 
-def _clone_site_detail(detail):
-    """Copy one cached site-detail payload without sharing station lists."""
+def _recompute_site_detail_summary(detail):
+    """Recompute marker and availability flags from the current station list.
 
-    cloned_detail = dict(detail)
-    cloned_detail["stations"] = [
-        _clone_station(station)
-        for station in detail.get("stations", [])
+    Several code paths mutate `detail["stations"]` first and then need the
+    same derived fields to stay consistent. Keeping that recomputation in one
+    place avoids drift between full-dataset builds and date-filtered views.
+    """
+
+    stations = _sort_site_stations(detail.get("stations", []))
+    detail["stations"] = stations
+
+    # Once all stations disappear, the site must degrade to the empty marker
+    # state so the plotted point and popup keep telling the same story.
+    if not stations:
+        detail["marker_state"] = POINT_STATE_NO_HOST
+        detail["has_online_station"] = False
+        detail["has_online_host"] = False
+        detail["has_known_host"] = False
+        return detail
+
+    detail["marker_state"] = _summarize_site_marker_state(stations)
+    detail["has_online_station"] = any(
+        station.get("map_state") in ONLINE_MARKER_STATES
+        for station in stations
+    )
+    detail["has_online_host"] = detail["has_online_station"]
+    detail["has_known_host"] = any(
+        station.get("host_id") is not None
+        for station in stations
+    )
+    return detail
+
+
+def _apply_site_detail_to_point(point, detail):
+    """Mirror the derived site detail back into one browser-facing map point."""
+
+    stations = detail.get("stations", [])
+    point["stations"] = [
+        _build_public_point_station(station)
+        for station in stations
     ]
-    return cloned_detail
-
-
-def _build_point_from_site_detail(base_point, detail):
-    """Merge filtered station detail back into the plotted point payload."""
-
-    point = {
-        "site_id": int(base_point["site_id"]),
-        "site_label": base_point.get("site_label"),
-        "county_name": base_point.get("county_name"),
-        "district_name": base_point.get("district_name"),
-        "state_id": base_point.get("state_id"),
-        "state_name": base_point.get("state_name"),
-        "state_code": base_point.get("state_code"),
-        "latitude": base_point.get("latitude"),
-        "longitude": base_point.get("longitude"),
-        "altitude": base_point.get("altitude"),
-        "gnss_measurements": base_point.get("gnss_measurements"),
-        "stations": [
-            _build_public_point_station(station)
-            for station in detail.get("stations", [])
-        ],
-        "station_names": [
-            station.get("host_name") or station.get("equipment_name")
-            for station in detail.get("stations", [])
-            if station.get("host_name") or station.get("equipment_name")
-        ],
-        "marker_state": detail.get("marker_state") or POINT_STATE_NO_HOST,
-        "has_online_station": bool(detail.get("has_online_station")),
-        "has_online_host": bool(detail.get("has_online_host")),
-        "has_known_host": bool(detail.get("has_known_host")),
-    }
+    point["station_names"] = [
+        station_name
+        for station in stations
+        if (station_name := station.get("host_name") or station.get("equipment_name"))
+    ]
+    point["marker_state"] = detail.get("marker_state") or POINT_STATE_NO_HOST
+    point["has_online_station"] = bool(detail.get("has_online_station"))
+    point["has_online_host"] = bool(detail.get("has_online_host"))
+    point["has_known_host"] = bool(detail.get("has_known_host"))
     return point
-
-
-def _store_map_snapshot(points, site_details, now=None):
-    """Atomically replace the in-memory point and popup caches.
-
-    The marker list and the popup details describe the same snapshot of the
-    world, so they should be published together to avoid cross-refresh drift.
-    """
-
-    current_time = time.time() if now is None else float(now)
-
-    with _MAP_CACHE_WRITE_LOCK:
-        _MAP_POINTS_CACHE["value"] = points
-        _MAP_POINTS_CACHE["expires_at"] = current_time + MAP_CACHE_TTL_SECONDS
-        _SITE_DETAILS_CACHE.clear()
-
-        for site_id, detail in site_details.items():
-            _SITE_DETAILS_CACHE[int(site_id)] = {
-                "expires_at": current_time + MAP_CACHE_TTL_SECONDS,
-                "value": detail,
-            }
-
-
-def _get_cached_site_detail_values():
-    """Return the raw detail snapshot currently mirrored in the TTL cache."""
-
-    return {
-        int(site_id): cache_entry["value"]
-        for site_id, cache_entry in _SITE_DETAILS_CACHE.items()
-    }
-
-
-def _get_station_map_snapshot():
-    """Return the latest full map snapshot, rebuilding only when necessary."""
-
-    now = time.time()
-    cached_site_details = _get_cached_site_detail_values()
-
-    if (
-        _MAP_POINTS_CACHE["value"] is not None
-        and _MAP_POINTS_CACHE["expires_at"] > now
-        and cached_site_details
-    ):
-        return _MAP_POINTS_CACHE["value"], cached_site_details
-
-    if _MAP_POINTS_CACHE["value"] is not None and cached_site_details:
-        _schedule_map_refresh_async(force=False)
-        return _MAP_POINTS_CACHE["value"], cached_site_details
-
-    return _refresh_station_map_snapshot()
-
-
-def _refresh_station_map_snapshot():
-    """Rebuild the full map snapshot and atomically publish both cache layers."""
-
-    points, site_details = _build_station_map_dataset()
-    _store_map_snapshot(points, site_details)
-    return points, site_details
-
-
-def _is_map_cache_due(now=None):
-    """Return whether the current map snapshot is missing or near expiry."""
-
-    current_time = time.time() if now is None else float(now)
-    cached_points = _MAP_POINTS_CACHE["value"]
-
-    if cached_points is None:
-        return True
-
-    return _MAP_POINTS_CACHE["expires_at"] <= (
-        current_time + MAP_BACKGROUND_REFRESH_LEAD_SECONDS
-    )
-
-
-def _run_map_refresh_worker():
-    """Refresh the map snapshot inside the detached worker thread."""
-
-    global _MAP_REFRESH_RUNNING
-
-    try:
-        _refresh_station_map_snapshot()
-    except Exception:
-        LOGGER.exception("failed_to_refresh_station_map_snapshot")
-    finally:
-        with _MAP_REFRESH_STATE_LOCK:
-            _MAP_REFRESH_RUNNING = False
-
-
-def _schedule_map_refresh_async(force=False):
-    """Start a background refresh when the cache is missing or aging out.
-
-    Requests should keep using a still-valid snapshot instead of blocking on a
-    refresh, so this helper prefers "serve current cache, refresh in background"
-    whenever possible.
-    """
-
-    global _MAP_REFRESH_RUNNING
-
-    now = time.time()
-
-    with _MAP_REFRESH_STATE_LOCK:
-        if _MAP_REFRESH_RUNNING:
-            return False
-
-        if not force and not _is_map_cache_due(now):
-            return False
-
-        _MAP_REFRESH_RUNNING = True
-
-    worker = threading.Thread(
-        target=_run_map_refresh_worker,
-        name="webfusion-map-refresh",
-        daemon=True,
-    )
-    worker.start()
-    return True
 
 
 def _summarize_site_marker_state(stations):
@@ -396,6 +270,8 @@ def _station_overlaps_date_range(station, start_dt=None, end_before=None):
     if first_seen is None and last_seen is None:
         return False
 
+    # Summary rows may carry only one edge of the observation interval. In
+    # that case we treat the known timestamp as both bounds for overlap tests.
     interval_start = first_seen or last_seen
     interval_end = last_seen or first_seen
 
@@ -411,75 +287,31 @@ def _station_overlaps_date_range(station, start_dt=None, end_before=None):
 def _filter_site_detail_by_date(detail, start_dt=None, end_before=None):
     """Filter one site detail payload by temporal overlap and recompute markers."""
 
-    cloned_detail = _clone_site_detail(detail)
-
-    if start_dt is None and end_before is None:
-        return cloned_detail
-
-    filtered_stations = [
-        station
-        for station in cloned_detail.get("stations", [])
-        if _station_overlaps_date_range(station, start_dt=start_dt, end_before=end_before)
+    # Date filters produce a derived popup payload. Keeping the original detail
+    # intact avoids mixing "full site" and "filtered site" state in one object.
+    filtered_detail = dict(detail)
+    filtered_detail["stations"] = [
+        dict(station)
+        for station in detail.get("stations", [])
     ]
 
-    cloned_detail["stations"] = _sort_site_stations(filtered_stations)
-
-    if cloned_detail["stations"]:
-        cloned_detail["marker_state"] = _summarize_site_marker_state(cloned_detail["stations"])
-        cloned_detail["has_online_station"] = any(
-            station["map_state"] in {POINT_STATE_ONLINE_CURRENT, POINT_STATE_ONLINE_PREVIOUS}
-            for station in cloned_detail["stations"]
-        )
-        cloned_detail["has_online_host"] = cloned_detail["has_online_station"]
-        cloned_detail["has_known_host"] = any(
-            station.get("host_id") is not None
-            for station in cloned_detail["stations"]
-        )
-    else:
-        cloned_detail["marker_state"] = POINT_STATE_NO_HOST
-        cloned_detail["has_online_station"] = False
-        cloned_detail["has_online_host"] = False
-        cloned_detail["has_known_host"] = False
-
-    return cloned_detail
-
-
-def _build_filtered_station_map_snapshot(points, site_details, start_dt=None, end_before=None):
-    """Apply a temporal filter on top of the cached summary-backed snapshot."""
-
     if start_dt is None and end_before is None:
-        return points, site_details
+        return filtered_detail
 
-    filtered_points = []
-    filtered_site_details = {}
-
-    for base_point in points:
-        site_id = int(base_point["site_id"])
-        base_detail = site_details.get(site_id)
-
-        if not base_detail:
-            continue
-
-        filtered_detail = _filter_site_detail_by_date(
-            base_detail,
-            start_dt=start_dt,
-            end_before=end_before,
-        )
-
-        if not filtered_detail.get("stations"):
-            continue
-
-        filtered_site_details[site_id] = filtered_detail
-        filtered_points.append(_build_point_from_site_detail(base_point, filtered_detail))
-
-    return filtered_points, filtered_site_details
+    filtered_detail["stations"] = [
+        station
+        for station in filtered_detail.get("stations", [])
+        if _station_overlaps_date_range(station, start_dt=start_dt, end_before=end_before)
+    ]
+    return _recompute_site_detail_summary(filtered_detail)
 
 
 def _build_station_map_dataset_from_summary():
     """Build the full map payload from ``RFFUSION_SUMMARY`` read models.
 
     The returned tuple contains the plotted points plus the already-shaped
-    popup payloads keyed by site id.
+    popup payloads keyed by site id. Site rows seed the locality metadata,
+    then station rows refine the popup and final marker state.
     """
 
     site_rows = _load_summary_site_rows()
@@ -489,6 +321,7 @@ def _build_station_map_dataset_from_summary():
     points_by_site = {}
     site_details = {}
 
+    # Phase 1: build one map point per locality from the summary rows.
     for row in site_rows:
         latitude = row.get("VL_LATITUDE")
         longitude = row.get("VL_LONGITUDE")
@@ -516,6 +349,7 @@ def _build_station_map_dataset_from_summary():
             "has_online_host": bool(row.get("HAS_ONLINE_HOST")),
             "has_known_host": bool(row.get("HAS_KNOWN_HOST")),
         }
+
         points.append(point)
         points_by_site[site_id] = point
         site_details[site_id] = {
@@ -527,141 +361,104 @@ def _build_station_map_dataset_from_summary():
             "has_known_host": point["has_known_host"],
         }
 
+    # Phase 2: attach station rows only to localities that are already plotted.
     for row in station_rows:
-        site_id = int(row["ID_SITE"]) if row.get("ID_SITE") is not None else None
+        raw_site_id = row.get("ID_SITE")
 
-        if site_id not in points_by_site:
+        if raw_site_id is None:
             continue
 
-        station = _build_map_point_station(row)
-        site_details[site_id]["stations"].append(station)
+        site_id = int(raw_site_id)
+        detail = site_details.get(site_id)
 
+        if detail is None:
+            continue
+
+        detail["stations"].append(_build_map_point_station(row))
+
+    # Phase 3: when station rows exist, they become the source of truth for
+    # marker state and online flags. Without station rows, the summary-site
+    # row keeps its seeded values.
     for site_id, detail in site_details.items():
-        detail["stations"] = _sort_site_stations(detail["stations"])
-
         if detail["stations"]:
-            detail["marker_state"] = _summarize_site_marker_state(detail["stations"])
-            detail["has_online_station"] = any(
-                station["map_state"] in {POINT_STATE_ONLINE_CURRENT, POINT_STATE_ONLINE_PREVIOUS}
-                for station in detail["stations"]
-            )
-            detail["has_online_host"] = detail["has_online_station"]
-            detail["has_known_host"] = any(
-                station["host_id"] is not None
-                for station in detail["stations"]
-            )
+            _recompute_site_detail_summary(detail)
 
-        point = points_by_site[site_id]
-        point["stations"] = [
-            _build_public_point_station(station)
-            for station in detail["stations"]
-        ]
-        point["marker_state"] = detail["marker_state"]
-        point["has_online_station"] = detail["has_online_station"]
-        point["has_online_host"] = detail["has_online_host"]
-        point["has_known_host"] = detail["has_known_host"]
-        point["station_names"] = [
-            station["host_name"] or station["equipment_name"]
-            for station in detail["stations"]
-            if station.get("host_name") or station.get("equipment_name")
-        ]
+        _apply_site_detail_to_point(points_by_site[site_id], detail)
 
     return points, site_details
-
-
-def _build_station_map_dataset():
-    """Return the canonical map dataset builder used by runtime code paths."""
-
-    return _build_station_map_dataset_from_summary()
-
-
-def _build_site_detail(site_id):
-    """Build popup metadata for one site from the current snapshot builder."""
-    points, site_details = _build_station_map_dataset()
-    _ = points
-    return site_details.get(int(site_id), _build_default_site_detail(site_id))
 
 
 def get_station_map_points(start_date=None, end_date=None):
     """Return map-ready station points for the landing page.
 
-    If a fresh snapshot already exists, it is returned immediately. If the
-    cache is empty, the request rebuilds the snapshot synchronously once.
+    Each request rebuilds the snapshot from the summary tables so the runtime
+    flow stays explicit and free of in-process cache state.
     """
-    _normalized_start, _normalized_end, start_dt, end_before = _parse_map_date_range(
+    start_dt, end_before = _parse_map_date_range(
         start_date=start_date,
         end_date=end_date,
     )
+    points, site_details = _build_station_map_dataset_from_summary()
 
     if start_dt is not None or end_before is not None:
-        points, site_details = _get_station_map_snapshot()
-        filtered_points, _filtered_site_details = _build_filtered_station_map_snapshot(
-            points,
-            site_details,
-            start_dt=start_dt,
-            end_before=end_before,
-        )
+        filtered_points = []
+
+        # Temporal filters run on top of the already-shaped site detail so the
+        # overlap rules stay in one place.
+        for base_point in points:
+            site_id = int(base_point["site_id"])
+            detail = site_details.get(site_id)
+
+            if not detail:
+                continue
+
+            filtered_detail = _filter_site_detail_by_date(
+                detail,
+                start_dt=start_dt,
+                end_before=end_before,
+            )
+
+            if not filtered_detail.get("stations"):
+                continue
+
+            point = dict(base_point)
+            _apply_site_detail_to_point(point, filtered_detail)
+            filtered_points.append(point)
+
         return filtered_points
 
-    now = time.time()
-
-    if (
-        _MAP_POINTS_CACHE["value"] is not None
-        and _MAP_POINTS_CACHE["expires_at"] > now
-    ):
-        return _MAP_POINTS_CACHE["value"]
-
-    if _MAP_POINTS_CACHE["value"] is not None:
-        _schedule_map_refresh_async(force=False)
-        return _MAP_POINTS_CACHE["value"]
-
-    points, _site_details = _refresh_station_map_snapshot()
     return points
 
 
 def get_station_map_site_detail(site_id, start_date=None, end_date=None):
-    """Return popup metadata for a single site, using a short TTL cache.
+    """Return popup metadata for a single site.
 
-    Popup detail is cached separately so repeated hover/open interactions do
-    not require rebuilding the whole station map dataset every time.
+    The detail comes from the same summary-backed builder used by the map
+    points, so popup and point state are derived by the same rules.
     """
-    _normalized_start, _normalized_end, start_dt, end_before = _parse_map_date_range(
+    start_dt, end_before = _parse_map_date_range(
         start_date=start_date,
         end_date=end_date,
     )
     cache_key = int(site_id)
+    _, site_details = _build_station_map_dataset_from_summary()
+    detail = site_details.get(cache_key)
 
-    if start_dt is not None or end_before is not None:
-        _points, site_details = _get_station_map_snapshot()
-        detail = site_details.get(cache_key)
+    if not detail:
+        return _build_default_site_detail(cache_key)
 
-        if not detail:
-            return _build_default_site_detail(cache_key)
+    if start_dt is None and end_before is None:
+        return detail
 
-        filtered_detail = _filter_site_detail_by_date(
-            detail,
-            start_dt=start_dt,
-            end_before=end_before,
-        )
+    filtered_detail = _filter_site_detail_by_date(
+        detail,
+        start_dt=start_dt,
+        end_before=end_before,
+    )
 
-        if not filtered_detail.get("stations"):
-            return _build_default_site_detail(cache_key)
+    # The popup API always returns the same shape. If the period removes
+    # every station, callers still receive an explicit empty detail object.
+    if not filtered_detail.get("stations"):
+        return _build_default_site_detail(cache_key)
 
-        return filtered_detail
-
-    now = time.time()
-    cached = _SITE_DETAILS_CACHE.get(cache_key)
-
-    if cached and cached["expires_at"] > now:
-        return cached["value"]
-
-    if cached:
-        _schedule_map_refresh_async(force=False)
-        return cached["value"]
-
-    value = _build_site_detail(cache_key)
-    _SITE_DETAILS_CACHE[cache_key] = {
-        "expires_at": now + MAP_CACHE_TTL_SECONDS,
-        "value": value,
-    }
-    return value
+    return filtered_detail

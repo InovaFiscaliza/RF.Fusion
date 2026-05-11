@@ -6,6 +6,7 @@ import importlib.util
 import sys
 import types
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -81,33 +82,70 @@ class TestMapService(unittest.TestCase):
             ],
         )
 
-    def test_get_station_map_points_returns_stale_cache_while_refresh_is_scheduled(self):
-        stale_points = [{"site_id": 10, "marker_state": self.module.POINT_STATE_OFFLINE_CURRENT}]
-        scheduled = []
+    def test_filter_site_detail_by_date_recomputes_summary_from_remaining_stations(self):
+        detail = {
+            "site_id": 77,
+            "stations": [
+                {
+                    "host_id": 101,
+                    "host_name": "RFEye002129",
+                    "equipment_name": "RFEye002129",
+                    "map_state": self.module.POINT_STATE_ONLINE_CURRENT,
+                    "first_seen_at": datetime(2026, 4, 1, 0, 0, 0),
+                    "last_seen_at": datetime(2026, 4, 5, 0, 0, 0),
+                },
+                {
+                    "host_id": None,
+                    "host_name": None,
+                    "equipment_name": "RFEye002130",
+                    "map_state": self.module.POINT_STATE_NO_HOST,
+                    "first_seen_at": datetime(2026, 4, 10, 0, 0, 0),
+                    "last_seen_at": datetime(2026, 4, 15, 0, 0, 0),
+                },
+            ],
+            "marker_state": self.module.POINT_STATE_ONLINE_CURRENT,
+            "has_online_station": True,
+            "has_online_host": True,
+            "has_known_host": True,
+        }
 
-        original_points_cache = dict(self.module._MAP_POINTS_CACHE)
-        original_schedule = self.module._schedule_map_refresh_async
-        original_refresh = self.module._refresh_station_map_snapshot
-
-        self.module._MAP_POINTS_CACHE["value"] = stale_points
-        self.module._MAP_POINTS_CACHE["expires_at"] = 0.0
-        self.module._schedule_map_refresh_async = lambda force=False: scheduled.append(force) or True
-        self.module._refresh_station_map_snapshot = lambda: (_ for _ in ()).throw(
-            AssertionError("stale cache should avoid synchronous snapshot rebuild")
+        filtered = self.module._filter_site_detail_by_date(
+            detail,
+            start_dt=datetime(2026, 4, 9, 0, 0, 0),
+            end_before=datetime(2026, 4, 20, 0, 0, 0),
         )
 
-        try:
+        self.assertEqual(len(filtered["stations"]), 1)
+        self.assertEqual(filtered["marker_state"], self.module.POINT_STATE_NO_HOST)
+        self.assertFalse(filtered["has_online_station"])
+        self.assertFalse(filtered["has_online_host"])
+        self.assertFalse(filtered["has_known_host"])
+
+    def test_get_station_map_points_rebuilds_snapshot_directly_from_summary(self):
+        points = [{"site_id": 10, "marker_state": self.module.POINT_STATE_OFFLINE_CURRENT}]
+        site_details = {
+            10: {
+                "site_id": 10,
+                "stations": [],
+                "marker_state": self.module.POINT_STATE_OFFLINE_CURRENT,
+                "has_online_station": False,
+                "has_online_host": False,
+                "has_known_host": False,
+            }
+        }
+
+        with patch.object(
+            self.module,
+            "_build_station_map_dataset_from_summary",
+            return_value=(points, site_details),
+        ) as build_snapshot:
             result = self.module.get_station_map_points()
-        finally:
-            self.module._MAP_POINTS_CACHE.update(original_points_cache)
-            self.module._schedule_map_refresh_async = original_schedule
-            self.module._refresh_station_map_snapshot = original_refresh
 
-        self.assertEqual(result, stale_points)
-        self.assertEqual(scheduled, [False])
+        self.assertEqual(result, points)
+        build_snapshot.assert_called_once_with()
 
-    def test_get_station_map_site_detail_returns_stale_cache_while_refresh_is_scheduled(self):
-        stale_detail = {
+    def test_get_station_map_site_detail_rebuilds_detail_directly_from_summary(self):
+        detail = {
             "site_id": 77,
             "stations": [],
             "marker_state": self.module.POINT_STATE_NO_HOST,
@@ -115,32 +153,18 @@ class TestMapService(unittest.TestCase):
             "has_online_host": False,
             "has_known_host": False,
         }
-        scheduled = []
+        points = [{"site_id": 77}]
+        site_details = {77: detail}
 
-        original_site_cache = dict(self.module._SITE_DETAILS_CACHE)
-        original_schedule = self.module._schedule_map_refresh_async
-        original_build = self.module._build_site_detail
-
-        self.module._SITE_DETAILS_CACHE.clear()
-        self.module._SITE_DETAILS_CACHE[77] = {
-            "expires_at": 0.0,
-            "value": stale_detail,
-        }
-        self.module._schedule_map_refresh_async = lambda force=False: scheduled.append(force) or True
-        self.module._build_site_detail = lambda site_id: (_ for _ in ()).throw(
-            AssertionError("stale site detail should avoid synchronous rebuild")
-        )
-
-        try:
+        with patch.object(
+            self.module,
+            "_build_station_map_dataset_from_summary",
+            return_value=(points, site_details),
+        ) as build_snapshot:
             result = self.module.get_station_map_site_detail(77)
-        finally:
-            self.module._SITE_DETAILS_CACHE.clear()
-            self.module._SITE_DETAILS_CACHE.update(original_site_cache)
-            self.module._schedule_map_refresh_async = original_schedule
-            self.module._build_site_detail = original_build
 
-        self.assertEqual(result, stale_detail)
-        self.assertEqual(scheduled, [False])
+        self.assertEqual(result, detail)
+        build_snapshot.assert_called_once_with()
 
     def test_build_station_map_dataset_prefers_materialized_summary_tables(self):
         site_rows = [
@@ -180,7 +204,7 @@ class TestMapService(unittest.TestCase):
 
         with patch.object(self.module, "_load_summary_site_rows", return_value=site_rows):
             with patch.object(self.module, "_load_summary_station_rows", return_value=station_rows):
-                points, site_details = self.module._build_station_map_dataset()
+                points, site_details = self.module._build_station_map_dataset_from_summary()
 
         self.assertEqual(len(points), 1)
         self.assertEqual(points[0]["site_id"], 77)

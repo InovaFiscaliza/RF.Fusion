@@ -56,8 +56,8 @@
 }
 
 .table-scroll table {
-    width: max(100%, 1280px);
-    min-width: 1100px;
+    width: max(100%, 1340px);
+    min-width: 1180px;
     border-collapse: collapse;
     font-size: 13px;
 }
@@ -215,6 +215,15 @@
     font-size: 12px;
     color: #475569;
     font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.file-detail-match-note {
+    color: #1d4ed8;
+    font-weight: 600;
 }
 
 .file-detail-table-wrap {
@@ -240,6 +249,10 @@
     background: #eef2f7;
     font-weight: 700;
     color: #334155;
+}
+
+.file-detail-match td {
+    background: #eff6ff;
 }
 
 .file-detail-empty,

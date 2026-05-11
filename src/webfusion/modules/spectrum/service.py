@@ -14,6 +14,7 @@ behavior, so the service layer documents those differences explicitly.
 import logging
 import os
 import time
+from datetime import datetime
 from db import get_connection_rfdata as get_connection, get_connection_summary
 
 LOGGER = logging.getLogger(__name__)
@@ -24,13 +25,9 @@ ALLOWED_SORT_FIELDS = {
     "freq_start": "f.NU_FREQ_START",
     "freq_end": "f.NU_FREQ_END",
     "rbw": "f.NU_RBW",
-    "trace_count": "f.NU_TRACE_COUNT"
+    "trace_count": "f.NU_TRACE_COUNT",
 }
 
-# These maps act as the server-side contract for URL/query-string sort options.
-# Keeping them explicit here prevents the route layer from interpolating raw
-# field names into SQL and makes it clear which columns the UI is allowed to
-# expose as sortable.
 ALLOWED_SORT_ORDERS = ["ASC", "DESC"]
 
 ALLOWED_FILE_SORT_FIELDS = {
@@ -43,6 +40,9 @@ ALLOWED_FILE_SORT_FIELDS = {
 SPECTRUM_QUERY_CACHE_TTL_SECONDS = 30
 EQUIPMENT_CACHE_TTL_SECONDS = 300
 FILE_PATH_CACHE_TTL_SECONDS = 300
+# Full file-result pages reuse one heavy grouped query result for a few minutes
+# so operators can move across pagination links without re-scanning the catalog.
+FILE_RESULT_FULL_CACHE_TTL_SECONDS = 300
 
 # These are intentionally tiny in-process caches. They smooth repeated clicks
 # and back/forward navigation in one worker process, but they are not meant to
@@ -50,38 +50,6 @@ FILE_PATH_CACHE_TTL_SECONDS = 300
 _EQUIPMENT_CACHE = {"expires_at": 0.0, "value": None}
 _SPECTRUM_QUERY_CACHE = {}
 _FILE_PATH_CACHE = {}
-
-
-def _load_summary_locality_rows(equipment_id):
-    """Load locality options for one equipment from ``SITE_EQUIPMENT_OBS_SUMMARY``.
-
-    The locality selector only needs one row per ``equipment + site`` with the
-    observed date range and spectrum count. The summary table already stores
-    exactly that shape, so the selector no longer needs to aggregate directly
-    over ``FACT_SPECTRUM`` for each equipment change.
-    """
-
-    conn = get_connection_summary()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT
-            FK_SITE AS ID_SITE,
-            NA_SITE_LABEL AS LOCALITY_LABEL,
-            NA_COUNTY_NAME AS COUNTY_NAME,
-            NA_STATE_CODE AS STATE_CODE,
-            DT_FIRST_SEEN_AT AS DATE_START,
-            DT_LAST_SEEN_AT AS DATE_END,
-            NU_SPECTRUM_COUNT AS SPECTRUM_COUNT
-        FROM SITE_EQUIPMENT_OBS_SUMMARY
-        WHERE FK_EQUIPMENT = %s
-        ORDER BY DT_LAST_SEEN_AT DESC, NA_SITE_LABEL ASC, FK_SITE ASC
-        """,
-        (equipment_id,),
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return rows
 
 
 def _load_summary_site_availability_row(equipment_id, site_id):
@@ -263,14 +231,15 @@ def _build_fact_filters(
 ):
     """Build reusable ``FACT_SPECTRUM`` WHERE clauses.
 
-    The spectrum page has two personalities:
+    The same helper feeds two related result shapes:
 
-    - spectrum mode: one row per spectrum, so frequency/description are valid
-    - file mode: one row per repository file, so those filters would be
-      misleading because one file may contain multiple different spectra
+    - spectrum-oriented rows, where frequency/description filters are natural
+    - file-oriented rows derived from spectra, where callers may choose whether
+      those spectrum-specific filters should participate in the result set
 
-    ``include_freq`` and ``include_description`` let the callers reuse the same
-    filter builder while staying faithful to the semantics of each mode.
+    ``include_freq`` and ``include_description`` exist so the service can keep
+    one source of truth for SQL predicates while still making that business
+    choice explicitly at each call site.
     """
 
     where_clauses = []
@@ -318,6 +287,57 @@ def _build_where_sql(where_clauses):
         return ""
 
     return "WHERE " + " AND ".join(where_clauses)
+
+
+def _format_br_datetime(value):
+    """Format timestamps for Brazilian-facing UI surfaces."""
+
+    if value in (None, ""):
+        return value
+
+    text = _coerce_text(value).strip()
+
+    if not text:
+        return value
+
+    normalized_text = text.replace("Z", "+00:00")
+
+    try:
+        parsed = datetime.fromisoformat(normalized_text.replace(" ", "T"))
+    except ValueError:
+        return text
+
+    if (
+        parsed.hour == 0
+        and parsed.minute == 0
+        and parsed.second == 0
+        and parsed.microsecond == 0
+    ):
+        return parsed.strftime("%d-%m-%Y")
+
+    return parsed.strftime("%d-%m-%Y %H:%M:%S")
+
+
+def _format_row_datetime_fields(rows, *field_names):
+    """Format datetime-like fields in each row for template/API output."""
+
+    for row in rows:
+        for field_name in field_names:
+            if field_name in row:
+                row[field_name] = _format_br_datetime(row.get(field_name))
+
+
+def _format_single_row_datetime_fields(row, *field_names):
+    """Format datetime-like fields in one row for template/API output."""
+
+    if not row:
+        return row
+
+    for field_name in field_names:
+        if field_name in row:
+            row[field_name] = _format_br_datetime(row.get(field_name))
+
+    return row
 
 
 def _postprocess_file_rows(rows):
@@ -413,8 +433,17 @@ def _get_cached_query(cache_key):
 
 def _set_cached_query(cache_key, value):
     """Cache one query result for a short per-process TTL."""
+    _set_cached_query_with_ttl(
+        cache_key,
+        value,
+        SPECTRUM_QUERY_CACHE_TTL_SECONDS,
+    )
+
+
+def _set_cached_query_with_ttl(cache_key, value, ttl_seconds):
+    """Cache one query result with a caller-provided TTL."""
     _SPECTRUM_QUERY_CACHE[cache_key] = {
-        "expires_at": time.time() + SPECTRUM_QUERY_CACHE_TTL_SECONDS,
+        "expires_at": time.time() + ttl_seconds,
         "value": value,
     }
 
@@ -442,12 +471,11 @@ def _set_cached_file_path(cache_key, value):
 
 
 def _reduce_latest_repo_file_rows(repo_rows):
-    """
-    Keep only the newest repository file row for each spectrum.
+    """Keep only the newest repository file row for each spectrum.
 
-    `DIM_SPECTRUM_FILE.ID_FILE` is monotonic enough for this operational view.
-    Reducing in Python lets the main paginated spectrum query avoid a global
-    grouped subquery across the whole bridge table before `LIMIT/OFFSET`.
+    ``DIM_SPECTRUM_FILE.ID_FILE`` is treated as a monotonic proxy for the most
+    recent repository entry. That assumption matches the legacy operational
+    download flow already exposed by the module.
     """
 
     latest_by_spectrum = {}
@@ -456,7 +484,9 @@ def _reduce_latest_repo_file_rows(repo_rows):
         spectrum_id = row["ID_SPECTRUM"]
         current = latest_by_spectrum.get(spectrum_id)
 
-        if current is None or int(row.get("ID_FILE") or 0) > int(current.get("ID_FILE") or 0):
+        if current is None or int(row.get("ID_FILE") or 0) > int(
+            current.get("ID_FILE") or 0
+        ):
             latest_by_spectrum[spectrum_id] = row
 
     return latest_by_spectrum
@@ -476,13 +506,7 @@ def _attach_repository_file_metadata(rows, latest_repo_files):
 
 
 def _fetch_latest_repo_files_for_spectra(cur, spectrum_ids):
-    """Load repository file metadata only for the spectra shown on the page.
-
-    The main spectrum query intentionally stays focused on spectrum facts and
-    locality context. Repository file metadata is attached in a second, narrow
-    query scoped to the current page so pagination stays cheap and the primary
-    query does not need an expensive bridge-table reduction across all rows.
-    """
+    """Load repository file metadata only for the spectra shown on the page."""
 
     if not spectrum_ids:
         return {}
@@ -550,19 +574,9 @@ def get_spectrum_data(
     sort_by="date_start",
     sort_order="DESC",
     page=1,
-    page_size=50
+    page_size=50,
 ):
-    """Return paginated spectrum rows plus the total count.
-
-    Frequency filters keep only spectra whose band is contained within the
-    user-provided interval.
-
-    This is the "true spectrum" query used by the default mode of the page:
-
-    - one output row represents one spectrum
-    - ordering is spectrum-centric
-    - file metadata is attached afterward only for the visible page
-    """
+    """Return paginated spectrum rows plus the total count."""
     if sort_by not in ALLOWED_SORT_FIELDS:
         sort_by = "date_start"
 
@@ -576,8 +590,6 @@ def get_spectrum_data(
     except Exception:
         page = 1
 
-    # The cache key mirrors the full user-visible query state so back/forward
-    # navigation and repeated submits can reuse the exact same page payload.
     cache_key = (
         "spectrum",
         equipment_id,
@@ -619,8 +631,6 @@ def get_spectrum_data(
     limit_sql = "LIMIT %s OFFSET %s"
     data_params = params + [page_size, offset]
 
-    # Data and count stay separate on purpose. The table needs a paginated,
-    # richly joined rowset, while the paginator only needs the filtered total.
     data_query = f"""
         SELECT
             f.ID_SPECTRUM,
@@ -650,7 +660,6 @@ def get_spectrum_data(
             ON c.ID_COUNTY = s.FK_COUNTY
         LEFT JOIN DIM_SITE_STATE st
             ON st.ID_STATE = s.FK_STATE
-
         {where_sql}
         {order_sql}
         {limit_sql}
@@ -668,11 +677,9 @@ def get_spectrum_data(
     cur.execute(data_query, data_params)
     rows = cur.fetchall()
     spectrum_ids = [row["ID_SPECTRUM"] for row in rows]
-
-    # File metadata is fetched only for the rows already chosen by pagination.
-    # That keeps the expensive bridge lookup proportional to the visible page.
     latest_repo_files = _fetch_latest_repo_files_for_spectra(cur, spectrum_ids)
     _attach_repository_file_metadata(rows, latest_repo_files)
+    _format_row_datetime_fields(rows, "DT_TIME_START", "DT_TIME_END")
 
     cur.execute(count_query, params)
     result = cur.fetchone()
@@ -690,6 +697,9 @@ def get_spectrum_file_data(
     site_id=None,
     start_date=None,
     end_date=None,
+    freq_start=None,
+    freq_end=None,
+    description=None,
     sort_by="date_start",
     sort_order="DESC",
     page=1,
@@ -697,19 +707,12 @@ def get_spectrum_file_data(
 ):
     """Return paginated file-mode rows plus the total count.
 
-    File mode intentionally stops at file-level filters such as equipment and
-    time window. It does not filter by frequency because one file may contain
-    several spectra spanning different ranges.
+    The only active search semantics are spectrum-aware: filters always apply
+    to spectra first. The result list shown to the user is then collapsed to
+    unique repository files, one row per file.
 
-    The result shape is intentionally different from ``get_spectrum_data``:
-
-    - one output row represents one repository file
-    - multiple linked spectra collapse into file-level aggregates
-    - locality information becomes summarized instead of singular
-
-    This is the query behind the repository-oriented operational workflow:
-    operators inspect one file row first and only expand linked spectra on
-    demand.
+    That preserves the more functional spectrum search while avoiding a UI that
+    exposes internal spectrum identifiers as the primary result grain.
     """
     if sort_by not in ALLOWED_FILE_SORT_FIELDS:
         sort_by = "date_start"
@@ -730,6 +733,9 @@ def get_spectrum_file_data(
         site_id,
         start_date,
         end_date,
+        freq_start,
+        freq_end,
+        description,
         sort_by,
         sort_order,
         page,
@@ -740,8 +746,30 @@ def get_spectrum_file_data(
     if cached is not None:
         return cached
 
-    # File mode keeps one row per repository file to avoid repeating the same
-    # official file path for every linked spectrum.
+    # Pagination should not force the grouped query to run again for every
+    # page transition, so one full result set is cached per filter/sort state.
+    full_cache_key = (
+        "file_full",
+        equipment_id,
+        site_id,
+        start_date,
+        end_date,
+        freq_start,
+        freq_end,
+        description,
+        sort_by,
+        sort_order,
+    )
+    cached_full = _get_cached_query(full_cache_key)
+
+    if cached_full is not None:
+        full_rows, total = cached_full
+        offset = (page - 1) * page_size
+        page_rows = [dict(row) for row in full_rows[offset:offset + page_size]]
+        result = (page_rows, total)
+        _set_cached_query(cache_key, result)
+        return result
+
     locality_display_sql = _build_locality_display_sql()
     where_sql = "WHERE repos.NA_VOLUME = 'reposfi'"
 
@@ -750,25 +778,24 @@ def get_spectrum_file_data(
                  repos.ID_FILE DESC
     """
 
-    offset = (page - 1) * page_size
-    limit_sql = "LIMIT %s OFFSET %s"
-    data_params = [page_size, offset]
-
     fact_source_alias = "fs"
     fact_where_clauses, fact_params = _build_fact_filters(
         equipment_id=equipment_id,
         site_id=site_id,
         start_date=start_date,
         end_date=end_date,
+        freq_start=freq_start,
+        freq_end=freq_end,
+        description=description,
         fact_alias=fact_source_alias,
-        include_freq=False,
-        include_description=False,
+        include_freq=True,
+        include_description=True,
     )
     fact_where_sql = _build_where_sql(fact_where_clauses)
 
-    # The filtered FACT_SPECTRUM subquery narrows the working set before the
-    # bridge/file joins. That keeps file mode faithful to the active filters
-    # without turning the outer grouped query into a giant unfiltered scan.
+    # The filtered FACT_SPECTRUM subquery is the true search. After spectra are
+    # identified, the result is collapsed to unique repository files for UI
+    # rendering and download workflows.
     data_query = f"""
         SELECT
             repos.ID_FILE,
@@ -778,6 +805,8 @@ def get_spectrum_file_data(
             repos.VL_FILE_SIZE_KB,
             MIN(f.DT_TIME_START) AS DT_TIME_START,
             MAX(f.DT_TIME_END) AS DT_TIME_END,
+            MIN(f.NU_FREQ_START) AS NU_FREQ_START,
+            MAX(f.NU_FREQ_END) AS NU_FREQ_END,
             COUNT(*) AS NU_SPECTRA,
             COUNT(DISTINCT s.ID_SITE) AS LOCALITY_COUNT,
             GROUP_CONCAT(
@@ -789,7 +818,9 @@ def get_spectrum_file_data(
                 ID_SPECTRUM,
                 FK_SITE,
                 DT_TIME_START,
-                DT_TIME_END
+                DT_TIME_END,
+                NU_FREQ_START,
+                NU_FREQ_END
             FROM FACT_SPECTRUM {fact_source_alias}
             {fact_where_sql}
         ) f
@@ -813,40 +844,28 @@ def get_spectrum_file_data(
             repos.NA_EXTENSION,
             repos.VL_FILE_SIZE_KB
         {order_sql}
-        {limit_sql}
-    """
-
-    count_query = f"""
-        SELECT COUNT(*) AS total
-        FROM (
-            SELECT repos.ID_FILE
-            FROM (
-                SELECT
-                    ID_SPECTRUM
-                FROM FACT_SPECTRUM {fact_source_alias}
-                {fact_where_sql}
-            ) f
-            JOIN BRIDGE_SPECTRUM_FILE b
-                ON b.FK_SPECTRUM = f.ID_SPECTRUM
-            JOIN DIM_SPECTRUM_FILE repos
-                ON repos.ID_FILE = b.FK_FILE
-            {where_sql}
-            GROUP BY repos.ID_FILE
-        ) grouped_files
     """
 
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute(data_query, fact_params + data_params)
-    rows = cur.fetchall()
-    _postprocess_file_rows(rows)
-
-    cur.execute(count_query, fact_params)
-    result = cur.fetchone()
-    total = result["total"] if result else 0
+    cur.execute(data_query, fact_params)
+    full_rows = cur.fetchall()
 
     conn.close()
+
+    _format_row_datetime_fields(full_rows, "DT_TIME_START", "DT_TIME_END")
+    _postprocess_file_rows(full_rows)
+
+    total = len(full_rows)
+    _set_cached_query_with_ttl(
+        full_cache_key,
+        (full_rows, total),
+        FILE_RESULT_FULL_CACHE_TTL_SECONDS,
+    )
+
+    offset = (page - 1) * page_size
+    rows = [dict(row) for row in full_rows[offset:offset + page_size]]
 
     result = (rows, total)
     _set_cached_query(cache_key, result)
@@ -861,22 +880,21 @@ def _load_fact_locality_rows(
     freq_start=None,
     freq_end=None,
     description=None,
-    query_mode="spectrum",
 ):
-    """Load locality options directly from ``FACT_SPECTRUM`` as a fallback."""
+    """Load locality options directly from the live spectrum catalog.
 
-    include_freq = query_mode == "spectrum"
-    include_description = query_mode == "spectrum"
+    The selector follows the same spectrum-aware filters as the main search so
+    operators do not pick a locality that cannot produce any file result.
+    """
+
     where_clauses, params = _build_fact_filters(
         equipment_id=equipment_id,
         start_date=start_date,
         end_date=end_date,
-        freq_start=freq_start if include_freq else None,
-        freq_end=freq_end if include_freq else None,
-        description=description if include_description else None,
+        freq_start=freq_start,
+        freq_end=freq_end,
+        description=description,
         fact_alias="f",
-        include_freq=include_freq,
-        include_description=include_description,
     )
     where_sql = _build_where_sql(where_clauses)
     locality_display_sql = _build_locality_display_sql()
@@ -916,6 +934,7 @@ def _load_fact_locality_rows(
     cur.execute(query, params)
     rows = cur.fetchall()
     conn.close()
+    _format_row_datetime_fields(rows, "DATE_START", "DATE_END")
     return rows
 
 
@@ -956,7 +975,7 @@ def _load_fact_site_availability_row(equipment_id, site_id):
     )
     row = cur.fetchone()
     conn.close()
-    return row
+    return _format_single_row_datetime_fields(row, "DATE_START", "DATE_END")
 
 
 def get_spectrum_locality_options(
@@ -967,19 +986,11 @@ def get_spectrum_locality_options(
     freq_start=None,
     freq_end=None,
     description=None,
-    query_mode="spectrum",
 ):
-    """Return dynamic locality options for the current spectrum filters.
-
-    The locality select is dependent on the other filters. In spectrum mode it
-    should reflect the full active query, including frequency/description. In
-    file mode it intentionally ignores those spectrum-specific filters so the
-    locality list stays aligned with the file-centric result set.
-    """
+    """Return locality options aligned with the current unified search."""
 
     cache_key = (
         "locality_options",
-        query_mode,
         equipment_id,
         start_date,
         end_date,
@@ -992,32 +1003,14 @@ def get_spectrum_locality_options(
     if cached is not None:
         return cached
 
-    rows = []
-
-    # Prefer the summary-backed selector because it avoids a grouped
-    # FACT_SPECTRUM scan on every equipment change. When that read model is
-    # temporarily unavailable or stale for one equipment, fall back to the
-    # live catalog query instead of leaving the UI empty.
-    try:
-        _ = start_date, end_date, freq_start, freq_end, description, query_mode
-        rows = _load_summary_locality_rows(equipment_id)
-    except Exception:
-        LOGGER.exception(
-            "failed_to_load_summary_spectrum_localities equipment_id=%s query_mode=%s",
-            equipment_id,
-            query_mode,
-        )
-
-    if not rows:
-        rows = _load_fact_locality_rows(
-            equipment_id=equipment_id,
-            start_date=start_date,
-            end_date=end_date,
-            freq_start=freq_start,
-            freq_end=freq_end,
-            description=description,
-            query_mode=query_mode,
-        )
+    rows = _load_fact_locality_rows(
+        equipment_id=equipment_id,
+        start_date=start_date,
+        end_date=end_date,
+        freq_start=freq_start,
+        freq_end=freq_end,
+        description=description,
+    )
 
     result = _finalize_locality_options(rows)
 
@@ -1102,6 +1095,7 @@ def get_spectrum_site_availability_range(*, equipment_id=None, site_id=None):
 
     if row:
         row["SPECTRUM_COUNT"] = int(row.get("SPECTRUM_COUNT") or 0)
+        _format_single_row_datetime_fields(row, "DATE_START", "DATE_END")
 
     if row:
         _set_cached_query(cache_key, row)
@@ -1110,12 +1104,11 @@ def get_spectrum_site_availability_range(*, equipment_id=None, site_id=None):
 
 
 def get_file_by_spectrum_id(spectrum_id):
-    """Resolve the repository path for a single spectrum result.
+    """Resolve the repository path for a single spectrum identifier.
 
-    Spectrum mode may show a download action per spectrum even though the file
-    relationship is many-to-one over time. This helper resolves the newest
-    repository file associated with that spectrum for the operational download
-    flow used by the UI.
+    The unified page no longer renders one row per spectrum, but legacy links
+    may still ask for a download starting from ``ID_SPECTRUM`` instead of the
+    repository file id.
     """
     cache_key = ("spectrum_file_path", spectrum_id)
     cached = _get_cached_file_path(cache_key)
@@ -1125,9 +1118,8 @@ def get_file_by_spectrum_id(spectrum_id):
     conn = get_connection()
     cur = conn.cursor()
 
-    # The inner reduction picks the newest reposfi file linked to the spectrum.
-    # That matches the same "latest file wins" operational assumption used in
-    # the paginated spectrum view.
+    # Legacy spectrum-based downloads still follow the same operational rule:
+    # when several reposfi files point to the same spectrum, serve the newest.
     query = """
         SELECT
             repos.NA_PATH,
@@ -1173,12 +1165,7 @@ def get_file_by_spectrum_id(spectrum_id):
 
 
 def get_file_by_file_id(file_id):
-    """Resolve the repository path for a file-mode result.
-
-    File mode already works with repository-file rows, so the lookup is much
-    simpler than the spectrum-mode variant: just resolve the reposfi path for
-    the selected file id.
-    """
+    """Resolve the repository path for one repository file row."""
     cache_key = ("file_id_path", file_id)
     cached = _get_cached_file_path(cache_key)
 
@@ -1216,24 +1203,57 @@ def get_file_by_file_id(file_id):
     return file_path
 
 
-def get_spectra_by_file_id(file_id):
-    """Return the spectra linked to a single repository file.
+def get_spectra_by_file_id(
+    file_id,
+    *,
+    equipment_id=None,
+    site_id=None,
+    start_date=None,
+    end_date=None,
+    freq_start=None,
+    freq_end=None,
+    description=None,
+):
+    """Return every spectrum linked to one file plus the active-match flag.
 
-    This supports the expandable "file mode" view without forcing the main
-    query to repeat one line per spectrum. The page loads these details lazily
-    only when an operator expands one file row.
+    The unified search returns one row per file, but the detail panel still
+    shows the complete contents of that file. ``IS_MATCH`` marks the spectra
+    that justified the file entering the result set so the UI can highlight
+    them without hiding the rest.
     """
-    cache_key = ("file_spectra", file_id)
+    cache_key = (
+        "file_spectra",
+        file_id,
+        equipment_id,
+        site_id,
+        start_date,
+        end_date,
+        freq_start,
+        freq_end,
+        description,
+    )
     cached = _get_cached_query(cache_key)
 
     if cached is not None:
         return cached
 
+    match_clauses, match_params = _build_fact_filters(
+        equipment_id=equipment_id,
+        site_id=site_id,
+        start_date=start_date,
+        end_date=end_date,
+        freq_start=freq_start,
+        freq_end=freq_end,
+        description=description,
+        fact_alias="f",
+    )
+    match_sql = " AND ".join(match_clauses) if match_clauses else "1 = 1"
+
     conn = get_connection()
     cur = conn.cursor()
 
     cur.execute(
-        """
+        f"""
         SELECT
             f.ID_SPECTRUM,
             f.NA_DESCRIPTION,
@@ -1243,7 +1263,11 @@ def get_spectra_by_file_id(file_id):
             f.DT_TIME_END,
             f.NU_RBW,
             f.NU_TRACE_COUNT,
-            e.NA_EQUIPMENT
+            e.NA_EQUIPMENT,
+            CASE
+                WHEN {match_sql} THEN 1
+                ELSE 0
+            END AS IS_MATCH
         FROM BRIDGE_SPECTRUM_FILE b
         JOIN FACT_SPECTRUM f
             ON f.ID_SPECTRUM = b.FK_SPECTRUM
@@ -1252,11 +1276,13 @@ def get_spectra_by_file_id(file_id):
         WHERE b.FK_FILE = %s
         ORDER BY f.DT_TIME_START DESC, f.ID_SPECTRUM DESC
         """,
-        (file_id,),
+        match_params + [file_id],
     )
 
     rows = cur.fetchall()
     conn.close()
+
+    _format_row_datetime_fields(rows, "DT_TIME_START", "DT_TIME_END")
 
     _set_cached_query(cache_key, rows)
     return rows

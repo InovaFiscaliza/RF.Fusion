@@ -11,7 +11,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260415-page-css-extraction') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260511-spectrum-unified-search') }}">
 {% endblock %}
 
 {% block content %}
@@ -37,18 +37,6 @@
     <form method="get" id="spectrum-query-form" data-loading-message="Consultando espectros...">
 
         <div class="spectrum-query-grid">
-
-            <div class="spectrum-query-field">
-                <label>Modo da Consulta</label>
-                <div class="select-shell">
-                    <select name="query_mode"
-                            id="query_mode"
-                            class="form-control">
-                        <option value="spectrum" {% if query_mode == "spectrum" %}selected{% endif %}>Espectro</option>
-                        <option value="file" {% if query_mode == "file" %}selected{% endif %}>Arquivo</option>
-                    </select>
-                </div>
-            </div>
 
             <div class="spectrum-query-field">
                 <label>Estação / Equipamento</label>
@@ -86,9 +74,9 @@
                 </div>
                 <div class="filter-helper-text" id="site-filter-hint">
                     {% if site_id and localities %}
-                        Localidade carregada. As opções disponíveis seguem a estação selecionada, sem depender do período.
+                        Localidade carregada. As opções disponíveis seguem a estação e os filtros ativos.
                     {% else %}
-                        As localidades disponíveis seguem somente a estação selecionada.
+                        As localidades disponíveis seguem a estação e os filtros ativos.
                     {% endif %}
                 </div>
             </div>
@@ -109,7 +97,6 @@
                        class="form-control">
             </div>
 
-            {% if query_mode == "spectrum" %}
             <div class="spectrum-query-field">
                 <label>Frequência Inicial (MHz)</label>
                 <input type="number"
@@ -119,7 +106,7 @@
                        step="0.001"
                        min="0">
                 <div class="filter-helper-text">
-                    Retorna apenas faixas contidas dentro do intervalo informado.
+                    Retorna arquivos que tenham pelo menos um espectro sobrepondo a faixa informada.
                 </div>
             </div>
 
@@ -130,7 +117,7 @@
                        value="{{ freq_end or '' }}"
                        class="form-control"
                        step="0.001"
-                       placeholder="Ex.: 100 a 200 inclui 105–140 e 155–165, mas exclui 70–110."
+                       placeholder="Ex.: 70 a 120 inclui 70–110 e 105–140."
                        min="0">
             </div>
 
@@ -145,9 +132,7 @@
                     Para buscar um plano específico, você pode usar coringas SQL como <code>%PMEC%</code>.
                 </div>
             </div>
-            {% endif %}
 
-            {% if query_mode == "file" %}
             <div class="spectrum-query-field">
                 <label>Ordenação</label>
                 <div class="select-shell">
@@ -161,19 +146,6 @@
                     </select>
                 </div>
             </div>
-            {% else %}
-            <div class="spectrum-query-field">
-                <label>Ordenação</label>
-                <div class="select-shell">
-                    <select name="sort_by" class="form-control">
-                        <option value="recent" {% if selected_spectrum_sort == "recent" %}selected{% endif %}>Mais recentes</option>
-                        <option value="oldest" {% if selected_spectrum_sort == "oldest" %}selected{% endif %}>Mais antigos</option>
-                        <option value="freq_start" {% if selected_spectrum_sort == "freq_start" %}selected{% endif %}>Frequência inicial</option>
-                        <option value="freq_end" {% if selected_spectrum_sort == "freq_end" %}selected{% endif %}>Frequência final</option>
-                    </select>
-                </div>
-            </div>
-            {% endif %}
 
         </div>
 
@@ -207,14 +179,12 @@
     <div class="margin-bottom-s text-neutral-7 font-size-s">
         Exibindo {{ (page-1)*50 + 1 }} –
         {{ (page-1)*50 + rows|length }}
-        de {{ total }} registros
+        de {{ total }} arquivos
     </div>
 
-    {% if query_mode == "file" %}
-    <div class="margin-bottom-s text-neutral-7 font-size-s">
-        Modo arquivo: uma linha por arquivo oficial, agregando o período e a quantidade de espectros associados.
+    <div class="margin-bottom-s text-neutral-7 font-size-s file-summary-note">
+        Uma linha por arquivo oficial. Expanda para ver todos os espectros; os que satisfazem a busca aparecem em destaque.
     </div>
-    {% endif %}
 
     <div class="pagination-container">
         <div class="text-neutral-7 font-size-s">
@@ -266,7 +236,6 @@
 
             <table>
                 <thead>
-                {% if query_mode == "file" %}
                 <tr>
                     <th></th>
                     <th>ID Arquivo</th>
@@ -274,27 +243,13 @@
                     <th>Localidade</th>
                     <th>Início</th>
                     <th>Fim</th>
+                    <th>Faixa Total (MHz)</th>
                     <th>Qtd. Espectros</th>
                     <th>Arquivo Oficial</th>
                 </tr>
-                {% else %}
-                <tr>
-                    <th>ID</th>
-                    <th>Plano</th>
-                    <th>Equipamento</th>
-                    <th>Localidade</th>
-                    <th>Faixa (MHz)</th>
-                    <th>Início</th>
-                    <th>Fim</th>
-                    <th>RBW</th>
-                    <th>Traces</th>
-                    <th>Arquivo Oficial</th>
-                </tr>
-                {% endif %}
                 </thead>
 
                 <tbody>
-                {% if query_mode == "file" %}
                 {% for r in rows %}
                 <tr class="file-summary-row" data-file-id="{{ r.ID_FILE }}">
                     <td>
@@ -311,6 +266,7 @@
                     <td title="{{ r.LOCALITY_DETAILS or r.LOCALITY_DISPLAY }}">{{ r.LOCALITY_DISPLAY }}</td>
                     <td>{{ r.DT_TIME_START }}</td>
                     <td>{{ r.DT_TIME_END }}</td>
+                    <td>{{ r.NU_FREQ_START }} – {{ r.NU_FREQ_END }}</td>
                     <td>{{ r.NU_SPECTRA }}</td>
                     <td>
                         {% if r.NA_FILE %}
@@ -328,42 +284,13 @@
                     </td>
                 </tr>
                 <tr class="file-detail-row" data-file-detail="{{ r.ID_FILE }}" hidden>
-                    <td colspan="8">
+                    <td colspan="9">
                         <div class="file-detail-panel">
                             <div class="file-detail-loading">Carregando espectros do arquivo...</div>
                         </div>
                     </td>
                 </tr>
                 {% endfor %}
-                {% else %}
-                {% for r in rows %}
-                <tr>
-                    <td>{{ r.ID_SPECTRUM }}</td>
-                    <td>{{ r.NA_DESCRIPTION }}</td>
-                    <td>{{ r.NA_EQUIPMENT }}</td>
-                    <td>{{ r.LOCALITY_LABEL or "—" }}</td>
-                    <td>{{ r.NU_FREQ_START }} – {{ r.NU_FREQ_END }}</td>
-                    <td>{{ r.DT_TIME_START }}</td>
-                    <td>{{ r.DT_TIME_END }}</td>
-                    <td>{{ r.NU_RBW }}</td>
-                    <td>{{ r.NU_TRACE_COUNT }}</td>
-                    <td>
-                        {% if r.NA_FILE %}
-                            <a href="{{ r.DOWNLOAD_URL or url_for('spectrum.download_spectrum', spectrum_id=r.ID_SPECTRUM) }}"
-                               data-download-loading-message="Iniciando download do arquivo..."
-                               class="file-link">
-                                {{ r.NA_FILE }}
-                            </a>
-                            <span class="file-size">
-                                ({{ r.VL_FILE_SIZE_KB }} KB)
-                            </span>
-                        {% else %}
-                            —
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-                {% endif %}
                 </tbody>
 
             </table>
@@ -390,5 +317,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/spectrum_page.js', v='20260415-spectrum-page-extraction') }}"></script>
+<script src="{{ url_for('static', filename='js/spectrum_page.js', v='20260511-spectrum-unified-search') }}"></script>
 {% endblock %}
