@@ -1040,10 +1040,6 @@ def finalize_task_resolution(
                 new_path = trashed_source_meta["file_path"]
                 history_server_path = trashed_source_meta["file_path"]
 
-    # The processing stage is terminal for the live queue row. Success or
-    # failure is represented afterwards only in FILE_TASK_HISTORY.
-    db_bp.file_task_delete(task_id=file_task_id)
-
     status = k.TASK_DONE if file_was_processed else k.TASK_ERROR
 
     history_meta = history_meta_override or resolve_history_file_metadata(
@@ -1082,22 +1078,48 @@ def finalize_task_resolution(
         message=na_message,
     )
 
-    db_bp.file_history_update(
-        host_id=host_id,
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        host_file_name=host_file_name,
-        host_file_path=host_path,
-        DT_PROCESSED=processed_at,
-        NA_SERVER_FILE_NAME=history_meta["name"],
-        NA_SERVER_FILE_PATH=history_server_path,
-        NA_EXTENSION=history_meta["extension"],
-        VL_FILE_SIZE_KB=history_meta["size_kb"],
-        DT_FILE_CREATED=history_meta["dt_created"],
-        DT_FILE_MODIFIED=history_meta["dt_modified"],
-        NU_STATUS_PROCESSING=status,
-        NA_MESSAGE=na_message,
-        **structured_error_fields,
-    )
+    # Closing processing must be atomic on BPDATA. If history cannot be
+    # finalized, the live queue row must remain recoverable; if deletion
+    # fails, the history update must roll back so the task does not vanish
+    # from FILE_TASK while staying pending in FILE_TASK_HISTORY.
+    db_bp.begin_transaction()
+    try:
+        history_result = db_bp.file_history_update(
+            host_id=host_id,
+            task_type=k.FILE_TASK_PROCESS_TYPE,
+            host_file_name=host_file_name,
+            host_file_path=host_path,
+            DT_PROCESSED=processed_at,
+            NA_SERVER_FILE_NAME=history_meta["name"],
+            NA_SERVER_FILE_PATH=history_server_path,
+            NA_EXTENSION=history_meta["extension"],
+            VL_FILE_SIZE_KB=history_meta["size_kb"],
+            DT_FILE_CREATED=history_meta["dt_created"],
+            DT_FILE_MODIFIED=history_meta["dt_modified"],
+            NU_STATUS_PROCESSING=status,
+            NA_MESSAGE=na_message,
+            **structured_error_fields,
+        )
+
+        if history_result.get("rows_affected") != 1:
+            raise RuntimeError(
+                "FILE_TASK_HISTORY finalization affected "
+                f"{history_result.get('rows_affected')} rows "
+                f"(expected 1 for host={host_id}, path={host_path}, "
+                f"name={host_file_name})"
+            )
+
+        deleted_rows = db_bp.file_task_delete(task_id=file_task_id)
+        if deleted_rows != 1:
+            raise RuntimeError(
+                f"FILE_TASK delete affected {deleted_rows} rows "
+                f"(expected 1 for task_id={file_task_id})"
+            )
+
+        db_bp.commit()
+    except Exception:
+        db_bp.rollback()
+        raise
 
     # Statistics are updated after history so host-level counters see the same
     # finalized state that the operator would read from FILE_TASK_HISTORY.

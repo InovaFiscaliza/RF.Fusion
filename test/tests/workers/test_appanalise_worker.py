@@ -80,19 +80,46 @@ class FakeDbBkp:
     """Minimal FILE_TASK persistence double with in-memory call recording."""
 
     def __init__(self) -> None:
+        self.in_transaction = False
         self.task_updates = []
         self.task_deletes = []
         self.history_updates = []
         self.statistics_updates = []
+        self.transaction_events = []
+        self.history_rows_affected = 1
+        self.delete_rows_affected = 1
 
-    def file_task_update(self, **kwargs) -> None:
+    def begin_transaction(self) -> None:
+        self.in_transaction = True
+        self.transaction_events.append("begin")
+
+    def commit(self) -> None:
+        self.transaction_events.append("commit")
+        self.in_transaction = False
+
+    def rollback(self) -> None:
+        self.transaction_events.append("rollback")
+        self.in_transaction = False
+
+    def file_task_update(self, **kwargs):
         self.task_updates.append(kwargs)
+        return {
+            "success": True,
+            "rows_affected": 1,
+            "updated_fields": kwargs,
+        }
 
-    def file_task_delete(self, **kwargs) -> None:
+    def file_task_delete(self, **kwargs):
         self.task_deletes.append(kwargs)
+        return self.delete_rows_affected
 
-    def file_history_update(self, **kwargs) -> None:
+    def file_history_update(self, **kwargs):
         self.history_updates.append(kwargs)
+        return {
+            "success": True,
+            "rows_affected": self.history_rows_affected,
+            "updated_fields": kwargs,
+        }
 
     def host_task_statistics_create(self, **kwargs) -> None:
         self.statistics_updates.append(kwargs)
@@ -1053,6 +1080,86 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         self.assertEqual(len(fake_log.warnings), 1)
         self.assertIn("appanalise_unavailable_retry", fake_log.warnings[0])
 
+    def test_main_skips_processing_when_another_worker_wins_the_claim(self) -> None:
+        fake_log = FakeWorkerLog()
+        sleep_calls = []
+
+        class FakeDbBkpMain(FakeDbBkp):
+            last_instance = None
+
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__()
+                self._read_once = False
+                FakeDbBkpMain.last_instance = self
+
+            def read_file_task(self, **kwargs):
+                if self._read_once:
+                    return None
+                self._read_once = True
+                return (
+                    {
+                        "FILE_TASK__ID_FILE_TASK": 321,
+                        "FILE_TASK__NA_SERVER_FILE_PATH": "/mnt/reposfi/tmp/RFEye002211",
+                        "FILE_TASK__NA_SERVER_FILE_NAME": "sample.bin",
+                        "FILE_TASK__NA_HOST_FILE_PATH": "/mnt/internal/data/2026/PECAN",
+                        "FILE_TASK__NA_HOST_FILE_NAME": "sample.bin",
+                        "HOST__NA_HOST_NAME": "RFEye002211",
+                        "FILE_TASK__NA_EXTENSION": ".bin",
+                        "FILE_TASK__DT_FILE_CREATED": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__DT_FILE_MODIFIED": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__VL_FILE_SIZE_KB": 123,
+                    },
+                    10699,
+                    None,
+                )
+
+            def file_task_update(self, **kwargs):
+                self.task_updates.append(kwargs)
+                return {
+                    "success": True,
+                    "rows_affected": 0,
+                    "updated_fields": kwargs,
+                }
+
+        class FakeDbRfmMain:
+            def __init__(self, *args, **kwargs) -> None:
+                self.in_transaction = False
+
+        class FakeApp:
+            def check_connection(self) -> None:
+                return None
+
+            def process(self, **kwargs):
+                raise AssertionError("process() should not run after a lost claim")
+
+        def stop_after_second_sleep():
+            sleep_calls.append("slept")
+            if len(sleep_calls) >= 2:
+                worker.process_status["running"] = False
+
+        with patch.object(worker, "log", fake_log):
+            with patch.object(worker, "dbHandlerBKP", FakeDbBkpMain):
+                with patch.object(worker, "dbHandlerRFM", FakeDbRfmMain):
+                    with patch.object(worker, "AppAnaliseConnection", FakeApp):
+                        with patch.object(
+                            worker.runtime_sleep,
+                            "random_jitter_sleep",
+                            side_effect=stop_after_second_sleep,
+                        ):
+                            worker.process_status["running"] = True
+                            worker.main()
+
+        db_bp = FakeDbBkpMain.last_instance
+        self.assertEqual(len(db_bp.task_updates), 1)
+        self.assertEqual(db_bp.task_updates[0]["expected_status"], worker.k.TASK_PENDING)
+        self.assertEqual(len(db_bp.task_deletes), 0)
+        self.assertEqual(len(db_bp.history_updates), 0)
+        self.assertEqual(len(db_bp.statistics_updates), 0)
+        self.assertEqual(sleep_calls, ["slept", "slept"])
+        self.assertTrue(
+            any("event=file_task_claim_lost" in warning for warning in fake_log.warnings)
+        )
+
     def test_main_uses_export_as_error_artifact_when_validation_fails_after_export(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir) / "reposfi"
@@ -1450,6 +1557,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             self.assertEqual(len(db_rfm.bridge_calls), 1)
             self.assertEqual(len(db_bp.task_deletes), 1)
             self.assertEqual(len(db_bp.history_updates), 1)
+            self.assertEqual(db_bp.transaction_events, ["begin", "commit"])
             self.assertFalse(db_bp.statistics_updates[0]["log_if_active"])
             self.assertEqual(
                 db_bp.history_updates[0]["NA_SERVER_FILE_NAME"],
@@ -1564,6 +1672,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             self.assertEqual(result["new_path"], str(repo_root / "trash"))
             self.assertEqual(len(db_bp.task_deletes), 1)
             self.assertEqual(len(db_bp.history_updates), 1)
+            self.assertEqual(db_bp.transaction_events, ["begin", "commit"])
             self.assertEqual(
                 db_bp.history_updates[0]["NA_SERVER_FILE_NAME"],
                 "sample_DONE.mat",
@@ -1582,6 +1691,51 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             )
             self.assertIn("[ERROR] validation failed", db_bp.history_updates[0]["NA_MESSAGE"])
             self.assertEqual(len(db_bp.statistics_updates), 1)
+
+    def test_finalize_task_resolution_rolls_back_when_history_update_affects_zero_rows(self) -> None:
+        db_bp = FakeDbBkp()
+        db_bp.history_rows_affected = 0
+
+        with self.assertRaisesRegex(RuntimeError, "FILE_TASK_HISTORY finalization affected 0 rows"):
+            processing.finalize_task_resolution(
+                db_bp,
+                file_task_id=101,
+                host_id=8,
+                host_file_name="host_sample.zip",
+                host_path="/host/path",
+                server_name="sample_DONE.zip",
+                extension=".zip",
+                vl_file_size_kb=123,
+                dt_created=datetime(2026, 1, 1, 0, 0, 0),
+                dt_modified=datetime(2026, 1, 1, 0, 0, 0),
+                file_was_processed=True,
+                new_path="/mnt/reposfi/2026/DF/1/2",
+                file_meta={
+                    "file_path": "/mnt/reposfi/2026/DF/1/2",
+                    "file_name": "sample_DONE.mat",
+                    "extension": ".mat",
+                    "size_kb": 123,
+                    "dt_created": datetime(2026, 1, 1, 0, 0, 0),
+                    "dt_modified": datetime(2026, 1, 1, 0, 0, 0),
+                    "full_path": "/mnt/reposfi/2026/DF/1/2/sample_DONE.mat",
+                },
+                source_file_meta={
+                    "file_path": "/mnt/reposfi/tmp",
+                    "file_name": "sample_DONE.zip",
+                    "extension": ".zip",
+                    "size_kb": 123,
+                    "dt_created": datetime(2026, 1, 1, 0, 0, 0),
+                    "dt_modified": datetime(2026, 1, 1, 0, 0, 0),
+                    "full_path": "/mnt/reposfi/tmp/sample_DONE.zip",
+                },
+                export=True,
+                err=FakeErr(),
+            )
+
+        self.assertEqual(len(db_bp.history_updates), 1)
+        self.assertEqual(len(db_bp.task_deletes), 0)
+        self.assertEqual(len(db_bp.statistics_updates), 0)
+        self.assertEqual(db_bp.transaction_events, ["begin", "rollback"])
 
 
 if __name__ == "__main__":

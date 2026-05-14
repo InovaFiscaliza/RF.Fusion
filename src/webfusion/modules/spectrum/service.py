@@ -31,10 +31,10 @@ ALLOWED_SORT_FIELDS = {
 ALLOWED_SORT_ORDERS = ["ASC", "DESC"]
 
 ALLOWED_FILE_SORT_FIELDS = {
-    "date_start": "MIN(f.DT_TIME_START)",
-    "date_end": "MAX(f.DT_TIME_END)",
+    "date_start": "ctx.DT_TIME_START",
+    "date_end": "ctx.DT_TIME_END",
     "file_name": "repos.NA_FILE",
-    "spectrum_count": "COUNT(*)",
+    "spectrum_count": "stats.NU_SPECTRA",
 }
 
 SPECTRUM_QUERY_CACHE_TTL_SECONDS = 30
@@ -43,6 +43,7 @@ FILE_PATH_CACHE_TTL_SECONDS = 300
 # Full file-result pages reuse one heavy grouped query result for a few minutes
 # so operators can move across pagination links without re-scanning the catalog.
 FILE_RESULT_FULL_CACHE_TTL_SECONDS = 300
+FILE_RESULT_CACHE_VERSION = 2
 
 # These are intentionally tiny in-process caches. They smooth repeated clicks
 # and back/forward navigation in one worker process, but they are not meant to
@@ -729,6 +730,7 @@ def get_spectrum_file_data(
 
     cache_key = (
         "file",
+        FILE_RESULT_CACHE_VERSION,
         equipment_id,
         site_id,
         start_date,
@@ -750,6 +752,7 @@ def get_spectrum_file_data(
     # page transition, so one full result set is cached per filter/sort state.
     full_cache_key = (
         "file_full",
+        FILE_RESULT_CACHE_VERSION,
         equipment_id,
         site_id,
         start_date,
@@ -796,6 +799,20 @@ def get_spectrum_file_data(
     # The filtered FACT_SPECTRUM subquery is the true search. After spectra are
     # identified, the result is collapsed to unique repository files for UI
     # rendering and download workflows.
+    filtered_spectra_sql = f"""
+        SELECT
+            ID_SPECTRUM,
+            FK_SITE,
+            DT_TIME_START,
+            DT_TIME_END,
+            NU_FREQ_START,
+            NU_FREQ_END
+        FROM FACT_SPECTRUM {fact_source_alias}
+        {fact_where_sql}
+    """
+
+    # The search still matches files via filtered spectra, but the UI should
+    # show how many spectra exist in the whole file once that file qualifies.
     data_query = f"""
         SELECT
             repos.ID_FILE,
@@ -803,53 +820,82 @@ def get_spectrum_file_data(
             repos.NA_FILE,
             repos.NA_EXTENSION,
             repos.VL_FILE_SIZE_KB,
-            MIN(f.DT_TIME_START) AS DT_TIME_START,
-            MAX(f.DT_TIME_END) AS DT_TIME_END,
-            MIN(f.NU_FREQ_START) AS NU_FREQ_START,
-            MAX(f.NU_FREQ_END) AS NU_FREQ_END,
-            COUNT(*) AS NU_SPECTRA,
-            COUNT(DISTINCT s.ID_SITE) AS LOCALITY_COUNT,
-            GROUP_CONCAT(
-                DISTINCT {locality_display_sql}
-                ORDER BY {locality_display_sql} SEPARATOR '||'
-            ) AS LOCALITY_LABELS
+            ctx.DT_TIME_START,
+            ctx.DT_TIME_END,
+            ctx.NU_FREQ_START,
+            ctx.NU_FREQ_END,
+            stats.NU_SPECTRA,
+            ctx.LOCALITY_COUNT,
+            ctx.LOCALITY_LABELS
         FROM (
+            SELECT DISTINCT
+                repos.ID_FILE,
+                repos.NA_PATH,
+                repos.NA_FILE,
+                repos.NA_EXTENSION,
+                repos.VL_FILE_SIZE_KB
+            FROM ({filtered_spectra_sql}) f
+            JOIN BRIDGE_SPECTRUM_FILE b
+                ON b.FK_SPECTRUM = f.ID_SPECTRUM
+            JOIN DIM_SPECTRUM_FILE repos
+                ON repos.ID_FILE = b.FK_FILE
+            {where_sql}
+        ) repos
+        JOIN (
             SELECT
-                ID_SPECTRUM,
-                FK_SITE,
-                DT_TIME_START,
-                DT_TIME_END,
-                NU_FREQ_START,
-                NU_FREQ_END
-            FROM FACT_SPECTRUM {fact_source_alias}
-            {fact_where_sql}
-        ) f
-        JOIN BRIDGE_SPECTRUM_FILE b
-            ON b.FK_SPECTRUM = f.ID_SPECTRUM
-        JOIN DIM_SPECTRUM_FILE repos
-            ON repos.ID_FILE = b.FK_FILE
-        JOIN DIM_SPECTRUM_SITE s
-            ON s.ID_SITE = f.FK_SITE
-        LEFT JOIN DIM_SITE_DISTRICT d
-            ON d.ID_DISTRICT = s.FK_DISTRICT
-        LEFT JOIN DIM_SITE_COUNTY c
-            ON c.ID_COUNTY = s.FK_COUNTY
-        LEFT JOIN DIM_SITE_STATE st
-            ON st.ID_STATE = s.FK_STATE
-        {where_sql}
-        GROUP BY
-            repos.ID_FILE,
-            repos.NA_PATH,
-            repos.NA_FILE,
-            repos.NA_EXTENSION,
-            repos.VL_FILE_SIZE_KB
+                repos.ID_FILE,
+                MIN(f.DT_TIME_START) AS DT_TIME_START,
+                MAX(f.DT_TIME_END) AS DT_TIME_END,
+                MIN(f.NU_FREQ_START) AS NU_FREQ_START,
+                MAX(f.NU_FREQ_END) AS NU_FREQ_END,
+                COUNT(DISTINCT s.ID_SITE) AS LOCALITY_COUNT,
+                GROUP_CONCAT(
+                    DISTINCT {locality_display_sql}
+                    ORDER BY {locality_display_sql} SEPARATOR '||'
+                ) AS LOCALITY_LABELS
+            FROM ({filtered_spectra_sql}) f
+            JOIN BRIDGE_SPECTRUM_FILE b
+                ON b.FK_SPECTRUM = f.ID_SPECTRUM
+            JOIN DIM_SPECTRUM_FILE repos
+                ON repos.ID_FILE = b.FK_FILE
+            JOIN DIM_SPECTRUM_SITE s
+                ON s.ID_SITE = f.FK_SITE
+            LEFT JOIN DIM_SITE_DISTRICT d
+                ON d.ID_DISTRICT = s.FK_DISTRICT
+            LEFT JOIN DIM_SITE_COUNTY c
+                ON c.ID_COUNTY = s.FK_COUNTY
+            LEFT JOIN DIM_SITE_STATE st
+                ON st.ID_STATE = s.FK_STATE
+            {where_sql}
+            GROUP BY repos.ID_FILE
+        ) ctx
+            ON ctx.ID_FILE = repos.ID_FILE
+        JOIN (
+            SELECT
+                b.FK_FILE AS ID_FILE,
+                COUNT(DISTINCT b.FK_SPECTRUM) AS NU_SPECTRA
+            FROM BRIDGE_SPECTRUM_FILE b
+            JOIN (
+                SELECT DISTINCT repos.ID_FILE
+                FROM ({filtered_spectra_sql}) f
+                JOIN BRIDGE_SPECTRUM_FILE b
+                    ON b.FK_SPECTRUM = f.ID_SPECTRUM
+                JOIN DIM_SPECTRUM_FILE repos
+                    ON repos.ID_FILE = b.FK_FILE
+                {where_sql}
+            ) matched_files
+                ON matched_files.ID_FILE = b.FK_FILE
+            GROUP BY b.FK_FILE
+        ) stats
+            ON stats.ID_FILE = repos.ID_FILE
         {order_sql}
     """
 
     conn = get_connection()
     cur = conn.cursor()
 
-    cur.execute(data_query, fact_params)
+    data_params = fact_params + fact_params + fact_params
+    cur.execute(data_query, data_params)
     full_rows = cur.fetchall()
 
     conn.close()

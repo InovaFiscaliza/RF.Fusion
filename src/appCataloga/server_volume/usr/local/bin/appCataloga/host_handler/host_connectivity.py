@@ -314,6 +314,19 @@ def persist_host_connectivity_state(
     This helper only persists definitive online/offline outcomes. Ambiguous
     states such as SSH degradation are handled by the caller before this point.
     """
+    def _suspend_host_dependent_work() -> None:
+        """
+        Reassert suspension of host-dependent queues for an offline host.
+
+        This is intentionally safe to call on every offline confirmation. The
+        DB helpers only touch DISCOVERY/BACKUP and only when they are still in
+        live states such as PENDING/RUNNING, so the calls act as an idempotent
+        reconciliation pass after restarts or manual requeues.
+        """
+        db.host_task_suspend_by_host(host_id)
+        db.file_task_suspend_by_host(host_id)
+        db.file_history_suspend_by_host(host_id)
+
     if online:
         # `(0,1)` and `(1,1)` both land here. In both cases the persisted
         # result is "host is operational now", so we explicitly assign the
@@ -373,18 +386,18 @@ def persist_host_connectivity_state(
             previous_state="online",
             current_state="offline",
         )
-        db.host_task_suspend_by_host(host_id)
-        db.file_task_suspend_by_host(host_id)
-        db.file_history_suspend_by_host(host_id)
+        _suspend_host_dependent_work()
         update_fields.update(
             IS_BUSY=False,
             NU_PID=k.HOST_UNLOCKED_PID,
             NU_HOST_CHECK_ERROR=1,
             DT_LAST_FAIL=now,
         )
-    # `(1,0)`: the host was already offline and remains offline. In that case
-    # `update_fields` still contains only the lightweight refresh fields above,
-    # so the original suspension/error side effects are not repeated.
+    else:
+        # `(1,0)`: the host was already offline and remains offline. Reassert
+        # the suspension contract so host-dependent work that was reset or
+        # manually requeued while the app was down does not remain PENDING.
+        _suspend_host_dependent_work()
 
     db.host_update(host_id=host_id, reset=True, **update_fields)
 

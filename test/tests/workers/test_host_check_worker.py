@@ -538,13 +538,66 @@ class HostMaintenanceTests(unittest.TestCase):
             db.host_updates,
             [{
                 "host_id": 78,
+                "reset": True,
                 "IS_OFFLINE": True,
                 "DT_LAST_CHECK": now,
-                "DT_LAST_FAIL": now,
             }],
         )
         self.assertEqual(db.resumed_hosts, [])
+        self.assertEqual(
+            db.suspended_hosts,
+            [
+                ("host_task", 78),
+                ("file_task", 78),
+                ("file_history", 78),
+            ],
+        )
         probe_host_connectivity.assert_called_once()
+
+    def test_run_host_check_all_batch_reasserts_suspension_when_offline_host_stays_offline(self) -> None:
+        now = datetime(2026, 3, 23, 12, 0, 0)
+        db = FakeDB(
+            hosts=[
+                {
+                    "ID_HOST": 79,
+                    "NA_HOST_NAME": "station-offline-steady",
+                    "NA_HOST_ADDRESS": "172.24.1.79",
+                    "NA_HOST_PORT": 22,
+                    "NA_HOST_USER": "root",
+                    "NA_HOST_PASSWORD": "secret",
+                    "IS_BUSY": False,
+                    "IS_OFFLINE": True,
+                    "DT_LAST_CHECK": now - timedelta(hours=1),
+                }
+            ]
+        )
+
+        with patch.object(
+            host_maintenance_worker.host_connectivity,
+            "is_host_online",
+            return_value=False,
+        ):
+            checked = self._run_maintenance_batch(db=db, now=now)
+
+        self.assertEqual(checked, 1)
+        self.assertEqual(
+            db.host_updates,
+            [{
+                "host_id": 79,
+                "reset": True,
+                "IS_OFFLINE": True,
+                "DT_LAST_CHECK": now,
+            }],
+        )
+        self.assertEqual(
+            db.suspended_hosts,
+            [
+                ("host_task", 79),
+                ("file_task", 79),
+                ("file_history", 79),
+            ],
+        )
+        self.assertEqual(db.resumed_hosts, [])
 
     def test_run_host_check_all_batch_does_not_clear_timeout_counter_on_ping_only_success(self) -> None:
         now = datetime(2026, 3, 23, 12, 0, 0)

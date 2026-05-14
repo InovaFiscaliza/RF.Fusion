@@ -791,6 +791,7 @@ class HostTaskConnectivityLifecycleTests(unittest.TestCase):
         for call in calls:
             self.assertEqual(call["table"], "HOST_TASK")
             self.assertEqual(call["data"]["NU_STATUS"], db_bkp_module.k.TASK_PENDING)
+            self.assertIsNone(call["data"]["NU_PID"])
             self.assertNotIn("NU_TYPE", call["data"])
             self.assertEqual(call["where"]["FK_HOST"], 88)
             self.assertEqual(call["where"]["NU_TYPE__in"], expected_types)
@@ -799,6 +800,35 @@ class HostTaskConnectivityLifecycleTests(unittest.TestCase):
                 call["where"]["NU_TYPE__in"],
             )
         self.assertIn("DT_HOST_TASK__lt", calls[2]["where"])
+
+    def test_file_task_resume_by_host_clears_pid_when_requeueing(self) -> None:
+        """Connectivity resume must drop stale worker ownership from FILE_TASK."""
+
+        handler = self.make_handler()
+        calls = []
+
+        def fake_update_row(*, table, data, where, commit):
+            calls.append(
+                {
+                    "table": table,
+                    "data": data,
+                    "where": where,
+                    "commit": commit,
+                }
+            )
+            return 1
+
+        handler._update_row = fake_update_row
+
+        handler.file_task_resume_by_host(host_id=91, busy_timeout_seconds=321)
+
+        self.assertEqual(len(calls), 3)
+        for call in calls:
+            self.assertEqual(call["table"], "FILE_TASK")
+            self.assertEqual(call["data"]["NU_STATUS"], db_bkp_module.k.TASK_PENDING)
+            self.assertIsNone(call["data"]["NU_PID"])
+            self.assertEqual(call["where"]["FK_HOST"], 91)
+        self.assertIn("DT_FILE_TASK__lt", calls[2]["where"])
 
 
 if __name__ == "__main__":

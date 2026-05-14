@@ -187,7 +187,31 @@ def cleanup_hosts_and_tasks():
         log.entry(f"[CLEANUP] Released {len(hosts)} BUSY hosts")
 
         # ---------------------------------------------------------
-        # 4) Purge stale repository TMP leftovers from backup
+        # 4) Reassert OFFLINE suspension invariants after the reset
+        # ---------------------------------------------------------
+        offline_hosts = db._select_rows(
+            table="HOST",
+            where={"IS_OFFLINE": True},
+            cols=["ID_HOST"],
+        )
+
+        for row in offline_hosts:
+            host_id = row["ID_HOST"]
+            log.warning(
+                f"[CLEANUP] Reasserting OFFLINE suspension invariants "
+                f"(host={host_id})"
+            )
+            db.host_task_suspend_by_host(host_id)
+            db.file_task_suspend_by_host(host_id)
+            db.file_history_suspend_by_host(host_id)
+
+        log.entry(
+            f"[CLEANUP] Reasserted OFFLINE suspension invariants for "
+            f"{len(offline_hosts)} host(s)"
+        )
+
+        # ---------------------------------------------------------
+        # 5) Purge stale repository TMP leftovers from backup
         # ---------------------------------------------------------
         repo_tmp_root = os.path.join(k.REPO_FOLDER, k.TMP_FOLDER)
         cleanup_repository_tmp_files(repo_tmp_root=repo_tmp_root)

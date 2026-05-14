@@ -323,6 +323,7 @@ def main():
         spectrum_ids = None
         task_started_monotonic = None
         phase_durations = {}
+        task_claimed = False
 
         try:
             # ===================================================
@@ -389,8 +390,9 @@ def main():
                         detail=k.APP_ANALISE_WORKER_DETAIL,
                     )
 
-                    db_bp.file_task_update(
+                    claim_result = db_bp.file_task_update(
                         task_id=file_task_id,
+                        expected_status=k.TASK_PENDING,
                         NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
                         DT_FILE_TASK=datetime.now(),
                         NU_STATUS=k.TASK_RUNNING,
@@ -400,6 +402,20 @@ def main():
                             message=claim_message,
                         ),
                     )
+
+                    rows_affected = 1
+                    if isinstance(claim_result, dict):
+                        rows_affected = claim_result.get("rows_affected", 0)
+
+                    if rows_affected != 1:
+                        log.warning(
+                            "event=file_task_claim_lost "
+                            f"host_id={host_id} task_id={file_task_id} "
+                            f"rows_affected={rows_affected}"
+                        )
+                        continue
+
+                    task_claimed = True
             except Exception as e:
                 err.capture(
                     reason="Failed to claim processing FILE_TASK",
@@ -621,11 +637,16 @@ def main():
                 db_rfm.rollback()
 
         finally:
-            if not file_task_id:
+            if not file_task_id or not task_claimed:
                 if err.triggered:
                     # When the database is saturated we can fail before
                     # claiming any FILE_TASK. Sleep here to avoid hammering
                     # MySQL with a tight reconnect loop.
+                    runtime_sleep.random_jitter_sleep()
+                elif file_task_id:
+                    # Another worker can win the optimistic claim between the
+                    # read step and the RUNNING transition. Back off briefly
+                    # so we do not spin on the same row.
                     runtime_sleep.random_jitter_sleep()
                 skip_to_next_iteration = True
             else:

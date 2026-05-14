@@ -119,11 +119,15 @@ def _recover_offline_host_if_operational(
         return
 
     # Keep the host offline until the operational SSH endpoint is confirmed.
-    db.host_update(
+    # Reuse the shared offline persistence path so host-dependent queues are
+    # re-suspended if they drifted back to PENDING while the app was down.
+    connectivity_module.persist_host_connectivity_state(
+        db=db,
+        log=log,
         host_id=host["ID_HOST"],
-        IS_OFFLINE=True,
-        DT_LAST_CHECK=checked_at,
-        DT_LAST_FAIL=checked_at,
+        was_offline=bool(host.get("IS_OFFLINE")),
+        online=False,
+        now=checked_at,
     )
     return
 

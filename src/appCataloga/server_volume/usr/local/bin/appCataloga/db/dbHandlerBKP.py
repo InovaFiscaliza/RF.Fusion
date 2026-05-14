@@ -177,6 +177,35 @@ class dbHandlerBKP(DBHandlerBase):
             reuse_connection=reuse_connection,
         )
         self.log.entry(f"[dbHandlerBKP] Initialized for DB '{database}'")
+        self.in_transaction: bool = False
+
+    def begin_transaction(self) -> None:
+        """Start an explicit transaction for multi-step BKP state changes."""
+        self.in_transaction = True
+        self._connect()
+        self.db_connection.autocommit = False
+
+    def commit(self) -> None:
+        """Commit the active managed transaction, if one exists."""
+        if not self.in_transaction:
+            return
+
+        try:
+            self.db_connection.commit()
+        finally:
+            self.db_connection.autocommit = True
+            self.in_transaction = False
+
+    def rollback(self) -> None:
+        """Roll back the active managed transaction, if one exists."""
+        if not self.in_transaction:
+            return
+
+        try:
+            self.db_connection.rollback()
+        finally:
+            self.db_connection.autocommit = True
+            self.in_transaction = False
 
     def _merge_structured_error_fields(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -1789,6 +1818,7 @@ class dbHandlerBKP(DBHandlerBase):
                 table="HOST_TASK",
                 data={
                     "NU_STATUS": k.TASK_PENDING,
+                    "NU_PID": None,
                     "NA_MESSAGE": (
                         "Host reachable again — suspended task resumed automatically"
                     ),
@@ -1808,6 +1838,7 @@ class dbHandlerBKP(DBHandlerBase):
                 table="HOST_TASK",
                 data={
                     "NU_STATUS": k.TASK_PENDING,
+                    "NU_PID": None,
                     "NA_MESSAGE": (
                         "Host reachable again — previously failed task resubmitted"
                     ),
@@ -1827,6 +1858,7 @@ class dbHandlerBKP(DBHandlerBase):
                 table="HOST_TASK",
                 data={
                     "NU_STATUS": k.TASK_PENDING,
+                    "NU_PID": None,
                     "NA_MESSAGE": (
                         f"Detected stale running task (> {busy_timeout_seconds}s) — "
                         f"resubmitted automatically"
@@ -2259,7 +2291,11 @@ class dbHandlerBKP(DBHandlerBase):
         self._connect()
         try:
             where = {"ID_FILE_TASK": task_id}
-            return self._delete_row("FILE_TASK", where=where, commit=True)
+            return self._delete_row(
+                "FILE_TASK",
+                where=where,
+                commit=not getattr(self, "in_transaction", False),
+            )
         finally:
             self._disconnect()
 
@@ -2392,6 +2428,7 @@ class dbHandlerBKP(DBHandlerBase):
                 table="FILE_TASK",
                 data=self._merge_structured_error_fields({
                     "NU_STATUS": k.TASK_PENDING,
+                    "NU_PID": None,
                     "NA_MESSAGE": (
                         "Host reachable again — suspended file task resumed automatically"
                     ),
@@ -2410,6 +2447,7 @@ class dbHandlerBKP(DBHandlerBase):
                 table="FILE_TASK",
                 data=self._merge_structured_error_fields({
                     "NU_STATUS": k.TASK_PENDING,
+                    "NU_PID": None,
                     "NA_MESSAGE": (
                         "Host reachable again — previously failed file task resubmitted"
                     ),
@@ -2432,6 +2470,7 @@ class dbHandlerBKP(DBHandlerBase):
                 table="FILE_TASK",
                 data=self._merge_structured_error_fields({
                     "NU_STATUS": k.TASK_PENDING,
+                    "NU_PID": None,
                     "NA_MESSAGE": (
                         f"Detected stale running file task (> {busy_timeout_seconds}s) — "
                         f"resubmitted automatically"
@@ -3020,7 +3059,7 @@ class dbHandlerBKP(DBHandlerBase):
                 table="FILE_TASK_HISTORY",
                 data=update_data,
                 where=where_dict,
-                commit=True,
+                commit=not getattr(self, "in_transaction", False),
             )
 
             if affected_rows != 1:

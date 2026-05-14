@@ -63,6 +63,10 @@ bootstrap process.
   Adds `FILE_SPECTRUM_SUMMARY` as a spectrum-aware search read model inside
   `RFFUSION_SUMMARY`, refreshed by MariaDB procedures with atomic table swaps.
 
+- [alterFusionSummaryDB-v8-drop-file-spectrum-summary.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v8-drop-file-spectrum-summary.sql)
+  Removes the retired `FILE_SPECTRUM_SUMMARY` read model and restores the
+  master summary refresh procedure to its pre-v7 shape.
+
 - [alterMeasureDB-v6-fact-spectrum-performance.sql](/RFFusion/src/mariadb/scripts/alterMeasureDB-v6-fact-spectrum-performance.sql)
   Adds the composite lookup index used by the appAnalise worker idempotency
   check on `RFDATA.FACT_SPECTRUM`.
@@ -185,6 +189,7 @@ mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v4-discove
 mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v5-atomic-read-refresh.sql
 mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v6-safe-refresh-diagnostics.sql
 mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v7-file-spectrum-summary.sql
+mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v8-drop-file-spectrum-summary.sql
 mysql -u root -p < /RFFusion/src/mariadb/scripts/alterMeasureDB-v6-fact-spectrum-performance.sql
 ```
 

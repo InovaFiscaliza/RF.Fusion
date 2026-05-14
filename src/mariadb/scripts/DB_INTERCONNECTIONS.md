@@ -293,17 +293,6 @@ erDiagram
         INT NU_STATION_COUNT
     }
 
-    FILE_SPECTRUM_SUMMARY {
-        INT FK_FILE PK
-        INT FK_SPECTRUM PK
-        INT FK_EQUIPMENT
-        INT FK_SITE
-        DATETIME DT_FILE_TIME_END
-        DATETIME DT_SPECTRUM_TIME_END
-        DECIMAL NU_SPECTRUM_FREQ_START
-        DECIMAL NU_SPECTRUM_FREQ_END
-    }
-
     HOST_MONTHLY_METRIC {
         INT FK_HOST PK
         DATE DT_REFERENCE_MONTH PK
@@ -347,7 +336,6 @@ erDiagram
     SITE_EQUIPMENT_OBS_SUMMARY ||--o{ HOST_LOCATION_SUMMARY : aggregates
     SITE_EQUIPMENT_OBS_SUMMARY ||--o{ MAP_SITE_STATION_SUMMARY : feeds
     MAP_SITE_STATION_SUMMARY ||--o{ MAP_SITE_SUMMARY : collapses
-    SITE_EQUIPMENT_OBS_SUMMARY ||--o{ FILE_SPECTRUM_SUMMARY : enriches locality labels
     ERROR_EVENT_CANONICAL ||--o{ HOST_ERROR_SUMMARY : groups
     ERROR_EVENT_CANONICAL ||--o{ SERVER_ERROR_SUMMARY : groups
     HOST_LOCATION_SUMMARY ||--o| HOST_CURRENT_SNAPSHOT : enriches
@@ -360,7 +348,6 @@ This database answers consumer-oriented questions such as:
 - which host is currently associated with one equipment
 - which locality is current or historical for a host
 - which marker state the map should render for a site
-- which repository files match equipment/site/date/frequency/description filters
 - which grouped backup and processing errors dominate the environment
 - which server-wide metrics should be available without repeated scans over
   `FILE_TASK_HISTORY` and `FACT_SPECTRUM`
