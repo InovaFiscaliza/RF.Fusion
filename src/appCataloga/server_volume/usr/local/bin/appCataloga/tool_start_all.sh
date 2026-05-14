@@ -24,6 +24,44 @@ read -p "All appCataloga services will be STARTED. Continue? [y/N] " -n 1 -r
 echo
 [[ ! $REPLY =~ ^[Yy]$ ]] && echo "Operation canceled." && exit 1
 
+echo
+echo ">>> Disabling legacy RFFUSION_SUMMARY SQL event"
+if cd "$SCRIPT_DIR" && /opt/conda/envs/appdata/bin/python - <<'PY'
+from bootstrap_paths import bootstrap_app_paths
+
+bootstrap_app_paths("appCataloga_rffusion_summary_worker.py")
+
+from db.dbHandlerSummary import dbHandlerSummary
+import config as k
+
+
+class _SilentLog:
+    def entry(self, *args, **kwargs):
+        pass
+
+    def warning(self, *args, **kwargs):
+        pass
+
+    def error(self, *args, **kwargs):
+        pass
+
+
+db = dbHandlerSummary(
+    database=k.SUMMARY_DATABASE_NAME,
+    log=_SilentLog(),
+    reuse_connection=True,
+)
+try:
+    db.disable_sql_event(k.SUMMARY_WORKER_SQL_EVENT_NAME)
+finally:
+    db._disconnect(force=True)
+PY
+then
+    echo ">>> Legacy SQL event disabled."
+else
+    echo "[WARN] Failed to disable the legacy SQL event preflight. The summary worker will retry on startup."
+fi
+
 services=(
   appCataloga
   appCataloga_host_check
@@ -32,6 +70,8 @@ services=(
   appCataloga_backlog_management
   appCataloga_file_bkp
   appCataloga_file_bin_proces_appAnalise
+  # Keep the summary consumer last because it performs a full reconcile on cold start.
+  appCataloga_rffusion_summary_worker
 )
 
 for svc in "${services[@]}"; do

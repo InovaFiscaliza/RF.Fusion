@@ -119,22 +119,19 @@ def should_export(hostname: str) -> bool:
     """
     Decide whether appAnalise should export a `.mat` artifact for this host.
 
-    Today the rule is mostly station-family based:
-        - RFeye: keep the original payload as the canonical artifact
-        - CW/CelPlan and others: accept/export the derived artifact
+    Station-family rule:
+        - RFeye: keep the original binary payload as the canonical artifact.
+          appAnalise is invoked for metadata extraction only, not file export.
+        - All others (CW/CelPlan, ERMx, Keysight, unknown families): accept
+          the `.mat` export as the canonical artifact.
 
     The function stays isolated so future host-family policy changes do not
     leak into the worker loop.
     """
     normalized = (hostname or "").lower()
-
-    if "rfeye" in normalized:
-        return False
-
-    if "cw" in normalized:
-        return True
-
-    return True
+    # Only RFeye stations bypass export; every other known family and any
+    # unrecognized hostname defaults to the export path.
+    return "rfeye" not in normalized
 
 
 def should_map_host_source_file(hostname: str) -> bool:
@@ -962,18 +959,53 @@ def finalize_task_resolution(
     """
     Apply the final FILE_TASK resolution once retry is no longer an option.
 
-    This is the definitive branch of the worker lifecycle: the live FILE_TASK
-    is retired, the history row is updated, and any on-disk leftovers are
-    moved into their canonical success or trash locations.
+    This is the single exit point for the worker lifecycle: the live FILE_TASK
+    is retired, the history row is updated, and on-disk artifacts are moved
+    into their canonical success or trash locations.
 
-    Success and fatal error share this helper on purpose so queue state,
+    Success and fatal error share this helper so queue state,
     FILE_TASK_HISTORY, and filesystem cleanup cannot drift apart.
 
-    Important error contract:
-        - if no stable export exists, the original payload remains the error artifact
-        - if appAnalise already produced a stable export and RF.Fusion rejects it
-          later, the export becomes the error artifact and the original source
-          is treated as a resolved input
+    Artifact decision tree
+    ----------------------
+    Success (`file_was_processed=True`):
+        Filesystem has already been finalized by `finalize_successful_processing()`.
+        This function only closes the DB queue row.
+
+    Fatal error, no export artifact (`export=False` or `file_meta == source_file_meta`):
+        source_file_meta  →  trash/           (error artifact for operator review)
+
+    Fatal error after stable export artifact exists (`export=True`, distinct file_meta):
+        appAnalise already materialized a `.mat` file and RF.Fusion later rejected it.
+        In that case the export is the error artifact, not the original source:
+            source_file_meta  →  trash/resolved_files/  (resolved input, quarantined)
+            file_meta         →  trash/                  (error artifact for review)
+        If the export disappeared before finalization:
+            source_file_meta  →  trash/                  (fallback error artifact)
+
+    DB atomicity contract:
+        The history update and FILE_TASK delete are wrapped in a single BKP
+        transaction.  If either fails, the transaction rolls back so the live
+        queue row remains recoverable — the worker loop will eventually retry
+        or the stale-task sweep will catch it.
+
+    Args:
+        file_was_processed (bool): True only when spectra were fully persisted
+            and `finalize_successful_processing()` already moved the file.
+        new_path (str | None): Canonical output directory set by the success
+            path.  None on the error path; this function resolves it from trash.
+        file_meta (dict | None): Worker-side metadata for the output artifact
+            (may differ from `source_file_meta` when export produced a new file).
+        source_file_meta (dict | None): Metadata for the original server payload.
+        export (bool | None): Whether appAnalise was asked to produce a `.mat`
+            export for this file.
+
+    Returns:
+        dict with keys:
+            status       — TASK_DONE or TASK_ERROR
+            new_path     — final directory written to FILE_TASK_HISTORY
+            history_meta — name/extension/size/timestamps of the canonical artifact
+            final_file   — absolute path of the canonical artifact, or None
     """
     history_meta_override = None
     history_server_path = new_path

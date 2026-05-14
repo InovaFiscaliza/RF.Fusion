@@ -229,6 +229,112 @@ class dbHandlerBKP(DBHandlerBase):
 
         return normalized
 
+    def _summary_publish_host_scope(
+        self,
+        host_id: Optional[int],
+        *,
+        reference_months: Optional[List[Any]] = None,
+        full_reconcile: bool = False,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Publish one host/month invalidation scope for the summary worker."""
+        if host_id is None and not full_reconcile:
+            return
+        if not hasattr(self.log, "warning"):
+            return
+
+        try:
+            self.summary_enqueue_refresh(
+                host_ids=[host_id] if host_id is not None else None,
+                reference_months=reference_months,
+                full_reconcile=full_reconcile,
+                reason=reason,
+                source_handler=self.__class__.__name__,
+                commit=not getattr(self, "in_transaction", False),
+            )
+        except Exception as exc:
+            if hasattr(self.log, "warning"):
+                self.log.warning(
+                    f"[dbHandlerBKP] Failed to enqueue SUMMARY dirty scope "
+                    f"(host={host_id}, reason={reason}): {exc}"
+                )
+
+    def _summary_lookup_host_task_host(self, task_id: int) -> Optional[int]:
+        """Resolve `HOST_TASK.FK_HOST` before publishing a dirty scope."""
+        if getattr(self, "cursor", None) is None:
+            return None
+        rows = self._select_rows(
+            table="HOST_TASK",
+            where={"ID_HOST_TASK": task_id},
+            cols=["FK_HOST"],
+            limit=1,
+        )
+        if not rows:
+            return None
+        value = rows[0].get("FK_HOST")
+        return int(value) if value is not None else None
+
+    def _summary_lookup_file_task_host(self, task_id: int) -> Optional[int]:
+        """Resolve `FILE_TASK.FK_HOST` before delete/update invalidation."""
+        if getattr(self, "cursor", None) is None:
+            return None
+        rows = self._select_rows(
+            table="FILE_TASK",
+            where={"ID_FILE_TASK": task_id},
+            cols=["FK_HOST"],
+            limit=1,
+        )
+        if not rows:
+            return None
+        value = rows[0].get("FK_HOST")
+        return int(value) if value is not None else None
+
+    def _summary_lookup_file_history_scope(
+        self,
+        *,
+        history_id: Optional[int] = None,
+        host_id: Optional[int] = None,
+        host_file_path: Optional[str] = None,
+        host_file_name: Optional[str] = None,
+    ) -> tuple[Optional[int], List[str]]:
+        """Resolve host/month scope from one `FILE_TASK_HISTORY` identity."""
+        if getattr(self, "cursor", None) is None:
+            return host_id, []
+        where: Dict[str, Any]
+        if history_id is not None:
+            where = {"ID_HISTORY": history_id}
+        elif (
+            host_id is not None
+            and host_file_path is not None
+            and host_file_name is not None
+        ):
+            where = {
+                "FK_HOST": host_id,
+                "NA_HOST_FILE_PATH": host_file_path,
+                "NA_HOST_FILE_NAME": host_file_name,
+            }
+        else:
+            return None, []
+
+        rows = self._select_rows(
+            table="FILE_TASK_HISTORY",
+            where=where,
+            cols=["FK_HOST", "DT_FILE_CREATED"],
+            limit=1,
+        )
+        if not rows:
+            return host_id, []
+
+        row = rows[0]
+        resolved_host_id = row.get("FK_HOST")
+        month = self._normalize_summary_reference_month(
+            row.get("DT_FILE_CREATED")
+        )
+        return (
+            int(resolved_host_id) if resolved_host_id is not None else host_id,
+            [month] if month is not None else [],
+        )
+
     # ======================================================================
     # HOST OPERATIONS
     # ======================================================================
@@ -278,6 +384,10 @@ class dbHandlerBKP(DBHandlerBase):
             self.log.entry(
                 f"[DBHandlerBKP] HOST {data.get('ID_HOST')} ({data.get('NA_HOST_UID')}) "
                 f"created or updated successfully."
+            )
+            self._summary_publish_host_scope(
+                data.get("ID_HOST"),
+                reason="host_upsert",
             )
 
         except Exception as e:
@@ -582,6 +692,10 @@ class dbHandlerBKP(DBHandlerBase):
 
             self.db_connection.commit()
             self.log.entry(f"[DBHandlerBKP] HOST {host_id} updated successfully.")
+            self._summary_publish_host_scope(
+                host_id,
+                reason="host_update",
+            )
             self._disconnect()
         except Exception as e:
             self.db_connection.rollback()
@@ -702,6 +816,10 @@ class dbHandlerBKP(DBHandlerBase):
                 # VOLUME
                 VL_PENDING_BACKUP_KB=pending_kb,
                 VL_DONE_BACKUP_KB=done_kb,
+            )
+            self._summary_publish_host_scope(
+                host_id,
+                reason="host_update_statistics",
             )
 
         finally:
@@ -1438,6 +1556,10 @@ class dbHandlerBKP(DBHandlerBase):
             self.log.entry(
                 f"[DBHandlerBKP] HOST_TASK created (ID={task_id}, host={payload.get('FK_HOST')}, type={payload.get('NU_TYPE')})."
             )
+            self._summary_publish_host_scope(
+                payload.get("FK_HOST"),
+                reason="host_task_create",
+            )
             return int(task_id or 0)
 
         except Exception as e:
@@ -1706,6 +1828,17 @@ class dbHandlerBKP(DBHandlerBase):
             else:
                 self.log.entry(f"{msg_prefix}: {rows_affected} row(s) updated → {set_dict}")
 
+            host_scope_id = None
+            if task_id is not None:
+                host_scope_id = self._summary_lookup_host_task_host(task_id)
+            elif where_dict and "FK_HOST" in where_dict:
+                host_scope_id = where_dict.get("FK_HOST")
+
+            self._summary_publish_host_scope(
+                host_scope_id,
+                reason="host_task_update",
+            )
+
             return {"success": True, "rows_affected": rows_affected, "updated_fields": set_dict}
 
         except Exception as e:
@@ -1717,6 +1850,8 @@ class dbHandlerBKP(DBHandlerBase):
     def host_task_delete(self, task_id: int) -> bool:
         """Delete one `HOST_TASK` row by primary key and report success."""
         try:
+            self._connect()
+            host_scope_id = self._summary_lookup_host_task_host(task_id)
             deleted = self._delete_row(
                 table="HOST_TASK",
                 where={"ID_HOST_TASK": task_id},
@@ -1725,6 +1860,10 @@ class dbHandlerBKP(DBHandlerBase):
 
             if deleted > 0:
                 self.log.entry(f"[DB] HOST_TASK {task_id} deleted successfully.")
+                self._summary_publish_host_scope(
+                    host_scope_id,
+                    reason="host_task_delete",
+                )
                 return True
             else:
                 self.log.warning(f"[DB] HOST_TASK {task_id} not found for deletion.")
@@ -1734,6 +1873,8 @@ class dbHandlerBKP(DBHandlerBase):
             self.db_connection.rollback()
             self.log.error(f"[DB] Error deleting HOST_TASK {task_id}: {e}")
             return False
+        finally:
+            self._disconnect()
         
     def host_task_suspend_by_host(self, host_id: int) -> None:
         """
@@ -1778,6 +1919,10 @@ class dbHandlerBKP(DBHandlerBase):
 
             if affected:
                 self.log.entry(f"[DBHandlerBKP] Suspended {affected} HOST_TASK entries for host {host_id}.")
+                self._summary_publish_host_scope(
+                    host_id,
+                    reason="host_task_suspend_by_host",
+                )
         except Exception as e:
             self.log.error(f"[DBHandlerBKP] Failed to suspend HOST_TASK entries for host {host_id}: {e}")
 
@@ -1882,6 +2027,10 @@ class dbHandlerBKP(DBHandlerBase):
                 self.log.entry(
                     f"[DBHandlerBKP] Resumed {total_resumed} HOST_TASK entries for host {host_id} "
                     f"(stale if > {busy_timeout_seconds}s)."
+                )
+                self._summary_publish_host_scope(
+                    host_id,
+                    reason="host_task_resume_by_host",
                 )
             else:
                 self.log.entry(
@@ -2121,6 +2270,10 @@ class dbHandlerBKP(DBHandlerBase):
                 f"[file_task_create] Upserted {processed} FILE_TASK entries "
                 f"for host {host_id}"
             )
+            self._summary_publish_host_scope(
+                host_id,
+                reason="file_task_create",
+            )
 
             return processed
 
@@ -2267,6 +2420,15 @@ class dbHandlerBKP(DBHandlerBase):
                     f"WHERE={where_dict} | fields={list(kwargs.keys())}"
                 )
 
+            host_scope_id = host_id
+            if host_scope_id is None and task_id is not None:
+                host_scope_id = self._summary_lookup_file_task_host(task_id)
+
+            self._summary_publish_host_scope(
+                host_scope_id,
+                reason="file_task_update",
+            )
+
             return {
                 "success": True,
                 "rows_affected": affected,
@@ -2290,12 +2452,19 @@ class dbHandlerBKP(DBHandlerBase):
         """Delete a `FILE_TASK` by primary key and return the row count."""
         self._connect()
         try:
+            host_scope_id = self._summary_lookup_file_task_host(task_id)
             where = {"ID_FILE_TASK": task_id}
-            return self._delete_row(
+            deleted_rows = self._delete_row(
                 "FILE_TASK",
                 where=where,
                 commit=not getattr(self, "in_transaction", False),
             )
+            if deleted_rows:
+                self._summary_publish_host_scope(
+                    host_scope_id,
+                    reason="file_task_delete",
+                )
+            return deleted_rows
         finally:
             self._disconnect()
 
@@ -2322,6 +2491,13 @@ class dbHandlerBKP(DBHandlerBase):
         """
         self._connect()
         try:
+            host_scope_id, reference_months = self._summary_lookup_file_history_scope(
+                history_id=history_id,
+                host_id=host_id,
+                host_file_path=host_file_path,
+                host_file_name=host_file_name,
+            )
+
             if history_id is not None:
                 where = {"ID_HISTORY": history_id}
             elif (
@@ -2340,7 +2516,14 @@ class dbHandlerBKP(DBHandlerBase):
                     "Use either history_id or (host_id, host_file_path, host_file_name)."
                 )
 
-            return self._delete_row("FILE_TASK_HISTORY", where=where, commit=True)
+            deleted_rows = self._delete_row("FILE_TASK_HISTORY", where=where, commit=True)
+            if deleted_rows:
+                self._summary_publish_host_scope(
+                    host_scope_id,
+                    reference_months=reference_months,
+                    reason="file_history_delete",
+                )
+            return deleted_rows
         finally:
             self._disconnect()
             
@@ -2384,6 +2567,10 @@ class dbHandlerBKP(DBHandlerBase):
                 self.log.entry(
                     f"[DBHandlerBKP] Suspended {affected} HOST-dependent FILE_TASK entries "
                     f"for host {host_id}."
+                )
+                self._summary_publish_host_scope(
+                    host_id,
+                    reason="file_task_suspend_by_host",
                 )
 
         except Exception as e:
@@ -2494,6 +2681,10 @@ class dbHandlerBKP(DBHandlerBase):
                     f"[DBHandlerBKP] Resumed {total_resumed} FILE_TASK entries for host {host_id} "
                     f"(stale if > {busy_timeout_seconds}s)."
                 )
+                self._summary_publish_host_scope(
+                    host_id,
+                    reason="file_task_resume_by_host",
+                )
             else:
                 self.log.entry(
                     f"[DBHandlerBKP] No FILE_TASK entries required resumption for host {host_id}."
@@ -2559,6 +2750,10 @@ class dbHandlerBKP(DBHandlerBase):
                 self.log.entry(
                     f"[DBHandlerBKP] Suspended {total_suspended} FILE_TASK_HISTORY phases "
                     f"(discovery + backup) for host {host_id}."
+                )
+                self._summary_publish_host_scope(
+                    host_id,
+                    reason="file_history_suspend_by_host",
                 )
 
         except Exception as e:
@@ -2631,6 +2826,10 @@ class dbHandlerBKP(DBHandlerBase):
                 self.log.entry(
                     f"[DBHandlerBKP] Resumed {total_resumed} FILE_TASK_HISTORY entries "
                     f"(discovery + backup) for host {host_id}"
+                )
+                self._summary_publish_host_scope(
+                    host_id,
+                    reason="file_history_resume_by_host",
                 )
             else:
                 self.log.entry(
@@ -2826,6 +3025,11 @@ class dbHandlerBKP(DBHandlerBase):
                 f"(new_type={new_type}, new_status={new_status}, "
                 f"selected_total_kb={summary['selected_total_kb']}) for host {host_id}"
             )
+            if rows_updated > 0:
+                self._summary_publish_host_scope(
+                    host_id,
+                    reason="update_backlog_by_filter",
+                )
 
             return summary
 
@@ -2836,6 +3040,7 @@ class dbHandlerBKP(DBHandlerBase):
 
         finally:
             self._disconnect()
+    
     def file_history_create(
         self,
         host_id: int,
@@ -2919,6 +3124,14 @@ class dbHandlerBKP(DBHandlerBase):
             self.log.entry(
                 f"[file_history_create] Upserted {processed} FILE_TASK_HISTORY entries "
                 f"for host {host_id}"
+            )
+            self._summary_publish_host_scope(
+                host_id,
+                reference_months=[
+                    getattr(file, "DT_FILE_CREATED", None)
+                    for file in file_metadata
+                ],
+                reason="file_history_create",
             )
 
             return processed
@@ -3055,6 +3268,28 @@ class dbHandlerBKP(DBHandlerBase):
         # Execute UPDATE
         # -------------------------------------------------
         try:
+            host_scope_id = host_id
+            reference_months: List[str] = []
+
+            if history_id is not None or (
+                host_id is not None
+                and host_file_path is not None
+                and host_file_name is not None
+            ):
+                host_scope_id, reference_months = self._summary_lookup_file_history_scope(
+                    history_id=history_id,
+                    host_id=host_id,
+                    host_file_path=host_file_path,
+                    host_file_name=host_file_name,
+                )
+
+            if "DT_FILE_CREATED" in update_data:
+                override_month = self._normalize_summary_reference_month(
+                    update_data.get("DT_FILE_CREATED")
+                )
+                if override_month is not None:
+                    reference_months = [override_month]
+
             affected_rows = self._update_row(
                 table="FILE_TASK_HISTORY",
                 data=update_data,
@@ -3066,6 +3301,12 @@ class dbHandlerBKP(DBHandlerBase):
                 self.log.warning(
                     f"[DBHandlerBKP] FILE_TASK_HISTORY update affected {affected_rows} rows "
                     f"(expected 1). WHERE={where_dict}"
+                )
+            elif not getattr(self, "in_transaction", False):
+                self._summary_publish_host_scope(
+                    host_scope_id,
+                    reference_months=reference_months,
+                    reason="file_history_update",
                 )
 
             return {

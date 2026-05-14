@@ -49,6 +49,15 @@ process_status = {"running": True}
 APP_ANALISE_PREFLIGHT_LOG_INTERVAL_SEC = int(
     getattr(k, "APP_ANALISE_PREFLIGHT_LOG_INTERVAL_SEC", 300)
 )
+# Module-level state machine for throttling repeated appAnalise preflight
+# warnings. Using a plain dict (rather than a class) keeps the design simple
+# given there is exactly one worker process per Python interpreter.
+# Fields:
+#   down             – True once the first failure is observed
+#   current_error    – last seen error text; a change triggers a new log entry
+#   first_failure_*  – monotonic timestamp of the initial outage
+#   last_warning_*   – monotonic timestamp of the most recent emitted warning
+#   suppressed_*     – counters for skipped warning events (since last / total)
 _APP_ANALISE_PREFLIGHT_LOG_STATE = {
     "down": False,
     "current_error": None,
@@ -95,7 +104,14 @@ def _reset_preflight_log_state() -> None:
 
 
 def _format_structured_event(event: str, **fields) -> str:
-    """Build a structured event string even when the active logger is mocked."""
+    """
+    Build a structured event string even when the active logger is a test double.
+
+    The production logger exposes `format_event()` directly, but test doubles
+    and lightweight stubs often do not.  This shim produces the same
+    `key=value` format so callers always get a readable string regardless of
+    the logger implementation.
+    """
     if hasattr(log, "format_event"):
         return log.format_event(event, **fields)
 

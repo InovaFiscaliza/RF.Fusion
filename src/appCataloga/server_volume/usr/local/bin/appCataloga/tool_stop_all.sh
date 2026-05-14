@@ -25,6 +25,8 @@ echo
 [[ ! $REPLY =~ ^[Yy]$ ]] && echo "Operation canceled." && exit 1
 
 services=(
+  # Stop the summary consumer first so no refresh starts during shutdown.
+  appCataloga_rffusion_summary_worker
   appCataloga_file_bkp
   appCataloga_file_bin_proces
   appCataloga_file_bin_proces_appAnalise

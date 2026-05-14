@@ -12,6 +12,10 @@ machinery.
 """
 
 from typing import Any, Dict, List, Optional, Tuple
+from datetime import date, datetime
+import json
+from datetime import date, datetime
+import json
 import mysql.connector
 from mysql.connector import Error
 import config as k
@@ -56,6 +60,30 @@ class DBHandlerBase:
         """Write low-level DB session lifecycle logs only when explicitly enabled."""
         if force or self.log_connection_lifecycle:
             self.log.entry(message)
+
+    def _drain_cursor(self) -> None:
+        """
+        Discard any pending result sets on the current cursor.
+
+        mysql.connector raises 'Unread result found' if a new query is issued
+        while a previous result set is still unconsumed. This can happen after
+        a failed mid-batch query, after cursor recreation on reconnect, or
+        after the health-probe `SELECT 1` in the reuse path.
+
+        Draining is always safe here because we never rely on leftover results;
+        all consumed data is fetched explicitly by the callers above.
+        """
+        try:
+            while True:
+                if self.cursor.nextset():
+                    try:
+                        self.cursor.fetchall()
+                    except Exception:
+                        pass
+                else:
+                    break
+        except Exception:
+            pass
 
     def _get_db_config(self) -> Dict[str, Any]:
         """Retrieve database credentials from `config`.
@@ -110,18 +138,9 @@ class DBHandlerBase:
                         try:
                             self.cursor.execute("SELECT 1;")
 
-                            # Consume any pending unread results
-                            try:
-                                while True:
-                                    if self.cursor.nextset():
-                                        try:
-                                            self.cursor.fetchall()
-                                        except Exception:
-                                            pass
-                                    else:
-                                        break
-                            except Exception:
-                                pass
+                            # Drain any unconsumed result sets left over from
+                            # the SELECT 1 probe or a previous partial query.
+                            self._drain_cursor()
 
                             return  # Valid connection and cursor ready
 
@@ -129,36 +148,13 @@ class DBHandlerBase:
                             # Existing cursor is invalid → recreate it
                             self.cursor = self.db_connection.cursor()
 
-                            # Cleanup any leftover result sets
-                            try:
-                                while True:
-                                    if self.cursor.nextset():
-                                        try:
-                                            self.cursor.fetchall()
-                                        except Exception:
-                                            pass
-                                    else:
-                                        break
-                            except Exception:
-                                pass
+                            self._drain_cursor()
 
                             return
 
                     # If no cursor exists, create a new one
                     self.cursor = self.db_connection.cursor()
-
-                    # Cleanup for safety
-                    try:
-                        while True:
-                            if self.cursor.nextset():
-                                try:
-                                    self.cursor.fetchall()
-                                except Exception:
-                                    pass
-                            else:
-                                break
-                    except Exception:
-                        pass
+                    self._drain_cursor()
 
                     return  # Reuse path complete
 
@@ -179,19 +175,7 @@ class DBHandlerBase:
                     self._log_connection_lifecycle(
                         "Database reconnected successfully."
                     )
-
-                    # Cleanup unread results post-reconnect
-                    try:
-                        while True:
-                            if self.cursor.nextset():
-                                try:
-                                    self.cursor.fetchall()
-                                except Exception:
-                                    pass
-                            else:
-                                break
-                    except Exception:
-                        pass
+                    self._drain_cursor()
 
                     return
 
@@ -217,19 +201,7 @@ class DBHandlerBase:
             self._log_connection_lifecycle(
                 "Database connection established successfully."
             )
-
-            # Final cleanup for safety
-            try:
-                while True:
-                    if self.cursor.nextset():
-                        try:
-                            self.cursor.fetchall()
-                        except Exception:
-                            pass
-                    else:
-                        break
-            except Exception:
-                pass
+            self._drain_cursor()
 
         except Error as e:
             self.log.error(f"Error connecting to database: {e}")
@@ -293,6 +265,272 @@ class DBHandlerBase:
     # ======================================================================
     # CRUD Operations
     # ======================================================================
+    @staticmethod
+    def _normalize_summary_reference_month(value: Any) -> Optional[str]:
+        """
+        Normalize one month-like value into `YYYY-MM-01`.
+
+        BKP and RFM publish monthly dirty scopes through the same outbox
+        contract, so the worker always receives first-of-month buckets.
+        """
+        if value is None:
+            return None
+
+        if isinstance(value, datetime):
+            return value.strftime("%Y-%m-01")
+
+        if isinstance(value, date):
+            return value.strftime("%Y-%m-01")
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        if len(text) >= 10:
+            text = text[:10]
+
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%d")
+            return parsed.strftime("%Y-%m-01")
+        except ValueError:
+            pass
+
+        try:
+            parsed = datetime.strptime(text, "%Y-%m")
+            return parsed.strftime("%Y-%m-01")
+        except ValueError:
+            return None
+
+    def summary_enqueue_refresh(
+        self,
+        *,
+        host_ids: Optional[List[int]] = None,
+        site_ids: Optional[List[int]] = None,
+        equipment_ids: Optional[List[int]] = None,
+        reference_months: Optional[List[Any]] = None,
+        full_reconcile: bool = False,
+        reason: Optional[str] = None,
+        source_handler: Optional[str] = None,
+        commit: Optional[bool] = None,
+    ) -> int:
+        """
+        Append one dirty-scope event into `BPDATA.SUMMARY_OUTBOX`.
+
+        Publishers describe which operational or analytical scope changed.
+        The Python worker later coalesces many rows into one summary refresh.
+        """
+        normalized_host_ids = sorted(
+            {
+                int(value)
+                for value in (host_ids or [])
+                if value is not None
+            }
+        )
+        normalized_site_ids = sorted(
+            {
+                int(value)
+                for value in (site_ids or [])
+                if value is not None
+            }
+        )
+        normalized_equipment_ids = sorted(
+            {
+                int(value)
+                for value in (equipment_ids or [])
+                if value is not None
+            }
+        )
+        normalized_months = sorted(
+            {
+                month
+                for month in (
+                    self._normalize_summary_reference_month(value)
+                    for value in (reference_months or [])
+                )
+                if month is not None
+            }
+        )
+
+        if (
+            not normalized_host_ids
+            and not normalized_site_ids
+            and not normalized_equipment_ids
+            and not normalized_months
+            and not full_reconcile
+        ):
+            return 0
+
+        # The outbox stores invalidation scope, not precomputed summary rows.
+        payload = {
+            "host_ids": normalized_host_ids,
+            "site_ids": normalized_site_ids,
+            "equipment_ids": normalized_equipment_ids,
+            "reference_months": normalized_months,
+            "full_reconcile": bool(full_reconcile),
+            "reason": reason,
+        }
+        row = {
+            "NA_EVENT_TYPE": "summary_dirty",
+            "NA_SOURCE_HANDLER": (
+                source_handler
+                or getattr(self, "__class__", type(self)).__name__
+            ),
+            "JS_PAYLOAD": json.dumps(
+                payload,
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+        }
+
+        self._connect()
+        try:
+            auto_commit = (
+                not getattr(self, "in_transaction", False)
+                if commit is None
+                else bool(commit)
+            )
+            return self._insert_row(
+                table="BPDATA.SUMMARY_OUTBOX",
+                data=row,
+                commit=auto_commit,
+                log_success=False,
+            )
+        finally:
+            self._disconnect()
+
+    @staticmethod
+    def _normalize_summary_reference_month(value: Any) -> Optional[str]:
+        """
+        Normalize one month-like value into `YYYY-MM-01`.
+
+        BKP and RFM publish monthly dirty scopes through the same outbox
+        contract, so the worker always receives first-of-month buckets.
+        """
+        if value is None:
+            return None
+
+        if isinstance(value, datetime):
+            return value.strftime("%Y-%m-01")
+
+        if isinstance(value, date):
+            return value.strftime("%Y-%m-01")
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        if len(text) >= 10:
+            text = text[:10]
+
+        try:
+            parsed = datetime.strptime(text, "%Y-%m-%d")
+            return parsed.strftime("%Y-%m-01")
+        except ValueError:
+            pass
+
+        try:
+            parsed = datetime.strptime(text, "%Y-%m")
+            return parsed.strftime("%Y-%m-01")
+        except ValueError:
+            return None
+
+    def summary_enqueue_refresh(
+        self,
+        *,
+        host_ids: Optional[List[int]] = None,
+        site_ids: Optional[List[int]] = None,
+        equipment_ids: Optional[List[int]] = None,
+        reference_months: Optional[List[Any]] = None,
+        full_reconcile: bool = False,
+        reason: Optional[str] = None,
+        source_handler: Optional[str] = None,
+        commit: Optional[bool] = None,
+    ) -> int:
+        """
+        Append one dirty-scope event into `BPDATA.SUMMARY_OUTBOX`.
+
+        Publishers describe which operational or analytical scope changed.
+        The Python worker later coalesces many rows into one summary refresh.
+        """
+        normalized_host_ids = sorted(
+            {
+                int(value)
+                for value in (host_ids or [])
+                if value is not None
+            }
+        )
+        normalized_site_ids = sorted(
+            {
+                int(value)
+                for value in (site_ids or [])
+                if value is not None
+            }
+        )
+        normalized_equipment_ids = sorted(
+            {
+                int(value)
+                for value in (equipment_ids or [])
+                if value is not None
+            }
+        )
+        normalized_months = sorted(
+            {
+                month
+                for month in (
+                    self._normalize_summary_reference_month(value)
+                    for value in (reference_months or [])
+                )
+                if month is not None
+            }
+        )
+
+        if (
+            not normalized_host_ids
+            and not normalized_site_ids
+            and not normalized_equipment_ids
+            and not normalized_months
+            and not full_reconcile
+        ):
+            return 0
+
+        # The outbox stores invalidation scope, not precomputed summary rows.
+        payload = {
+            "host_ids": normalized_host_ids,
+            "site_ids": normalized_site_ids,
+            "equipment_ids": normalized_equipment_ids,
+            "reference_months": normalized_months,
+            "full_reconcile": bool(full_reconcile),
+            "reason": reason,
+        }
+        row = {
+            "NA_EVENT_TYPE": "summary_dirty",
+            "NA_SOURCE_HANDLER": (
+                source_handler
+                or getattr(self, "__class__", type(self)).__name__
+            ),
+            "JS_PAYLOAD": json.dumps(
+                payload,
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+        }
+
+        self._connect()
+        try:
+            auto_commit = (
+                not getattr(self, "in_transaction", False)
+                if commit is None
+                else bool(commit)
+            )
+            return self._insert_row(
+                table="BPDATA.SUMMARY_OUTBOX",
+                data=row,
+                commit=auto_commit,
+                log_success=False,
+            )
+        finally:
+            self._disconnect()
+
     def _insert_row(
         self,
         table: str,

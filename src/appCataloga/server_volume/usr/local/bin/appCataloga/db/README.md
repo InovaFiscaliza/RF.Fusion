@@ -2,17 +2,18 @@
 
 This folder contains the database access layer for appCataloga.
 
-The design is split into one shared base handler plus two domain handlers:
+The design is split into one shared base handler plus three domain handlers:
 
 - `dbHandlerBase.py`: reusable MySQL connection and SQL helper layer
 - `dbHandlerBKP.py`: operational domain for hosts, host tasks, file tasks, and file history
 - `dbHandlerRFM.py`: analytical domain for sites, files, procedures, spectrum entities, and publication support
+- `dbHandlerSummary.py`: summary domain for outbox consumption and `RFFUSION_SUMMARY` refresh writes
 
 ## Architecture
 
 The intended layering is:
 
-1. Services and workers call `dbHandlerBKP` or `dbHandlerRFM`
+1. Services and workers call the domain handler that owns the target database concern
 2. Domain handlers encode table semantics and workflow rules
 3. `DBHandlerBase` provides generic SQL builders and connection management
 
@@ -45,12 +46,29 @@ Main helper methods:
 - `_execute_custom()`: custom non-select execution
 - `_execute_many_custom()`: batched custom execution
 - `_upsert_batch()`: batched UPSERT for large ingestion flows
+- `summary_enqueue_refresh()`: append one dirty scope into `BPDATA.SUMMARY_OUTBOX`
 
 Important conventions:
 
 - joined selects return normalized keys like `HOST__ID_HOST`
 - `#CUSTOM#...` keys are reserved for trusted SQL fragments
 - the base layer defaults to autocommit unless a subclass manages an explicit transaction
+
+## Summary Architecture
+
+`RFFUSION_SUMMARY` is now maintained by a Python worker instead of the old
+MariaDB event-driven full refresh.
+
+The flow is:
+
+1. `dbHandlerBKP` publishes host/month invalidation scopes into `BPDATA.SUMMARY_OUTBOX`
+2. `dbHandlerRFM` publishes site/equipment invalidation scopes into the same outbox
+3. `appCataloga_rffusion_summary_worker.py` consumes the outbox through `dbHandlerSummary`
+4. `SummaryRefreshEngine` refreshes only the affected public summary tables
+
+This keeps the public `RFFUSION_SUMMARY` schema stable for `webfusion`,
+MATLAB and other readers while moving refresh orchestration out of hot
+`INSERT ... SELECT` paths on `BPDATA`.
 
 ## dbHandlerBKP
 
@@ -130,6 +148,7 @@ Operational notes:
 - `HOST_TASK_CHECK_*` and statistics tasks do not own the host BUSY lock; host exclusivity is reserved for discovery and backup
 - host statistics are recomputed from history rather than inferred from transient task tables
 - stale host locks may trigger a re-queued connection-check task
+- summary invalidation is best-effort; the dedicated worker still runs a periodic full reconcile to cap drift
 
 ## dbHandlerRFM
 
@@ -197,6 +216,27 @@ Operational notes:
 - `dbHandlerRFM` is transaction-aware; callers are expected to define the transaction boundary
 - standalone calls commit immediately when no explicit transaction is active
 - geographic resolution is deterministic and avoids fuzzy matching
+- writes that affect summary-facing site/equipment observations publish dirty scopes into `BPDATA.SUMMARY_OUTBOX`
+
+## dbHandlerSummary
+
+`dbHandlerSummary` owns the Python refresh path for `RFFUSION_SUMMARY`.
+
+Main entities:
+
+- `BPDATA.SUMMARY_OUTBOX`
+- `BPDATA.SUMMARY_WORKER_STATE`
+- `RFFUSION_SUMMARY.SUMMARY_REFRESH_STATE`
+- `RFFUSION_SUMMARY.SUMMARY_REFRESH_LOG`
+- the public summary tables refreshed by the worker
+
+Main responsibilities:
+
+- claim and release the singleton summary worker lock
+- read and prune append-only outbox batches
+- persist worker checkpoint and heartbeat state
+- persist summary refresh telemetry
+- replace or upsert summary-table rows during refresh passes
 
 ## Usage Guidance
 
@@ -214,6 +254,13 @@ Use `dbHandlerRFM` when the code is persisting processed measurement data:
 - procedures
 - spectra
 - publication artifacts
+
+Use `dbHandlerSummary` when the code is maintaining the public summary read models:
+
+- consuming `SUMMARY_OUTBOX`
+- updating worker checkpoint state
+- refreshing `RFFUSION_SUMMARY`
+- writing summary refresh telemetry
 
 Use `DBHandlerBase` only as an implementation dependency of the domain handlers.
 Service code should not call the base helper methods directly unless it is

@@ -9,6 +9,7 @@ This part of the project is responsible for:
 - backing files up into the shared repository
 - processing selected files locally or through `appAnalise`
 - publishing metadata
+- maintaining the public `RFFUSION_SUMMARY` read models
 - cleaning quarantined artifacts after retention expires
 
 If the root [README.md](/RFFusion/README.md) explains the platform, this file
@@ -48,8 +49,11 @@ The important architectural split is:
 
 - `BPDATA` stores operational state
 - `RFDATA` stores analytical state
+- `RFFUSION_SUMMARY` stores public read models consumed by dashboards and external tools
 
 `appCataloga` touches both, but for different reasons.
+It also now owns the canonical refresh path for `RFFUSION_SUMMARY` through a
+Python outbox worker instead of a heavy MariaDB event.
 
 ## Main Entry Points
 
@@ -143,6 +147,17 @@ The collector treats:
 
 as different channels with different semantics and retention windows.
 
+### `appCataloga_rffusion_summary_worker.py`
+
+Maintains the public `RFFUSION_SUMMARY` tables.
+
+This worker is responsible for:
+
+- consuming `BPDATA.SUMMARY_OUTBOX`
+- coalescing dirty scopes published by `BPDATA` and `RFDATA` writers
+- refreshing only the affected summary tables
+- running a periodic full reconcile to cap drift without reviving the old SQL event
+
 ## Current Workflow
 
 The active workflow is roughly:
@@ -157,6 +172,9 @@ HOST
   -> processing
   -> FILE_TASK_HISTORY
   -> metadata publication / garbage collection
+  -> SUMMARY_OUTBOX
+  -> appCataloga_rffusion_summary_worker
+  -> RFFUSION_SUMMARY
 ```
 
 Operationally, there are now two important queue paths:
@@ -192,6 +210,21 @@ There is also a second nuance around long-running source files:
   as a definitive payload error
 - instead, the live `FILE_TASK` and `FILE_TASK_HISTORY.NU_STATUS_PROCESSING`
   move to `TASK_FROZEN = -3` for manual review
+
+## Summary Read Models
+
+`webfusion`, MATLAB and other read-side consumers still read the same public
+tables in `RFFUSION_SUMMARY`.
+
+What changed is the producer:
+
+- `appCataloga` publishers append dirty scopes into `BPDATA.SUMMARY_OUTBOX`
+- `appCataloga_rffusion_summary_worker.py` consumes that outbox
+- the worker refreshes the existing summary tables in dependency order
+- a scheduled full reconcile remains as a safety net for missed events
+
+Operationally, the summary worker is part of the normal service lifecycle and
+is started and stopped by `tool_start_all.sh` and `tool_stop_all.sh`.
 
 ## File Filter Modes
 

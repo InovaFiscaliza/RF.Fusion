@@ -9,6 +9,7 @@ CREATE DATABASE IF NOT EXISTS RFFUSION_SUMMARY
 
 USE RFFUSION_SUMMARY;
 
+-- Public refresh telemetry written by the Python summary worker.
 CREATE TABLE `SUMMARY_REFRESH_STATE` (
   `NA_OBJECT_NAME` varchar(100) NOT NULL,
   `DT_LAST_START` datetime DEFAULT NULL,
@@ -2385,14 +2386,9 @@ BEGIN
     END IF;
 END$$
 
-CREATE EVENT `EVT_REFRESH_ALL_RFFUSION_SUMMARY_10MIN`
-    ON SCHEDULE EVERY 10 MINUTE
-    STARTS CURRENT_TIMESTAMP + INTERVAL 10 MINUTE
-    ON COMPLETION PRESERVE
-    ENABLE
-    DO CALL PRC_REFRESH_ALL_RFFUSION_SUMMARY_SAFE()$$
-
 DELIMITER ;
 
--- Enable the MariaDB event scheduler when deploying the summary refresh event.
-SET GLOBAL event_scheduler = ON;
+-- The canonical refresh path is now the Python outbox worker
+-- (`appCataloga_rffusion_summary_worker.py`). The heavy MariaDB event is kept
+-- out of the bootstrap schema to avoid reintroducing full `INSERT ... SELECT`
+-- refreshes on hot operational tables during normal runtime.

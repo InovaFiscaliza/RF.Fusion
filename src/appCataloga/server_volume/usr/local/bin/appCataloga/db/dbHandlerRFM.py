@@ -101,6 +101,36 @@ class dbHandlerRFM(DBHandlerBase):
                 self.db_connection.autocommit = False
             except Exception:
                 pass
+
+    def _summary_publish_scope(
+        self,
+        *,
+        site_ids: Optional[list[int]] = None,
+        equipment_ids: Optional[list[int]] = None,
+        reason: Optional[str] = None,
+        full_reconcile: bool = False,
+    ) -> None:
+        """Publish one site/equipment invalidation scope for the summary worker."""
+        if not site_ids and not equipment_ids and not full_reconcile:
+            return
+        if not hasattr(self.log, "warning"):
+            return
+
+        try:
+            self.summary_enqueue_refresh(
+                site_ids=site_ids,
+                equipment_ids=equipment_ids,
+                full_reconcile=full_reconcile,
+                reason=reason,
+                source_handler=self.__class__.__name__,
+                commit=not self.in_transaction,
+            )
+        except Exception as exc:
+            if hasattr(self.log, "warning"):
+                self.log.warning(
+                    f"[dbHandlerRFM] Failed to enqueue SUMMARY dirty scope "
+                    f"(sites={site_ids}, equipments={equipment_ids}, reason={reason}): {exc}"
+                )
  
         
     # ======================================================================
@@ -414,6 +444,11 @@ class dbHandlerRFM(DBHandlerBase):
                     f"(state={db_state_id}, county={db_county_id}, district={db_district_id})"
                 )
 
+            self._summary_publish_scope(
+                site_ids=[int(site_id)],
+                reason="refresh_site_geography",
+            )
+
             return {
                 "action": "updated",
                 "site_id": int(site_id),
@@ -512,6 +547,11 @@ class dbHandlerRFM(DBHandlerBase):
                     f"[DBHandlerRFM] Inserted site ID={site_id} "
                     f"({data['latitude']}, {data['longitude']})"
                 )
+
+            self._summary_publish_scope(
+                site_ids=[site_id],
+                reason="insert_site",
+            )
 
             return site_id
 
@@ -634,6 +674,10 @@ class dbHandlerRFM(DBHandlerBase):
                     f"lon={new_longitude:.6f}, "
                     f"alt={new_altitude:.2f}"
                 )
+            self._summary_publish_scope(
+                site_ids=[int(site)],
+                reason="update_site",
+            )
             return result
 
         except Exception as e:
@@ -1228,6 +1272,11 @@ class dbHandlerRFM(DBHandlerBase):
             if not self.in_transaction:
                 self.db_connection.commit()
 
+            self._summary_publish_scope(
+                equipment_ids=[int(equipment_id)],
+                reason="get_or_create_spectrum_equipment",
+            )
+
             return int(equipment_id)
 
         except Exception as e:
@@ -1446,6 +1495,12 @@ class dbHandlerRFM(DBHandlerBase):
 
             if not self.in_transaction:
                 self.db_connection.commit()
+
+            self._summary_publish_scope(
+                site_ids=[int(data["id_site"])],
+                equipment_ids=[int(data["id_equipment"])],
+                reason="insert_spectrum",
+            )
 
             return int(spectrum_id)
 

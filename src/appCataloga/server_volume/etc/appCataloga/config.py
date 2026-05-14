@@ -45,6 +45,7 @@ SERVER_NAME             = r"10.88.0.33"
 DB_PORT                 = 3306
 RFM_DATABASE_NAME       = "RFDATA"
 BKP_DATABASE_NAME       = "BPDATA"
+SUMMARY_DATABASE_NAME   = "RFFUSION_SUMMARY"
 DB_USER_NAME            = secret["DB_USER_NAME"]
 DB_PASSWORD             = secret["DB_PASSWORD"]
 DB_LOG_CONNECTION_LIFECYCLE = False   # Log connect/close/reconnect lifecycle only when explicitly debugging DB sessions
@@ -223,3 +224,17 @@ GC_QUARANTINE_DAYS = 365
 GC_RESOLVED_FILES_QUARANTINE_DAYS = 60
 GC_IDLE_SLEEP = 60
 GC_LOOP_SLEEP = 5
+
+#------------------------------------------
+# RFFUSION_SUMMARY incremental worker
+#------------------------------------------
+# These values control the Python worker that consumes `BPDATA.SUMMARY_OUTBOX`
+# and refreshes the public `RFFUSION_SUMMARY` tables without reviving the old
+# heavy MariaDB event refresh path.
+SUMMARY_WORKER_CONSUMER_NAME = "rffusion_summary_worker"
+SUMMARY_WORKER_BATCH_SIZE = 500
+SUMMARY_WORKER_IDLE_SLEEP_SEC = 5
+SUMMARY_WORKER_RECONCILE_INTERVAL_SEC = 86400
+SUMMARY_WORKER_OUTBOX_PRUNE_DAYS = 30
+SUMMARY_WORKER_DISABLE_SQL_EVENT_ON_START = True
+SUMMARY_WORKER_SQL_EVENT_NAME = "EVT_REFRESH_ALL_RFFUSION_SUMMARY_10MIN"

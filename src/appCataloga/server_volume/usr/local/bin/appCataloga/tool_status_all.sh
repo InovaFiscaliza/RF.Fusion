@@ -29,6 +29,8 @@ services=(
   appCataloga_file_bin_proces
   appCataloga_file_bin_proces_appAnalise
   appCataloga_file_bkp
+  # The summary worker is part of the normal runtime, not an external cron.
+  appCataloga_rffusion_summary_worker
 )
 
 for svc in "${services[@]}"; do

@@ -30,47 +30,6 @@ bootstrap process.
   This is the materialized summary layer intended to serve `webfusion` and
   external consumers without repeatedly scanning the heaviest source tables.
 
-### Migration scripts
-
-- [alterProcessingDB-v10-error-fields.sql](/RFFusion/src/mariadb/scripts/alterProcessingDB-v10-error-fields.sql)
-  Adds structured error fields to the operational processing tables in
-  `BPDATA`.
-
-- [alterFusionSummaryDB-v2-error-aggregation.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v2-error-aggregation.sql)
-  Refines the `RFFUSION_SUMMARY` error layer by removing the persisted
-  per-event staging table and aggregating directly from a virtual canonical
-  error view.
-
-- [alterFusionSummaryDB-v3-refresh-events.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v3-refresh-events.sql)
-  Enables periodic `RFFUSION_SUMMARY` refreshes through MariaDB Events with a
-  named lock to prevent overlapping runs.
-
-- [alterFusionSummaryDB-v4-discovered-files.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v4-discovered-files.sql)
-  Fixes the discovered-file totals in `HOST_CURRENT_SNAPSHOT` so the server
-  dashboard no longer depends on the stale `BPDATA.HOST.NU_HOST_FILES`
-  counter.
-
-- [alterFusionSummaryDB-v5-atomic-read-refresh.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v5-atomic-read-refresh.sql)
-  Replaces the read-facing summary refreshes used by `webfusion` with
-  shadow-table swaps so the UI keeps seeing the previous snapshot while the
-  next one is being rebuilt.
-
-- [alterFusionSummaryDB-v6-safe-refresh-diagnostics.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v6-safe-refresh-diagnostics.sql)
-  Improves the scheduled `RFFUSION_SUMMARY` refresh wrapper so lock skips are
-  reported correctly and real SQL failures carry the original database error.
-
-- [alterFusionSummaryDB-v7-file-spectrum-summary.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v7-file-spectrum-summary.sql)
-  Adds `FILE_SPECTRUM_SUMMARY` as a spectrum-aware search read model inside
-  `RFFUSION_SUMMARY`, refreshed by MariaDB procedures with atomic table swaps.
-
-- [alterFusionSummaryDB-v8-drop-file-spectrum-summary.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v8-drop-file-spectrum-summary.sql)
-  Removes the retired `FILE_SPECTRUM_SUMMARY` read model and restores the
-  master summary refresh procedure to its pre-v7 shape.
-
-- [alterMeasureDB-v6-fact-spectrum-performance.sql](/RFFusion/src/mariadb/scripts/alterMeasureDB-v6-fact-spectrum-performance.sql)
-  Adds the composite lookup index used by the appAnalise worker idempotency
-  check on `RFDATA.FACT_SPECTRUM`.
-
 ### Seed files
 
 - [equipmentType.csv](/RFFusion/src/mariadb/scripts/equipmentType.csv)
@@ -94,6 +53,12 @@ bootstrap process.
   Explains how `BPDATA`, `RFDATA` and `RFFUSION_SUMMARY` complement each other
   at the application level.
 
+- [README_ORPHANED_MAINTENANCE.md](/RFFusion/src/mariadb/scripts/README_ORPHANED_MAINTENANCE.md)
+  Documents the orphaned-task maintenance utilities and their operating model.
+
+- [ANALYSIS_orphaned_file_tasks.md](/RFFusion/src/mariadb/scripts/ANALYSIS_orphaned_file_tasks.md)
+  Captures the operational analysis that motivated the maintenance scripts.
+
 - [environment.yml](/RFFusion/src/mariadb/scripts/environment.yml)
   Conda environment file historically used by the project runtime. It is not
   the main schema artifact, but it remains useful when reproducing the RF.Fusion
@@ -111,6 +76,8 @@ Main tables:
 - `HOST_TASK`
 - `FILE_TASK`
 - `FILE_TASK_HISTORY`
+- `SUMMARY_OUTBOX`
+- `SUMMARY_WORKER_STATE`
 
 This database answers questions such as:
 
@@ -149,7 +116,7 @@ Main areas:
 - host monthly metrics
 - canonicalized error events and grouped error summaries
 - server-wide current snapshot cards
-- file/spectrum search read models shared by `webfusion` and external consumers
+- refresh telemetry for the Python summary worker
 
 This database answers questions such as:
 
@@ -178,20 +145,6 @@ mysql -u root -p < /RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql
 In practice, the supported path is still the MariaDB container deployment:
 
 - [/RFFusion/install/mariaDB/README.md](/RFFusion/install/mariaDB/README.md)
-
-For an environment that already has `RFFUSION_SUMMARY` `v1`, apply the error
-aggregation refinement after the bootstrap:
-
-```bash
-mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v2-error-aggregation.sql
-mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v3-refresh-events.sql
-mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v4-discovered-files.sql
-mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v5-atomic-read-refresh.sql
-mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v6-safe-refresh-diagnostics.sql
-mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v7-file-spectrum-summary.sql
-mysql -u root -p < /RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v8-drop-file-spectrum-summary.sql
-mysql -u root -p < /RFFusion/src/mariadb/scripts/alterMeasureDB-v6-fact-spectrum-performance.sql
-```
 
 ## Important Operational Notes
 
@@ -225,6 +178,22 @@ The relationship is application-level:
 - `RFFUSION_SUMMARY` materializes cross-database joins and grouped aggregates
 - repository artifacts help reconcile the operational and analytical worlds
 
+### Summary maintenance is now Python-owned
+
+The canonical refresh path for `RFFUSION_SUMMARY` is no longer the legacy
+MariaDB event scheduler.
+
+Today the model is:
+
+- `createProcessingDB-v9.sql` creates `SUMMARY_OUTBOX` and `SUMMARY_WORKER_STATE` in `BPDATA`
+- `appCataloga` publishers append dirty scopes into that outbox
+- `appCataloga_rffusion_summary_worker.py` consumes the outbox and refreshes the public summary tables
+- `createFusionSummaryDB-v1.sql` still defines the public summary schema and its diagnostics tables
+
+This preserves the `RFFUSION_SUMMARY` contract for `webfusion`, MATLAB and
+other readers while avoiding heavy periodic `INSERT ... SELECT` refreshes on
+hot operational tables during the day.
+
 That design is documented in:
 
 - [DB_INTERCONNECTIONS.md](/RFFusion/src/mariadb/scripts/DB_INTERCONNECTIONS.md)
@@ -240,6 +209,9 @@ The filenames are versioned for a reason.
 If a change alters schema shape, seed format or bootstrap semantics in a
 meaningful way, prefer introducing a new versioned script instead of silently
 rewriting history.
+
+For the current repository state, the three `create*` scripts are the only
+canonical bootstrap SQL artifacts in this directory.
 
 ### Keep seed files aligned with runtime assumptions
 
