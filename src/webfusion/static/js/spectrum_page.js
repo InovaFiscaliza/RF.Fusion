@@ -1,33 +1,67 @@
 /* Spectrum page controller
  *
- * This page now has one search mode:
- * - filters are spectrum-aware
- * - results are file-oriented
- * - expanded details show all spectra in the file and highlight the matches
+ * This page now combines facet-style filters:
+ * - equipment, state, and district constrain each other dynamically
+ * - observed period hints follow the current non-date filter set
+ * - result rows stay file-oriented, with lazy-loaded internal spectra
  */
 (function () {
     const root = document.getElementById("spectrum-page-root");
     const queryForm = document.getElementById("spectrum-query-form");
     const equipmentField = document.getElementById("equipment_id");
-    const siteField = document.getElementById("site_id");
-    const siteHint = document.getElementById("site-filter-hint");
+    const stateField = document.getElementById("state_id");
+    const districtField = document.getElementById("district_id");
+    const districtHint = document.getElementById("district-filter-hint");
+    const periodHint = document.getElementById("period-filter-hint");
+    const clearFiltersLink = document.getElementById("clear-spectrum-filters");
     const startDateField = queryForm ? queryForm.elements.start_date : null;
     const endDateField = queryForm ? queryForm.elements.end_date : null;
     const freqStartField = queryForm ? queryForm.elements.freq_start : null;
     const freqEndField = queryForm ? queryForm.elements.freq_end : null;
     const descriptionField = queryForm ? queryForm.elements.description : null;
+    const hiddenSiteField = queryForm ? queryForm.elements.site_id : null;
 
-    if (!root || !queryForm || !equipmentField || !siteField) {
+    if (!root || !queryForm || !equipmentField || !stateField || !districtField) {
         return;
     }
 
-    const localitiesEndpoint = root.dataset.localitiesEndpoint || "/api/spectrum/localities";
+    const filtersEndpoint = root.dataset.filtersEndpoint || "/api/spectrum/filters";
     const fileSpectraEndpointBase = root.dataset.fileSpectraEndpointBase || "/api/spectrum/file";
-    const localityCache = new Map();
+    const usesLightweightBootstrap = root.dataset.lightweightBootstrap === "1";
+    const filterCache = new Map();
     const detailCache = new Map();
-    const hasInitialLocalityOptions = siteField.options.length > 1;
-    let localityRequestSerial = 0;
+    const selectConfigs = [
+        {
+            field: equipmentField,
+            key: "equipments",
+            idKey: "ID_EQUIPMENT",
+            labelKey: "OPTION_LABEL",
+            defaultOptionLabel: "Todas as estacoes",
+        },
+        {
+            field: stateField,
+            key: "states",
+            idKey: "ID_STATE",
+            labelKey: "OPTION_LABEL",
+            defaultOptionLabel: "Todos os estados",
+        },
+        {
+            field: districtField,
+            key: "districts",
+            idKey: "ID_DISTRICT",
+            labelKey: "OPTION_LABEL",
+            defaultOptionLabel: "Todos os distritos",
+        },
+    ];
+
+    let filterRequestSerial = 0;
     let refreshTimer = null;
+    let filterAbortController = null;
+    let loadingOverlayTimer = null;
+    let allowAutoDateFill = !(
+        (startDateField && startDateField.value)
+        || (endDateField && endDateField.value)
+    );
 
     function escapeHtml(value) {
         return String(value ?? "")
@@ -38,16 +72,6 @@
             .replace(/'/g, "&#39;");
     }
 
-    function setSiteHint(message) {
-        if (siteHint) {
-            siteHint.textContent = message;
-        }
-    }
-
-    function hasEquipmentSelection() {
-        return Boolean(equipmentField.value.trim());
-    }
-
     function appendTrimmedParam(params, key, rawValue) {
         const value = typeof rawValue === "string" ? rawValue.trim() : "";
 
@@ -56,31 +80,23 @@
         }
     }
 
-    /* The locality selector is dependent UI. It should follow the active form
-     * state so operators never pick a site that is already impossible under
-     * the current station/date/frequency/description filters.
-     */
-    function buildLocalityQuery() {
+    function buildFilterQuery() {
         const params = new URLSearchParams();
         appendTrimmedParam(params, "equipment_id", equipmentField.value);
-        appendTrimmedParam(params, "start_date", startDateField ? startDateField.value : "");
-        appendTrimmedParam(params, "end_date", endDateField ? endDateField.value : "");
-        appendTrimmedParam(params, "freq_start", freqStartField ? freqStartField.value : "");
-        appendTrimmedParam(params, "freq_end", freqEndField ? freqEndField.value : "");
-        appendTrimmedParam(params, "description", descriptionField ? descriptionField.value : "");
+        appendTrimmedParam(params, "state_id", stateField.value);
+        appendTrimmedParam(params, "district_id", districtField.value);
+        appendTrimmedParam(params, "site_id", hiddenSiteField ? hiddenSiteField.value : "");
         return params;
     }
 
-    /* Detail highlighting must follow the search that produced the current
-     * table, not unsaved edits sitting in the form. Using `location.search`
-     * keeps the expanded panel aligned with the rendered result rows.
-     */
     function buildDetailQuery() {
         const source = new URLSearchParams(window.location.search);
         const params = new URLSearchParams();
 
         [
             "equipment_id",
+            "state_id",
+            "district_id",
             "site_id",
             "start_date",
             "end_date",
@@ -92,158 +108,280 @@
         return params;
     }
 
-    function resetSiteOptions(message) {
-        siteField.innerHTML = '<option value="">Todas as localidades</option>';
-        siteField.value = "";
-        setSiteHint(message);
-    }
-
-    function markSiteOptionsStale(message) {
-        setSiteHint(message);
-    }
-
-    function setSiteFieldRefreshing(isRefreshing) {
-        siteField.classList.toggle("is-refreshing", isRefreshing);
-    }
-
-    function getCurrentSelectionSnapshot() {
-        const selectedOption = siteField.options[siteField.selectedIndex];
+    function getSelectionSnapshot(field) {
+        const selectedOption = field.options[field.selectedIndex];
 
         return {
-            value: siteField.value ? String(siteField.value) : "",
+            value: field.value ? String(field.value) : "",
             label: selectedOption ? selectedOption.textContent : "",
         };
     }
 
-    function populateSiteOptions(rows, selectedValue, selectedLabel) {
-        siteField.innerHTML = '<option value="">Todas as localidades</option>';
+    function setFieldRefreshing(field, isRefreshing) {
+        field.classList.toggle("is-refreshing", isRefreshing);
+    }
+
+    function setDistrictHint(message) {
+        if (districtHint) {
+            districtHint.textContent = message;
+        }
+    }
+
+    function setPeriodHint(message) {
+        if (periodHint) {
+            periodHint.textContent = message;
+        }
+    }
+
+    function scheduleLoadingOverlay(message) {
+        if (loadingOverlayTimer) {
+            window.clearTimeout(loadingOverlayTimer);
+        }
+
+        loadingOverlayTimer = window.setTimeout(() => {
+            if (typeof window.showPageLoadingOverlay === "function") {
+                window.showPageLoadingOverlay(message || "Atualizando filtros...");
+            }
+        }, 180);
+    }
+
+    function clearLoadingOverlay() {
+        if (loadingOverlayTimer) {
+            window.clearTimeout(loadingOverlayTimer);
+            loadingOverlayTimer = null;
+        }
+
+        if (typeof window.hidePageLoadingOverlay === "function") {
+            window.hidePageLoadingOverlay();
+        }
+    }
+
+    function cancelPendingFilterRefresh() {
+        filterRequestSerial += 1;
+
+        if (refreshTimer) {
+            window.clearTimeout(refreshTimer);
+            refreshTimer = null;
+        }
+
+        if (filterAbortController) {
+            filterAbortController.abort();
+            filterAbortController = null;
+        }
+
+        selectConfigs.forEach(({ field }) => setFieldRefreshing(field, false));
+        clearLoadingOverlay();
+    }
+
+    function populateSelectOptions(config, rows, selectedValue, selectedLabel) {
+        const { field, idKey, labelKey, defaultOptionLabel } = config;
+        field.innerHTML = "";
+
+        const defaultOption = document.createElement("option");
+        defaultOption.value = "";
+        defaultOption.textContent = defaultOptionLabel;
+        field.appendChild(defaultOption);
 
         rows.forEach((row) => {
             const option = document.createElement("option");
-            option.value = String(row.ID_SITE);
-            option.textContent = row.OPTION_LABEL;
-            siteField.appendChild(option);
+            option.value = String(row[idKey]);
+            option.textContent = row[labelKey];
+            field.appendChild(option);
         });
 
         const hasSelectedValue = selectedValue
-            && rows.some((row) => String(row.ID_SITE) === String(selectedValue));
+            && rows.some((row) => String(row[idKey]) === String(selectedValue));
 
         if (selectedValue && !hasSelectedValue && selectedLabel) {
             const option = document.createElement("option");
             option.value = String(selectedValue);
             option.textContent = selectedLabel;
-            siteField.appendChild(option);
+            field.appendChild(option);
         }
 
-        siteField.value = selectedValue ? String(selectedValue) : "";
-        setSiteHint(
-            rows.length
-                ? `${rows.length} localidades disponíveis.`
-                : "Nenhuma localidade encontrada para os filtros atuais."
-        );
+        field.value = selectedValue ? String(selectedValue) : "";
     }
 
-    async function refreshLocalities(options = {}) {
-        const { force = false } = options;
+    function applyAvailability(availability, options = {}) {
+        const { mayAutofill = false } = options;
 
-        if (!hasEquipmentSelection()) {
-            resetSiteOptions("Selecione uma estação para listar as localidades conhecidas.");
-            return;
-        }
+        if (!availability || !availability.DATE_START || !availability.DATE_END) {
+            if (startDateField) {
+                startDateField.removeAttribute("min");
+                startDateField.removeAttribute("max");
+            }
 
-        const params = buildLocalityQuery();
-        const cacheKey = params.toString();
-        const selectionSnapshot = getCurrentSelectionSnapshot();
-        const currentRequest = ++localityRequestSerial;
+            if (endDateField) {
+                endDateField.removeAttribute("min");
+                endDateField.removeAttribute("max");
+            }
 
-        if (!force && localityCache.has(cacheKey)) {
-            populateSiteOptions(
-                localityCache.get(cacheKey),
-                selectionSnapshot.value,
-                selectionSnapshot.label,
+            setPeriodHint(
+                "O periodo observado e sugerido conforme o recorte geografico escolhido."
             );
             return;
         }
 
-        setSiteFieldRefreshing(true);
-        setSiteHint("Atualizando localidades observadas...");
+        if (startDateField) {
+            startDateField.min = availability.DATE_START;
+            startDateField.max = availability.DATE_END;
+        }
+
+        if (endDateField) {
+            endDateField.min = availability.DATE_START;
+            endDateField.max = availability.DATE_END;
+        }
+
+        setPeriodHint(
+            `Faixa observada para o recorte geografico atual: ${availability.DATE_START_DISPLAY} ate ${availability.DATE_END_DISPLAY}.`
+        );
+
+        if (
+            mayAutofill
+            && allowAutoDateFill
+            && startDateField
+            && endDateField
+        ) {
+            startDateField.value = availability.DATE_START;
+            endDateField.value = availability.DATE_END;
+        }
+    }
+
+    function renderFilterPayload(payload, snapshots, options = {}) {
+        const equipments = Array.isArray(payload.equipments) ? payload.equipments : [];
+        const states = Array.isArray(payload.states) ? payload.states : [];
+        const districts = Array.isArray(payload.districts) ? payload.districts : [];
+
+        populateSelectOptions(selectConfigs[0], equipments, snapshots.equipment.value, snapshots.equipment.label);
+        populateSelectOptions(selectConfigs[1], states, snapshots.state.value, snapshots.state.label);
+        populateSelectOptions(selectConfigs[2], districts, snapshots.district.value, snapshots.district.label);
+
+        setDistrictHint(
+            districts.length
+                ? `${districts.length} distritos disponiveis para o recorte geografico atual.`
+                : "Nenhum distrito encontrado para o recorte geografico atual."
+        );
+
+        applyAvailability(payload.availability, options);
+    }
+
+    async function refreshFilterOptions(options = {}) {
+        const { force = false, mayAutofill = false, loadingMessage = "" } = options;
+        const params = buildFilterQuery();
+        const cacheKey = params.toString();
+        const currentRequest = ++filterRequestSerial;
+        const snapshots = {
+            equipment: getSelectionSnapshot(equipmentField),
+            state: getSelectionSnapshot(stateField),
+            district: getSelectionSnapshot(districtField),
+        };
+
+        if (!force && filterCache.has(cacheKey)) {
+            renderFilterPayload(filterCache.get(cacheKey), snapshots, { mayAutofill });
+            return;
+        }
+
+        if (filterAbortController) {
+            filterAbortController.abort();
+        }
+
+        filterAbortController = new AbortController();
+        selectConfigs.forEach(({ field }) => setFieldRefreshing(field, true));
+        setDistrictHint("Atualizando distritos observados...");
+        setPeriodHint("Atualizando periodo observado...");
+        scheduleLoadingOverlay(loadingMessage || "Atualizando filtros...");
 
         try {
-            const response = await fetch(`${localitiesEndpoint}?${params.toString()}`);
+            const requestParams = new URLSearchParams(params);
+            if (usesLightweightBootstrap && cacheKey === "") {
+                requestParams.set("bootstrap", "1");
+            }
+
+            const response = await fetch(`${filtersEndpoint}?${requestParams.toString()}`, {
+                signal: filterAbortController.signal,
+            });
+
             if (!response.ok) {
-                throw new Error(`localities request failed with status ${response.status}`);
+                throw new Error(`filters request failed with status ${response.status}`);
             }
 
             const payload = await response.json();
-            const rows = Array.isArray(payload.rows) ? payload.rows : [];
 
-            if (currentRequest !== localityRequestSerial) {
+            if (currentRequest !== filterRequestSerial) {
                 return;
             }
 
-            localityCache.set(cacheKey, rows);
-            populateSiteOptions(
-                rows,
-                selectionSnapshot.value,
-                selectionSnapshot.label,
-            );
+            filterCache.set(cacheKey, payload);
+            renderFilterPayload(payload, snapshots, { mayAutofill });
         } catch (error) {
-            if (currentRequest !== localityRequestSerial) {
+            if (error && error.name === "AbortError") {
                 return;
             }
 
-            markSiteOptionsStale("Nao foi possivel atualizar as localidades agora.");
+            if (currentRequest !== filterRequestSerial) {
+                return;
+            }
+
+            setDistrictHint("Nao foi possivel atualizar os distritos agora.");
+            setPeriodHint("Nao foi possivel atualizar o periodo observado agora.");
         } finally {
-            if (currentRequest === localityRequestSerial) {
-                setSiteFieldRefreshing(false);
+            if (currentRequest === filterRequestSerial) {
+                filterAbortController = null;
+                selectConfigs.forEach(({ field }) => setFieldRefreshing(field, false));
+                clearLoadingOverlay();
             }
         }
     }
 
-    function scheduleLocalityRefresh(message) {
-        if (!hasEquipmentSelection()) {
-            resetSiteOptions("Selecione uma estação para listar as localidades conhecidas.");
-            return;
+    function scheduleFilterRefresh(message, options = {}) {
+        if (message) {
+            setDistrictHint(message);
         }
-
-        markSiteOptionsStale(message || "Atualizando localidades observadas...");
 
         if (refreshTimer) {
             window.clearTimeout(refreshTimer);
         }
 
         refreshTimer = window.setTimeout(() => {
-            refreshLocalities();
+            refreshTimer = null;
+            refreshFilterOptions(options);
         }, 450);
     }
 
-    equipmentField.addEventListener("change", () => {
-        resetSiteOptions("Estação alterada. Carregando localidades conhecidas...");
-        scheduleLocalityRefresh("Estação alterada. Carregando localidades conhecidas...");
-    });
-
-    [startDateField, endDateField, freqStartField, freqEndField]
-        .filter(Boolean)
-        .forEach((field) => {
-            field.addEventListener("change", () => {
-                scheduleLocalityRefresh("Filtros alterados. Atualizando localidades...");
+    [equipmentField, stateField, districtField].forEach((field) => {
+        field.addEventListener("change", () => {
+            scheduleFilterRefresh("Filtros geograficos alterados. Atualizando opcoes...", {
+                mayAutofill: true,
+                loadingMessage: "Atualizando filtros geograficos...",
             });
         });
+    });
 
-    if (descriptionField) {
-        descriptionField.addEventListener("input", () => {
-            scheduleLocalityRefresh("Filtros alterados. Atualizando localidades...");
+    [startDateField, endDateField].filter(Boolean).forEach((field) => {
+        field.addEventListener("change", () => {
+            allowAutoDateFill = !(
+                (startDateField && startDateField.value)
+                || (endDateField && endDateField.value)
+            );
         });
+    });
+
+    if (!usesLightweightBootstrap) {
+        refreshFilterOptions({
+            force: true,
+            mayAutofill: allowAutoDateFill,
+        });
+    } else {
+        setDistrictHint("Selecione um estado ou uma estacao para carregar os distritos disponiveis.");
+        setPeriodHint(
+            "O periodo observado sera carregado quando houver contexto geografico suficiente."
+        );
     }
 
-    if (hasEquipmentSelection()) {
-        if (!hasInitialLocalityOptions || siteField.options.length <= 2) {
-            refreshLocalities();
-        } else {
-            setSiteHint(`${Math.max(siteField.options.length - 1, 0)} localidades disponíveis.`);
-        }
-    } else if (!hasInitialLocalityOptions) {
-        resetSiteOptions("Selecione uma estação para listar as localidades conhecidas.");
+    if (clearFiltersLink) {
+        clearFiltersLink.addEventListener("click", () => {
+            cancelPendingFilterRefresh();
+        });
     }
 
     function renderDetailCell(value, shouldHighlight) {
@@ -276,7 +414,7 @@
         return `
             <div class="file-detail-header">
                 Espectros internos do arquivo
-                ${shouldHighlightMatches ? '<span class="file-detail-match-note">Os compatíveis com a busca aparecem em negrito.</span>' : ""}
+                ${shouldHighlightMatches ? '<span class="file-detail-match-note">Os compativeis com a busca aparecem em negrito.</span>' : ""}
             </div>
             <div class="file-detail-table-wrap">
                 <table class="file-detail-table">
@@ -285,7 +423,7 @@
                             <th>ID</th>
                             <th>Plano</th>
                             <th>Faixa (MHz)</th>
-                            <th>Início</th>
+                            <th>Inicio</th>
                             <th>Fim</th>
                             <th>RBW</th>
                             <th>Traces</th>

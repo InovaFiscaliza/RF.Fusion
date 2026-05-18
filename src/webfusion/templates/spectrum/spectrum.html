@@ -11,15 +11,16 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260511-spectrum-unified-search') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260518-spectrum-faceted-filters') }}">
 {% endblock %}
 
 {% block content %}
 
 <div
     id="spectrum-page-root"
-    data-localities-endpoint="{{ url_for('spectrum.spectrum_localities') }}"
+    data-filters-endpoint="{{ url_for('spectrum.spectrum_filters') }}"
     data-file-spectra-endpoint-base="{{ url_for('spectrum.spectrum_file_spectra', file_id=0) | replace('/0/spectra', '') }}"
+    data-lightweight-bootstrap="{{ '1' if lightweight_filter_bootstrap else '0' }}"
 >
 
 <h1 class="margin-bottom-l">
@@ -35,49 +36,75 @@
     </div>
 
     <form method="get" id="spectrum-query-form" data-loading-message="Consultando espectros...">
+        {% if site_id %}
+        <input type="hidden" name="site_id" value="{{ site_id }}">
+        {% endif %}
+
+        {% if site_context and site_id %}
+        <div class="filter-helper-text margin-bottom-m">
+            Busca aberta a partir do mapa e limitada ao site {{ site_context.LOCALITY_LABEL or ('site ' ~ site_id) }}.
+            Os filtros de Estado e Distrito foram alinhados com esse ponto, mas a restrição por site continua ativa até você limpar os filtros.
+        </div>
+        {% endif %}
 
         <div class="spectrum-query-grid">
 
             <div class="spectrum-query-field">
-                <label>Estação / Equipamento</label>
+                <label>Estado</label>
                 <div class="select-shell">
-                    <select name="equipment_id" id="equipment_id" class="form-control" required>
-                        <option value="">-- selecione --</option>
-                        {% for e in equipments %}
-                        <option value="{{ e.ID_EQUIPMENT }}"
-                            {% if e.ID_EQUIPMENT|string == equipment_id %}selected{% endif %}>
-                            {{ e.NA_EQUIPMENT }}
+                    <select name="state_id" id="state_id" class="form-control">
+                        <option value="">Todos os estados</option>
+                        {% for state in states %}
+                        <option
+                            value="{{ state.ID_STATE }}"
+                            {% if state.ID_STATE|string == state_id %}selected{% endif %}
+                        >
+                            {{ state.OPTION_LABEL }}
                         </option>
                         {% endfor %}
                     </select>
+                </div>
+                <div class="filter-helper-text">
+                    Os estados disponíveis seguem o recorte geográfico ativo entre estação e distrito.
                 </div>
             </div>
 
             <div class="spectrum-query-field">
-                <label>Localidade</label>
+                <label>Distrito</label>
                 <div class="select-shell">
                     <select
-                        name="site_id"
-                        id="site_id"
+                        name="district_id"
+                        id="district_id"
                         class="form-control"
                     >
-                        <option value="">Todas as localidades</option>
-                        {% for locality in localities %}
+                        <option value="">Todos os distritos</option>
+                        {% for district in districts %}
                         <option
-                            value="{{ locality.ID_SITE }}"
-                            {% if locality.ID_SITE|string == site_id %}selected{% endif %}
+                            value="{{ district.ID_DISTRICT }}"
+                            {% if district.ID_DISTRICT|string == district_id %}selected{% endif %}
                         >
-                            {{ locality.OPTION_LABEL }}
+                            {{ district.OPTION_LABEL }}
                         </option>
                         {% endfor %}
                     </select>
                 </div>
-                <div class="filter-helper-text" id="site-filter-hint">
-                    {% if site_id and localities %}
-                        Localidade carregada. As opções disponíveis seguem a estação e os filtros ativos.
-                    {% else %}
-                        As localidades disponíveis seguem a estação e os filtros ativos.
-                    {% endif %}
+                <div class="filter-helper-text" id="district-filter-hint">
+                    Os distritos disponíveis seguem o recorte geográfico ativo entre estação e estado.
+                </div>
+            </div>
+
+            <div class="spectrum-query-field">
+                <label>Estação / Equipamento</label>
+                <div class="select-shell">
+                    <select name="equipment_id" id="equipment_id" class="form-control">
+                        <option value="">Todas as estações</option>
+                        {% for e in equipments %}
+                        <option value="{{ e.ID_EQUIPMENT }}"
+                            {% if e.ID_EQUIPMENT|string == equipment_id %}selected{% endif %}>
+                            {{ e.OPTION_LABEL or e.NA_EQUIPMENT }}
+                        </option>
+                        {% endfor %}
+                    </select>
                 </div>
             </div>
 
@@ -87,6 +114,13 @@
                        name="start_date"
                        value="{{ start_date or '' }}"
                        class="form-control">
+                <div class="filter-helper-text" id="period-filter-hint">
+                    {% if filter_availability and filter_availability.DATE_START_DISPLAY and filter_availability.DATE_END_DISPLAY %}
+                        Faixa observada para o recorte geográfico atual: {{ filter_availability.DATE_START_DISPLAY }} até {{ filter_availability.DATE_END_DISPLAY }}.
+                    {% else %}
+                        O período observado é sugerido conforme o recorte geográfico escolhido.
+                    {% endif %}
+                </div>
             </div>
 
             <div class="spectrum-query-field">
@@ -150,7 +184,12 @@
         </div>
 
         <div class="spectrum-query-submit-row">
-            <a class="btn-secondary" href="{{ url_for('spectrum.spectrum') }}">
+            <a
+                class="btn-secondary"
+                id="clear-spectrum-filters"
+                href="{{ url_for('spectrum.spectrum') }}"
+                data-loading-message="Limpando filtros..."
+            >
                 Limpar filtros
             </a>
             <button type="submit" class="btn-search">
@@ -262,7 +301,7 @@
                         </button>
                     </td>
                     <td>{{ r.ID_FILE }}</td>
-                    <td>{{ r.NA_EQUIPMENT }}</td>
+                    <td title="{{ r.EQUIPMENT_DETAILS or r.EQUIPMENT_DISPLAY }}">{{ r.EQUIPMENT_DISPLAY }}</td>
                     <td title="{{ r.LOCALITY_DETAILS or r.LOCALITY_DISPLAY }}">{{ r.LOCALITY_DISPLAY }}</td>
                     <td>{{ r.DT_TIME_START }}</td>
                     <td>{{ r.DT_TIME_END }}</td>
@@ -300,11 +339,11 @@
 
 </div>
 
-{% elif equipment_id %}
+{% elif query_started %}
 
 <div class="card background-neutral-0 padding-l border-radius-m">
-    {% if site_availability_hint and site_availability_hint.DATE_START and site_availability_hint.DATE_END %}
-        Nenhum registro encontrado para os filtros informados. Para {{ site_availability_hint.LOCALITY_LABEL or ('site ' ~ site_id) }}, existem medições entre {{ site_availability_hint.DATE_START }} e {{ site_availability_hint.DATE_END }}.
+    {% if filter_availability and filter_availability.DATE_START_DISPLAY and filter_availability.DATE_END_DISPLAY %}
+        Nenhum registro encontrado para os filtros informados. Para a combinacao geografica atual, existem medicoes entre {{ filter_availability.DATE_START_DISPLAY }} e {{ filter_availability.DATE_END_DISPLAY }}.
     {% else %}
         Nenhum registro encontrado para os filtros informados.
     {% endif %}
@@ -317,5 +356,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/spectrum_page.js', v='20260511-spectrum-unified-search') }}"></script>
+<script src="{{ url_for('static', filename='js/spectrum_page.js', v='20260518-spectrum-faceted-filters') }}"></script>
 {% endblock %}

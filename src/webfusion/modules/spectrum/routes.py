@@ -21,9 +21,9 @@ from werkzeug.wsgi import wrap_file
 from modules.spectrum.service import (
     get_spectrum_file_data,
     get_equipments,
+    get_spectrum_filter_options,
     get_spectrum_locality_options,
     get_spectrum_site_option,
-    get_spectrum_site_availability_range,
     get_file_by_file_id,
     get_file_by_spectrum_id,
     get_spectra_by_file_id,
@@ -305,6 +305,61 @@ def _parse_frequency_value(value):
         return None
 
 
+def _has_active_spectrum_filters(
+    *,
+    equipment_id=None,
+    state_id=None,
+    district_id=None,
+    site_id=None,
+    start_date=None,
+    end_date=None,
+    freq_start=None,
+    freq_end=None,
+    description=None,
+):
+    """Return whether the current request already defines a meaningful search."""
+
+    return any(
+        value not in (None, "")
+        for value in (
+            equipment_id,
+            state_id,
+            district_id,
+            site_id,
+            start_date,
+            end_date,
+            description,
+        )
+    ) or freq_start is not None or freq_end is not None
+
+
+def _should_use_lightweight_filter_bootstrap(
+    *,
+    equipment_id=None,
+    state_id=None,
+    district_id=None,
+    site_id=None,
+    start_date=None,
+    end_date=None,
+    freq_start=None,
+    freq_end=None,
+    description=None,
+):
+    """Return whether the page can skip expensive district/period preloading."""
+
+    return not _has_active_spectrum_filters(
+        equipment_id=equipment_id,
+        state_id=state_id,
+        district_id=district_id,
+        site_id=site_id,
+        start_date=start_date,
+        end_date=end_date,
+        freq_start=freq_start,
+        freq_end=freq_end,
+        description=description,
+    )
+
+
 @spectrum_bp.route("/spectrum", methods=["GET"])
 def spectrum():
     """Render the spectrum query page.
@@ -313,6 +368,8 @@ def spectrum():
     result side: one matching file per row, with expandable internal spectra.
     """
     equipment_id = _normalize_optional_arg(request.args.get("equipment_id"))
+    state_id = _normalize_optional_arg(request.args.get("state_id"))
+    district_id = _normalize_optional_arg(request.args.get("district_id"))
     site_id = _normalize_optional_arg(request.args.get("site_id"))
     start_date = _normalize_optional_arg(request.args.get("start_date"))
     end_date = _normalize_optional_arg(request.args.get("end_date"))
@@ -341,35 +398,94 @@ def spectrum():
     query_error_message = None
     freq_start_value = _parse_frequency_value(freq_start)
     freq_end_value = _parse_frequency_value(freq_end)
+    site_context = None
 
     query_error_message = _validate_frequency_bounds(freq_start_value, freq_end_value)
 
-    try:
-        equipments = get_equipments()
-    except Exception:
-        current_app.logger.exception("failed_to_load_spectrum_equipments")
-        equipments = []
-        query_error_message = "Nao foi possivel carregar o catalogo de estacoes agora."
+    if site_id:
+        try:
+            site_context = get_spectrum_site_option(site_id)
+            if site_context:
+                if not state_id and site_context.get("ID_STATE") is not None:
+                    state_id = str(site_context["ID_STATE"])
+                if not district_id and site_context.get("ID_DISTRICT") is not None:
+                    district_id = str(site_context["ID_DISTRICT"])
+        except Exception:
+            current_app.logger.exception(
+                "failed_to_load_selected_spectrum_site_context site_id=%s equipment_id=%s",
+                site_id,
+                equipment_id,
+            )
 
-    equipment_name_by_id = {
-        str(item["ID_EQUIPMENT"]): item["NA_EQUIPMENT"]
-        for item in equipments
-    }
+    equipments = []
+    states = []
+    districts = []
+    filter_availability = None
+    lightweight_filter_bootstrap = _should_use_lightweight_filter_bootstrap(
+        equipment_id=equipment_id,
+        state_id=state_id,
+        district_id=district_id,
+        site_id=site_id,
+        start_date=start_date,
+        end_date=end_date,
+        freq_start=freq_start_value,
+        freq_end=freq_end_value,
+        description=description,
+    )
+
+    try:
+        filter_options = get_spectrum_filter_options(
+            equipment_id=equipment_id,
+            state_id=state_id,
+            district_id=district_id,
+            site_id=site_id,
+            start_date=start_date,
+            end_date=end_date,
+            freq_start=freq_start_value,
+            freq_end=freq_end_value,
+            description=description,
+            include_districts=not lightweight_filter_bootstrap,
+            include_availability=not lightweight_filter_bootstrap,
+        )
+        equipments = filter_options.get("equipments", [])
+        states = filter_options.get("states", [])
+        districts = filter_options.get("districts", [])
+        filter_availability = filter_options.get("availability")
+    except Exception:
+        current_app.logger.exception("failed_to_load_spectrum_filter_options")
+        try:
+            equipments = get_equipments()
+        except Exception:
+            current_app.logger.exception("failed_to_load_spectrum_equipments_fallback")
+            equipments = []
+        query_error_message = (
+            query_error_message
+            or "Nao foi possivel carregar o catalogo de filtros agora."
+        )
 
     rows = []
     total = 0
     total_pages = 0
     visible_pages = []
-    site_availability_hint = None
-    # Query execution only starts once an equipment has been chosen. At that
-    # point, empty optional filters mean "broad query for this equipment", not
-    # "do not query yet". The equipment selector is the true gate that turns
-    # the screen from an empty search shell into a result page.
-    if equipment_id and not query_error_message:
+    query_started = _has_active_spectrum_filters(
+        equipment_id=equipment_id,
+        state_id=state_id,
+        district_id=district_id,
+        site_id=site_id,
+        start_date=start_date,
+        end_date=end_date,
+        freq_start=freq_start_value,
+        freq_end=freq_end_value,
+        description=description,
+    )
+
+    if query_started and not query_error_message:
         query_started_at = time.perf_counter()
         try:
             rows, total = get_spectrum_file_data(
                 equipment_id=equipment_id,
+                state_id=state_id,
+                district_id=district_id,
                 site_id=site_id,
                 start_date=start_date,
                 end_date=end_date,
@@ -391,6 +507,8 @@ def spectrum():
                 page = total_pages
                 rows, total = get_spectrum_file_data(
                     equipment_id=equipment_id,
+                    state_id=state_id,
+                    district_id=district_id,
                     site_id=site_id,
                     start_date=start_date,
                     end_date=end_date,
@@ -409,18 +527,16 @@ def spectrum():
             if total_pages > 0:
                 visible_pages = _build_visible_page_slots(page, total_pages)
 
-            selected_equipment_name = equipment_name_by_id.get(str(equipment_id))
-
-            for row in rows:
-                row["NA_EQUIPMENT"] = selected_equipment_name
-
             _annotate_download_urls(rows)
 
             current_app.logger.info(
-                "spectrum_query_completed equipment_id=%s site_id=%s start_date=%s "
-                "end_date=%s freq_start=%s freq_end=%s description=%s rows=%s total=%s "
+                "spectrum_query_completed equipment_id=%s state_id=%s district_id=%s "
+                "site_id=%s start_date=%s end_date=%s freq_start=%s freq_end=%s "
+                "description=%s rows=%s total=%s "
                 "elapsed_ms=%.1f",
                 equipment_id,
+                state_id,
+                district_id,
                 site_id,
                 start_date,
                 end_date,
@@ -433,10 +549,12 @@ def spectrum():
             )
         except Exception:
             current_app.logger.exception(
-                "failed_to_query_spectrum_page equipment_id=%s site_id=%s start_date=%s "
-                "end_date=%s freq_start=%s freq_end=%s description=%s sort_by=%s "
-                "sort_order=%s page=%s",
+                "failed_to_query_spectrum_page equipment_id=%s state_id=%s district_id=%s "
+                "site_id=%s start_date=%s end_date=%s freq_start=%s freq_end=%s "
+                "description=%s sort_by=%s sort_order=%s page=%s",
                 equipment_id,
+                state_id,
+                district_id,
                 site_id,
                 start_date,
                 end_date,
@@ -455,44 +573,10 @@ def spectrum():
                 "Nao foi possivel consultar os registros com esses filtros agora."
             )
 
-    # Preserve the active filter state for pagination links and for the
-    # dependent locality selector rendered by the template.
-    localities = []
-
-    # When a site is already selected, the template still needs that single
-    # locality option rendered so the `<select>` can display the current
-    # choice before `spectrum_page.js` potentially refreshes the list later.
-    if site_id:
-        try:
-            selected_locality = get_spectrum_site_option(site_id)
-            if selected_locality:
-                localities = [selected_locality]
-        except Exception:
-            current_app.logger.exception(
-                "failed_to_load_selected_spectrum_locality site_id=%s equipment_id=%s",
-                site_id,
-                equipment_id,
-            )
-
-    # Availability hints are only useful in a narrow scenario: the user picked
-    # a concrete site and got no rows back, but the query itself did not fail.
-    # In that case we try to explain whether the selected locality has data in
-    # another temporal window instead of leaving the result empty and silent.
-    if equipment_id and site_id and not rows and not query_error_message:
-        try:
-            site_availability_hint = get_spectrum_site_availability_range(
-                equipment_id=equipment_id,
-                site_id=site_id,
-            )
-        except Exception:
-            current_app.logger.exception(
-                "failed_to_load_spectrum_site_availability equipment_id=%s site_id=%s",
-                equipment_id,
-                site_id,
-            )
-
     query_params = {
         "equipment_id": equipment_id,
+        "state_id": state_id,
+        "district_id": district_id,
         "site_id": site_id,
         "start_date": start_date,
         "end_date": end_date,
@@ -514,10 +598,14 @@ def spectrum():
     return render_template(
         "spectrum/spectrum.html",
         equipments=equipments,
-        localities=localities,
+        states=states,
+        districts=districts,
         rows=rows,
         equipment_id=equipment_id,
+        state_id=state_id,
+        district_id=district_id,
         site_id=site_id,
+        site_context=site_context,
         start_date=start_date,
         end_date=end_date,
         freq_start=freq_start,
@@ -530,10 +618,103 @@ def spectrum():
         total_pages=total_pages,
         total=total,
         query_error_message=query_error_message,
-        site_availability_hint=site_availability_hint,
+        filter_availability=filter_availability,
+        query_started=query_started,
+        lightweight_filter_bootstrap=lightweight_filter_bootstrap,
         visible_pages=visible_pages,
         page_query_prefix=page_query_prefix,
     )
+
+
+@spectrum_bp.route("/api/spectrum/filters")
+def spectrum_filters():
+    """Return dynamic option sets for the facet-style spectrum filters."""
+
+    equipment_id = _normalize_optional_arg(request.args.get("equipment_id"))
+    state_id = _normalize_optional_arg(request.args.get("state_id"))
+    district_id = _normalize_optional_arg(request.args.get("district_id"))
+    site_id = _normalize_optional_arg(request.args.get("site_id"))
+    start_date = _normalize_optional_arg(request.args.get("start_date"))
+    end_date = _normalize_optional_arg(request.args.get("end_date"))
+    freq_start = _parse_frequency_value(_normalize_optional_arg(request.args.get("freq_start")))
+    freq_end = _parse_frequency_value(_normalize_optional_arg(request.args.get("freq_end")))
+    description = _normalize_optional_arg(request.args.get("description"))
+    bootstrap_mode = request.args.get("bootstrap") == "1"
+
+    if _validate_frequency_bounds(freq_start, freq_end):
+        return jsonify(
+            {
+                "equipments": [],
+                "states": [],
+                "districts": [],
+                "availability": None,
+            }
+        )
+
+    started_at = time.perf_counter()
+
+    try:
+        include_districts = True
+        include_availability = True
+
+        if bootstrap_mode and _should_use_lightweight_filter_bootstrap(
+            equipment_id=equipment_id,
+            state_id=state_id,
+            district_id=district_id,
+            site_id=site_id,
+            start_date=start_date,
+            end_date=end_date,
+            freq_start=freq_start,
+            freq_end=freq_end,
+            description=description,
+        ):
+            include_districts = False
+            include_availability = False
+
+        payload = get_spectrum_filter_options(
+            equipment_id=equipment_id,
+            state_id=state_id,
+            district_id=district_id,
+            site_id=site_id,
+            start_date=start_date,
+            end_date=end_date,
+            freq_start=freq_start,
+            freq_end=freq_end,
+            description=description,
+            include_districts=include_districts,
+            include_availability=include_availability,
+        )
+        current_app.logger.info(
+            "spectrum_filters_loaded equipment_id=%s state_id=%s district_id=%s "
+            "site_id=%s bootstrap_mode=%s equipments=%s states=%s districts=%s elapsed_ms=%.1f",
+            equipment_id,
+            state_id,
+            district_id,
+            site_id,
+            bootstrap_mode,
+            len(payload.get("equipments", [])),
+            len(payload.get("states", [])),
+            len(payload.get("districts", [])),
+            (time.perf_counter() - started_at) * 1000.0,
+        )
+        return jsonify(payload)
+    except Exception:
+        current_app.logger.exception(
+            "failed_to_load_spectrum_filters equipment_id=%s state_id=%s district_id=%s site_id=%s",
+            equipment_id,
+            state_id,
+            district_id,
+            site_id,
+        )
+        return jsonify(
+            {
+                "equipments": [],
+                "states": [],
+                "districts": [],
+                "availability": None,
+                "error": "filters_temporarily_unavailable",
+            }
+        ), 503
 
 
 @spectrum_bp.route("/api/spectrum/localities")
@@ -545,6 +726,9 @@ def spectrum_localities():
     spectrum-aware filters as the main page, except for the locality itself.
     """
     equipment_id = _normalize_optional_arg(request.args.get("equipment_id"))
+    state_id = _normalize_optional_arg(request.args.get("state_id"))
+    district_id = _normalize_optional_arg(request.args.get("district_id"))
+    site_id = _normalize_optional_arg(request.args.get("site_id"))
     start_date = _normalize_optional_arg(request.args.get("start_date"))
     end_date = _normalize_optional_arg(request.args.get("end_date"))
     freq_start = _parse_frequency_value(_normalize_optional_arg(request.args.get("freq_start")))
@@ -562,6 +746,9 @@ def spectrum_localities():
     try:
         rows = get_spectrum_locality_options(
             equipment_id=equipment_id,
+            state_id=state_id,
+            district_id=district_id,
+            site_id=site_id,
             start_date=start_date,
             end_date=end_date,
             freq_start=freq_start,
@@ -632,6 +819,8 @@ def spectrum_file_spectra(file_id):
                 "rows": get_spectra_by_file_id(
                     file_id,
                     equipment_id=_normalize_optional_arg(request.args.get("equipment_id")),
+                    state_id=_normalize_optional_arg(request.args.get("state_id")),
+                    district_id=_normalize_optional_arg(request.args.get("district_id")),
                     site_id=_normalize_optional_arg(request.args.get("site_id")),
                     start_date=_normalize_optional_arg(request.args.get("start_date")),
                     end_date=_normalize_optional_arg(request.args.get("end_date")),

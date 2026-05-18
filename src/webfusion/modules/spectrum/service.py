@@ -43,7 +43,8 @@ FILE_PATH_CACHE_TTL_SECONDS = 300
 # Full file-result pages reuse one heavy grouped query result for a few minutes
 # so operators can move across pagination links without re-scanning the catalog.
 FILE_RESULT_FULL_CACHE_TTL_SECONDS = 300
-FILE_RESULT_CACHE_VERSION = 2
+FILE_RESULT_CACHE_VERSION = 3
+FILTER_OPTION_CACHE_VERSION = 2
 
 # These are intentionally tiny in-process caches. They smooth repeated clicks
 # and back/forward navigation in one worker process, but they are not meant to
@@ -220,6 +221,8 @@ def _build_locality_display_sql(
 def _build_fact_filters(
     *,
     equipment_id=None,
+    state_id=None,
+    district_id=None,
     site_id=None,
     start_date=None,
     end_date=None,
@@ -227,6 +230,7 @@ def _build_fact_filters(
     freq_end=None,
     description=None,
     fact_alias="f",
+    site_alias="s",
     include_freq=True,
     include_description=True,
 ):
@@ -249,6 +253,14 @@ def _build_fact_filters(
     if equipment_id:
         where_clauses.append(f"{fact_alias}.FK_EQUIPMENT = %s")
         params.append(equipment_id)
+
+    if state_id:
+        where_clauses.append(f"{site_alias}.FK_STATE = %s")
+        params.append(state_id)
+
+    if district_id:
+        where_clauses.append(f"{site_alias}.FK_DISTRICT = %s")
+        params.append(district_id)
 
     if site_id:
         where_clauses.append(f"{fact_alias}.FK_SITE = %s")
@@ -279,6 +291,42 @@ def _build_fact_filters(
         params.append(f"%{description}%")
 
     return where_clauses, params
+
+
+def _append_summary_geo_filters(
+    where_clauses,
+    params,
+    *,
+    equipment_id=None,
+    state_id=None,
+    district_id=None,
+    site_id=None,
+    summary_alias="sm",
+    site_alias="s",
+):
+    """Append the geo filters supported by ``SITE_EQUIPMENT_OBS_SUMMARY``.
+
+    The summary read model is intentionally used for responsive selector
+    updates. It only understands geographic/equipment scoping, which is
+    enough for the fast filter chrome shown before the user launches the full
+    spectrum/file query.
+    """
+
+    if equipment_id:
+        where_clauses.append(f"{summary_alias}.FK_EQUIPMENT = %s")
+        params.append(equipment_id)
+
+    if state_id:
+        where_clauses.append(f"{summary_alias}.ID_STATE = %s")
+        params.append(state_id)
+
+    if district_id:
+        where_clauses.append(f"{site_alias}.FK_DISTRICT = %s")
+        params.append(district_id)
+
+    if site_id:
+        where_clauses.append(f"{summary_alias}.FK_SITE = %s")
+        params.append(site_id)
 
 
 def _build_where_sql(where_clauses):
@@ -317,6 +365,27 @@ def _format_br_datetime(value):
         return parsed.strftime("%d-%m-%Y")
 
     return parsed.strftime("%d-%m-%Y %H:%M:%S")
+
+
+def _format_iso_date(value):
+    """Format one date-like value as ``YYYY-MM-DD`` for HTML date inputs."""
+
+    if value in (None, ""):
+        return None
+
+    text = _coerce_text(value).strip()
+
+    if not text:
+        return None
+
+    normalized_text = text.replace("Z", "+00:00")
+
+    try:
+        parsed = datetime.fromisoformat(normalized_text.replace(" ", "T"))
+    except ValueError:
+        return text[:10]
+
+    return parsed.strftime("%Y-%m-%d")
 
 
 def _format_row_datetime_fields(rows, *field_names):
@@ -371,6 +440,22 @@ def _postprocess_file_rows(rows):
 
         row["LOCALITY_DETAILS"] = " | ".join(raw_labels)
 
+        raw_equipments = [
+            part.strip()
+            for part in _coerce_text(row.get("EQUIPMENT_LABELS")).split("||")
+            if part and part.strip()
+        ]
+        row["EQUIPMENT_COUNT"] = int(row.get("EQUIPMENT_COUNT") or 0)
+
+        if len(raw_equipments) == 1:
+            row["EQUIPMENT_DISPLAY"] = raw_equipments[0]
+        elif len(raw_equipments) > 1:
+            row["EQUIPMENT_DISPLAY"] = f"{len(raw_equipments)} estacoes"
+        else:
+            row["EQUIPMENT_DISPLAY"] = "—"
+
+        row["EQUIPMENT_DETAILS"] = " | ".join(raw_equipments)
+
 
 def _finalize_locality_options(rows):
     """Add stable option labels for the dynamic locality filter.
@@ -411,6 +496,126 @@ def _finalize_locality_options(rows):
         )
 
     return options
+
+
+def _build_district_option_label(row):
+    """Build one district-facing label with county/state disambiguation."""
+
+    district_name = _coerce_text(
+        row.get("DISTRICT_NAME") or row.get("NA_DISTRICT") or f"Distrito {row['ID_DISTRICT']}"
+    )
+    county_name = _coerce_text(row.get("COUNTY_NAME") or row.get("NA_COUNTY"))
+    state_code = _coerce_text(row.get("STATE_CODE") or row.get("LC_STATE"))
+    context_parts = []
+
+    if county_name and county_name.casefold() != district_name.casefold():
+        context_parts.append(county_name)
+
+    if state_code:
+        context_parts.append(state_code)
+
+    if not context_parts:
+        return district_name
+
+    return f"{district_name} ({'/'.join(context_parts)})"
+
+
+def _finalize_equipment_options(rows):
+    """Normalize equipment options for the dynamic spectrum filters."""
+
+    options = []
+
+    for row in rows:
+        equipment_id = int(row["ID_EQUIPMENT"])
+        equipment_name = _coerce_text(
+            row.get("NA_EQUIPMENT") or row.get("EQUIPMENT_NAME") or f"Equipamento {equipment_id}"
+        )
+        options.append(
+            {
+                "ID_EQUIPMENT": equipment_id,
+                "NA_EQUIPMENT": equipment_name,
+                "OPTION_LABEL": equipment_name,
+                "SPECTRUM_COUNT": int(row.get("SPECTRUM_COUNT") or 0),
+                "DATE_START": _format_iso_date(row.get("DATE_START")),
+                "DATE_END": _format_iso_date(row.get("DATE_END")),
+            }
+        )
+
+    return options
+
+
+def _finalize_state_options(rows):
+    """Normalize state options with human-friendly `UF - nome` labels."""
+
+    options = []
+
+    for row in rows:
+        state_id = int(row["ID_STATE"])
+        state_code = _coerce_text(row.get("STATE_CODE") or row.get("LC_STATE"))
+        state_name = _coerce_text(row.get("STATE_NAME") or row.get("NA_STATE"))
+        option_label = state_code or state_name or f"Estado {state_id}"
+
+        if state_code and state_name:
+            option_label = f"{state_code} - {state_name}"
+
+        options.append(
+            {
+                "ID_STATE": state_id,
+                "STATE_CODE": state_code,
+                "STATE_NAME": state_name,
+                "OPTION_LABEL": option_label,
+                "SPECTRUM_COUNT": int(row.get("SPECTRUM_COUNT") or 0),
+                "DATE_START": _format_iso_date(row.get("DATE_START")),
+                "DATE_END": _format_iso_date(row.get("DATE_END")),
+            }
+        )
+
+    return options
+
+
+def _finalize_district_options(rows):
+    """Normalize district options keyed by `FK_DISTRICT` instead of `ID_SITE`."""
+
+    options = []
+
+    for row in rows:
+        district_id = int(row["ID_DISTRICT"])
+        district_name = _coerce_text(row.get("DISTRICT_NAME") or row.get("NA_DISTRICT"))
+        county_name = _coerce_text(row.get("COUNTY_NAME") or row.get("NA_COUNTY"))
+        state_code = _coerce_text(row.get("STATE_CODE") or row.get("LC_STATE"))
+        options.append(
+            {
+                "ID_DISTRICT": district_id,
+                "DISTRICT_NAME": district_name,
+                "COUNTY_NAME": county_name,
+                "STATE_CODE": state_code,
+                "OPTION_LABEL": _build_district_option_label(row),
+                "SITE_COUNT": int(row.get("SITE_COUNT") or 0),
+                "SPECTRUM_COUNT": int(row.get("SPECTRUM_COUNT") or 0),
+                "DATE_START": _format_iso_date(row.get("DATE_START")),
+                "DATE_END": _format_iso_date(row.get("DATE_END")),
+            }
+        )
+
+    return options
+
+
+def _finalize_availability_row(row):
+    """Normalize the date availability helper returned to routes and JS."""
+
+    if not row:
+        return None
+
+    return {
+        "DATE_START": _format_iso_date(row.get("DATE_START")),
+        "DATE_END": _format_iso_date(row.get("DATE_END")),
+        "DATE_START_DISPLAY": _format_br_datetime(row.get("DATE_START")),
+        "DATE_END_DISPLAY": _format_br_datetime(row.get("DATE_END")),
+        "SPECTRUM_COUNT": int(row.get("SPECTRUM_COUNT") or 0),
+        "SITE_COUNT": int(row.get("SITE_COUNT") or 0),
+        "DISTRICT_COUNT": int(row.get("DISTRICT_COUNT") or 0),
+        "EQUIPMENT_COUNT": int(row.get("EQUIPMENT_COUNT") or 0),
+    }
 
 
 def _get_cached_query(cache_key):
@@ -566,6 +771,8 @@ def get_equipments():
 
 def get_spectrum_data(
     equipment_id=None,
+    state_id=None,
+    district_id=None,
     site_id=None,
     start_date=None,
     end_date=None,
@@ -594,6 +801,8 @@ def get_spectrum_data(
     cache_key = (
         "spectrum",
         equipment_id,
+        state_id,
+        district_id,
         site_id,
         start_date,
         end_date,
@@ -612,6 +821,8 @@ def get_spectrum_data(
 
     where_clauses, params = _build_fact_filters(
         equipment_id=equipment_id,
+        state_id=state_id,
+        district_id=district_id,
         site_id=site_id,
         start_date=start_date,
         end_date=end_date,
@@ -619,6 +830,7 @@ def get_spectrum_data(
         freq_end=freq_end,
         description=description,
         fact_alias="f",
+        site_alias="s",
     )
     where_sql = _build_where_sql(where_clauses)
     locality_display_sql = _build_locality_display_sql()
@@ -669,6 +881,8 @@ def get_spectrum_data(
     count_query = f"""
         SELECT COUNT(*) AS total
         FROM FACT_SPECTRUM f
+        JOIN DIM_SPECTRUM_SITE s
+            ON s.ID_SITE = f.FK_SITE
         {where_sql}
     """
 
@@ -695,6 +909,8 @@ def get_spectrum_data(
 
 def get_spectrum_file_data(
     equipment_id=None,
+    state_id=None,
+    district_id=None,
     site_id=None,
     start_date=None,
     end_date=None,
@@ -732,6 +948,8 @@ def get_spectrum_file_data(
         "file",
         FILE_RESULT_CACHE_VERSION,
         equipment_id,
+        state_id,
+        district_id,
         site_id,
         start_date,
         end_date,
@@ -754,6 +972,8 @@ def get_spectrum_file_data(
         "file_full",
         FILE_RESULT_CACHE_VERSION,
         equipment_id,
+        state_id,
+        district_id,
         site_id,
         start_date,
         end_date,
@@ -784,6 +1004,8 @@ def get_spectrum_file_data(
     fact_source_alias = "fs"
     fact_where_clauses, fact_params = _build_fact_filters(
         equipment_id=equipment_id,
+        state_id=state_id,
+        district_id=district_id,
         site_id=site_id,
         start_date=start_date,
         end_date=end_date,
@@ -791,6 +1013,7 @@ def get_spectrum_file_data(
         freq_end=freq_end,
         description=description,
         fact_alias=fact_source_alias,
+        site_alias="s_filter",
         include_freq=True,
         include_description=True,
     )
@@ -801,13 +1024,16 @@ def get_spectrum_file_data(
     # rendering and download workflows.
     filtered_spectra_sql = f"""
         SELECT
-            ID_SPECTRUM,
-            FK_SITE,
-            DT_TIME_START,
-            DT_TIME_END,
-            NU_FREQ_START,
-            NU_FREQ_END
+            {fact_source_alias}.ID_SPECTRUM,
+            {fact_source_alias}.FK_SITE,
+            {fact_source_alias}.FK_EQUIPMENT,
+            {fact_source_alias}.DT_TIME_START,
+            {fact_source_alias}.DT_TIME_END,
+            {fact_source_alias}.NU_FREQ_START,
+            {fact_source_alias}.NU_FREQ_END
         FROM FACT_SPECTRUM {fact_source_alias}
+        JOIN DIM_SPECTRUM_SITE s_filter
+            ON s_filter.ID_SITE = {fact_source_alias}.FK_SITE
         {fact_where_sql}
     """
 
@@ -824,6 +1050,8 @@ def get_spectrum_file_data(
             ctx.DT_TIME_END,
             ctx.NU_FREQ_START,
             ctx.NU_FREQ_END,
+            ctx.EQUIPMENT_COUNT,
+            ctx.EQUIPMENT_LABELS,
             stats.NU_SPECTRA,
             ctx.LOCALITY_COUNT,
             ctx.LOCALITY_LABELS
@@ -848,6 +1076,11 @@ def get_spectrum_file_data(
                 MAX(f.DT_TIME_END) AS DT_TIME_END,
                 MIN(f.NU_FREQ_START) AS NU_FREQ_START,
                 MAX(f.NU_FREQ_END) AS NU_FREQ_END,
+                COUNT(DISTINCT f.FK_EQUIPMENT) AS EQUIPMENT_COUNT,
+                GROUP_CONCAT(
+                    DISTINCT e.NA_EQUIPMENT
+                    ORDER BY e.NA_EQUIPMENT SEPARATOR '||'
+                ) AS EQUIPMENT_LABELS,
                 COUNT(DISTINCT s.ID_SITE) AS LOCALITY_COUNT,
                 GROUP_CONCAT(
                     DISTINCT {locality_display_sql}
@@ -858,6 +1091,8 @@ def get_spectrum_file_data(
                 ON b.FK_SPECTRUM = f.ID_SPECTRUM
             JOIN DIM_SPECTRUM_FILE repos
                 ON repos.ID_FILE = b.FK_FILE
+            JOIN DIM_SPECTRUM_EQUIPMENT e
+                ON e.ID_EQUIPMENT = f.FK_EQUIPMENT
             JOIN DIM_SPECTRUM_SITE s
                 ON s.ID_SITE = f.FK_SITE
             LEFT JOIN DIM_SITE_DISTRICT d
@@ -921,6 +1156,9 @@ def get_spectrum_file_data(
 def _load_fact_locality_rows(
     *,
     equipment_id=None,
+    state_id=None,
+    district_id=None,
+    site_id=None,
     start_date=None,
     end_date=None,
     freq_start=None,
@@ -935,12 +1173,16 @@ def _load_fact_locality_rows(
 
     where_clauses, params = _build_fact_filters(
         equipment_id=equipment_id,
+        state_id=state_id,
+        district_id=district_id,
+        site_id=site_id,
         start_date=start_date,
         end_date=end_date,
         freq_start=freq_start,
         freq_end=freq_end,
         description=description,
         fact_alias="f",
+        site_alias="s",
     )
     where_sql = _build_where_sql(where_clauses)
     locality_display_sql = _build_locality_display_sql()
@@ -982,6 +1224,430 @@ def _load_fact_locality_rows(
     conn.close()
     _format_row_datetime_fields(rows, "DATE_START", "DATE_END")
     return rows
+
+
+def _load_fact_equipment_filter_rows(
+    *,
+    state_id=None,
+    district_id=None,
+    site_id=None,
+    start_date=None,
+    end_date=None,
+    freq_start=None,
+    freq_end=None,
+    description=None,
+):
+    """Load equipment options scoped by every active non-equipment filter."""
+
+    where_clauses, params = _build_fact_filters(
+        state_id=state_id,
+        district_id=district_id,
+        site_id=site_id,
+        start_date=start_date,
+        end_date=end_date,
+        freq_start=freq_start,
+        freq_end=freq_end,
+        description=description,
+        fact_alias="f",
+        site_alias="s",
+    )
+    where_sql = _build_where_sql(where_clauses)
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT
+            e.ID_EQUIPMENT,
+            e.NA_EQUIPMENT,
+            MIN(f.DT_TIME_START) AS DATE_START,
+            MAX(f.DT_TIME_END) AS DATE_END,
+            COUNT(*) AS SPECTRUM_COUNT
+        FROM FACT_SPECTRUM f
+        JOIN DIM_SPECTRUM_EQUIPMENT e
+            ON e.ID_EQUIPMENT = f.FK_EQUIPMENT
+        JOIN DIM_SPECTRUM_SITE s
+            ON s.ID_SITE = f.FK_SITE
+        {where_sql}
+        GROUP BY e.ID_EQUIPMENT, e.NA_EQUIPMENT
+        ORDER BY e.NA_EQUIPMENT ASC
+        """,
+        params,
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def _load_summary_equipment_filter_rows(
+    *,
+    state_id=None,
+    district_id=None,
+    site_id=None,
+):
+    """Load equipment options from the summary read model."""
+
+    where_clauses = [
+        "sm.NA_EQUIPMENT IS NOT NULL",
+        "sm.NA_EQUIPMENT <> ''",
+    ]
+    params = []
+
+    joins = []
+    if district_id:
+        joins.append(
+            "JOIN RFDATA.DIM_SPECTRUM_SITE s ON s.ID_SITE = sm.FK_SITE"
+        )
+
+    _append_summary_geo_filters(
+        where_clauses,
+        params,
+        state_id=state_id,
+        district_id=district_id,
+        site_id=site_id,
+        summary_alias="sm",
+        site_alias="s",
+    )
+
+    conn = get_connection_summary()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT
+            sm.FK_EQUIPMENT AS ID_EQUIPMENT,
+            sm.NA_EQUIPMENT,
+            MIN(sm.DT_FIRST_SEEN_AT) AS DATE_START,
+            MAX(sm.DT_LAST_SEEN_AT) AS DATE_END,
+            SUM(sm.NU_SPECTRUM_COUNT) AS SPECTRUM_COUNT
+        FROM SITE_EQUIPMENT_OBS_SUMMARY sm
+        {' '.join(joins)}
+        {_build_where_sql(where_clauses)}
+        GROUP BY sm.FK_EQUIPMENT, sm.NA_EQUIPMENT
+        ORDER BY sm.NA_EQUIPMENT ASC
+        """,
+        params,
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def _load_fact_state_rows(
+    *,
+    equipment_id=None,
+    district_id=None,
+    site_id=None,
+    start_date=None,
+    end_date=None,
+    freq_start=None,
+    freq_end=None,
+    description=None,
+):
+    """Load state options scoped by every active non-state filter."""
+
+    where_clauses, params = _build_fact_filters(
+        equipment_id=equipment_id,
+        district_id=district_id,
+        site_id=site_id,
+        start_date=start_date,
+        end_date=end_date,
+        freq_start=freq_start,
+        freq_end=freq_end,
+        description=description,
+        fact_alias="f",
+        site_alias="s",
+    )
+    where_clauses.append("s.FK_STATE IS NOT NULL")
+    where_sql = _build_where_sql(where_clauses)
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT
+            st.ID_STATE,
+            st.LC_STATE AS STATE_CODE,
+            st.NA_STATE AS STATE_NAME,
+            MIN(f.DT_TIME_START) AS DATE_START,
+            MAX(f.DT_TIME_END) AS DATE_END,
+            COUNT(*) AS SPECTRUM_COUNT
+        FROM FACT_SPECTRUM f
+        JOIN DIM_SPECTRUM_SITE s
+            ON s.ID_SITE = f.FK_SITE
+        JOIN DIM_SITE_STATE st
+            ON st.ID_STATE = s.FK_STATE
+        {where_sql}
+        GROUP BY st.ID_STATE, st.LC_STATE, st.NA_STATE
+        ORDER BY st.LC_STATE ASC, st.NA_STATE ASC
+        """,
+        params,
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def _load_summary_state_rows(
+    *,
+    equipment_id=None,
+    district_id=None,
+    site_id=None,
+):
+    """Load state options from the summary read model."""
+
+    where_clauses = [
+        "sm.NA_STATE_CODE IS NOT NULL",
+        "sm.NA_STATE_CODE <> ''",
+    ]
+    params = []
+
+    joins = []
+    if district_id:
+        joins.append(
+            "JOIN RFDATA.DIM_SPECTRUM_SITE s ON s.ID_SITE = sm.FK_SITE"
+        )
+
+    _append_summary_geo_filters(
+        where_clauses,
+        params,
+        equipment_id=equipment_id,
+        district_id=district_id,
+        site_id=site_id,
+        summary_alias="sm",
+        site_alias="s",
+    )
+
+    conn = get_connection_summary()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT
+            sm.ID_STATE,
+            sm.NA_STATE_CODE AS STATE_CODE,
+            sm.NA_STATE_NAME AS STATE_NAME,
+            MIN(sm.DT_FIRST_SEEN_AT) AS DATE_START,
+            MAX(sm.DT_LAST_SEEN_AT) AS DATE_END,
+            SUM(sm.NU_SPECTRUM_COUNT) AS SPECTRUM_COUNT
+        FROM SITE_EQUIPMENT_OBS_SUMMARY sm
+        {' '.join(joins)}
+        {_build_where_sql(where_clauses)}
+        GROUP BY sm.ID_STATE, sm.NA_STATE_CODE, sm.NA_STATE_NAME
+        ORDER BY sm.NA_STATE_CODE ASC, sm.NA_STATE_NAME ASC
+        """,
+        params,
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def _load_fact_district_rows(
+    *,
+    equipment_id=None,
+    state_id=None,
+    site_id=None,
+    start_date=None,
+    end_date=None,
+    freq_start=None,
+    freq_end=None,
+    description=None,
+):
+    """Load district options keyed by `FK_DISTRICT` instead of `ID_SITE`."""
+
+    where_clauses, params = _build_fact_filters(
+        equipment_id=equipment_id,
+        state_id=state_id,
+        site_id=site_id,
+        start_date=start_date,
+        end_date=end_date,
+        freq_start=freq_start,
+        freq_end=freq_end,
+        description=description,
+        fact_alias="f",
+        site_alias="s",
+    )
+    where_clauses.append("s.FK_DISTRICT IS NOT NULL")
+    where_sql = _build_where_sql(where_clauses)
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT
+            d.ID_DISTRICT,
+            d.NA_DISTRICT AS DISTRICT_NAME,
+            c.NA_COUNTY AS COUNTY_NAME,
+            st.LC_STATE AS STATE_CODE,
+            COUNT(DISTINCT s.ID_SITE) AS SITE_COUNT,
+            COUNT(*) AS SPECTRUM_COUNT,
+            MIN(f.DT_TIME_START) AS DATE_START,
+            MAX(f.DT_TIME_END) AS DATE_END
+        FROM FACT_SPECTRUM f
+        JOIN DIM_SPECTRUM_SITE s
+            ON s.ID_SITE = f.FK_SITE
+        JOIN DIM_SITE_DISTRICT d
+            ON d.ID_DISTRICT = s.FK_DISTRICT
+        LEFT JOIN DIM_SITE_COUNTY c
+            ON c.ID_COUNTY = s.FK_COUNTY
+        LEFT JOIN DIM_SITE_STATE st
+            ON st.ID_STATE = s.FK_STATE
+        {where_sql}
+        GROUP BY d.ID_DISTRICT, d.NA_DISTRICT, c.NA_COUNTY, st.LC_STATE
+        ORDER BY d.NA_DISTRICT ASC, c.NA_COUNTY ASC, st.LC_STATE ASC
+        """,
+        params,
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def _load_summary_district_rows(
+    *,
+    equipment_id=None,
+    state_id=None,
+    site_id=None,
+):
+    """Load district options from the summary read model."""
+
+    where_clauses = ["s.FK_DISTRICT IS NOT NULL"]
+    params = []
+
+    _append_summary_geo_filters(
+        where_clauses,
+        params,
+        equipment_id=equipment_id,
+        state_id=state_id,
+        site_id=site_id,
+        summary_alias="sm",
+        site_alias="s",
+    )
+
+    conn = get_connection_summary()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT
+            d.ID_DISTRICT,
+            d.NA_DISTRICT AS DISTRICT_NAME,
+            c.NA_COUNTY AS COUNTY_NAME,
+            st.LC_STATE AS STATE_CODE,
+            COUNT(DISTINCT sm.FK_SITE) AS SITE_COUNT,
+            SUM(sm.NU_SPECTRUM_COUNT) AS SPECTRUM_COUNT,
+            MIN(sm.DT_FIRST_SEEN_AT) AS DATE_START,
+            MAX(sm.DT_LAST_SEEN_AT) AS DATE_END
+        FROM SITE_EQUIPMENT_OBS_SUMMARY sm
+        JOIN RFDATA.DIM_SPECTRUM_SITE s
+            ON s.ID_SITE = sm.FK_SITE
+        JOIN RFDATA.DIM_SITE_DISTRICT d
+            ON d.ID_DISTRICT = s.FK_DISTRICT
+        LEFT JOIN RFDATA.DIM_SITE_COUNTY c
+            ON c.ID_COUNTY = s.FK_COUNTY
+        LEFT JOIN RFDATA.DIM_SITE_STATE st
+            ON st.ID_STATE = s.FK_STATE
+        {_build_where_sql(where_clauses)}
+        GROUP BY d.ID_DISTRICT, d.NA_DISTRICT, c.NA_COUNTY, st.LC_STATE
+        ORDER BY d.NA_DISTRICT ASC, c.NA_COUNTY ASC, st.LC_STATE ASC
+        """,
+        params,
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def _load_fact_filter_availability_row(
+    *,
+    equipment_id=None,
+    state_id=None,
+    district_id=None,
+    site_id=None,
+    freq_start=None,
+    freq_end=None,
+    description=None,
+):
+    """Load the observed date window for the current non-date filter set."""
+
+    where_clauses, params = _build_fact_filters(
+        equipment_id=equipment_id,
+        state_id=state_id,
+        district_id=district_id,
+        site_id=site_id,
+        freq_start=freq_start,
+        freq_end=freq_end,
+        description=description,
+        fact_alias="f",
+        site_alias="s",
+    )
+    where_sql = _build_where_sql(where_clauses)
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT
+            MIN(f.DT_TIME_START) AS DATE_START,
+            MAX(f.DT_TIME_END) AS DATE_END,
+            COUNT(*) AS SPECTRUM_COUNT,
+            COUNT(DISTINCT f.FK_SITE) AS SITE_COUNT,
+            COUNT(DISTINCT s.FK_DISTRICT) AS DISTRICT_COUNT,
+            COUNT(DISTINCT f.FK_EQUIPMENT) AS EQUIPMENT_COUNT
+        FROM FACT_SPECTRUM f
+        JOIN DIM_SPECTRUM_SITE s
+            ON s.ID_SITE = f.FK_SITE
+        {where_sql}
+        """,
+        params,
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def _load_summary_filter_availability_row(
+    *,
+    equipment_id=None,
+    state_id=None,
+    district_id=None,
+    site_id=None,
+):
+    """Load the observed geo availability window from the summary model."""
+
+    where_clauses = []
+    params = []
+
+    _append_summary_geo_filters(
+        where_clauses,
+        params,
+        equipment_id=equipment_id,
+        state_id=state_id,
+        district_id=district_id,
+        site_id=site_id,
+        summary_alias="sm",
+        site_alias="s",
+    )
+
+    conn = get_connection_summary()
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT
+            MIN(sm.DT_FIRST_SEEN_AT) AS DATE_START,
+            MAX(sm.DT_LAST_SEEN_AT) AS DATE_END,
+            SUM(sm.NU_SPECTRUM_COUNT) AS SPECTRUM_COUNT,
+            COUNT(DISTINCT sm.FK_SITE) AS SITE_COUNT,
+            COUNT(DISTINCT s.FK_DISTRICT) AS DISTRICT_COUNT,
+            COUNT(DISTINCT sm.FK_EQUIPMENT) AS EQUIPMENT_COUNT
+        FROM SITE_EQUIPMENT_OBS_SUMMARY sm
+        JOIN RFDATA.DIM_SPECTRUM_SITE s
+            ON s.ID_SITE = sm.FK_SITE
+        {_build_where_sql(where_clauses)}
+        """,
+        params,
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 
 def _load_fact_site_availability_row(equipment_id, site_id):
@@ -1027,6 +1693,9 @@ def _load_fact_site_availability_row(equipment_id, site_id):
 def get_spectrum_locality_options(
     *,
     equipment_id=None,
+    state_id=None,
+    district_id=None,
+    site_id=None,
     start_date=None,
     end_date=None,
     freq_start=None,
@@ -1038,6 +1707,9 @@ def get_spectrum_locality_options(
     cache_key = (
         "locality_options",
         equipment_id,
+        state_id,
+        district_id,
+        site_id,
         start_date,
         end_date,
         freq_start,
@@ -1051,6 +1723,9 @@ def get_spectrum_locality_options(
 
     rows = _load_fact_locality_rows(
         equipment_id=equipment_id,
+        state_id=state_id,
+        district_id=district_id,
+        site_id=site_id,
         start_date=start_date,
         end_date=end_date,
         freq_start=freq_start,
@@ -1063,6 +1738,185 @@ def get_spectrum_locality_options(
     if result:
         _set_cached_query(cache_key, result)
 
+    return result
+
+
+def get_spectrum_filter_options(
+    *,
+    equipment_id=None,
+    state_id=None,
+    district_id=None,
+    site_id=None,
+    start_date=None,
+    end_date=None,
+    freq_start=None,
+    freq_end=None,
+    description=None,
+    include_districts=True,
+    include_availability=True,
+):
+    """Return the dynamic equipment/state/district option sets plus availability."""
+
+    cache_key = (
+        "filter_options",
+        FILTER_OPTION_CACHE_VERSION,
+        equipment_id,
+        state_id,
+        district_id,
+        site_id,
+        start_date,
+        end_date,
+        freq_start,
+        freq_end,
+        description,
+        include_districts,
+        include_availability,
+    )
+    cached = _get_cached_query(cache_key)
+
+    if cached is not None:
+        return cached
+
+    equipments = []
+    states = []
+    districts = []
+    availability = None
+
+    try:
+        equipments = _finalize_equipment_options(
+            _load_summary_equipment_filter_rows(
+                state_id=state_id,
+                district_id=district_id,
+                site_id=site_id,
+            )
+        )
+    except Exception:
+        LOGGER.exception(
+            "failed_to_load_summary_spectrum_equipment_filters state_id=%s district_id=%s site_id=%s",
+            state_id,
+            district_id,
+            site_id,
+        )
+
+    if not equipments:
+        if state_id or district_id or site_id or start_date or end_date or description or freq_start is not None or freq_end is not None:
+            equipments = _finalize_equipment_options(
+                _load_fact_equipment_filter_rows(
+                    state_id=state_id,
+                    district_id=district_id,
+                    site_id=site_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    freq_start=freq_start,
+                    freq_end=freq_end,
+                    description=description,
+                )
+            )
+        else:
+            equipments = _finalize_equipment_options(get_equipments())
+
+    try:
+        states = _finalize_state_options(
+            _load_summary_state_rows(
+                equipment_id=equipment_id,
+                district_id=district_id,
+                site_id=site_id,
+            )
+        )
+    except Exception:
+        LOGGER.exception(
+            "failed_to_load_summary_spectrum_state_filters equipment_id=%s district_id=%s site_id=%s",
+            equipment_id,
+            district_id,
+            site_id,
+        )
+
+    if not states:
+        states = _finalize_state_options(
+            _load_fact_state_rows(
+                equipment_id=equipment_id,
+                district_id=district_id,
+                site_id=site_id,
+                start_date=start_date,
+                end_date=end_date,
+                freq_start=freq_start,
+                freq_end=freq_end,
+                description=description,
+            )
+        )
+
+    districts = []
+    if include_districts:
+        try:
+            districts = _finalize_district_options(
+                _load_summary_district_rows(
+                    equipment_id=equipment_id,
+                    state_id=state_id,
+                    site_id=site_id,
+                )
+            )
+        except Exception:
+            LOGGER.exception(
+                "failed_to_load_summary_spectrum_district_filters equipment_id=%s state_id=%s site_id=%s",
+                equipment_id,
+                state_id,
+                site_id,
+            )
+
+        if not districts:
+            districts = _finalize_district_options(
+                _load_fact_district_rows(
+                    equipment_id=equipment_id,
+                    state_id=state_id,
+                    site_id=site_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    freq_start=freq_start,
+                    freq_end=freq_end,
+                    description=description,
+                )
+            )
+
+    availability = None
+    if include_availability:
+        try:
+            availability = _finalize_availability_row(
+                _load_summary_filter_availability_row(
+                    equipment_id=equipment_id,
+                    state_id=state_id,
+                    district_id=district_id,
+                    site_id=site_id,
+                )
+            )
+        except Exception:
+            LOGGER.exception(
+                "failed_to_load_summary_spectrum_availability equipment_id=%s state_id=%s district_id=%s site_id=%s",
+                equipment_id,
+                state_id,
+                district_id,
+                site_id,
+            )
+
+        if availability is None:
+            availability = _finalize_availability_row(
+                _load_fact_filter_availability_row(
+                    equipment_id=equipment_id,
+                    state_id=state_id,
+                    district_id=district_id,
+                    site_id=site_id,
+                    freq_start=freq_start,
+                    freq_end=freq_end,
+                    description=description,
+                )
+            )
+
+    result = {
+        "equipments": equipments,
+        "states": states,
+        "districts": districts,
+        "availability": availability if availability and availability["DATE_START"] and availability["DATE_END"] else None,
+    }
+    _set_cached_query(cache_key, result)
     return result
 
 
@@ -1084,6 +1938,10 @@ def get_spectrum_site_option(site_id):
         f"""
         SELECT
             s.ID_SITE,
+            s.FK_DISTRICT AS ID_DISTRICT,
+            d.NA_DISTRICT AS DISTRICT_NAME,
+            s.FK_STATE AS ID_STATE,
+            st.NA_STATE AS STATE_NAME,
             {locality_display_sql} AS LOCALITY_LABEL,
             c.NA_COUNTY AS COUNTY_NAME,
             st.LC_STATE AS STATE_CODE
@@ -1105,7 +1963,12 @@ def get_spectrum_site_option(site_id):
     if not row:
         return None
 
-    return _finalize_locality_options([row])[0]
+    option = _finalize_locality_options([row])[0]
+    option["ID_DISTRICT"] = int(row["ID_DISTRICT"]) if row.get("ID_DISTRICT") is not None else None
+    option["DISTRICT_NAME"] = row.get("DISTRICT_NAME")
+    option["ID_STATE"] = int(row["ID_STATE"]) if row.get("ID_STATE") is not None else None
+    option["STATE_NAME"] = row.get("STATE_NAME")
+    return option
 
 
 def get_spectrum_site_availability_range(*, equipment_id=None, site_id=None):
@@ -1253,6 +2116,8 @@ def get_spectra_by_file_id(
     file_id,
     *,
     equipment_id=None,
+    state_id=None,
+    district_id=None,
     site_id=None,
     start_date=None,
     end_date=None,
@@ -1271,6 +2136,8 @@ def get_spectra_by_file_id(
         "file_spectra",
         file_id,
         equipment_id,
+        state_id,
+        district_id,
         site_id,
         start_date,
         end_date,
@@ -1285,6 +2152,8 @@ def get_spectra_by_file_id(
 
     match_clauses, match_params = _build_fact_filters(
         equipment_id=equipment_id,
+        state_id=state_id,
+        district_id=district_id,
         site_id=site_id,
         start_date=start_date,
         end_date=end_date,
@@ -1292,6 +2161,7 @@ def get_spectra_by_file_id(
         freq_end=freq_end,
         description=description,
         fact_alias="f",
+        site_alias="s",
     )
     match_sql = " AND ".join(match_clauses) if match_clauses else "1 = 1"
 
@@ -1319,6 +2189,8 @@ def get_spectra_by_file_id(
             ON f.ID_SPECTRUM = b.FK_SPECTRUM
         JOIN DIM_SPECTRUM_EQUIPMENT e
             ON e.ID_EQUIPMENT = f.FK_EQUIPMENT
+        JOIN DIM_SPECTRUM_SITE s
+            ON s.ID_SITE = f.FK_SITE
         WHERE b.FK_FILE = %s
         ORDER BY f.DT_TIME_START DESC, f.ID_SPECTRUM DESC
         """,
