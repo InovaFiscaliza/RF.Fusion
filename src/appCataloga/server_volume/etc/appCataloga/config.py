@@ -238,3 +238,8 @@ SUMMARY_WORKER_RECONCILE_INTERVAL_SEC = 86400
 SUMMARY_WORKER_OUTBOX_PRUNE_DAYS = 30
 SUMMARY_WORKER_DISABLE_SQL_EVENT_ON_START = True
 SUMMARY_WORKER_SQL_EVENT_NAME = "EVT_REFRESH_ALL_RFFUSION_SUMMARY_10MIN"
+# How long the worker can have been offline before the startup reconcile is
+# considered mandatory.  If DT_LAST_SUCCESS is more recent than this threshold,
+# the startup reconcile is skipped and the worker begins with incremental
+# processing, catching up via the outbox.  Default: 1 hour (3600 seconds).
+SUMMARY_WORKER_STALE_THRESHOLD_SEC = 3600

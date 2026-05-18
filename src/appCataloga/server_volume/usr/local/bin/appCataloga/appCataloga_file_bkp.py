@@ -671,7 +671,7 @@ def transfer_file_task(
         local_size_bytes = os.path.getsize(final_file)
 
         if local_size_bytes > 0:
-            local_size_kb = local_size_bytes / 1024
+            local_size_kb = local_size_bytes // 1024
 
             if (
                 not metadata_drift
@@ -737,7 +737,7 @@ def transfer_file_task(
             "Backup failed: local file size is 0 bytes"
         )
 
-    local_size_kb = local_size_bytes / 1024
+    local_size_kb = local_size_bytes // 1024
 
     # ---------------------------------------------------------
     # 3) Must not be smaller than remote

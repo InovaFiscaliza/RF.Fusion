@@ -45,6 +45,12 @@ TRANSIENT_FILESYSTEM_ERRNOS = {
 }
 
 ERMX_FAMILY_PREFIXES = ("ermx", "emrx")
+# Module-level buffer used exclusively within `resolve_spectrum_sites()` call frames.
+# `resolve_spectrum_sites()` sets this to a fresh dict at entry and restores None
+# on exit (via try/finally), so `upsert_site()` can accumulate per-call GNSS
+# aggregation without requiring an extra parameter across the call chain.
+# This pattern is intentionally non-reentrant: it is safe only because every
+# worker is a single-threaded process that processes one file at a time.
 _FIXED_SITE_UPDATE_AGGREGATOR = None
 
 
@@ -159,15 +165,17 @@ def resolve_equipment_persistence_identity(
     """
     Resolve the catalog identity and equipment-type hint for one spectrum.
 
-    Most station families can persist the same canonical identifier both as the
-    equipment name and as the type-inference source. ERMx/EMRx is different:
-    the operational asset is the Windows station itself, while the payload
-    receiver string names the analyzer model attached to that station.
+    Most station families use the same canonical identifier both as the
+    persisted equipment name and as the type-inference source. ERMx/EMRx is
+    the exception: the operational asset is the Windows measurement station
+    (the hostname), while the payload's equipment string names the analyzer
+    model attached to that station. We persist the station hostname as the
+    equipment name but use the analyzer string to infer the equipment type.
 
     Returns:
         tuple[str, str]:
-            - equipment_name persisted in `DIM_SPECTRUM_EQUIPMENT.NA_EQUIPMENT`
-            - equipment_type_hint used to infer `FK_EQUIPMENT_TYPE`
+            - equipment_name: persisted in ``DIM_SPECTRUM_EQUIPMENT.NA_EQUIPMENT``
+            - equipment_type_hint: used to infer ``FK_EQUIPMENT_TYPE``
     """
     normalized_host = (hostname_db or "").strip().lower()
     raw_spectrum_name = (
@@ -177,6 +185,9 @@ def resolve_equipment_persistence_identity(
     )
 
     if normalized_host.startswith(ERMX_FAMILY_PREFIXES):
+        # Guard preserved for future callers that might skip the startswith check.
+        # Unreachable in the current call path: startswith() returning True
+        # guarantees normalized_host is non-empty.
         if not normalized_host:
             raise ValueError("hostname_db is required for ERMx/EMRx equipment resolution")
 
@@ -510,11 +521,28 @@ def insert_spectra_batch(
     dt_modified,
 ):
     """
-    Persist source lineage (when applicable) and all normalized spectra.
+    Persist source-file lineage (when applicable) and all normalized spectra.
 
-    SITE ownership now lives on each spectrum row, not on the file as a whole.
-    The batch still shares one processing procedure, but every spectrum may
-    resolve to a different `ID_SITE`.
+    Dimension rows (trace type, equipment, measure unit) are resolved once per
+    unique value and cached locally for the duration of this batch, so the
+    same file does not issue repeated ``INSERT IGNORE`` lookups for identical
+    dimension keys.
+
+    Spectrum deduplication:
+        ``spectrum_id_cache`` guards against exact duplicate spectrum rows that
+        can appear when one appAnalise payload contains repeated measurement
+        periods. Duplicate rows reuse the same ``FACT_SPECTRUM.ID_SPECTRUM`` for
+        the bridge table instead of inserting two identical fact rows.
+
+    SITE ownership:
+        Each spectrum carries a pre-resolved ``site_id`` attribute set by
+        ``resolve_spectrum_sites()`` before this function is called. The batch
+        therefore does not perform any geocoding or SITE lookups.
+
+    Side effects:
+        - Inserts into ``DIM_SPECTRUM_FILE``, ``FACT_SPECTRUM``, and
+          ``BRIDGE_SPECTRUM_FILE`` within the caller's open RFDATA transaction.
+        - Does **not** commit; the caller is responsible for the transaction.
     """
     host_file_id = None
     detector_id = db_rfm.insert_detector_type(k.DEFAULT_DETECTOR)
@@ -608,6 +636,10 @@ def insert_spectra_batch(
         spectrum_identity_key = _build_spectrum_identity_key(spectrum_row)
 
         if spectrum_identity_key in spectrum_id_cache:
+            # Exact duplicate detected within this payload: reuse the existing
+            # FACT_SPECTRUM row for the bridge table instead of inserting a
+            # second identical measurement. appAnalise occasionally emits
+            # repeated rows when trace periods overlap at file boundaries.
             spectrum_ids.append(spectrum_id_cache[spectrum_identity_key])
             duplicate_spectrum_hits += 1
             continue
@@ -663,14 +695,13 @@ def build_repository_destination_path(db_rfm, bin_data, hostname_db):
 
 def return_task_to_pending(db_bp, file_task_id, err):
     """
-    Requeue the current FILE_TASK after a transient appAnalise failure.
+    Requeue the current FILE_TASK to PENDING after a transient appAnalise failure.
 
-    This is the only retry path in the worker. It exists for dependency
-    outages, not for definitive payload defects.
-
-    The helper is retained for future policies where transient failures should
-    return to the live queue automatically instead of being frozen for manual
-    review.
+    This helper is intentionally retained but is NOT invoked by the current
+    worker policy: the worker now freezes transient failures for manual review
+    instead of automatically requeueing them.  The function is kept here so
+    future policy changes (e.g., automatic retry with a back-off counter) can
+    restore requeueing without having to reconstruct the correct DB update.
     """
     message = tools.compose_message(
         task_type=k.FILE_TASK_PROCESS_TYPE,

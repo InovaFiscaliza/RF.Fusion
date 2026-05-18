@@ -14,15 +14,32 @@ machinery.
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import date, datetime
 import json
-from datetime import date, datetime
-import json
 import mysql.connector
 from mysql.connector import Error
 import config as k
 
 
 class DBHandlerBase:
-    """Base class providing MySQL connection management and CRUD utilities."""
+    """
+    Shared MySQL foundation for all appCataloga database handlers.
+
+    Provides:
+        - connection lifecycle (connect, reconnect, reuse, disconnect)
+        - generic parameterized CRUD helpers (_insert_row, _update_row, etc.)
+        - a multi-table JOIN builder (_select_custom) driven by VALID_FIELDS_*
+          metadata declared in subclasses
+        - the SUMMARY_OUTBOX publisher used by both BKP and RFM subclasses
+
+    Subclasses:
+        - `dbHandlerBKP`: owns HOST, HOST_TASK, FILE_TASK, FILE_TASK_HISTORY
+        - `dbHandlerRFM`: owns FACT_SPECTRUM, DIM_SPECTRUM_SITE, DIM_SPECTRUM_FILE
+
+    Connection policy:
+        Long-lived workers pass `reuse_connection=True` (default) so the same
+        session is kept open across thousands of queue iterations. One-shot
+        callers (e.g., startup helpers) pass `False` to ensure the connection
+        is torn down immediately after use.
+    """
 
     # ======================================================================
     # Initialization
@@ -316,8 +333,28 @@ class DBHandlerBase:
         """
         Append one dirty-scope event into `BPDATA.SUMMARY_OUTBOX`.
 
-        Publishers describe which operational or analytical scope changed.
-        The Python worker later coalesces many rows into one summary refresh.
+        Callers describe which operational or analytical scope changed; the
+        summary worker later coalesces many such events into one refresh cycle.
+        An event is only written when at least one non-empty scope is provided.
+
+        Args:
+            host_ids: IDs of HOST rows whose file counts or errors changed.
+            site_ids: IDs of DIM_SPECTRUM_SITE rows affected by new spectra.
+            equipment_ids: IDs of DIM_SPECTRUM_EQUIPMENT rows affected.
+            reference_months: Month values (datetime, date, or ``"YYYY-MM"``
+                string) that may now have stale aggregate statistics. Each is
+                normalised to ``YYYY-MM-01`` before storage.
+            full_reconcile: When True, the worker re-aggregates everything
+                regardless of listed scopes. Use after bulk data imports.
+            reason: Free-text label for diagnostics, e.g. ``"host_upsert"``.
+            source_handler: Name of the calling handler class, embedded in the
+                outbox row for tracing. Defaults to ``type(self).__name__``.
+            commit: Override the auto-commit default. ``None`` commits when the
+                caller is not inside an explicit ``begin_transaction()`` block.
+
+        Returns:
+            int: ``lastrowid`` of the inserted outbox row, or 0 when all
+                provided scopes were empty and no event was written.
         """
         normalized_host_ids = sorted(
             {
@@ -398,138 +435,114 @@ class DBHandlerBase:
         finally:
             self._disconnect()
 
-    @staticmethod
-    def _normalize_summary_reference_month(value: Any) -> Optional[str]:
-        """
-        Normalize one month-like value into `YYYY-MM-01`.
+    # ------------------------------------------------------------------
+    # Internal SQL building helpers (shared by CRUD methods below)
+    # ------------------------------------------------------------------
 
-        BKP and RFM publish monthly dirty scopes through the same outbox
-        contract, so the worker always receives first-of-month buckets.
-        """
-        if value is None:
-            return None
-
-        if isinstance(value, datetime):
-            return value.strftime("%Y-%m-01")
-
-        if isinstance(value, date):
-            return value.strftime("%Y-%m-01")
-
-        text = str(value).strip()
-        if not text:
-            return None
-
-        if len(text) >= 10:
-            text = text[:10]
-
-        try:
-            parsed = datetime.strptime(text, "%Y-%m-%d")
-            return parsed.strftime("%Y-%m-01")
-        except ValueError:
-            pass
-
-        try:
-            parsed = datetime.strptime(text, "%Y-%m")
-            return parsed.strftime("%Y-%m-01")
-        except ValueError:
-            return None
-
-    def summary_enqueue_refresh(
+    def _build_where_clause(
         self,
+        where: Dict[str, Any],
+        params: List[Any],
         *,
-        host_ids: Optional[List[int]] = None,
-        site_ids: Optional[List[int]] = None,
-        equipment_ids: Optional[List[int]] = None,
-        reference_months: Optional[List[Any]] = None,
-        full_reconcile: bool = False,
-        reason: Optional[str] = None,
-        source_handler: Optional[str] = None,
-        commit: Optional[bool] = None,
-    ) -> int:
+        allow_custom_fragments: bool = False,
+    ) -> str:
         """
-        Append one dirty-scope event into `BPDATA.SUMMARY_OUTBOX`.
+        Build a parameterized WHERE clause from a filter dict.
 
-        Publishers describe which operational or analytical scope changed.
-        The Python worker later coalesces many rows into one summary refresh.
+        Single implementation of the ``__``-suffix operator DSL shared by
+        ``_update_row`` and ``_select_rows``. Appends bound values to *params*
+        in-place so they stay aligned with any SET or column-list parameters
+        that precede them in the final statement.
+
+        Supported key suffixes:
+            ``__lt``      → ``col < %s``
+            ``__gt``      → ``col > %s``
+            ``__lte``     → ``col <= %s``
+            ``__gte``     → ``col >= %s``
+            ``__like``    → ``col LIKE %s``
+            ``__between`` → ``col BETWEEN %s AND %s``  (value: ``[low, high]``)
+            ``__in``      → ``col IN (%s, …)``         (value: list/tuple)
+            no suffix     → ``col = %s``
+
+        Args:
+            where: Filter dict following the operator DSL above.
+            params: Mutable list extended in-place with bound parameters.
+            allow_custom_fragments: When True, keys prefixed with ``#CUSTOM#``
+                inject a raw SQL fragment with no parameter binding. Only safe
+                for fixed, developer-controlled expressions — never for
+                user-supplied strings.
+
+        Returns:
+            str: A ``" WHERE …"`` fragment (leading space included), or ``""``
+                when *where* is empty.
+
+        Raises:
+            ValueError: On unsupported operator suffix or malformed BETWEEN/IN.
         """
-        normalized_host_ids = sorted(
-            {
-                int(value)
-                for value in (host_ids or [])
-                if value is not None
-            }
-        )
-        normalized_site_ids = sorted(
-            {
-                int(value)
-                for value in (site_ids or [])
-                if value is not None
-            }
-        )
-        normalized_equipment_ids = sorted(
-            {
-                int(value)
-                for value in (equipment_ids or [])
-                if value is not None
-            }
-        )
-        normalized_months = sorted(
-            {
-                month
-                for month in (
-                    self._normalize_summary_reference_month(value)
-                    for value in (reference_months or [])
-                )
-                if month is not None
-            }
-        )
+        if not where:
+            return ""
 
-        if (
-            not normalized_host_ids
-            and not normalized_site_ids
-            and not normalized_equipment_ids
-            and not normalized_months
-            and not full_reconcile
-        ):
-            return 0
+        parts: List[str] = []
+        for key, value in where.items():
 
-        # The outbox stores invalidation scope, not precomputed summary rows.
-        payload = {
-            "host_ids": normalized_host_ids,
-            "site_ids": normalized_site_ids,
-            "equipment_ids": normalized_equipment_ids,
-            "reference_months": normalized_months,
-            "full_reconcile": bool(full_reconcile),
-            "reason": reason,
-        }
-        row = {
-            "NA_EVENT_TYPE": "summary_dirty",
-            "NA_SOURCE_HANDLER": (
-                source_handler
-                or getattr(self, "__class__", type(self)).__name__
-            ),
-            "JS_PAYLOAD": json.dumps(
-                payload,
-                ensure_ascii=True,
-                sort_keys=True,
-            ),
-        }
+            if allow_custom_fragments and key.startswith("#CUSTOM#"):
+                parts.append(value)  # raw fragment — no parameter binding
+                continue
 
-        self._connect()
-        try:
-            auto_commit = (
-                not getattr(self, "in_transaction", False)
-                if commit is None
-                else bool(commit)
-            )
-            return self._insert_row(
-                table="BPDATA.SUMMARY_OUTBOX",
-                data=row,
-                commit=auto_commit,
-                log_success=False,
-            )
-        finally:
-            self._disconnect()
+            if "__" in key:
+                col, op = key.split("__", 1)
+                if op == "lt":
+                    parts.append(f"{col} < %s")
+                    params.append(value)
+                elif op == "gt":
+                    parts.append(f"{col} > %s")
+                    params.append(value)
+                elif op == "lte":
+                    parts.append(f"{col} <= %s")
+                    params.append(value)
+                elif op == "gte":
+                    parts.append(f"{col} >= %s")
+                    params.append(value)
+                elif op == "like":
+                    parts.append(f"{col} LIKE %s")
+                    params.append(value)
+                elif op == "between":
+                    if not isinstance(value, (list, tuple)) or len(value) != 2:
+                        raise ValueError("BETWEEN operator requires [low, high]")
+                    parts.append(f"{col} BETWEEN %s AND %s")
+                    params.extend([value[0], value[1]])
+                elif op == "in":
+                    if not isinstance(value, (list, tuple)):
+                        raise ValueError("IN operator requires list/tuple")
+                    placeholders = ", ".join(["%s"] * len(value))
+                    parts.append(f"{col} IN ({placeholders})")
+                    params.extend(list(value))
+                else:
+                    raise ValueError(f"Unsupported operator '__{op}'")
+            else:
+                parts.append(f"{key}=%s")
+                params.append(value)
+
+        return " WHERE " + " AND ".join(parts)
+
+    def _map_cursor_rows(self, rows: list) -> List[Dict[str, Any]]:
+        """
+        Convert fetched cursor result tuples into column-keyed dicts.
+
+        Must be called immediately after ``cursor.execute()`` while
+        ``cursor.description`` is still populated.
+
+        Args:
+            rows: Raw result set from ``cursor.fetchall()``.
+
+        Returns:
+            List[Dict[str, Any]]: One dict per row keyed by column name.
+                Empty list when *rows* is empty.
+        """
+        if not rows:
+            return []
+        columns = [col[0] for col in self.cursor.description]
+        return [dict(zip(columns, row)) for row in rows]
 
     def _insert_row(
         self,
@@ -540,37 +553,37 @@ class DBHandlerBase:
         commit: bool = True,
         log_success: bool = True,
     ) -> int:
-        """Insert a new record into a table with optional IGNORE behavior.
-
-        This method automatically builds a parameterized INSERT statement using
-        the provided dictionary. If `ignore=True`, it will use `INSERT IGNORE`
-        to suppress duplicate key errors.
+        """
+        Insert one row using a fully parameterized SQL statement.
 
         Args:
             table (str): Target table name.
-            data (Dict[str, Any]): Mapping of column names to values.
-            ignore (bool, optional): If True, uses `INSERT IGNORE` instead of `INSERT`.
-                Defaults to False.
-            commit (bool, optional): Whether to commit immediately after insert.
-                Defaults to True.
+            data (Dict[str, Any]): Column-to-value mapping for the new row.
+            ignore (bool): If True, uses INSERT IGNORE to suppress duplicate-key
+                errors silently. Useful for idempotent inserts of dimension rows.
+            commit (bool): Commit immediately after the insert. Callers inside an
+                explicit transaction must pass `commit=False`.
+            log_success (bool): Emit an entry-level log on success. Disable for
+                high-frequency inserts (e.g., spectrum batch) to reduce noise.
 
         Returns:
-            int: Last inserted row ID, or 0 if unavailable.
+            int: `lastrowid` of the inserted row, or 0 when unavailable
+                (e.g., INSERT IGNORE on a duplicate).
 
         Raises:
-            mysql.connector.Error: If SQL execution or commit fails.
+            Exception: Re-raises any SQL failure after logging and rollback.
         """
-        
-        # Validate input dictionary
         if not data:
             self.log.warning(f"[DBHandlerBase] Empty data dictionary for table '{table}'. Skipping insert.")
             return 0
 
-        # Compose SQL statement dynamically
         cols = ", ".join(data.keys())
         vals = ", ".join(["%s"] * len(data))
         insert_kw = "INSERT IGNORE" if ignore else "INSERT"
         sql = f"{insert_kw} INTO {table} ({cols}) VALUES ({vals});"
+        # True when this call owns its own transaction boundary. When False we
+        # are inside an explicit begin_transaction() block managed by the caller,
+        # so rollback on failure is also the caller's responsibility.
         manage_own_transaction = commit or not getattr(self, "in_transaction", False)
 
         try:
@@ -608,16 +621,39 @@ class DBHandlerBase:
         touch_field: Optional[str] = None,
     ) -> int:
         """
-        Update rows using a dictionary-driven SQL builder.
+        Update rows using a dictionary-driven parameterized SQL builder.
 
-        Supported WHERE suffix operators:
-        `__lt`, `__gt`, `__lte`, `__gte`, `__like`, `__between`, `__in`.
+        SET clause:
+            Plain keys map to parameterized `col=%s`.
+            Keys ending in `__expr` inject a trusted raw SQL expression:
+            ``{"DT_PROCESSED__expr": "NOW()"}`` → ``SET DT_PROCESSED=NOW()``.
+            Use `__expr` only for server-side functions; never for user input.
 
-        Supported SET suffix operator:
-        `__expr` for trusted raw SQL expressions.
+        WHERE clause operators (key suffixes):
+            ``__lt``  ``__gt``  ``__lte``  ``__gte``  ``__like``
+            ``__between`` (value must be ``[low, high]``)
+            ``__in``  (value must be a list/tuple)
+            No suffix → equality (``col=%s``).
 
-        `extra_sql` is reserved for trailing clauses such as `ORDER BY` and
-        `LIMIT` in carefully controlled call sites.
+        Args:
+            extra_sql: Raw SQL appended after WHERE (e.g. ``"LIMIT 1"``). Only
+                used in call sites where ambiguity is impossible and ordering
+                matters (e.g. atomic claim-one-row patterns).
+            touch_field: Column name set to ``NOW()`` on every update, typically
+                a last-modified timestamp.
+
+        Returns:
+            int: Number of affected rows.
+
+        Raises:
+            Exception: Re-raises after logging and unconditional rollback.
+
+        Warning:
+            The rollback in the except clause is unconditional. If this method
+            is called from within an explicit `begin_transaction()` block and
+            raises, the entire outer transaction will be rolled back. Callers
+            inside explicit transactions should catch exceptions themselves and
+            call `self.rollback()` at the transaction boundary instead.
         """
 
         if not data and not touch_field:
@@ -646,53 +682,7 @@ class DBHandlerBase:
         # WHERE clause
         # ---------------------------------------------------------
         if where:
-            where_parts = []
-
-            for key, value in where.items():
-                if "__" in key:
-                    col, op = key.split("__", 1)
-
-                    if op == "lt":
-                        where_parts.append(f"{col} < %s")
-                        params.append(value)
-
-                    elif op == "gt":
-                        where_parts.append(f"{col} > %s")
-                        params.append(value)
-
-                    elif op == "lte":
-                        where_parts.append(f"{col} <= %s")
-                        params.append(value)
-
-                    elif op == "gte":
-                        where_parts.append(f"{col} >= %s")
-                        params.append(value)
-
-                    elif op == "like":
-                        where_parts.append(f"{col} LIKE %s")
-                        params.append(value)
-
-                    elif op == "between":
-                        if not isinstance(value, (list, tuple)) or len(value) != 2:
-                            raise ValueError("BETWEEN operator requires (start, end)")
-                        where_parts.append(f"{col} BETWEEN %s AND %s")
-                        params.extend([value[0], value[1]])
-
-                    elif op == "in":
-                        if not isinstance(value, (list, tuple)):
-                            raise ValueError("IN operator requires list/tuple")
-                        placeholders = ", ".join(["%s"] * len(value))
-                        where_parts.append(f"{col} IN ({placeholders})")
-                        params.extend(list(value))
-
-                    else:
-                        raise ValueError(f"Unsupported operator '__{op}'")
-
-                else:
-                    where_parts.append(f"{key}=%s")
-                    params.append(value)
-
-            sql += " WHERE " + " AND ".join(where_parts)
+            sql += self._build_where_clause(where, params)
 
         # Extra SQL segment
         if extra_sql:
@@ -724,22 +714,33 @@ class DBHandlerBase:
         *,
         commit: bool = True,
         touch_field: Optional[str] = None,
-        log_each: bool = False,   # <--- NEW FLAG
+        log_each: bool = False,
     ) -> int:
         """
-        Perform an atomic UPSERT operation (INSERT or UPDATE) using
-        'INSERT ... ON DUPLICATE KEY UPDATE' in MariaDB/MySQL.
+        Atomic INSERT … ON DUPLICATE KEY UPDATE (MariaDB/MySQL UPSERT).
+
+        The method builds the UPDATE clause by excluding `unique_keys` columns
+        from the SET list — those are the constraint-defining columns whose
+        values must not change on conflict.
 
         Args:
-            table (str): Target table name.
-            data (Dict[str, Any]): Column-value mapping to insert or update.
-            unique_keys (List[str]): List of columns that define the unique constraint.
-            commit (bool, optional): Whether to commit immediately. Defaults to True.
-            touch_field (str, optional): Field to auto-update with NOW() on update.
-            log_each (bool, optional): If True, logs every UPSERT (default False).
+            data: Column-to-value mapping for the row.
+            unique_keys: Column name(s) that define the unique/PK constraint.
+                Accepts either a single string (``"ID_HOST"``) or a list of
+                strings. When passed as a plain string, membership testing uses
+                Python's ``in`` operator on the string, which works correctly
+                for column names that do not appear as sub-strings of the key
+                string — but callers should prefer passing a list to be safe.
+            touch_field: Column name touched with ``NOW()`` on every update,
+                typically a last-modified timestamp.
+            log_each: Emit a debug entry per UPSERT. Leave False on hot paths
+                such as host statistics updates to avoid log flooding.
 
         Returns:
-            int: Number of affected rows.
+            int: Rows affected (1 = insert, 2 = update, 0 = no-op).
+
+        Raises:
+            Exception: Re-raises after logging and unconditional rollback.
         """
 
         if not data:
@@ -817,8 +818,9 @@ class DBHandlerBase:
             self.log.warning(f"[DBHandlerBase] DELETE skipped: no WHERE provided for {table}")
             return 0
 
-        # Build SQL and parameterized conditions
-        sql = f"DELETE FROM {table} WHERE " + " AND ".join([f"{k}=%s" for k in where])
+        # `col` is used as the loop variable intentionally to avoid shadowing
+        # the `config as k` module import that is in scope at the class level.
+        sql = f"DELETE FROM {table} WHERE " + " AND ".join([f"{col}=%s" for col in where])
         params = tuple(where.values())
 
         try:
@@ -867,13 +869,7 @@ class DBHandlerBase:
         """
         try:
             self.cursor.execute(sql, params)
-            rows = self.cursor.fetchall() or []
-
-            if not rows:
-                return []
-
-            columns = [col[0] for col in self.cursor.description]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._map_cursor_rows(self.cursor.fetchall() or [])
 
         except Exception as e:
             self.log.error(
@@ -894,66 +890,37 @@ class DBHandlerBase:
         cols: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Select rows from a single table and return dictionaries.
+        Select rows from a single table and return a list of dicts.
 
-        Supported WHERE suffix operators:
-        `__lt`, `__gt`, `__lte`, `__gte`, `__like`, `__between`, `__in`.
+        WHERE clause operators (key suffixes):
+            ``__lt``  ``__gt``  ``__lte``  ``__gte``  ``__like``
+            ``__between`` (value must be ``[low, high]``)
+            ``__in``  (value must be a list/tuple)
+            No suffix → equality.
 
-        Trusted SQL fragments are also supported via keys prefixed with
-        `#CUSTOM#`.
+        The ``#CUSTOM#`` key prefix injects a pre-formatted SQL fragment
+        directly into the WHERE clause without parameter binding::
+
+            where={"#CUSTOM#status": "(NU_STATUS = 0 OR NU_STATUS = -1)"}
+
+        Use this escape hatch only for fixed expressions that cannot be
+        expressed with the operator suffixes above. Never use it with
+        user-supplied strings — it bypasses parameter binding entirely.
+
+        Args:
+            cols: Explicit column list for SELECT. Supports aliases
+                (``"ID_HOST AS host_id"``). Defaults to ``*``.
+
+        Returns:
+            List[Dict[str, Any]]: Each row as a column-keyed dict.
+                Empty list when no rows match.
         """
         c = ", ".join(cols) if cols else "*"
         sql = f"SELECT {c} FROM {table}"
         params: List[Any] = []
 
         if where:
-            conditions = []
-            for key, value in where.items():
-                if key.startswith("#CUSTOM#"):
-                    # Inject preformatted SQL fragment (e.g. "(NU_STATUS = 0 OR NU_STATUS = -1)")
-                    conditions.append(value)
-                elif "__" in key:
-                    col, op = key.split("__", 1)
-
-                    if op == "lt":
-                        conditions.append(f"{col} < %s")
-                        params.append(value)
-
-                    elif op == "gt":
-                        conditions.append(f"{col} > %s")
-                        params.append(value)
-
-                    elif op == "lte":
-                        conditions.append(f"{col} <= %s")
-                        params.append(value)
-
-                    elif op == "gte":
-                        conditions.append(f"{col} >= %s")
-                        params.append(value)
-
-                    elif op == "like":
-                        conditions.append(f"{col} LIKE %s")
-                        params.append(value)
-
-                    elif op == "between":
-                        if not isinstance(value, (list, tuple)) or len(value) != 2:
-                            raise ValueError("BETWEEN operator requires (start, end)")
-                        conditions.append(f"{col} BETWEEN %s AND %s")
-                        params.extend([value[0], value[1]])
-
-                    elif op == "in":
-                        if not isinstance(value, (list, tuple)):
-                            raise ValueError("IN operator requires list/tuple")
-                        placeholders = ", ".join(["%s"] * len(value))
-                        conditions.append(f"{col} IN ({placeholders})")
-                        params.extend(list(value))
-
-                    else:
-                        raise ValueError(f"Unsupported operator '__{op}'")
-                else:
-                    conditions.append(f"{key}=%s")
-                    params.append(value)
-            sql += " WHERE " + " AND ".join(conditions)
+            sql += self._build_where_clause(where, params, allow_custom_fragments=True)
 
         if order_by:
             sql += f" ORDER BY {order_by}"
@@ -965,13 +932,7 @@ class DBHandlerBase:
 
         try:
             self.cursor.execute(sql, tuple(params))
-            rows = self.cursor.fetchall() or []
-            if not rows:
-                return []
-
-            columns = [col[0] for col in self.cursor.description]
-            results = [dict(zip(columns, row)) for row in rows]
-            return results
+            return self._map_cursor_rows(self.cursor.fetchall() or [])
 
         except Exception as e:
             self.log.error(f"[DBHandlerBase] SELECT failed on {table}: {e}")
@@ -991,10 +952,43 @@ class DBHandlerBase:
         order_by: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Build a joined SELECT using table aliases and `VALID_FIELDS_*` metadata.
+        Build a multi-table SELECT driven by ``VALID_FIELDS_*`` class attributes.
 
-        Result columns are normalized as `TABLE__COLUMN`, which allows service
-        code to join heterogeneous tables without ambiguous field names.
+        Every table referenced in the query must have a corresponding
+        ``VALID_FIELDS_TABLENAME`` set attribute on the handler class. All
+        columns from that set are projected; result columns are named
+        ``TABLE__column`` to avoid ambiguity across joined tables.
+
+        Args:
+            table: Base table as ``"TABLE_NAME ALIAS"`` — e.g.
+                ``"FILE_TASK ft"``. The alias is mandatory because WHERE and
+                JOIN clauses must qualify column names.
+            joins: Additional JOIN strings in plain SQL — e.g.
+                ``"JOIN HOST h ON h.ID_HOST = ft.FK_HOST"``. The alias in each
+                JOIN is used to look up the corresponding ``VALID_FIELDS_*``
+                attribute for automatic column projection.
+            where: Filter dict using a **tuple-based** DSL, distinct from the
+                ``__suffix`` DSL used by ``_select_rows`` and ``_update_row``::
+
+                    ("IN",      [1, 2, 3])      → col IN (%s, %s, %s)
+                    ("BETWEEN", (low, high))     → col BETWEEN %s AND %s
+                    ("LIKE",    "pat%")          → col LIKE %s
+                    (">=", value)               → col >= %s  (any cmp op)
+                    "IS_NULL"                   → col IS NULL
+                    "NOT_NULL"                  → col IS NOT NULL
+                    plain value                 → col = %s
+                    "#CUSTOM#key": "raw_sql"    → injected verbatim
+
+                Column names must include the table alias when the same name
+                exists in more than one joined table.
+
+        Returns:
+            List[Dict[str, Any]]: Rows with ``TABLE__column``-keyed dicts.
+                Empty list when no rows match.
+
+        Raises:
+            ValueError: When a ``VALID_FIELDS_TABLE`` attribute is missing for
+                any table referenced via the base table or joins.
         """
 
         # ------------------------------------------------------------------
@@ -1120,12 +1114,7 @@ class DBHandlerBase:
         # ------------------------------------------------------------------
         try:
             self.cursor.execute(sql, tuple(params))
-            rows = self.cursor.fetchall() or []
-            if not rows:
-                return []
-
-            columns = [c[0] for c in self.cursor.description]
-            return [dict(zip(columns, row)) for row in rows]
+            return self._map_cursor_rows(self.cursor.fetchall() or [])
 
         except Exception as e:
             self.log.error(
@@ -1196,11 +1185,33 @@ class DBHandlerBase:
         commit: bool = True,
     ) -> int:
         """
-        Perform a batch UPSERT operation using
-        INSERT ... ON DUPLICATE KEY UPDATE.
+        High-throughput batch UPSERT via ``INSERT … ON DUPLICATE KEY UPDATE``.
 
-        This is a LOW-LEVEL primitive designed for high-throughput ingestion.
-        It must receive homogeneous rows and does not apply business logic.
+        Rows are submitted in ``batch_size`` chunks via ``cursor.executemany``,
+        which is significantly faster than repeated single-row ``_upsert_row``
+        calls for bulk imports or full-table reconciles.
+
+        Args:
+            table: Target table name.
+            rows: Column-value dicts to upsert. All dicts must share identical
+                keys (homogeneous schema); raises ``ValueError`` otherwise.
+            unique_keys: Column name(s) defining the unique/PK constraint.
+                These columns are excluded from the ``ON DUPLICATE KEY UPDATE``
+                clause so their values are never overwritten on conflict.
+            touch_field: Column name set to ``NOW()`` on every update, typically
+                a last-modified timestamp.
+            batch_size: Number of rows per ``executemany`` call. Tune based on
+                row width and server memory; default of 1000 is conservative.
+            commit: Commit after all batches complete. Pass ``False`` to fold
+                this operation into an outer ``begin_transaction()`` block.
+
+        Returns:
+            int: Total rows submitted (not necessarily changed — ``executemany``
+                does not expose per-row affected counts).
+
+        Raises:
+            ValueError: When rows have inconsistent column schemas.
+            Exception: Re-raises any SQL failure after rollback.
         """
 
         if not rows:
@@ -1210,7 +1221,8 @@ class DBHandlerBase:
         processed = 0
 
         try:
-            cursor = self.db_connection.cursor()
+            # self.cursor is already initialised by _connect() above;
+            # no need to open a separate local cursor.
 
             # ---------------------------------------------------------
             # Validate homogeneous schema
@@ -1248,12 +1260,12 @@ class DBHandlerBase:
                 batch.append(tuple(row[col] for col in columns))
 
                 if len(batch) >= batch_size:
-                    cursor.executemany(sql, batch)
+                    self.cursor.executemany(sql, batch)
                     processed += len(batch)
                     batch.clear()
 
             if batch:
-                cursor.executemany(sql, batch)
+                self.cursor.executemany(sql, batch)
                 processed += len(batch)
 
             if commit:

@@ -56,19 +56,47 @@ Important conventions:
 
 ## Summary Architecture
 
-`RFFUSION_SUMMARY` is now maintained by a Python worker instead of the old
-MariaDB event-driven full refresh.
+`RFFUSION_SUMMARY` is maintained by a Python worker instead of the legacy
+MariaDB Event (`EVT_REFRESH_ALL_RFFUSION_SUMMARY_10MIN`) that ran a full
+rebuild every 10 minutes regardless of activity.
 
 The flow is:
 
 1. `dbHandlerBKP` publishes host/month invalidation scopes into `BPDATA.SUMMARY_OUTBOX`
-2. `dbHandlerRFM` publishes site/equipment invalidation scopes into the same outbox
-3. `appCataloga_rffusion_summary_worker.py` consumes the outbox through `dbHandlerSummary`
-4. `SummaryRefreshEngine` refreshes only the affected public summary tables
+   whenever host tasks, file tasks, or backup/processing events change.
+2. `dbHandlerRFM` publishes site/equipment invalidation scopes into the same
+   outbox whenever spectrum sites or equipment observations change.
+3. `appCataloga_rffusion_summary_worker.py` runs as a daemon and drives two
+   update strategies through `dbHandlerSummary` and `SummaryRefreshEngine`:
+
+   - **Full reconcile**: rebuilds all summary tables from source on startup and
+     nightly at 02:00 BRT (UTC-3).  After each reconcile, both queue tables are
+     fully purged — `SUMMARY_OUTBOX` (all rows deleted) and
+     `SUMMARY_WORKER_STATE` (consumer row deleted, auto-recreated on next poll
+     with `ID_LAST_OUTBOX = 0`).
+
+   - **Incremental update**: between reconciles, reads the next batch of outbox
+     rows after the stored checkpoint, identifies the dirty scope, and refreshes
+     only the affected summary objects.  After each successful batch the
+     checkpoint is advanced and the consumed outbox rows are deleted immediately
+     (`drain_consumed_outbox`), keeping `SUMMARY_OUTBOX` small regardless of
+     event volume.
+
+4. A MariaDB named lock (`RFFUSION_SUMMARY_PY_WORKER`) held by the worker's
+   dedicated `lock_db` connection prevents two instances from running
+   concurrently.  The lock is released automatically when the holding connection
+   closes.
 
 This keeps the public `RFFUSION_SUMMARY` schema stable for `webfusion`,
 MATLAB and other readers while moving refresh orchestration out of hot
 `INSERT ... SELECT` paths on `BPDATA`.
+
+Queue table roles:
+
+| Table | Schema | Role |
+|-------|--------|------|
+| `SUMMARY_OUTBOX` | `BPDATA` | Append-only event queue; publishers write, worker drains |
+| `SUMMARY_WORKER_STATE` | `BPDATA` | Single-row consumer checkpoint; stores `ID_LAST_OUTBOX` and health fields |
 
 ## dbHandlerBKP
 
@@ -224,19 +252,73 @@ Operational notes:
 
 Main entities:
 
-- `BPDATA.SUMMARY_OUTBOX`
-- `BPDATA.SUMMARY_WORKER_STATE`
-- `RFFUSION_SUMMARY.SUMMARY_REFRESH_STATE`
-- `RFFUSION_SUMMARY.SUMMARY_REFRESH_LOG`
-- the public summary tables refreshed by the worker
+- `BPDATA.SUMMARY_OUTBOX` — event queue consumed by this handler
+- `BPDATA.SUMMARY_WORKER_STATE` — durable consumer checkpoint
+- `RFFUSION_SUMMARY.SUMMARY_REFRESH_STATE` — per-object last-run telemetry
+- `RFFUSION_SUMMARY.SUMMARY_REFRESH_LOG` — historical refresh audit log
+- all public summary tables written during refresh passes
 
 Main responsibilities:
 
-- claim and release the singleton summary worker lock
-- read and prune append-only outbox batches
-- persist worker checkpoint and heartbeat state
-- persist summary refresh telemetry
+- manage the singleton MariaDB lock that prevents dual worker instances
+- read append-only outbox batches in checkpoint order
+- persist worker checkpoint, status, and health timestamps
+- implement queue drain and post-reconcile reset
+- persist per-object refresh telemetry
 - replace or upsert summary-table rows during refresh passes
+
+Key method groups:
+
+**Singleton lock**
+
+- `configure_worker_session()` — sets session-level DB parameters (timeouts, etc.)
+- `disable_sql_event()` — disables the legacy MariaDB Event at startup if configured
+
+**Worker state (checkpoint)**
+
+- `read_worker_state(consumer_name)` — returns the checkpoint row; auto-creates it
+  with `ID_LAST_OUTBOX = 0` on first run so no manual bootstrap is needed
+- `mark_worker_start(consumer_name)` — stamps `DT_LAST_START`, sets
+  `NA_STATUS = 'running'`; called before every pass for stall detection
+- `mark_worker_success(consumer_name, last_outbox_id, ...)` — advances
+  `ID_LAST_OUTBOX` and stamps `DT_LAST_SUCCESS`; only called after a
+  successful refresh so a failed batch is retried
+- `mark_worker_failure(consumer_name, error_message)` — records the error
+  without advancing the checkpoint
+
+**Outbox consumption**
+
+- `read_outbox_batch(consumer_name, batch_size)` — returns the next N rows with
+  `ID_OUTBOX > ID_LAST_OUTBOX`, ordered ascending so events are processed in
+  publish order
+- `drain_consumed_outbox(consumer_name)` — deletes all rows with
+  `ID_OUTBOX <= ID_LAST_OUTBOX` immediately after a successful incremental
+  batch; true queue semantics, prevents unbounded outbox growth
+- `reset_after_reconcile(consumer_name)` — purges *all* outbox rows and drops
+  the consumer state row; called after a full reconcile because every
+  accumulated event is already reflected in the rebuilt summary
+- `prune_processed_outbox(consumer_name, keep_days)` — legacy time-gated prune;
+  retained for manual maintenance use but no longer called by the worker
+
+**Summary refresh telemetry**
+
+- `summary_refresh_start(object_name)` — upserts a `SUMMARY_REFRESH_STATE` row
+  with `IS_SUCCESS = 0` and returns the start timestamp
+- `summary_refresh_success(object_name, started_at, row_count)` — updates the
+  state row to `IS_SUCCESS = 1` and writes a `SUMMARY_REFRESH_LOG` entry
+- `summary_refresh_failure(object_name, started_at, error_message)` — records
+  the failure in both the state row and the log
+
+**Summary table writes**
+
+- `replace_table_rows(table, rows)` — shadow-table swap write strategy.
+  Writes rows into a `{table}_shadow` staging table then issues one atomic
+  `RENAME TABLE` to promote it as the live table.  Readers never see an empty
+  or partially-written table.  The `_shadow` table is created automatically on
+  the first call; no manual schema migration needed.  Use for objects that are
+  always rebuilt in full (`HOST_CURRENT_SNAPSHOT`, `MAP_SITE_SUMMARY`, etc.).
+- `upsert_table_rows(table, rows)` — row-level UPSERT for tables that support
+  partial updates scoped to the dirty hosts
 
 ## Usage Guidance
 

@@ -275,7 +275,21 @@ def _log_processing_phase_timings(
     resolved_site_ids=None,
     spectrum_ids=None,
 ):
-    """Emit one local timing summary for the current FILE_TASK iteration."""
+    """
+    Emit one structured timing event for the current FILE_TASK iteration.
+
+    Phase keys emitted (all in seconds, None when the phase was not reached):
+        claim           – optimistic lock: read + UPDATE FILE_TASK to RUNNING
+        process         – appAnalise round-trip (may dominate total time)
+        site_resolution – geocoding + DIM_SPECTRUM_SITE upserts (pre-TX)
+        db_open         – begin RFDATA transaction
+        db_persist      – FACT_SPECTRUM insert batch + commit
+        finalize_fs     – os.rename() promotion or quarantine moves
+        task_resolution – FILE_TASK delete + FILE_TASK_HISTORY update (BPDATA TX)
+
+    Used for performance profiling and for diagnosing which phase is
+    responsible for timeout-like freezes in production.
+    """
     if not filename or task_started_monotonic is None:
         return
 
@@ -323,16 +337,34 @@ def main():
 
     while process_status["running"]:
         err = errors.ErrorHandler(log)
+        # All state variables that are read in the `finally` block must be
+        # initialized here so the finally path is safe even when an exception
+        # occurs before any assignment below (e.g., a DB connection failure
+        # before a FILE_TASK row is even fetched).
         file_task_id = None
         file_was_processed = False
         new_path = None
         host_id = None
         file_meta = None
+        # `retry_later`: transient appAnalise transport failure; the dependency
+        #   was down or the payload wedged the service. Current policy: freeze
+        #   the task for manual review (same outcome as freeze_task) rather than
+        #   requeueing automatically to avoid hot loops.
+        # `freeze_task`: appAnalise responded but timed out on this specific
+        #   payload. Semantically distinct from retry_later even though both
+        #   currently resolve to freeze: timeout implies a per-payload problem
+        #   while retry_later implies a service-wide problem. Kept separate so
+        #   the destination detail message and future policy divergence are clear.
         retry_later = False
         freeze_task = False
         export = None
         source_file_meta = None
         resolved_site_ids = None
+        # Python's `finally` cannot issue a `continue` to the outer while loop.
+        # When the finally block decides the iteration should restart without
+        # the normal resolution path, it sets this flag. The unconditional
+        # `if skip_to_next_iteration: continue` at the bottom of the loop body
+        # then performs the actual `continue`.
         skip_to_next_iteration = False
         resolution = None
         bin_data = None

@@ -3421,6 +3421,99 @@ class dbHandlerBKP(DBHandlerBase):
             ))
 
         # ------------------------------------------------------------
+        # Secondary check: CelPlan .zip files already converted to .mat
+        #
+        # For RFEYE .bin files the size-based key is intentional: the same
+        # filename can grow over time, so a different size means the file
+        # must be re-backed-up.
+        #
+        # For CelPlan .zip files the original asset never grows, but an
+        # older version of the processing worker overwrote VL_FILE_SIZE_KB
+        # and DT_FILE_CREATED in FILE_TASK_HISTORY with the server .mat
+        # values. Those corrupted rows never match the primary key, causing
+        # duplicate FILE_TASKs for files that had already been processed.
+        #
+        # Guard: if FILE_TASK_HISTORY already holds a row for this host +
+        # path + filename where NA_SERVER_FILE_NAME ends in '.mat' and
+        # NU_STATUS_PROCESSING is terminal (DONE or ERROR), the .zip is
+        # considered done regardless of the primary identity key.
+        # ------------------------------------------------------------
+        processed_zip_keys: set[tuple] = set()
+        zip_files = [
+            m for m in batch
+            if getattr(m, "NA_EXTENSION", "").lower() == ".zip"
+        ]
+        if zip_files:
+            placeholders = ", ".join(["%s"] * len(zip_files))
+            secondary_sql = f"""
+                SELECT DISTINCT h.NA_HOST_FILE_NAME, h.NA_HOST_FILE_PATH
+                FROM FILE_TASK_HISTORY h
+                WHERE h.FK_HOST = %s
+                  AND h.NA_HOST_FILE_NAME IN ({placeholders})
+                  AND h.NA_SERVER_FILE_NAME LIKE '%.mat'
+                  AND h.NU_STATUS_PROCESSING IN (%s, %s)
+            """
+            secondary_params = tuple(
+                [host_id]
+                + [m.NA_FILE for m in zip_files]
+                + [k.TASK_DONE, k.TASK_ERROR]
+            )
+            secondary_rows = self._select_raw(secondary_sql, secondary_params)
+            processed_zip_keys = {
+                (row["NA_HOST_FILE_NAME"], row["NA_HOST_FILE_PATH"])
+                for row in secondary_rows
+            }
+
+        # ------------------------------------------------------------
+        # Fuzzy size check for .zip files (ZIP_SIZE_TOLERANCE_KB)
+        #
+        # Exact size matching fails in two known scenarios:
+        #   a) History was written with float division (/ 1024) before
+        #      the worker was standardized to integer division (// 1024),
+        #      causing a systematic 1 KB mismatch on legacy rows.
+        #   b) A file was overwritten on the station with a corrupted or
+        #      truncated version. Once the original was backed up we
+        #      accept the data loss rather than re-backing up a file
+        #      the station no longer has intact.
+        #
+        # Strategy: same filename + same minute timestamp + size within
+        # ZIP_SIZE_TOLERANCE_KB of the history value → treat as same file.
+        # This check is intentionally scoped to .zip only. For .bin files
+        # a different size is authoritative evidence of new appended data.
+        # ------------------------------------------------------------
+        _ZIP_SIZE_TOLERANCE_KB = 100
+
+        fuzzy_zip_keys: set[tuple] = set()
+        if zip_files:
+            row_sql_fz = "SELECT %s AS name, %s AS created, %s AS size"
+            union_sql_fz = " UNION ALL ".join([row_sql_fz] * len(zip_files))
+            fuzzy_sql = f"""
+                SELECT DISTINCT f.name, f.created
+                FROM (
+                    {union_sql_fz}
+                ) AS f
+                JOIN FILE_TASK_HISTORY h
+                    ON h.FK_HOST = %s
+                   AND h.NA_HOST_FILE_NAME = f.name
+                   AND ABS(h.VL_FILE_SIZE_KB - f.size) <= %s
+                   AND TIMESTAMPDIFF(MINUTE, h.DT_FILE_CREATED, f.created) = 0
+            """
+            fuzzy_params: list[object] = []
+            for m in zip_files:
+                fuzzy_params.extend([m.NA_FILE, m.DT_FILE_CREATED, m.VL_FILE_SIZE_KB])
+            fuzzy_params.extend([host_id, _ZIP_SIZE_TOLERANCE_KB])
+
+            fuzzy_rows = self._select_raw(fuzzy_sql, tuple(fuzzy_params))
+            for row in fuzzy_rows:
+                fz_created = row["created"]
+                if not isinstance(fz_created, datetime):
+                    fz_created = datetime.fromisoformat(str(fz_created))
+                fuzzy_zip_keys.add((
+                    row["name"],
+                    fz_created.replace(second=0, microsecond=0),
+                ))
+
+        # ------------------------------------------------------------
         # Filter original batch using minute-level identity
         # ------------------------------------------------------------
         result = []
@@ -3434,8 +3527,24 @@ class dbHandlerBKP(DBHandlerBase):
                 m.VL_FILE_SIZE_KB,
             )
 
-            if key not in existing_keys:
-                result.append(m)
+            if key in existing_keys:
+                continue
+
+            # Fuzzy size guard: .zip with size within ZIP_SIZE_TOLERANCE_KB
+            if (
+                getattr(m, "NA_EXTENSION", "").lower() == ".zip"
+                and (m.NA_FILE, created_minute) in fuzzy_zip_keys
+            ):
+                continue
+
+            # Secondary guard: .zip already processed to .mat in history
+            if (
+                getattr(m, "NA_EXTENSION", "").lower() == ".zip"
+                and (m.NA_FILE, m.NA_PATH) in processed_zip_keys
+            ):
+                continue
+
+            result.append(m)
 
         return result
     

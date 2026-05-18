@@ -151,12 +151,37 @@ as different channels with different semantics and retention windows.
 
 Maintains the public `RFFUSION_SUMMARY` tables.
 
-This worker is responsible for:
+This is a long-lived daemon process that uses two complementary update
+strategies to keep `RFFUSION_SUMMARY` consistent with the operational databases:
 
-- consuming `BPDATA.SUMMARY_OUTBOX`
-- coalescing dirty scopes published by `BPDATA` and `RFDATA` writers
-- refreshing only the affected summary tables
-- running a periodic full reconcile to cap drift without reviving the old SQL event
+**Full reconcile** — rebuilds all summary tables from scratch by reading the
+authoritative source tables in `BPDATA` and `RFDATA`.  Triggered automatically
+at startup and nightly at 02:00 BRT (UTC-3, low-traffic window).  After a
+reconcile, both queue tables (`SUMMARY_OUTBOX` and `SUMMARY_WORKER_STATE`) are
+fully cleared because the rebuilt summary already reflects every accumulated
+event — nothing in the queue carries new information.
+
+**Incremental update** — reads the next batch of `SUMMARY_OUTBOX` events,
+determines which summary objects are affected (the *dirty scope*), and refreshes
+only those objects.  Runs continuously between reconciles so dashboards see new
+measurements within seconds of ingestion.  Processed rows are deleted from the
+outbox immediately after each successful batch (true queue semantics — the
+outbox never grows without bound).
+
+A MariaDB named lock (`RFFUSION_SUMMARY_PY_WORKER`) prevents two instances from
+running concurrently.  A second invocation exits immediately with code `0`,
+leaving the running instance undisturbed.
+
+Configuration keys (in `config.py`):
+
+| Key | Default | Meaning |
+|-----|---------|--------|
+| `SUMMARY_DATABASE_NAME` | `RFFUSION_SUMMARY` | Target schema |
+| `SUMMARY_WORKER_CONSUMER_NAME` | `rffusion_summary_worker` | Consumer identifier in `SUMMARY_WORKER_STATE` |
+| `SUMMARY_WORKER_BATCH_SIZE` | `500` | Max outbox rows per incremental pass |
+| `SUMMARY_WORKER_IDLE_SLEEP_SEC` | `5` | Sleep between polls when outbox is empty |
+| `SUMMARY_WORKER_DISABLE_SQL_EVENT_ON_START` | `True` | Disables the legacy MariaDB event at startup |
+| `SUMMARY_WORKER_SQL_EVENT_NAME` | `EVT_REFRESH_ALL_RFFUSION_SUMMARY_10MIN` | Name of the legacy event to disable |
 
 ## Current Workflow
 
@@ -216,12 +241,23 @@ There is also a second nuance around long-running source files:
 `webfusion`, MATLAB and other read-side consumers still read the same public
 tables in `RFFUSION_SUMMARY`.
 
-What changed is the producer:
+What changed is the producer.  The old MariaDB Event
+(`EVT_REFRESH_ALL_RFFUSION_SUMMARY_10MIN`) ran a full rebuild every 10 minutes
+regardless of activity.  The Python worker replaces it with two targeted paths:
 
-- `appCataloga` publishers append dirty scopes into `BPDATA.SUMMARY_OUTBOX`
-- `appCataloga_rffusion_summary_worker.py` consumes that outbox
-- the worker refreshes the existing summary tables in dependency order
-- a scheduled full reconcile remains as a safety net for missed events
+- `dbHandlerBKP` and `dbHandlerRFM` publish lightweight dirty-scope events into
+  `BPDATA.SUMMARY_OUTBOX` whenever a measurement or task changes.
+- `appCataloga_rffusion_summary_worker.py` consumes those events,
+  determines the minimal set of affected summary objects, and refreshes only
+  those objects — leaving unaffected tables untouched.
+- On startup and nightly at 02:00 BRT, a full reconcile rebuilds all summary
+  tables from scratch as a correctness guarantee.
+- After each operation the queue tables are kept clean: the outbox is drained
+  immediately after each incremental batch, and both queue tables are fully
+  purged after each full reconcile.
+
+The public schema of `RFFUSION_SUMMARY` did not change.  All consumers read the
+same tables as before; only the refresh mechanism is different.
 
 Operationally, the summary worker is part of the normal service lifecycle and
 is started and stopped by `tool_start_all.sh` and `tool_stop_all.sh`.
