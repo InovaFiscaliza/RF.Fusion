@@ -607,6 +607,78 @@ class TestHostService(unittest.TestCase):
         self.assertIn("FROM HOST_CURRENT_SNAPSHOT", summary_cursor.executed[0][0])
         self.assertEqual(summary_cursor.executed[0][1], ["%rfeye%"])
 
+    def test_get_host_location_history_exposes_county_and_district_ids(self):
+        class FakeCursor:
+            def __init__(self):
+                self.executed = []
+                self.responses = [
+                    [
+                        {
+                            "ID_EQUIPMENT": 133,
+                            "NA_EQUIPMENT": "ermxes03",
+                            "MATCH_TYPE": "exact_normalized",
+                            "MATCH_CONFIDENCE": 1.0,
+                        }
+                    ],
+                    [
+                        {
+                            "ID_SITE": 237,
+                            "ID_COUNTY": 3205309,
+                            "ID_DISTRICT": 181,
+                            "LOCALITY_LABEL": "Enseada do Sua · Vitoria/ES",
+                            "COUNTY_NAME": "Vitoria",
+                            "STATE_NAME": "Espirito Santo",
+                            "STATE_CODE": "ES",
+                            "FIRST_SEEN_AT": "2025-06-28 12:22:53",
+                            "LAST_SEEN_AT": "2026-01-10 09:01:12",
+                            "SPECTRUM_COUNT": 1925,
+                        }
+                    ],
+                ]
+
+            def execute(self, query, params=None):
+                self.executed.append((query, params))
+
+            def fetchall(self):
+                if not self.responses:
+                    return []
+                return self.responses.pop(0)
+
+        class FakeConnection:
+            def __init__(self, cursor):
+                self._cursor = cursor
+                self.closed = False
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                self.closed = True
+
+        summary_cursor = FakeCursor()
+        summary_connection = FakeConnection(summary_cursor)
+
+        self.module._HOST_LOCATION_HISTORY_CACHE.clear()
+
+        with patch.object(self.module.time, "monotonic", return_value=100.0):
+            with patch.object(
+                self.module,
+                "get_connection_summary",
+                return_value=summary_connection,
+            ):
+                payload = self.module._get_host_location_history(10845)
+
+        self.assertEqual(len(payload["equipment_matches"]), 1)
+        self.assertEqual(payload["equipment_matches"][0]["ID_EQUIPMENT"], 133)
+        self.assertEqual(len(payload["location_history"]), 1)
+        self.assertEqual(payload["location_history"][0]["ID_SITE"], 237)
+        self.assertEqual(payload["location_history"][0]["ID_COUNTY"], 3205309)
+        self.assertEqual(payload["location_history"][0]["ID_DISTRICT"], 181)
+        self.assertEqual(payload["location_history"][0]["SPECTRUM_COUNT"], 1925)
+        self.assertTrue(summary_connection.closed)
+        self.assertEqual(len(summary_cursor.executed), 2)
+        self.assertIn("FROM HOST_LOCATION_SUMMARY", summary_cursor.executed[1][0])
+
 
 if __name__ == "__main__":
     unittest.main()

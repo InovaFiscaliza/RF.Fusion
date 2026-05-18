@@ -21,6 +21,8 @@
     data-filters-endpoint="{{ url_for('spectrum.spectrum_filters') }}"
     data-file-spectra-endpoint-base="{{ url_for('spectrum.spectrum_file_spectra', file_id=0) | replace('/0/spectra', '') }}"
     data-lightweight-bootstrap="{{ '1' if lightweight_filter_bootstrap else '0' }}"
+    data-initial-availability-start="{{ filter_availability.DATE_START if filter_availability and filter_availability.DATE_START else '' }}"
+    data-initial-availability-end="{{ filter_availability.DATE_END if filter_availability and filter_availability.DATE_END else '' }}"
 >
 
 <h1 class="margin-bottom-l">
@@ -113,6 +115,10 @@
                 <input type="date"
                        name="start_date"
                        value="{{ start_date or '' }}"
+                       {% if filter_availability and filter_availability.DATE_START and filter_availability.DATE_END %}
+                       min="{{ filter_availability.DATE_START }}"
+                       max="{{ filter_availability.DATE_END }}"
+                       {% endif %}
                        class="form-control">
                 <div class="filter-helper-text" id="period-filter-hint">
                     {% if filter_availability and filter_availability.DATE_START_DISPLAY and filter_availability.DATE_END_DISPLAY %}
@@ -128,6 +134,10 @@
                 <input type="date"
                        name="end_date"
                        value="{{ end_date or '' }}"
+                       {% if filter_availability and filter_availability.DATE_START and filter_availability.DATE_END %}
+                       min="{{ filter_availability.DATE_START }}"
+                       max="{{ filter_availability.DATE_END }}"
+                       {% endif %}
                        class="form-control">
             </div>
 

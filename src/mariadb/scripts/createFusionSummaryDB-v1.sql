@@ -1,6 +1,23 @@
 /* =====================================================================
    createFusionSummaryDB-v1.sql
-   - Canonical RFFUSION_SUMMARY schema reconciled with the live MariaDB instance
+   Canonical RFFUSION_SUMMARY schema — current as of schema v2.
+
+   Changelog
+   ---------
+   v1 — initial schema reconciled with the live MariaDB instance.
+   v2 — geography keys (FK_COUNTY, FK_DISTRICT) promoted into
+        SITE_EQUIPMENT_OBS_SUMMARY, HOST_LOCATION_SUMMARY and
+        MAP_SITE_SUMMARY so features such as /spectrum, map payloads
+        and host locality history can resolve district/county without
+        joining back to live RFDATA dimension tables.
+        (Previously delivered as alterFusionSummaryDB-v2-geography-keys.sql)
+
+   Note on shadow tables
+   ---------------------
+   The summary worker uses an atomic-swap pattern (CREATE … SELECT, then
+   RENAME TABLE) for heavy refreshes. The *_shadow tables it creates at
+   runtime are transient and are therefore NOT defined here; the worker
+   is responsible for their lifecycle.
    ===================================================================== */
 
 CREATE DATABASE IF NOT EXISTS RFFUSION_SUMMARY
@@ -75,6 +92,8 @@ CREATE TABLE `SITE_EQUIPMENT_OBS_SUMMARY` (
   `FK_EQUIPMENT` int(11) NOT NULL,
   `NA_SITE_NAME` varchar(100) DEFAULT NULL,
   `NA_SITE_LABEL` varchar(120) NOT NULL,
+  `FK_COUNTY` int(11) DEFAULT NULL,
+  `FK_DISTRICT` int(11) DEFAULT NULL,
   `NA_COUNTY_NAME` varchar(150) DEFAULT NULL,
   `NA_DISTRICT_NAME` varchar(100) DEFAULT NULL,
   `ID_STATE` int(11) DEFAULT NULL,
@@ -102,6 +121,8 @@ CREATE TABLE `HOST_LOCATION_SUMMARY` (
   `NA_HOST_NAME` varchar(100) NOT NULL,
   `NA_LOCALITY_LABEL` varchar(255) NOT NULL,
   `NA_SITE_LABEL` varchar(120) NOT NULL,
+  `FK_COUNTY` int(11) DEFAULT NULL,
+  `FK_DISTRICT` int(11) DEFAULT NULL,
   `NA_COUNTY_NAME` varchar(150) DEFAULT NULL,
   `NA_DISTRICT_NAME` varchar(100) DEFAULT NULL,
   `ID_STATE` int(11) DEFAULT NULL,
@@ -148,6 +169,8 @@ CREATE TABLE `MAP_SITE_STATION_SUMMARY` (
 CREATE TABLE `MAP_SITE_SUMMARY` (
   `FK_SITE` int(11) NOT NULL,
   `NA_SITE_LABEL` varchar(120) NOT NULL,
+  `FK_COUNTY` int(11) DEFAULT NULL,
+  `FK_DISTRICT` int(11) DEFAULT NULL,
   `NA_COUNTY_NAME` varchar(150) DEFAULT NULL,
   `NA_DISTRICT_NAME` varchar(100) DEFAULT NULL,
   `ID_STATE` int(11) DEFAULT NULL,
@@ -735,6 +758,8 @@ BEGIN
         FK_EQUIPMENT,
         NA_SITE_NAME,
         NA_SITE_LABEL,
+        FK_COUNTY,
+        FK_DISTRICT,
         NA_COUNTY_NAME,
         NA_DISTRICT_NAME,
         ID_STATE,
@@ -757,6 +782,8 @@ BEGIN
         ranked.FK_EQUIPMENT,
         ranked.NA_SITE_NAME,
         ranked.NA_SITE_LABEL,
+        ranked.FK_COUNTY,
+        ranked.FK_DISTRICT,
         ranked.NA_COUNTY_NAME,
         ranked.NA_DISTRICT_NAME,
         ranked.ID_STATE,
@@ -791,6 +818,8 @@ BEGIN
                 f.FK_EQUIPMENT,
                 s.NA_SITE AS NA_SITE_NAME,
                 COALESCE(NULLIF(s.NA_SITE, ''), CONCAT('Site ', s.ID_SITE)) AS NA_SITE_LABEL,
+                s.FK_COUNTY,
+                s.FK_DISTRICT,
                 c.NA_COUNTY AS NA_COUNTY_NAME,
                 d.NA_DISTRICT AS NA_DISTRICT_NAME,
                 st.ID_STATE,
@@ -820,6 +849,8 @@ BEGIN
                 f.FK_SITE,
                 f.FK_EQUIPMENT,
                 s.NA_SITE,
+                s.FK_COUNTY,
+                s.FK_DISTRICT,
                 c.NA_COUNTY,
                 d.NA_DISTRICT,
                 st.ID_STATE,
@@ -908,6 +939,8 @@ BEGIN
         NA_HOST_NAME,
         NA_LOCALITY_LABEL,
         NA_SITE_LABEL,
+        FK_COUNTY,
+        FK_DISTRICT,
         NA_COUNTY_NAME,
         NA_DISTRICT_NAME,
         ID_STATE,
@@ -949,6 +982,8 @@ BEGIN
             )
         ) AS NA_LOCALITY_LABEL,
         obs.NA_SITE_LABEL,
+        obs.FK_COUNTY,
+        obs.FK_DISTRICT,
         obs.NA_COUNTY_NAME,
         obs.NA_DISTRICT_NAME,
         obs.ID_STATE,
@@ -978,6 +1013,8 @@ BEGIN
         host.NA_HOST_NAME,
         obs.NA_SITE_NAME,
         obs.NA_SITE_LABEL,
+        obs.FK_COUNTY,
+        obs.FK_DISTRICT,
         obs.NA_COUNTY_NAME,
         obs.NA_DISTRICT_NAME,
         obs.ID_STATE,
@@ -1189,6 +1226,8 @@ BEGIN
     INSERT INTO MAP_SITE_SUMMARY__BUILD (
         FK_SITE,
         NA_SITE_LABEL,
+        FK_COUNTY,
+        FK_DISTRICT,
         NA_COUNTY_NAME,
         NA_DISTRICT_NAME,
         ID_STATE,
@@ -1214,6 +1253,8 @@ BEGIN
     SELECT
         s.ID_SITE,
         COALESCE(NULLIF(s.NA_SITE, ''), CONCAT('Site ', s.ID_SITE)) AS NA_SITE_LABEL,
+        s.FK_COUNTY,
+        s.FK_DISTRICT,
         c.NA_COUNTY,
         d.NA_DISTRICT,
         st.ID_STATE,

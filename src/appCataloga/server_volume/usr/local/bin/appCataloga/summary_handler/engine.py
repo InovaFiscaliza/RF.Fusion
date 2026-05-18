@@ -762,6 +762,8 @@ class SummaryRefreshEngine:
                 f.FK_EQUIPMENT,
                 s.NA_SITE AS NA_SITE_NAME,
                 COALESCE(NULLIF(s.NA_SITE, ''), CONCAT('Site ', s.ID_SITE)) AS NA_SITE_LABEL,
+                s.FK_COUNTY,
+                s.FK_DISTRICT,
                 c.NA_COUNTY AS NA_COUNTY_NAME,
                 d.NA_DISTRICT AS NA_DISTRICT_NAME,
                 st.ID_STATE,
@@ -792,6 +794,8 @@ class SummaryRefreshEngine:
                 f.FK_SITE,
                 f.FK_EQUIPMENT,
                 s.NA_SITE,
+                s.FK_COUNTY,
+                s.FK_DISTRICT,
                 c.NA_COUNTY,
                 d.NA_DISTRICT,
                 st.ID_STATE,
@@ -838,6 +842,8 @@ class SummaryRefreshEngine:
                     "FK_EQUIPMENT": equipment_id,
                     "NA_SITE_NAME": row.get("NA_SITE_NAME"),
                     "NA_SITE_LABEL": row.get("NA_SITE_LABEL"),
+                    "FK_COUNTY": row.get("FK_COUNTY"),
+                    "FK_DISTRICT": row.get("FK_DISTRICT"),
                     "NA_COUNTY_NAME": row.get("NA_COUNTY_NAME"),
                     "NA_DISTRICT_NAME": row.get("NA_DISTRICT_NAME"),
                     "ID_STATE": row.get("ID_STATE"),
@@ -1100,6 +1106,8 @@ class SummaryRefreshEngine:
                 host.NA_HOST_NAME,
                 obs.NA_SITE_NAME,
                 obs.NA_SITE_LABEL,
+                obs.FK_COUNTY,
+                obs.FK_DISTRICT,
                 obs.NA_COUNTY_NAME,
                 obs.NA_DISTRICT_NAME,
                 obs.ID_STATE,
@@ -1136,6 +1144,8 @@ class SummaryRefreshEngine:
                     "NA_HOST_NAME": row.get("NA_HOST_NAME"),
                     "NA_SITE_NAME": row.get("NA_SITE_NAME"),
                     "NA_SITE_LABEL": row.get("NA_SITE_LABEL"),
+                    "FK_COUNTY": row.get("FK_COUNTY"),
+                    "FK_DISTRICT": row.get("FK_DISTRICT"),
                     "NA_COUNTY_NAME": row.get("NA_COUNTY_NAME"),
                     "NA_DISTRICT_NAME": row.get("NA_DISTRICT_NAME"),
                     "ID_STATE": row.get("ID_STATE"),
@@ -1191,6 +1201,8 @@ class SummaryRefreshEngine:
                     "NA_HOST_NAME": row.get("NA_HOST_NAME"),
                     "NA_LOCALITY_LABEL": _build_locality_label(row),
                     "NA_SITE_LABEL": row.get("NA_SITE_LABEL"),
+                    "FK_COUNTY": row.get("FK_COUNTY"),
+                    "FK_DISTRICT": row.get("FK_DISTRICT"),
                     "NA_COUNTY_NAME": row.get("NA_COUNTY_NAME"),
                     "NA_DISTRICT_NAME": row.get("NA_DISTRICT_NAME"),
                     "ID_STATE": row.get("ID_STATE"),
@@ -1312,6 +1324,8 @@ class SummaryRefreshEngine:
             SELECT
                 s.ID_SITE,
                 s.NA_SITE,
+                s.FK_COUNTY,
+                s.FK_DISTRICT,
                 c.NA_COUNTY,
                 d.NA_DISTRICT,
                 st.ID_STATE,
@@ -1365,7 +1379,7 @@ class SummaryRefreshEngine:
                 agg["NU_NO_HOST_COUNT"] += 1
             agg["MIN_PRIORITY"] = min(
                 agg["MIN_PRIORITY"],
-                int(row.get("NU_STATE_PRIORITY") or 4),
+                int(row["NU_STATE_PRIORITY"]) if row.get("NU_STATE_PRIORITY") is not None else 4,
             )
 
         refreshed_at = datetime.utcnow()
@@ -1395,6 +1409,8 @@ class SummaryRefreshEngine:
                 {
                     "FK_SITE": site_id,
                     "NA_SITE_LABEL": _coalesce_text(row.get("NA_SITE"), f"Site {site_id}") or f"Site {site_id}",
+                    "FK_COUNTY": row.get("FK_COUNTY"),
+                    "FK_DISTRICT": row.get("FK_DISTRICT"),
                     "NA_COUNTY_NAME": row.get("NA_COUNTY"),
                     "NA_DISTRICT_NAME": row.get("NA_DISTRICT"),
                     "ID_STATE": row.get("ID_STATE"),

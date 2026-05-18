@@ -9,6 +9,34 @@ to the user interface:
 Those are not interchangeable queries with a different template. Each mode has
 different allowed filters, grouping rules, sorting semantics, and download
 behavior, so the service layer documents those differences explicitly.
+
+Read model strategy
+-------------------
+Every public function tries ``RFFUSION_SUMMARY.SITE_EQUIPMENT_OBS_SUMMARY``
+(the summary read model) first. That table is a materialized view pre-joined
+with geography and pre-aggregated by (site, equipment). It answers most filter
+queries cheaply because it avoids scanning ``FACT_SPECTRUM``.
+
+When the summary returns nothing — typically because the operator applies date
+or frequency filters that the summary does not track — the service falls back
+to a live ``RFDATA.FACT_SPECTRUM`` query joined with dimension tables. That
+path is authoritative but significantly heavier.
+
+The fallback is explicit at each call site on purpose. An engineer debugging
+a slow filter refresh should be able to tell immediately which code path ran
+and why.
+
+Caching
+-------
+All public functions write results into ``_SPECTRUM_QUERY_CACHE``, a tiny
+in-process dict with per-entry TTLs. The cache smooths repeated clicks and
+back/forward navigation within one gunicorn worker. It is NOT shared across
+worker processes, is NOT invalidated on DB writes, and must NOT be treated as
+a consistency layer.
+
+When query logic changes in a breaking way, increment
+``FILE_RESULT_CACHE_VERSION`` or ``FILTER_OPTION_CACHE_VERSION`` to discard
+in-flight cache entries built by the old query shape.
 """
 
 import logging
@@ -43,6 +71,10 @@ FILE_PATH_CACHE_TTL_SECONDS = 300
 # Full file-result pages reuse one heavy grouped query result for a few minutes
 # so operators can move across pagination links without re-scanning the catalog.
 FILE_RESULT_FULL_CACHE_TTL_SECONDS = 300
+
+# Bump these integers whenever the query shape changes in a way that would make
+# cached results from the previous version wrong or incomplete. In-process
+# cache entries are keyed by version so old entries are naturally skipped.
 FILE_RESULT_CACHE_VERSION = 3
 FILTER_OPTION_CACHE_VERSION = 2
 
@@ -52,6 +84,9 @@ FILTER_OPTION_CACHE_VERSION = 2
 _EQUIPMENT_CACHE = {"expires_at": 0.0, "value": None}
 _SPECTRUM_QUERY_CACHE = {}
 _FILE_PATH_CACHE = {}
+
+SUMMARY_SITE_EQUIPMENT_TABLE = "RFFUSION_SUMMARY.SITE_EQUIPMENT_OBS_SUMMARY"
+SUMMARY_MAP_SITE_TABLE = "RFFUSION_SUMMARY.MAP_SITE_SUMMARY"
 
 
 def _load_summary_site_availability_row(equipment_id, site_id):
@@ -172,12 +207,17 @@ def _build_locality_display_sql(
     county_alias="c",
     state_alias="st",
 ):
-    """Build a user-facing locality label with county/state context.
+    """Build a locality label by joining raw RFDATA geography dimension tables.
+
+    Used ONLY by ``_load_fact_site_availability_row`` (the live RFDATA fallback
+    path). All other display SQL uses ``_build_summary_locality_display_sql``
+    instead, which reads pre-joined geography from the summary model and avoids
+    this four-table dimension join.
 
     The county/state complement is rendered in parentheses when the site label
-    differs from the municipality. This avoids labels such as
-    ``Brasilia · Belem/PA``, which can read like two simultaneous locations to
-    operators, even though the intent is ``site name inside county/state``.
+    differs from the municipality name. This avoids labels such as
+    ``Brasilia (Belem/PA)``, which can look like two locations to operators —
+    the intent is ``site name (county/state context)``.
     """
 
     base_sql = _build_locality_base_sql(
@@ -215,6 +255,99 @@ def _build_locality_display_sql(
                 ''
             )
         )
+    """
+
+
+def _build_summary_locality_display_sql(
+    *,
+    summary_alias="sm",
+    fallback_site_id_expr=None,
+    site_name_expr=None,
+    district_name_expr=None,
+    county_name_expr=None,
+    state_code_expr=None,
+):
+    """Build a locality label using pre-joined geography from the summary model.
+
+    Preferred over ``_build_locality_display_sql`` because the summary model
+    already carries geography as flat denormalized columns, so this SQL fragment
+    needs no extra dimension joins.
+
+    Callers can override individual column expressions when the table alias or
+    column names differ from the SITE_EQUIPMENT_OBS_SUMMARY defaults — for
+    example, ``MAP_SITE_SUMMARY`` uses ``NA_SITE_LABEL`` instead of
+    ``NA_SITE_NAME``.
+
+    Label resolution priority:
+      1. Site name (``NA_SITE_NAME`` / overridden ``site_name_expr``)
+      2. District name
+      3. County name
+      4. ``'Site <id>'`` as a last-resort fallback
+
+    County/state context is appended in parentheses only when the site label
+    differs from the county name, preventing redundant labels like
+    ``Brasilia (Brasilia/DF)``.
+    """
+
+    fallback_site_id_expr = fallback_site_id_expr or f"{summary_alias}.FK_SITE"
+    site_name_expr = site_name_expr or f"{summary_alias}.NA_SITE_NAME"
+    district_name_expr = district_name_expr or f"{summary_alias}.NA_DISTRICT_NAME"
+    county_name_expr = county_name_expr or f"{summary_alias}.NA_COUNTY_NAME"
+    state_code_expr = state_code_expr or f"{summary_alias}.NA_STATE_CODE"
+
+    base_sql = (
+        f"COALESCE("
+        f"NULLIF({site_name_expr}, ''), "
+        f"NULLIF({district_name_expr}, ''), "
+        f"{county_name_expr}, "
+        f"CONCAT('Site ', {fallback_site_id_expr})"
+        f")"
+    )
+    site_differs_from_county_sql = _build_text_difference_sql(
+        site_name_expr,
+        county_name_expr,
+    )
+    state_suffix_sql = (
+        f"CASE "
+        f"WHEN {state_code_expr} IS NOT NULL AND {state_code_expr} <> '' "
+        f"THEN CONCAT('/', {state_code_expr}) "
+        f"ELSE '' "
+        f"END"
+    )
+    return f"""
+        TRIM(
+            CONCAT(
+                {base_sql},
+                CASE
+                    WHEN {county_name_expr} IS NOT NULL
+                     AND (
+                        {site_name_expr} IS NULL
+                        OR {site_name_expr} = ''
+                        OR {site_differs_from_county_sql}
+                     )
+                    THEN CONCAT(' (', {county_name_expr}, {state_suffix_sql}, ')')
+                    WHEN {state_code_expr} IS NOT NULL AND {state_code_expr} <> ''
+                    THEN CONCAT('/', {state_code_expr})
+                    ELSE ''
+                END,
+                ''
+            )
+        )
+    """
+
+
+def _build_summary_site_equipment_join(
+    *,
+    fact_alias="f",
+    summary_alias="sm",
+    join_type="LEFT JOIN",
+):
+    """Build the `(site, equipment)` summary join used by spectrum/file queries."""
+
+    return f"""
+        {join_type} {SUMMARY_SITE_EQUIPMENT_TABLE} {summary_alias}
+            ON {summary_alias}.FK_SITE = {fact_alias}.FK_SITE
+           AND {summary_alias}.FK_EQUIPMENT = {fact_alias}.FK_EQUIPMENT
     """
 
 
@@ -293,6 +426,58 @@ def _build_fact_filters(
     return where_clauses, params
 
 
+def _build_summary_scoped_fact_filters(
+    *,
+    equipment_id=None,
+    state_id=None,
+    district_id=None,
+    site_id=None,
+    start_date=None,
+    end_date=None,
+    freq_start=None,
+    freq_end=None,
+    description=None,
+    fact_alias="f",
+    summary_alias="sm",
+    include_freq=True,
+    include_description=True,
+):
+    """Build FACT_SPECTRUM predicates that resolve geographic scope via the summary join.
+
+    Preferred over ``_build_fact_filters`` when the query already joins
+    ``SITE_EQUIPMENT_OBS_SUMMARY``. Geographic filters (state, district) use
+    summary columns (``ID_STATE``, ``FK_DISTRICT``) instead of
+    ``DIM_SPECTRUM_SITE``, which avoids a second join to the geographic
+    dimension tables.
+
+    Returns (where_clauses, params) in the same format as ``_build_fact_filters``.
+    Callers append the clauses to their WHERE block and bind params in order.
+    """
+
+    where_clauses, params = _build_fact_filters(
+        equipment_id=equipment_id,
+        site_id=site_id,
+        start_date=start_date,
+        end_date=end_date,
+        freq_start=freq_start,
+        freq_end=freq_end,
+        description=description,
+        fact_alias=fact_alias,
+        include_freq=include_freq,
+        include_description=include_description,
+    )
+
+    if state_id:
+        where_clauses.append(f"{summary_alias}.ID_STATE = %s")
+        params.append(state_id)
+
+    if district_id:
+        where_clauses.append(f"{summary_alias}.FK_DISTRICT = %s")
+        params.append(district_id)
+
+    return where_clauses, params
+
+
 def _append_summary_geo_filters(
     where_clauses,
     params,
@@ -321,7 +506,7 @@ def _append_summary_geo_filters(
         params.append(state_id)
 
     if district_id:
-        where_clauses.append(f"{site_alias}.FK_DISTRICT = %s")
+        where_clauses.append(f"{summary_alias}.FK_DISTRICT = %s")
         params.append(district_id)
 
     if site_id:
@@ -339,7 +524,16 @@ def _build_where_sql(where_clauses):
 
 
 def _format_br_datetime(value):
-    """Format timestamps for Brazilian-facing UI surfaces."""
+    """Format a timestamp value for Brazilian-facing UI surfaces (DD-MM-YYYY).
+
+    Handles raw datetime objects, ISO-8601 strings, and byte strings returned
+    by older MySQL driver versions. When the time component is exactly midnight,
+    the time portion is suppressed — whole-day ranges stored as ``00:00:00``
+    would clutter the display unnecessarily.
+
+    Returns the original value unchanged when parsing fails, so it is safe to
+    call on already-formatted strings without corrupting them.
+    """
 
     if value in (None, ""):
         return value
@@ -368,7 +562,12 @@ def _format_br_datetime(value):
 
 
 def _format_iso_date(value):
-    """Format one date-like value as ``YYYY-MM-DD`` for HTML date inputs."""
+    """Format one date-like value as ``YYYY-MM-DD`` for HTML ``<input type="date">``.
+
+    Returns None for missing or empty values. Falls back to slicing the first
+    10 characters when full ISO parsing fails, which tolerates legacy date-only
+    strings that may arrive from older rows in the catalog.
+    """
 
     if value in (None, ""):
         return None
@@ -784,7 +983,28 @@ def get_spectrum_data(
     page=1,
     page_size=50,
 ):
-    """Return paginated spectrum rows plus the total count."""
+    """Return paginated spectrum rows plus the total row count.
+
+    Each row corresponds to one spectrum observation from ``FACT_SPECTRUM``.
+    Geography labels are resolved from the summary model to avoid the
+    multi-table dimension join on every page load.
+
+    Repository file metadata (path, name, extension, size) is fetched in a
+    separate follow-up query restricted to only the spectrum IDs on the current
+    page. This keeps the main scan narrow and avoids inflating the result set
+    with file data for offscreen rows.
+
+    Results are cached per (filter, sort, page) tuple for
+    ``SPECTRUM_QUERY_CACHE_TTL_SECONDS``. The cache key includes sort and page
+    so that changing either produces a distinct cache entry rather than
+    returning stale data for the new view.
+
+    Returns:
+        (rows, total): rows is a list of dicts for the requested page;
+        total is the count of all matching spectra, used for pagination math.
+    """
+    # -- Clamp sort and pagination inputs before they reach the cache key or SQL.
+    # ALLOWED_SORT_FIELDS is the injection guard for the ORDER BY column name.
     if sort_by not in ALLOWED_SORT_FIELDS:
         sort_by = "date_start"
 
@@ -819,7 +1039,9 @@ def get_spectrum_data(
     if cached is not None:
         return cached
 
-    where_clauses, params = _build_fact_filters(
+    # -- Build SQL fragments. WHERE clauses use the summary join so geographic
+    # filters hit the pre-aggregated table instead of DIM_SPECTRUM_SITE.
+    where_clauses, params = _build_summary_scoped_fact_filters(
         equipment_id=equipment_id,
         state_id=state_id,
         district_id=district_id,
@@ -830,10 +1052,17 @@ def get_spectrum_data(
         freq_end=freq_end,
         description=description,
         fact_alias="f",
-        site_alias="s",
+        summary_alias="sm",
     )
     where_sql = _build_where_sql(where_clauses)
-    locality_display_sql = _build_locality_display_sql()
+    locality_display_sql = _build_summary_locality_display_sql(
+        summary_alias="sm",
+        fallback_site_id_expr="f.FK_SITE",
+    )
+    summary_join_sql = _build_summary_site_equipment_join(
+        fact_alias="f",
+        summary_alias="sm",
+    )
 
     order_sql = f"""
         ORDER BY {ALLOWED_SORT_FIELDS[sort_by]} {sort_order},
@@ -857,22 +1086,13 @@ def get_spectrum_data(
             f.NU_RBW,
             f.NU_VBW,
             f.NU_ATT_GAIN,
-            e.NA_EQUIPMENT,
+            COALESCE(sm.NA_EQUIPMENT, CONCAT('Equipamento ', f.FK_EQUIPMENT)) AS NA_EQUIPMENT,
             f.FK_SITE AS ID_SITE,
             {locality_display_sql} AS LOCALITY_LABEL,
-            c.NA_COUNTY AS COUNTY_NAME,
-            st.LC_STATE AS STATE_CODE
+            sm.NA_COUNTY_NAME AS COUNTY_NAME,
+            sm.NA_STATE_CODE AS STATE_CODE
         FROM FACT_SPECTRUM f
-        JOIN DIM_SPECTRUM_EQUIPMENT e
-            ON e.ID_EQUIPMENT = f.FK_EQUIPMENT
-        JOIN DIM_SPECTRUM_SITE s
-            ON s.ID_SITE = f.FK_SITE
-        LEFT JOIN DIM_SITE_DISTRICT d
-            ON d.ID_DISTRICT = s.FK_DISTRICT
-        LEFT JOIN DIM_SITE_COUNTY c
-            ON c.ID_COUNTY = s.FK_COUNTY
-        LEFT JOIN DIM_SITE_STATE st
-            ON st.ID_STATE = s.FK_STATE
+        {summary_join_sql}
         {where_sql}
         {order_sql}
         {limit_sql}
@@ -881,14 +1101,15 @@ def get_spectrum_data(
     count_query = f"""
         SELECT COUNT(*) AS total
         FROM FACT_SPECTRUM f
-        JOIN DIM_SPECTRUM_SITE s
-            ON s.ID_SITE = f.FK_SITE
+        {summary_join_sql}
         {where_sql}
     """
 
     conn = get_connection()
     cur = conn.cursor()
 
+    # -- Execute main data query then fetch file metadata only for the IDs
+    # that landed on this page, keeping the bridge/file join narrow.
     cur.execute(data_query, data_params)
     rows = cur.fetchall()
     spectrum_ids = [row["ID_SPECTRUM"] for row in rows]
@@ -922,14 +1143,33 @@ def get_spectrum_file_data(
     page=1,
     page_size=50
 ):
-    """Return paginated file-mode rows plus the total count.
+    """Return paginated file-mode rows plus the total file count.
 
     The only active search semantics are spectrum-aware: filters always apply
     to spectra first. The result list shown to the user is then collapsed to
     unique repository files, one row per file.
 
-    That preserves the more functional spectrum search while avoiding a UI that
-    exposes internal spectrum identifiers as the primary result grain.
+    That preserves the more powerful spectrum search while presenting the
+    file-oriented download workflow without exposing spectrum IDs as the primary
+    result grain.
+
+    Two-level caching strategy:
+    - The full sorted result set (all pages) is cached under ``full_cache_key``
+      for ``FILE_RESULT_FULL_CACHE_TTL_SECONDS``. Pagination jumps within the
+      same filter/sort state are served from this in-process slice without
+      re-running the heavy grouped query.
+    - Individual pages are also cached under a page-scoped key for the standard
+      short TTL, so that minor cache-expiry races between workers do not cause
+      unnecessary full re-runs.
+
+    SQL note: the filtered-spectra subquery appears three times in the generated
+    SQL (file identification, context aggregation, and full-file spectrum count).
+    The ``fact_params`` list is therefore bound three times via
+    ``data_params = fact_params + fact_params + fact_params``.
+
+    Returns:
+        (rows, total): rows is a list of dicts for the requested page;
+        total is the count of matched files (not spectra), used for pagination.
     """
     if sort_by not in ALLOWED_FILE_SORT_FIELDS:
         sort_by = "date_start"
@@ -993,7 +1233,10 @@ def get_spectrum_file_data(
         _set_cached_query(cache_key, result)
         return result
 
-    locality_display_sql = _build_locality_display_sql()
+    locality_display_sql = _build_summary_locality_display_sql(
+        summary_alias="sm",
+        fallback_site_id_expr="f.FK_SITE",
+    )
     where_sql = "WHERE repos.NA_VOLUME = 'reposfi'"
 
     order_sql = f"""
@@ -1002,7 +1245,7 @@ def get_spectrum_file_data(
     """
 
     fact_source_alias = "fs"
-    fact_where_clauses, fact_params = _build_fact_filters(
+    fact_where_clauses, fact_params = _build_summary_scoped_fact_filters(
         equipment_id=equipment_id,
         state_id=state_id,
         district_id=district_id,
@@ -1013,11 +1256,20 @@ def get_spectrum_file_data(
         freq_end=freq_end,
         description=description,
         fact_alias=fact_source_alias,
-        site_alias="s_filter",
+        summary_alias="sm_filter",
         include_freq=True,
         include_description=True,
     )
     fact_where_sql = _build_where_sql(fact_where_clauses)
+    filtered_summary_join_sql = _build_summary_site_equipment_join(
+        fact_alias=fact_source_alias,
+        summary_alias="sm_filter",
+    )
+    summary_join_sql = _build_summary_site_equipment_join(
+        fact_alias="f",
+        summary_alias="sm",
+    )
+    equipment_label_sql = "COALESCE(sm.NA_EQUIPMENT, CONCAT('Equipamento ', f.FK_EQUIPMENT))"
 
     # The filtered FACT_SPECTRUM subquery is the true search. After spectra are
     # identified, the result is collapsed to unique repository files for UI
@@ -1032,8 +1284,7 @@ def get_spectrum_file_data(
             {fact_source_alias}.NU_FREQ_START,
             {fact_source_alias}.NU_FREQ_END
         FROM FACT_SPECTRUM {fact_source_alias}
-        JOIN DIM_SPECTRUM_SITE s_filter
-            ON s_filter.ID_SITE = {fact_source_alias}.FK_SITE
+        {filtered_summary_join_sql}
         {fact_where_sql}
     """
 
@@ -1078,10 +1329,10 @@ def get_spectrum_file_data(
                 MAX(f.NU_FREQ_END) AS NU_FREQ_END,
                 COUNT(DISTINCT f.FK_EQUIPMENT) AS EQUIPMENT_COUNT,
                 GROUP_CONCAT(
-                    DISTINCT e.NA_EQUIPMENT
-                    ORDER BY e.NA_EQUIPMENT SEPARATOR '||'
+                    DISTINCT {equipment_label_sql}
+                    ORDER BY {equipment_label_sql} SEPARATOR '||'
                 ) AS EQUIPMENT_LABELS,
-                COUNT(DISTINCT s.ID_SITE) AS LOCALITY_COUNT,
+                COUNT(DISTINCT f.FK_SITE) AS LOCALITY_COUNT,
                 GROUP_CONCAT(
                     DISTINCT {locality_display_sql}
                     ORDER BY {locality_display_sql} SEPARATOR '||'
@@ -1091,16 +1342,7 @@ def get_spectrum_file_data(
                 ON b.FK_SPECTRUM = f.ID_SPECTRUM
             JOIN DIM_SPECTRUM_FILE repos
                 ON repos.ID_FILE = b.FK_FILE
-            JOIN DIM_SPECTRUM_EQUIPMENT e
-                ON e.ID_EQUIPMENT = f.FK_EQUIPMENT
-            JOIN DIM_SPECTRUM_SITE s
-                ON s.ID_SITE = f.FK_SITE
-            LEFT JOIN DIM_SITE_DISTRICT d
-                ON d.ID_DISTRICT = s.FK_DISTRICT
-            LEFT JOIN DIM_SITE_COUNTY c
-                ON c.ID_COUNTY = s.FK_COUNTY
-            LEFT JOIN DIM_SITE_STATE st
-                ON st.ID_STATE = s.FK_STATE
+            {summary_join_sql}
             {where_sql}
             GROUP BY repos.ID_FILE
         ) ctx
@@ -1171,7 +1413,7 @@ def _load_fact_locality_rows(
     operators do not pick a locality that cannot produce any file result.
     """
 
-    where_clauses, params = _build_fact_filters(
+    where_clauses, params = _build_summary_scoped_fact_filters(
         equipment_id=equipment_id,
         state_id=state_id,
         district_id=district_id,
@@ -1182,36 +1424,36 @@ def _load_fact_locality_rows(
         freq_end=freq_end,
         description=description,
         fact_alias="f",
-        site_alias="s",
+        summary_alias="sm",
     )
     where_sql = _build_where_sql(where_clauses)
-    locality_display_sql = _build_locality_display_sql()
+    locality_display_sql = _build_summary_locality_display_sql(
+        summary_alias="sm",
+        fallback_site_id_expr="f.FK_SITE",
+    )
+    summary_join_sql = _build_summary_site_equipment_join(
+        fact_alias="f",
+        summary_alias="sm",
+    )
 
     query = f"""
         SELECT
-            s.ID_SITE,
+            f.FK_SITE AS ID_SITE,
             {locality_display_sql} AS LOCALITY_LABEL,
-            c.NA_COUNTY AS COUNTY_NAME,
-            st.LC_STATE AS STATE_CODE,
+            sm.NA_COUNTY_NAME AS COUNTY_NAME,
+            sm.NA_STATE_CODE AS STATE_CODE,
             MIN(f.DT_TIME_START) AS DATE_START,
             MAX(f.DT_TIME_END) AS DATE_END,
             COUNT(*) AS SPECTRUM_COUNT
         FROM FACT_SPECTRUM f
-        JOIN DIM_SPECTRUM_SITE s
-            ON s.ID_SITE = f.FK_SITE
-        LEFT JOIN DIM_SITE_DISTRICT d
-            ON d.ID_DISTRICT = s.FK_DISTRICT
-        LEFT JOIN DIM_SITE_COUNTY c
-            ON c.ID_COUNTY = s.FK_COUNTY
-        LEFT JOIN DIM_SITE_STATE st
-            ON st.ID_STATE = s.FK_STATE
+        {summary_join_sql}
         {where_sql}
         GROUP BY
-            s.ID_SITE,
-            s.NA_SITE,
-            d.NA_DISTRICT,
-            c.NA_COUNTY,
-            st.LC_STATE
+            f.FK_SITE,
+            sm.NA_SITE_NAME,
+            sm.NA_DISTRICT_NAME,
+            sm.NA_COUNTY_NAME,
+            sm.NA_STATE_CODE
         ORDER BY
             MAX(f.DT_TIME_END) DESC,
             LOCALITY_LABEL ASC
@@ -1293,12 +1535,6 @@ def _load_summary_equipment_filter_rows(
     ]
     params = []
 
-    joins = []
-    if district_id:
-        joins.append(
-            "JOIN RFDATA.DIM_SPECTRUM_SITE s ON s.ID_SITE = sm.FK_SITE"
-        )
-
     _append_summary_geo_filters(
         where_clauses,
         params,
@@ -1320,7 +1556,6 @@ def _load_summary_equipment_filter_rows(
             MAX(sm.DT_LAST_SEEN_AT) AS DATE_END,
             SUM(sm.NU_SPECTRUM_COUNT) AS SPECTRUM_COUNT
         FROM SITE_EQUIPMENT_OBS_SUMMARY sm
-        {' '.join(joins)}
         {_build_where_sql(where_clauses)}
         GROUP BY sm.FK_EQUIPMENT, sm.NA_EQUIPMENT
         ORDER BY sm.NA_EQUIPMENT ASC
@@ -1401,12 +1636,6 @@ def _load_summary_state_rows(
     ]
     params = []
 
-    joins = []
-    if district_id:
-        joins.append(
-            "JOIN RFDATA.DIM_SPECTRUM_SITE s ON s.ID_SITE = sm.FK_SITE"
-        )
-
     _append_summary_geo_filters(
         where_clauses,
         params,
@@ -1429,7 +1658,6 @@ def _load_summary_state_rows(
             MAX(sm.DT_LAST_SEEN_AT) AS DATE_END,
             SUM(sm.NU_SPECTRUM_COUNT) AS SPECTRUM_COUNT
         FROM SITE_EQUIPMENT_OBS_SUMMARY sm
-        {' '.join(joins)}
         {_build_where_sql(where_clauses)}
         GROUP BY sm.ID_STATE, sm.NA_STATE_CODE, sm.NA_STATE_NAME
         ORDER BY sm.NA_STATE_CODE ASC, sm.NA_STATE_NAME ASC
@@ -1510,7 +1738,7 @@ def _load_summary_district_rows(
 ):
     """Load district options from the summary read model."""
 
-    where_clauses = ["s.FK_DISTRICT IS NOT NULL"]
+    where_clauses = ["sm.FK_DISTRICT IS NOT NULL"]
     params = []
 
     _append_summary_geo_filters(
@@ -1528,26 +1756,18 @@ def _load_summary_district_rows(
     cur.execute(
         f"""
         SELECT
-            d.ID_DISTRICT,
-            d.NA_DISTRICT AS DISTRICT_NAME,
-            c.NA_COUNTY AS COUNTY_NAME,
-            st.LC_STATE AS STATE_CODE,
+            sm.FK_DISTRICT AS ID_DISTRICT,
+            sm.NA_DISTRICT_NAME AS DISTRICT_NAME,
+            sm.NA_COUNTY_NAME AS COUNTY_NAME,
+            sm.NA_STATE_CODE AS STATE_CODE,
             COUNT(DISTINCT sm.FK_SITE) AS SITE_COUNT,
             SUM(sm.NU_SPECTRUM_COUNT) AS SPECTRUM_COUNT,
             MIN(sm.DT_FIRST_SEEN_AT) AS DATE_START,
             MAX(sm.DT_LAST_SEEN_AT) AS DATE_END
         FROM SITE_EQUIPMENT_OBS_SUMMARY sm
-        JOIN RFDATA.DIM_SPECTRUM_SITE s
-            ON s.ID_SITE = sm.FK_SITE
-        JOIN RFDATA.DIM_SITE_DISTRICT d
-            ON d.ID_DISTRICT = s.FK_DISTRICT
-        LEFT JOIN RFDATA.DIM_SITE_COUNTY c
-            ON c.ID_COUNTY = s.FK_COUNTY
-        LEFT JOIN RFDATA.DIM_SITE_STATE st
-            ON st.ID_STATE = s.FK_STATE
         {_build_where_sql(where_clauses)}
-        GROUP BY d.ID_DISTRICT, d.NA_DISTRICT, c.NA_COUNTY, st.LC_STATE
-        ORDER BY d.NA_DISTRICT ASC, c.NA_COUNTY ASC, st.LC_STATE ASC
+        GROUP BY sm.FK_DISTRICT, sm.NA_DISTRICT_NAME, sm.NA_COUNTY_NAME, sm.NA_STATE_CODE
+        ORDER BY sm.NA_DISTRICT_NAME ASC, sm.NA_COUNTY_NAME ASC, sm.NA_STATE_CODE ASC
         """,
         params,
     )
@@ -1636,11 +1856,9 @@ def _load_summary_filter_availability_row(
             MAX(sm.DT_LAST_SEEN_AT) AS DATE_END,
             SUM(sm.NU_SPECTRUM_COUNT) AS SPECTRUM_COUNT,
             COUNT(DISTINCT sm.FK_SITE) AS SITE_COUNT,
-            COUNT(DISTINCT s.FK_DISTRICT) AS DISTRICT_COUNT,
+            COUNT(DISTINCT sm.FK_DISTRICT) AS DISTRICT_COUNT,
             COUNT(DISTINCT sm.FK_EQUIPMENT) AS EQUIPMENT_COUNT
         FROM SITE_EQUIPMENT_OBS_SUMMARY sm
-        JOIN RFDATA.DIM_SPECTRUM_SITE s
-            ON s.ID_SITE = sm.FK_SITE
         {_build_where_sql(where_clauses)}
         """,
         params,
@@ -1651,7 +1869,18 @@ def _load_summary_filter_availability_row(
 
 
 def _load_fact_site_availability_row(equipment_id, site_id):
-    """Load one equipment/site availability row directly from ``FACT_SPECTRUM``."""
+    """Load one equipment/site availability row directly from ``FACT_SPECTRUM``.
+
+    Fallback used when the summary model has no row for the given
+    (equipment, site) pair. Resolves the locality label by joining the four
+    geographic dimension tables (site, district, county, state).
+
+    Dates are NOT formatted here. The caller
+    ``get_spectrum_site_availability_range`` normalizes date fields after both
+    the summary path and this fallback, ensuring consistent output regardless
+    of which source ran. Formatting here would cause double-formatting when
+    this path is taken.
+    """
 
     locality_display_sql = _build_locality_display_sql()
     conn = get_connection()
@@ -1687,7 +1916,10 @@ def _load_fact_site_availability_row(equipment_id, site_id):
     )
     row = cur.fetchone()
     conn.close()
-    return _format_single_row_datetime_fields(row, "DATE_START", "DATE_END")
+    # Intentionally returning the raw row without date formatting.
+    # get_spectrum_site_availability_range formats both the summary and fact
+    # paths uniformly after the fact, avoiding a double-format on this path.
+    return row
 
 
 def get_spectrum_locality_options(
@@ -1755,7 +1987,27 @@ def get_spectrum_filter_options(
     include_districts=True,
     include_availability=True,
 ):
-    """Return the dynamic equipment/state/district option sets plus availability."""
+    """Return the dynamic equipment/state/district option sets plus availability.
+
+    Each filter dimension follows the same two-layer strategy:
+      1. Try the summary model first — fast, pre-aggregated, geo-scoped only.
+      2. If the summary returns nothing, fall back to a live FACT_SPECTRUM scan
+         that applies the full filter context including date and frequency.
+
+    The summary path is preferred because it avoids scanning the fact table for
+    every dropdown refresh. The fallback is written out explicitly per dimension
+    so a slow request can be traced to the specific fact scan that ran.
+
+    ``include_districts`` and ``include_availability`` can be False to skip
+    the heaviest dimensions when the caller does not need them (e.g., the map
+    panel only needs equipment and state options).
+
+    Returns a dict with keys:
+      - ``equipments``: list of equipment option dicts
+      - ``states``: list of state option dicts
+      - ``districts``: list of district option dicts (empty when skipped)
+      - ``availability``: date/count summary dict, or None when no data found
+    """
 
     cache_key = (
         "filter_options",
@@ -1782,6 +2034,9 @@ def get_spectrum_filter_options(
     districts = []
     availability = None
 
+    # -- Equipment options: summary is preferred when only geo filters are active.
+    # The fact fallback is used only when an active filter (date, frequency,
+    # description) could exclude equipment that the summary would otherwise show.
     try:
         equipments = _finalize_equipment_options(
             _load_summary_equipment_filter_rows(
@@ -1813,8 +2068,11 @@ def get_spectrum_filter_options(
                 )
             )
         else:
+            # No active filters at all: reuse the cached global equipment list
+            # rather than doing another summary scan.
             equipments = _finalize_equipment_options(get_equipments())
 
+    # -- State options: same summary-first strategy.
     try:
         states = _finalize_state_options(
             _load_summary_state_rows(
@@ -1847,6 +2105,9 @@ def get_spectrum_filter_options(
 
     districts = []
     if include_districts:
+        # -- District options: the most granular geo dimension and the most
+        # expensive to scan. Guarded by include_districts so callers that only
+        # render state/equipment dropdowns do not pay the full district cost.
         try:
             districts = _finalize_district_options(
                 _load_summary_district_rows(
@@ -1879,6 +2140,10 @@ def get_spectrum_filter_options(
 
     availability = None
     if include_availability:
+        # -- Availability window: gives the date range and aggregate counts for
+        # the current filter state. Used by the UI to set sensible date picker
+        # defaults. The summary path is cheap but does not account for
+        # date/frequency filters; the fact fallback is precise but expensive.
         try:
             availability = _finalize_availability_row(
                 _load_summary_filter_availability_row(
@@ -1931,28 +2196,29 @@ def get_spectrum_site_option(site_id):
     if site_id in (None, ""):
         return None
 
-    locality_display_sql = _build_locality_display_sql()
-    conn = get_connection()
+    locality_display_sql = _build_summary_locality_display_sql(
+        summary_alias="ms",
+        fallback_site_id_expr="ms.FK_SITE",
+        site_name_expr="ms.NA_SITE_LABEL",
+        district_name_expr="ms.NA_DISTRICT_NAME",
+        county_name_expr="ms.NA_COUNTY_NAME",
+        state_code_expr="ms.NA_STATE_CODE",
+    )
+    conn = get_connection_summary()
     cur = conn.cursor()
     cur.execute(
         f"""
         SELECT
-            s.ID_SITE,
-            s.FK_DISTRICT AS ID_DISTRICT,
-            d.NA_DISTRICT AS DISTRICT_NAME,
-            s.FK_STATE AS ID_STATE,
-            st.NA_STATE AS STATE_NAME,
+            ms.FK_SITE AS ID_SITE,
+            ms.FK_DISTRICT AS ID_DISTRICT,
+            ms.NA_DISTRICT_NAME AS DISTRICT_NAME,
+            ms.ID_STATE,
+            ms.NA_STATE_NAME AS STATE_NAME,
             {locality_display_sql} AS LOCALITY_LABEL,
-            c.NA_COUNTY AS COUNTY_NAME,
-            st.LC_STATE AS STATE_CODE
-        FROM DIM_SPECTRUM_SITE s
-        LEFT JOIN DIM_SITE_DISTRICT d
-            ON d.ID_DISTRICT = s.FK_DISTRICT
-        LEFT JOIN DIM_SITE_COUNTY c
-            ON c.ID_COUNTY = s.FK_COUNTY
-        LEFT JOIN DIM_SITE_STATE st
-            ON st.ID_STATE = s.FK_STATE
-        WHERE s.ID_SITE = %s
+            ms.NA_COUNTY_NAME AS COUNTY_NAME,
+            ms.NA_STATE_CODE AS STATE_CODE
+        FROM {SUMMARY_MAP_SITE_TABLE} ms
+        WHERE ms.FK_SITE = %s
         LIMIT 1
         """,
         (site_id,),
@@ -1972,11 +2238,19 @@ def get_spectrum_site_option(site_id):
 
 
 def get_spectrum_site_availability_range(*, equipment_id=None, site_id=None):
-    """Return the observed date range for one equipment/locality pair.
+    """Return the observed date range for one (equipment, site) pair.
 
-    The route uses this as a lightweight hint when a preselected site no longer
-    appears in the current locality list. The goal is explanatory UX
-    ("available from X to Y here"), not a full result query.
+    Used by the spectrum route when a preselected site no longer appears in the
+    current locality list (e.g., filtered out by an active date range). The
+    intent is explanatory UX — "available from X to Y at this site" — rather
+    than a full result query.
+
+    Tries the summary model first; falls back to a live FACT_SPECTRUM scan if
+    the summary has no matching (equipment, site) row. Date fields are formatted
+    after both paths so the caller receives a consistent dict regardless of
+    which source ran.
+
+    Returns None when either argument is empty or no matching rows exist.
     """
 
     if equipment_id in (None, "") or site_id in (None, ""):
@@ -2004,6 +2278,9 @@ def get_spectrum_site_availability_range(*, equipment_id=None, site_id=None):
 
     if row:
         row["SPECTRUM_COUNT"] = int(row.get("SPECTRUM_COUNT") or 0)
+        # Normalize date fields here for both the summary and fact paths.
+        # The fact loader (_load_fact_site_availability_row) deliberately does
+        # not format dates so this call is the single formatting point.
         _format_single_row_datetime_fields(row, "DATE_START", "DATE_END")
 
     if row:
@@ -2150,7 +2427,7 @@ def get_spectra_by_file_id(
     if cached is not None:
         return cached
 
-    match_clauses, match_params = _build_fact_filters(
+    match_clauses, match_params = _build_summary_scoped_fact_filters(
         equipment_id=equipment_id,
         state_id=state_id,
         district_id=district_id,
@@ -2161,13 +2438,22 @@ def get_spectra_by_file_id(
         freq_end=freq_end,
         description=description,
         fact_alias="f",
-        site_alias="s",
+        summary_alias="sm",
     )
     match_sql = " AND ".join(match_clauses) if match_clauses else "1 = 1"
+    summary_join_sql = _build_summary_site_equipment_join(
+        fact_alias="f",
+        summary_alias="sm",
+    )
 
     conn = get_connection()
     cur = conn.cursor()
 
+    # IS_MATCH is computed inline rather than via a subquery join so the DB
+    # can evaluate the active filter conditions while scanning the file's
+    # spectra in a single pass. The WHERE clause intentionally does NOT restrict
+    # the result set: all spectra linked to the file are returned; only the
+    # ones that caused the file to qualify are flagged for UI highlighting.
     cur.execute(
         f"""
         SELECT
@@ -2179,7 +2465,7 @@ def get_spectra_by_file_id(
             f.DT_TIME_END,
             f.NU_RBW,
             f.NU_TRACE_COUNT,
-            e.NA_EQUIPMENT,
+            COALESCE(sm.NA_EQUIPMENT, CONCAT('Equipamento ', f.FK_EQUIPMENT)) AS NA_EQUIPMENT,
             CASE
                 WHEN {match_sql} THEN 1
                 ELSE 0
@@ -2187,10 +2473,7 @@ def get_spectra_by_file_id(
         FROM BRIDGE_SPECTRUM_FILE b
         JOIN FACT_SPECTRUM f
             ON f.ID_SPECTRUM = b.FK_SPECTRUM
-        JOIN DIM_SPECTRUM_EQUIPMENT e
-            ON e.ID_EQUIPMENT = f.FK_EQUIPMENT
-        JOIN DIM_SPECTRUM_SITE s
-            ON s.ID_SITE = f.FK_SITE
+        {summary_join_sql}
         WHERE b.FK_FILE = %s
         ORDER BY f.DT_TIME_START DESC, f.ID_SPECTRUM DESC
         """,

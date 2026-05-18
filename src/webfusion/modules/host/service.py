@@ -1059,6 +1059,8 @@ def _get_host_location_history(host_id):
         """
         SELECT
             FK_SITE AS ID_SITE,
+            FK_COUNTY AS ID_COUNTY,
+            FK_DISTRICT AS ID_DISTRICT,
             NA_LOCALITY_LABEL AS LOCALITY_LABEL,
             NA_COUNTY_NAME AS COUNTY_NAME,
             NA_STATE_NAME AS STATE_NAME,
@@ -1084,6 +1086,8 @@ def _get_host_location_history(host_id):
 
     for row in location_history:
         row["ID_SITE"] = int(row.get("ID_SITE") or 0)
+        row["ID_COUNTY"] = int(row["ID_COUNTY"]) if row.get("ID_COUNTY") is not None else None
+        row["ID_DISTRICT"] = int(row["ID_DISTRICT"]) if row.get("ID_DISTRICT") is not None else None
         row["SPECTRUM_COUNT"] = int(row.get("SPECTRUM_COUNT") or 0)
 
     payload = {

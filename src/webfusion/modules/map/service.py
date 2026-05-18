@@ -75,6 +75,8 @@ def _load_summary_site_rows():
         """
         SELECT
             FK_SITE AS ID_SITE,
+            FK_COUNTY AS ID_COUNTY,
+            FK_DISTRICT AS ID_DISTRICT,
             NA_SITE_LABEL AS SITE_LABEL,
             NA_COUNTY_NAME AS COUNTY_NAME,
             NA_DISTRICT_NAME AS DISTRICT_NAME,
@@ -332,6 +334,8 @@ def _build_station_map_dataset_from_summary():
         site_id = int(row["ID_SITE"])
         point = {
             "site_id": site_id,
+            "county_id": int(row["ID_COUNTY"]) if row.get("ID_COUNTY") is not None else None,
+            "district_id": int(row["ID_DISTRICT"]) if row.get("ID_DISTRICT") is not None else None,
             "site_label": str(row.get("SITE_LABEL") or f"Site {site_id}"),
             "county_name": str(row["COUNTY_NAME"]) if row.get("COUNTY_NAME") is not None else None,
             "district_name": str(row["DISTRICT_NAME"]) if row.get("DISTRICT_NAME") is not None else None,
@@ -354,6 +358,8 @@ def _build_station_map_dataset_from_summary():
         points_by_site[site_id] = point
         site_details[site_id] = {
             "site_id": site_id,
+            "county_id": point["county_id"],
+            "district_id": point["district_id"],
             "stations": [],
             "marker_state": point["marker_state"],
             "has_online_station": point["has_online_station"],

@@ -210,6 +210,133 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertEqual(by_equipment[20]["NA_MATCH_TYPE"], "manual_override")
         self.assertEqual(by_equipment[20]["IS_MANUAL_OVERRIDE"], 1)
 
+    def test_site_equipment_obs_summary_preserves_county_and_district_ids(self) -> None:
+        db = FakeSummaryDb()
+        log = FakeSummaryLog()
+        engine = SummaryRefreshEngine(db=db, logger=log)
+
+        engine._select = lambda sql, params=(): [
+            {
+                "FK_SITE": 237,
+                "FK_EQUIPMENT": 133,
+                "NA_SITE_NAME": "Enseada do Sua",
+                "NA_SITE_LABEL": "Enseada do Sua",
+                "FK_COUNTY": 3205309,
+                "FK_DISTRICT": 181,
+                "NA_COUNTY_NAME": "Vitoria",
+                "NA_DISTRICT_NAME": "Enseada do Sua",
+                "ID_STATE": 32,
+                "NA_STATE_NAME": "Espirito Santo",
+                "NA_STATE_CODE": "ES",
+                "VL_LATITUDE": -20.31,
+                "VL_LONGITUDE": -40.29,
+                "VL_ALTITUDE": 3.0,
+                "NU_GNSS_MEASUREMENTS": 12,
+                "NA_EQUIPMENT": "ermxes03",
+                "DT_FIRST_SEEN_AT": datetime(2025, 6, 28, 12, 22, 53),
+                "DT_LAST_SEEN_AT": datetime(2026, 1, 10, 9, 1, 12),
+                "NU_SPECTRUM_COUNT": 1925,
+                "ID_LAST_SPECTRUM": 4219,
+            }
+        ]
+
+        row_count, watermark = engine._refresh_site_equipment_obs_summary()
+
+        self.assertEqual(row_count, 1)
+        self.assertEqual(watermark, "rows=1")
+        rows = db.replaced["SITE_EQUIPMENT_OBS_SUMMARY"]
+        self.assertEqual(rows[0]["FK_COUNTY"], 3205309)
+        self.assertEqual(rows[0]["FK_DISTRICT"], 181)
+
+    def test_host_location_summary_propagates_county_and_district_ids(self) -> None:
+        db = FakeSummaryDb()
+        log = FakeSummaryLog()
+        engine = SummaryRefreshEngine(db=db, logger=log)
+
+        engine._select = lambda sql, params=(): [
+            {
+                "FK_HOST": 10845,
+                "FK_SITE": 237,
+                "NA_HOST_NAME": "ERMxES03",
+                "NA_SITE_NAME": "Enseada do Sua",
+                "NA_SITE_LABEL": "Enseada do Sua",
+                "FK_COUNTY": 3205309,
+                "FK_DISTRICT": 181,
+                "NA_COUNTY_NAME": "Vitoria",
+                "NA_DISTRICT_NAME": "Enseada do Sua",
+                "ID_STATE": 32,
+                "NA_STATE_NAME": "Espirito Santo",
+                "NA_STATE_CODE": "ES",
+                "VL_LATITUDE": -20.31,
+                "VL_LONGITUDE": -40.29,
+                "VL_ALTITUDE": 3.0,
+                "DT_FIRST_SEEN_AT": datetime(2025, 6, 28, 12, 22, 53),
+                "DT_LAST_SEEN_AT": datetime(2026, 1, 10, 9, 1, 12),
+                "NU_SPECTRUM_COUNT": 1925,
+                "FK_EQUIPMENT": 133,
+                "IS_CURRENT_LOCATION": 1,
+                "IS_OFFLINE": 0,
+                "VL_MATCH_CONFIDENCE": 1.0,
+            }
+        ]
+
+        row_count, watermark = engine._refresh_host_location_summary()
+
+        self.assertEqual(row_count, 1)
+        self.assertEqual(watermark, "rows=1")
+        rows = db.replaced["HOST_LOCATION_SUMMARY"]
+        self.assertEqual(rows[0]["FK_COUNTY"], 3205309)
+        self.assertEqual(rows[0]["FK_DISTRICT"], 181)
+        self.assertEqual(rows[0]["NA_LOCALITY_LABEL"], "Enseada do Sua · Vitoria/ES")
+
+    def test_map_site_summary_propagates_county_and_district_ids(self) -> None:
+        db = FakeSummaryDb()
+        log = FakeSummaryLog()
+        engine = SummaryRefreshEngine(db=db, logger=log)
+
+        def fake_select(sql, params=()):
+            if "FROM RFDATA.DIM_SPECTRUM_SITE s" in sql:
+                return [
+                    {
+                        "ID_SITE": 237,
+                        "NA_SITE": "Enseada do Sua",
+                        "FK_COUNTY": 3205309,
+                        "FK_DISTRICT": 181,
+                        "NA_COUNTY": "Vitoria",
+                        "NA_DISTRICT": "Enseada do Sua",
+                        "ID_STATE": 32,
+                        "NA_STATE": "Espirito Santo",
+                        "LC_STATE": "ES",
+                        "VL_LATITUDE": -20.31,
+                        "VL_LONGITUDE": -40.29,
+                        "VL_ALTITUDE": 3.0,
+                        "NU_GNSS_MEASUREMENTS": 12,
+                    }
+                ]
+
+            if sql.strip() == "SELECT * FROM MAP_SITE_STATION_SUMMARY":
+                return [
+                    {
+                        "FK_SITE": 237,
+                        "FK_HOST": 10845,
+                        "NA_MAP_STATE": "online_current",
+                        "NU_STATE_PRIORITY": 0,
+                    }
+                ]
+
+            raise AssertionError(f"Unexpected SQL: {sql}")
+
+        engine._select = fake_select
+
+        row_count, watermark = engine._refresh_map_site_summary()
+
+        self.assertEqual(row_count, 1)
+        self.assertEqual(watermark, "rows=1")
+        rows = db.replaced["MAP_SITE_SUMMARY"]
+        self.assertEqual(rows[0]["FK_COUNTY"], 3205309)
+        self.assertEqual(rows[0]["FK_DISTRICT"], 181)
+        self.assertEqual(rows[0]["NA_MARKER_STATE"], "online_current")
+
     def test_normalization_and_cwsm_signature_follow_sql_contract(self) -> None:
         self.assertEqual(_normalize_key(" CWSM-22010007 "), "cwsm22010007")
         self.assertEqual(_cwsm_signature("cwsm22010007"), "cwsm211007")

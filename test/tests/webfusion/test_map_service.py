@@ -170,6 +170,8 @@ class TestMapService(unittest.TestCase):
         site_rows = [
             {
                 "ID_SITE": 77,
+                "ID_COUNTY": 5300108,
+                "ID_DISTRICT": 1234,
                 "SITE_LABEL": "Site Teste",
                 "COUNTY_NAME": "Brasilia",
                 "DISTRICT_NAME": "Plano Piloto",
@@ -208,10 +210,14 @@ class TestMapService(unittest.TestCase):
 
         self.assertEqual(len(points), 1)
         self.assertEqual(points[0]["site_id"], 77)
+        self.assertEqual(points[0]["county_id"], 5300108)
+        self.assertEqual(points[0]["district_id"], 1234)
         self.assertEqual(points[0]["marker_state"], self.module.POINT_STATE_ONLINE_CURRENT)
         self.assertEqual(points[0]["station_names"], ["RFEye002129"])
         self.assertTrue(points[0]["has_online_station"])
         self.assertEqual(len(site_details[77]["stations"]), 1)
+        self.assertEqual(site_details[77]["county_id"], 5300108)
+        self.assertEqual(site_details[77]["district_id"], 1234)
         self.assertEqual(site_details[77]["stations"][0]["host_id"], 101)
         self.assertTrue(site_details[77]["stations"][0]["is_current_location"])
 

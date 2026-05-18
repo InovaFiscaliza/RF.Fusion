@@ -88,6 +88,105 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(upper_where, ["f.NU_FREQ_START <= %s"])
         self.assertEqual(upper_params, [200.0])
 
+    def test_append_summary_geo_filters_uses_materialized_district_id(self):
+        where_clauses = []
+        params = []
+
+        self.module._append_summary_geo_filters(
+            where_clauses,
+            params,
+            equipment_id=133,
+            state_id=32,
+            district_id=181,
+            site_id=237,
+            summary_alias="sm",
+            site_alias="unused_alias",
+        )
+
+        self.assertEqual(
+            where_clauses,
+            [
+                "sm.FK_EQUIPMENT = %s",
+                "sm.ID_STATE = %s",
+                "sm.FK_DISTRICT = %s",
+                "sm.FK_SITE = %s",
+            ],
+        )
+        self.assertEqual(params, [133, 32, 181, 237])
+
+    def test_get_spectrum_data_uses_summary_for_geography_and_labels(self):
+        class FakeCursor:
+            def __init__(self):
+                self.executed = []
+                self.fetchall_responses = [[
+                    {
+                        "ID_SPECTRUM": 4174724,
+                        "NA_DESCRIPTION": "PMRD",
+                        "NU_FREQ_START": 70.0,
+                        "NU_FREQ_END": 110.0,
+                        "DT_TIME_START": "2026-05-06 01:50:00",
+                        "DT_TIME_END": "2026-05-07 05:55:00",
+                        "NU_TRACE_COUNT": 338,
+                        "NU_TRACE_LENGTH": 1024,
+                        "NU_RBW": 73828.0,
+                        "NU_VBW": 73828.0,
+                        "NU_ATT_GAIN": 10.0,
+                        "NA_EQUIPMENT": "rfeye002129",
+                        "ID_SITE": 237,
+                        "LOCALITY_LABEL": "Enseada do Sua (Vitoria/ES)",
+                        "COUNTY_NAME": "Vitoria",
+                        "STATE_CODE": "ES",
+                    }
+                ]]
+
+            def execute(self, query, params):
+                self.executed.append((query, params))
+
+            def fetchall(self):
+                return self.fetchall_responses.pop(0)
+
+            def fetchone(self):
+                return {"total": 1}
+
+        class FakeConnection:
+            def __init__(self, cursor):
+                self._cursor = cursor
+                self.closed = False
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                self.closed = True
+
+        fake_cursor = FakeCursor()
+        fake_connection = FakeConnection(fake_cursor)
+        original_fetch_latest = self.module._fetch_latest_repo_files_for_spectra
+        self.module.get_connection = lambda: fake_connection
+        self.module._fetch_latest_repo_files_for_spectra = lambda cur, spectrum_ids: {}
+        self.module._SPECTRUM_QUERY_CACHE.clear()
+
+        try:
+            rows, total = self.module.get_spectrum_data(
+                equipment_id=338,
+                state_id=32,
+                page=1,
+                page_size=50,
+            )
+        finally:
+            self.module._fetch_latest_repo_files_for_spectra = original_fetch_latest
+
+        self.assertEqual(total, 1)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ID_SPECTRUM"], 4174724)
+        self.assertIn("RFFUSION_SUMMARY.SITE_EQUIPMENT_OBS_SUMMARY", fake_cursor.executed[0][0])
+        self.assertNotIn("JOIN DIM_SPECTRUM_SITE", fake_cursor.executed[0][0])
+        self.assertNotIn("JOIN DIM_SPECTRUM_EQUIPMENT", fake_cursor.executed[0][0])
+        self.assertIn("RFFUSION_SUMMARY.SITE_EQUIPMENT_OBS_SUMMARY", fake_cursor.executed[1][0])
+        self.assertEqual(fake_cursor.executed[0][1], [338, 32, 50, 0])
+        self.assertEqual(fake_cursor.executed[1][1], [338, 32])
+        self.assertTrue(fake_connection.closed)
+
     def test_get_spectrum_file_data_caches_full_search_results_before_paging(self):
         class FakeCursor:
             def __init__(self):
@@ -163,8 +262,12 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(rows[0]["LOCALITY_DISPLAY"], "—")
         self.assertEqual(len(fake_cursor.executed), 1)
         self.assertNotIn("LIMIT %s OFFSET %s", fake_cursor.executed[0][0])
-        self.assertIn("EXISTS", fake_cursor.executed[0][0])
-        self.assertEqual(fake_cursor.executed[0][1], [338, 50.0, 120.0])
+        self.assertIn("RFFUSION_SUMMARY.SITE_EQUIPMENT_OBS_SUMMARY", fake_cursor.executed[0][0])
+        self.assertNotIn("JOIN DIM_SPECTRUM_SITE", fake_cursor.executed[0][0])
+        self.assertEqual(
+            fake_cursor.executed[0][1],
+            [338, 50.0, 120.0, 338, 50.0, 120.0, 338, 50.0, 120.0],
+        )
 
         cached_rows, cached_total = self.module.get_spectrum_file_data(
             equipment_id=338,
@@ -180,7 +283,7 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(len(fake_cursor.executed), 1)
         self.assertTrue(fake_connection.closed)
 
-    def test_get_spectrum_locality_options_uses_live_filtered_rows(self):
+    def test_get_spectrum_locality_options_uses_summary_scoped_live_rows(self):
         class FakeCursor:
             def __init__(self):
                 self.executed = []
@@ -242,10 +345,57 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(rows[0]["OPTION_LABEL"], "Brasilia (site 12)")
         self.assertEqual(rows[1]["OPTION_LABEL"], "Brasilia (site 13)")
         self.assertIn("FACT_SPECTRUM", fake_cursor.executed[0][0])
+        self.assertIn("RFFUSION_SUMMARY.SITE_EQUIPMENT_OBS_SUMMARY", fake_cursor.executed[0][0])
+        self.assertNotIn("JOIN DIM_SPECTRUM_SITE", fake_cursor.executed[0][0])
         self.assertEqual(
             fake_cursor.executed[0][1],
             [99, "2024-01-01", 70.0, 120.0, "%PMEC%"],
         )
+        self.assertTrue(fake_connection.closed)
+
+    def test_get_spectrum_site_option_reads_map_site_summary(self):
+        class FakeCursor:
+            def __init__(self):
+                self.executed = []
+
+            def execute(self, query, params):
+                self.executed.append((query, params))
+
+            def fetchone(self):
+                return {
+                    "ID_SITE": 237,
+                    "ID_DISTRICT": 181,
+                    "DISTRICT_NAME": "Enseada do Sua",
+                    "ID_STATE": 32,
+                    "STATE_NAME": "Espirito Santo",
+                    "LOCALITY_LABEL": "Enseada do Sua (Vitoria/ES)",
+                    "COUNTY_NAME": "Vitoria",
+                    "STATE_CODE": "ES",
+                }
+
+        class FakeConnection:
+            def __init__(self, cursor):
+                self._cursor = cursor
+                self.closed = False
+
+            def cursor(self):
+                return self._cursor
+
+            def close(self):
+                self.closed = True
+
+        fake_cursor = FakeCursor()
+        fake_connection = FakeConnection(fake_cursor)
+        self.module.get_connection_summary = lambda: fake_connection
+
+        row = self.module.get_spectrum_site_option(237)
+
+        self.assertEqual(row["ID_SITE"], 237)
+        self.assertEqual(row["ID_DISTRICT"], 181)
+        self.assertEqual(row["ID_STATE"], 32)
+        self.assertEqual(row["STATE_CODE"], "ES")
+        self.assertIn("RFFUSION_SUMMARY.MAP_SITE_SUMMARY", fake_cursor.executed[0][0])
+        self.assertEqual(fake_cursor.executed[0][1], (237,))
         self.assertTrue(fake_connection.closed)
 
     def test_get_spectra_by_file_id_marks_rows_that_match_active_search(self):
@@ -298,6 +448,8 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(rows[0]["IS_MATCH"], 1)
         self.assertIn("CASE", fake_cursor.executed[0][0])
         self.assertIn("IS_MATCH", fake_cursor.executed[0][0])
+        self.assertIn("RFFUSION_SUMMARY.SITE_EQUIPMENT_OBS_SUMMARY", fake_cursor.executed[0][0])
+        self.assertNotIn("JOIN DIM_SPECTRUM_SITE", fake_cursor.executed[0][0])
         self.assertEqual(
             fake_cursor.executed[0][1],
             [338, 50.0, 120.0, "%PMRD%", 436239],

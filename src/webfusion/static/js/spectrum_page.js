@@ -28,6 +28,8 @@
     const filtersEndpoint = root.dataset.filtersEndpoint || "/api/spectrum/filters";
     const fileSpectraEndpointBase = root.dataset.fileSpectraEndpointBase || "/api/spectrum/file";
     const usesLightweightBootstrap = root.dataset.lightweightBootstrap === "1";
+    const initialAvailabilityStart = root.dataset.initialAvailabilityStart || "";
+    const initialAvailabilityEnd = root.dataset.initialAvailabilityEnd || "";
     const filterCache = new Map();
     const detailCache = new Map();
     const selectConfigs = [
@@ -58,10 +60,9 @@
     let refreshTimer = null;
     let filterAbortController = null;
     let loadingOverlayTimer = null;
-    let allowAutoDateFill = !(
-        (startDateField && startDateField.value)
-        || (endDateField && endDateField.value)
-    );
+    let currentAvailabilityStart = initialAvailabilityStart;
+    let currentAvailabilityEnd = initialAvailabilityEnd;
+    let allowAutoDateFill = false;
 
     function escapeHtml(value) {
         return String(value ?? "")
@@ -133,6 +134,44 @@
         }
     }
 
+    function hasSiteConstraint() {
+        return Boolean(hiddenSiteField && hiddenSiteField.value);
+    }
+
+    function hasDistrictContext() {
+        return Boolean(stateField.value || equipmentField.value || hasSiteConstraint());
+    }
+
+    function hasDateFields() {
+        return Boolean(startDateField && endDateField);
+    }
+
+    function computeShouldAutoFillDates() {
+        if (!hasDateFields()) {
+            return false;
+        }
+
+        const startValue = startDateField.value || "";
+        const endValue = endDateField.value || "";
+
+        if (!startValue && !endValue) {
+            return true;
+        }
+
+        if (!currentAvailabilityStart || !currentAvailabilityEnd) {
+            return false;
+        }
+
+        return (
+            startValue === currentAvailabilityStart
+            && endValue === currentAvailabilityEnd
+        );
+    }
+
+    function syncAutoDateFillMode() {
+        allowAutoDateFill = computeShouldAutoFillDates();
+    }
+
     function scheduleLoadingOverlay(message) {
         if (loadingOverlayTimer) {
             window.clearTimeout(loadingOverlayTimer);
@@ -173,6 +212,15 @@
         clearLoadingOverlay();
     }
 
+    function clearDistrictSelection() {
+        districtField.value = "";
+    }
+
+    function resetDistrictOptionsForMissingContext() {
+        populateSelectOptions(selectConfigs[2], [], "", "");
+        setDistrictHint("Selecione um estado ou uma estacao para carregar os distritos disponiveis.");
+    }
+
     function populateSelectOptions(config, rows, selectedValue, selectedLabel) {
         const { field, idKey, labelKey, defaultOptionLabel } = config;
         field.innerHTML = "";
@@ -206,6 +254,18 @@
         const { mayAutofill = false } = options;
 
         if (!availability || !availability.DATE_START || !availability.DATE_END) {
+            if (
+                allowAutoDateFill
+                && startDateField
+                && endDateField
+            ) {
+                startDateField.value = "";
+                endDateField.value = "";
+            }
+
+            currentAvailabilityStart = "";
+            currentAvailabilityEnd = "";
+
             if (startDateField) {
                 startDateField.removeAttribute("min");
                 startDateField.removeAttribute("max");
@@ -219,8 +279,12 @@
             setPeriodHint(
                 "O periodo observado e sugerido conforme o recorte geografico escolhido."
             );
+            syncAutoDateFillMode();
             return;
         }
+
+        currentAvailabilityStart = availability.DATE_START;
+        currentAvailabilityEnd = availability.DATE_END;
 
         if (startDateField) {
             startDateField.min = availability.DATE_START;
@@ -245,6 +309,8 @@
             startDateField.value = availability.DATE_START;
             endDateField.value = availability.DATE_END;
         }
+
+        syncAutoDateFillMode();
     }
 
     function renderFilterPayload(payload, snapshots, options = {}) {
@@ -256,11 +322,15 @@
         populateSelectOptions(selectConfigs[1], states, snapshots.state.value, snapshots.state.label);
         populateSelectOptions(selectConfigs[2], districts, snapshots.district.value, snapshots.district.label);
 
-        setDistrictHint(
-            districts.length
-                ? `${districts.length} distritos disponiveis para o recorte geografico atual.`
-                : "Nenhum distrito encontrado para o recorte geografico atual."
-        );
+        if (!districts.length && !hasDistrictContext()) {
+            setDistrictHint("Selecione um estado ou uma estacao para carregar os distritos disponiveis.");
+        } else {
+            setDistrictHint(
+                districts.length
+                    ? `${districts.length} distritos disponiveis para o recorte geografico atual.`
+                    : "Nenhum distrito encontrado para o recorte geografico atual."
+            );
+        }
 
         applyAvailability(payload.availability, options);
     }
@@ -293,7 +363,7 @@
 
         try {
             const requestParams = new URLSearchParams(params);
-            if (usesLightweightBootstrap && cacheKey === "") {
+            if (cacheKey === "") {
                 requestParams.set("bootstrap", "1");
             }
 
@@ -348,23 +418,45 @@
         }, 450);
     }
 
-    [equipmentField, stateField, districtField].forEach((field) => {
-        field.addEventListener("change", () => {
-            scheduleFilterRefresh("Filtros geograficos alterados. Atualizando opcoes...", {
-                mayAutofill: true,
-                loadingMessage: "Atualizando filtros geograficos...",
-            });
+    equipmentField.addEventListener("change", () => {
+        if (!hasDistrictContext()) {
+            clearDistrictSelection();
+            resetDistrictOptionsForMissingContext();
+        }
+
+        scheduleFilterRefresh("Filtros geograficos alterados. Atualizando opcoes...", {
+            mayAutofill: true,
+            loadingMessage: "Atualizando filtros geograficos...",
+        });
+    });
+
+    stateField.addEventListener("change", () => {
+        clearDistrictSelection();
+
+        if (!hasDistrictContext()) {
+            resetDistrictOptionsForMissingContext();
+        }
+
+        scheduleFilterRefresh("Filtros geograficos alterados. Atualizando opcoes...", {
+            mayAutofill: true,
+            loadingMessage: "Atualizando filtros geograficos...",
+        });
+    });
+
+    districtField.addEventListener("change", () => {
+        scheduleFilterRefresh("Filtros geograficos alterados. Atualizando opcoes...", {
+            mayAutofill: true,
+            loadingMessage: "Atualizando filtros geograficos...",
         });
     });
 
     [startDateField, endDateField].filter(Boolean).forEach((field) => {
         field.addEventListener("change", () => {
-            allowAutoDateFill = !(
-                (startDateField && startDateField.value)
-                || (endDateField && endDateField.value)
-            );
+            syncAutoDateFillMode();
         });
     });
+
+    syncAutoDateFillMode();
 
     if (!usesLightweightBootstrap) {
         refreshFilterOptions({
