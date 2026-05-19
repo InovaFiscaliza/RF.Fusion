@@ -184,6 +184,38 @@ def _normalize_key(value: Any) -> str:
     return text
 
 
+def _cwsm_family_prefix_for_station_suffix(station_suffix: int) -> Optional[str]:
+    """Return the short-host CWSM family prefix for one station suffix.
+
+    CelPlan long receiver identifiers are not fully self-describing: several
+    historical ``cwsm2110xxxx`` equipment rows actually belong to the
+    ``CWSM212xxx`` or ``CWSM220xxx`` short-host families.  Operationally the
+    family is determined by the station suffix range, not only by the long-form
+    prefix persisted in RFDATA.
+
+    The currently observed catalog uses these ranges:
+
+    - ``01``–``22``  → ``CWSM211xxx``
+    - ``26``–``37``  → ``CWSM212xxx``
+    - ``38``–``47``  → ``CWSM220xxx``
+
+    Args:
+        station_suffix: Integer value derived from the last two digits of the
+            long-form CWSM receiver identifier.
+
+    Returns:
+        The 3-digit family prefix used by the short host name, or ``None`` when
+        the suffix is outside the known CelPlan allocation ranges.
+    """
+    if 1 <= station_suffix <= 22:
+        return "211"
+    if 26 <= station_suffix <= 37:
+        return "212"
+    if 38 <= station_suffix <= 47:
+        return "220"
+    return None
+
+
 def _cwsm_signature(normalized_key: str) -> Optional[str]:
     """Collapse known CWSM equipment/host naming variants into a canonical signature.
 
@@ -216,6 +248,14 @@ def _cwsm_signature(normalized_key: str) -> Optional[str]:
         return "cwsm211007"
 
     if len(digits) >= 8:
+        # CelPlan short host families are allocated by station suffix range,
+        # not strictly by the long receiver prefix stored in RFDATA.  That is
+        # why identifiers such as `cwsm21100031` and `cwsm21100044` must match
+        # `CWSM212031` and `CWSM220044`, respectively.
+        family_prefix = _cwsm_family_prefix_for_station_suffix(int(digits[-2:]))
+        if family_prefix:
+            return f"cwsm{family_prefix}{digits[-3:]}"
+
         prefix = digits[:4]              # first four digits encode the unit series
         if prefix == "2110":
             return f"cwsm211{digits[-3:]}"  # e.g. cwsm21100007 → cwsm211007

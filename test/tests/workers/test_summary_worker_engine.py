@@ -210,6 +210,42 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertEqual(by_equipment[20]["NA_MATCH_TYPE"], "manual_override")
         self.assertEqual(by_equipment[20]["IS_MANUAL_OVERRIDE"], 1)
 
+    def test_host_equipment_link_matches_cwsm_family_by_station_suffix(self) -> None:
+        db = FakeSummaryDb()
+        log = FakeSummaryLog()
+        engine = SummaryRefreshEngine(db=db, logger=log)
+
+        datasets = {
+            "FROM BPDATA.HOST": [
+                {"FK_HOST": 1, "NA_HOST_NAME": "CWSM212031"},
+                {"FK_HOST": 2, "NA_HOST_NAME": "CWSM220044"},
+            ],
+            "FROM RFDATA.DIM_SPECTRUM_EQUIPMENT": [
+                {"FK_EQUIPMENT": 118, "NA_EQUIPMENT": "cwsm21100031"},
+                {"FK_EQUIPMENT": 138, "NA_EQUIPMENT": "cwsm21100044"},
+            ],
+            "FROM HOST_EQUIPMENT_LINK_OVERRIDE": [],
+        }
+
+        def fake_select(sql, params=()):
+            for marker, rows in datasets.items():
+                if marker in sql:
+                    return rows
+            raise AssertionError(f"Unexpected SQL: {sql}")
+
+        engine._select = fake_select
+        row_count, watermark = engine._refresh_host_equipment_link()
+
+        rows = db.replaced["HOST_EQUIPMENT_LINK"]
+        self.assertEqual(row_count, 2)
+        self.assertIn("hosts=2", watermark)
+        by_equipment = {row["FK_EQUIPMENT"]: row for row in rows if row["IS_PRIMARY_LINK"] == 1}
+
+        self.assertEqual(by_equipment[118]["FK_HOST"], 1)
+        self.assertEqual(by_equipment[118]["NA_MATCH_TYPE"], "cwsm_signature")
+        self.assertEqual(by_equipment[138]["FK_HOST"], 2)
+        self.assertEqual(by_equipment[138]["NA_MATCH_TYPE"], "cwsm_signature")
+
     def test_site_equipment_obs_summary_preserves_county_and_district_ids(self) -> None:
         db = FakeSummaryDb()
         log = FakeSummaryLog()
@@ -341,6 +377,8 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertEqual(_normalize_key(" CWSM-22010007 "), "cwsm22010007")
         self.assertEqual(_cwsm_signature("cwsm22010007"), "cwsm211007")
         self.assertEqual(_cwsm_signature("cwsm21100007"), "cwsm211007")
+        self.assertEqual(_cwsm_signature("cwsm21100031"), "cwsm212031")
+        self.assertEqual(_cwsm_signature("cwsm21100044"), "cwsm220044")
         self.assertIsNone(_cwsm_signature("rfeye002073"))
 
     def test_host_monthly_metric_skips_invalid_reference_month_rows(self) -> None:

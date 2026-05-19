@@ -369,6 +369,7 @@ CREATE FUNCTION `FN_SUMMARY_CWSM_SIGNATURE`(p_normalized_key VARCHAR(255)) RETUR
     DETERMINISTIC
 BEGIN
     DECLARE v_digits VARCHAR(255);
+    DECLARE v_station_suffix INT;
     DECLARE v_prefix VARCHAR(4);
 
     IF p_normalized_key IS NULL OR p_normalized_key = '' THEN
@@ -394,6 +395,23 @@ BEGIN
     END IF;
 
     IF CHAR_LENGTH(v_digits) >= 8 THEN
+        SET v_station_suffix = CAST(RIGHT(v_digits, 2) AS UNSIGNED);
+
+        -- CelPlan allocates short host families by station suffix range, so
+        -- some historical `cwsm2110xxxx` receivers belong to `CWSM212xxx` or
+        -- `CWSM220xxx` hosts instead of `CWSM211xxx`.
+        IF v_station_suffix BETWEEN 1 AND 22 THEN
+            RETURN CONCAT('cwsm211', RIGHT(v_digits, 3));
+        END IF;
+
+        IF v_station_suffix BETWEEN 26 AND 37 THEN
+            RETURN CONCAT('cwsm212', RIGHT(v_digits, 3));
+        END IF;
+
+        IF v_station_suffix BETWEEN 38 AND 47 THEN
+            RETURN CONCAT('cwsm220', RIGHT(v_digits, 3));
+        END IF;
+
         SET v_prefix = LEFT(v_digits, 4);
 
         IF v_prefix = '2110' THEN
