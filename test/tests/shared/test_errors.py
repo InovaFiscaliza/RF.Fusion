@@ -95,6 +95,42 @@ class ErrorHandlerTests(unittest.TestCase):
             formatted,
         )
 
+    def test_format_error_promotes_wrapped_bin_validation_to_specific_code(self) -> None:
+        # Generic PROCESS wrappers should still surface the precise validation
+        # class when the inner BinValidationError is already recognizable.
+        handler = errors.ErrorHandler(FakeLogger())
+        handler.capture(
+            "Payload validation failed during processing",
+            stage="PROCESS",
+            exc=errors.BinValidationError("Spectrum list is empty"),
+        )
+
+        formatted = handler.format_error()
+
+        self.assertIn("[code=SPECTRUM_LIST_EMPTY]", formatted)
+        self.assertIn("Spectrum list is empty", formatted)
+        self.assertNotIn(
+            "[code=BIN_PAYLOAD_VALIDATION_FAILED]",
+            formatted,
+        )
+
+    def test_format_error_keeps_unknown_bin_validation_stable_with_detail(self) -> None:
+        # Unknown validation defects should not collapse into a detail-free
+        # generic bucket; the stable summary stays generic while the payload
+        # specific reason moves into detail.
+        handler = errors.ErrorHandler(FakeLogger())
+        handler.capture(
+            "Payload validation failed during processing",
+            stage="PROCESS",
+            exc=errors.BinValidationError("Receiver serial missing from payload"),
+        )
+
+        formatted = handler.format_error()
+
+        self.assertIn("[code=BIN_PAYLOAD_VALIDATION_FAILED]", formatted)
+        self.assertIn("Payload validation failed during processing", formatted)
+        self.assertIn("[detail=Receiver serial missing from payload]", formatted)
+
     def test_log_error_uses_structured_logger_when_available(self) -> None:
         # Newer loggers should receive a normalized event instead of plain text.
         logger = FakeLogger()

@@ -199,6 +199,30 @@ def _canonicalize_error_reason(
             exc_text or None,
         )
 
+    if raw_reason.startswith("APP_ANALISE returned invalid Answer.Spectra type"):
+        canonical = "APP_ANALISE returned invalid Answer.Spectra type"
+        detail = raw_reason if raw_reason != canonical else None
+        return "APP_ANALISE_INVALID_SPECTRA_TYPE", canonical, detail
+
+    if (
+        raw_reason == "Payload validation failed during processing"
+        and isinstance(exc, BinValidationError)
+    ):
+        if exc_text and exc_text != raw_reason:
+            nested_code, nested_reason, nested_detail = _canonicalize_error_reason(
+                exc_text,
+                None,
+                stage=stage,
+            )
+            if nested_code:
+                return nested_code, nested_reason, nested_detail
+
+        return (
+            "BIN_PAYLOAD_VALIDATION_FAILED",
+            "Payload validation failed during processing",
+            exc_text or None,
+        )
+
     # -------------------------------------------------------------
     # DIM / enrichment failures where the human-readable message is
     # too specific to use directly as the dashboard grouping key.

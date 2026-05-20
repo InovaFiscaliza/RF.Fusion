@@ -1,0 +1,46 @@
+# =============================================================================
+# rffusion-containers.service
+# Purpose  : Systemd unit that starts and stops the RFFusion container stack
+#            automatically on Red Hat VM boot/shutdown.
+#
+# Installation (run as root on the VM host):
+#   bash /path/to/RF.Fusion/service/install-service.sh
+#
+# The placeholder __SCRIPTS_DIR__ is replaced by install-service.sh with the
+# actual path to this service/ directory on the host filesystem.
+# =============================================================================
+
+[Unit]
+Description=RFFusion Container Stack (MariaDB + appCataloga + webfusion)
+
+# Wait for full network connectivity so MariaDB and other services can bind
+# their ports, and remote filesystems (e.g., CIFS /mnt/reposfi) are mounted
+# before we try to start containers that depend on them.
+After=network-online.target remote-fs.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# RemainAfterExit=yes keeps the unit in "active" state after ExecStart exits.
+# This is correct for a oneshot service that launches background daemons
+# (Podman containers already run detached). It also ensures ExecStop is
+# invoked when the unit is stopped or the system shuts down.
+RemainAfterExit=yes
+
+ExecStart=__SCRIPTS_DIR__/rffusion-start.sh
+ExecStop=__SCRIPTS_DIR__/rffusion-stop.sh
+
+# Give containers up to 3 minutes to start (MariaDB init can be slow on
+# first-run volumes) and up to 60 s to stop gracefully.
+TimeoutStartSec=180
+TimeoutStopSec=60
+
+# Route output to the journal so it is visible via:
+#   journalctl -u rffusion-containers -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rffusion-containers
+
+[Install]
+WantedBy=multi-user.target
