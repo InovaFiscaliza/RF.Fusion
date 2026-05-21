@@ -286,6 +286,12 @@
     color: #163a66;
 }
 
+/* Positioning context for the external hover panel. The panel is a sibling
+ * of #station-map so it escapes Leaflet's overflow:hidden clip. */
+.station-map-wrap {
+    position: relative;
+}
+
 /* The map background doubles as a lightweight loading/fallback state
  * before Leaflet tiles finish painting. */
 #station-map {
@@ -392,6 +398,37 @@
 }
 
 /* -------------------------------------------------------------
+ * External hover panel — lives outside Leaflet's clip boundary
+ * ------------------------------------------------------------- */
+#station-hover-panel {
+    position: absolute;
+    z-index: 1000;
+    width: min(400px, calc(100vw - 32px));
+    /* Cap height to the map container so the panel never escapes the wrap
+     * even when a large cluster popup pushes the content very tall. */
+    max-height: calc(100% - 16px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: #ffffff;
+    border-radius: 18px;
+    box-shadow:
+        0 4px 24px rgba(15, 23, 42, 0.14),
+        0 1px 4px rgba(15, 23, 42, 0.08);
+    pointer-events: auto;
+    /* Smooth appearance; position changes are instant (JS does edge clamping). */
+    animation: station-hover-panel-in 0.1s ease-out both;
+}
+
+#station-hover-panel[hidden] {
+    display: none;
+}
+
+@keyframes station-hover-panel-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* -------------------------------------------------------------
  * Popup content rendered by `index_map.js`
  * ------------------------------------------------------------- */
 .station-popup {
@@ -405,10 +442,6 @@
     overscroll-behavior: contain;
 }
 
-.station-popup-container {
-    max-width: min(400px, calc(100vw - 32px));
-}
-
 .station-popup::-webkit-scrollbar {
     width: 9px;
 }
@@ -417,23 +450,6 @@
     background: #cbd5e1;
     border-radius: 999px;
     border: 2px solid #ffffff;
-}
-
-.station-popup-container .leaflet-popup-content-wrapper {
-    border-radius: 18px;
-    width: min(400px, calc(100vw - 32px));
-    box-sizing: border-box;
-}
-
-.station-popup-container .leaflet-popup-content {
-    margin: 0;
-    width: 100% !important;
-}
-
-/* Popup repositioning is handled manually in JS because Leaflet auto-pan
- * caused the map to scroll on hover near the top edge. */
-.station-popup-container {
-    transition: transform 0.12s ease-out;
 }
 
 .station-popup-title {

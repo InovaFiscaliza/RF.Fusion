@@ -43,39 +43,45 @@ def load_host_service():
 
 
 class TestHostService(unittest.TestCase):
-    """Validate host-page reconciliation of fixed-station receiver names."""
+    """Validate summary-backed host and server service helpers."""
 
     @classmethod
     def setUpClass(cls):
         cls.module = load_host_service()
 
-    def test_build_cwsm_signature_handles_known_receiver_families(self):
+    def test_build_host_list_cache_key_normalizes_inputs(self):
         self.assertEqual(
-            self.module._build_cwsm_signature("cwsm21100001"),
-            "cwsm211001",
+            self.module._build_host_list_cache_key(
+                online_only=True,
+                search="  RFeye002274  ",
+            ),
+            (True, "rfeye002274"),
         )
         self.assertEqual(
-            self.module._build_cwsm_signature("cwsm21120037"),
-            "cwsm212037",
-        )
-        self.assertEqual(
-            self.module._build_cwsm_signature("cwsm22010007"),
-            "cwsm211007",
-        )
-        self.assertEqual(
-            self.module._build_cwsm_signature("cwsm22010040"),
-            "cwsm220040",
+            self.module._build_host_list_cache_key(),
+            (False, ""),
         )
 
-    def test_equipment_matches_host_handles_cwsm_2112_family(self):
-        self.assertTrue(
-            self.module._equipment_matches_host("CWSM212037", "cwsm21120037")
+    def test_format_structured_error_bucket_renders_stage_and_code(self):
+        self.assertEqual(
+            self.module._format_structured_error_bucket(
+                {
+                    "ERROR_STAGE": "PROCESS",
+                    "ERROR_CODE": "NO_VALID_SPECTRA",
+                    "ERROR_SUMMARY": "BIN discarded: no valid spectra after validation",
+                },
+                default_label="Processing Error",
+            ),
+            (
+                "Processing Error | [ERROR] [stage=PROCESS] "
+                "[code=NO_VALID_SPECTRA] BIN discarded: no valid spectra after validation"
+            ),
         )
-        self.assertFalse(
-            self.module._equipment_matches_host("CWSM211037", "cwsm21120037")
-        )
-        self.assertTrue(
-            self.module._equipment_matches_host("CWSM211007", "cwsm22010007")
+        self.assertIsNone(
+            self.module._format_structured_error_bucket(
+                {"ERROR_STAGE": "", "ERROR_CODE": "", "ERROR_SUMMARY": ""},
+                default_label="Processing Error",
+            )
         )
 
     def test_check_appanalise_status_uses_ping_successfully(self):
@@ -248,6 +254,7 @@ class TestHostService(unittest.TestCase):
         summary_cursor = FakeCursor(
             [
                 {
+                    "ID_SUMMARY": 1,
                     "NA_CURRENT_MONTH_LABEL": "2026-04",
                     "NU_BACKUP_DONE_THIS_MONTH": 12,
                     "VL_BACKUP_DONE_GB_THIS_MONTH": 3.75,
@@ -416,7 +423,7 @@ class TestHostService(unittest.TestCase):
         self.assertEqual(overview["BUSY_HOSTS"], 2)
         self.assertTrue(summary_connection.closed)
 
-    def test_get_host_statistics_keeps_totals_and_adds_host_queue_metrics(self):
+    def test_get_host_statistics_reads_summary_snapshot_current_month_backup_metrics(self):
         class FakeCursor:
             def __init__(self, rows):
                 self.rows = list(rows)
@@ -430,6 +437,11 @@ class TestHostService(unittest.TestCase):
                     return {}
                 return self.rows.pop(0)
 
+            def fetchall(self):
+                if not self.rows:
+                    return []
+                return self.rows.pop(0)
+
         class FakeConnection:
             def __init__(self, cursor):
                 self._cursor = cursor
@@ -441,7 +453,7 @@ class TestHostService(unittest.TestCase):
             def close(self):
                 self.closed = True
 
-        bp_cursor = FakeCursor(
+        snapshot_cursor = FakeCursor(
             [
                 {
                     "ID_HOST": 42,
@@ -462,71 +474,64 @@ class TestHostService(unittest.TestCase):
                     "NU_PENDING_FILE_BACKUP_TASKS": 5,
                     "NU_DONE_FILE_BACKUP_TASKS": 80,
                     "NU_ERROR_FILE_BACKUP_TASKS": 1,
-                    "VL_PENDING_BACKUP_KB": 2048,
-                    "VL_DONE_BACKUP_KB": 8192,
+                    "NU_BACKUP_DONE_THIS_MONTH": 8,
+                    "VL_PENDING_BACKUP_GB": 2.0,
+                    "VL_BACKUP_DONE_GB_THIS_MONTH": 2.25,
+                    "VL_DONE_BACKUP_GB": 8.0,
                     "DT_LAST_PROCESSING": "2026-04-08 09:00:00",
                     "NU_PENDING_FILE_PROCESS_TASKS": 4,
                     "NU_DONE_FILE_PROCESS_TASKS": 70,
                     "NU_ERROR_FILE_PROCESS_TASKS": 3,
                     "NU_HOST_FILES": 123,
-                },
-                {
-                    "BACKUP_QUEUE_FILES_TOTAL": 3,
-                    "BACKUP_QUEUE_GB_TOTAL": 1.5,
-                    "PROCESSING_QUEUE_FILES_TOTAL": 2,
-                    "PROCESSING_QUEUE_GB_TOTAL": 0.75,
-                },
-                {
-                    "FAILURE_AT": "2026-04-08 08:00:00",
-                    "FAILURE_REASON": "Processing Error",
+                    "NU_BACKUP_QUEUE_FILES_TOTAL": 3,
+                    "VL_BACKUP_QUEUE_GB_TOTAL": 1.5,
+                    "NU_PROCESSING_QUEUE_FILES_TOTAL": 2,
+                    "VL_PROCESSING_QUEUE_GB_TOTAL": 0.75,
+                    "NU_FACT_SPECTRUM_TOTAL": 321,
+                    "DT_LAST_ERROR_AT": "2026-04-08 08:00:00",
+                    "NA_LAST_ERROR_SUMMARY": "Processing Error",
                 },
             ]
         )
+        snapshot_connection = FakeConnection(snapshot_cursor)
 
-        bp_connection = FakeConnection(bp_cursor)
+        monthly_cursor = FakeCursor(
+            [
+                [
+                    {
+                        "DT_REFERENCE_MONTH": self.module.datetime(2026, 4, 1),
+                        "NU_DISCOVERED_FILES": 120,
+                        "VL_DISCOVERED_GB": 10.5,
+                        "NU_BACKUP_DONE_FILES": 80,
+                        "VL_BACKUP_DONE_GB": 8.0,
+                        "NU_BACKUP_PENDING_FILES": 5,
+                        "VL_BACKUP_PENDING_GB": 2.0,
+                        "NU_BACKUP_ERROR_FILES": 1,
+                        "VL_BACKUP_ERROR_GB": 0.25,
+                        "NU_PROCESSING_DONE_FILES": 70,
+                        "VL_PROCESSING_DONE_GB": 6.5,
+                        "NU_PROCESSING_PENDING_FILES": 4,
+                        "VL_PROCESSING_PENDING_GB": 1.75,
+                        "NU_PROCESSING_ERROR_FILES": 3,
+                        "VL_PROCESSING_ERROR_GB": 0.5,
+                    }
+                ]
+            ]
+        )
+        monthly_connection = FakeConnection(monthly_cursor)
 
         self.module._HOST_STATISTICS_CACHE.clear()
 
         with patch.object(self.module.time, "monotonic", return_value=100.0):
             with patch.object(
                 self.module,
-                "get_connection",
-                return_value=bp_connection,
+                "get_connection_summary",
+                side_effect=[snapshot_connection, monthly_connection],
             ):
-                with patch.object(
-                    self.module,
-                    "_get_history_summary_for_host",
-                    return_value={
-                        "BACKUP_DONE_THIS_MONTH": 8,
-                        "BACKUP_DONE_GB_THIS_MONTH": 2.25,
-                        "DISCOVERED_FILES_TOTAL": 120,
-                        "DISCOVERED_GB_TOTAL": 10.5,
-                        "BACKUP_DONE_FILES_TOTAL": 80,
-                        "BACKUP_DONE_GB_TOTAL": 8.0,
-                        "BACKUP_PENDING_FILES_TOTAL": 5,
-                        "BACKUP_PENDING_GB_TOTAL": 2.0,
-                        "BACKUP_ERROR_FILES_TOTAL": 1,
-                        "BACKUP_ERROR_GB_TOTAL": 0.25,
-                        "PROCESSING_DONE_FILES_TOTAL": 70,
-                        "PROCESSING_DONE_GB_TOTAL": 6.5,
-                        "PROCESSING_PENDING_FILES_TOTAL": 4,
-                        "PROCESSING_PENDING_GB_TOTAL": 1.75,
-                        "PROCESSING_ERROR_FILES_TOTAL": 3,
-                        "PROCESSING_ERROR_GB_TOTAL": 0.5,
-                    },
-                ):
-                    with patch.object(
-                        self.module,
-                        "_get_yearly_status_breakdown_for_host",
-                        return_value=[],
-                    ):
-                        with patch.object(
-                            self.module,
-                            "_get_host_fact_spectrum_total",
-                            return_value=321,
-                        ):
-                            stats = self.module.get_host_statistics(42)
+                stats = self.module.get_host_statistics(42)
 
+        self.assertEqual(stats["BACKUP_DONE_THIS_MONTH"], 8)
+        self.assertEqual(stats["BACKUP_DONE_GB_THIS_MONTH"], 2.25)
         self.assertEqual(stats["BACKUP_QUEUE_FILES_TOTAL"], 3)
         self.assertEqual(stats["BACKUP_QUEUE_GB_TOTAL"], 1.5)
         self.assertEqual(stats["PROCESSING_QUEUE_FILES_TOTAL"], 2)
@@ -534,10 +539,14 @@ class TestHostService(unittest.TestCase):
         self.assertEqual(stats["BACKUP_PENDING_FILES_TOTAL"], 5)
         self.assertEqual(stats["PROCESSING_PENDING_FILES_TOTAL"], 4)
         self.assertEqual(stats["FACT_SPECTRUM_TOTAL"], 321)
-        self.assertTrue(bp_connection.closed)
-        self.assertEqual(len(bp_cursor.executed), 3)
-        self.assertIn("FROM FILE_TASK", bp_cursor.executed[1][0])
-        self.assertEqual(bp_cursor.executed[1][1], (42,))
+        self.assertTrue(snapshot_connection.closed)
+        self.assertTrue(monthly_connection.closed)
+        self.assertEqual(len(snapshot_cursor.executed), 1)
+        self.assertIn("FROM HOST_CURRENT_SNAPSHOT", snapshot_cursor.executed[0][0])
+        self.assertEqual(snapshot_cursor.executed[0][1], (42,))
+        self.assertEqual(len(monthly_cursor.executed), 1)
+        self.assertIn("FROM HOST_MONTHLY_METRIC", monthly_cursor.executed[0][0])
+        self.assertEqual(monthly_cursor.executed[0][1], (42,))
 
     def test_get_hosts_reads_summary_snapshot_rows(self):
         class FakeCursor:

@@ -233,6 +233,74 @@ class HostCooldownTests(unittest.TestCase):
         )
 
 
+class HostStatisticsRefreshTests(unittest.TestCase):
+    """Validate durable HOST aggregates derived from FILE_TASK_HISTORY."""
+
+    def make_handler(self):
+        handler = object.__new__(db_bkp_module.dbHandlerBKP)
+        handler.log = FakeLog()
+        handler._connect = lambda: None
+        handler._disconnect = lambda: None
+        handler.db_connection = type(
+            "FakeConnection",
+            (),
+            {"rollback": lambda self: None},
+        )()
+        return handler
+
+    def test_host_update_statistics_refreshes_nu_host_files_from_history(self) -> None:
+        """HOST.NU_HOST_FILES must track the durable discovered-file total."""
+
+        handler = self.make_handler()
+        host_updates = []
+        summary_scopes = []
+
+        def fake_select_raw(sql, params):
+            if "SUM(NU_STATUS_DISCOVERY  = 0)" in sql:
+                return [
+                    {
+                        "total_discovered": 17,
+                        "total_backup": 11,
+                        "total_processed": 9,
+                        "pending_backup": 3,
+                        "pending_process": 2,
+                        "error_discovery": 1,
+                        "error_backup": 4,
+                        "error_process": 5,
+                        "last_discovered": datetime(2026, 5, 18, 10, 0, 0),
+                        "last_backup": datetime(2026, 5, 19, 11, 0, 0),
+                        "last_processed": datetime(2026, 5, 20, 12, 0, 0),
+                    }
+                ]
+
+            if "AS pending_kb" in sql and "AS done_kb" in sql:
+                return [
+                    {
+                        "pending_kb": 2048,
+                        "done_kb": 4096,
+                    }
+                ]
+
+            raise AssertionError(f"Unexpected SQL: {sql}")
+
+        handler._select_raw = fake_select_raw
+        handler.host_update = lambda **kwargs: host_updates.append(kwargs)
+        handler._summary_publish_host_scope = lambda host_id, **kwargs: summary_scopes.append(
+            {"host_id": host_id, **kwargs}
+        )
+
+        handler.host_update_statistics(88)
+
+        self.assertEqual(len(host_updates), 1)
+        self.assertEqual(host_updates[0]["host_id"], 88)
+        self.assertEqual(host_updates[0]["NU_HOST_FILES"], 17)
+        self.assertEqual(host_updates[0]["NU_DONE_FILE_DISCOVERY_TASKS"], 17)
+        self.assertEqual(host_updates[0]["NU_DONE_FILE_BACKUP_TASKS"], 11)
+        self.assertEqual(host_updates[0]["VL_PENDING_BACKUP_KB"], 2048)
+        self.assertEqual(host_updates[0]["VL_DONE_BACKUP_KB"], 4096)
+        self.assertEqual(summary_scopes, [{"host_id": 88, "reason": "host_update_statistics"}])
+
+
 class FileTimestampOwnershipTests(unittest.TestCase):
     """Validate that task/history timestamps are explicit at call sites."""
 
@@ -711,6 +779,43 @@ class HostTaskQueueTests(unittest.TestCase):
         self.assertEqual(captured["table"], "HOST_TASK")
         self.assertEqual(captured["where"], {"ID_HOST_TASK": 105})
         self.assertEqual(captured["data"]["FILTER"], '{"a": 1, "b": 2}')
+
+    def test_host_task_update_canonicalizes_persisted_error_message(self) -> None:
+        """HOST_TASK error messages should be compacted before persistence."""
+
+        handler = self.make_handler()
+        captured = {}
+        handler.db_connection = type(
+            "FakeConnection",
+            (),
+            {"rollback": lambda self: None},
+        )()
+
+        def fake_update_row(*, table, data, where, commit):
+            captured["table"] = table
+            captured["data"] = data
+            captured["where"] = where
+            captured["commit"] = commit
+            return 1
+
+        handler._update_row = fake_update_row
+
+        handler.host_task_update(
+            task_id=106,
+            NA_MESSAGE=(
+                "Host Check Error | [ERROR] [stage=CONNECTIVITY] "
+                "[type=TimeoutError] [code=CONNECTIVITY_CHECK_FAILED] "
+                "Connectivity test failed [host_id=88] [task_id=106]"
+            ),
+        )
+
+        self.assertEqual(captured["table"], "HOST_TASK")
+        self.assertEqual(captured["where"], {"ID_HOST_TASK": 106})
+        self.assertEqual(
+            captured["data"]["NA_MESSAGE"],
+            "Host Check Error | [ERROR] [stage=CONNECTIVITY] "
+            "[code=CONNECTIVITY_CHECK_FAILED] Connectivity test failed",
+        )
 
 
 class HostTaskConnectivityLifecycleTests(unittest.TestCase):

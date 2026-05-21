@@ -1,6 +1,6 @@
 /* =====================================================================
    createFusionSummaryDB-v1.sql
-   Canonical RFFUSION_SUMMARY schema — current as of schema v2.
+   Canonical RFFUSION_SUMMARY schema — current as of schema v3.
 
    Changelog
    ---------
@@ -11,6 +11,11 @@
         and host locality history can resolve district/county without
         joining back to live RFDATA dimension tables.
         (Previously delivered as alterFusionSummaryDB-v2-geography-keys.sql)
+   v3 — current-month backup throughput by `DT_BACKUP` materialized into
+        HOST_CURRENT_SNAPSHOT and aggregated into SERVER_CURRENT_SUMMARY via
+        `NU_BACKUP_DONE_THIS_MONTH` and `VL_BACKUP_DONE_GB_THIS_MONTH`.
+        This script is now the canonical source for that schema state; the
+        transitional alter script is retired.
 
    Note on shadow tables
    ---------------------
@@ -283,7 +288,9 @@ CREATE TABLE `HOST_CURRENT_SNAPSHOT` (
   `NU_PENDING_FILE_BACKUP_TASKS` int(11) DEFAULT NULL,
   `NU_DONE_FILE_BACKUP_TASKS` int(11) DEFAULT NULL,
   `NU_ERROR_FILE_BACKUP_TASKS` int(11) DEFAULT NULL,
+  `NU_BACKUP_DONE_THIS_MONTH` int(11) NOT NULL DEFAULT 0,
   `VL_PENDING_BACKUP_GB` decimal(18,2) NOT NULL DEFAULT 0.00,
+  `VL_BACKUP_DONE_GB_THIS_MONTH` decimal(18,2) NOT NULL DEFAULT 0.00,
   `VL_DONE_BACKUP_GB` decimal(18,2) NOT NULL DEFAULT 0.00,
   `DT_LAST_PROCESSING` datetime DEFAULT NULL,
   `NU_PENDING_FILE_PROCESS_TASKS` int(11) DEFAULT NULL,
@@ -1835,8 +1842,10 @@ BEGIN
     DECLARE v_started_at DATETIME DEFAULT UTC_TIMESTAMP();
     DECLARE v_row_count BIGINT DEFAULT 0;
     DECLARE v_current_month_start DATETIME;
+    DECLARE v_next_month_start DATETIME;
 
     SET v_current_month_start = STR_TO_DATE(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01 00:00:00'), '%Y-%m-%d %H:%i:%s');
+    SET v_next_month_start = DATE_ADD(v_current_month_start, INTERVAL 1 MONTH);
 
     INSERT INTO SUMMARY_REFRESH_STATE (
         NA_OBJECT_NAME,
@@ -1879,7 +1888,9 @@ BEGIN
         NU_PENDING_FILE_BACKUP_TASKS,
         NU_DONE_FILE_BACKUP_TASKS,
         NU_ERROR_FILE_BACKUP_TASKS,
+        NU_BACKUP_DONE_THIS_MONTH,
         VL_PENDING_BACKUP_GB,
+        VL_BACKUP_DONE_GB_THIS_MONTH,
         VL_DONE_BACKUP_GB,
         DT_LAST_PROCESSING,
         NU_PENDING_FILE_PROCESS_TASKS,
@@ -1923,7 +1934,9 @@ BEGIN
         h.NU_PENDING_FILE_BACKUP_TASKS,
         h.NU_DONE_FILE_BACKUP_TASKS,
         h.NU_ERROR_FILE_BACKUP_TASKS,
+        COALESCE(backup_month.NU_BACKUP_DONE_THIS_MONTH, 0),
         ROUND(COALESCE(h.VL_PENDING_BACKUP_KB, 0) / 1024 / 1024, 2),
+        COALESCE(backup_month.VL_BACKUP_DONE_GB_THIS_MONTH, 0.00),
         ROUND(COALESCE(h.VL_DONE_BACKUP_KB, 0) / 1024 / 1024, 2),
         h.DT_LAST_PROCESSING,
         h.NU_PENDING_FILE_PROCESS_TASKS,
@@ -1967,6 +1980,18 @@ BEGIN
         GROUP BY t.FK_HOST
     ) queue
       ON queue.FK_HOST = h.ID_HOST
+    LEFT JOIN (
+        SELECT
+            f.FK_HOST,
+            COUNT(*) AS NU_BACKUP_DONE_THIS_MONTH,
+            ROUND(COALESCE(SUM(f.VL_FILE_SIZE_KB), 0) / 1024 / 1024, 2) AS VL_BACKUP_DONE_GB_THIS_MONTH
+        FROM BPDATA.FILE_TASK_HISTORY f
+        WHERE f.NU_STATUS_BACKUP = 0
+          AND f.DT_BACKUP >= v_current_month_start
+          AND f.DT_BACKUP < v_next_month_start
+        GROUP BY f.FK_HOST
+    ) backup_month
+      ON backup_month.FK_HOST = h.ID_HOST
     LEFT JOIN (
         SELECT
             metric.FK_HOST,
@@ -2093,21 +2118,8 @@ BEGIN
     DECLARE v_started_at DATETIME DEFAULT UTC_TIMESTAMP();
     DECLARE v_row_count BIGINT DEFAULT 0;
     DECLARE v_current_month_start DATETIME;
-    DECLARE v_next_month_start DATETIME;
 
     SET v_current_month_start = STR_TO_DATE(DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-01 00:00:00'), '%Y-%m-%d %H:%i:%s');
-
-    IF MONTH(v_current_month_start) = 12 THEN
-        SET v_next_month_start = STR_TO_DATE(
-            CONCAT(YEAR(v_current_month_start) + 1, '-01-01 00:00:00'),
-            '%Y-%m-%d %H:%i:%s'
-        );
-    ELSE
-        SET v_next_month_start = STR_TO_DATE(
-            CONCAT(YEAR(v_current_month_start), '-', LPAD(MONTH(v_current_month_start) + 1, 2, '0'), '-01 00:00:00'),
-            '%Y-%m-%d %H:%i:%s'
-        );
-    END IF;
 
     INSERT INTO SUMMARY_REFRESH_STATE (
         NA_OBJECT_NAME,
@@ -2175,20 +2187,8 @@ BEGIN
         COALESCE(SUM(snap.NU_PROCESSING_QUEUE_FILES_TOTAL), 0) AS NU_PROCESSING_QUEUE_FILES_TOTAL,
         ROUND(COALESCE(SUM(snap.VL_PROCESSING_QUEUE_GB_TOTAL), 0), 2) AS VL_PROCESSING_QUEUE_GB_TOTAL,
         COALESCE(SUM(snap.NU_FACT_SPECTRUM_TOTAL), 0) AS NU_FACT_SPECTRUM_TOTAL,
-        COALESCE((
-            SELECT COUNT(*)
-            FROM BPDATA.FILE_TASK_HISTORY f
-            WHERE f.NU_STATUS_BACKUP = 0
-              AND f.DT_BACKUP >= v_current_month_start
-              AND f.DT_BACKUP < v_next_month_start
-        ), 0) AS NU_BACKUP_DONE_THIS_MONTH,
-        COALESCE((
-            SELECT ROUND(COALESCE(SUM(f.VL_FILE_SIZE_KB), 0) / 1024 / 1024, 2)
-            FROM BPDATA.FILE_TASK_HISTORY f
-            WHERE f.NU_STATUS_BACKUP = 0
-              AND f.DT_BACKUP >= v_current_month_start
-              AND f.DT_BACKUP < v_next_month_start
-        ), 0.00) AS VL_BACKUP_DONE_GB_THIS_MONTH,
+        COALESCE(SUM(snap.NU_BACKUP_DONE_THIS_MONTH), 0) AS NU_BACKUP_DONE_THIS_MONTH,
+        ROUND(COALESCE(SUM(snap.VL_BACKUP_DONE_GB_THIS_MONTH), 0), 2) AS VL_BACKUP_DONE_GB_THIS_MONTH,
         COALESCE((
             SELECT COUNT(*)
             FROM SERVER_ERROR_SUMMARY se

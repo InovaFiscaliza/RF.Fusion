@@ -81,6 +81,19 @@
     let currentOverlayLayer = null;
     let latestDatasetRequestId = 0;
 
+    // External hover panel — singleton element that lives outside Leaflet's
+    // clip boundary, so it never gets cropped by the map container.
+    const hoverPanel = document.getElementById("station-hover-panel");
+    let panelActiveMarker = null;
+
+    // Keep the panel visible while the cursor travels from marker to panel.
+    hoverPanel.addEventListener("mouseenter", () => {
+        if (panelActiveMarker?.__wfCancelClose) panelActiveMarker.__wfCancelClose();
+    });
+    hoverPanel.addEventListener("mouseleave", () => {
+        if (panelActiveMarker?.__wfScheduleClose) panelActiveMarker.__wfScheduleClose();
+    });
+
     const MAP_THEME_STORAGE_KEY = "webfusion.station_map_theme";
     const POPUP_HOVER_OPEN_DELAY_MS = 140;
     const MARKER_FOCUS_ZOOM_THRESHOLD = 7;
@@ -1004,7 +1017,6 @@
             html: buildMarkerHtml(point),
             iconSize: [metrics.iconSize, metrics.iconSize],
             iconAnchor: [metrics.iconAnchor, metrics.iconAnchor],
-            popupAnchor: [0, -metrics.popupOffsetY],
         });
     }
 
@@ -1056,7 +1068,7 @@
         element.dataset.wfMarkerHoverBound = "1";
         element.addEventListener("mouseenter", () => marker.fire("mouseover"));
         element.addEventListener("mouseleave", () => marker.fire("mouseout"));
-        element.addEventListener("click", () => marker.openPopup());
+        element.addEventListener("click", () => showHoverPanel(marker));
     }
 
     /**
@@ -1268,11 +1280,9 @@
      * cards quickly pollute the map during hover exploration.
      */
     function closeOtherPopups(activeMarker) {
-        renderedMarkers.forEach((marker) => {
-            if (marker !== activeMarker && marker.isPopupOpen()) {
-                marker.closePopup();
-            }
-        });
+        if (panelActiveMarker && panelActiveMarker !== activeMarker) {
+            hideHoverPanel();
+        }
     }
 
     /**
@@ -1565,83 +1575,106 @@
 
     // Hover popups stay lightweight at first render; station actions are
     // loaded lazily only when the user actually opens a point.
+
     /**
-     * Keep a popup inside the visible map bounds without letting Leaflet pan
-     * the whole map on hover.
-     *
-     * `autoPan` is disabled to avoid the irritating map scroll/jump effect.
-     * This helper compensates by nudging the popup element itself.
+     * Compute the pixel-space position for the hover panel relative to the
+     * `.station-map-wrap` container, clamped so the panel never overflows
+     * the map edges.
      */
-    function fitPopupWithinMap(marker) {
-        /* Hover popups should never drag the whole map with them.
-         *
-         * Leaflet's `autoPan` solves clipping by moving the viewport, but that
-         * felt jittery and disorienting during exploration. The compromise
-         * here is to keep the map still and reposition only the popup element
-         * when it would bleed outside the visible container.
-         */
-        if (!marker) {
+    function positionHoverPanel(marker) {
+        if (!marker || hoverPanel.hidden) {
             return;
         }
 
-        const popup = marker.getPopup();
-        if (!popup || !popup.isOpen()) {
+        // Use getBoundingClientRect so the coordinates are in the same reference
+        // frame as the panel's offset parent, regardless of browser zoom level or
+        // any CSS transform on the map container.
+        const markerEl = marker.getElement();
+        if (!markerEl) {
             return;
         }
 
+        const wrapEl     = hoverPanel.parentElement;
+        const markerRect = markerEl.getBoundingClientRect();
+        const wrapRect   = wrapEl.getBoundingClientRect();
+
+        const panelW = hoverPanel.offsetWidth  || 340;
+        const panelH = hoverPanel.offsetHeight || 200;
+        const gap     = 10;
+        const padding = 8;
+
+        // Marker centre relative to the wrap element (the panel's offset parent).
+        const markerCX    = markerRect.left - wrapRect.left + markerRect.width  / 2;
+        const markerCY    = markerRect.top  - wrapRect.top  + markerRect.height / 2;
+        const halfMarkerH = markerRect.height / 2;
+
+        const wrapW = wrapRect.width;
+        const wrapH = wrapRect.height;
+
+        // Default: centre horizontally on the marker, open above it.
+        let left = markerCX - panelW / 2;
+        let top  = markerCY - halfMarkerH - gap - panelH;
+
+        // Horizontal clamp.
+        if (left < padding)                  left = padding;
+        if (left + panelW > wrapW - padding) left = wrapW - padding - panelW;
+
+        // Prefer above; flip below when the panel would overflow the top edge.
+        if (top < padding) {
+            top = markerCY + halfMarkerH + gap;
+        }
+
+        // Bottom clamp — catches both the default position and the flipped one.
+        if (top + panelH > wrapH - padding) {
+            top = wrapH - padding - panelH;
+        }
+
+        // Final safety: panel is taller than the map (only possible with very
+        // large cluster popups at small map heights).
+        if (top < padding) top = padding;
+
+        hoverPanel.style.left = Math.round(left) + "px";
+        hoverPanel.style.top  = Math.round(top)  + "px";
+    }
+
+    /**
+     * Display the hover panel for `marker`, load lazy details, and close any
+     * other panel that may have been open.
+     */
+    function showHoverPanel(marker) {
+        const point = marker?.__wfPoint;
+        if (!point) {
+            return;
+        }
+
+        closeOtherPopups(marker);
+        panelActiveMarker = marker;
+
+        hoverPanel.innerHTML = buildPopupHtml(point);
+        hoverPanel.removeAttribute("hidden");
+
+        // Position immediately, then again after the first paint so the panel
+        // height is known and the vertical clamp is accurate.
+        positionHoverPanel(marker);
         window.requestAnimationFrame(() => {
-            const popupElement = popup.getElement();
-            if (!popupElement) {
-                return;
-            }
-
-            const baseTransform = popupElement.dataset.baseTransform || popupElement.style.transform || "";
-            popupElement.dataset.baseTransform = baseTransform;
-            popupElement.style.transform = baseTransform;
-
-            const contentWrapper = popupElement.querySelector(".leaflet-popup-content-wrapper");
-            if (contentWrapper) {
-                const baseWrapperTransform = contentWrapper.dataset.baseTransform || contentWrapper.style.transform || "";
-                contentWrapper.dataset.baseTransform = baseWrapperTransform;
-                contentWrapper.style.transform = baseWrapperTransform;
-            }
-
-            const mapRect = map.getContainer().getBoundingClientRect();
-            const popupRect = popupElement.getBoundingClientRect();
-            const contentWrapperRect = contentWrapper
-                ? contentWrapper.getBoundingClientRect()
-                : popupRect;
-            const padding = 14;
-            let shiftX = 0;
-            let shiftY = 0;
-
-            if (contentWrapperRect.left < mapRect.left + padding) {
-                shiftX = mapRect.left + padding - contentWrapperRect.left;
-            } else if (contentWrapperRect.right > mapRect.right - padding) {
-                shiftX = mapRect.right - padding - contentWrapperRect.right;
-            }
-
-            if (popupRect.top < mapRect.top + padding) {
-                shiftY = mapRect.top + padding - popupRect.top;
-            } else if (popupRect.bottom > mapRect.bottom - padding) {
-                shiftY = mapRect.bottom - padding - popupRect.bottom;
-            }
-
-            if (shiftY) {
-                const verticalTransform = `translateY(${Math.round(shiftY)}px)`;
-                popupElement.style.transform = baseTransform
-                    ? `${baseTransform} ${verticalTransform}`
-                    : verticalTransform;
-            }
-
-            if (contentWrapper && shiftX) {
-                const baseWrapperTransform = contentWrapper.dataset.baseTransform || contentWrapper.style.transform || "";
-                const horizontalTransform = `translateX(${Math.round(shiftX)}px)`;
-                contentWrapper.style.transform = baseWrapperTransform
-                    ? `${baseWrapperTransform} ${horizontalTransform}`
-                    : horizontalTransform;
-            }
+            if (panelActiveMarker === marker) positionHoverPanel(marker);
         });
+
+        refreshPopupNearbySummary(marker);
+        if (point.popupClusterSummary?.useCluster) {
+            ensureClusterPointDetails(marker);
+        } else {
+            ensurePointDetails(point, marker);
+        }
+    }
+
+    /**
+     * Hide the hover panel and clear the active-marker reference.
+     */
+    function hideHoverPanel() {
+        panelActiveMarker = null;
+        hoverPanel.setAttribute("hidden", "");
+        hoverPanel.innerHTML = "";
     }
 
     /**
@@ -1656,8 +1689,14 @@
 
         const nearbySummary = buildNearbyPopupSummary(marker);
         point.popupClusterSummary = nearbySummary.useCluster ? nearbySummary : null;
-        marker.setPopupContent(buildPopupHtml(point));
-        fitPopupWithinMap(marker);
+
+        if (panelActiveMarker === marker) {
+            hoverPanel.innerHTML = buildPopupHtml(point);
+            // Re-clamp after a content change because the panel height may differ.
+            window.requestAnimationFrame(() => {
+                if (panelActiveMarker === marker) positionHoverPanel(marker);
+            });
+        }
     }
 
     /**
@@ -1684,35 +1723,22 @@
     }
 
     /**
-     * Bind hover and click behavior to the live popup DOM element.
+     * Refresh the panel content after a zoom change that may alter the nearby
+     * cluster summary.
      */
-    function bindPopupElementInteractions(popupElement, cancelClose, scheduleClose) {
-        if (!popupElement || popupElement.dataset.wfPopupBound === "1") {
+    function refreshOpenPopupNearbyPoints() {
+        if (!panelActiveMarker) {
             return;
         }
 
-        popupElement.dataset.wfPopupBound = "1";
-        popupElement.addEventListener("mouseenter", cancelClose);
-        popupElement.addEventListener("mouseleave", scheduleClose);
-    }
+        const marker = panelActiveMarker;
+        refreshPopupNearbySummary(marker);
 
-    /**
-     * Keep open popups aligned with the current zoom-level nearby summary.
-     */
-    function refreshOpenPopupNearbyPoints() {
-        renderedMarkers.forEach((marker) => {
-            if (!marker.isPopupOpen()) {
-                return;
-            }
-
-            refreshPopupNearbySummary(marker);
-
-            if (marker.__wfPoint?.popupClusterSummary?.useCluster) {
-                ensureClusterPointDetails(marker);
-            } else {
-                ensurePointDetails(marker.__wfPoint, marker);
-            }
-        });
+        if (marker.__wfPoint?.popupClusterSummary?.useCluster) {
+            ensureClusterPointDetails(marker);
+        } else {
+            ensurePointDetails(marker.__wfPoint, marker);
+        }
     }
 
     /**
@@ -1819,16 +1845,6 @@
         marker.__wfPoint = point;
         renderedMarkers.push(marker);
 
-        marker.bindPopup(buildPopupHtml(point), {
-            closeButton: false,
-            autoClose: false,
-            closeOnClick: false,
-            autoPan: false,
-            minWidth: 320,
-            maxWidth: 400,
-            className: "station-popup-container"
-        });
-
         let openTimer = null;
         let closeTimer = null;
 
@@ -1858,15 +1874,20 @@
             cancelOpen();
             openTimer = window.setTimeout(() => {
                 openTimer = null;
-                marker.openPopup();
+                showHoverPanel(marker);
             }, POPUP_HOVER_OPEN_DELAY_MS);
         }
 
         function scheduleClose() {
             cancelOpen();
             cancelClose();
-            closeTimer = window.setTimeout(() => marker.closePopup(), 180);
+            closeTimer = window.setTimeout(hideHoverPanel, 180);
         }
+
+        // Store references so the panel's own hover listeners can cancel/resume
+        // the close timer when the cursor travels from marker to panel.
+        marker.__wfCancelClose  = cancelClose;
+        marker.__wfScheduleClose = scheduleClose;
 
         marker.on("mouseover", function () {
             cancelClose();
@@ -1879,27 +1900,6 @@
         });
 
         marker.on("mouseout", scheduleClose);
-
-        marker.on("popupopen", function (event) {
-            closeOtherPopups(marker);
-            refreshPopupNearbySummary(marker);
-            if (point.popupClusterSummary?.useCluster) {
-                ensureClusterPointDetails(marker);
-            } else {
-                ensurePointDetails(point, marker);
-            }
-            const popupElement = marker.getPopup()?.getElement() || event.popup.getElement();
-            if (!popupElement) {
-                return;
-            }
-
-            // Leaflet recreates popup DOM on each open, so the hover listeners
-            // and base transform need to be rebound to the live element every
-            // time the popup mounts.
-            popupElement.dataset.baseTransform = popupElement.style.transform || "";
-            fitPopupWithinMap(marker);
-            bindPopupElementInteractions(popupElement, cancelClose, scheduleClose);
-        });
 
         bounds.push([point.latitude, point.longitude]);
     }
@@ -2390,6 +2390,12 @@
     map.on("zoomend", () => {
         refreshRenderedMarkerAppearance();
         refreshOpenPopupNearbyPoints();
+        if (panelActiveMarker) positionHoverPanel(panelActiveMarker);
+    });
+
+    // Reposition the panel while the map is panned so it tracks the marker.
+    map.on("moveend", () => {
+        if (panelActiveMarker) positionHoverPanel(panelActiveMarker);
     });
 
     // Startup restores the shell theme first, then normalizes the temporal

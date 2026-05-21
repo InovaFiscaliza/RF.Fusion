@@ -472,7 +472,7 @@ def _persist_task_error(
             task_id=task["task_id"],
             NU_STATUS=k.TASK_ERROR,
             NU_PID=k.HOST_UNLOCKED_PID,
-            NA_MESSAGE=f"Host Check Error | {err.format_error()}",
+            NA_MESSAGE=f"Host Check Error | {err.format_persisted_error()}",
             DT_HOST_TASK=datetime.now(),
         )
     except Exception as e2:

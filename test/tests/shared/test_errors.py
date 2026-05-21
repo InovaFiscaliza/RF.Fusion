@@ -131,6 +131,82 @@ class ErrorHandlerTests(unittest.TestCase):
         self.assertIn("Payload validation failed during processing", formatted)
         self.assertIn("[detail=Receiver serial missing from payload]", formatted)
 
+    def test_format_persisted_error_omits_type_and_runtime_context(self) -> None:
+        # DB-facing messages should keep the stable classification but drop
+        # volatile tokens already stored in dedicated columns.
+        handler = errors.ErrorHandler(FakeLogger())
+        handler.capture(
+            "Payload validation failed during processing",
+            stage="PROCESS",
+            exc=errors.BinValidationError(
+                "APP_ANALISE returned error in Answer: "
+                "model:SpecDataBase:NoReadableFilesInZip"
+            ),
+            host_id=10826,
+            task_id=1178786,
+        )
+
+        formatted = handler.format_persisted_error()
+
+        self.assertIn("[stage=PROCESS]", formatted)
+        self.assertIn("[code=APP_ANALISE_NO_READABLE_FILES_IN_ZIP]", formatted)
+        self.assertIn("APP_ANALISE reported no readable files in ZIP", formatted)
+        self.assertIn("[detail=model:SpecDataBase:NoReadableFilesInZip]", formatted)
+        self.assertNotIn("[type=", formatted)
+        self.assertNotIn("[host_id=", formatted)
+        self.assertNotIn("[task_id=", formatted)
+
+    def test_persisted_error_fields_promote_specific_app_analise_answer_error(self) -> None:
+        # The structured DB columns should carry the precise processing code,
+        # not only the generic outer BIN validation wrapper.
+        handler = errors.ErrorHandler(FakeLogger())
+        handler.capture(
+            "Payload validation failed during processing",
+            stage="PROCESS",
+            exc=errors.BinValidationError(
+                "APP_ANALISE returned error in Answer: "
+                "model:SpecDataBase:NoReadableFilesInZip"
+            ),
+        )
+
+        payload = errors.persisted_error_fields_from_handler(handler)
+
+        self.assertEqual(payload["NA_ERROR_DOMAIN"], "PROCESSING")
+        self.assertEqual(
+            payload["NA_ERROR_CODE"],
+            "APP_ANALISE_NO_READABLE_FILES_IN_ZIP",
+        )
+        self.assertEqual(
+            payload["NA_ERROR_SUMMARY"],
+            "APP_ANALISE reported no readable files in ZIP",
+        )
+        self.assertEqual(
+            payload["NA_ERROR_DETAIL"],
+            "model:SpecDataBase:NoReadableFilesInZip",
+        )
+        self.assertEqual(payload["NU_ERROR_CLASSIFIER_VERSION"], 1)
+
+    def test_canonicalize_persisted_error_message_strips_type_and_context(self) -> None:
+        # Historical DB rows may contain the verbose log-flavored formatter.
+        # Canonicalization should preserve the stable error payload while
+        # removing exception type and per-attempt context tags.
+        normalized = errors.canonicalize_persisted_error_message(
+            "Processing Error | [ERROR] [stage=PROCESS] [type=BinValidationError] "
+            "[code=BIN_PAYLOAD_VALIDATION_FAILED] "
+            "Payload validation failed during processing "
+            "[detail=APP_ANALISE returned error in Answer: "
+            "model:SpecDataBase:NoReadableFilesInZip] "
+            "[host_id=10826] [task_id=1178786]"
+        )
+
+        self.assertEqual(
+            normalized,
+            "Processing Error | [ERROR] [stage=PROCESS] "
+            "[code=APP_ANALISE_NO_READABLE_FILES_IN_ZIP] "
+            "APP_ANALISE reported no readable files in ZIP "
+            "[detail=model:SpecDataBase:NoReadableFilesInZip]",
+        )
+
     def test_log_error_uses_structured_logger_when_available(self) -> None:
         # Newer loggers should receive a normalized event instead of plain text.
         logger = FakeLogger()

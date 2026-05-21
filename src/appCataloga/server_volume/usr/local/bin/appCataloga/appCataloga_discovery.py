@@ -370,7 +370,7 @@ def _persist_discovery_error(
             NA_MESSAGE=tools.compose_message(
                 task_type=k.FILE_TASK_DISCOVERY,
                 task_status=k.TASK_ERROR,
-                error=err.format_error(),
+                error=err.format_persisted_error(),
             ),
             DT_HOST_TASK=datetime.now(),
         )

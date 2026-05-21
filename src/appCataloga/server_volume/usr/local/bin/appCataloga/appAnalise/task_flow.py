@@ -365,8 +365,14 @@ def _flush_fixed_site_updates(db_rfm, site_updates, *, logger=None):
 
 
 def _build_spectrum_identity_key(spectrum_row):
-    """Build the in-memory idempotence key used during one payload insert."""
-    return (
+    """Build the in-memory idempotence key used during one payload insert.
+
+    RFeye fixed stations can republish the same logical spectrum from a
+    growing partial file. For that family only, `DT_TIME_END` is excluded so
+    later parses collapse into the original logical spectrum instead of
+    creating a second in-batch identity.
+    """
+    key = (
         spectrum_row["id_site"],
         spectrum_row["id_equipment"],
         spectrum_row["id_procedure"],
@@ -374,9 +380,11 @@ def _build_spectrum_identity_key(spectrum_row):
         spectrum_row["nu_freq_start"],
         spectrum_row["nu_freq_end"],
         spectrum_row["dt_time_start"],
-        spectrum_row["dt_time_end"],
         spectrum_row["nu_trace_length"],
     )
+    if spectrum_row.get("allow_time_end_growth_dedup"):
+        return key
+    return key + (spectrum_row["dt_time_end"],)
 
 
 def _build_site_cache_key(site_data):
@@ -632,6 +640,7 @@ def insert_spectra_batch(
             "nu_rbw": getattr(spectrum, "bw", None),
             "nu_att_gain": k.DEFAULT_ATTENUATION_GAIN,
             "js_metadata": json.dumps(metadata),
+            "allow_time_end_growth_dedup": persisted_equipment_name.startswith("rfeye"),
         }
         spectrum_identity_key = _build_spectrum_identity_key(spectrum_row)
 
@@ -707,7 +716,7 @@ def return_task_to_pending(db_bp, file_task_id, err):
         task_type=k.FILE_TASK_PROCESS_TYPE,
         task_status=k.TASK_PENDING,
         detail="APP_ANALISE transient failure, task returned for retry",
-        error=err.format_error(),
+        error=err.format_persisted_error(),
     )
 
     db_bp.file_task_update(
@@ -740,7 +749,7 @@ def freeze_task_for_manual_review(
         task_type=k.FILE_TASK_PROCESS_TYPE,
         task_status=k.TASK_FROZEN,
         detail=detail,
-        error=err.format_error(),
+        error=err.format_persisted_error(),
     )
 
     db_bp.file_task_update(
@@ -1133,7 +1142,7 @@ def finalize_task_resolution(
         task_status=status,
         path=new_path if file_was_processed else None,
         name=history_meta["name"] if file_was_processed else None,
-        error=err.format_error() if err.triggered else None,
+        error=err.format_persisted_error() if err.triggered else None,
     )
     processed_at = datetime.now()
     structured_error_fields = _structured_error_fields_for_handler(

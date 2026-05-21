@@ -667,6 +667,82 @@ class SmallDimensionInsertTests(DbHandlerRfmBaseTests):
 class SpectrumAndBridgeTests(DbHandlerRfmBaseTests):
     """Validate the final relational inserts that tie the ingestion together."""
 
+    def test_insert_spectrum_reuses_existing_row_when_only_dt_time_end_grows(self) -> None:
+        handler = self.make_handler()
+        select_calls = []
+
+        def fake_select_rows(**kwargs):
+            select_calls.append(kwargs)
+            where = kwargs["where"]
+            if "DT_TIME_END" in where:
+                return []
+            return [{"ID_SPECTRUM": 4223243}]
+
+        handler._select_rows = fake_select_rows
+        handler._insert_row = lambda **kwargs: self.fail("should not insert a new spectrum")
+
+        spectrum_id = handler.insert_spectrum(
+            {
+                "id_site": 10,
+                "id_equipment": 20,
+                "id_procedure": 30,
+                "id_detector_type": 40,
+                "id_trace_type": 50,
+                "id_measure_unit": 60,
+                "nu_freq_start": 470.0,
+                "nu_freq_end": 700.0,
+                "dt_time_start": datetime(2026, 5, 18, 7, 55, 0),
+                "dt_time_end": datetime(2026, 5, 19, 12, 0, 0),
+                "nu_trace_length": 5888,
+                "allow_time_end_growth_dedup": True,
+            }
+        )
+
+        self.assertEqual(spectrum_id, 4223243)
+        self.assertEqual(len(select_calls), 2)
+        self.assertIn("DT_TIME_END", select_calls[0]["where"])
+        self.assertNotIn("DT_TIME_END", select_calls[1]["where"])
+        self.assertEqual(select_calls[1]["order_by"], "DT_TIME_END ASC, ID_SPECTRUM ASC")
+
+    def test_insert_spectrum_does_not_use_relaxed_match_for_non_rfeye(self) -> None:
+        handler = self.make_handler()
+        select_calls = []
+        captured = {}
+
+        def fake_select_rows(**kwargs):
+            select_calls.append(kwargs)
+            return []
+
+        def fake_insert_row(*, table, data):
+            captured["table"] = table
+            captured["data"] = data
+            return 900
+
+        handler._select_rows = fake_select_rows
+        handler._insert_row = fake_insert_row
+
+        spectrum_id = handler.insert_spectrum(
+            {
+                "id_site": 10,
+                "id_equipment": 20,
+                "id_procedure": 30,
+                "id_detector_type": 40,
+                "id_trace_type": 50,
+                "id_measure_unit": 60,
+                "nu_freq_start": 470.0,
+                "nu_freq_end": 700.0,
+                "dt_time_start": datetime(2026, 5, 18, 7, 55, 0),
+                "dt_time_end": datetime(2026, 5, 19, 12, 0, 0),
+                "nu_trace_length": 5888,
+                "allow_time_end_growth_dedup": False,
+            }
+        )
+
+        self.assertEqual(spectrum_id, 900)
+        self.assertEqual(len(select_calls), 1)
+        self.assertIn("DT_TIME_END", select_calls[0]["where"])
+        self.assertEqual(captured["table"], "FACT_SPECTRUM")
+
     def test_insert_spectrum_serializes_js_metadata_dict(self) -> None:
         handler = self.make_handler()
         captured = {}

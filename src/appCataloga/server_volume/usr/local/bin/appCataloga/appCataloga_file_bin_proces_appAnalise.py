@@ -396,7 +396,7 @@ def main():
             if not result:
                 # This worker does not own a pool, so an empty queue simply
                 # yields back to the normal jitter contract before polling again.
-                runtime_sleep.random_jitter_sleep()
+                runtime_sleep.random_jitter_sleep(interval=10)
                 continue
 
             # From this point on, the loop is working on one concrete payload.
@@ -695,6 +695,7 @@ def main():
                     # Another worker can win the optimistic claim between the
                     # read step and the RUNNING transition. Back off briefly
                     # so we do not spin on the same row.
+                    
                     runtime_sleep.random_jitter_sleep()
                 skip_to_next_iteration = True
             else:

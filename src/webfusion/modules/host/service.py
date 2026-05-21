@@ -19,7 +19,7 @@ import subprocess
 import time
 from datetime import datetime
 
-from db import get_connection_bpdata, get_connection_summary
+from db import get_connection_summary
 
 
 _RUNTIME_OVERVIEW_CACHE = {
@@ -908,43 +908,6 @@ def _get_host_error_summary_rows(host_id, error_scope):
     return rows
 
 
-def _get_current_month_backup_summary_for_host(
-    host_id,
-    current_month_start,
-    next_month_start,
-):
-    """Read the exact current-month backup throughput for one host.
-
-    ``HOST_MONTHLY_METRIC`` is keyed by ``DT_FILE_CREATED`` and therefore cannot
-    answer the host card that is explicitly about files backed up during the
-    current calendar month. This narrower live query preserves that meaning
-    while the rest of the page moves to summary-backed reads.
-    """
-
-    conn = get_connection_bpdata()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT
-            COUNT(*) AS BACKUP_DONE_THIS_MONTH,
-            ROUND(COALESCE(SUM(VL_FILE_SIZE_KB), 0) / 1024 / 1024, 2) AS BACKUP_DONE_GB_THIS_MONTH
-        FROM FILE_TASK_HISTORY
-        WHERE FK_HOST = %s
-          AND NU_STATUS_BACKUP = 0
-          AND DT_BACKUP >= %s
-          AND DT_BACKUP < %s
-        """,
-        (
-            int(host_id),
-            current_month_start.strftime("%Y-%m-%d %H:%M:%S"),
-            next_month_start.strftime("%Y-%m-%d %H:%M:%S"),
-        ),
-    )
-    row = cur.fetchone() or {}
-    conn.close()
-    return row
-
-
 def _build_host_yearly_breakdowns(monthly_rows):
     """Collapse month-grain summary rows into the annual tables shown on `/host`."""
 
@@ -1381,8 +1344,8 @@ def get_host_statistics(host_id):
     The result mixes:
         - current operational counters from ``HOST_CURRENT_SNAPSHOT``
         - historical totals and annual breakdowns from ``HOST_MONTHLY_METRIC``
-        - one narrow live query for the exact "backup done this month" card,
-          which is keyed by ``DT_BACKUP`` rather than ``DT_FILE_CREATED``
+        - current-month backup throughput already materialized in the snapshot
+          from ``DT_BACKUP``
     """
 
     normalized_host_id = int(host_id)
@@ -1401,21 +1364,10 @@ def get_host_statistics(host_id):
     row["DONE_GB"] = round(float(row.get("VL_DONE_BACKUP_GB") or 0), 2)
 
     current_month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    if current_month_start.month == 12:
-        next_month_start = current_month_start.replace(year=current_month_start.year + 1, month=1)
-    else:
-        next_month_start = current_month_start.replace(month=current_month_start.month + 1)
-
     monthly_rows = _get_host_monthly_metric_rows(normalized_host_id)
-    current_month_backup = _get_current_month_backup_summary_for_host(
-        normalized_host_id,
-        current_month_start,
-        next_month_start,
-    )
-
     row["CURRENT_MONTH_LABEL"] = current_month_start.strftime("%Y-%m")
-    row["BACKUP_DONE_THIS_MONTH"] = int(current_month_backup.get("BACKUP_DONE_THIS_MONTH") or 0)
-    row["BACKUP_DONE_GB_THIS_MONTH"] = float(current_month_backup.get("BACKUP_DONE_GB_THIS_MONTH") or 0)
+    row["BACKUP_DONE_THIS_MONTH"] = int(row.get("NU_BACKUP_DONE_THIS_MONTH") or 0)
+    row["BACKUP_DONE_GB_THIS_MONTH"] = float(row.get("VL_BACKUP_DONE_GB_THIS_MONTH") or 0)
 
     totals = {
         "DISCOVERED_FILES_TOTAL": 0,

@@ -247,6 +247,9 @@ class FakeErr:
     def format_error(self) -> str:
         return self._message
 
+    def format_persisted_error(self) -> str:
+        return self._message
+
 
 def build_test_file_meta(path: Path) -> dict:
     """Build worker-style file metadata for a real temporary file."""
@@ -581,6 +584,74 @@ class SpectrumInsertTests(unittest.TestCase):
         self.assertEqual(js_metadata["antenna"]["Name"], "RFE-ANT-01")
         self.assertEqual(js_metadata["others"]["gpsType"], "Built-in")
         self.assertNotIn("discarded_spectrum_count", js_metadata)
+
+    def test_insert_spectra_batch_collapses_partial_rfeye_growth_same_payload(self) -> None:
+        db = FakeDbRfmIngest()
+        spectrum_a = self._build_spectrum(site_id=10, equipment_name="rfeye002083")
+        spectrum_b = self._build_spectrum(site_id=10, equipment_name="rfeye002083")
+        spectrum_a.description = "PMRD (Faixa 4 de 4)."
+        spectrum_b.description = "PMRD (Faixa 4 de 4)."
+        spectrum_a.start_mega = spectrum_b.start_mega = 470.0
+        spectrum_a.stop_mega = spectrum_b.stop_mega = 700.0
+        spectrum_a.ndata = spectrum_b.ndata = 5888
+        spectrum_a.trace_length = 168
+        spectrum_b.trace_length = 338
+        spectrum_a.start_dateidx = spectrum_b.start_dateidx = datetime(2026, 5, 18, 7, 55, 0)
+        spectrum_a.stop_dateidx = datetime(2026, 5, 18, 21, 50, 0)
+        spectrum_b.stop_dateidx = datetime(2026, 5, 19, 12, 0, 0)
+        bin_data = {
+            "method": "Fixed logger",
+            "spectrum": [spectrum_a, spectrum_b],
+        }
+
+        spectrum_ids = processing.insert_spectra_batch(
+            db_rfm=db,
+            bin_data=bin_data,
+            hostname_db="rfeye002083",
+            host_path="/host/path",
+            host_file_name="source.bin",
+            extension=".bin",
+            vl_file_size_kb=1,
+            dt_created=datetime(2026, 1, 1, 12, 0, 0),
+            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
+        )
+
+        self.assertEqual(spectrum_ids, [801, 801])
+        self.assertEqual(len(db.insert_spectrum_calls), 1)
+
+    def test_insert_spectra_batch_keeps_time_end_distinct_for_non_rfeye(self) -> None:
+        db = FakeDbRfmIngest()
+        spectrum_a = self._build_spectrum(site_id=10, equipment_name="keysight a")
+        spectrum_b = self._build_spectrum(site_id=10, equipment_name="keysight a")
+        spectrum_a.description = "PMRD (Faixa 4 de 4)."
+        spectrum_b.description = "PMRD (Faixa 4 de 4)."
+        spectrum_a.start_mega = spectrum_b.start_mega = 470.0
+        spectrum_a.stop_mega = spectrum_b.stop_mega = 700.0
+        spectrum_a.ndata = spectrum_b.ndata = 5888
+        spectrum_a.trace_length = 168
+        spectrum_b.trace_length = 338
+        spectrum_a.start_dateidx = spectrum_b.start_dateidx = datetime(2026, 5, 18, 7, 55, 0)
+        spectrum_a.stop_dateidx = datetime(2026, 5, 18, 21, 50, 0)
+        spectrum_b.stop_dateidx = datetime(2026, 5, 19, 12, 0, 0)
+        bin_data = {
+            "method": "Drive test",
+            "spectrum": [spectrum_a, spectrum_b],
+        }
+
+        spectrum_ids = processing.insert_spectra_batch(
+            db_rfm=db,
+            bin_data=bin_data,
+            hostname_db="keysight_mobile",
+            host_path="/host/path",
+            host_file_name="source.bin",
+            extension=".bin",
+            vl_file_size_kb=1,
+            dt_created=datetime(2026, 1, 1, 12, 0, 0),
+            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
+        )
+
+        self.assertEqual(spectrum_ids, [801, 802])
+        self.assertEqual(len(db.insert_spectrum_calls), 2)
 
     def test_insert_spectra_batch_falls_back_to_host_for_malformed_cwsm_receiver(self) -> None:
         db = FakeDbRfmIngest()
@@ -946,6 +1017,9 @@ class RetryTests(unittest.TestCase):
 
         class FakeErr:
             def format_error(self) -> str:
+                return "[ERROR] timeout"
+
+            def format_persisted_error(self) -> str:
                 return "[ERROR] timeout"
 
         db = FakeDb()

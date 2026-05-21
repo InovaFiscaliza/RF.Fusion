@@ -1415,6 +1415,13 @@ class dbHandlerRFM(DBHandlerBase):
 
         The lookup keys are chosen to make worker retries idempotent without
         requiring a separate deduplication pass.
+
+        RFeye fixed stations can re-export the same logical spectrum from a
+        growing partial file on later backups. In that case the spectrum keeps
+        the same site/equipment/procedure/frequency/start identity while only
+        `DT_TIME_END` expands. For that family only, we try an exact match
+        first and then a relaxed canonical match that ignores `DT_TIME_END`,
+        reusing the oldest persisted row for that logical spectrum.
         """
 
         required_keys = (
@@ -1437,20 +1444,26 @@ class dbHandlerRFM(DBHandlerBase):
 
         self._connect()
         try:
-            # The fact row is considered the same spectrum when the resolved
-            # site/equipment/procedure/time/frequency window already exists.
+            allow_time_end_growth_dedup = bool(
+                data.get("allow_time_end_growth_dedup")
+            )
+            stable_identity_where = {
+                "FK_SITE": data["id_site"],
+                "FK_EQUIPMENT": data["id_equipment"],
+                "FK_PROCEDURE": data["id_procedure"],
+                "FK_TRACE_TYPE": data["id_trace_type"],
+                "NU_FREQ_START": data["nu_freq_start"],
+                "NU_FREQ_END": data["nu_freq_end"],
+                "DT_TIME_START": data["dt_time_start"],
+                "NU_TRACE_LENGTH": data["nu_trace_length"],
+            }
+
+            # Exact replay of the same payload row.
             rows = self._select_rows(
                 table="FACT_SPECTRUM",
                 where={
-                    "FK_SITE": data["id_site"],
-                    "FK_EQUIPMENT": data["id_equipment"],
-                    "FK_PROCEDURE": data["id_procedure"],
-                    "FK_TRACE_TYPE": data["id_trace_type"],
-                    "NU_FREQ_START": data["nu_freq_start"],
-                    "NU_FREQ_END": data["nu_freq_end"],
-                    "DT_TIME_START": data["dt_time_start"],
+                    **stable_identity_where,
                     "DT_TIME_END": data["dt_time_end"],
-                    "NU_TRACE_LENGTH": data["nu_trace_length"],
                 },
                 cols=["ID_SPECTRUM"],
                 limit=1,
@@ -1458,6 +1471,20 @@ class dbHandlerRFM(DBHandlerBase):
 
             if rows:
                 return int(rows[0]["ID_SPECTRUM"])
+
+            if allow_time_end_growth_dedup:
+                # Canonical fallback for growing RFeye partial files: keep the
+                # earliest persisted spectrum row for this logical identity.
+                rows = self._select_rows(
+                    table="FACT_SPECTRUM",
+                    where=stable_identity_where,
+                    cols=["ID_SPECTRUM"],
+                    order_by="DT_TIME_END ASC, ID_SPECTRUM ASC",
+                    limit=1,
+                )
+
+                if rows:
+                    return int(rows[0]["ID_SPECTRUM"])
 
             # Accept either serialized JSON or a dict.
             js_metadata = data.get("js_metadata")

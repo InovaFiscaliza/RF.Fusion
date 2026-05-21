@@ -92,6 +92,8 @@ ERROR_DOMAIN_BY_CODE = {
     "SITE_GEOGRAPHIC_CODES_NOT_FOUND": "PROCESSING",
     "APP_ANALISE_READ_TIMEOUT": "PROCESSING",
     "APP_ANALISE_INVALID_SPECTRA_TYPE": "PROCESSING",
+    "APP_ANALISE_ANSWER_ERROR": "PROCESSING",
+    "APP_ANALISE_NO_READABLE_FILES_IN_ZIP": "PROCESSING",
     "BIN_PAYLOAD_VALIDATION_FAILED": "PROCESSING",
     "AUTH_FAILED": "BACKUP",
     "SSH_AUTH_TIMEOUT": "BACKUP",
@@ -203,6 +205,22 @@ def _canonicalize_error_reason(
         canonical = "APP_ANALISE returned invalid Answer.Spectra type"
         detail = raw_reason if raw_reason != canonical else None
         return "APP_ANALISE_INVALID_SPECTRA_TYPE", canonical, detail
+
+    if raw_reason.startswith("APP_ANALISE returned error in Answer:"):
+        detail = raw_reason.split("APP_ANALISE returned error in Answer:", 1)[1].strip()
+
+        if detail == "model:SpecDataBase:NoReadableFilesInZip":
+            return (
+                "APP_ANALISE_NO_READABLE_FILES_IN_ZIP",
+                "APP_ANALISE reported no readable files in ZIP",
+                detail,
+            )
+
+        return (
+            "APP_ANALISE_ANSWER_ERROR",
+            "APP_ANALISE returned error in Answer",
+            detail or None,
+        )
 
     if (
         raw_reason == "Payload validation failed during processing"
@@ -459,6 +477,72 @@ def _extract_error_summary(error_fragment: str) -> Optional[str]:
     return summary or None
 
 
+def _render_persisted_error_fragment(
+    *,
+    stage: Optional[str],
+    code: Optional[str],
+    summary: Optional[str],
+    detail: Optional[str],
+) -> str:
+    """Build the compact structured error fragment used in persisted messages."""
+    parts = ["[ERROR]"]
+
+    if stage:
+        parts.append(f"[stage={stage}]")
+
+    if code:
+        parts.append(f"[code={code}]")
+
+    if summary:
+        parts.append(summary)
+
+    if detail:
+        parts.append(f"[detail={detail}]")
+
+    return " ".join(parts)
+
+
+def canonicalize_persisted_error_message(message: Optional[str]) -> Optional[str]:
+    """
+    Normalize one persisted audit message into a compact canonical form.
+
+    This keeps `NA_MESSAGE` readable for operators while stripping volatile
+    tokens such as exception types and per-attempt IDs that already live in
+    dedicated columns. Non-error messages pass through unchanged.
+    """
+    normalized = (message or "").strip()
+
+    if not normalized:
+        return message
+
+    prefix, error_fragment = _extract_embedded_error_fragment(normalized)
+
+    if error_fragment is None:
+        return normalized
+
+    payload = classify_persisted_error_message(normalized)
+
+    rendered_error = _render_persisted_error_fragment(
+        stage=payload.get("NA_ERROR_STAGE"),
+        code=payload.get("NA_ERROR_CODE"),
+        summary=payload.get("NA_ERROR_SUMMARY"),
+        detail=payload.get("NA_ERROR_DETAIL"),
+    )
+
+    normalized_prefix = prefix.strip(" |")
+    if normalized_prefix:
+        return f"{normalized_prefix} | {rendered_error}"
+
+    if "[ERROR]" in normalized:
+        return rendered_error
+
+    leading_label = normalized.split("|", 1)[0].strip()
+    if leading_label and leading_label.lower() in ERROR_DOMAIN_BY_PREFIX:
+        return f"{leading_label} | {rendered_error}"
+
+    return rendered_error
+
+
 def classify_persisted_error_message(message: Optional[str]) -> Dict[str, Any]:
     """
     Parse one persisted task/history message into structured error columns.
@@ -507,6 +591,24 @@ def classify_persisted_error_message(message: Optional[str]) -> Dict[str, Any]:
     if not detail and fallback_detail:
         detail = fallback_detail
 
+    if detail:
+        refined_code, refined_summary, refined_detail = _canonicalize_error_reason(
+            detail,
+            None,
+            stage=stage,
+        )
+        if refined_code and code in {
+            None,
+            "UNCLASSIFIED",
+            "BIN_PAYLOAD_VALIDATION_FAILED",
+            "APP_ANALISE_ANSWER_ERROR",
+        }:
+            code = refined_code
+            if refined_summary:
+                summary = refined_summary
+            if refined_detail is not None:
+                detail = refined_detail
+
     if not code and (stage or summary or prefix):
         code = "UNCLASSIFIED"
 
@@ -543,9 +645,14 @@ def persisted_error_fields_from_handler(
     """
     if handler is not None:
         triggered = getattr(handler, "triggered", None)
+        format_persisted_error = getattr(handler, "format_persisted_error", None)
         format_error = getattr(handler, "format_error", None)
 
         if triggered:
+            if callable(format_persisted_error):
+                return classify_persisted_error_message(
+                    handler.format_persisted_error()
+                )
             return classify_persisted_error_message(handler.format_error())
 
         if triggered is None and callable(format_error):
@@ -933,16 +1040,13 @@ class ErrorHandler:
 
         self.logger.error(" ".join(parts))
         
-    def format_error(self) -> str:
-        """
-        Return a compact structured error string for persistence.
-
-        The output is tuned for DB/history fields:
-            - stable enough for grouping
-            - detailed enough for audits
-            - compact enough to avoid turning every raw exception into a
-              unique ungroupable blob
-        """
+    def _format_structured_error(
+        self,
+        *,
+        include_type: bool,
+        include_context: bool,
+    ) -> str:
+        """Render one structured error string with configurable verbosity."""
         if not self.triggered:
             return ""
 
@@ -958,7 +1062,8 @@ class ErrorHandler:
         if self.stage:
             parts.append(f"[stage={self.stage}]")
 
-        parts.append(f"[type={exc_type}]")
+        if include_type:
+            parts.append(f"[type={exc_type}]")
 
         if error_code:
             parts.append(f"[code={error_code}]")
@@ -969,12 +1074,38 @@ class ErrorHandler:
         if detail:
             parts.append(f"[detail={detail}]")
 
-        if self.context:
+        if include_context and self.context:
             parts.extend(
                 [f"[{key}={value}]" for key, value in self.context.items()]
             )
 
         return " ".join(parts)
+
+    def format_error(self) -> str:
+        """
+        Return the richer structured error string used in logs and APIs.
+
+        This flavor keeps exception type and captured runtime context because
+        those channels value immediate operator detail over storage stability.
+        """
+        return self._format_structured_error(
+            include_type=True,
+            include_context=True,
+        )
+
+    def format_persisted_error(self) -> str:
+        """
+        Return the compact structured error string used in DB audit fields.
+
+        Persistence intentionally omits volatile tokens such as exception type
+        and per-attempt context (`host_id`, `task_id`, etc.) because those
+        facts already live in dedicated columns and only make `NA_MESSAGE`
+        noisier and less groupable.
+        """
+        return self._format_structured_error(
+            include_type=False,
+            include_context=False,
+        )
 
 
 

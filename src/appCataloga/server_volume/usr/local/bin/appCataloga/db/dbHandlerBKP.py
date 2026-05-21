@@ -218,6 +218,9 @@ class dbHandlerBKP(DBHandlerBase):
         normalized = dict(payload)
 
         if "NA_MESSAGE" in normalized:
+            normalized["NA_MESSAGE"] = errors.canonicalize_persisted_error_message(
+                normalized.get("NA_MESSAGE")
+            )
             normalized.update(
                 errors.classify_persisted_error_message(normalized.get("NA_MESSAGE"))
             )
@@ -798,6 +801,9 @@ class dbHandlerBKP(DBHandlerBase):
                 NU_DONE_FILE_DISCOVERY_TASKS=total_discovered,
                 NU_DONE_FILE_BACKUP_TASKS=total_backup,
                 NU_DONE_FILE_PROCESS_TASKS=total_processed,
+                # Keep HOST's discovered-file counter aligned with the same
+                # durable history aggregate consumed by RFFUSION_SUMMARY.
+                NU_HOST_FILES=total_discovered,
 
                 # PENDING
                 NU_PENDING_FILE_BACKUP_TASKS=pending_backup,
@@ -1799,6 +1805,11 @@ class dbHandlerBKP(DBHandlerBase):
 
         if "FILTER" in set_dict:
             set_dict["FILTER"] = self._serialize_host_task_filter(set_dict["FILTER"])
+
+        if "NA_MESSAGE" in set_dict:
+            set_dict["NA_MESSAGE"] = errors.canonicalize_persisted_error_message(
+                set_dict.get("NA_MESSAGE")
+            )
 
         if not set_dict:
             self.log.warning(f"[DB] host_task_update() called with no valid fields for update.")

@@ -245,7 +245,7 @@ def _persist_backlog_error(
         NU_STATUS=k.TASK_ERROR,
         NU_PID=k.HOST_UNLOCKED_PID,
         DT_HOST_TASK=datetime.now(),
-        NA_MESSAGE=f"Backlog management error | {err.format_error()}",
+        NA_MESSAGE=f"Backlog management error | {err.format_persisted_error()}",
     )
 
 

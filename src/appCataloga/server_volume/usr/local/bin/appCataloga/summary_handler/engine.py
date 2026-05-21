@@ -2006,6 +2006,8 @@ class SummaryRefreshEngine:
 
         - ``BPDATA.HOST`` — connectivity flags, task counters, KB sizes.
         - ``BPDATA.FILE_TASK`` — real-time queue depth (pending only).
+        - ``BPDATA.FILE_TASK_HISTORY`` — current-month backup throughput
+          grouped by ``DT_BACKUP``.
         - ``HOST_MONTHLY_METRIC`` — total discovered-file count (preferred over
           the raw ``NU_HOST_FILES`` counter which may lag).
         - ``HOST_EQUIPMENT_LINK`` — matched equipment count.
@@ -2036,6 +2038,36 @@ class SummaryRefreshEngine:
             FROM BPDATA.FILE_TASK
             GROUP BY FK_HOST
             """
+        )
+        current_month_start = datetime.utcnow().replace(
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        if current_month_start.month == 12:
+            next_month_start = current_month_start.replace(
+                year=current_month_start.year + 1,
+                month=1,
+            )
+        else:
+            next_month_start = current_month_start.replace(
+                month=current_month_start.month + 1,
+            )
+        backup_month_rows = self._select(
+            """
+            SELECT
+                FK_HOST,
+                COUNT(*) AS NU_BACKUP_DONE_THIS_MONTH,
+                ROUND(COALESCE(SUM(VL_FILE_SIZE_KB), 0) / 1024 / 1024, 2) AS VL_BACKUP_DONE_GB_THIS_MONTH
+            FROM BPDATA.FILE_TASK_HISTORY
+            WHERE NU_STATUS_BACKUP = 0
+              AND DT_BACKUP >= %s
+              AND DT_BACKUP < %s
+            GROUP BY FK_HOST
+            """,
+            (current_month_start, next_month_start),
         )
         monthly_rows = self._select(
             """
@@ -2092,6 +2124,7 @@ class SummaryRefreshEngine:
         )
 
         queue_map = {int(row["FK_HOST"]): row for row in queue_rows}
+        backup_month_map = {int(row["FK_HOST"]): row for row in backup_month_rows}
         monthly_map = {int(row["FK_HOST"]): row for row in monthly_rows}
         link_map = {int(row["FK_HOST"]): row for row in link_rows}
         spectrum_map = {int(row["FK_HOST"]): row for row in spectrum_rows}
@@ -2109,6 +2142,7 @@ class SummaryRefreshEngine:
         for host in hosts:
             host_id = int(host["ID_HOST"])
             queue = queue_map.get(host_id, {})
+            backup_month = backup_month_map.get(host_id, {})
             monthly = monthly_map.get(host_id, {})
             link_stats = link_map.get(host_id, {})
             spectrum_stats = spectrum_map.get(host_id, {})
@@ -2135,7 +2169,9 @@ class SummaryRefreshEngine:
                     "NU_PENDING_FILE_BACKUP_TASKS": host.get("NU_PENDING_FILE_BACKUP_TASKS"),
                     "NU_DONE_FILE_BACKUP_TASKS": host.get("NU_DONE_FILE_BACKUP_TASKS"),
                     "NU_ERROR_FILE_BACKUP_TASKS": host.get("NU_ERROR_FILE_BACKUP_TASKS"),
+                    "NU_BACKUP_DONE_THIS_MONTH": int(backup_month.get("NU_BACKUP_DONE_THIS_MONTH") or 0),
                     "VL_PENDING_BACKUP_GB": _kb_to_gb(host.get("VL_PENDING_BACKUP_KB")),
+                    "VL_BACKUP_DONE_GB_THIS_MONTH": backup_month.get("VL_BACKUP_DONE_GB_THIS_MONTH") or 0,
                     "VL_DONE_BACKUP_GB": _kb_to_gb(host.get("VL_DONE_BACKUP_KB")),
                     "DT_LAST_PROCESSING": host.get("DT_LAST_PROCESSING"),
                     "NU_PENDING_FILE_PROCESS_TASKS": host.get("NU_PENDING_FILE_PROCESS_TASKS"),
@@ -2175,9 +2211,9 @@ class SummaryRefreshEngine:
 
         Aggregates across all rows in ``HOST_CURRENT_SNAPSHOT`` to produce
         server-wide totals (host counts, file counts, queue depths, GB volumes,
-        spectrum count).  Adds current-month backup metrics from
-        ``HOST_MONTHLY_METRIC`` and error-group counts from
-        ``SERVER_ERROR_SUMMARY``.
+        spectrum count).  Current-month backup throughput is summed from the
+        per-host snapshot fields already materialized from ``DT_BACKUP``, and
+        error-group counts come from ``SERVER_ERROR_SUMMARY``.
 
         The table always contains exactly one row with
         ``ID_SUMMARY = 1``.  The month label (``NA_CURRENT_MONTH_LABEL``) uses
@@ -2191,16 +2227,6 @@ class SummaryRefreshEngine:
         """
         snapshot_rows = self._select("SELECT * FROM HOST_CURRENT_SNAPSHOT")
         current_month = datetime.utcnow().strftime("%Y-%m-01")
-        metric_rows = self._select(
-            """
-            SELECT
-                SUM(NU_BACKUP_DONE_FILES) AS NU_BACKUP_DONE_THIS_MONTH,
-                ROUND(COALESCE(SUM(VL_BACKUP_DONE_GB), 0), 2) AS VL_BACKUP_DONE_GB_THIS_MONTH
-            FROM HOST_MONTHLY_METRIC
-            WHERE DT_REFERENCE_MONTH = %s
-            """,
-            (current_month,),
-        )
         server_error_rows = self._select(
             """
             SELECT
@@ -2211,7 +2237,6 @@ class SummaryRefreshEngine:
             """
         )
 
-        backup_done_metrics = metric_rows[0] if metric_rows else {}
         error_group_map = {
             row["NA_ERROR_SCOPE"]: int(row.get("NU_GROUPS") or 0)
             for row in server_error_rows
@@ -2237,8 +2262,8 @@ class SummaryRefreshEngine:
             "NU_PROCESSING_QUEUE_FILES_TOTAL": sum(int(row.get("NU_PROCESSING_QUEUE_FILES_TOTAL") or 0) for row in snapshot_rows),
             "VL_PROCESSING_QUEUE_GB_TOTAL": round(sum(float(row.get("VL_PROCESSING_QUEUE_GB_TOTAL") or 0) for row in snapshot_rows), 2),
             "NU_FACT_SPECTRUM_TOTAL": sum(int(row.get("NU_FACT_SPECTRUM_TOTAL") or 0) for row in snapshot_rows),
-            "NU_BACKUP_DONE_THIS_MONTH": int(backup_done_metrics.get("NU_BACKUP_DONE_THIS_MONTH") or 0),
-            "VL_BACKUP_DONE_GB_THIS_MONTH": backup_done_metrics.get("VL_BACKUP_DONE_GB_THIS_MONTH") or 0,
+            "NU_BACKUP_DONE_THIS_MONTH": sum(int(row.get("NU_BACKUP_DONE_THIS_MONTH") or 0) for row in snapshot_rows),
+            "VL_BACKUP_DONE_GB_THIS_MONTH": round(sum(float(row.get("VL_BACKUP_DONE_GB_THIS_MONTH") or 0) for row in snapshot_rows), 2),
             "NU_BACKUP_ERROR_GROUPS": int(error_group_map.get("BACKUP", 0)),
             "NU_PROCESSING_ERROR_GROUPS": int(error_group_map.get("PROCESSING", 0)),
             "DT_REFRESHED_AT": refreshed_at,

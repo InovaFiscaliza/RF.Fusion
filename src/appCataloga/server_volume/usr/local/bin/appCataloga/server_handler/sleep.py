@@ -33,11 +33,13 @@ if CONFIG_PATH not in sys.path:
 import config as k  # noqa: E402  (must be available at runtime)
 
 
-def random_jitter_sleep() -> None:
+def random_jitter_sleep(interval:float = None) -> None:
     """
     Sleep a small randomized interval to reduce worker polling races.
 
     Workers use this between idle polls so many daemons do not wake and
     contend for the same rows in perfect lockstep.
     """
-    time.sleep(random.uniform(0.5, k.MAX_HOST_TASK_WAIT_TIME))
+    if interval is None:
+        interval = k.MAX_HOST_TASK_WAIT_TIME
+    time.sleep(random.uniform(0.5, interval))

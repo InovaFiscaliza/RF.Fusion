@@ -157,8 +157,13 @@
     </div>
 
     {# Leaflet mounts the interactive map into this container. Point data comes
-       from `/api/map/stations`, while popup details are lazy-loaded per site. #}
-    <div id="station-map"></div>
+       from `/api/map/stations`, while popup details are lazy-loaded per site.
+       The hover panel sits as a sibling inside the wrap so it can overflow the
+       map without being clipped by Leaflet's internal popup pane. #}
+    <div class="station-map-wrap">
+        <div id="station-map"></div>
+        <div id="station-hover-panel" class="station-hover-panel" hidden></div>
+    </div>
 
     {# The legend is filled dynamically so only marker states present in the
        current filtered view are shown. #}

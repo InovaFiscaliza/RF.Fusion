@@ -315,8 +315,11 @@ Key method groups:
   Writes rows into a `{table}_shadow` staging table then issues one atomic
   `RENAME TABLE` to promote it as the live table.  Readers never see an empty
   or partially-written table.  The `_shadow` table is created automatically on
-  the first call; no manual schema migration needed.  Use for objects that are
-  always rebuilt in full (`HOST_CURRENT_SNAPSHOT`, `MAP_SITE_SUMMARY`, etc.).
+  the first call, but later schema changes must be migrated explicitly on both
+  the live and `_shadow` tables.  If they drift, the worker now fails fast with
+  a schema-mismatch error instead of silently repairing the shadow.  Use for
+  objects that are always rebuilt in full (`HOST_CURRENT_SNAPSHOT`,
+  `MAP_SITE_SUMMARY`, etc.).
 - `upsert_table_rows(table, rows)` — row-level UPSERT for tables that support
   partial updates scoped to the dirty hosts
 

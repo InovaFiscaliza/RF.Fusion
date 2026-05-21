@@ -503,7 +503,7 @@ def _persist_backup_error(
         task_status=k.TASK_ERROR,
         path=task["FILE_TASK__NA_HOST_FILE_PATH"] if task else None,
         name=task["FILE_TASK__NA_HOST_FILE_NAME"] if task else None,
-        error=err.format_error(),
+        error=err.format_persisted_error(),
     )
     error_at = datetime.now()
     structured_error_fields = errors.persisted_error_fields_from_handler(

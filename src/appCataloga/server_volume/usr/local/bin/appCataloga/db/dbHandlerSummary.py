@@ -754,7 +754,11 @@ class dbHandlerSummary(DBHandlerBase):
 
         The ``{table}_shadow`` table is created automatically on the first call
         (``CREATE TABLE IF NOT EXISTS ... LIKE {table}``) and reused on every
-        subsequent call, so no manual schema migration is needed.
+        subsequent call.  However, later schema changes to the live table do
+        not automatically propagate to an already-existing shadow table.  That
+        drift is treated as a deployment/configuration error and this method
+        fails fast with a diagnostic message rather than attempting to repair
+        the shadow schema at runtime.
 
         Swap cycle for each call::
 
@@ -789,6 +793,51 @@ class dbHandlerSummary(DBHandlerBase):
                 f"CREATE TABLE IF NOT EXISTS {shadow} LIKE {table}",
                 commit=True,
             )
+
+            # Validate that the staging table still matches the live table.
+            # ALTER TABLE on `{table}` does not propagate to an existing
+            # `{table}_shadow`. If they drift apart, that is a rollout/migration
+            # error and must fail loudly instead of being auto-healed here.
+            live_cols = self._select_raw(
+                """
+                SELECT COLUMN_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = %s
+                  AND TABLE_NAME = %s
+                ORDER BY ORDINAL_POSITION
+                """,
+                (self.database, table),
+            )
+            shadow_cols = self._select_raw(
+                """
+                SELECT COLUMN_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = %s
+                  AND TABLE_NAME = %s
+                ORDER BY ORDINAL_POSITION
+                """,
+                (self.database, shadow),
+            )
+
+            live_col_names = [row["COLUMN_NAME"] for row in live_cols]
+            shadow_col_names = [row["COLUMN_NAME"] for row in shadow_cols]
+
+            if live_col_names != shadow_col_names:
+                missing_in_shadow = [
+                    col for col in live_col_names if col not in shadow_col_names
+                ]
+                extra_in_shadow = [
+                    col for col in shadow_col_names if col not in live_col_names
+                ]
+                message = (
+                    f"Shadow table schema drift detected: {shadow} != {table}. "
+                    f"missing_in_shadow={missing_in_shadow} "
+                    f"extra_in_shadow={extra_in_shadow} "
+                    f"live_columns={live_col_names} "
+                    f"shadow_columns={shadow_col_names}"
+                )
+                self.log.error(f"[dbHandlerSummary] {message}")
+                raise RuntimeError(message)
 
             # TRUNCATE is DDL → implicit commit; shadow is guaranteed empty from here.
             # Any partial state from a previous crashed cycle is cleared.
