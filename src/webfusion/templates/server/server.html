@@ -10,7 +10,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/server_page.css', v='20260415-page-css-extraction') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/server_page.css', v='20260522-server-metric-scopes') }}">
 {% endblock %}
 
 {% block content %}
@@ -26,297 +26,456 @@
     data-summary-metrics-initial-loaded="{{ '1' if server_summary_metrics else '0' }}"
 >
 
-<h1 class="margin-bottom-l">
+<h1 class="wf-screen-title margin-bottom-l">
     Panorama da Máquina Virtual
 </h1>
 
 <form id="server-filter-form" method="get" data-loading-message="Atualizando panorama da máquina virtual..."></form>
 
-<div class="card background-neutral-0 padding-l border-radius-m margin-bottom-l">
-    <div class="section-title section-title-tight">Consolidado do Servidor</div>
-    <div class="summary-subsection">
-        <div class="summary-subsection-title">Panorama das Estações</div>
-        <div class="summary-grid">
-            <div class="summary-card">
-                <div class="summary-card-label">Estações Cadastradas</div>
-                <div class="summary-card-value">{{ server_overview.TOTAL_HOSTS }}</div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Online</div>
-                <div class="summary-card-value">{{ server_overview.ONLINE_HOSTS }}</div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Offline</div>
-                <div class="summary-card-value">{{ server_overview.OFFLINE_HOSTS }}</div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Ocupadas</div>
-                <div class="summary-card-value">{{ server_overview.BUSY_HOSTS }}</div>
-            </div>
-        </div>
-    </div>
+<div class="server-page-stack">
+    <p class="server-page-intro page-intro">
+        O panorama abaixo separa estado das estações, pipeline de catalogação, infraestrutura compartilhada e diagnósticos sob demanda.
+    </p>
 
-    <div class="summary-subsection">
-        <div class="summary-subsection-title">Ciclo de Backup e Armazenamento</div>
-        <div class="summary-grid">
-            <div class="summary-card">
-                <div class="summary-card-label">Mês de referência</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-month-label">
-                    {{ server_summary_metrics.CURRENT_MONTH_LABEL if server_summary_metrics else 'CARREGANDO' }}
+    <div class="server-top-grid">
+        <section class="card background-neutral-0 padding-l border-radius-m server-section-card">
+            <div class="server-section-head">
+                <div class="server-section-kicker">Visão rápida</div>
+                <h2 class="server-section-title">Panorama das Estações</h2>
+                <p class="server-section-copy">
+                    Leitura imediata da frota cadastrada e do estado operacional atual das estações.
+                </p>
+            </div>
+            <div class="summary-grid server-summary-grid server-summary-grid--compact">
+                <div class="summary-card">
+                    <div class="summary-card-label">Cadastradas</div>
+                    <div class="summary-card-value">{{ server_overview.TOTAL_HOSTS }}</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-card-label">Online</div>
+                    <div class="summary-card-value">{{ server_overview.ONLINE_HOSTS }}</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-card-label">Offline</div>
+                    <div class="summary-card-value">{{ server_overview.OFFLINE_HOSTS }}</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-card-label">Ocupadas</div>
+                    <div class="summary-card-value">{{ server_overview.BUSY_HOSTS }}</div>
                 </div>
             </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Arquivos mapeados</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-discovered-total">
-                    {{ server_summary_metrics.DISCOVERED_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Backups no mês</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-done-month">
-                    {{ server_summary_metrics.BACKUP_DONE_THIS_MONTH if server_summary_metrics else 'CARREGANDO' }}
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Volume no mês</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-done-gb-month">
-                    {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_DONE_GB_THIS_MONTH }} GB{% else %}CARREGANDO{% endif %}
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Backups pendentes</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-pending-total">
-                    {{ server_summary_metrics.BACKUP_PENDING_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Backups com erro</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-error-total">
-                    {{ server_summary_metrics.BACKUP_ERROR_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Volume pendente de backup</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-pending-gb">
-                    {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_PENDING_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Arquivos na fila de backup</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-queue-total">
-                    {{ server_summary_metrics.BACKUP_QUEUE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Volume na fila de backup</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-queue-gb">
-                    {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_QUEUE_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
-                </div>
-            </div>
-        </div>
-    </div>
+        </section>
 
-    <div class="summary-subsection">
-        <div class="summary-subsection-title">Processamento e Base Analítica</div>
-        <div class="summary-grid">
-            <div class="summary-card">
-                <div class="summary-card-label">Arquivos com Processamento Pendente</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-pending-total">
-                    {{ server_summary_metrics.PROCESSING_PENDING_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
-                </div>
+        <section class="card background-neutral-0 padding-l border-radius-m server-section-card">
+            <div class="server-section-head">
+                <div class="server-section-kicker">Infraestrutura</div>
+                <h2 class="server-section-title">Servidor Compartilhado</h2>
+                <p class="server-section-copy">
+                    Recursos comuns que sustentam o pipeline e ajudam a contextualizar gargalos do ambiente.
+                </p>
             </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Arquivos na fila de processamento</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-queue-total">
-                    {{ server_summary_metrics.PROCESSING_QUEUE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Volume na fila de processamento</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-queue-gb">
-                    {% if server_summary_metrics %}{{ server_summary_metrics.PROCESSING_QUEUE_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Arquivos com Processamento Concluído</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-done-total">
-                    {{ server_summary_metrics.PROCESSING_DONE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Arquivos com Erro de Processamento</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-error-total">
-                    {{ server_summary_metrics.PROCESSING_ERROR_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
-                </div>
-            </div>
-            <div class="summary-card">
-                <div class="summary-card-label">Espectros Gerados</div>
-                <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-fact-spectrum-total">
-                    {{ server_summary_metrics.FACT_SPECTRUM_TOTAL if server_summary_metrics else 'CARREGANDO' }}
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="section-title">Infraestrutura Compartilhada do Servidor</div>
-    <div class="summary-grid">
-        <div class="summary-card">
-            <div class="summary-card-label">Uso de Memória RAM</div>
-            <div class="summary-card-value">
-                {{ server_overview.SERVER_MEMORY.used_human }}/{{ server_overview.SERVER_MEMORY.total_human }}
-            </div>
-            <div class="summary-card-note">
-                Ocupado/Total | Disponível {{ server_overview.SERVER_MEMORY.available_human }} | Uso {{ server_overview.SERVER_MEMORY.use_percent }}%
-            </div>
-        </div>
-        <div class="summary-card">
-            <div class="summary-card-label">Uso do Repositório Oficial</div>
-            <div class="summary-card-value">
-                {% if server_overview.REPOSFI_USAGE.mounted %}
-                {{ server_overview.REPOSFI_USAGE.used_human }}/{{ server_overview.REPOSFI_USAGE.total_human }}
-                {% else %}
-                Indisponível
-                {% endif %}
-            </div>
-            <div class="summary-card-note">
-                {% if server_overview.REPOSFI_USAGE.mounted %}
-                Ocupado/Total | Livre {{ server_overview.REPOSFI_USAGE.free_human }} | Uso {{ server_overview.REPOSFI_USAGE.use_percent }}%
-                {% else %}
-                Montagem {{ server_overview.REPOSFI_USAGE.path }} indisponível
-                {% endif %}
-            </div>
-        </div>
-        <div class="summary-card">
-            <div class="summary-card-label">Conectividade do appAnalise</div>
-            <div class="summary-card-value {% if server_overview.APP_ANALISE_STATUS.online %}summary-card-value-online{% else %}summary-card-value-offline{% endif %}">
-                {% if server_overview.APP_ANALISE_STATUS.online %}
-                Online
-                {% else %}
-                Offline
-                {% endif %}
-            </div>
-            <div class="summary-card-note">
-                {{ server_overview.APP_ANALISE_STATUS.host or "-" }}
-                {% if server_overview.APP_ANALISE_STATUS.online %}
-                | ping {{ server_overview.APP_ANALISE_STATUS.latency_ms }} ms
-                {% elif server_overview.APP_ANALISE_STATUS.error %}
-                | {{ server_overview.APP_ANALISE_STATUS.error }}
-                {% endif %}
-            </div>
-        </div>
-    </div>
-
-    <div class="section-title">Diagnóstico de Processamento</div>
-    <details class="details-panel" id="server-processing-errors-panel">
-        <summary>
-            Clique para carregar detalhes sobre erros agrupados de processamento
-            <span class="details-summary-meta" id="server-processing-errors-meta">Consulta sob demanda</span>
-        </summary>
-        <div class="details-panel-body">
-            <div class="diagnostic-breakdown">
-                <table class="diagnostic-table">
-                    <thead>
-                        <tr>
-                            <th>Mensagem de erro</th>
-                            <th class="diagnostic-count-col">Ocorrências</th>
-                        </tr>
-                    </thead>
-                    <tbody id="server-processing-errors-body">
-                        <tr>
-                            <td colspan="2">Abra este painel para exibir os erros agrupados consultados no banco de resumo.</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </details>
-
-    <div class="section-title">Diagnóstico de Backup</div>
-    <details class="details-panel" id="server-backup-errors-panel">
-        <summary>
-            Clique para carregar detalhes sobre erros agrupados de backup
-            <span class="details-summary-meta" id="server-backup-errors-meta">Consulta sob demanda</span>
-        </summary>
-        <div class="details-panel-body">
-            <div class="diagnostic-breakdown">
-                <table class="diagnostic-table">
-                    <thead>
-                        <tr>
-                            <th>Mensagem de erro</th>
-                            <th class="diagnostic-count-col">Ocorrências</th>
-                        </tr>
-                    </thead>
-                    <tbody id="server-backup-errors-body">
-                        <tr>
-                            <td colspan="2">Abra este painel para exibir os erros agrupados de backup consultados no banco de resumo.</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </details>
-
-    <details class="details-panel" id="server-host-table-panel">
-        <summary>
-            Clique para expandir a tabela de estações
-            <span class="details-summary-meta" id="server-host-table-meta">Carregamento sob demanda</span>
-        </summary>
-        <div class="details-panel-body">
-            <div class="table-panel-toolbar">
-                <div class="summary-card-note">
-                    O consolidado acima é global. O filtro abaixo afeta apenas a tabela de estações.
-                </div>
-                <div class="table-panel-actions">
-                    <div class="online-filter section-online-filter">
-                        <label>
-                            <input
-                                type="checkbox"
-                                id="online_only"
-                                name="online_only"
-                                value="1"
-                                form="server-filter-form"
-                                {% if online_only %}checked{% endif %}
-                            >
-                            Apenas Online na Tabela
-                        </label>
+            <div class="summary-grid server-summary-grid server-summary-grid--compact">
+                <div class="summary-card">
+                    <div class="summary-card-label">Uso de Memória RAM</div>
+                    <div class="summary-card-value">
+                        {{ server_overview.SERVER_MEMORY.used_human }}/{{ server_overview.SERVER_MEMORY.total_human }}
                     </div>
-                    <button
-                        type="submit"
-                        class="btn-search"
-                        form="server-filter-form"
-                    >
-                        Atualizar Panorama
-                    </button>
-                    <a class="btn-secondary" href="{{ url_for('server.server') }}">
-                        Limpar filtro
-                    </a>
+                    <div class="summary-card-note">
+                        Disponível {{ server_overview.SERVER_MEMORY.available_human }} | Uso {{ server_overview.SERVER_MEMORY.use_percent }}%
+                    </div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-card-label">Repositório Oficial</div>
+                    <div class="summary-card-value">
+                        {% if server_overview.REPOSFI_USAGE.mounted %}
+                        {{ server_overview.REPOSFI_USAGE.used_human }}/{{ server_overview.REPOSFI_USAGE.total_human }}
+                        {% else %}
+                        Indisponível
+                        {% endif %}
+                    </div>
+                    <div class="summary-card-note">
+                        {% if server_overview.REPOSFI_USAGE.mounted %}
+                        Livre {{ server_overview.REPOSFI_USAGE.free_human }} | Uso {{ server_overview.REPOSFI_USAGE.use_percent }}%
+                        {% else %}
+                        Montagem {{ server_overview.REPOSFI_USAGE.path }} indisponível
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-card-label">appAnalise</div>
+                    <div class="summary-card-value {% if server_overview.APP_ANALISE_STATUS.online %}summary-card-value-online{% else %}summary-card-value-offline{% endif %}">
+                        {% if server_overview.APP_ANALISE_STATUS.online %}
+                        Online
+                        {% else %}
+                        Offline
+                        {% endif %}
+                    </div>
+                    <div class="summary-card-note">
+                        {{ server_overview.APP_ANALISE_STATUS.host or "-" }}
+                        {% if server_overview.APP_ANALISE_STATUS.online %}
+                        | ping {{ server_overview.APP_ANALISE_STATUS.latency_ms }} ms
+                        {% elif server_overview.APP_ANALISE_STATUS.error %}
+                        | {{ server_overview.APP_ANALISE_STATUS.error }}
+                        {% endif %}
+                    </div>
                 </div>
             </div>
-            <div class="annual-breakdown">
-                <table class="stats-table">
-                    <thead>
-                        <tr>
-                            <th>Estação</th>
-                            <th>Conexão</th>
-                            <th>Ocupação</th>
-                            <th>Último check</th>
-                            <th>Backups pendentes</th>
-                            <th>Erros de backup</th>
-                            <th>Processamentos pendentes</th>
-                            <th>Erros de processamento</th>
-                            <th>Volume pendente (GB)</th>
-                            <th>Ação</th>
-                        </tr>
-                    </thead>
-                    <tbody id="server-host-table-body">
-                        <tr>
-                            <td colspan="10">Abra este painel para carregar a tabela de estações.</td>
-                        </tr>
-                    </tbody>
-                </table>
+        </section>
+    </div>
+
+    <div class="server-operational-grid">
+        <section class="card background-neutral-0 padding-l border-radius-m server-section-card">
+            <div class="server-section-head">
+                <div class="server-section-kicker">Pipeline</div>
+                <h2 class="server-section-title">Backup e Armazenamento</h2>
+                <p class="server-section-copy">
+                    Indicadores separados entre execução mensal do backup, acervo histórico e fila operacional atual.
+                </p>
             </div>
+            <div class="server-metric-clusters">
+                <section class="server-metric-cluster">
+                    <div class="server-metric-cluster-head">
+                        <div>
+                            <h3 class="server-metric-cluster-title">Execução do Mês</h3>
+                            <p class="server-metric-cluster-copy">Movimentação operacional já executada no mês de referência, baseada em DT_BACKUP.</p>
+                        </div>
+                        <span class="server-section-meta-badge">
+                            Mês de referência
+                            <strong id="server-summary-month-label" class="{% if not server_summary_metrics %}summary-card-value-loading{% endif %}">
+                                {{ server_summary_metrics.CURRENT_MONTH_LABEL if server_summary_metrics else 'CARREGANDO' }}
+                            </strong>
+                        </span>
+                    </div>
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster">
+                        <div class="summary-card">
+                            <div class="summary-card-label">Backups no mês</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-done-month">
+                                {{ server_summary_metrics.BACKUP_DONE_THIS_MONTH if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume no mês</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-done-gb-month">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_DONE_GB_THIS_MONTH }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="server-metric-cluster">
+                    <div class="server-metric-cluster-head">
+                        <div>
+                            <h3 class="server-metric-cluster-title">Acervo Global</h3>
+                            <p class="server-metric-cluster-copy">Estado acumulado dos arquivos do acervo, independente do mês em que o backup aconteceu.</p>
+                        </div>
+                    </div>
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster">
+                        <div class="summary-card">
+                            <div class="summary-card-label">Arquivos mapeados</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-discovered-total">
+                                {{ server_summary_metrics.DISCOVERED_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume mapeado</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-discovered-gb-total">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.DISCOVERED_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Backups concluídos</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-done-total">
+                                {{ server_summary_metrics.BACKUP_DONE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume já baixado</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-done-gb-total">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_DONE_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Aguardando backup</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-pending-total">
+                                {{ server_summary_metrics.BACKUP_PENDING_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                            <div class="summary-card-note">Arquivos ainda sem backup concluído.</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Erros de backup</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-error-total">
+                                {{ server_summary_metrics.BACKUP_ERROR_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume com erro</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-error-gb-total">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_ERROR_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume aguardando</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-pending-gb">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_PENDING_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="server-metric-cluster">
+                    <div class="server-metric-cluster-head">
+                        <div>
+                            <h3 class="server-metric-cluster-title">Fila Atual</h3>
+                            <p class="server-metric-cluster-copy">Somente tarefas efetivamente enfileiradas ou em execução neste instante, não o passivo total.</p>
+                        </div>
+                    </div>
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster">
+                        <div class="summary-card">
+                            <div class="summary-card-label">Em fila agora</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-queue-total">
+                                {{ server_summary_metrics.BACKUP_QUEUE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                            <div class="summary-card-note">Tarefas em execução ou aguardando worker neste momento.</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume na fila</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-queue-gb">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_QUEUE_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </section>
+
+        <section class="card background-neutral-0 padding-l border-radius-m server-section-card">
+            <div class="server-section-head">
+                <div class="server-section-kicker">Pipeline</div>
+                <h2 class="server-section-title">Processamento e Base Analítica</h2>
+                <p class="server-section-copy">
+                    Indicadores separados entre acervo histórico já tratado e fila operacional atual de processamento. Nesta visão, o processamento não usa um recorte mensal materializado como o backup.
+                </p>
+            </div>
+            <div class="server-metric-clusters">
+                <section class="server-metric-cluster">
+                    <div class="server-metric-cluster-head">
+                        <div>
+                            <h3 class="server-metric-cluster-title">Acervo Global</h3>
+                            <p class="server-metric-cluster-copy">Estado acumulado do acervo entre pendências, sucesso analítico, erros e base gerada.</p>
+                        </div>
+                    </div>
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster">
+                        <div class="summary-card">
+                            <div class="summary-card-label">Aguardando processamento</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-pending-total">
+                                {{ server_summary_metrics.PROCESSING_PENDING_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                            <div class="summary-card-note">Arquivos ainda sem processamento concluído.</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume aguardando</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-pending-gb-total">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.PROCESSING_PENDING_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Processados com sucesso</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-done-total">
+                                {{ server_summary_metrics.PROCESSING_DONE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume processado</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-done-gb-total">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.PROCESSING_DONE_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Erros de processamento</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-error-total">
+                                {{ server_summary_metrics.PROCESSING_ERROR_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume com erro</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-error-gb-total">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.PROCESSING_ERROR_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Espectros gerados</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-fact-spectrum-total">
+                                {{ server_summary_metrics.FACT_SPECTRUM_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="server-metric-cluster">
+                    <div class="server-metric-cluster-head">
+                        <div>
+                            <h3 class="server-metric-cluster-title">Fila Atual</h3>
+                            <p class="server-metric-cluster-copy">Somente tarefas de processamento efetivamente enfileiradas ou em execução neste instante.</p>
+                        </div>
+                    </div>
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster">
+                        <div class="summary-card">
+                            <div class="summary-card-label">Em fila agora</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-queue-total">
+                                {{ server_summary_metrics.PROCESSING_QUEUE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                            <div class="summary-card-note">Tarefas em execução ou aguardando worker neste momento.</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume na fila</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-queue-gb">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.PROCESSING_QUEUE_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </section>
+    </div>
+
+    <div class="server-diagnostic-grid">
+        <section class="card background-neutral-0 padding-l border-radius-m server-section-card">
+            <div class="server-section-head">
+                <div class="server-section-kicker">Diagnóstico</div>
+                <h2 class="server-section-title">Erros de Processamento</h2>
+                <p class="server-section-copy">
+                    Agrupamentos globais de falhas para identificar padrões recorrentes no pipeline analítico.
+                </p>
+            </div>
+            <details class="details-panel" id="server-processing-errors-panel">
+                <summary>
+                    Erros agrupados de processamento
+                    <span class="details-summary-meta" id="server-processing-errors-meta">Consulta sob demanda</span>
+                </summary>
+                <div class="details-panel-body">
+                    <div class="diagnostic-breakdown">
+                        <table class="diagnostic-table">
+                            <thead>
+                                <tr>
+                                    <th>Mensagem de erro</th>
+                                    <th class="diagnostic-count-col">Ocorrências</th>
+                                </tr>
+                            </thead>
+                            <tbody id="server-processing-errors-body">
+                                <tr>
+                                    <td colspan="2">Abra este painel para exibir os erros agrupados consultados no banco de resumo.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </details>
+        </section>
+
+        <section class="card background-neutral-0 padding-l border-radius-m server-section-card">
+            <div class="server-section-head">
+                <div class="server-section-kicker">Diagnóstico</div>
+                <h2 class="server-section-title">Erros de Backup</h2>
+                <p class="server-section-copy">
+                    Consolidação das falhas de download para diferenciar passivo pontual de problema sistêmico.
+                </p>
+            </div>
+            <details class="details-panel" id="server-backup-errors-panel">
+                <summary>
+                    Erros agrupados de backup
+                    <span class="details-summary-meta" id="server-backup-errors-meta">Consulta sob demanda</span>
+                </summary>
+                <div class="details-panel-body">
+                    <div class="diagnostic-breakdown">
+                        <table class="diagnostic-table">
+                            <thead>
+                                <tr>
+                                    <th>Mensagem de erro</th>
+                                    <th class="diagnostic-count-col">Ocorrências</th>
+                                </tr>
+                            </thead>
+                            <tbody id="server-backup-errors-body">
+                                <tr>
+                                    <td colspan="2">Abra este painel para exibir os erros agrupados de backup consultados no banco de resumo.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </details>
+        </section>
+    </div>
+
+    <section class="card background-neutral-0 padding-l border-radius-m server-section-card">
+        <div class="server-section-head">
+            <div class="server-section-kicker">Navegação</div>
+            <h2 class="server-section-title">Tabela de Estações</h2>
+            <p class="server-section-copy">
+                Use este bloco para aprofundar a leitura por estação sem alterar o significado dos totais globais exibidos acima.
+            </p>
         </div>
-    </details>
+        <details class="details-panel" id="server-host-table-panel">
+            <summary>
+                Abrir tabela de estações
+                <span class="details-summary-meta" id="server-host-table-meta">Carregamento sob demanda</span>
+            </summary>
+            <div class="details-panel-body">
+                <div class="table-panel-toolbar">
+                    <p class="server-toolbar-caption">
+                        O filtro abaixo afeta apenas esta listagem de estações.
+                    </p>
+                    <div class="table-panel-actions">
+                        <div class="online-filter section-online-filter">
+                            <label>
+                                <input
+                                    type="checkbox"
+                                    id="online_only"
+                                    name="online_only"
+                                    value="1"
+                                    form="server-filter-form"
+                                    {% if online_only %}checked{% endif %}
+                                >
+                                Apenas Online na Tabela
+                            </label>
+                        </div>
+                        <button
+                            type="submit"
+                            class="btn-search"
+                            form="server-filter-form"
+                        >
+                            Atualizar Panorama
+                        </button>
+                        <a class="btn-secondary" href="{{ url_for('server.server') }}">
+                            Limpar filtro
+                        </a>
+                    </div>
+                </div>
+                <div class="annual-breakdown">
+                    <table class="stats-table">
+                        <thead>
+                            <tr>
+                                <th>Estação</th>
+                                <th>Conexão</th>
+                                <th>Ocupação</th>
+                                <th>Último check</th>
+                                <th>Backups pendentes</th>
+                                <th>Erros de backup</th>
+                                <th>Processamentos pendentes</th>
+                                <th>Erros de processamento</th>
+                                <th>Volume pendente (GB)</th>
+                                <th>Ação</th>
+                            </tr>
+                        </thead>
+                        <tbody id="server-host-table-body">
+                            <tr>
+                                <td colspan="10">Abra este painel para carregar a tabela de estações.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </details>
+    </section>
 </div>
 
 </div>
@@ -324,5 +483,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/server_page.js', v='20260428-server-diagnostics-fix') }}"></script>
+<script src="{{ url_for('static', filename='js/server_page.js', v='20260522-server-metric-scopes') }}"></script>
 {% endblock %}

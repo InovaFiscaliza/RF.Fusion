@@ -776,6 +776,35 @@ def _get_server_discovered_files_total_fallback():
     return int(row.get("NU_DISCOVERED_FILES_TOTAL") or 0)
 
 
+def _get_server_monthly_metric_rollups():
+    """Aggregate global acervo totals from ``HOST_MONTHLY_METRIC``.
+
+    These rollups keep server-wide global counters visually separate from the
+    operational "current queue" snapshot. They reflect the accumulated state
+    of files grouped by their creation-month cohorts.
+    """
+
+    conn = get_connection_summary()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            COALESCE(SUM(NU_DISCOVERED_FILES), 0) AS NU_DISCOVERED_FILES_TOTAL,
+            ROUND(COALESCE(SUM(VL_DISCOVERED_GB), 0), 2) AS VL_DISCOVERED_GB_TOTAL,
+            COALESCE(SUM(NU_BACKUP_DONE_FILES), 0) AS NU_BACKUP_DONE_FILES_TOTAL,
+            ROUND(COALESCE(SUM(VL_BACKUP_DONE_GB), 0), 2) AS VL_BACKUP_DONE_GB_TOTAL,
+            ROUND(COALESCE(SUM(VL_BACKUP_ERROR_GB), 0), 2) AS VL_BACKUP_ERROR_GB_TOTAL,
+            ROUND(COALESCE(SUM(VL_PROCESSING_PENDING_GB), 0), 2) AS VL_PROCESSING_PENDING_GB_TOTAL,
+            ROUND(COALESCE(SUM(VL_PROCESSING_DONE_GB), 0), 2) AS VL_PROCESSING_DONE_GB_TOTAL,
+            ROUND(COALESCE(SUM(VL_PROCESSING_ERROR_GB), 0), 2) AS VL_PROCESSING_ERROR_GB_TOTAL
+        FROM HOST_MONTHLY_METRIC
+        """
+    )
+    row = cur.fetchone() or {}
+    conn.close()
+    return row
+
+
 def _get_summary_host_rows(search=None, online_only=False):
     """Read the server host table from ``HOST_CURRENT_SNAPSHOT``.
 
@@ -1141,6 +1170,7 @@ def get_server_summary_metrics():
         return _SERVER_SUMMARY_CACHE["payload"]
 
     summary_row = _get_server_current_summary_row()
+    monthly_rollups = _get_server_monthly_metric_rollups()
 
     if not summary_row or not summary_row.get("ID_SUMMARY"):
         raise RuntimeError("server_current_summary_missing")
@@ -1156,17 +1186,24 @@ def get_server_summary_metrics():
         "BACKUP_DONE_THIS_MONTH": int(summary_row.get("NU_BACKUP_DONE_THIS_MONTH") or 0),
         "BACKUP_DONE_GB_THIS_MONTH": float(summary_row.get("VL_BACKUP_DONE_GB_THIS_MONTH") or 0),
         "DISCOVERED_FILES_TOTAL": discovered_files_total,
+        "DISCOVERED_GB_TOTAL": float(monthly_rollups.get("VL_DISCOVERED_GB_TOTAL") or 0),
+        "BACKUP_DONE_FILES_TOTAL": int(monthly_rollups.get("NU_BACKUP_DONE_FILES_TOTAL") or 0),
+        "BACKUP_DONE_GB_TOTAL": float(monthly_rollups.get("VL_BACKUP_DONE_GB_TOTAL") or 0),
         "BACKUP_PENDING_FILES_TOTAL": int(summary_row.get("NU_BACKUP_PENDING_FILES_TOTAL") or 0),
         "BACKUP_PENDING_GB_TOTAL": float(summary_row.get("VL_BACKUP_PENDING_GB_TOTAL") or 0),
         "BACKUP_ERROR_FILES_TOTAL": int(summary_row.get("NU_BACKUP_ERROR_FILES_TOTAL") or 0),
+        "BACKUP_ERROR_GB_TOTAL": float(monthly_rollups.get("VL_BACKUP_ERROR_GB_TOTAL") or 0),
         "BACKUP_QUEUE_FILES_TOTAL": int(summary_row.get("NU_BACKUP_QUEUE_FILES_TOTAL") or 0),
         "BACKUP_QUEUE_GB_TOTAL": float(summary_row.get("VL_BACKUP_QUEUE_GB_TOTAL") or 0),
         "PROCESSING_PENDING_FILES_TOTAL": int(summary_row.get("NU_PROCESSING_PENDING_FILES_TOTAL") or 0),
+        "PROCESSING_PENDING_GB_TOTAL": float(monthly_rollups.get("VL_PROCESSING_PENDING_GB_TOTAL") or 0),
         "PROCESSING_DONE_FILES_TOTAL": int(summary_row.get("NU_PROCESSING_DONE_FILES_TOTAL") or 0),
+        "PROCESSING_DONE_GB_TOTAL": float(monthly_rollups.get("VL_PROCESSING_DONE_GB_TOTAL") or 0),
         "FACT_SPECTRUM_TOTAL": int(summary_row.get("NU_FACT_SPECTRUM_TOTAL") or 0),
         "PROCESSING_QUEUE_FILES_TOTAL": int(summary_row.get("NU_PROCESSING_QUEUE_FILES_TOTAL") or 0),
         "PROCESSING_QUEUE_GB_TOTAL": float(summary_row.get("VL_PROCESSING_QUEUE_GB_TOTAL") or 0),
         "PROCESSING_ERROR_FILES_TOTAL": int(summary_row.get("NU_PROCESSING_ERROR_FILES_TOTAL") or 0),
+        "PROCESSING_ERROR_GB_TOTAL": float(monthly_rollups.get("VL_PROCESSING_ERROR_GB_TOTAL") or 0),
     }
 
     _SERVER_SUMMARY_CACHE["payload"] = payload

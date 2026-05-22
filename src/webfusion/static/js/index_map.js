@@ -119,6 +119,13 @@
         "offline_current",
         "offline_previous",
     ]);
+    const POINT_STATE_SUMMARY_PRIORITY = {
+        online_current: 0,
+        online_previous: 1,
+        offline_current: 2,
+        offline_previous: 3,
+        no_host: 4,
+    };
 
     // Marker states come from the backend's map consolidation. The legend and
     // marker styling must stay aligned with those exact keys.
@@ -389,6 +396,74 @@
     }
 
     /**
+     * Build the shorter locality subtitle used in the hover panel hierarchy.
+     *
+     * The state already appears as the primary heading there, so this label
+     * intentionally avoids repeating the state code when a more local place
+     * name is available.
+     */
+    function getPointLocalityShortLabel(point) {
+        const siteLabel = String(point?.site_label || "").trim();
+        const districtName = String(point?.district_name || "").trim();
+        const countyName = String(point?.county_name || "").trim();
+
+        if (siteLabel && countyName && isDistinctText(siteLabel, countyName)) {
+            return `${siteLabel} · ${countyName}`;
+        }
+
+        if (siteLabel) {
+            return siteLabel;
+        }
+
+        if (districtName && isDistinctText(districtName, countyName)) {
+            return districtName;
+        }
+
+        return countyName || "";
+    }
+
+    /**
+     * Resolve the primary state heading shown in map hover panels.
+     */
+    function getPointStateDisplayLabel(point) {
+        return String(point?.state_name || point?.state_code || "Estado não identificado").trim();
+    }
+
+    /**
+     * Compare user-facing labels with accent/case tolerance.
+     */
+    function compareDisplayText(textA, textB) {
+        return String(textA || "").localeCompare(String(textB || ""), "pt-BR", {
+            sensitivity: "base",
+            numeric: true,
+        });
+    }
+
+    /**
+     * Resolve the compact station/equipment label for ordering and display.
+     */
+    function getStationDisplayName(station) {
+        return String(station?.host_name || station?.equipment_name || "").trim();
+    }
+
+    /**
+     * Resolve the first alphabetical station label associated with one point.
+     */
+    function getPointPrimaryStationLabel(point) {
+        const stationLabels = Array.isArray(point?.stations) && point.stations.length > 0
+            ? point.stations.map(getStationDisplayName).filter(Boolean)
+            : Array.isArray(point?.station_names)
+            ? point.station_names.map((name) => String(name || "").trim()).filter(Boolean)
+            : [];
+
+        if (!stationLabels.length) {
+            return "";
+        }
+
+        return [...stationLabels].sort(compareDisplayText)[0];
+    }
+
+    /**
      * Produce the human-facing point label used in tooltips and selectors.
      *
      * When multiple stations share one plotted locality we intentionally
@@ -397,21 +472,70 @@
     function getPointDisplayName(point) {
         const namedStations = Array.isArray(point.stations) && point.stations.length > 0
             ? point.stations
-                .map((station) => station.host_name || station.equipment_name)
+                .map((station) => getStationDisplayName(station))
                 .filter(Boolean)
             : Array.isArray(point.station_names)
             ? point.station_names.filter(Boolean)
             : [];
+        const orderedStationNames = [...namedStations].sort(compareDisplayText);
 
-        if (namedStations.length === 1) {
-            return namedStations[0];
+        if (orderedStationNames.length === 1) {
+            return orderedStationNames[0];
         }
 
-        if (namedStations.length > 1) {
-            return `${namedStations[0]} (+${namedStations.length - 1})`;
+        if (orderedStationNames.length > 1) {
+            return `${orderedStationNames[0]} (+${orderedStationNames.length - 1})`;
         }
 
         return point.site_label;
+    }
+
+    /**
+     * Order station entries alphabetically for hover-panel readability.
+     */
+    function comparePopupStationOrder(stationA, stationB) {
+        return compareDisplayText(
+            getStationDisplayName(stationA),
+            getStationDisplayName(stationB),
+        );
+    }
+
+    /**
+     * Order popup points by state, then locality, then station label.
+     */
+    function comparePopupPointOrder(pointA, pointB) {
+        const stateDiff = compareDisplayText(
+            getPointStateDisplayLabel(pointA),
+            getPointStateDisplayLabel(pointB),
+        );
+        if (stateDiff !== 0) {
+            return stateDiff;
+        }
+
+        const localityDiff = compareDisplayText(
+            getPointLocalityShortLabel(pointA) || getPointLocalityLabel(pointA),
+            getPointLocalityShortLabel(pointB) || getPointLocalityLabel(pointB),
+        );
+        if (localityDiff !== 0) {
+            return localityDiff;
+        }
+
+        const stationDiff = compareDisplayText(
+            getPointPrimaryStationLabel(pointA),
+            getPointPrimaryStationLabel(pointB),
+        );
+        if (stationDiff !== 0) {
+            return stationDiff;
+        }
+
+        return (pointA.site_id || 0) - (pointB.site_id || 0);
+    }
+
+    /**
+     * Format the station-count badge with the correct Portuguese plural.
+     */
+    function formatStationCountLabel(stationCount) {
+        return `${stationCount} ${stationCount === 1 ? "estação" : "estações"}`;
     }
 
     /**
@@ -877,6 +1001,158 @@
     }
 
     /**
+     * Match one station row against the free-text station filter.
+     *
+     * This keeps the "Estação" control intuitive when a locality contains
+     * multiple colocated stations: once the user filters by one station name,
+     * marker color and popup content should reflect that station subset rather
+     * than the unrelated colocated peers.
+     */
+    function stationMatchesSearchTerm(station, searchTerm) {
+        if (!searchTerm) {
+            return false;
+        }
+
+        const corpus = normalizeSearchText([
+            station?.host_name || "",
+            station?.equipment_name || "",
+        ].join(" "));
+
+        return Boolean(corpus) && corpus.includes(searchTerm);
+    }
+
+    /**
+     * Snapshot the active station-level scopes derived from the toolbar.
+     */
+    function buildActiveStationScope({ searchTerm = "", statusScope = "all", localityScope = "include_history" } = {}) {
+        return {
+            searchTerm: String(searchTerm || "").trim(),
+            statusScope,
+            localityScope,
+        };
+    }
+
+    /**
+     * Tell whether any station-level restriction is currently active.
+     */
+    function hasActiveStationScope(scope) {
+        if (!scope) {
+            return false;
+        }
+
+        return Boolean(
+            scope.searchTerm
+            || scope.statusScope === "online_only"
+            || scope.statusScope === "offline_only"
+            || scope.localityScope === "current_only"
+            || scope.localityScope === "historical_only"
+        );
+    }
+
+    /**
+     * Tell whether one station survives the active station-level scopes.
+     */
+    function stationMatchesScope(station, scope) {
+        if (!station) {
+            return false;
+        }
+
+        if (scope?.searchTerm && !stationMatchesSearchTerm(station, scope.searchTerm)) {
+            return false;
+        }
+
+        const stateKey = station.map_state || "no_host";
+
+        if (scope?.statusScope === "online_only" && !ONLINE_POINT_STATES.has(stateKey)) {
+            return false;
+        }
+
+        if (scope?.statusScope === "offline_only" && !OFFLINE_POINT_STATES.has(stateKey)) {
+            return false;
+        }
+
+        if (scope?.localityScope === "current_only" && HISTORICAL_POINT_STATES.has(stateKey)) {
+            return false;
+        }
+
+        if (scope?.localityScope === "historical_only" && !HISTORICAL_POINT_STATES.has(stateKey)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Filter one station array by the active station-level scopes.
+     */
+    function filterStationsByScope(stations, scope) {
+        if (!Array.isArray(stations)) {
+            return [];
+        }
+
+        if (!hasActiveStationScope(scope)) {
+            return stations.map((station) => ({ ...station }));
+        }
+
+        return stations
+            .filter((station) => stationMatchesScope(station, scope))
+            .map((station) => ({ ...station }));
+    }
+
+    /**
+     * Collapse a filtered station subset back into one marker-state key.
+     */
+    function summarizePointStateFromStations(stations) {
+        if (!Array.isArray(stations) || stations.length === 0) {
+            return "no_host";
+        }
+
+        let bestState = "no_host";
+        let bestPriority = POINT_STATE_SUMMARY_PRIORITY[bestState];
+
+        stations.forEach((station) => {
+            const stateKey = station?.map_state || "no_host";
+            const priority = POINT_STATE_SUMMARY_PRIORITY[stateKey] ?? POINT_STATE_SUMMARY_PRIORITY.no_host;
+
+            if (priority < bestPriority) {
+                bestState = stateKey;
+                bestPriority = priority;
+            }
+        });
+
+        return bestState;
+    }
+
+    /**
+     * Clone one point so a station text filter can scope marker state and popup
+     * content to the matching stations only, without mutating the base dataset.
+     */
+    function buildStationScopedPoint(point, stations, scope) {
+        const scopedStations = Array.isArray(stations) ? stations : [];
+        const activeStationScope = buildActiveStationScope(scope);
+
+        return {
+            ...point,
+            stations: scopedStations,
+            station_names: scopedStations
+                .map((station) => station.host_name || station.equipment_name || "")
+                .filter(Boolean),
+            marker_state: summarizePointStateFromStations(scopedStations),
+            has_online_station: scopedStations.some((station) =>
+                ONLINE_POINT_STATES.has(station?.map_state || "no_host")
+            ),
+            has_online_host: scopedStations.some((station) =>
+                ONLINE_POINT_STATES.has(station?.map_state || "no_host")
+            ),
+            has_known_host: scopedStations.some((station) =>
+                station?.host_id !== null && station?.host_id !== undefined
+            ),
+            _activeStationScope: activeStationScope,
+            _stationScopeSearchTerm: activeStationScope.searchTerm || "",
+        };
+    }
+
+    /**
      * Return the normalized state key for one point.
      */
     function getPointStateKey(point) {
@@ -917,6 +1193,17 @@
      */
     function isOfflinePoint(point) {
         return OFFLINE_POINT_STATES.has(getPointStateKey(point));
+    }
+
+    /**
+     * Resolve the compact locality-mode label shown in popup summaries.
+     */
+    function getPointLocationModeLabel(point) {
+        if (getPointStateKey(point) === "no_host") {
+            return "Sem host";
+        }
+
+        return isHistoricalPoint(point) ? "Histórico" : "Atual";
     }
 
     /**
@@ -1092,36 +1379,17 @@
      * to recognize first when multiple nearby geopoints collapse visually.
      */
     function getClusterGroupDescriptor(point) {
-        const districtName = String(point?.district_name || "").trim();
-        const siteLabel = String(point?.site_label || "").trim();
-        const countyName = String(point?.county_name || "").trim();
-        const stateCode = String(point?.state_code || "").trim();
-        const countyStateLabel = getPointCountyStateLabel(point) || countyName || stateCode;
-        const districtKey = normalizeSearchText(districtName);
-        const siteKey = normalizeSearchText(siteLabel);
-        const countyKey = normalizeSearchText(countyName);
-        const stateKey = normalizeSearchText(stateCode);
-
-        if (siteKey && siteKey !== countyKey) {
-            return {
-                key: `${stateKey}|${countyKey}|site|${siteKey}`,
-                label: siteLabel,
-                context: countyStateLabel,
-            };
-        }
-
-        if (districtKey && districtKey !== countyKey) {
-            return {
-                key: `${stateKey}|${countyKey}|district|${districtKey}`,
-                label: districtName,
-                context: countyStateLabel,
-            };
-        }
+        const stateLabel = getPointStateDisplayLabel(point);
+        const localityLabel = getPointLocalityShortLabel(point) || getPointLocalityLabel(point) || `ID_SITE ${point.site_id}`;
+        const stateKey = normalizeSearchText(stateLabel);
+        const localityKey = normalizeSearchText(localityLabel);
 
         return {
-            key: `${stateKey}|${countyKey || siteKey || districtKey || "fallback"}`,
-            label: countyStateLabel || `ID_SITE ${point.site_id}`,
-            context: countyStateLabel,
+            key: `${stateKey}|${localityKey || `site-${point.site_id}`}`,
+            label: stateLabel,
+            context: localityLabel,
+            stateLabel,
+            localityLabel,
         };
     }
 
@@ -1169,13 +1437,7 @@
      * appear first inside each locality group.
      */
     function compareClusterPointPriority(pointA, pointB) {
-        const priorityDiff = getPointRenderPriority(pointB) - getPointRenderPriority(pointA);
-
-        if (priorityDiff !== 0) {
-            return priorityDiff;
-        }
-
-        return (pointA.site_id || 0) - (pointB.site_id || 0);
+        return comparePopupPointOrder(pointA, pointB);
     }
 
     /**
@@ -1194,13 +1456,7 @@
                 distance: marker === activeMarker ? 0 : getMarkerPixelDistance(activeMarker, marker),
             }))
             .filter((entry) => entry.marker === activeMarker || entry.distance <= maxDistance)
-            .sort((entryA, entryB) => {
-                if (entryA.distance !== entryB.distance) {
-                    return entryA.distance - entryB.distance;
-                }
-
-                return compareClusterPointPriority(entryA.point, entryB.point);
-            });
+            .sort((entryA, entryB) => compareClusterPointPriority(entryA.point, entryB.point));
 
         if (clusteredEntries.length <= 1) {
             return {
@@ -1232,6 +1488,8 @@
                 key: descriptor.key,
                 label: descriptor.label,
                 context: descriptor.context,
+                stateLabel: descriptor.stateLabel,
+                localityLabel: descriptor.localityLabel,
                 distance: entry.distance,
                 isActiveGroup: entry.marker === activeMarker,
                 points: [entry.point],
@@ -1244,15 +1502,17 @@
                 points: [...group.points].sort(compareClusterPointPriority),
             }))
             .sort((groupA, groupB) => {
-                if (groupA.isActiveGroup !== groupB.isActiveGroup) {
-                    return groupA.isActiveGroup ? -1 : 1;
+                const stateDiff = compareDisplayText(groupA.stateLabel, groupB.stateLabel);
+                if (stateDiff !== 0) {
+                    return stateDiff;
                 }
 
-                if (groupA.distance !== groupB.distance) {
-                    return groupA.distance - groupB.distance;
+                const localityDiff = compareDisplayText(groupA.localityLabel, groupB.localityLabel);
+                if (localityDiff !== 0) {
+                    return localityDiff;
                 }
 
-                return String(groupA.label || "").localeCompare(String(groupB.label || ""), "pt-BR");
+                return compareDisplayText(groupA.label, groupB.label);
             });
 
         const pointCount = clusteredEntries.length;
@@ -1260,13 +1520,17 @@
         const title = localityCount === 1
             ? groups[0].label
             : `${pointCount} pontos nesta região`;
+        const subtitle = localityCount === 1
+            ? groups[0].context
+            : "";
         const meta = localityCount === 1
-            ? [groups[0].context, `${pointCount} ponto(s) agrupado(s) neste zoom`].filter(Boolean).join(" · ")
+            ? `${pointCount} ponto(s) agrupado(s) neste zoom`
             : `${localityCount} localidades agrupadas neste zoom`;
 
         return {
             useCluster: true,
             title,
+            subtitle,
             meta,
             groups,
             hiddenCount,
@@ -1291,22 +1555,10 @@
      */
     function getStationLocationRoleLabel(station) {
         if (station.is_current_location) {
-            return "Posição atual";
+            return "";
         }
 
-        return "Localidade histórica";
-    }
-
-    /**
-     * Compose the compact metadata line shown under a popup title.
-     */
-    function getPointPopupMeta(point, separator = " | ") {
-        return [
-            `ID_SITE ${point.site_id}`,
-            getPointLocalityLabel(point) ? `Localidade ${getPointLocalityLabel(point)}` : null,
-            point.altitude !== null && point.altitude !== undefined ? `Alt ${point.altitude} m` : null,
-            point.gnss_measurements ? `${point.gnss_measurements} medições GNSS` : null
-        ].filter(Boolean).join(separator);
+        return "Histórico";
     }
 
     /**
@@ -1317,14 +1569,12 @@
             return "";
         }
 
-        return point.stations.map((station) => {
+        const orderedStations = [...point.stations].sort(comparePopupStationOrder);
+        const isSingleStationPoint = orderedStations.length === 1;
+
+        return orderedStations.map((station) => {
             const equipmentName = escapeHtml(station.equipment_name || "Equipamento");
-            const localityContext = escapeHtml(
-                [
-                    getPointLocalityLabel(point) || "Localidade não identificada",
-                    getStationLocationRoleLabel(station)
-                ].join(" · ")
-            );
+            const roleLabel = isSingleStationPoint ? "" : getStationLocationRoleLabel(station);
             const hostHref = station.host_id ? `/host?host_id=${station.host_id}&online_only=0` : null;
             const hostSearchHref = !station.host_id && station.equipment_name
                 ? `/host?search=${encodeURIComponent(station.equipment_name)}&online_only=0`
@@ -1333,12 +1583,12 @@
             const spectrumHref = buildSpectrumHref(point, station);
 
             return `
-                <div class="station-entry">
-                    <div class="station-entry-header">
+                <div class="station-entry${isSingleStationPoint ? " station-entry-single" : ""}">
+                    <div class="station-entry-header${isSingleStationPoint ? " station-entry-header-single" : ""}">
                         <span class="station-entry-name">${equipmentName}</span>
                         <span class="station-status ${stationStatusClass(station)}">${stationStatusLabel(station)}</span>
                     </div>
-                    <div class="station-entry-context">${localityContext}</div>
+                    ${roleLabel ? `<div class="station-entry-context">${escapeHtml(roleLabel)}</div>` : ""}
                     <div class="station-actions">
                         ${spectrumHref ? `<a class="station-action" href="${spectrumHref}" data-loading-message="Abrindo consulta de arquivos...">Arquivos</a>` : ""}
                         ${hostHref ? `<a class="station-action" href="${hostHref}" data-loading-message="Carregando panorama da estação...">Host</a>` : ""}
@@ -1375,7 +1625,7 @@
 
         if (isCluster) {
             return `
-                <div class="station-popup-cluster-point-section-label">Estações neste ponto</div>
+                ${Array.isArray(point.stations) && point.stations.length > 1 ? `<div class="station-popup-cluster-point-section-label">Estações neste ponto</div>` : ""}
                 <div class="station-popup-cluster-point-details">
                     ${entriesHtml}
                 </div>
@@ -1390,52 +1640,59 @@
     }
 
     /**
+     * Render one point card using the same visual language in both popup modes.
+     */
+    function buildPointCardHtml(point, options = {}) {
+        const stateKey = getPointStateKey(point);
+        const pointScopeLabel = options.pointScopeLabel || "";
+        const stationCount = Array.isArray(point.stations)
+            ? point.stations.length
+            : null;
+        const stationCountLabel = stationCount === null
+            ? null
+            : formatStationCountLabel(stationCount);
+        const metaParts = [
+            `ID_SITE ${point.site_id}`,
+        ].filter(Boolean);
+        const pointActionsHtml = buildPointActionAreaHtml(point, { cluster: true });
+        const pointName = getPointDisplayName(point) || `ID_SITE ${point.site_id}`;
+        const locationModeLabel = getPointLocationModeLabel(point);
+
+        return `
+            <div class="station-popup-cluster-point">
+                ${pointScopeLabel ? `<div class="station-popup-cluster-point-kind">${escapeHtml(pointScopeLabel)}</div>` : ""}
+                <div class="station-popup-cluster-point-header">
+                    <div class="station-popup-cluster-point-heading">
+                        <span class="station-popup-cluster-point-name">${escapeHtml(pointName)}</span>
+                    </div>
+                    <div class="station-popup-cluster-point-badges">
+                        ${stationCountLabel ? `<span class="station-popup-cluster-point-count">${escapeHtml(stationCountLabel)}</span>` : ""}
+                        ${locationModeLabel ? `<span class="station-popup-cluster-point-state state-${escapeHtml(stateKey)}">${escapeHtml(locationModeLabel)}</span>` : ""}
+                    </div>
+                </div>
+                <div class="station-popup-cluster-point-meta">${escapeHtml(metaParts.join(" · "))}</div>
+                ${pointActionsHtml}
+            </div>
+        `;
+    }
+
+    /**
      * Render the summary popup used when several points collapse together at
      * the current zoom level.
      */
     function buildClusterPopupHtml(clusterSummary) {
+        const showGroupHeaders = clusterSummary.groups.length > 1;
         const groupsHtml = clusterSummary.groups.map((group) => {
             const pointRowsHtml = group.points.map((point) => {
-                const stateKey = getPointStateKey(point);
-                const stateMeta = POINT_STATE_META[stateKey] || POINT_STATE_META.no_host;
                 const pointScopeLabel = group.points.length > 1
-                    ? `Ponto geográfico em ${group.label}`
-                    : "Ponto geográfico";
-                const stationCount = Array.isArray(point.stations)
-                    ? point.stations.length
-                    : null;
-                const stationCountLabel = stationCount === null
-                    ? null
-                    : `${stationCount} estação${stationCount === 1 ? "" : "ões"}`;
-                const altitudeLabel = point.altitude !== null && point.altitude !== undefined
-                    ? `Alt ${point.altitude} m`
-                    : null;
-                const gnssLabel = point.gnss_measurements
-                    ? `${point.gnss_measurements} medições GNSS`
-                    : null;
-                const locationMode = isHistoricalPoint(point) ? "Histórico" : "Atual";
-                const metaParts = [
-                    altitudeLabel,
-                    gnssLabel,
-                    locationMode,
-                ].filter(Boolean);
-                const pointActionsHtml = buildPointActionAreaHtml(point, { cluster: true });
-
-                return `
-                    <div class="station-popup-cluster-point">
-                        <div class="station-popup-cluster-point-kind">${escapeHtml(pointScopeLabel)}</div>
-                        <div class="station-popup-cluster-point-header">
-                            <span class="station-popup-cluster-point-name">${escapeHtml(`ID_SITE ${point.site_id}`)}</span>
-                            <div class="station-popup-cluster-point-badges">
-                                ${stationCountLabel ? `<span class="station-popup-cluster-point-count">${escapeHtml(stationCountLabel)}</span>` : ""}
-                                <span class="station-popup-cluster-point-state state-${escapeHtml(stateKey)}">${escapeHtml(stateMeta.legendLabel)}</span>
-                            </div>
-                        </div>
-                        <div class="station-popup-cluster-point-meta">${escapeHtml(metaParts.join(" · "))}</div>
-                        ${pointActionsHtml}
-                    </div>
-                `;
+                    ? "Ponto geográfico"
+                    : "";
+                return buildPointCardHtml(point, { pointScopeLabel });
             }).join("");
+
+            if (!showGroupHeaders) {
+                return pointRowsHtml;
+            }
 
             return `
                 <div class="station-popup-cluster-group">
@@ -1458,6 +1715,7 @@
         return `
             <div class="station-popup station-popup-cluster">
                 <div class="station-popup-title">${escapeHtml(clusterSummary.title)}</div>
+                ${clusterSummary.subtitle ? `<div class="station-popup-subtitle">${escapeHtml(clusterSummary.subtitle)}</div>` : ""}
                 <div class="station-popup-meta">${escapeHtml(clusterSummary.meta)}</div>
                 <div class="station-popup-cluster-groups">
                     ${groupsHtml}
@@ -1527,14 +1785,17 @@
         // That staged rendering is intentional: hovering a point should feel
         // immediate even before the detailed station payload arrives, but the
         // popup must still degrade cleanly when the detail request fails.
-        const meta = getPointPopupMeta(point);
-        const actionAreaHtml = buildPointActionAreaHtml(point);
+        const stateLabel = getPointStateDisplayLabel(point);
+        const localityLabel = getPointLocalityShortLabel(point) || getPointLocalityLabel(point);
+        const pointCardHtml = buildPointCardHtml(point);
 
         return `
             <div class="station-popup">
-                <div class="station-popup-title">${escapeHtml(point.site_label)}</div>
-                <div class="station-popup-meta">${escapeHtml(meta)}</div>
-                ${actionAreaHtml}
+                <div class="station-popup-title">${escapeHtml(stateLabel)}</div>
+                ${localityLabel ? `<div class="station-popup-subtitle">${escapeHtml(localityLabel)}</div>` : ""}
+                <div class="station-popup-cluster-point-list station-popup-single-point-list">
+                    ${pointCardHtml}
+                </div>
             </div>
         `;
     }
@@ -1610,28 +1871,42 @@
 
         const wrapW = wrapRect.width;
         const wrapH = wrapRect.height;
+        const viewportH = window.innerHeight || document.documentElement.clientHeight || wrapH;
+        const visibleTopInWrap = Math.max(padding, (0 - wrapRect.top) + padding);
+        const visibleBottomInWrap = Math.min(
+            wrapH - padding,
+            viewportH - wrapRect.top - padding
+        );
+        const availablePanelHeight = Math.max(
+            180,
+            Math.floor(visibleBottomInWrap - visibleTopInWrap)
+        );
+
+        hoverPanel.style.maxHeight = `${availablePanelHeight}px`;
+
+        const measuredPanelH = hoverPanel.offsetHeight || panelH;
 
         // Default: centre horizontally on the marker, open above it.
         let left = markerCX - panelW / 2;
-        let top  = markerCY - halfMarkerH - gap - panelH;
+        let top  = markerCY - halfMarkerH - gap - measuredPanelH;
 
         // Horizontal clamp.
         if (left < padding)                  left = padding;
         if (left + panelW > wrapW - padding) left = wrapW - padding - panelW;
 
         // Prefer above; flip below when the panel would overflow the top edge.
-        if (top < padding) {
+        if (top < visibleTopInWrap) {
             top = markerCY + halfMarkerH + gap;
         }
 
         // Bottom clamp — catches both the default position and the flipped one.
-        if (top + panelH > wrapH - padding) {
-            top = wrapH - padding - panelH;
+        if (top + measuredPanelH > visibleBottomInWrap) {
+            top = visibleBottomInWrap - measuredPanelH;
         }
 
-        // Final safety: panel is taller than the map (only possible with very
-        // large cluster popups at small map heights).
-        if (top < padding) top = padding;
+        // Final safety: keep the panel inside the visible browser area even
+        // when the map is taller than the viewport.
+        if (top < visibleTopInWrap) top = visibleTopInWrap;
 
         hoverPanel.style.left = Math.round(left) + "px";
         hoverPanel.style.top  = Math.round(top)  + "px";
@@ -1771,14 +2046,31 @@
         point.loadingPromise = fetch(buildMapApiUrl(`/api/map/stations/${point.site_id}`))
             .then((response) => response.json())
             .then((payload) => {
+                let detailStations = Array.isArray(payload.stations) ? payload.stations : [];
+                const activeStationScope = point._activeStationScope
+                    ? buildActiveStationScope(point._activeStationScope)
+                    : buildActiveStationScope({
+                        searchTerm: normalizeSearchText(point._stationScopeSearchTerm || ""),
+                    });
+
+                if (hasActiveStationScope(activeStationScope)) {
+                    detailStations = filterStationsByScope(detailStations, activeStationScope);
+                }
+
                 point.loadingDetails = false;
                 point.detailsLoaded = true;
                 point.detailsError = false;
-                point.stations = Array.isArray(payload.stations) ? payload.stations : [];
-                point.marker_state = payload.marker_state || point.marker_state || "no_host";
-                point.has_online_station = Boolean(payload.has_online_station);
+                point.stations = detailStations;
+                point.marker_state = hasActiveStationScope(activeStationScope)
+                    ? summarizePointStateFromStations(detailStations)
+                    : payload.marker_state || point.marker_state || "no_host";
+                point.has_online_station = detailStations.some((station) =>
+                    ONLINE_POINT_STATES.has(station?.map_state || "no_host")
+                );
                 point.has_online_host = point.has_online_station;
-                point.has_known_host = Boolean(payload.has_known_host);
+                point.has_known_host = detailStations.some((station) =>
+                    station?.host_id !== null && station?.host_id !== undefined
+                );
                 point.station_names = point.stations
                     .map((station) => station.host_name || station.equipment_name || "")
                     .filter(Boolean);
@@ -2110,38 +2402,61 @@
             : normalizeSearchText(siteFilter.value);
         const statusScope = statusFilter ? statusFilter.value : "all";
         const localityScope = localityFilter ? localityFilter.value : "include_history";
+        const activeStationScope = buildActiveStationScope({
+            searchTerm: siteSearchTerm,
+            statusScope,
+            localityScope,
+        });
+        const hasStationScope = hasActiveStationScope(activeStationScope);
 
-        return allStationPoints.filter((point) => {
+        return allStationPoints.reduce((filteredPoints, point) => {
             if (selectedStateCode && point.state_code !== selectedStateCode) {
-                return false;
+                return filteredPoints;
             }
 
             if (activeSiteId) {
                 if (String(point.site_id) !== activeSiteId) {
-                    return false;
+                    return filteredPoints;
                 }
             } else if (siteSearchTerm && !getPointSearchText(point).includes(siteSearchTerm)) {
-                return false;
+                return filteredPoints;
             }
 
-            if (statusScope === "online_only" && !isOnlinePoint(point)) {
-                return false;
+            let effectivePoint = point;
+
+            if (hasStationScope) {
+                if (!Array.isArray(point.stations) || point.stations.length === 0) {
+                    return filteredPoints;
+                }
+
+                const matchedStations = filterStationsByScope(point.stations, activeStationScope);
+
+                if (matchedStations.length === 0) {
+                    return filteredPoints;
+                }
+
+                effectivePoint = buildStationScopedPoint(point, matchedStations, activeStationScope);
             }
 
-            if (statusScope === "offline_only" && !isOfflinePoint(point)) {
-                return false;
+            if (statusScope === "online_only" && !isOnlinePoint(effectivePoint)) {
+                return filteredPoints;
             }
 
-            if (localityScope === "current_only" && isHistoricalPoint(point)) {
-                return false;
+            if (statusScope === "offline_only" && !isOfflinePoint(effectivePoint)) {
+                return filteredPoints;
             }
 
-            if (localityScope === "historical_only" && !isHistoricalPoint(point)) {
-                return false;
+            if (localityScope === "current_only" && isHistoricalPoint(effectivePoint)) {
+                return filteredPoints;
             }
 
-            return true;
-        });
+            if (localityScope === "historical_only" && !isHistoricalPoint(effectivePoint)) {
+                return filteredPoints;
+            }
+
+            filteredPoints.push(effectivePoint);
+            return filteredPoints;
+        }, []);
     }
 
     /**
@@ -2397,6 +2712,14 @@
     map.on("moveend", () => {
         if (panelActiveMarker) positionHoverPanel(panelActiveMarker);
     });
+
+    window.addEventListener("resize", () => {
+        if (panelActiveMarker) positionHoverPanel(panelActiveMarker);
+    }, { passive: true });
+
+    window.addEventListener("scroll", () => {
+        if (panelActiveMarker) positionHoverPanel(panelActiveMarker);
+    }, { passive: true });
 
     // Startup restores the shell theme first, then normalizes the temporal
     // controls, then loads the initial summary-backed point dataset.

@@ -35,6 +35,27 @@ h1 {
     line-height: 1.2;
 }
 
+.wf-screen-title {
+    margin: 0;
+    font-size: var(--font-size-h1);
+    line-height: 1.25;
+    font-weight: var(--font-semi-bold);
+    letter-spacing: normal;
+    color: var(--color-blue-dark, var(--wf-text-strong));
+}
+
+@media (max-width: 1024px) {
+    .wf-screen-title {
+        font-size: calc(var(--font-size-h1) - 2px);
+    }
+}
+
+@media (max-width: 640px) {
+    .wf-screen-title {
+        font-size: calc(var(--font-size-h1) - 4px);
+    }
+}
+
 .header {
     width: 100%;
 }

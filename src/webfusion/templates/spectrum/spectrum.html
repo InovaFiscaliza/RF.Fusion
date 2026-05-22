@@ -11,7 +11,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260518-spectrum-faceted-filters') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260522-spectrum-query-ux') }}">
 {% endblock %}
 
 {% block content %}
@@ -25,16 +25,21 @@
     data-initial-availability-end="{{ filter_availability.DATE_END if filter_availability and filter_availability.DATE_END else '' }}"
 >
 
-<h1 class="margin-bottom-l">
+<h1 class="wf-screen-title margin-bottom-l">
     Consulta de Espectros
 </h1>
 
 <!-- ====================== FILTROS ====================== -->
 
-<div class="card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+<div class="card background-neutral-0 padding-l border-radius-m margin-bottom-l spectrum-query-card">
 
-    <div class="font-semi-bold margin-bottom-m">
-        Parâmetros de Pesquisa
+    <div class="spectrum-query-card-header">
+        <div class="spectrum-query-card-title">
+            Parâmetros de Pesquisa
+        </div>
+        <div class="spectrum-query-card-description">
+            Combine contexto geográfico, período e faixa de frequência para localizar arquivos oficiais e inspecionar os espectros internos com menos atrito.
+        </div>
     </div>
 
     <form method="get" id="spectrum-query-form" data-loading-message="Consultando espectros...">
@@ -43,7 +48,7 @@
         {% endif %}
 
         {% if site_context and site_id %}
-        <div class="filter-helper-text margin-bottom-m">
+        <div class="spectrum-query-context-banner">
             Busca aberta a partir do mapa e limitada ao site {{ site_context.LOCALITY_LABEL or ('site ' ~ site_id) }}.
             Os filtros de Estado e Distrito foram alinhados com esse ponto, mas a restrição por site continua ativa até você limpar os filtros.
         </div>
@@ -51,7 +56,7 @@
 
         <div class="spectrum-query-grid">
 
-            <div class="spectrum-query-field">
+            <div class="spectrum-query-field spectrum-query-field--span-3">
                 <label>Estado</label>
                 <div class="select-shell">
                     <select name="state_id" id="state_id" class="form-control">
@@ -71,7 +76,7 @@
                 </div>
             </div>
 
-            <div class="spectrum-query-field">
+            <div class="spectrum-query-field spectrum-query-field--span-3">
                 <label>Distrito</label>
                 <div class="select-shell">
                     <select
@@ -95,7 +100,7 @@
                 </div>
             </div>
 
-            <div class="spectrum-query-field">
+            <div class="spectrum-query-field spectrum-query-field--span-6">
                 <label>Estação / Equipamento</label>
                 <div class="select-shell">
                     <select name="equipment_id" id="equipment_id" class="form-control">
@@ -110,7 +115,7 @@
                 </div>
             </div>
 
-            <div class="spectrum-query-field">
+            <div class="spectrum-query-field spectrum-query-field--span-3">
                 <label>Período Inicial</label>
                 <input type="date"
                        name="start_date"
@@ -129,7 +134,7 @@
                 </div>
             </div>
 
-            <div class="spectrum-query-field">
+            <div class="spectrum-query-field spectrum-query-field--span-3">
                 <label>Período Final</label>
                 <input type="date"
                        name="end_date"
@@ -141,7 +146,7 @@
                        class="form-control">
             </div>
 
-            <div class="spectrum-query-field">
+            <div class="spectrum-query-field spectrum-query-field--span-3">
                 <label>Frequência Inicial (MHz)</label>
                 <input type="number"
                        name="freq_start"
@@ -154,7 +159,7 @@
                 </div>
             </div>
 
-            <div class="spectrum-query-field">
+            <div class="spectrum-query-field spectrum-query-field--span-3">
                 <label>Frequência Final (MHz)</label>
                 <input type="number"
                        name="freq_end"
@@ -165,7 +170,7 @@
                        min="0">
             </div>
 
-            <div class="spectrum-query-field">
+            <div class="spectrum-query-field spectrum-query-field--span-8">
                 <label>Plano / Descrição</label>
                 <input type="text"
                        name="description"
@@ -177,7 +182,7 @@
                 </div>
             </div>
 
-            <div class="spectrum-query-field">
+            <div class="spectrum-query-field spectrum-query-field--span-4">
                 <label>Ordenação</label>
                 <div class="select-shell">
                     <select name="sort_by" class="form-control">
@@ -194,17 +199,19 @@
         </div>
 
         <div class="spectrum-query-submit-row">
-            <a
-                class="btn-secondary"
-                id="clear-spectrum-filters"
-                href="{{ url_for('spectrum.spectrum') }}"
-                data-loading-message="Limpando filtros..."
-            >
-                Limpar filtros
-            </a>
-            <button type="submit" class="btn-search">
-                Pesquisar
-            </button>
+            <div class="spectrum-query-submit-actions">
+                <a
+                    class="btn-secondary"
+                    id="clear-spectrum-filters"
+                    href="{{ url_for('spectrum.spectrum') }}"
+                    data-loading-message="Limpando filtros..."
+                >
+                    Limpar filtros
+                </a>
+                <button type="submit" class="btn-search">
+                    Pesquisar
+                </button>
+            </div>
         </div>
 
     </form>

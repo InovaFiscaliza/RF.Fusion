@@ -21,16 +21,23 @@
         BACKUP_DONE_THIS_MONTH          : document.getElementById("server-summary-backup-done-month"),
         BACKUP_DONE_GB_THIS_MONTH       : document.getElementById("server-summary-backup-done-gb-month"),
         DISCOVERED_FILES_TOTAL          : document.getElementById("server-summary-discovered-total"),
+        DISCOVERED_GB_TOTAL             : document.getElementById("server-summary-discovered-gb-total"),
+        BACKUP_DONE_FILES_TOTAL         : document.getElementById("server-summary-backup-done-total"),
+        BACKUP_DONE_GB_TOTAL            : document.getElementById("server-summary-backup-done-gb-total"),
         BACKUP_PENDING_FILES_TOTAL      : document.getElementById("server-summary-backup-pending-total"),
         BACKUP_ERROR_FILES_TOTAL        : document.getElementById("server-summary-backup-error-total"),
+        BACKUP_ERROR_GB_TOTAL           : document.getElementById("server-summary-backup-error-gb-total"),
         BACKUP_QUEUE_FILES_TOTAL        : document.getElementById("server-summary-backup-queue-total"),
         BACKUP_QUEUE_GB_TOTAL           : document.getElementById("server-summary-backup-queue-gb"),
         PROCESSING_PENDING_FILES_TOTAL  : document.getElementById("server-summary-processing-pending-total"),
+        PROCESSING_PENDING_GB_TOTAL     : document.getElementById("server-summary-processing-pending-gb-total"),
         PROCESSING_QUEUE_FILES_TOTAL    : document.getElementById("server-summary-processing-queue-total"),
         PROCESSING_QUEUE_GB_TOTAL       : document.getElementById("server-summary-processing-queue-gb"),
         PROCESSING_DONE_FILES_TOTAL     : document.getElementById("server-summary-processing-done-total"),
+        PROCESSING_DONE_GB_TOTAL        : document.getElementById("server-summary-processing-done-gb-total"),
         FACT_SPECTRUM_TOTAL             : document.getElementById("server-summary-fact-spectrum-total"),
         PROCESSING_ERROR_FILES_TOTAL    : document.getElementById("server-summary-processing-error-total"),
+        PROCESSING_ERROR_GB_TOTAL       : document.getElementById("server-summary-processing-error-gb-total"),
         BACKUP_PENDING_GB_TOTAL         : document.getElementById("server-summary-backup-pending-gb"),
     };
     const processingPanel   = document.getElementById("server-processing-errors-panel");
@@ -143,6 +150,14 @@
         td.textContent = message;
         tr.appendChild(td);
         targetBody.appendChild(tr);
+    }
+
+    function formatStationCountLabel(count) {
+        if (count === 1) {
+            return "1 estação no filtro atual";
+        }
+
+        return `${count || 0} estações no filtro atual`;
     }
 
     /* Shared grouped-diagnostic row renderer used by both processing and
@@ -345,7 +360,7 @@
 
                 const payload = await response.json();
                 renderHostRows(payload.rows || []);
-                hostTableMeta.textContent = `${payload.count || 0} estação(ões) no filtro atual`;
+                hostTableMeta.textContent = formatStationCountLabel(payload.count);
                 loaded = true;
             } catch (error) {
                 hostTableBody.innerHTML = `
@@ -410,12 +425,28 @@
             String(payload.DISCOVERED_FILES_TOTAL ?? 0)
         );
         setSummaryValue(
+            summaryBindings.DISCOVERED_GB_TOTAL,
+            `${payload.DISCOVERED_GB_TOTAL ?? 0} GB`
+        );
+        setSummaryValue(
+            summaryBindings.BACKUP_DONE_FILES_TOTAL,
+            String(payload.BACKUP_DONE_FILES_TOTAL ?? 0)
+        );
+        setSummaryValue(
+            summaryBindings.BACKUP_DONE_GB_TOTAL,
+            `${payload.BACKUP_DONE_GB_TOTAL ?? 0} GB`
+        );
+        setSummaryValue(
             summaryBindings.BACKUP_PENDING_FILES_TOTAL,
             String(payload.BACKUP_PENDING_FILES_TOTAL ?? 0)
         );
         setSummaryValue(
             summaryBindings.BACKUP_ERROR_FILES_TOTAL,
             String(payload.BACKUP_ERROR_FILES_TOTAL ?? 0)
+        );
+        setSummaryValue(
+            summaryBindings.BACKUP_ERROR_GB_TOTAL,
+            `${payload.BACKUP_ERROR_GB_TOTAL ?? 0} GB`
         );
         setSummaryValue(
             summaryBindings.BACKUP_QUEUE_FILES_TOTAL,
@@ -430,6 +461,10 @@
             String(payload.PROCESSING_PENDING_FILES_TOTAL ?? 0)
         );
         setSummaryValue(
+            summaryBindings.PROCESSING_PENDING_GB_TOTAL,
+            `${payload.PROCESSING_PENDING_GB_TOTAL ?? 0} GB`
+        );
+        setSummaryValue(
             summaryBindings.PROCESSING_QUEUE_FILES_TOTAL,
             String(payload.PROCESSING_QUEUE_FILES_TOTAL ?? 0)
         );
@@ -442,12 +477,20 @@
             String(payload.PROCESSING_DONE_FILES_TOTAL ?? 0)
         );
         setSummaryValue(
+            summaryBindings.PROCESSING_DONE_GB_TOTAL,
+            `${payload.PROCESSING_DONE_GB_TOTAL ?? 0} GB`
+        );
+        setSummaryValue(
             summaryBindings.FACT_SPECTRUM_TOTAL,
             String(payload.FACT_SPECTRUM_TOTAL ?? 0)
         );
         setSummaryValue(
             summaryBindings.PROCESSING_ERROR_FILES_TOTAL,
             String(payload.PROCESSING_ERROR_FILES_TOTAL ?? 0)
+        );
+        setSummaryValue(
+            summaryBindings.PROCESSING_ERROR_GB_TOTAL,
+            `${payload.PROCESSING_ERROR_GB_TOTAL ?? 0} GB`
         );
         setSummaryValue(
             summaryBindings.BACKUP_PENDING_GB_TOTAL,
@@ -463,7 +506,7 @@
 
             if (key === "CURRENT_MONTH_LABEL") {
                 element.textContent = "INDISPONIVEL";
-            } else if (key.endsWith("_GB_TOTAL") || key === "BACKUP_DONE_GB_THIS_MONTH") {
+            } else if (key.endsWith("_GB_TOTAL") || key.endsWith("_GB_THIS_MONTH")) {
                 element.textContent = "- GB";
             } else {
                 element.textContent = "-";

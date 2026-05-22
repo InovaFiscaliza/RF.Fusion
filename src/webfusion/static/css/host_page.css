@@ -1,3 +1,181 @@
+.host-page-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.host-top-grid,
+.host-secondary-grid,
+.host-pipeline-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+}
+
+.host-section-card {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.host-section-head {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.host-section-kicker {
+    color: #1d4ed8;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.host-section-title {
+    margin: 0;
+    color: #0f172a;
+    font-size: 21px;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.host-section-copy {
+    margin: 0;
+    color: #64748b;
+    font-size: 13px;
+    line-height: 1.55;
+    max-width: 72ch;
+}
+
+.host-status-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.host-fact-table th {
+    width: 240px;
+}
+
+.host-month-banner {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    align-self: flex-start;
+    padding: 8px 12px;
+    border: 1px solid #dbe5f1;
+    border-radius: 999px;
+    background: #f8fbff;
+    color: #33527f;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.host-month-banner strong {
+    color: #0f172a;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.host-month-banner-label {
+    color: #33527f;
+}
+
+.host-month-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 28px;
+    padding: 6px 12px;
+    border: 1px solid #dbe5f1;
+    border-radius: 999px;
+    background: #eef5ff;
+    color: #1e3a8a;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.host-summary-grid--facts,
+.host-summary-grid--activity,
+.host-summary-grid--month,
+.host-summary-grid--cluster {
+    margin-top: 0;
+}
+
+.host-summary-grid--facts {
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.host-summary-grid--activity,
+.host-summary-grid--cluster {
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
+.host-summary-grid--facts .summary-card-value,
+.host-summary-grid--activity .summary-card-value {
+    overflow-wrap: anywhere;
+}
+
+.host-summary-grid--activity .summary-card-value {
+    font-size: 18px;
+}
+
+.host-summary-value-ssh {
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+}
+
+.host-summary-grid--month {
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.host-metric-clusters {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.host-metric-cluster {
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    background: #fbfdff;
+    padding: 14px;
+}
+
+.host-metric-cluster-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.host-metric-cluster-title {
+    margin: 0;
+    color: #33527f;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.host-metric-cluster-copy {
+    margin: 4px 0 0;
+    color: #64748b;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.host-section-card .details-panel {
+    margin-top: 0;
+}
+
 .host-query-grid {
     display: grid;
     grid-template-columns: minmax(280px, 2fr) minmax(180px, 1fr) minmax(220px, 1fr);
@@ -19,7 +197,22 @@
     flex: 1 1 0;
 }
 
+.online-filter label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #334155;
+}
+
 @media (max-width: 920px) {
+    .host-top-grid,
+    .host-secondary-grid,
+    .host-pipeline-grid {
+        grid-template-columns: 1fr;
+    }
+
     .host-query-grid {
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
         gap: 16px;
@@ -35,6 +228,18 @@
 }
 
 @media (max-width: 640px) {
+    .host-page-stack {
+        gap: 14px;
+    }
+
+    .host-section-card {
+        gap: 14px;
+    }
+
+    .host-section-title {
+        font-size: 19px;
+    }
+
     .host-query-grid {
         grid-template-columns: minmax(0, 1fr);
         gap: 14px;

@@ -3,7 +3,7 @@
 {% block title %}RF.Fusion - Módulos{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/index_page.css', v='20260511-map-filter-cleanup') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/index_page.css', v='20260522-map-popup-viewport-clamp') }}">
 <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -17,7 +17,7 @@
 {# Home combines two roles in one page:
    1. a quick operational map of stations/localities
    2. the primary navigation grid for the WebFusion modules. #}
-<h1 class="margin-bottom-l">
+<h1 class="wf-screen-title margin-bottom-l">
     Módulos do Sistema
 </h1>
 
@@ -291,5 +291,5 @@
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
 ></script>
-<script src="{{ url_for('static', filename='js/index_map.js', v='20260511-map-filter-cleanup') }}"></script>
+<script src="{{ url_for('static', filename='js/index_map.js', v='20260522-map-popup-respect-active-filters') }}"></script>
 {% endblock %}
