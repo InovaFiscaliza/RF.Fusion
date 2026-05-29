@@ -91,10 +91,14 @@ ERROR_DOMAIN_BY_CODE = {
     "INVALID_BUFFER_SIZE": "PROCESSING",
     "SITE_GEOGRAPHIC_CODES_NOT_FOUND": "PROCESSING",
     "APP_ANALISE_READ_TIMEOUT": "PROCESSING",
+    "APP_ANALISE_TRANSIENT_SERVICE_FAILURE": "PROCESSING",
+    "APP_ANALISE_FILE_UNAVAILABLE": "PROCESSING",
+    "APP_ANALISE_OUTPUT_ARTIFACT_UNAVAILABLE": "PROCESSING",
     "APP_ANALISE_INVALID_SPECTRA_TYPE": "PROCESSING",
     "APP_ANALISE_ANSWER_ERROR": "PROCESSING",
     "APP_ANALISE_NO_READABLE_FILES_IN_ZIP": "PROCESSING",
     "BIN_PAYLOAD_VALIDATION_FAILED": "PROCESSING",
+    "TRANSIENT_FILESYSTEM_FINALIZATION_FAILURE": "PROCESSING",
     "AUTH_FAILED": "BACKUP",
     "SSH_AUTH_TIMEOUT": "BACKUP",
     "SSH_NEGOTIATION_FAILED": "BACKUP",
@@ -198,6 +202,54 @@ def _canonicalize_error_reason(
         return (
             "APP_ANALISE_READ_TIMEOUT",
             "APP_ANALISE read timeout during processing",
+            exc_text or None,
+        )
+
+    if raw_reason == "Transient appAnalise processing failure":
+        return (
+            "APP_ANALISE_TRANSIENT_SERVICE_FAILURE",
+            "Transient appAnalise processing failure",
+            exc_text or None,
+        )
+
+    if (
+        raw_reason == "APP_ANALISE file unavailable during processing"
+        and isinstance(exc, AppAnaliseFileUnavailableError)
+    ):
+        if exc_text.startswith("APP_ANALISE output artifact unavailable:"):
+            detail = exc_text.replace("[", "(").replace("]", ")")
+            return (
+                "APP_ANALISE_OUTPUT_ARTIFACT_UNAVAILABLE",
+                "APP_ANALISE output artifact unavailable",
+                detail,
+            )
+
+        return (
+            "APP_ANALISE_FILE_UNAVAILABLE",
+            "APP_ANALISE file unavailable during processing",
+            exc_text or None,
+        )
+
+    if raw_reason.startswith("APP_ANALISE source file unavailable before request:"):
+        return (
+            "APP_ANALISE_FILE_UNAVAILABLE",
+            "APP_ANALISE source file unavailable before request",
+            raw_reason,
+        )
+
+    if raw_reason.startswith(
+        "APP_ANALISE reported missing source file and it is absent locally:"
+    ):
+        return (
+            "APP_ANALISE_FILE_UNAVAILABLE",
+            "APP_ANALISE source file unavailable",
+            raw_reason,
+        )
+
+    if raw_reason == "Transient filesystem finalization failure":
+        return (
+            "TRANSIENT_FILESYSTEM_FINALIZATION_FAILURE",
+            "Transient filesystem finalization failure",
             exc_text or None,
         )
 
@@ -682,6 +734,17 @@ class ExternalServiceTransientError(Exception):
     These errors should not be interpreted as proof that the source
     file is invalid, because a retry may succeed once the dependency
     becomes healthy again.
+    """
+    pass
+
+
+class AppAnaliseFileUnavailableError(Exception):
+    """
+    Raised when appAnalise cannot see or produce a concrete file artifact.
+
+    This is intentionally separate from broad transport outages: an unreachable
+    socket, a read timeout, and a missing output `.mat` require different
+    operator action even though they may all freeze the queue row.
     """
     pass
 

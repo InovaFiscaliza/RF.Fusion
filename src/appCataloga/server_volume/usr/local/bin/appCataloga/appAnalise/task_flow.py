@@ -126,18 +126,17 @@ def should_export(hostname: str) -> bool:
     Decide whether appAnalise should export a `.mat` artifact for this host.
 
     Station-family rule:
-        - RFeye: keep the original binary payload as the canonical artifact.
-          appAnalise is invoked for metadata extraction only, not file export.
-        - All others (CW/CelPlan, ERMx, Keysight, unknown families): accept
-          the `.mat` export as the canonical artifact.
+        - CelPlan (`CWSM` hostname prefix): accept the `.mat` export as the
+          canonical artifact.
+        - All other families: keep the original binary payload as the
+          canonical artifact. appAnalise is invoked for metadata extraction
+          only, not file export.
 
     The function stays isolated so future host-family policy changes do not
     leak into the worker loop.
     """
-    normalized = (hostname or "").lower()
-    # Only RFeye stations bypass export; every other known family and any
-    # unrecognized hostname defaults to the export path.
-    return "rfeye" not in normalized
+    normalized = (hostname or "").strip().lower()
+    return normalized.startswith("cwsm")
 
 
 def should_map_host_source_file(hostname: str) -> bool:
@@ -752,56 +751,34 @@ def freeze_task_for_manual_review(
         error=err.format_persisted_error(),
     )
 
-    db_bp.file_task_update(
-        task_id=file_task_id,
-        NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
-        NU_STATUS=k.TASK_FROZEN,
-        NU_PID=None,
-        DT_FILE_TASK=datetime.now(),
-        NA_MESSAGE=message,
-        **_structured_error_fields_for_handler(err, message=message),
-    )
+    db_bp.begin_transaction()
+    try:
+        db_bp.file_task_update(
+            task_id=file_task_id,
+            NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+            NU_STATUS=k.TASK_FROZEN,
+            NU_PID=None,
+            DT_FILE_TASK=datetime.now(),
+            NA_MESSAGE=message,
+            **_structured_error_fields_for_handler(err, message=message),
+        )
 
-    db_bp.file_history_update(
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        host_id=host_id,
-        host_file_path=host_path,
-        host_file_name=host_file_name,
-        NU_STATUS_PROCESSING=k.TASK_FROZEN,
-        NA_MESSAGE=message,
-        **_structured_error_fields_for_handler(err, message=message),
-    )
+        db_bp.file_history_update(
+            task_type=k.FILE_TASK_PROCESS_TYPE,
+            host_id=host_id,
+            host_file_path=host_path,
+            host_file_name=host_file_name,
+            NU_STATUS_PROCESSING=k.TASK_FROZEN,
+            NA_MESSAGE=message,
+            **_structured_error_fields_for_handler(err, message=message),
+        )
+
+        db_bp.commit()
+    except Exception:
+        db_bp.rollback()
+        raise
 
     db_bp.host_task_statistics_create(host_id=host_id, log_if_active=False)
-
-
-def freeze_task_after_processing_timeout(
-    db_bp,
-    *,
-    file_task_id,
-    host_id,
-    host_file_name,
-    host_path,
-    err,
-):
-    """
-    Freeze one PROCESS FILE_TASK after appAnalise returned a structured timeout.
-
-    Unlike transport outages, a `ReadTimeout` reply means appAnalise stayed
-    responsive enough to answer, but this specific payload exceeded the remote
-    processing budget. We keep both the live FILE_TASK and the processing phase
-    in FILE_TASK_HISTORY on hold for manual review instead of retrying or
-    finalizing the file as a definitive processing error.
-    """
-    freeze_task_for_manual_review(
-        db_bp,
-        file_task_id=file_task_id,
-        host_id=host_id,
-        host_file_name=host_file_name,
-        host_path=host_path,
-        err=err,
-        detail="APP_ANALISE read timeout, task frozen for manual review",
-    )
 
 
 def is_same_file(file_a, file_b):
@@ -1196,10 +1173,31 @@ def finalize_task_resolution(
     # Statistics are updated after history so host-level counters see the same
     # finalized state that the operator would read from FILE_TASK_HISTORY.
     db_bp.host_task_statistics_create(host_id=host_id, log_if_active=False)
+
+    # Resolve the durable ID_HISTORY for the caller (used by error-list writers).
+    # Best-effort: a lookup failure must not disrupt the finalization result.
+    id_file_history = None
+    try:
+        history_rows = db_bp._select_rows(
+            table="FILE_TASK_HISTORY",
+            where={
+                "FK_HOST": host_id,
+                "NA_HOST_FILE_PATH": host_path,
+                "NA_HOST_FILE_NAME": host_file_name,
+            },
+            cols=["ID_HISTORY"],
+            limit=1,
+        )
+        if history_rows:
+            id_file_history = history_rows[0].get("ID_HISTORY")
+    except Exception:
+        pass
+
     return {
         "status": status,
         "new_path": history_server_path,
         "history_meta": history_meta,
+        "id_file_history": id_file_history,
         "final_file": (
             os.path.join(history_server_path, history_meta["name"])
             if history_server_path else None

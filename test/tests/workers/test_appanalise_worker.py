@@ -275,8 +275,11 @@ class ShouldExportTests(unittest.TestCase):
     def test_should_export_enables_mat_for_cw_hosts(self) -> None:
         self.assertTrue(processing.should_export("CWSM21100001"))
 
-    def test_should_export_defaults_to_true_for_other_hosts(self) -> None:
-        self.assertTrue(processing.should_export("unknown_station"))
+    def test_should_export_disables_mat_for_ermx_hosts(self) -> None:
+        self.assertFalse(processing.should_export("ERMxES03"))
+
+    def test_should_export_disables_mat_for_unknown_hosts(self) -> None:
+        self.assertFalse(processing.should_export("unknown_station"))
 
     def test_should_map_host_source_file_uses_allowlist(self) -> None:
         self.assertTrue(processing.should_map_host_source_file("rfeye002106"))
@@ -1050,16 +1053,17 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(db.task_updates[0]["NU_STATUS"], worker.k.TASK_PENDING)
         self.assertIn("task returned for retry", db.task_updates[0]["NA_MESSAGE"])
 
-    def test_freeze_task_after_processing_timeout_freezes_live_row_and_history(self) -> None:
+    def test_freeze_task_for_manual_review_freezes_timeout_row_and_history(self) -> None:
         db = FakeDbBkp()
 
-        processing.freeze_task_after_processing_timeout(
+        processing.freeze_task_for_manual_review(
             db,
             file_task_id=321,
             host_id=77,
             host_file_name="sample.bin",
             host_path="/host/path",
             err=FakeErr("[ERROR] timeout", triggered=True),
+            detail="APP_ANALISE read timeout, task frozen for manual review",
         )
 
         self.assertEqual(len(db.task_updates), 1)
@@ -1078,7 +1082,7 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(len(db.task_deletes), 0)
         self.assertEqual(len(db.statistics_updates), 1)
 
-    def test_freeze_task_for_manual_review_freezes_live_row_and_history(self) -> None:
+    def test_freeze_task_for_manual_review_freezes_file_unavailable_row_and_history(self) -> None:
         db = FakeDbBkp()
 
         processing.freeze_task_for_manual_review(
@@ -1087,8 +1091,8 @@ class RetryTests(unittest.TestCase):
             host_id=88,
             host_file_name="sample.bin",
             host_path="/host/path",
-            err=FakeErr("[ERROR] connection refused", triggered=True),
-            detail="Transient appAnalise failure, task frozen for manual review",
+            err=FakeErr("[ERROR] file unavailable", triggered=True),
+            detail="APP_ANALISE file unavailable, task frozen for manual review",
         )
 
         self.assertEqual(len(db.task_updates), 1)
@@ -1098,7 +1102,7 @@ class RetryTests(unittest.TestCase):
             db.history_updates[0]["NU_STATUS_PROCESSING"],
             worker.k.TASK_FROZEN,
         )
-        self.assertIn("Transient appAnalise failure", db.task_updates[0]["NA_MESSAGE"])
+        self.assertIn("APP_ANALISE file unavailable", db.task_updates[0]["NA_MESSAGE"])
         self.assertEqual(len(db.statistics_updates), 1)
 
 
@@ -1450,7 +1454,10 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         self.assertEqual(db_bp.task_updates[0]["NU_STATUS"], worker.k.TASK_RUNNING)
         self.assertEqual(db_bp.task_updates[1]["NU_STATUS"], worker.k.TASK_FROZEN)
         self.assertIsNone(db_bp.task_updates[1]["NU_PID"])
-        self.assertIn("Transient appAnalise failure", db_bp.task_updates[1]["NA_MESSAGE"])
+        self.assertIn(
+            "Transient filesystem finalization failure",
+            db_bp.task_updates[1]["NA_MESSAGE"],
+        )
         self.assertEqual(len(db_bp.task_deletes), 0)
         self.assertEqual(len(db_bp.history_updates), 1)
         self.assertEqual(

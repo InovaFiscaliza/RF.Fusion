@@ -110,7 +110,7 @@ class DetectProtocolErrorTests(unittest.TestCase):
 
         with tempfile.NamedTemporaryFile() as tmp_file:
             with self.assertRaises(
-                AppAnaliseErrors.ExternalServiceTransientError
+                AppAnaliseErrors.AppAnaliseFileUnavailableError
             ) as ctx:
                 self.parser.detect_protocol_error(
                     payload,

@@ -9,6 +9,8 @@ stays linear so transient service failures can be distinguished cleanly from
 definitive payload failures.
 """
 
+import csv
+import fcntl
 import os
 import re
 import sys
@@ -37,6 +39,79 @@ from shared import (
 
 from db.dbHandlerBKP import dbHandlerBKP
 from db.dbHandlerRFM import dbHandlerRFM
+
+
+# ===============================================================
+# ERROR LIST (CSV)
+# ===============================================================
+
+_ERROR_LIST_FILE: str = os.path.join(
+    getattr(k, "LOG_DIR", "/var/log"),
+    getattr(k, "ERROR_LIST_FILE_NAME", "appCataloga_file_errolist.csv"),
+)
+
+_ERROR_LIST_COLUMNS = [
+    "DT_PROCESSING",
+    "FILE_PATH",
+    "FILE_NAME",
+    "ID_FILE_TASK",
+    "ID_FILE_HISTORY",
+    "ERROR_MESSAGE",
+    "ERROR_DETAIL",
+]
+
+
+def _append_to_error_list(
+    *,
+    file_path,
+    file_name,
+    id_file_task,
+    id_file_history,
+    error_message,
+    error_detail,
+    dt_processing=None,
+):
+    """Append one error entry to the CSV error list.
+
+    Best-effort: any I/O failure is silently swallowed so a log write
+    problem never disrupts the worker loop.  An exclusive advisory lock
+    serialises concurrent writes from multiple worker processes.
+    """
+    if dt_processing is None:
+        dt_processing = datetime.now()
+
+    row = {
+        "DT_PROCESSING": dt_processing.isoformat(sep=" ", timespec="seconds"),
+        "FILE_PATH": file_path or "",
+        "FILE_NAME": file_name or "",
+        "ID_FILE_TASK": "" if id_file_task is None else str(id_file_task),
+        "ID_FILE_HISTORY": "" if id_file_history is None else str(id_file_history),
+        "ERROR_MESSAGE": error_message or "",
+        "ERROR_DETAIL": error_detail or "",
+    }
+
+    log_dir = os.path.dirname(_ERROR_LIST_FILE) or "."
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        write_header = not os.path.exists(_ERROR_LIST_FILE)
+        with open(_ERROR_LIST_FILE, "a", newline="", encoding="utf-8") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                fh.seek(0, os.SEEK_END)
+                write_header = write_header or (fh.tell() == 0)
+                writer = csv.DictWriter(
+                    fh,
+                    fieldnames=_ERROR_LIST_COLUMNS,
+                    quoting=csv.QUOTE_MINIMAL,
+                    lineterminator="\n",
+                )
+                if write_header:
+                    writer.writeheader()
+                writer.writerow(row)
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+    except Exception:
+        pass
 
 
 # ===============================================================
@@ -346,17 +421,8 @@ def main():
         new_path = None
         host_id = None
         file_meta = None
-        # `retry_later`: transient appAnalise transport failure; the dependency
-        #   was down or the payload wedged the service. Current policy: freeze
-        #   the task for manual review (same outcome as freeze_task) rather than
-        #   requeueing automatically to avoid hot loops.
-        # `freeze_task`: appAnalise responded but timed out on this specific
-        #   payload. Semantically distinct from retry_later even though both
-        #   currently resolve to freeze: timeout implies a per-payload problem
-        #   while retry_later implies a service-wide problem. Kept separate so
-        #   the destination detail message and future policy divergence are clear.
-        retry_later = False
-        freeze_task = False
+        manual_freeze_detail = None
+        manual_freeze_outcome = None
         export = None
         source_file_meta = None
         resolved_site_ids = None
@@ -493,12 +559,10 @@ def main():
                     )
 
             except errors.AppAnaliseReadTimeoutError as e:
-                # This is neither a plain transport outage nor a definitive
-                # payload defect. appAnalise stayed alive long enough to reply,
-                # but the specific file exceeded its remote processing budget.
-                # Freeze the queue row for manual review instead of retrying or
-                # trashing the artifact automatically.
-                freeze_task = True
+                manual_freeze_detail = (
+                    "APP_ANALISE read timeout, task frozen for manual review"
+                )
+                manual_freeze_outcome = "frozen_timeout"
                 err.capture(
                     reason="APP_ANALISE read timeout during processing",
                     stage="PROCESS",
@@ -507,14 +571,25 @@ def main():
                     task_id=file_task_id,
                 )
                 raise
+            except errors.AppAnaliseFileUnavailableError as e:
+                manual_freeze_detail = (
+                    "APP_ANALISE file unavailable, task frozen for manual review"
+                )
+                manual_freeze_outcome = "frozen_file_unavailable"
+                err.capture(
+                    reason="APP_ANALISE file unavailable during processing",
+                    stage="PROCESS",
+                    exc=e,
+                    host_id=host_id,
+                    task_id=file_task_id,
+                )
+                raise
             except errors.ExternalServiceTransientError as e:
-                # appAnalise availability problems stay classified as transient
-                # for diagnostics, but the current operational policy freezes
-                # these rows for manual review instead of requeueing them
-                # immediately. This avoids hot loops on payloads that tend to
-                # wedge appAnalise until the service-side timeout behavior is
-                # improved.
-                retry_later = True
+                manual_freeze_detail = (
+                    "Transient appAnalise service failure, task frozen for "
+                    "manual review"
+                )
+                manual_freeze_outcome = "frozen_transient_service"
                 err.capture(
                     reason="Transient appAnalise processing failure",
                     stage="PROCESS",
@@ -648,12 +723,11 @@ def main():
                     file_was_processed = True
             except Exception as e:
                 if task_flow.is_transient_filesystem_error(e):
-                    # Shared-storage hiccups (EBUSY, stale handles, etc.) do
-                    # not mean the payload is bad. Treat them with the same
-                    # temporary operational policy as transient appAnalise
-                    # outages: freeze the FILE_TASK for manual review instead
-                    # of churning on automatic retries.
-                    retry_later = True
+                    manual_freeze_detail = (
+                        "Transient filesystem finalization failure, task frozen "
+                        "for manual review"
+                    )
+                    manual_freeze_outcome = "frozen_transient_filesystem"
                     err.capture(
                         reason="Transient filesystem finalization failure",
                         stage="FS",
@@ -695,19 +769,14 @@ def main():
                     # Another worker can win the optimistic claim between the
                     # read step and the RUNNING transition. Back off briefly
                     # so we do not spin on the same row.
-                    
                     runtime_sleep.random_jitter_sleep()
                 skip_to_next_iteration = True
             else:
                 # ---------------------------------------------------
                 # Phase 1 — Resolve the queue row through one exit point
                 # ---------------------------------------------------
-                if retry_later:
+                if manual_freeze_detail:
                     try:
-                        # Temporary operational policy: freeze transient failures
-                        # instead of requeueing them so problematic files do not
-                        # churn in tight loops while appAnalise-side protections
-                        # are still evolving.
                         with _timed_phase(phase_durations, "task_resolution"):
                             task_flow.freeze_task_for_manual_review(
                                 db_bp,
@@ -716,19 +785,16 @@ def main():
                                 host_file_name=host_file_name,
                                 host_path=host_path,
                                 err=err,
-                                detail=(
-                                    "Transient appAnalise failure, task frozen for "
-                                    "manual review"
-                                ),
+                                detail=manual_freeze_detail,
                             )
                         log.event(
                             "processing_frozen",
                             file=filename,
-                            error=err.format_error() or "Transient appAnalise failure",
+                            error=err.format_error() or manual_freeze_detail,
                         )
                         _log_processing_phase_timings(
                             filename=filename,
-                            outcome="frozen_transient",
+                            outcome=manual_freeze_outcome or "frozen_manual_review",
                             task_started_monotonic=task_started_monotonic,
                             phase_durations=phase_durations,
                             bin_data=bin_data,
@@ -738,40 +804,6 @@ def main():
                     except Exception as update_err:
                         log.error(
                             f"event=retry_freeze_failed host_id={host_id} "
-                            f"task_id={file_task_id} error={update_err}"
-                        )
-
-                    runtime_sleep.random_jitter_sleep()
-                    skip_to_next_iteration = True
-
-                elif freeze_task:
-                    try:
-                        with _timed_phase(phase_durations, "task_resolution"):
-                            task_flow.freeze_task_after_processing_timeout(
-                                db_bp,
-                                file_task_id=file_task_id,
-                                host_id=host_id,
-                                host_file_name=host_file_name,
-                                host_path=host_path,
-                                err=err,
-                            )
-                        log.event(
-                            "processing_frozen",
-                            file=filename,
-                            error=err.format_error() or "APP_ANALISE read timeout",
-                        )
-                        _log_processing_phase_timings(
-                            filename=filename,
-                            outcome="frozen_timeout",
-                            task_started_monotonic=task_started_monotonic,
-                            phase_durations=phase_durations,
-                            bin_data=bin_data,
-                            resolved_site_ids=resolved_site_ids,
-                            spectrum_ids=spectrum_ids,
-                        )
-                    except Exception as update_err:
-                        log.error(
-                            f"event=freeze_task_failed host_id={host_id} "
                             f"task_id={file_task_id} error={update_err}"
                         )
 
@@ -832,6 +864,14 @@ def main():
                                 export=export,
                                 final_file=resolution["final_file"],
                                 error=err.format_error() or "Processing failed",
+                            )
+                            _append_to_error_list(
+                                file_path=server_path,
+                                file_name=server_name,
+                                id_file_task=file_task_id,
+                                id_file_history=resolution.get("id_file_history"),
+                                error_message=err.format_error() or "Processing failed",
+                                error_detail=err.format_persisted_error(),
                             )
 
                         _log_processing_phase_timings(

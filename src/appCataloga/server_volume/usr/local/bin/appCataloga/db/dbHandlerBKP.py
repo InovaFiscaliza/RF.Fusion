@@ -2417,7 +2417,7 @@ class dbHandlerBKP(DBHandlerBase):
                 table="FILE_TASK",
                 data=kwargs,
                 where=where_dict,
-                commit=True,
+                commit=not getattr(self, "in_transaction", False),
             )
 
             if affected != 1:

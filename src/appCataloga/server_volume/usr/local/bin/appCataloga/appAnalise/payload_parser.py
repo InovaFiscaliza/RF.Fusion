@@ -588,17 +588,14 @@ class AppAnalisePayloadParser:
             )
 
         if self._is_missing_source_file_error(answer_error):
-            # When appAnalise says "file not found" but the source file still
-            # exists locally, the most likely problem is service visibility or
-            # timing, not a definitively bad FILE_TASK.
+            # The source still exists for appCataloga, so this is a visibility
+            # or export-side file problem inside appAnalise, not a socket outage.
             if requested_full_path and os.path.isfile(requested_full_path):
-                raise errors.ExternalServiceTransientError(
+                raise errors.AppAnaliseFileUnavailableError(
                     "APP_ANALISE reported missing source file, but it still "
                     f"exists locally: {requested_full_path} ({answer_error})"
                 )
 
-            # If the source file is genuinely gone from disk, retrying would
-            # only repeat the same semantic defect.
             if requested_full_path:
                 raise errors.BinValidationError(
                     "APP_ANALISE reported missing source file and it is "
@@ -781,7 +778,7 @@ class AppAnalisePayloadParser:
         try:
             return os.path.getsize(full_path)
         except OSError as e:
-            raise errors.ExternalServiceTransientError(
+            raise errors.AppAnaliseFileUnavailableError(
                 f"APP_ANALISE output artifact unavailable: {full_path} ({e})"
             )
 
@@ -793,7 +790,7 @@ class AppAnalisePayloadParser:
         try:
             return os.stat(full_path)
         except OSError as e:
-            raise errors.ExternalServiceTransientError(
+            raise errors.AppAnaliseFileUnavailableError(
                 f"APP_ANALISE output artifact unavailable: {full_path} ({e})"
             )
 

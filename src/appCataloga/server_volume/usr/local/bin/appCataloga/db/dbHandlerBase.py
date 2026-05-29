@@ -701,7 +701,8 @@ class DBHandlerBase:
             return affected
 
         except Exception as e:
-            self.db_connection.rollback()
+            if not getattr(self, "in_transaction", False):
+                self.db_connection.rollback()
             self.log.error(f"[DB] UPDATE failed: {e}")
             raise
 
@@ -833,7 +834,8 @@ class DBHandlerBase:
             return deleted_count
 
         except Exception as e:
-            self.db_connection.rollback()
+            if not getattr(self, "in_transaction", False):
+                self.db_connection.rollback()
             self.log.error(f"[DBHandlerBase] DELETE failed on {table}: {e}")
             raise
     

@@ -63,7 +63,7 @@ APP_ANALISE_CLIENT_NAME     = "Matlab"
 # socket timeout so appAnalise can return a structured ReadTimeout before this
 # client gives up on the connection.
 APP_ANALISE_REQUEST_TIMEOUT_SECONDS = 540
-APP_ANALISE_PROCESS_TIMEOUT = 600
+APP_ANALISE_PROCESS_TIMEOUT = 1800
 APP_ANALISE_CONNECT_TIMEOUT = 15
 APP_ANALISE_WORKER_DETAIL   = "worker=APP_ANALISE"
 APP_ANALISE_SOURCE_LINEAGE_FAMILIES = (

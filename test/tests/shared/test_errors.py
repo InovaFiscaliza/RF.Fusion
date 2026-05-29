@@ -156,6 +156,46 @@ class ErrorHandlerTests(unittest.TestCase):
         self.assertNotIn("[host_id=", formatted)
         self.assertNotIn("[task_id=", formatted)
 
+    def test_format_persisted_error_separates_appanalise_file_unavailable(self) -> None:
+        handler = errors.ErrorHandler(FakeLogger())
+        handler.capture(
+            "APP_ANALISE file unavailable during processing",
+            stage="PROCESS",
+            exc=errors.AppAnaliseFileUnavailableError(
+                "APP_ANALISE output artifact unavailable: /repo/out/file.mat "
+                "([Errno 2] No such file or directory)"
+            ),
+            task_id=123,
+        )
+
+        formatted = handler.format_persisted_error()
+
+        self.assertIn("[code=APP_ANALISE_OUTPUT_ARTIFACT_UNAVAILABLE]", formatted)
+        self.assertIn("APP_ANALISE output artifact unavailable", formatted)
+        self.assertIn("/repo/out/file.mat", formatted)
+        self.assertIn("(Errno 2)", formatted)
+        self.assertNotIn("[task_id=", formatted)
+
+        payload = errors.persisted_error_fields_from_handler(handler)
+        self.assertEqual(
+            payload["NA_ERROR_CODE"],
+            "APP_ANALISE_OUTPUT_ARTIFACT_UNAVAILABLE",
+        )
+        self.assertIn("/repo/out/file.mat", payload["NA_ERROR_DETAIL"])
+
+    def test_format_persisted_error_keeps_transient_appanalise_detail(self) -> None:
+        handler = errors.ErrorHandler(FakeLogger())
+        handler.capture(
+            "Transient appAnalise processing failure",
+            stage="PROCESS",
+            exc=errors.ExternalServiceTransientError("Connection refused"),
+        )
+
+        formatted = handler.format_persisted_error()
+
+        self.assertIn("Transient appAnalise processing failure", formatted)
+        self.assertIn("[detail=Connection refused]", formatted)
+
     def test_persisted_error_fields_promote_specific_app_analise_answer_error(self) -> None:
         # The structured DB columns should carry the precise processing code,
         # not only the generic outer BIN validation wrapper.
