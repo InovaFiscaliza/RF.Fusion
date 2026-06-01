@@ -43,13 +43,8 @@ class hostDaemon:
     # ----------------------------------------------------------------------
     # Cleanup / termination
     # ----------------------------------------------------------------------
-    def close_host(self, cleanup_due_backup: bool = False) -> None:
-        """Close the underlying SSH/SFTP session gracefully.
-
-        The ``cleanup_due_backup`` argument is kept only for backward
-        compatibility with legacy call sites. The server-side discovery flow no
-        longer manages any remote indexer files.
-        """
+    def close_host(self) -> None:
+        """Close the underlying SSH/SFTP session gracefully."""
         try:
             self.sftp_conn.close()
         except Exception as e:

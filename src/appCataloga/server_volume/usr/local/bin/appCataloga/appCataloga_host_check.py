@@ -153,11 +153,6 @@ def _finalize_error(
         log.error(f"event=finalize_error_failed task_id={task['task_id']} error={e2}")
 
 
-def _cleanup(task: dict | None) -> None:
-    """No resources to release in this worker."""
-    pass
-
-
 # --- main ---
 
 def _init_db() -> dbHandlerBKP:
@@ -220,9 +215,6 @@ def main() -> None:
                     task_id=task["task_id"] if task else None,
                 )
             _finalize_error(db, task, err)
-
-        finally:
-            _cleanup(task)
 
         runtime_sleep.random_jitter_sleep()
 

@@ -16,7 +16,7 @@ import ipaddress
 import socket
 import sys
 import paramiko
-from typing import Any, Optional, TypeAlias, TYPE_CHECKING
+from typing import Any, TypeAlias, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from db.dbHandlerBKP import dbHandlerBKP
@@ -65,7 +65,7 @@ class ConnectivityProbeResult:
     reason: str
     icmp_online: bool
     ssh_online: bool
-    error: Optional[str] = None
+    error: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -83,7 +83,7 @@ def _probe_result(
     reason: str,
     icmp_online: bool,
     ssh_online: bool,
-    error: Optional[str] = None,
+    error: str | None = None,
 ) -> ConnectivityProbePayload:
     """Return the canonical probe payload shared by host workers."""
     return ConnectivityProbeResult(
