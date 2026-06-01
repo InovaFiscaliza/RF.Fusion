@@ -122,30 +122,35 @@ class HostConnectivityTests(unittest.TestCase):
         fake_log = FakeLog()
         ssh_client = FakeSSHClient()
 
-        with patch.object(host_check_worker, "log", fake_log):
+        with patch.object(
+            host_check_worker.host_connectivity,
+            "resolve_host_addresses",
+            return_value=["172.24.1.11"],
+        ):
             with patch.object(
                 host_check_worker.host_connectivity,
-                "resolve_host_addresses",
-                return_value=["172.24.1.11"],
+                "_ping_address",
+                return_value=True,
             ):
                 with patch.object(
-                    host_check_worker.host_connectivity,
-                    "_ping_address",
-                    return_value=True,
+                    host_check_worker.host_connectivity.paramiko,
+                    "SSHClient",
+                    return_value=ssh_client,
                 ):
-                    with patch.object(
-                        host_check_worker.host_connectivity.paramiko,
-                        "SSHClient",
-                        return_value=ssh_client,
-                    ):
-                        connectivity = host_check_worker.check_host_connectivity(
-                            host_id=101,
-                            addr="172.24.1.11",
-                            port=22,
-                            user="root",
-                            password="secret",
-                            event_name="host_check_connection",
-                        )
+                    connectivity = host_check_worker.host_connectivity.probe_host_connectivity(
+                        addr="172.24.1.11",
+                        port=22,
+                        user="root",
+                        password="secret",
+                    )
+                    host_check_worker.host_connectivity.log_connectivity_probe(
+                        log=fake_log,
+                        event_name="host_check_connection",
+                        host_id=101,
+                        addr="172.24.1.11",
+                        port=22,
+                        probe=connectivity,
+                    )
 
         self.assertEqual(connectivity["state"], "online")
         self.assertTrue(connectivity["icmp_online"])
@@ -160,30 +165,35 @@ class HostConnectivityTests(unittest.TestCase):
         fake_log = FakeLog()
         ssh_client = FakeSSHClient(connect_side_effect=socket.timeout("timed out"))
 
-        with patch.object(host_check_worker, "log", fake_log):
+        with patch.object(
+            host_check_worker.host_connectivity,
+            "resolve_host_addresses",
+            return_value=["172.24.1.12"],
+        ):
             with patch.object(
                 host_check_worker.host_connectivity,
-                "resolve_host_addresses",
-                return_value=["172.24.1.12"],
+                "_ping_address",
+                return_value=True,
             ):
                 with patch.object(
-                    host_check_worker.host_connectivity,
-                    "_ping_address",
-                    return_value=True,
+                    host_check_worker.host_connectivity.paramiko,
+                    "SSHClient",
+                    return_value=ssh_client,
                 ):
-                    with patch.object(
-                        host_check_worker.host_connectivity.paramiko,
-                        "SSHClient",
-                        return_value=ssh_client,
-                    ):
-                        connectivity = host_check_worker.check_host_connectivity(
-                            host_id=202,
-                            addr="172.24.1.12",
-                            port=22,
-                            user="root",
-                            password="secret",
-                            event_name="host_check_connection",
-                        )
+                    connectivity = host_check_worker.host_connectivity.probe_host_connectivity(
+                        addr="172.24.1.12",
+                        port=22,
+                        user="root",
+                        password="secret",
+                    )
+                    host_check_worker.host_connectivity.log_connectivity_probe(
+                        log=fake_log,
+                        event_name="host_check_connection",
+                        host_id=202,
+                        addr="172.24.1.12",
+                        port=22,
+                        probe=connectivity,
+                    )
 
         # ICMP success plus SSH timeout is the exact case where we want the
         # new "degraded" state instead of collapsing back to offline/online.
@@ -197,71 +207,63 @@ class HostConnectivityTests(unittest.TestCase):
         self.assertEqual(payload["state"], "degraded")
 
     def test_check_host_connectivity_marks_connection_refused_as_degraded(self) -> None:
-        fake_log = FakeLog()
         exc = paramiko.ssh_exception.NoValidConnectionsError(
             {("172.24.1.12", 22): ConnectionRefusedError(111, "refused")}
         )
         ssh_client = FakeSSHClient(connect_side_effect=exc)
 
-        with patch.object(host_check_worker, "log", fake_log):
+        with patch.object(
+            host_check_worker.host_connectivity,
+            "resolve_host_addresses",
+            return_value=["172.24.1.12"],
+        ):
             with patch.object(
                 host_check_worker.host_connectivity,
-                "resolve_host_addresses",
-                return_value=["172.24.1.12"],
+                "_ping_address",
+                return_value=True,
             ):
                 with patch.object(
-                    host_check_worker.host_connectivity,
-                    "_ping_address",
-                    return_value=True,
+                    host_check_worker.host_connectivity.paramiko,
+                    "SSHClient",
+                    return_value=ssh_client,
                 ):
-                    with patch.object(
-                        host_check_worker.host_connectivity.paramiko,
-                        "SSHClient",
-                        return_value=ssh_client,
-                    ):
-                        connectivity = host_check_worker.check_host_connectivity(
-                            host_id=203,
-                            addr="172.24.1.12",
-                            port=22,
-                            user="root",
-                            password="secret",
-                            event_name="host_check_connection",
-                        )
+                    connectivity = host_check_worker.host_connectivity.probe_host_connectivity(
+                        addr="172.24.1.12",
+                        port=22,
+                        user="root",
+                        password="secret",
+                    )
 
         self.assertEqual(connectivity["state"], "degraded")
         self.assertTrue(connectivity["icmp_online"])
         self.assertFalse(connectivity["ssh_online"])
 
     def test_check_host_connectivity_marks_auth_timeout_as_degraded(self) -> None:
-        fake_log = FakeLog()
         ssh_client = FakeSSHClient(
             connect_side_effect=paramiko.AuthenticationException("Authentication timeout.")
         )
 
-        with patch.object(host_check_worker, "log", fake_log):
+        with patch.object(
+            host_check_worker.host_connectivity,
+            "resolve_host_addresses",
+            return_value=["172.24.1.14"],
+        ):
             with patch.object(
                 host_check_worker.host_connectivity,
-                "resolve_host_addresses",
-                return_value=["172.24.1.14"],
+                "_ping_address",
+                return_value=True,
             ):
                 with patch.object(
-                    host_check_worker.host_connectivity,
-                    "_ping_address",
-                    return_value=True,
+                    host_check_worker.host_connectivity.paramiko,
+                    "SSHClient",
+                    return_value=ssh_client,
                 ):
-                    with patch.object(
-                        host_check_worker.host_connectivity.paramiko,
-                        "SSHClient",
-                        return_value=ssh_client,
-                    ):
-                        connectivity = host_check_worker.check_host_connectivity(
-                            host_id=204,
-                            addr="172.24.1.14",
-                            port=22,
-                            user="root",
-                            password="secret",
-                            event_name="host_check_connection",
-                        )
+                    connectivity = host_check_worker.host_connectivity.probe_host_connectivity(
+                        addr="172.24.1.14",
+                        port=22,
+                        user="root",
+                        password="secret",
+                    )
 
         self.assertEqual(connectivity["state"], "degraded")
         self.assertEqual(connectivity["reason"], "ssh_auth_timeout")
@@ -272,11 +274,11 @@ class HostConnectivityTests(unittest.TestCase):
         now = datetime(2026, 3, 23, 12, 0, 0)
         db = FakeDB(hosts=[])
 
-        host_check_worker.handle_degraded_connectivity_task(
+        host_check_worker.host_connectivity._handle_degraded_connectivity(
             db=db,
             task_id=17,
             host_id=203,
-            current_error_count=2,
+            error_count=2,
             now=now,
         )
 
@@ -312,30 +314,35 @@ class HostConnectivityTests(unittest.TestCase):
         fake_log = FakeLog()
         ssh_client = FakeSSHClient()
 
-        with patch.object(host_check_worker, "log", fake_log):
+        with patch.object(
+            host_check_worker.host_connectivity,
+            "resolve_host_addresses",
+            return_value=["172.24.1.13"],
+        ):
             with patch.object(
                 host_check_worker.host_connectivity,
-                "resolve_host_addresses",
-                return_value=["172.24.1.13"],
+                "_ping_address",
+                return_value=False,
             ):
                 with patch.object(
-                    host_check_worker.host_connectivity,
-                    "_ping_address",
-                    return_value=False,
+                    host_check_worker.host_connectivity.paramiko,
+                    "SSHClient",
+                    return_value=ssh_client,
                 ):
-                    with patch.object(
-                        host_check_worker.host_connectivity.paramiko,
-                        "SSHClient",
-                        return_value=ssh_client,
-                    ):
-                        connectivity = host_check_worker.check_host_connectivity(
-                            host_id=303,
-                            addr="172.24.1.13",
-                            port=22,
-                            user="root",
-                            password="secret",
-                            event_name="host_check",
-                        )
+                    connectivity = host_check_worker.host_connectivity.probe_host_connectivity(
+                        addr="172.24.1.13",
+                        port=22,
+                        user="root",
+                        password="secret",
+                    )
+                    host_check_worker.host_connectivity.log_connectivity_probe(
+                        log=fake_log,
+                        event_name="host_check",
+                        host_id=303,
+                        addr="172.24.1.13",
+                        port=22,
+                        probe=connectivity,
+                    )
 
         # Once ICMP is down there is no value in burning SSH timeouts on top.
         self.assertEqual(connectivity["state"], "offline")
@@ -347,33 +354,29 @@ class HostConnectivityTests(unittest.TestCase):
         self.assertFalse(payload["online"])
 
     def test_check_host_connectivity_uses_second_resolved_ip_when_first_one_is_down(self) -> None:
-        fake_log = FakeLog()
         ssh_client = FakeSSHClient()
 
-        with patch.object(host_check_worker, "log", fake_log):
+        with patch.object(
+            host_check_worker.host_connectivity,
+            "resolve_host_addresses",
+            return_value=["172.24.1.147"],
+        ):
             with patch.object(
                 host_check_worker.host_connectivity,
-                "resolve_host_addresses",
-                return_value=["172.24.1.147"],
+                "_ping_address",
+                return_value=True,
             ):
                 with patch.object(
-                    host_check_worker.host_connectivity,
-                    "_ping_address",
-                    return_value=True,
+                    host_check_worker.host_connectivity.paramiko,
+                    "SSHClient",
+                    return_value=ssh_client,
                 ):
-                    with patch.object(
-                        host_check_worker.host_connectivity.paramiko,
-                        "SSHClient",
-                        return_value=ssh_client,
-                    ):
-                        connectivity = host_check_worker.check_host_connectivity(
-                            host_id=304,
-                            addr="rfeye002158.anatel.gov.br",
-                            port=2828,
-                            user="root",
-                            password="secret",
-                            event_name="host_check_connection",
-                        )
+                    connectivity = host_check_worker.host_connectivity.probe_host_connectivity(
+                        addr="rfeye002158.anatel.gov.br",
+                        port=2828,
+                        user="root",
+                        password="secret",
+                    )
 
         self.assertEqual(connectivity["state"], "online")
         self.assertEqual(connectivity["resolved_addr"], "172.24.1.147")
