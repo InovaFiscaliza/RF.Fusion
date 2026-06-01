@@ -97,31 +97,13 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
 
 # --- work ---
 
-def _process_statistics_task(db: dbHandlerBKP, task: dict) -> None:
-    """Refresh host statistics and mark the task done. Raises on DB failure."""
-    db.host_update_statistics(host_id=task["host_id"])
-    db.host_task_update(
-        task_id=task["task_id"],
-        NU_STATUS=k.TASK_DONE,
-        NU_PID=k.HOST_UNLOCKED_PID,
-        DT_HOST_TASK=task["now"],
-        NA_MESSAGE=f"Host statistics refreshed for host {task['host_id']}",
-    )
-    log.event(
-        "task_done",
-        host_id=task["host_id"],
-        task_id=task["task_id"],
-        status="statistics_refreshed",
-    )
-
-
 def _do_work(db: dbHandlerBKP, task: dict) -> dict:
     """Dispatch the claimed task by type. Raises on any failure."""
     start = time.monotonic()
 
     match task["task_type"]:
         case k.HOST_TASK_UPDATE_STATISTICS_TYPE:
-            _process_statistics_task(db, task)
+            host_runtime.update_host_statistics(db, task, logger=log)
         case k.HOST_TASK_CHECK_TYPE:
             host_connectivity.handle_connectivity_task(
                 db, task, logger=log, promote_to_processing=True

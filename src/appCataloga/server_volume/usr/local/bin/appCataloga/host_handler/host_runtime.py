@@ -9,7 +9,21 @@ and releasing a single claimed host at the end of one loop iteration.
 from __future__ import annotations
 
 import os
-from typing import Any
+import sys
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from db.dbHandlerBKP import dbHandlerBKP
+
+BASE_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../../../../")
+)
+CONFIG_PATH = os.path.join(BASE_DIR, "etc", "appCataloga")
+
+if CONFIG_PATH not in sys.path:
+    sys.path.insert(0, CONFIG_PATH)
+
+import config as k  # noqa: E402
 
 
 def release_busy_hosts_for_current_pid(
@@ -57,3 +71,26 @@ def release_locked_host(
             f"event=host_release_failed service={service_name} "
             f"host_id={host_id} error={exc}"
         )
+
+
+def update_host_statistics(
+    db: dbHandlerBKP,
+    task: dict,
+    *,
+    logger: Any,
+) -> None:
+    """Refresh host statistics and mark the task done. Raises on DB failure."""
+    db.host_update_statistics(host_id=task["host_id"])
+    db.host_task_update(
+        task_id=task["task_id"],
+        NU_STATUS=k.TASK_DONE,
+        NU_PID=k.HOST_UNLOCKED_PID,
+        DT_HOST_TASK=task["now"],
+        NA_MESSAGE=f"Host statistics refreshed for host {task['host_id']}",
+    )
+    logger.event(
+        "task_done",
+        host_id=task["host_id"],
+        task_id=task["task_id"],
+        status="statistics_refreshed",
+    )

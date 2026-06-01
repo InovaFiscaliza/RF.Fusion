@@ -16,7 +16,10 @@ import ipaddress
 import socket
 import sys
 import paramiko
-from typing import Any, Optional, TypeAlias
+from typing import Any, Optional, TypeAlias, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from db.dbHandlerBKP import dbHandlerBKP
 
 from ping3 import ping
 
@@ -540,7 +543,7 @@ def probe_host_connectivity(
 
 
 def _handle_degraded_connectivity(
-    db: Any,
+    db: dbHandlerBKP,
     task_id: int,
     host_id: int,
     error_count: int,
@@ -588,7 +591,7 @@ def _handle_degraded_connectivity(
 
 
 def _handle_auth_error(
-    db: Any,
+    db: dbHandlerBKP,
     task_id: int,
     host_id: int,
     error_count: int,
@@ -632,7 +635,7 @@ def _handle_auth_error(
 
 
 def _finalize_connectivity(
-    db: Any,
+    db: dbHandlerBKP,
     task_id: int,
     host_id: int,
     was_offline: bool,
@@ -693,7 +696,7 @@ def _finalize_connectivity(
 
 
 def handle_connectivity_task(
-    db: Any,
+    db: dbHandlerBKP,
     task: dict,
     *,
     logger: Any,
