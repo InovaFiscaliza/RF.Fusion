@@ -1,18 +1,18 @@
 #!/bin/bash
 # =============================================================================
-# Script: appCataloga_file_bin_proces_appAnalise.sh
+# Script: appCataloga_file_bin_process_appAnalise.sh
 # Purpose: appAnalise-backed file processing daemon (SINGLETON)
 # =============================================================================
 
 set -e
 
-APP_NAME="appCataloga_file_bin_proces_appAnalise.py"
+APP_NAME="appCataloga_file_bin_process_appAnalise.py"
 APP_PATH="/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/$APP_NAME"
 PYTHON_BIN="/opt/conda/envs/appdata/bin/python"
 
 PID_DIR="/var/run/appCataloga"
 LOG_DIR="/var/log/appCataloga"
-LOG_FILE="$LOG_DIR/appCataloga_file_bin_proces_appAnalise.log"
+LOG_FILE="$LOG_DIR/appCataloga_file_bin_process_appAnalise.log"
 
 mkdir -p "$PID_DIR" "$LOG_DIR"
 
@@ -29,7 +29,7 @@ check_env() {
 }
 
 start() {
-    banner "STARTING appCataloga_file_bin_proces_appAnalise"
+    banner "STARTING appCataloga_file_bin_process_appAnalise"
     check_env
     pgrep -f "$APP_NAME" >/dev/null && { echo "Already running."; exit 0; }
     cd "$(dirname "$APP_PATH")"
@@ -38,7 +38,7 @@ start() {
 }
 
 stop() {
-    banner "STOPPING appCataloga_file_bin_proces_appAnalise"
+    banner "STOPPING appCataloga_file_bin_process_appAnalise"
     pkill -TERM -f "$APP_NAME" || true
     sleep 2
     pkill -KILL -f "$APP_NAME" 2>/dev/null || true
@@ -46,7 +46,7 @@ stop() {
 }
 
 status() {
-    banner "STATUS appCataloga_file_bin_proces_appAnalise"
+    banner "STATUS appCataloga_file_bin_process_appAnalise"
     pgrep -af "$APP_NAME" || echo "Not running."
 }
 

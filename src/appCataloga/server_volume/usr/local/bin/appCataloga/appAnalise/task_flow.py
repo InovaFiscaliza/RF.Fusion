@@ -18,7 +18,7 @@ Reading guide:
     4. final success/error resolution of the FILE_TASK
 
 That split mirrors the worker lifecycle in
-`appCataloga_file_bin_proces_appAnalise.py`.
+`appCataloga_file_bin_process_appAnalise.py`.
 """
 
 from __future__ import annotations

@@ -118,7 +118,7 @@ def _append_to_error_list(
 # GLOBAL STATE
 # ===============================================================
 
-SERVICE_NAME = "appCataloga_file_bin_proces_appAnalise"
+SERVICE_NAME = "appCataloga_file_bin_process_appAnalise"
 log = logging_utils.log(target_screen=False)
 process_status = {"running": True}
 APP_ANALISE_PREFLIGHT_LOG_INTERVAL_SEC = int(

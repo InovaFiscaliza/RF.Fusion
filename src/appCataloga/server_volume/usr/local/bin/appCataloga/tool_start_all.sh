@@ -69,7 +69,7 @@ services=(
   appCataloga_discovery
   appCataloga_backlog_management
   appCataloga_file_bkp
-  appCataloga_file_bin_proces_appAnalise
+  appCataloga_file_bin_process_appAnalise
   # Keep the summary consumer last because it performs a full reconcile on cold start.
   appCataloga_rffusion_summary_worker
 )

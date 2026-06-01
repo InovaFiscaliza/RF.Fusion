@@ -384,7 +384,7 @@ def _persist_discovery_error(
     # Bootstrap failures need a second opinion from host_check. AUTH joins the
     # same path so explicit credential problems also pass through the shared
     # host-state reconciliation flow.
-    if err.stage in {"AUTH", "CONNECT", "SSH"}:
+    if err.stage in {k.STAGE_AUTH, k.STAGE_CONNECT, k.STAGE_SSH}:
         try:
             db.queue_host_task(
                 host_id=host_id,
@@ -488,7 +488,7 @@ def main() -> None:
             except Exception as e:
                 err.capture(
                     "Failed to lock HOST or HOST_TASK",
-                    "LOCK_TASK",
+                    k.STAGE_LOCK_TASK,
                     e,
                     host_id=host_id,
                     task_id=task_id,
@@ -534,7 +534,7 @@ def main() -> None:
             except Exception as e:
                 err.capture(
                     "Discovery failed",
-                    "DISCOVERY",
+                    k.STAGE_DISCOVERY,
                     e,
                     host_id=host_id,
                     task_id=task_id,
@@ -556,7 +556,7 @@ def main() -> None:
             except Exception as e:
                 err.capture(
                     "Backlog handoff failed",
-                    "BACKLOG",
+                    k.STAGE_BACKLOG,
                     e,
                     host_id=host_id,
                     task_id=task_id,
@@ -569,7 +569,7 @@ def main() -> None:
         except Exception as e:
             err.capture(
                 reason="Unexpected discovery loop failure",
-                stage="MAIN",
+                stage=k.STAGE_MAIN,
                 exc=e,
                 host_id=host_id,
                 task_id=task_id,
@@ -651,7 +651,7 @@ if __name__ == "__main__":
         err = errors.ErrorHandler(log)
         err.capture(
             reason="Fatal discovery worker crash",
-            stage="MAIN",
+            stage=k.STAGE_MAIN,
             exc=e,
         )
         err.log_error()
