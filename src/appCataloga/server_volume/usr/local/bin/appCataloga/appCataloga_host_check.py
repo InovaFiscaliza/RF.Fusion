@@ -105,11 +105,11 @@ def _do_work(db: dbHandlerBKP, task: dict) -> dict:
         case k.HOST_TASK_UPDATE_STATISTICS_TYPE:
             host_runtime.update_host_statistics(db, task, logger=log)
         case k.HOST_TASK_CHECK_TYPE:
-            host_connectivity.handle_connectivity_task(
+            host_connectivity.run_check(
                 db, task, logger=log, promote_to_processing=True
             )
         case k.HOST_TASK_CHECK_CONNECTION_TYPE:
-            host_connectivity.handle_connectivity_task(
+            host_connectivity.run_check(
                 db, task, logger=log, promote_to_processing=False
             )
         case _:

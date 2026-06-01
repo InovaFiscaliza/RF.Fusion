@@ -284,7 +284,7 @@ def _classify_no_valid_connections_failure(
 
 def persist_host_connectivity_state(
     *,
-    db: Any,
+    db: dbHandlerBKP,
     log: Any,
     host_id: int,
     was_offline: bool,
@@ -542,34 +542,32 @@ def probe_host_connectivity(
 # --- connectivity task handlers (called from appCataloga_host_check.py) ---
 
 
-def _handle_degraded_connectivity(
+def _persist_degraded(
     db: dbHandlerBKP,
-    task_id: int,
-    host_id: int,
-    error_count: int,
-    now: datetime,
+    task: dict,
 ) -> None:
     """
-    Handle ambiguous SSH timeouts while ICMP still responds.
-    The task stays PENDING until consecutive failures reach the threshold.
+    Persist degraded connectivity state for a host.
+    Marks the task ERROR when consecutive failures exceed the threshold,
+    otherwise keeps it PENDING for the next probe.
     """
-    next_count = max(0, int(error_count or 0)) + 1
+    next_count = max(0, int(task["host_check_error_count"] or 0)) + 1
     threshold = k.HOST_CHECK_SSH_TIMEOUT_CONFIRMATIONS
 
     db.host_update(
-        host_id=host_id,
+        host_id=task["host_id"],
         reset=True,
-        DT_LAST_CHECK=now,
-        DT_LAST_FAIL=now,
+        DT_LAST_CHECK=task["now"],
+        DT_LAST_FAIL=task["now"],
         NU_HOST_CHECK_ERROR=next_count,
     )
 
     if next_count >= threshold:
         db.host_task_update(
-            task_id=task_id,
+            task_id=task["task_id"],
             NU_STATUS=k.TASK_ERROR,
             NU_PID=k.HOST_UNLOCKED_PID,
-            DT_HOST_TASK=now,
+            DT_HOST_TASK=task["now"],
             NA_MESSAGE=(
                 "SSH supervision degraded threshold reached while ICMP still "
                 f"responds ({next_count}/{threshold})"
@@ -577,12 +575,12 @@ def _handle_degraded_connectivity(
         )
         return
 
-    # Below the threshold: keep the task alive for the next probe.
+    # Below threshold: keep the task alive for the next probe.
     db.host_task_update(
-        task_id=task_id,
+        task_id=task["task_id"],
         NU_STATUS=k.TASK_PENDING,
         NU_PID=k.HOST_UNLOCKED_PID,
-        DT_HOST_TASK=now,
+        DT_HOST_TASK=task["now"],
         NA_MESSAGE=(
             "SSH supervision degraded while ICMP still responds | "
             f"confirmation {next_count}/{threshold}"
@@ -590,112 +588,107 @@ def _handle_degraded_connectivity(
     )
 
 
-def _handle_auth_error(
+def _persist_auth_error(
     db: dbHandlerBKP,
-    task_id: int,
-    host_id: int,
-    error_count: int,
-    now: datetime,
+    task: dict,
     detail: str,
+    *,
     logger: Any,
 ) -> None:
     """
     Suspend host-dependent work after an SSH authentication failure.
     Auth rejection is not transient; retries keep failing until credentials are fixed.
     """
-    next_count = max(0, int(error_count or 0)) + 1
+    next_count = max(0, int(task["host_check_error_count"] or 0)) + 1
 
     db.host_update(
-        host_id=host_id,
+        host_id=task["host_id"],
         reset=True,
-        DT_LAST_CHECK=now,
-        DT_LAST_FAIL=now,
+        DT_LAST_CHECK=task["now"],
+        DT_LAST_FAIL=task["now"],
         NU_HOST_CHECK_ERROR=next_count,
     )
 
-    db.host_task_suspend_by_host(host_id)
-    db.file_task_suspend_by_host(host_id)
-    db.file_history_suspend_by_host(host_id)
+    db.host_task_suspend_by_host(task["host_id"])
+    db.file_task_suspend_by_host(task["host_id"])
+    db.file_history_suspend_by_host(task["host_id"])
 
     db.host_task_update(
-        task_id=task_id,
+        task_id=task["task_id"],
         NU_STATUS=k.TASK_ERROR,
         NU_PID=k.HOST_UNLOCKED_PID,
-        DT_HOST_TASK=now,
+        DT_HOST_TASK=task["now"],
         NA_MESSAGE=f"SSH authentication failed during connectivity confirmation | {detail}",
     )
 
     logger.event(
         "host_auth_error_suspended",
-        host_id=host_id,
-        task_id=task_id,
+        host_id=task["host_id"],
+        task_id=task["task_id"],
         error_count=next_count,
         detail=detail,
     )
 
 
-def _finalize_connectivity(
+def _finalize_check(
     db: dbHandlerBKP,
-    task_id: int,
-    host_id: int,
-    was_offline: bool,
+    task: dict,
     online: bool,
-    now: datetime,
+    *,
     promote_to_processing: bool,
-    host_filter: dict,
     resume_dependent_tasks: bool,
     logger: Any,
 ) -> None:
     """
-    Apply the final online/offline result to HOST and close the task.
-    CHECK tasks queue a PROCESSING row on success; CHECK_CONNECTION tasks do not.
+    Apply the final connectivity result to HOST and close the task.
+    CHECK tasks queue a processing row on success; CHECK_CONNECTION tasks do not.
     """
     persist_host_connectivity_state(
         db=db,
         log=logger,
-        host_id=host_id,
-        was_offline=was_offline,
+        host_id=task["host_id"],
+        was_offline=task["was_offline"],
         online=online,
-        now=now,
+        now=task["now"],
         resume_dependent_tasks=resume_dependent_tasks,
     )
 
     if not online:
         db.host_task_update(
-            task_id=task_id,
+            task_id=task["task_id"],
             NU_STATUS=k.TASK_ERROR,
             NU_PID=k.HOST_UNLOCKED_PID,
             NA_MESSAGE="Host unreachable (connectivity check failed)",
-            DT_HOST_TASK=now,
+            DT_HOST_TASK=task["now"],
         )
         return
 
     if promote_to_processing:
         db.queue_host_task(
-            host_id=host_id,
+            host_id=task["host_id"],
             task_type=k.HOST_TASK_PROCESSING_TYPE,
             task_status=k.TASK_PENDING,
-            filter_dict=host_filter,
+            filter_dict=task["host_filter"],
         )
         db.host_task_update(
-            task_id=task_id,
+            task_id=task["task_id"],
             NU_STATUS=k.TASK_DONE,
             NU_PID=k.HOST_UNLOCKED_PID,
-            DT_HOST_TASK=now,
+            DT_HOST_TASK=task["now"],
             NA_MESSAGE="Host check completed; discovery task queued",
         )
         return
 
     db.host_task_update(
-        task_id=task_id,
+        task_id=task["task_id"],
         NU_STATUS=k.TASK_DONE,
         NU_PID=k.HOST_UNLOCKED_PID,
-        DT_HOST_TASK=now,
+        DT_HOST_TASK=task["now"],
         NA_MESSAGE="Host connectivity reconciliation completed successfully",
     )
 
 
-def handle_connectivity_task(
+def run_check(
     db: dbHandlerBKP,
     task: dict,
     *,
@@ -704,10 +697,10 @@ def handle_connectivity_task(
 ) -> None:
     """
     Execute one queued connectivity task (CHECK or CHECK_CONNECTION).
-    Probes the host, then calls the right state handler.
+    Probes the host, then applies the right state transition.
     Raises on any DB failure — does not catch internally.
     """
-    event_name = "host_check" if promote_to_processing else "host_check_connection"
+    event_name = k.EVENT_HOST_CHECK if promote_to_processing else k.EVENT_CHECK_CONNECTION
 
     connectivity = probe_host_connectivity(
         addr=task["addr"],
@@ -726,35 +719,20 @@ def handle_connectivity_task(
     )
 
     match connectivity["state"]:
-        case "degraded":
-            _handle_degraded_connectivity(
-                db=db,
-                task_id=task["task_id"],
-                host_id=task["host_id"],
-                error_count=task["host_check_error_count"],
-                now=task["now"],
-            )
-        case "auth_error":
-            _handle_auth_error(
-                db=db,
-                task_id=task["task_id"],
-                host_id=task["host_id"],
-                error_count=task["host_check_error_count"],
-                now=task["now"],
+        case k.HOST_CONN_DEGRADED:
+            _persist_degraded(db, task)
+        case k.HOST_CONN_AUTH_ERROR:
+            _persist_auth_error(
+                db, task,
                 detail=connectivity["error"] or connectivity["reason"],
                 logger=logger,
             )
         case _:
-            # Handles "online" and "offline" — the definitive final states.
-            _finalize_connectivity(
-                db=db,
-                task_id=task["task_id"],
-                host_id=task["host_id"],
-                was_offline=task["was_offline"],
-                online=(connectivity["state"] == "online"),
-                now=task["now"],
+            # Handles online and offline — the definitive final states.
+            _finalize_check(
+                db, task,
+                online=(connectivity["state"] == k.HOST_CONN_ONLINE),
                 promote_to_processing=promote_to_processing,
-                host_filter=task["host_filter"],
                 resume_dependent_tasks=(task["host_check_error_count"] > 0),
                 logger=logger,
             )

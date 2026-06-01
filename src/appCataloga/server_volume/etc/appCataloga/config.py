@@ -223,6 +223,16 @@ STAGE_TRANSFER      = "TRANSFER"
 STAGE_PROCESS       = "PROCESS"
 STAGE_CONNECTIVITY  = "CONNECTIVITY"
 
+# Connectivity probe state identifiers — used in match/case and comparisons
+HOST_CONN_ONLINE     = "online"
+HOST_CONN_OFFLINE    = "offline"
+HOST_CONN_DEGRADED   = "degraded"
+HOST_CONN_AUTH_ERROR = "auth_error"
+
+# Log event names for host connectivity checks
+EVENT_HOST_CHECK       = "host_check"
+EVENT_CHECK_CONNECTION = "host_check_connection"
+
 #------------------------------------------
 # Station Constants
 #------------------------------------------

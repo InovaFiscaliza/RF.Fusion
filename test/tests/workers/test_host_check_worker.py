@@ -270,17 +270,17 @@ class HostConnectivityTests(unittest.TestCase):
         self.assertTrue(connectivity["icmp_online"])
         self.assertTrue(connectivity["ssh_online"])
 
-    def test_handle_degraded_connectivity_task_preserves_host_state(self) -> None:
+    def test_persist_degraded_preserves_host_state(self) -> None:
         now = datetime(2026, 3, 23, 12, 0, 0)
         db = FakeDB(hosts=[])
+        task = {
+            "task_id": 17,
+            "host_id": 203,
+            "host_check_error_count": 2,
+            "now": now,
+        }
 
-        host_check_worker.host_connectivity._handle_degraded_connectivity(
-            db=db,
-            task_id=17,
-            host_id=203,
-            error_count=2,
-            now=now,
-        )
+        host_check_worker.host_connectivity._persist_degraded(db=db, task=task)
 
         self.assertEqual(
             db.host_updates,
