@@ -1,15 +1,19 @@
 """
 Remote discovery helpers shared by appCataloga workers.
 
-This module provides the high-level `hostDaemon` abstraction used by the
-server-side discovery flow to traverse remote filesystems over SSH/SFTP and
-yield `FileMetadata` batches without coupling traversal logic to database code.
+Provides SSH/SFTP context initialization and the `iter_metadata_files` generator
+that coordinates remote filesystem traversal for the discovery flow.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Iterator
+from typing import Any, Callable
+import paramiko
+from shared import errors
+from shared.file_metadata import FileMetadata
 from shared.filter import Filter
 from shared.logging_utils import log
 
@@ -26,164 +30,74 @@ if CONFIG_PATH not in sys.path:
     sys.path.insert(0, CONFIG_PATH)
 
 import config as k  # noqa: E402
-from .ssh_utils import sftpConnection
+from .host_ssh_utils import sftpConnection
 
-class hostDaemon:
-    """High-level SSH/SFTP helper used by server-side discovery flows."""
+def iter_metadata_files(
+    sftp_conn: sftpConnection,
+    log: log,
+    hostname: str,
+    host_id: int,
+    filter_obj: Filter,
+    callBackCheckFile,
+    callBackGetLastDBDate,
+    *,
+    batch_size: int = 1000,
+) -> Iterator[list[FileMetadata]]:
+    """
+    High-level metadata discovery orchestrator for one remote host.
 
-    def __init__(
-        self,
-        sftp_conn: sftpConnection,
-        log: log,
-    ):
-        """Initialize the host daemon wrapper around one SSH/SFTP session."""
-        self.sftp_conn = sftp_conn
-        self.log = log
+    Database-agnostic; delegates deduplication and cutoff decisions to callbacks.
+    Memory usage is bounded by `batch_size`.
 
-    # ----------------------------------------------------------------------
-    # Cleanup / termination
-    # ----------------------------------------------------------------------
-    def close_host(self) -> None:
-        """Close the underlying SSH/SFTP session gracefully."""
-        try:
-            self.sftp_conn.close()
-        except Exception as e:
-            self.log.warning(
-                f"[HostDaemon] Error closing SFTP session: {e}"
-            )
-            
-    
-    def iter_metadata_files(
-        self,
-        hostname: str,
-        host_id: int,
-        filter_obj: Filter,
-        callBackCheckFile,
-        callBackGetLastDBDate,
-        *,
-        batch_size: int = 1000,
-    ):
-        """
-        High-level metadata discovery orchestrator.
+    Discovery modes (derived from Filter):
+        - NONE / DEFAULT:  incremental using the last DB timestamp
+        - FILE:            explicit file list (timestamp ignored)
+        - REDISCOVERY:     full rescan (timestamp ignored)
+    """
+    if isinstance(filter_obj, dict):
+        filter_obj = Filter(filter_obj, log=log)
 
-        This generator coordinates the complete metadata discovery lifecycle
-        for a given host. It is intentionally DATABASE-AGNOSTIC and relies on
-        callbacks to delegate persistence-aware decisions.
+    mode = (filter_obj.data.get("mode") or "").upper()
+    remote_dir = filter_obj.data.get("file_path", k.DEFAULT_DATA_FOLDER)
+    pattern = filter_obj._build_pattern(hostname=hostname)
 
-        Responsibilities:
-            • Discover filesystem metadata remotely
-            • Apply incremental discovery rules
-            • Delegate deduplication to an external callback
-            • Enforce semantic Filter rules
-            • Yield bounded batches of FileMetadata eligible for persistence
+    newer_than = None
+    if mode != Filter.MODE_FILE:
+        last_dt = callBackGetLastDBDate(host_id)
+        if last_dt:
+            newer_than = last_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        Architectural guarantees:
-            • Does NOT know database schema or tables
-            • Does NOT perform SQL or persistence logic
-            • Uses callbacks to externalize stateful decisions
-            • Memory usage is strictly bounded by `batch_size`
-            • Safe for reuse, testing, and mocking
-
-        Discovery modes (derived from Filter):
-            - NONE / DEFAULT:
-                Incremental discovery using last DB timestamp
-            - FILE:
-                Explicit file discovery (timestamp ignored)
-            - REDISCOVERY:
-                Full rescan of the remote path (timestamp ignored)
-
-        Deduplication strategy:
-            • Entirely delegated to `callBackCheckFile`
-            • Callback must accept and return List[FileMetadata]
-            • Callback may use database, cache, or other mechanisms
-
-        Args:
-            host_id (int):
-                Host identifier.
-            filter_obj (Filter | dict):
-                Discovery filter definition.
-            callBackCheckFile (callable):
-                Callback responsible for filtering out existing files.
-            callBackGetLastDBDate (callable):
-                Callback returning last discovery timestamp for incremental mode.
-            batch_size (int):
-                Maximum batch size and memory bound.
-
-        Yields:
-            List[FileMetadata]:
-                Filtered and deduplicated batches of metadata.
-        """
-
-        # ------------------------------------------------------------
-        # Normalize filter input
-        # ------------------------------------------------------------
-        if isinstance(filter_obj, dict):
-            filter_obj = Filter(filter_obj, log=self.log)
-
-        # ------------------------------------------------------------
-        # Resolve discovery semantics
-        # ------------------------------------------------------------
-        mode = (filter_obj.data.get("mode") or "").upper()
-        # ------------------------------------------------------------
-        # Resolve remote scan parameters
-        # ------------------------------------------------------------
-        remote_dir = filter_obj.data.get("file_path", k.DEFAULT_DATA_FOLDER)
-        pattern = filter_obj._build_pattern(hostname=hostname)
-
-        # ------------------------------------------------------------
-        # Incremental discovery cutoff
-        # ------------------------------------------------------------
+    if mode == Filter.MODE_REDISCOVERY:
         newer_than = None
+
+    for batch in sftp_conn.iter_find_files_with_metadata(
+        remote_path=remote_dir,
+        pattern=pattern,
+        newer_than=newer_than,
+        batch_size=batch_size,
+    ):
         if mode != Filter.MODE_FILE:
-            last_dt = callBackGetLastDBDate(host_id)
-            if last_dt:
-                newer_than = last_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-        if mode == Filter.MODE_REDISCOVERY:
-            newer_than = None
-
-        # ------------------------------------------------------------
-        # Remote metadata discovery loop
-        # ------------------------------------------------------------
-        for batch in self.sftp_conn.iter_find_files_with_metadata(
-            remote_path=remote_dir,
-            pattern=pattern,
-            newer_than=newer_than,
-            batch_size=batch_size,
-        ):
-            # --------------------------------------------
-            # Delegated deduplication phase
-            # --------------------------------------------
-            # The iterator does NOT know how deduplication is done.
-            # It only trusts the callback contract.
-            # Only available for modes except FILE
-            if mode != Filter.MODE_FILE:
-                batch = callBackCheckFile(
-                    host_id=host_id,
-                    batch=batch,
-                    batch_size=batch_size,
-                )
-            else:
-                self.log.entry(
-                    f"[META] MODE_FILE active — skipping deduplication for host {host_id}"
+            batch = callBackCheckFile(
+                host_id=host_id,
+                batch=batch,
+                batch_size=batch_size,
+            )
+        else:
+            log.entry(
+                f"[META] MODE_FILE active \u2014 skipping deduplication for host {host_id}"
             )
 
-            if not batch:
-                continue
+        if not batch:
+            continue
 
-            # --------------------------------------------
-            # Filter evaluation phase
-            # --------------------------------------------
-            batch = filter_obj.evaluate_metadata(batch)
+        batch = filter_obj.evaluate_metadata(batch)
 
-            if batch:
-                yield batch
+        if batch:
+            yield batch
 
 
-def init_host_context(host: dict, log):
-    """
-    Initialize the shared SSH/SFTP and host-daemon context for one host row.
-    """
+def init_host_context(host: dict, log) -> sftpConnection:
+    """Initialize one remote SSH/SFTP session from a host row."""
     try:
         host_uid = host["HOST__NA_HOST_NAME"]
         host_addr = host["HOST__NA_HOST_ADDRESS"]
@@ -195,7 +109,7 @@ def init_host_context(host: dict, log):
         log.error(f"[INIT] Missing field in host metadata: {missing}")
         raise
 
-    sftp_conn = sftpConnection(
+    return sftpConnection(
         host_uid=host_uid,
         host_addr=host_addr,
         port=port,
@@ -203,10 +117,86 @@ def init_host_context(host: dict, log):
         password=password,
         log=log,
     )
+            
 
-    daemon = hostDaemon(
-        sftp_conn=sftp_conn,
-        log=log,
+def capture_bootstrap_error(
+    err: errors.ErrorHandler,
+    exc: Exception,
+    *,
+    host_id: int,
+    task_id: int,
+) -> None:
+    """Normalize SSH/SFTP bootstrap failures into shared ErrorHandler stages."""
+    if isinstance(exc, paramiko.AuthenticationException):
+        err.capture(
+            "SSH authentication failed",
+            stage="AUTH",
+            exc=exc,
+            host_id=host_id,
+            task_id=task_id,
+        )
+        return
+
+    if isinstance(exc, paramiko.SSHException):
+        err.capture(
+            "SSH negotiation failed",
+            stage="SSH",
+            exc=exc,
+            host_id=host_id,
+            task_id=task_id,
+        )
+        return
+
+    err.capture(
+        "SSH/SFTP initialization failed",
+        stage="CONNECT",
+        exc=exc,
+        host_id=host_id,
+        task_id=task_id,
     )
 
-    return sftp_conn, daemon
+
+def init_host_context_with_retry(
+    *,
+    task: dict,
+    log,
+    err: errors.ErrorHandler,
+    host_id: int,
+    task_id: int,
+    transient_retry_handler: Callable[..., bool],
+    retry_handler_kwargs: dict[str, Any] | None = None,
+    retry_failure_reason: str,
+) -> tuple[sftpConnection | None, bool]:
+    """
+    Initialize one remote host context or delegate retry/error handling.
+
+    Returns (sftp_conn, preserve_host_busy_cooldown).
+    On success returns the live connection and False.
+    On transient failure calls transient_retry_handler and returns (None, preserve).
+    On fatal failure captures AUTH/SSH/CONNECT in err and returns (None, False).
+    """
+    retry_handler_kwargs = retry_handler_kwargs or {}
+
+    try:
+        sftp_conn = init_host_context(task, log)
+        return sftp_conn, False
+    except Exception as exc:
+        if errors.is_transient_sftp_init_error(exc):
+            try:
+                preserve_host_busy_cooldown = transient_retry_handler(
+                    exc=exc,
+                    **retry_handler_kwargs,
+                )
+                return None, preserve_host_busy_cooldown
+            except Exception as retry_exc:
+                err.capture(
+                    retry_failure_reason,
+                    stage="RETRY",
+                    exc=retry_exc,
+                    host_id=host_id,
+                    task_id=task_id,
+                )
+                return None, False
+
+        capture_bootstrap_error(err, exc, host_id=host_id, task_id=task_id)
+        return None, False

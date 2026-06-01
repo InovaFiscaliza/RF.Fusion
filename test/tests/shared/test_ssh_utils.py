@@ -35,7 +35,7 @@ ensure_app_paths()
 
 with bind_real_shared_package():
     errors = import_package_module("app_shared", SHARED_ROOT, "errors")
-    ssh_utils = import_package_module("app_host_handler", HOST_HANDLER_ROOT, "ssh_utils")
+    ssh_utils = import_package_module("app_host_handler", HOST_HANDLER_ROOT, "host_ssh_utils")
 
 
 class FakeTransport:
@@ -109,40 +109,6 @@ class FakeTransferLog:
 class SftpInitErrorClassificationTests(unittest.TestCase):
     """Validate classification of retryable versus fatal SSH/SFTP bootstrap errors."""
 
-    def test_classifies_no_valid_connections_timeout(self) -> None:
-        exc = paramiko.ssh_exception.NoValidConnectionsError(
-            {("127.0.0.1", 22): TimeoutError("timed out")}
-        )
-
-        details = errors.classify_no_valid_connections_error(exc)
-
-        self.assertEqual(details["summary"], "timeout")
-        self.assertTrue(details["has_timeout"])
-
-    def test_classifies_no_valid_connections_refused(self) -> None:
-        exc = paramiko.ssh_exception.NoValidConnectionsError(
-            {("127.0.0.1", 22): ConnectionRefusedError(111, "refused")}
-        )
-
-        details = errors.classify_no_valid_connections_error(exc)
-
-        self.assertEqual(details["summary"], "refused")
-        self.assertTrue(details["has_refused"])
-
-    def test_classifies_no_valid_connections_mixed(self) -> None:
-        exc = paramiko.ssh_exception.NoValidConnectionsError(
-            {
-                ("127.0.0.1", 22): ConnectionRefusedError(111, "refused"),
-                ("::1", 22): TimeoutError("timed out"),
-            }
-        )
-
-        details = errors.classify_no_valid_connections_error(exc)
-
-        self.assertEqual(details["summary"], "mixed")
-        self.assertTrue(details["has_refused"])
-        self.assertTrue(details["has_timeout"])
-
     def test_marks_no_valid_connections_as_transient(self) -> None:
         exc = paramiko.ssh_exception.NoValidConnectionsError(
             {("127.0.0.1", 22): ConnectionRefusedError(111, "refused")}
@@ -208,29 +174,26 @@ class SftpInitErrorClassificationTests(unittest.TestCase):
 
 
 class SshConnectionResolutionTests(unittest.TestCase):
-    """Validate address resolution rules used before opening the SFTP session."""
+    """Validate address assignment rules used before opening the SFTP session."""
 
-    def test_sftp_connection_prefers_primary_172_address(self) -> None:
+    def test_sftp_connection_uses_provided_address(self) -> None:
+        # Resolution is the caller's responsibility; sftpConnection connects
+        # to whatever address it receives verbatim.
         fake_client = FakeSSHClient()
 
         with unittest.mock.patch.object(
-            ssh_utils.host_connectivity,
-            "resolve_primary_host_address",
-            return_value="172.24.1.147",
+            ssh_utils.paramiko,
+            "SSHClient",
+            return_value=fake_client,
         ):
-            with unittest.mock.patch.object(
-                ssh_utils.paramiko,
-                "SSHClient",
-                return_value=fake_client,
-            ):
-                conn = ssh_utils.sftpConnection(
-                    host_uid="RFEye002158",
-                    host_addr="rfeye002158.anatel.gov.br",
-                    port=2828,
-                    user="root",
-                    password="secret",
-                    log=type("FakeLog", (), {"entry": lambda *a, **k: None, "error": lambda *a, **k: None})(),
-                )
+            conn = ssh_utils.sftpConnection(
+                host_uid="RFEye002158",
+                host_addr="172.24.1.147",
+                port=2828,
+                user="root",
+                password="secret",
+                log=type("FakeLog", (), {"entry": lambda *a, **k: None, "error": lambda *a, **k: None})(),
+            )
 
         self.assertEqual(conn.connect_addr, "172.24.1.147")
         self.assertEqual(fake_client.connect_calls[0]["hostname"], "172.24.1.147")
@@ -286,7 +249,7 @@ class TransferWatchdogTests(unittest.TestCase):
 
             self.assertEqual(Path(local_file).read_bytes(), b"x" * 6)
             self.assertFalse(
-                any("backup_transfer_abort" in warning for warning in conn.log.warnings)
+                any("backup_transfer_abort" in entry for entry in conn.log.entries)
             )
 
     def test_transfer_aborts_when_progress_stalls(self) -> None:
@@ -329,7 +292,7 @@ class TransferWatchdogTests(unittest.TestCase):
             self.assertTrue(conn.sftp.closed)
             self.assertTrue(fake_ssh.closed)
             self.assertTrue(
-                any("backup_transfer_abort" in warning for warning in conn.log.warnings)
+                any("backup_transfer_abort" in entry for entry in conn.log.entries)
             )
 
 

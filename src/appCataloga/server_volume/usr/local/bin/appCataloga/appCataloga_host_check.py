@@ -29,8 +29,6 @@ from shared import errors, logging_utils
 import config as k
 
 
-# --- globals ---
-
 SERVICE_NAME = "appCataloga_host_check"
 log = logging_utils.log()
 process_status = {"running": True}
@@ -44,8 +42,6 @@ HOST_TASK_PRIORITY = (
     k.HOST_TASK_UPDATE_STATISTICS_TYPE,
 )
 
-
-# --- signal handling ---
 
 def _shutdown_cleanup(signal_name: str) -> None:
     """Release BUSY host locks when the process shuts down."""
@@ -62,8 +58,6 @@ signal_runtime.install_shutdown_handlers(
     on_shutdown=_shutdown_cleanup,
 )
 
-
-# --- loop helpers ---
 
 def _read_next_task(db: dbHandlerBKP) -> dict | None:
     """Return the next queued HOST_TASK by priority, or None when the queue is empty."""
@@ -89,45 +83,47 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     )
     if result["rows_affected"] == 1:
         return True
-    log.warning(
-        f"event=claim_race_lost host_id={task['host_id']} task_id={task['task_id']}"
-    )
+    log.event("claim_race_lost", host_id=task["host_id"], task_id=task["task_id"])
     return False
 
 
-# --- work ---
-
-def _do_work(db: dbHandlerBKP, task: dict) -> dict:
-    """Dispatch the claimed task by type. Raises on any failure."""
-    start = time.monotonic()
-
+def _do_work(db: dbHandlerBKP, task: dict) -> tuple[int, str]:
+    """Dispatch the claimed task by type. Returns (status, message). Raises on any failure."""
     match task["task_type"]:
         case k.HOST_TASK_UPDATE_STATISTICS_TYPE:
-            host_runtime.update_host_statistics(db, task, logger=log)
+            return host_runtime.run_update_statistics(db, task, logger=log)
+
         case k.HOST_TASK_CHECK_TYPE:
-            host_connectivity.run_check(
+            return host_connectivity.run_check(
                 db, task, logger=log, promote_to_processing=True
             )
+
         case k.HOST_TASK_CHECK_CONNECTION_TYPE:
-            host_connectivity.run_check(
+            return host_connectivity.run_check(
                 db, task, logger=log, promote_to_processing=False
             )
+
         case _:
             raise ValueError(f"Unsupported HOST_TASK type: {task['task_type']}")
 
-    return {"elapsed_sec": time.monotonic() - start}
 
-
-# --- finalization ---
-
-def _finalize_success(db: dbHandlerBKP, task: dict, result: dict) -> None:
-    """Log task completion. Domain functions already wrote the final queue state."""
+def _finalize_success(
+    db: dbHandlerBKP, task: dict, status: int, message: str, elapsed_sec: float
+) -> None:
+    """Write the domain result to the queue and log task completion."""
+    db.host_task_update(
+        task_id=task["task_id"],
+        NU_STATUS=status,
+        NU_PID=k.HOST_UNLOCKED_PID,
+        DT_HOST_TASK=task["now"],
+        NA_MESSAGE=message,
+    )
     log.event(
         "work_completed",
         host_id=task["host_id"],
         task_id=task["task_id"],
         task_type=task["task_type"],
-        elapsed_sec=round(result["elapsed_sec"], 3),
+        elapsed_sec=round(elapsed_sec, 3),
     )
 
 
@@ -150,17 +146,15 @@ def _finalize_error(
             DT_HOST_TASK=datetime.now(),
         )
     except Exception as e2:
-        log.error(f"event=finalize_error_failed task_id={task['task_id']} error={e2}")
+        log.event("finalize_error_failed", task_id=task["task_id"], error=e2)
 
-
-# --- main ---
 
 def _init_db() -> dbHandlerBKP:
     """Connect to the operational database. Exits the process on failure."""
     try:
         return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error(f"event=db_init_failed service={SERVICE_NAME} error={e}")
+        log.event("db_init_failed", service=SERVICE_NAME, error=e)
         sys.exit(1)
 
 
@@ -173,7 +167,6 @@ def main() -> None:
         task = None
 
         try:
-            # --- read ---
             task_row = _read_next_task(db)
             if task_row is None:
                 runtime_sleep.random_jitter_sleep()
@@ -193,17 +186,16 @@ def main() -> None:
                 "now"                   : datetime.now(),
             }
 
-            # --- claim ---
             if not _claim_task(db, task):
                 # Another worker got this task first. Not an error, just skip.
                 runtime_sleep.random_jitter_sleep()
                 continue
 
-            # --- work ---
-            result = _do_work(db, task)
+            start = time.monotonic()
+            status, message = _do_work(db, task)
+            elapsed_sec = time.monotonic() - start
 
-            # --- finalize ---
-            _finalize_success(db, task, result)
+            _finalize_success(db, task, status, message, elapsed_sec)
 
         except Exception as e:
             if not err.triggered:
@@ -220,8 +212,6 @@ def main() -> None:
 
     log.service_stop(SERVICE_NAME)
 
-
-# --- entrypoint ---
 
 if __name__ == "__main__":
     try:

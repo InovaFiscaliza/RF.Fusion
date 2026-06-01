@@ -805,76 +805,6 @@ def is_auth_timeout_error(exc: Exception) -> bool:
     return any(snippet in normalized for snippet in AUTH_TIMEOUT_MESSAGE_SNIPPETS)
 
 
-def classify_no_valid_connections_error(exc: Exception) -> dict:
-    """
-    Summarize the wrapped inner failures of NoValidConnectionsError.
-
-    Paramiko uses this exception as a container for one or more low-level
-    socket/connect failures. The interesting detail lives in `exc.errors`,
-    not in the wrapper message itself.
-
-    The returned summary is intentionally coarse. Callers rarely need every
-    nested endpoint failure; they usually need to know whether the overall
-    picture looks like timeout, refusal, unreachable network, or a mixture.
-    """
-    if not isinstance(exc, paramiko.ssh_exception.NoValidConnectionsError):
-        raise TypeError("exc must be NoValidConnectionsError")
-
-    nested = getattr(exc, "errors", {}) or {}
-    entries = []
-
-    for endpoint, inner_exc in nested.items():
-        kind = "unknown"
-        errno_value = getattr(inner_exc, "errno", None)
-
-        # Normalize many socket/OS exception shapes into a small vocabulary
-        # that worker policy can make decisions on.
-        if isinstance(inner_exc, (socket.timeout, TimeoutError)):
-            kind = "timeout"
-        elif isinstance(inner_exc, ConnectionRefusedError):
-            kind = "refused"
-        elif isinstance(inner_exc, (ConnectionResetError, BrokenPipeError)):
-            kind = "reset"
-        elif isinstance(inner_exc, OSError):
-            if errno_value == errno.ECONNREFUSED:
-                kind = "refused"
-            elif errno_value == errno.ETIMEDOUT:
-                kind = "timeout"
-            elif errno_value in {errno.ECONNRESET, errno.ECONNABORTED}:
-                kind = "reset"
-            elif errno_value in UNREACHABLE_ERRNOS:
-                kind = "unreachable"
-
-        entries.append(
-            {
-                "endpoint": endpoint,
-                "kind": kind,
-                "errno": errno_value,
-                "error_type": type(inner_exc).__name__,
-                "message": str(inner_exc),
-            }
-        )
-
-    kinds = {entry["kind"] for entry in entries}
-
-    if not entries:
-        summary = "unknown"
-    elif len(kinds) == 1:
-        summary = next(iter(kinds))
-    else:
-        summary = "mixed"
-
-    return {
-        "summary": summary,
-        "entries": entries,
-        "has_timeout": any(entry["kind"] == "timeout" for entry in entries),
-        "has_refused": any(entry["kind"] == "refused" for entry in entries),
-        "has_reset": any(entry["kind"] == "reset" for entry in entries),
-        "has_unreachable": any(entry["kind"] == "unreachable" for entry in entries),
-        "has_unknown": any(entry["kind"] == "unknown" for entry in entries),
-    }
-
-
 def is_transient_sftp_init_error(exc: Exception) -> bool:
     """
     Return whether an SSH/SFTP initialization error is safe to retry later.
@@ -937,7 +867,12 @@ def is_timeout_like_sftp_init_error(exc: Exception) -> bool:
         )
 
     if isinstance(exc, paramiko.ssh_exception.NoValidConnectionsError):
-        return classify_no_valid_connections_error(exc)["has_timeout"]
+        nested = getattr(exc, "errors", {}) or {}
+        return any(
+            isinstance(inner, (socket.timeout, TimeoutError))
+            or (isinstance(inner, OSError) and inner.errno == errno.ETIMEDOUT)
+            for inner in nested.values()
+        )
 
     return False
 def should_queue_host_check(exc: Exception) -> bool:

@@ -9,21 +9,23 @@ supervisory checks, not for long-lived data-plane sessions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
-import os
 import ipaddress
+import os
 import socket
 import sys
-import paramiko
-from typing import Any, TypeAlias, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from db.dbHandlerBKP import dbHandlerBKP
 
 from ping3 import ping
 
-from shared import errors
+from .host_ssh_utils import (
+    ConnectivityProbePayload,
+    persist_auth_error,
+    ssh_probe,
+)
 
 
 BASE_DIR = os.path.abspath(
@@ -37,62 +39,59 @@ if CONFIG_PATH not in sys.path:
 
 import config as k  # noqa: E402
 
+# =====================================================================
+# Host address resolution
+# =====================================================================
 
-NO_VALID_CONNECTIONS_REASON_MAP = {
-    "timeout": "ssh_timeout",
-    "refused": "ssh_connection_refused",
-    "reset": "ssh_connection_reset",
-    "unreachable": "ssh_network_unreachable",
-    "mixed": "ssh_connection_mixed_failure",
-    "unknown": "ssh_connection_failed",
-}
-
-ConnectivityProbePayload: TypeAlias = dict[str, Any]
-
-
-@dataclass(frozen=True)
-class ConnectivityProbeResult:
+def resolve_host_addresses(host_addr: str) -> list[str]:
     """
-    Immutable result returned by the short connectivity probe.
+    Resolve a host into a stable list of candidate IP addresses.
 
-    The workers still consume dictionaries for backward compatibility, but
-    building results through a small value object keeps the probe logic easier
-    to read and less error-prone than hand-writing the same dict shape in every
-    exception branch.
+    Some stations publish multiple A records, for example a stable 172.x.x.x
+    operational network plus another VPN-facing IP that may not be reachable
+    from the RF.Fusion VM. Resolving once and picking the preferred family
+    avoids intra-probe DNS flapping where ICMP and SSH accidentally land on
+    different endpoints.
     """
+    try:
+        literal_ip = ipaddress.ip_address(host_addr)
+    except ValueError:
+        literal_ip = None
 
-    state: str
-    reason: str
-    icmp_online: bool
-    ssh_online: bool
-    error: str | None = None
+    # Literal IPs bypass DNS. This keeps explicit host entries deterministic
+    # and avoids surprising resolver behavior when operators pin a station.
+    if literal_ip is not None:
+        return [str(literal_ip)]
 
-    def as_dict(self) -> dict:
-        return {
-            "state": self.state,
-            "reason": self.reason,
-            "icmp_online": self.icmp_online,
-            "ssh_online": self.ssh_online,
-            "error": self.error,
-        }
+    try:
+        infos = socket.getaddrinfo(host_addr, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return [host_addr]
+    except Exception:
+        return [host_addr]
 
+    addresses: list[str] = []
+    for _family, _type, _proto, _canonname, sockaddr in infos:
+        addr = sockaddr[0]
+        if addr not in addresses:
+            addresses.append(addr)
 
-def _probe_result(
-    *,
-    state: str,
-    reason: str,
-    icmp_online: bool,
-    ssh_online: bool,
-    error: str | None = None,
-) -> ConnectivityProbePayload:
-    """Return the canonical probe payload shared by host workers."""
-    return ConnectivityProbeResult(
-        state=state,
-        reason=reason,
-        icmp_online=icmp_online,
-        ssh_online=ssh_online,
-        error=error,
-    ).as_dict()
+    if not addresses:
+        return [host_addr]
+
+    preferred_172 = []
+    for addr in addresses:
+        try:
+            ip_obj = ipaddress.ip_address(addr)
+            if ip_obj.version == 4 and str(ip_obj).startswith("172."):
+                preferred_172.append(addr)
+        except ValueError:
+            pass
+
+    # When a station exposes both VPN/public and operational network addresses,
+    # the operational 172.x.x.x endpoint is the one we want. Falling back to
+    # other records was the source of many false offline/degraded diagnoses.
+    return preferred_172 if preferred_172 else addresses
 
 
 def log_connectivity_probe(
@@ -137,149 +136,12 @@ def log_connectivity_probe(
     log.event(event_name, **payload)
 
 
-def resolve_host_addresses(host_addr: str) -> list[str]:
-    """
-    Resolve a host into a stable list of candidate IP addresses.
-
-    Some stations publish multiple A records, for example a stable 172.x.x.x
-    operational network plus another VPN-facing IP that may not be reachable
-    from the RF.Fusion VM. Resolving once and picking the preferred family
-    avoids intra-probe DNS flapping where ICMP and SSH accidentally land on
-    different endpoints.
-    """
-    try:
-        literal_ip = ipaddress.ip_address(host_addr)
-    except ValueError:
-        literal_ip = None
-
-    # Literal IPs should bypass DNS entirely. This keeps explicit host entries
-    # such as 172.24.x.x or 192.168.x.x deterministic and avoids surprising
-    # resolver behavior when operators intentionally pin a station to one path.
-    if literal_ip is not None:
-        return [str(literal_ip)]
-
-    try:
-        infos = socket.getaddrinfo(host_addr, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        return [host_addr]
-    except Exception:
-        return [host_addr]
-
-    addresses: list[str] = []
-    for _family, _type, _proto, _canonname, sockaddr in infos:
-        addr = sockaddr[0]
-        if addr not in addresses:
-            addresses.append(addr)
-
-    if not addresses:
-        return [host_addr]
-
-    preferred_172 = []
-    for addr in addresses:
-        try:
-            ip_obj = ipaddress.ip_address(addr)
-        except ValueError:
-            continue
-
-        if ip_obj.version == 4 and str(ip_obj).startswith("172."):
-            preferred_172.append(addr)
-
-    # When a station exposes both VPN/public and operational network addresses,
-    # the operational 172.x.x.x endpoint is the one we want to supervise and
-    # use for SSH/SFTP sessions. Falling back to the other records here was the
-    # source of many false offline/degraded diagnoses.
-    if preferred_172:
-        return preferred_172
-
-    return addresses
-
-
-def resolve_primary_host_address(host_addr: str) -> str:
-    """
-    Return the preferred concrete address for a host.
-
-    This is the single-address counterpart of `resolve_host_addresses()` and is
-    intended for long-lived data-plane connections such as backup/discovery SSH
-    sessions. Keeping this choice centralized ensures control-plane probes and
-    data-plane transports follow the same routing preference.
-    """
-    return resolve_host_addresses(host_addr)[0]
-
-
 def _ping_address(addr: str, timeout_sec: float) -> bool:
     """Ping a concrete address without triggering another DNS lookup."""
     try:
         return ping(addr, timeout=timeout_sec) is not None
     except Exception:
         return False
-
-
-def _connect_short_ssh_probe(addr: str, port: int, user: str, password: str) -> None:
-    """
-    Attempt the short supervisory SSH login used by host probes.
-
-    The helper intentionally raises the original Paramiko/socket exception so
-    callers can classify the failure without losing stage-specific details.
-    """
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    try:
-        client.connect(
-            hostname=addr,
-            port=int(port),
-            username=user,
-            password=password,
-            timeout=k.HOST_CHECK_SSH_PROBE_TIMEOUT_SEC,
-            banner_timeout=k.HOST_CHECK_SSH_PROBE_TIMEOUT_SEC,
-            auth_timeout=k.HOST_CHECK_SSH_PROBE_TIMEOUT_SEC,
-            look_for_keys=False,
-            allow_agent=False,
-        )
-    finally:
-        try:
-            client.close()
-        except Exception:
-            pass
-
-
-def _classify_generic_ssh_probe_failure(exc: Exception) -> dict:
-    """
-    Classify non-specialized SSH probe failures as degraded operational states.
-    """
-    if errors.is_timeout_like_sftp_init_error(exc):
-        reason = "ssh_timeout"
-    elif errors.is_transient_sftp_init_error(exc):
-        reason = "ssh_transient_failure"
-    else:
-        reason = "ssh_unreachable"
-
-    return _probe_result(
-        state="degraded",
-        reason=reason,
-        icmp_online=True,
-        ssh_online=False,
-        error=str(exc),
-    )
-
-
-def _classify_no_valid_connections_failure(
-    exc: paramiko.ssh_exception.NoValidConnectionsError,
-) -> dict:
-    """
-    Translate Paramiko's aggregate connection wrapper into one stable reason.
-    """
-    details = errors.classify_no_valid_connections_error(exc)
-    return _probe_result(
-        state="degraded",
-        reason=NO_VALID_CONNECTIONS_REASON_MAP.get(
-            details["summary"],
-            "ssh_connection_failed",
-        ),
-        icmp_online=True,
-        ssh_online=False,
-        error=str(exc),
-    )
 
 
 def persist_host_connectivity_state(
@@ -405,7 +267,7 @@ def persist_host_connectivity_state(
     db.host_update(host_id=host_id, reset=True, **update_fields)
 
 
-def is_host_online(host_addr: str, timeout_sec=None) -> bool:
+def is_host_online(host_addr: str, timeout_sec: float | None = None) -> bool:
     """
     Check host reachability through ICMP without surfacing ping library errors.
 
@@ -413,10 +275,7 @@ def is_host_online(host_addr: str, timeout_sec=None) -> bool:
     as "not reachable" so callers can stay focused on state transitions.
     """
     timeout = k.ICMP_TIMEOUT_SEC if timeout_sec is None else timeout_sec
-    for resolved_addr in resolve_host_addresses(host_addr):
-        if _ping_address(resolved_addr, timeout):
-            return True
-    return False
+    return any(_ping_address(addr, timeout) for addr in resolve_host_addresses(host_addr))
 
 
 def probe_host_connectivity(
@@ -428,115 +287,42 @@ def probe_host_connectivity(
     """
     Classify host operational connectivity for discovery/backup purposes.
 
-    The returned dictionary is designed for both decision-making and logging.
-    It captures a coarse state plus enough detail to distinguish:
-        - ICMP unreachable
-        - SSH unavailable
-        - SSH degraded/timeouting
-        - authentication failures
-        - fully operational hosts
-
     States:
-        - online: ICMP and a short SSH login probe succeeded
-        - offline: ICMP itself is unreachable
-        - degraded: host pings, but SSH could not be confirmed by the short probe
-        - auth_error: host is reachable, but credentials were explicitly rejected
+        - online:     ICMP and a short SSH login probe succeeded
+        - offline:    ICMP itself is unreachable
+        - degraded:   host pings, but SSH could not be confirmed
+        - auth_error: host is reachable, but credentials were rejected
     """
-    # Resolve once up front so ICMP and SSH supervision talk about the same
-    # candidate endpoints during this probe pass. This avoids DNS flapping
-    # inside one check cycle.
     resolved_addrs = resolve_host_addresses(addr)
-    timeout = k.ICMP_TIMEOUT_SEC
-    saw_icmp = False
+    reachable = [a for a in resolved_addrs if _ping_address(a, k.ICMP_TIMEOUT_SEC)]
+
+    if not reachable:
+        return {
+            "state": k.HOST_CONN_OFFLINE,
+            "reason": "icmp_unreachable",
+            "icmp_online": False,
+            "ssh_online": False,
+            "error": None,
+            "resolved_candidates": resolved_addrs,
+        }
+
     best_failure: dict | None = None
 
-    for resolved_addr in resolved_addrs:
-        # A candidate that does not even answer ICMP cannot be the operational
-        # endpoint we want, so we skip SSH entirely for that address.
-        if not _ping_address(resolved_addr, timeout):
-            continue
+    for resolved_addr in reachable:
+        result = ssh_probe(addr=resolved_addr, port=port, user=user, password=password)
+        result["resolved_addr"] = resolved_addr
+        result["resolved_candidates"] = resolved_addrs
 
-        saw_icmp = True
-
-        try:
-            # This is a deliberately short supervisory login, not a real worker
-            # session. Its only job is to answer "can discovery/backup start now?".
-            _connect_short_ssh_probe(
-                addr=resolved_addr,
-                port=port,
-                user=user,
-                password=password,
-            )
-            result = _probe_result(
-                state="online",
-                reason="ssh_connect_ok",
-                icmp_online=True,
-                ssh_online=True,
-            )
-            result["resolved_addr"] = resolved_addr
-            result["resolved_candidates"] = resolved_addrs
-            # The first candidate that passes both ICMP and the short SSH probe
-            # wins immediately. At that point we already have the strongest
-            # possible operational answer for this host.
+        if result["state"] == k.HOST_CONN_ONLINE:
             return result
-        except paramiko.AuthenticationException as e:
-            # Authentication timeout is treated as degradation, not as bad
-            # credentials, because the station may simply be too slow or busy
-            # to finish auth within the short supervisory budget.
-            if errors.is_auth_timeout_error(e):
-                failure = _probe_result(
-                    state="degraded",
-                    reason="ssh_auth_timeout",
-                    icmp_online=True,
-                    ssh_online=True,
-                    error=str(e),
-                )
-            else:
-                failure = _probe_result(
-                    state="auth_error",
-                    reason="ssh_auth_failed",
-                    icmp_online=True,
-                    ssh_online=True,
-                    error=str(e),
-                )
-        except paramiko.ssh_exception.NoValidConnectionsError as e:
-            # Paramiko wraps several concrete TCP failures in this aggregate
-            # exception. The helper below inspects the inner errors so callers
-            # can distinguish timeout/refused/unreachable instead of seeing one
-            # opaque "could not connect" outcome.
-            failure = _classify_no_valid_connections_failure(e)
-        except Exception as e:
-            # Any other SSH-side failure still means "ICMP worked but the host
-            # is not operational for backup/discovery right now".
-            failure = _classify_generic_ssh_probe_failure(e)
 
-        failure["resolved_addr"] = resolved_addr
-        failure["resolved_candidates"] = resolved_addrs
+        # Auth rejection outranks degradation — operators need to fix credentials.
+        if best_failure is None or result["state"] == k.HOST_CONN_AUTH_ERROR:
+            best_failure = result
 
-        # If several resolved IPs fail differently, keep the most actionable
-        # failure seen so far. Explicit auth rejection outranks generic
-        # degradation because it tells operators to fix credentials, not just
-        # wait for the next retry window.
-        if best_failure is None or best_failure["state"] != "auth_error":
-            best_failure = failure
-        elif failure["state"] == "auth_error":
-            best_failure = failure
-
-    if best_failure is not None:
-        # At least one candidate answered ICMP, but none passed the short SSH
-        # probe. Return the strongest non-online diagnosis collected above.
-        return best_failure
-
-    # No candidate address answered ICMP at all, so this is the strongest
-    # evidence we have for a true offline/network-unreachable state.
-    result = _probe_result(
-        state="offline",
-        reason="icmp_unreachable",
-        icmp_online=False,
-        ssh_online=False,
-    )
-    result["resolved_candidates"] = resolved_addrs
-    return result
+    # reachable is non-empty, so best_failure is always set after the loop.
+    assert best_failure is not None
+    return best_failure
 
 
 # --- connectivity task handlers (called from appCataloga_host_check.py) ---
@@ -545,11 +331,13 @@ def probe_host_connectivity(
 def _persist_degraded(
     db: dbHandlerBKP,
     task: dict,
-) -> None:
+) -> tuple[int, str]:
     """
     Persist degraded connectivity state for a host.
-    Marks the task ERROR when consecutive failures exceed the threshold,
-    otherwise keeps it PENDING for the next probe.
+
+    Outcomes:
+        - below threshold:  increments error counter; returns PENDING
+        - at threshold:     returns ERROR; host stays BUSY until recovery
     """
     next_count = max(0, int(task["host_check_error_count"] or 0)) + 1
     threshold = k.HOST_CHECK_SSH_TIMEOUT_CONFIRMATIONS
@@ -563,70 +351,14 @@ def _persist_degraded(
     )
 
     if next_count >= threshold:
-        db.host_task_update(
-            task_id=task["task_id"],
-            NU_STATUS=k.TASK_ERROR,
-            NU_PID=k.HOST_UNLOCKED_PID,
-            DT_HOST_TASK=task["now"],
-            NA_MESSAGE=(
-                "SSH supervision degraded threshold reached while ICMP still "
-                f"responds ({next_count}/{threshold})"
-            ),
+        return (
+            k.TASK_ERROR,
+            f"SSH supervision degraded threshold reached while ICMP still responds ({next_count}/{threshold})",
         )
-        return
 
-    # Below threshold: keep the task alive for the next probe.
-    db.host_task_update(
-        task_id=task["task_id"],
-        NU_STATUS=k.TASK_PENDING,
-        NU_PID=k.HOST_UNLOCKED_PID,
-        DT_HOST_TASK=task["now"],
-        NA_MESSAGE=(
-            "SSH supervision degraded while ICMP still responds | "
-            f"confirmation {next_count}/{threshold}"
-        ),
-    )
-
-
-def _persist_auth_error(
-    db: dbHandlerBKP,
-    task: dict,
-    detail: str,
-    *,
-    logger: Any,
-) -> None:
-    """
-    Suspend host-dependent work after an SSH authentication failure.
-    Auth rejection is not transient; retries keep failing until credentials are fixed.
-    """
-    next_count = max(0, int(task["host_check_error_count"] or 0)) + 1
-
-    db.host_update(
-        host_id=task["host_id"],
-        reset=True,
-        DT_LAST_CHECK=task["now"],
-        DT_LAST_FAIL=task["now"],
-        NU_HOST_CHECK_ERROR=next_count,
-    )
-
-    db.host_task_suspend_by_host(task["host_id"])
-    db.file_task_suspend_by_host(task["host_id"])
-    db.file_history_suspend_by_host(task["host_id"])
-
-    db.host_task_update(
-        task_id=task["task_id"],
-        NU_STATUS=k.TASK_ERROR,
-        NU_PID=k.HOST_UNLOCKED_PID,
-        DT_HOST_TASK=task["now"],
-        NA_MESSAGE=f"SSH authentication failed during connectivity confirmation | {detail}",
-    )
-
-    logger.event(
-        "host_auth_error_suspended",
-        host_id=task["host_id"],
-        task_id=task["task_id"],
-        error_count=next_count,
-        detail=detail,
+    return (
+        k.TASK_PENDING,
+        f"SSH supervision degraded while ICMP still responds | confirmation {next_count}/{threshold}",
     )
 
 
@@ -638,10 +370,14 @@ def _finalize_check(
     promote_to_processing: bool,
     resume_dependent_tasks: bool,
     logger: Any,
-) -> None:
+) -> tuple[int, str]:
     """
-    Apply the final connectivity result to HOST and close the task.
-    CHECK tasks queue a processing row on success; CHECK_CONNECTION tasks do not.
+    Apply the final connectivity result to HOST and return the task close state.
+
+    Outcomes:
+        - offline:             returns ERROR
+        - online + promote:    queues discovery task; returns DONE
+        - online + no promote: returns DONE (connectivity-only check)
     """
     persist_host_connectivity_state(
         db=db,
@@ -654,14 +390,7 @@ def _finalize_check(
     )
 
     if not online:
-        db.host_task_update(
-            task_id=task["task_id"],
-            NU_STATUS=k.TASK_ERROR,
-            NU_PID=k.HOST_UNLOCKED_PID,
-            NA_MESSAGE="Host unreachable (connectivity check failed)",
-            DT_HOST_TASK=task["now"],
-        )
-        return
+        return (k.TASK_ERROR, "Host unreachable (connectivity check failed)")
 
     if promote_to_processing:
         db.queue_host_task(
@@ -670,22 +399,9 @@ def _finalize_check(
             task_status=k.TASK_PENDING,
             filter_dict=task["host_filter"],
         )
-        db.host_task_update(
-            task_id=task["task_id"],
-            NU_STATUS=k.TASK_DONE,
-            NU_PID=k.HOST_UNLOCKED_PID,
-            DT_HOST_TASK=task["now"],
-            NA_MESSAGE="Host check completed; discovery task queued",
-        )
-        return
+        return (k.TASK_DONE, "Host check completed; discovery task queued")
 
-    db.host_task_update(
-        task_id=task["task_id"],
-        NU_STATUS=k.TASK_DONE,
-        NU_PID=k.HOST_UNLOCKED_PID,
-        DT_HOST_TASK=task["now"],
-        NA_MESSAGE="Host connectivity reconciliation completed successfully",
-    )
+    return (k.TASK_DONE, "Host connectivity reconciliation completed successfully")
 
 
 def run_check(
@@ -694,10 +410,17 @@ def run_check(
     *,
     logger: Any,
     promote_to_processing: bool,
-) -> None:
+) -> tuple[int, str]:
     """
     Execute one queued connectivity task (CHECK or CHECK_CONNECTION).
-    Probes the host, then applies the right state transition.
+
+    Probes the host, logs the result, then dispatches to the matching handler:
+        - degraded:    increments error counter; retries until threshold
+        - auth_error:  suspends all dependent work
+        - online:      persists online state; optionally promotes to discovery
+        - offline:     persists offline state
+
+    Returns (status, message) for the caller to close the task.
     Raises on any DB failure — does not catch internally.
     """
     event_name = k.EVENT_HOST_CHECK if promote_to_processing else k.EVENT_CHECK_CONNECTION
@@ -720,16 +443,15 @@ def run_check(
 
     match connectivity["state"]:
         case k.HOST_CONN_DEGRADED:
-            _persist_degraded(db, task)
+            return _persist_degraded(db, task)
         case k.HOST_CONN_AUTH_ERROR:
-            _persist_auth_error(
+            return persist_auth_error(
                 db, task,
                 detail=connectivity["error"] or connectivity["reason"],
                 logger=logger,
             )
         case _:
-            # Handles online and offline — the definitive final states.
-            _finalize_check(
+            return _finalize_check(
                 db, task,
                 online=(connectivity["state"] == k.HOST_CONN_ONLINE),
                 promote_to_processing=promote_to_processing,

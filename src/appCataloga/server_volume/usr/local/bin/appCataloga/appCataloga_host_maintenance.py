@@ -26,7 +26,7 @@ from bootstrap_paths import bootstrap_app_paths
 PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 from db.dbHandlerBKP import dbHandlerBKP
-from host_handler import host_connectivity, host_runtime, maintenance as maintenance_flow
+from host_handler import host_connectivity, host_maintenance as maintenance_flow, host_runtime
 from server_handler import signal_runtime, sleep as runtime_sleep
 from shared import logging_utils
 import config as k

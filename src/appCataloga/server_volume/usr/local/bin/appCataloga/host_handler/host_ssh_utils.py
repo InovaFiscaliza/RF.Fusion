@@ -12,17 +12,17 @@ import sys
 import os
 import shlex
 import stat
+import socket
 import threading
 import time
 import paramiko
+from collections.abc import Iterator
 from datetime import datetime
-from typing import List, Optional, Union
-from enum import Enum
+from typing import Any, TypeAlias, TYPE_CHECKING
 
-from shared import tools
+from shared import errors, tools
 from shared.file_metadata import FileMetadata
 from shared.logging_utils import log
-from . import host_connectivity
 
 
 # ---------------------------------------------------------------------
@@ -39,6 +39,142 @@ if CONFIG_PATH not in sys.path:
     sys.path.insert(0, CONFIG_PATH)
 
 import config as k  # noqa: E402  (must be available at runtime)
+
+if TYPE_CHECKING:
+    from db.dbHandlerBKP import dbHandlerBKP
+
+
+
+# =====================================================================
+# Connectivity probe types and SSH probe helpers
+# =====================================================================
+
+ConnectivityProbePayload: TypeAlias = dict[str, Any]
+
+def _probe_result(
+    *,
+    state: str,
+    reason: str,
+    icmp_online: bool,
+    ssh_online: bool,
+    error: str | None = None,
+) -> ConnectivityProbePayload:
+    return {
+        "state": state,
+        "reason": reason,
+        "icmp_online": icmp_online,
+        "ssh_online": ssh_online,
+        "error": error,
+    }
+
+
+def _connect_short_ssh_probe(addr: str, port: int, user: str, password: str) -> None:
+    """
+    Attempt the short supervisory SSH login used by host probes.
+
+    Intentionally raises the original Paramiko/socket exception so callers
+    can classify the failure without losing stage-specific details.
+    """
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(
+            hostname=addr,
+            port=int(port),
+            username=user,
+            password=password,
+            timeout=k.HOST_CHECK_SSH_PROBE_TIMEOUT_SEC,
+            banner_timeout=k.HOST_CHECK_SSH_PROBE_TIMEOUT_SEC,
+            auth_timeout=k.HOST_CHECK_SSH_PROBE_TIMEOUT_SEC,
+            look_for_keys=False,
+            allow_agent=False,
+        )
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+def ssh_probe(addr: str, port: int, user: str, password: str) -> ConnectivityProbePayload:
+    """
+    Run the short supervisory SSH login for one ICMP-reachable address.
+
+    Outcomes:
+        - online:      SSH login succeeded
+        - auth_error:  credentials rejected (AuthenticationException, non-timeout)
+        - degraded:    everything else — auth timeout, no valid connections,
+                       transport errors, generic failures
+
+    Never raises.
+    """
+    try:
+        _connect_short_ssh_probe(addr=addr, port=port, user=user, password=password)
+        return _probe_result(
+            state=k.HOST_CONN_ONLINE, reason="ssh_connect_ok",
+            icmp_online=True, ssh_online=True,
+        )
+    except paramiko.AuthenticationException as e:
+        if errors.is_auth_timeout_error(e):
+            return _probe_result(
+                state=k.HOST_CONN_DEGRADED, reason="ssh_auth_timeout",
+                icmp_online=True, ssh_online=True, error=str(e),
+            )
+        return _probe_result(
+            state=k.HOST_CONN_AUTH_ERROR, reason="ssh_auth_failed",
+            icmp_online=True, ssh_online=True, error=str(e),
+        )
+    except paramiko.ssh_exception.NoValidConnectionsError as e:
+        return _probe_result(
+            state=k.HOST_CONN_DEGRADED, reason="ssh_no_valid_connections",
+            icmp_online=True, ssh_online=False, error=str(e),
+        )
+    except Exception as e:
+        reason = "ssh_timeout" if isinstance(e, (socket.timeout, TimeoutError)) else "ssh_unreachable"
+        return _probe_result(
+            state=k.HOST_CONN_DEGRADED, reason=reason,
+            icmp_online=True, ssh_online=False, error=str(e),
+        )
+
+
+def persist_auth_error(
+    db: dbHandlerBKP,
+    task: dict,
+    detail: str,
+    *,
+    logger: Any,
+) -> tuple[int, str]:
+    """
+    Suspend host-dependent work after an SSH authentication failure.
+
+    Auth rejection is not transient; retries keep failing until credentials
+    are fixed. Suspends all dependent queues and returns ERROR status for
+    the caller to close the task.
+    """
+    next_count = max(0, int(task["host_check_error_count"] or 0)) + 1
+
+    db.host_update(
+        host_id=task["host_id"],
+        reset=True,
+        DT_LAST_CHECK=task["now"],
+        DT_LAST_FAIL=task["now"],
+        NU_HOST_CHECK_ERROR=next_count,
+    )
+
+    db.host_task_suspend_by_host(task["host_id"])
+    db.file_task_suspend_by_host(task["host_id"])
+    db.file_history_suspend_by_host(task["host_id"])
+
+    logger.event(
+        "host_auth_error_suspended",
+        host_id=task["host_id"],
+        task_id=task["task_id"],
+        error_count=next_count,
+        detail=detail,
+    )
+
+    return (k.TASK_ERROR, f"SSH authentication failed during connectivity confirmation | {detail}")
+
 
 # =====================================================================
 # SFTP Connection
@@ -57,14 +193,6 @@ class sftpConnection:
     ) -> None:
         """Initialize SSH and SFTP connections with stability tuning.
 
-        Args:
-            host_uid (str): Unique host identifier (for logs).
-            host_addr (str): Hostname or IP address.
-            port (int): SSH port number.
-            user (str): SSH username.
-            password (str): SSH password.
-            log (log): Logger instance.
-
         Raises:
             Exception: When connection to remote host fails.
         """
@@ -72,22 +200,17 @@ class sftpConnection:
         self.log = log
         self.host_uid = host_uid
         self.host_addr = host_addr
-        self.connect_addr = host_connectivity.resolve_primary_host_address(host_addr)
+        self.connect_addr = host_addr
         self.port = port
         self.user = user
 
         try:
-            # -------------------------------------------------------------
-            # SSH CLIENT SETUP
-            # -------------------------------------------------------------
             self.ssh_client = paramiko.SSHClient()
             self.ssh_client.set_missing_host_key_policy(
                 paramiko.AutoAddPolicy()
             )
 
-            # -------------------------------------------------------------
-            # CONNECT (timeouts apply ONLY to connection/auth phase)
-            # -------------------------------------------------------------
+            # Timeouts cover connection/auth only; data transfer timeouts are separate.
             self.ssh_client.connect(
                 hostname=self.connect_addr,
                 port=port,
@@ -116,9 +239,6 @@ class sftpConnection:
             # Increase SSH window size to avoid stdout backpressure
             transport.window_size = 2**24  # 16 MB
 
-            # -------------------------------------------------------------
-            # SFTP SESSION
-            # -------------------------------------------------------------
             self.sftp = self.ssh_client.open_sftp()
 
             self.log.entry(
@@ -186,7 +306,7 @@ class sftpConnection:
             )
             raise
 
-    def read(self, filename: str, mode: str = "r") -> Union[str, bytes]:
+    def read(self, filename: str, mode: str = "r") -> str | bytes:
         """Read content from a remote file (text or binary)."""
         try:
             if "b" in mode:
@@ -208,14 +328,10 @@ class sftpConnection:
             )
             raise
     
-    def read_cookie_list(self, filename: str) -> List[str]:
+    def read_cookie_list(self, filename: str) -> list[str]:
         """Read a 'list cookie' file (one item per line) from remote host.
 
-        Args:
-            filename (str): Absolute remote path of the cookie file.
-
-        Returns:
-            list[str]: List of non-empty, stripped lines. Empty list if missing.
+        Returns non-empty stripped lines. Returns empty list if file is missing.
         """
         try:
             data = self.read(filename, "r")
@@ -226,15 +342,8 @@ class sftpConnection:
             self.log.error(f"Error reading cookie list '{filename}' from '{self.host_uid}'. {e}")
             return []
 
-    def write_cookie_list(self, filename: str, lines: List[str]) -> None:
+    def write_cookie_list(self, filename: str, lines: list[str]) -> None:
         """Write a 'list cookie' file (one item per line) to remote host.
-
-        Args:
-            filename (str): Absolute remote path of the cookie file.
-            lines (list[str]): Lines to write; will be joined by newline.
-
-        Returns:
-            None
 
         Raises:
             Exception: On SFTP I/O errors.
@@ -247,12 +356,14 @@ class sftpConnection:
             raise
 
     
-    def abort_transfer(self, reason: Optional[str] = None) -> None:
+    def abort_transfer(self, reason: str | None = None) -> None:
         """Force-close the active SFTP/SSH transport during a stalled transfer."""
         if reason:
-            self.log.warning(
-                f"event=backup_transfer_abort host={self.host_uid} "
-                f"address={self.host_addr} reason={reason}"
+            self.log.event(
+                "backup_transfer_abort",
+                host=self.host_uid,
+                address=self.host_addr,
+                reason=reason,
             )
 
         try:
@@ -280,23 +391,12 @@ class sftpConnection:
         remote_file: str,
         local_file: str,
         *,
-        max_seconds: Optional[float] = None,
-        stall_timeout_seconds: Optional[float] = None,
-        progress_poll_seconds: Optional[float] = None,
-        heartbeat_seconds: Optional[float] = None,
+        max_seconds: float | None = None,
+        stall_timeout_seconds: float | None = None,
+        progress_poll_seconds: float | None = None,
+        heartbeat_seconds: float | None = None,
     ) -> None:
         """Download a remote file to a local path with progress watchdogs.
-
-        Args:
-            remote_file (str): Absolute remote path of the file.
-            local_file (str): Local filesystem destination path.
-            max_seconds (float | None): Absolute transfer timeout.
-            stall_timeout_seconds (float | None): Maximum time without progress.
-            progress_poll_seconds (float | None): Poll interval for watchdog.
-            heartbeat_seconds (float | None): Periodic progress log interval.
-
-        Returns:
-            None
 
         Raises:
             Exception: On SFTP I/O errors (e.g., permissions, network).
@@ -486,14 +586,7 @@ class sftpConnection:
             )
             
     def size(self, filename: str) -> int:
-        """
-        Return remote file size in bytes.
-
-        Args:
-            filename (str): Absolute remote file path.
-
-        Returns:
-            int: File size in bytes.
+        """Return remote file size in bytes.
 
         Raises:
             FileNotFoundError: If file does not exist.
@@ -618,21 +711,8 @@ class sftpConnection:
     # =================================================================
     # OS Detection
     # =================================================================
-    def detect_remote_os(self):
-        """
-        Detect the operating system of a remote host via SSH.
-
-        Detection strategy:
-            1) Attempt to identify a Unix/Linux system using `uname -s`.
-            2) If that fails, detect Windows using PowerShell.
-
-        Returns:
-            str: "linux" or "windows"
-        """
-
-        # ---------------------------------------------------------------
-        # 1) Linux detection
-        # ---------------------------------------------------------------
+    def detect_remote_os(self) -> str:
+        """Detect remote operating system via SSH. Returns 'linux' or 'windows'."""
         try:
             stdin, stdout, stderr = self.ssh_client.exec_command(
                 "uname -s", timeout=5
@@ -643,9 +723,6 @@ class sftpConnection:
         except Exception:
             pass
 
-        # ---------------------------------------------------------------
-        # 2) Windows detection
-        # ---------------------------------------------------------------
         try:
             stdin, stdout, stderr = self.ssh_client.exec_command(
                 "powershell -NoProfile -Command Write-Output windows",
@@ -662,257 +739,20 @@ class sftpConnection:
     # =================================================================
     # Cross-platform discovery with metadata
     # =================================================================
-    def sftp_find_files_with_metadata(
-        self,
-        remote_path: str,
-        pattern: str,
-        recursive: bool = True,
-        newer_than: Optional[str] = None,
-    ):
-        """
-        Traverse a remote filesystem and return a full in-memory metadata list.
-
-        This function intentionally materializes the entire result because the
-        current discovery pipeline still expects a complete list at this layer.
-        Filtering and deduplication belong to higher orchestration layers.
-
-        Args:
-            remote_path (str):
-                Base directory on the remote host to start traversal from.
-
-            pattern (str):
-                Filename pattern (glob-like) used for matching files.
-                Example: "*.bin", "*.dbm"
-
-            recursive (bool):
-                Whether to recurse into subdirectories.
-                NOTE: On Windows, recursion is handled by PowerShell.
-
-            newer_than (Optional[str]):
-                If provided, only files newer than this timestamp
-                will be returned. Format must be compatible with:
-                - Linux: find -newermt
-                - Windows: PowerShell Get-Date
-
-        Returns:
-            list[FileMetadata]:
-                A fully materialized list of FileMetadata objects.
-
-        Any SSH or parsing error is logged and results in an empty list.
-        """
-
-        # ------------------------------------------------------------
-        # Normalize and sanitize input parameters
-        # ------------------------------------------------------------
-        # Remove trailing path separators to avoid duplicate slashes
-        remote_path = remote_path.rstrip("/").rstrip("\\")
-
-        # Sanitize pattern to avoid malformed shell / PowerShell calls
-        pattern = pattern.strip().replace('"', "").replace("'", "")
-        if not pattern.startswith("*"):
-            pattern = "*" + pattern
-
-        # Detect remote operating system (Linux or Windows)
-        os_type = self.detect_remote_os()
-
-        # NOTE:
-        # This list is intentionally built in-memory.
-        # DO NOT change this to a generator here.
-        results: list[FileMetadata] = []
-
-        self.log.entry(
-            f"[META] Traversal start | os={os_type} | "
-            f"path={remote_path} | pattern={pattern} | "
-            f"recursive={'yes' if recursive else 'no'} | "
-            f"incremental={'yes' if newer_than else 'no'}"
-        )
-
-        start = time.monotonic()
-
-        # ============================================================
-        # LINUX BACKEND
-        # ============================================================
-        if os_type == "linux":
-
-            # Build incremental discovery guard if requested
-            newer = f'-newermt "{newer_than}"' if newer_than else ""
-
-            # Use GNU find with a fixed, parseable output format
-            # Field order is STRICT and MUST NOT be changed lightly
-            cmd = (
-                f"find {remote_path} -type f -iname '{pattern}' {newer} "
-                "-printf '%p|%s|%C@|%T@|%A@|%U|%G|%m\n'"
-            )
-
-            self.log.entry(f"[META][LINUX] exec: {cmd}")
-
-            try:
-                _, stdout, stderr = self.ssh_client.exec_command(
-                    cmd, timeout=k.HOST_BUSY_TIMEOUT
-                )
-
-                # Read stdout line-by-line to avoid buffering large outputs
-                for raw in iter(stdout.readline, ""):
-                    raw = raw.strip()
-                    if not raw:
-                        continue
-
-                    # Expected format:
-                    # fullpath|size|ctime|mtime|atime|uid|gid|mode
-                    fullpath, size, c_at, m_at, a_at, uid, gid, mode = raw.split("|")
-
-                    filename = os.path.basename(fullpath)
-                    dirname = os.path.dirname(fullpath)
-                    _, ext = os.path.splitext(filename)
-
-                    # Create FileMetadata object with legacy-compatible fields
-                    results.append(
-                        FileMetadata(
-                            NA_FULL_PATH=fullpath,
-                            NA_PATH=dirname,
-                            NA_FILE=filename,
-                            NA_EXTENSION=ext,
-                            VL_FILE_SIZE_KB=int(size) // 1024,
-                            DT_FILE_CREATED=datetime.fromtimestamp(float(c_at)),
-                            DT_FILE_MODIFIED=datetime.fromtimestamp(float(m_at)),
-                            DT_FILE_ACCESSED=datetime.fromtimestamp(float(a_at)),
-                            NA_OWNER=str(uid),
-                            NA_GROUP=str(gid),
-                            NA_PERMISSIONS=stat.filemode(int(mode, 8)),
-                        )
-                    )
-
-                # Capture any stderr output for diagnostics
-                err = stderr.read().decode("utf-8", errors="ignore").strip()
-                if err:
-                    self.log.warning(f"[META][LINUX] STDERR: {err}")
-
-            except Exception as e:
-                # Any failure here aborts discovery for this host
-                self.log.error(f"[META][LINUX] discovery failed: {e}")
-                return []
-
-        # ============================================================
-        # WINDOWS BACKEND
-        # ============================================================
-        elif os_type == "windows":
-
-            recurse = "-Recurse" if recursive else ""
-            date_guard = f"$cutoff = Get-Date '{newer_than}';" if newer_than else ""
-
-            # PowerShell command designed to:
-            # - List files only
-            # - Optionally recurse
-            # - Optionally apply incremental date filter
-            # - Emit a pipe-separated, parseable line per file
-            ps_cmd = (
-                f"{date_guard}"
-                f"Get-ChildItem -Path '{remote_path}' "
-                f"-Filter '{pattern}' -File {recurse} "
-                f"-ErrorAction SilentlyContinue | "
-                f"{'Where-Object { $_.CreationTimeUtc -gt $cutoff } | ' if newer_than else ''}"
-                f"ForEach-Object {{ "
-                f"[string]::Join('|',"
-                f"$_.FullName,"
-                f"$_.Length,"
-                f"$_.CreationTimeUtc.ToString('o'),"
-                f"$_.LastWriteTimeUtc.ToString('o'),"
-                f"'NTFS'"
-                f") }}"
-            )
-
-            cmd = f'powershell -NoProfile -Command "{ps_cmd}"'
-            self.log.entry(f"[META][WINDOWS] exec: {cmd}")
-
-            try:
-                _, stdout, stderr = self.ssh_client.exec_command(
-                    cmd, timeout=k.HOST_BUSY_TIMEOUT
-                )
-
-                for raw in iter(stdout.readline, ""):
-                    raw = raw.strip()
-                    if not raw:
-                        continue
-
-                    parts = raw.split("|")
-                    if len(parts) != 5:
-                        # Windows stdout can be noisy; ignore malformed lines
-                        self.log.warning(
-                            f"[META][WINDOWS] noisy or invalid line ignored: {raw}"
-                        )
-                        continue
-
-                    fullpath, size, c_at, m_at, perms = parts
-                    fullpath = fullpath.replace("\\", "/")
-
-                    filename = os.path.basename(fullpath)
-                    dirname = os.path.dirname(fullpath)
-                    _, ext = os.path.splitext(filename)
-
-                    results.append(
-                        FileMetadata(
-                            NA_FULL_PATH=fullpath,
-                            NA_PATH=dirname,
-                            NA_FILE=filename,
-                            NA_EXTENSION=ext,
-                            VL_FILE_SIZE_KB=int(size) // 1024,
-                            DT_FILE_CREATED=tools.parse_ps_iso(c_at),
-                            DT_FILE_MODIFIED=tools.parse_ps_iso(m_at),
-                            DT_FILE_ACCESSED=None,
-                            NA_OWNER="",
-                            NA_GROUP="0",
-                            NA_PERMISSIONS=perms,
-                        )
-                    )
-
-                err = stderr.read().decode("utf-8", errors="ignore").strip()
-                if err:
-                    self.log.warning(f"[META][WINDOWS] STDERR: {err}")
-
-            except Exception as e:
-                self.log.error(f"[META][WINDOWS] discovery failed: {e}")
-                return []
-
-        # ============================================================
-        # UNSUPPORTED OS
-        # ============================================================
-        else:
-            self.log.error(f"[META] Unsupported OS '{os_type}'")
-            return []
-
-        elapsed = time.monotonic() - start
-
-        self.log.entry(
-            f"[META] Traversal completed | os={os_type} | "
-            f"files={len(results)} | time={elapsed:.2f}s"
-        )
-
-        return results
-    
     def iter_find_files_with_metadata(
         self,
         remote_path: str,
         pattern: str,
         *,
         recursive: bool = True,
-        newer_than: Optional[str] = None,
+        newer_than: str | None = None,
         batch_size: int = 1000,
-    ):
+    ) -> Iterator[list[FileMetadata]]:
         """
-        Stream remote filesystem metadata in FIXED-SIZE batches.
+        Stream remote filesystem metadata in fixed-size batches.
 
-        This function is the lowest-level discovery primitive.
-        It:
-            - streams stdout line-by-line (no buffering of full output)
-            - parses raw filesystem metadata
-            - groups FileMetadata objects into bounded batches
-            - yields each batch atomically
-
-        Memory contract:
-            - At most `batch_size` FileMetadata objects live at once.
-
-        Yields:
-            list[FileMetadata]
+        Streams stdout line-by-line to avoid buffering large remote listings.
+        At most `batch_size` FileMetadata objects live in memory at once.
         """
 
         remote_path = remote_path.rstrip("/").rstrip("\\")

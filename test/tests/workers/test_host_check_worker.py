@@ -133,7 +133,7 @@ class HostConnectivityTests(unittest.TestCase):
                 return_value=True,
             ):
                 with patch.object(
-                    host_check_worker.host_connectivity.paramiko,
+                    paramiko,
                     "SSHClient",
                     return_value=ssh_client,
                 ):
@@ -176,7 +176,7 @@ class HostConnectivityTests(unittest.TestCase):
                 return_value=True,
             ):
                 with patch.object(
-                    host_check_worker.host_connectivity.paramiko,
+                    paramiko,
                     "SSHClient",
                     return_value=ssh_client,
                 ):
@@ -223,7 +223,7 @@ class HostConnectivityTests(unittest.TestCase):
                 return_value=True,
             ):
                 with patch.object(
-                    host_check_worker.host_connectivity.paramiko,
+                    paramiko,
                     "SSHClient",
                     return_value=ssh_client,
                 ):
@@ -254,7 +254,7 @@ class HostConnectivityTests(unittest.TestCase):
                 return_value=True,
             ):
                 with patch.object(
-                    host_check_worker.host_connectivity.paramiko,
+                    paramiko,
                     "SSHClient",
                     return_value=ssh_client,
                 ):
@@ -280,7 +280,7 @@ class HostConnectivityTests(unittest.TestCase):
             "now": now,
         }
 
-        host_check_worker.host_connectivity._persist_degraded(db=db, task=task)
+        status, message = host_check_worker.host_connectivity._persist_degraded(db=db, task=task)
 
         self.assertEqual(
             db.host_updates,
@@ -294,21 +294,11 @@ class HostConnectivityTests(unittest.TestCase):
                 }
             ],
         )
-        self.assertEqual(
-            db.host_task_updates,
-            [
-                {
-                    "task_id": 17,
-                    "NU_STATUS": host_check_worker.k.TASK_ERROR,
-                    "NU_PID": host_check_worker.k.HOST_UNLOCKED_PID,
-                    "DT_HOST_TASK": now,
-                    "NA_MESSAGE": (
-                        "SSH supervision degraded threshold reached while ICMP still "
-                        "responds (3/3)"
-                    ),
-                }
-            ],
-        )
+        # task close happens at entrypoint (_finalize_success), not inside _persist_degraded
+        self.assertEqual(db.host_task_updates, [])
+        self.assertEqual(status, host_check_worker.k.TASK_ERROR)
+        self.assertIn("threshold reached", message)
+        self.assertIn("3/3", message)
 
     def test_check_host_connectivity_skips_ssh_probe_when_ping_is_down(self) -> None:
         fake_log = FakeLog()
@@ -325,7 +315,7 @@ class HostConnectivityTests(unittest.TestCase):
                 return_value=False,
             ):
                 with patch.object(
-                    host_check_worker.host_connectivity.paramiko,
+                    paramiko,
                     "SSHClient",
                     return_value=ssh_client,
                 ):
@@ -367,7 +357,7 @@ class HostConnectivityTests(unittest.TestCase):
                 return_value=True,
             ):
                 with patch.object(
-                    host_check_worker.host_connectivity.paramiko,
+                    paramiko,
                     "SSHClient",
                     return_value=ssh_client,
                 ):
@@ -389,7 +379,7 @@ class HostConnectivityTests(unittest.TestCase):
 
     def test_resolve_host_addresses_prefers_172_network_when_available(self) -> None:
         with patch.object(
-            host_check_worker.host_connectivity.socket,
+            socket,
             "getaddrinfo",
             return_value=[
                 (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.82.10.123", 0)),
@@ -404,7 +394,7 @@ class HostConnectivityTests(unittest.TestCase):
 
     def test_resolve_host_addresses_keeps_literal_172_ip_without_dns_lookup(self) -> None:
         with patch.object(
-            host_check_worker.host_connectivity.socket,
+            socket,
             "getaddrinfo",
         ) as getaddrinfo:
             addresses = host_check_worker.host_connectivity.resolve_host_addresses(
@@ -416,7 +406,7 @@ class HostConnectivityTests(unittest.TestCase):
 
     def test_resolve_host_addresses_keeps_literal_192_ip_without_dns_lookup(self) -> None:
         with patch.object(
-            host_check_worker.host_connectivity.socket,
+            socket,
             "getaddrinfo",
         ) as getaddrinfo:
             addresses = host_check_worker.host_connectivity.resolve_host_addresses(

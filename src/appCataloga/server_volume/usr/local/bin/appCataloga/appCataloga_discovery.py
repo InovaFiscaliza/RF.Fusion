@@ -39,7 +39,7 @@ PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 # Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
-from host_handler import bootstrap_flow, host_runtime
+from host_handler import host_context, host_runtime
 from server_handler import signal_runtime, sleep as runtime_sleep
 from shared import (
     errors,
@@ -215,7 +215,7 @@ def _requeue_transient_bootstrap_failure(
 
 def _stream_discovery_batches(
     db: dbHandlerBKP,
-    daemon,
+    sftp_conn,
     *,
     task: dict,
     host_id: int,
@@ -235,7 +235,9 @@ def _stream_discovery_batches(
     host_filter = filter.Filter(task["host_filter"], log=log)
     processed = 0
 
-    for batch in daemon.iter_metadata_files(
+    for batch in host_context.iter_metadata_files(
+        sftp_conn,
+        log,
         host_id=host_id,
         hostname=hostname,
         filter_obj=host_filter,
@@ -442,7 +444,6 @@ def main() -> None:
     # ===============================================================
     while process_status["running"]:
 
-        daemon = None
         sftp = None
         err = errors.ErrorHandler(log)
         task = None
@@ -498,8 +499,8 @@ def main() -> None:
             # ==========================================================
             # ACT III — Bootstrap remote SSH/SFTP context
             # ==========================================================
-            sftp, daemon, preserve_host_busy_cooldown = (
-                bootstrap_flow.init_host_context_with_retry(
+            sftp, preserve_host_busy_cooldown = (
+                host_context.init_host_context_with_retry(
                     task=task,
                     log=log,
                     err=err,
@@ -526,7 +527,7 @@ def main() -> None:
             try:
                 processed = _stream_discovery_batches(
                     db,
-                    daemon,
+                    sftp,
                     task=task,
                     host_id=host_id,
                     hostname=hostname,

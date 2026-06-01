@@ -50,7 +50,7 @@ PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 # Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
-from host_handler import bootstrap_flow, host_runtime
+from host_handler import host_context, host_runtime
 from server_handler import signal_runtime, sleep as runtime_sleep, worker_pool
 from shared import (
     errors,
@@ -923,8 +923,8 @@ def main() -> None:
                 )
                 continue
 
-            sftp_conn, _, preserve_host_busy_cooldown = (
-                bootstrap_flow.init_host_context_with_retry(
+            sftp_conn, preserve_host_busy_cooldown = (
+                host_context.init_host_context_with_retry(
                     task=task,
                     log=log,
                     err=err,

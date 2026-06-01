@@ -73,24 +73,13 @@ def release_locked_host(
         )
 
 
-def update_host_statistics(
+def run_update_statistics(
     db: dbHandlerBKP,
     task: dict,
     *,
     logger: Any,
-) -> None:
-    """Refresh host statistics and mark the task done. Raises on DB failure."""
+) -> tuple[int, str]:
+    """Refresh host statistics. Returns (status, message) for the caller to close the task."""
+
     db.host_update_statistics(host_id=task["host_id"])
-    db.host_task_update(
-        task_id=task["task_id"],
-        NU_STATUS=k.TASK_DONE,
-        NU_PID=k.HOST_UNLOCKED_PID,
-        DT_HOST_TASK=task["now"],
-        NA_MESSAGE=f"Host statistics refreshed for host {task['host_id']}",
-    )
-    logger.event(
-        "task_done",
-        host_id=task["host_id"],
-        task_id=task["task_id"],
-        status="statistics_refreshed",
-    )
+    return (k.TASK_DONE, f"Host statistics refreshed for host {task['host_id']}")
