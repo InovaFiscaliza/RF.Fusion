@@ -208,6 +208,22 @@ TASK_PENDING            = 1         # Task pending execution
 TASK_RUNNING            = 2         # Task running
 
 #------------------------------------------
+# Error Stage Constants
+# Used in err.capture(stage=k.STAGE_*) and err.stage comparisons.
+# Never use inline strings — a typo here fails silently at runtime.
+#------------------------------------------
+STAGE_MAIN          = "MAIN"
+STAGE_AUTH          = "AUTH"
+STAGE_CONNECT       = "CONNECT"
+STAGE_SSH           = "SSH"
+STAGE_LOCK_TASK     = "LOCK_TASK"
+STAGE_DISCOVERY     = "DISCOVERY"
+STAGE_BACKLOG       = "BACKLOG"
+STAGE_TRANSFER      = "TRANSFER"
+STAGE_PROCESS       = "PROCESS"
+STAGE_CONNECTIVITY  = "CONNECTIVITY"
+
+#------------------------------------------
 # Station Constants
 #------------------------------------------
 CELPLAN_HOST_TAG    = "CWSM"
