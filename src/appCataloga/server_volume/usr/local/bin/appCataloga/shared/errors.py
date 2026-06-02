@@ -15,14 +15,13 @@ shared operational semantics, not just pretty error strings.
 """
 
 from __future__ import annotations
-import errno
 import re
 import socket
 import sys
 import os
 import paramiko
 from . import constants
-from typing import Any, Dict, Optional
+from typing import Any, Dict, NamedTuple, Optional
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 
@@ -760,34 +759,10 @@ class AppAnaliseReadTimeoutError(Exception):
     pass
 
 
-TRANSIENT_SFTP_ERRNOS = {
-    errno.ECONNABORTED,
-    errno.ECONNREFUSED,
-    errno.ECONNRESET,
-    errno.ETIMEDOUT,
-}
-
-# Paramiko sometimes surfaces timeout semantics through message text instead of
-# a dedicated exception subclass, especially around banner/auth phases.
-TRANSIENT_SSH_MESSAGE_SNIPPETS = (
-    "error reading ssh protocol banner",
-    "connection reset by peer",
-    "connection timed out",
-    "connection closed",
-    "no existing session",
-)
-
 AUTH_TIMEOUT_MESSAGE_SNIPPETS = (
     "authentication timeout",
     "auth timeout",
 )
-
-UNREACHABLE_ERRNOS = {
-    errno.EHOSTUNREACH,
-    errno.ENETUNREACH,
-    errno.EHOSTDOWN,
-    errno.ENETDOWN,
-}
 
 
 def is_auth_timeout_error(exc: Exception) -> bool:
@@ -805,115 +780,58 @@ def is_auth_timeout_error(exc: Exception) -> bool:
     return any(snippet in normalized for snippet in AUTH_TIMEOUT_MESSAGE_SNIPPETS)
 
 
-def is_transient_sftp_init_error(exc: Exception) -> bool:
+class SshConnectClass(NamedTuple):
+    """Classification result for any SSH connection-time exception."""
+
+    state: str        # k.HOST_CONN_* value used by connectivity probe results
+    reason: str       # short slug used in log events and probe results
+    stage: str        # k.STAGE_* value used by workers for err.capture
+    ssh_online: bool  # True when the TCP/SSH layer was reached before failure
+
+
+def classify_ssh_connect_exc(exc: Exception) -> SshConnectClass:
     """
-    Return whether an SSH/SFTP initialization error is safe to retry later.
+    Classify any SSH connect-time exception into a stable four-field descriptor.
 
-    Authentication and clearly semantic protocol failures remain fatal. Transport
-    setup failures caused by connection contention, resets, or banner timeouts
-    are considered transient and may be requeued.
-
-    "Transient" here means "too weak to prove the host is truly bad". It does
-    not necessarily mean "caused by local contention".
-    """
-    if isinstance(exc, paramiko.AuthenticationException):
-        return is_auth_timeout_error(exc)
-
-    if isinstance(exc, (socket.timeout, TimeoutError, EOFError, ConnectionResetError)):
-        return True
-
-    if isinstance(exc, paramiko.ssh_exception.NoValidConnectionsError):
-        # The wrapper only tells us that no TCP family succeeded from this VM.
-        # That is too weak to prove the host is dead, so workers should keep
-        # the task retryable and let higher-level liveness mechanisms decide.
-        return True
-
-    if isinstance(exc, OSError):
-        return exc.errno in TRANSIENT_SFTP_ERRNOS
-
-    if isinstance(exc, paramiko.SSHException):
-        normalized = str(exc).strip().lower()
-        return any(
-            snippet in normalized
-            for snippet in TRANSIENT_SSH_MESSAGE_SNIPPETS
-        )
-
-    return False
-
-
-def is_timeout_like_sftp_init_error(exc: Exception) -> bool:
-    """
-    Return whether the SSH/SFTP init failure looks timeout-driven.
-
-    Timeout-like failures are ambiguous: they may indicate a dead SSH service,
-    a stalled banner/auth phase, or temporary overload. Callers should avoid
-    labeling these cases as simple "busy" contention.
-    """
-    if isinstance(exc, (socket.timeout, TimeoutError)):
-        return True
-
-    if is_auth_timeout_error(exc):
-        return True
-
-    if isinstance(exc, OSError):
-        return exc.errno == errno.ETIMEDOUT
-
-    if isinstance(exc, paramiko.SSHException):
-        normalized = str(exc).strip().lower()
-        return (
-            "timed out" in normalized
-            or "timeout" in normalized
-            or "error reading ssh protocol banner" in normalized
-        )
-
-    if isinstance(exc, paramiko.ssh_exception.NoValidConnectionsError):
-        nested = getattr(exc, "errors", {}) or {}
-        return any(
-            isinstance(inner, (socket.timeout, TimeoutError))
-            or (isinstance(inner, OSError) and inner.errno == errno.ETIMEDOUT)
-            for inner in nested.values()
-        )
-
-    return False
-def should_queue_host_check(exc: Exception) -> bool:
-    """
-    Return whether a transient SFTP init failure is suspicious enough to ask
-    host_check for an explicit connectivity confirmation.
-
-    This is intentionally narrower than `is_transient_sftp_init_error()`. Some
-    transient init failures are just SSH/SFTP contention or overload and should
-    only requeue the current task, not suggest that the host is offline.
-
-    In other words:
-        - retryable != always worth a host reconciliation task
-        - this helper answers the second question
+    This is the single shared classifier used by both ssh_probe (which builds
+    probe payloads) and workers (which need the right stage for err.capture).
+    Keeping both callers anchored to the same function prevents exception
+    handling logic from drifting apart over time.
     """
     if isinstance(exc, paramiko.AuthenticationException):
-        return is_auth_timeout_error(exc)
-
-    if isinstance(exc, (socket.timeout, TimeoutError, ConnectionResetError, EOFError)):
-        return True
+        if is_auth_timeout_error(exc):
+            return SshConnectClass(
+                state=k.HOST_CONN_DEGRADED,
+                reason="ssh_auth_timeout",
+                stage=k.STAGE_AUTH,
+                ssh_online=True,
+            )
+        return SshConnectClass(
+            state=k.HOST_CONN_AUTH_ERROR,
+            reason="ssh_auth_failed",
+            stage=k.STAGE_AUTH,
+            ssh_online=True,
+        )
 
     if isinstance(exc, paramiko.ssh_exception.NoValidConnectionsError):
-        return True
+        return SshConnectClass(
+            state=k.HOST_CONN_DEGRADED,
+            reason="ssh_no_valid_connections",
+            stage=k.STAGE_CONNECT,
+            ssh_online=False,
+        )
 
-    if isinstance(exc, OSError):
-        return exc.errno in TRANSIENT_SFTP_ERRNOS
-
-    return False
-
-
-def get_transient_sftp_retry_detail(exc: Exception) -> str:
-    """
-    Return the user-facing retry detail for a transient SSH/SFTP init error.
-
-    Timeouts are ambiguous and deserve a more explicit message than plain SSH
-    contention. All other retryable init errors keep the legacy busy wording.
-    """
-    if is_timeout_like_sftp_init_error(exc):
-        return k.SSH_TIMEOUT_RETRY_DETAIL
-
-    return k.SFTP_BUSY_RETRY_DETAIL
+    reason = (
+        "ssh_timeout"
+        if isinstance(exc, (socket.timeout, TimeoutError))
+        else "ssh_unreachable"
+    )
+    return SshConnectClass(
+        state=k.HOST_CONN_DEGRADED,
+        reason=reason,
+        stage=k.STAGE_CONNECT,
+        ssh_online=False,
+    )
 
 class ErrorHandler:
     """

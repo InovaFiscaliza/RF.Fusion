@@ -60,11 +60,23 @@ signal_runtime.install_shutdown_handlers(
 
 
 def _read_next_task(db: dbHandlerBKP) -> dict | None:
-    """Return the next queued HOST_TASK by priority, or None when the queue is empty."""
+    """Return the next queued HOST_TASK as a normalized task dict, or None when empty."""
     for task_type in HOST_TASK_PRIORITY:
-        task = db.host_task_read(task_status=k.TASK_PENDING, task_type=task_type)
-        if task:
-            return task
+        task_row = db.host_task_read(task_status=k.TASK_PENDING, task_type=task_type)
+        if task_row:
+            return {
+                "host_id"               : task_row["HOST__ID_HOST"],
+                "task_id"               : task_row["HOST_TASK__ID_HOST_TASK"],
+                "task_type"             : task_row["HOST_TASK__NU_TYPE"],
+                "addr"                  : task_row["HOST__NA_HOST_ADDRESS"],
+                "port"                  : task_row["HOST__NA_HOST_PORT"],
+                "user"                  : task_row["HOST__NA_HOST_USER"],
+                "password"              : task_row["HOST__NA_HOST_PASSWORD"],
+                "was_offline"           : bool(task_row.get("HOST__IS_OFFLINE")),
+                "host_check_error_count": int(task_row.get("HOST__NU_HOST_CHECK_ERROR") or 0),
+                "host_filter"           : task_row.get("host_filter") or dict(k.NONE_FILTER),
+                "now"                   : datetime.now(),
+            }
     return None
 
 
@@ -130,7 +142,11 @@ def _finalize_success(
 def _finalize_error(
     db: dbHandlerBKP, task: dict | None, err: errors.ErrorHandler
 ) -> None:
-    """Write ERROR to the queue and log the failure. Safe when task is None."""
+    """Write ERROR to the queue and log the failure. Safe when task is None.
+
+    Unlike discovery, this worker never re-queues a host-check on failure:
+    it IS the host-check worker, so re-queuing on error would create a loop.
+    """
     if task is None:
         err.log_error()
         return
@@ -167,24 +183,10 @@ def main() -> None:
         task = None
 
         try:
-            task_row = _read_next_task(db)
-            if task_row is None:
+            task = _read_next_task(db)
+            if task is None:
                 runtime_sleep.random_jitter_sleep()
                 continue
-
-            task = {
-                "host_id"               : task_row["HOST__ID_HOST"],
-                "task_id"               : task_row["HOST_TASK__ID_HOST_TASK"],
-                "task_type"             : task_row["HOST_TASK__NU_TYPE"],
-                "addr"                  : task_row["HOST__NA_HOST_ADDRESS"],
-                "port"                  : task_row["HOST__NA_HOST_PORT"],
-                "user"                  : task_row["HOST__NA_HOST_USER"],
-                "password"              : task_row["HOST__NA_HOST_PASSWORD"],
-                "was_offline"           : bool(task_row.get("HOST__IS_OFFLINE")),
-                "host_check_error_count": int(task_row.get("HOST__NU_HOST_CHECK_ERROR") or 0),
-                "host_filter"           : task_row.get("host_filter") or dict(k.NONE_FILTER),
-                "now"                   : datetime.now(),
-            }
 
             if not _claim_task(db, task):
                 # Another worker got this task first. Not an error, just skip.

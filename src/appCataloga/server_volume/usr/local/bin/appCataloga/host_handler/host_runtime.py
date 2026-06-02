@@ -38,6 +38,8 @@ def release_busy_hosts_for_current_pid(
     try:
         pid = os.getpid()
         logger.event("cleanup_busy_hosts", pid=pid)
+        # Fresh connection: the regular one may have been left in a dirty
+        # state if the worker was interrupted mid-transaction.
         db = db_factory(
             database=database_name,
             log=logger,

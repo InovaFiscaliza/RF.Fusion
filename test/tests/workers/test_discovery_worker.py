@@ -59,7 +59,6 @@ class FakeDB:
     def __init__(self) -> None:
         self.host_task_updates = []
         self.queued_tasks = []
-        self.cooldown_calls = []
 
     def host_task_update(self, **kwargs):
         self.host_task_updates.append(kwargs)
@@ -69,58 +68,14 @@ class FakeDB:
         self.queued_tasks.append(kwargs)
         return {"HOST_TASK__ID_HOST_TASK": 99}
 
-    def host_start_transient_busy_cooldown(self, **kwargs):
-        self.cooldown_calls.append(kwargs)
-        return True
+    def host_task_statistics_create(self, **kwargs):
+        pass
 
 
 class DiscoveryWorkerTests(unittest.TestCase):
     """Protect discovery behavior when bootstrap cannot proceed normally."""
 
-    def test_requeue_transient_bootstrap_failure_returns_task_to_pending_and_starts_cooldown(self) -> None:
-        fake_db = FakeDB()
-        fake_log = FakeLog()
-        exc = RuntimeError("busy")
-
-        with patch.object(discovery_worker, "log", fake_log):
-            with patch.object(
-                discovery_worker.errors,
-                "get_transient_sftp_retry_detail",
-                return_value="SSH busy retry",
-            ):
-                with patch.object(
-                    discovery_worker.errors,
-                    "should_queue_host_check",
-                    return_value=True,
-                ):
-                    with patch.object(
-                        discovery_worker.errors,
-                        "is_timeout_like_sftp_init_error",
-                        return_value=False,
-                    ):
-                        preserved = discovery_worker._requeue_transient_bootstrap_failure(
-                            fake_db,
-                            host_id=11,
-                            task_id=22,
-                            exc=exc,
-                        )
-
-        # Transient bootstrap failures must keep the discovery row alive while
-        # also asking the backend for a focused connectivity recheck.
-        self.assertTrue(preserved)
-        self.assertEqual(len(fake_db.host_task_updates), 1)
-        self.assertEqual(
-            fake_db.host_task_updates[0]["NU_STATUS"],
-            discovery_worker.k.TASK_PENDING,
-        )
-        self.assertEqual(len(fake_db.queued_tasks), 1)
-        self.assertEqual(
-            fake_db.queued_tasks[0]["task_type"],
-            discovery_worker.k.HOST_TASK_CHECK_CONNECTION_TYPE,
-        )
-        self.assertEqual(len(fake_db.cooldown_calls), 1)
-
-    def test_persist_discovery_error_clears_pid_and_requests_host_check_for_auth(self) -> None:
+    def test_finalize_error_clears_pid_and_requests_host_check_for_auth(self) -> None:
         fake_db = FakeDB()
         fake_log = FakeLog()
         err = discovery_worker.errors.ErrorHandler(fake_log)
@@ -131,17 +86,10 @@ class DiscoveryWorkerTests(unittest.TestCase):
             host_id=33,
             task_id=44,
         )
+        task = {"host_id": 33, "task_id": 44, "hostname": "RFEye-test", "host_filter": {}}
 
         with patch.object(discovery_worker, "log", fake_log):
-            discovery_worker._persist_discovery_error(
-                fake_db,
-                err,
-                host_id=33,
-                task_id=44,
-                hostname="RFEye-test",
-                processed=0,
-                backlog_result={"queued_backlog_tasks": 0},
-            )
+            discovery_worker._finalize_error(fake_db, task, err)
 
         # Definitive discovery failures should free the row from any worker PID
         # and leave a connectivity follow-up queued for operators.
@@ -160,30 +108,50 @@ class DiscoveryWorkerTests(unittest.TestCase):
             discovery_worker.k.HOST_TASK_CHECK_CONNECTION_TYPE,
         )
 
-    def test_queue_backlog_control_task_hands_off_promotion_to_dedicated_worker(self) -> None:
+    def test_finalize_success_marks_task_done(self) -> None:
         fake_db = FakeDB()
         fake_log = FakeLog()
+        task = {
+            "host_id": 33,
+            "task_id": 44,
+            "hostname": "CWSM211004",
+            "host_filter": {"mode": "ALL"},
+        }
 
         with patch.object(discovery_worker, "log", fake_log):
-            result = discovery_worker._queue_backlog_control_task(
-                fake_db,
-                task={"host_filter": {"mode": "ALL"}},
-                task_id=44,
-                host_id=33,
-                hostname="CWSM211004",
-                processed=12,
-            )
+            discovery_worker._finalize_success(fake_db, task, processed=12, elapsed_sec=1.5)
 
-        self.assertEqual(result["queued_backlog_tasks"], 1)
-        self.assertEqual(len(fake_db.queued_tasks), 1)
-        self.assertEqual(
-            fake_db.queued_tasks[0]["task_type"],
-            discovery_worker.k.HOST_TASK_BACKLOG_CONTROL_TYPE,
-        )
         self.assertEqual(len(fake_db.host_task_updates), 1)
         self.assertEqual(
             fake_db.host_task_updates[0]["NU_STATUS"],
             discovery_worker.k.TASK_DONE,
+        )
+        self.assertEqual(
+            fake_db.host_task_updates[0]["NU_PID"],
+            discovery_worker.k.HOST_UNLOCKED_PID,
+        )
+
+    def test_do_work_queues_backlog_control(self) -> None:
+        fake_db = FakeDB()
+        fake_log = FakeLog()
+        task = {
+            "host_id": 33,
+            "task_id": 44,
+            "hostname": "CWSM211004",
+            "host_filter": {"mode": "ALL"},
+        }
+
+        with patch.object(discovery_worker, "log", fake_log):
+            with patch.object(
+                discovery_worker, "_stream_discovery_batches", return_value=5
+            ):
+                count = discovery_worker._do_work(fake_db, object(), task)
+
+        self.assertEqual(count, 5)
+        self.assertEqual(len(fake_db.queued_tasks), 1)
+        self.assertEqual(
+            fake_db.queued_tasks[0]["task_type"],
+            discovery_worker.k.HOST_TASK_BACKLOG_CONTROL_TYPE,
         )
 
 

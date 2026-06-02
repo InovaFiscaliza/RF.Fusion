@@ -72,7 +72,6 @@ class FakeTaskDB:
         self.file_task_updates = []
         self.file_history_updates = []
         self.queued_tasks = []
-        self.cooldown_calls = []
 
     def file_task_update(self, **kwargs):
         self.file_task_updates.append(kwargs)
@@ -83,10 +82,6 @@ class FakeTaskDB:
 
     def queue_host_task(self, **kwargs):
         self.queued_tasks.append(kwargs)
-
-    def host_start_transient_busy_cooldown(self, **kwargs):
-        self.cooldown_calls.append(kwargs)
-        return True
 
     def file_task_delete(self, *_args, **_kwargs):
         return True
@@ -367,53 +362,6 @@ class BackupFlowTests(unittest.TestCase):
             fake_db.file_task_updates[0]["DT_FILE_MODIFIED"],
             refreshed_metadata.DT_FILE_MODIFIED,
         )
-
-    def test_requeue_transient_bootstrap_failure_returns_file_task_to_pending(self) -> None:
-        fake_db = FakeTaskDB()
-        fake_log = FakeLog()
-        exc = RuntimeError("busy")
-        task = {
-            "FILE_TASK__NA_HOST_FILE_PATH": "/remote",
-            "FILE_TASK__NA_HOST_FILE_NAME": "sample.bin",
-        }
-
-        with patch.object(backup_worker, "log", fake_log):
-            with patch.object(
-                backup_worker.errors,
-                "get_transient_sftp_retry_detail",
-                return_value="SSH busy retry",
-            ):
-                with patch.object(
-                    backup_worker.errors,
-                    "should_queue_host_check",
-                    return_value=True,
-                ):
-                    with patch.object(
-                        backup_worker.errors,
-                        "is_timeout_like_sftp_init_error",
-                        return_value=False,
-                    ):
-                        preserved = backup_worker._requeue_transient_bootstrap_failure(
-                            fake_db,
-                            worker_id=1,
-                            host_id=11,
-                            file_task_id=22,
-                            task=task,
-                            exc=exc,
-                        )
-
-        self.assertTrue(preserved)
-        self.assertEqual(len(fake_db.file_task_updates), 1)
-        self.assertEqual(
-            fake_db.file_task_updates[0]["NU_STATUS"],
-            backup_worker.k.TASK_PENDING,
-        )
-        self.assertEqual(len(fake_db.queued_tasks), 1)
-        self.assertEqual(
-            fake_db.queued_tasks[0]["task_type"],
-            backup_worker.k.HOST_TASK_CHECK_CONNECTION_TYPE,
-        )
-        self.assertEqual(len(fake_db.cooldown_calls), 1)
 
     def test_persist_backup_error_clears_pid_and_queues_host_check_for_auth(self) -> None:
         fake_db = FakeTaskDB()

@@ -143,94 +143,6 @@ signal_runtime.install_shutdown_handlers(
 )
 
 
-def _requeue_transient_bootstrap_failure(
-    db: dbHandlerBKP,
-    *,
-    worker_id: int,
-    host_id: int,
-    file_task_id: int,
-    task: dict,
-    exc: Exception,
-) -> bool:
-    """
-    Return the same FILE_TASK to PENDING after a transient SSH/SFTP failure.
-
-    Backup owns a slightly different retry contract from discovery because the
-    queue row being recycled here is a FILE_TASK, not a HOST_TASK. The shared
-    bootstrap helper delegates to this function so worker-specific persistence
-    stays explicit in the entrypoint.
-
-    "Transient" here means the bootstrap failure is weak evidence. We should
-    retry the same file later instead of turning it into TASK_ERROR right away.
-    """
-    retry_detail = errors.get_transient_sftp_retry_detail(exc)
-    input_path = task["FILE_TASK__NA_HOST_FILE_PATH"]
-    input_name = task["FILE_TASK__NA_HOST_FILE_NAME"]
-
-    # Some retryable bootstrap failures still look suspicious enough that the
-    # queued host worker should reconcile the host out of band.
-    if errors.should_queue_host_check(exc):
-        try:
-            db.queue_host_task(
-                host_id=host_id,
-                task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
-                task_status=k.TASK_PENDING,
-                filter_dict=k.NONE_FILTER,
-            )
-        except Exception as queue_exc:
-            log.error(
-                "event=queue_host_check_failed "
-                f"service=appCataloga_file_bkp worker_id={worker_id} "
-                f"host_id={host_id} task_id={file_task_id} "
-                f"error={queue_exc}"
-            )
-
-    # The live FILE_TASK goes back to PENDING so another worker can retry the
-    # same artifact later without creating a second queue row for it.
-    message = tools.compose_message(
-        task_type=k.FILE_TASK_BACKUP_TYPE,
-        task_status=k.TASK_PENDING,
-        path=input_path,
-        name=input_name,
-        detail=retry_detail,
-    )
-
-    db.file_task_update(
-        task_id=file_task_id,
-        DT_FILE_TASK=datetime.now(),
-        NU_STATUS=k.TASK_PENDING,
-        NA_MESSAGE=message,
-        **errors.persisted_error_fields_from_handler(message=message),
-    )
-
-    preserve_host_busy_cooldown = db.host_start_transient_busy_cooldown(
-        host_id=host_id,
-        owner_pid=os.getpid(),
-        cooldown_seconds=k.SFTP_BUSY_COOLDOWN_SECONDS,
-    )
-
-    log.warning_event(
-        "sftp_init_retry",
-        service="appCataloga_file_bkp",
-        worker_id=worker_id,
-        host_id=host_id,
-        task_id=file_task_id,
-        timeout_like=errors.is_timeout_like_sftp_init_error(exc),
-        retry_detail=retry_detail,
-        error=exc,
-    )
-
-    if preserve_host_busy_cooldown:
-        log.warning(
-            "event=sftp_busy_cooldown_started "
-            f"service=appCataloga_file_bkp worker_id={worker_id} "
-            f"host_id={host_id} task_id={file_task_id} "
-            f"cooldown_seconds={k.SFTP_BUSY_COOLDOWN_SECONDS}"
-        )
-
-    return preserve_host_busy_cooldown
-
-
 def _claim_backup_task(
     db: dbHandlerBKP,
     *,
@@ -770,9 +682,31 @@ def transfer_file_task(
     return local_size_kb, remote_metadata
 
 
-# ======================================================================
-# Main Execution
-# ======================================================================
+def _read_next_task(db: dbHandlerBKP) -> dict | None:
+    """Return the next pending backup FILE_TASK as a normalized task dict, or None."""
+    row = db.read_file_task(
+        task_status=k.TASK_PENDING,
+        task_type=k.FILE_TASK_BACKUP_TYPE,
+        check_host_busy=True,
+        check_host_offline=True,
+        lock_host=True,
+        reserve_hosts_for_discovery=True,
+        fair_by_host=True,
+    )
+    if not row:
+        return None
+    task_row, host_id, file_task_id = row
+    return {
+        **task_row,
+        "host_id"       : host_id,
+        "file_task_id"  : file_task_id,
+        "input_filename": os.path.join(
+            task_row["FILE_TASK__NA_HOST_FILE_PATH"],
+            task_row["FILE_TASK__NA_HOST_FILE_NAME"],
+        ),
+    }
+
+
 def main() -> None:
     """
     Run one backup worker process until shutdown is requested.
@@ -819,7 +753,6 @@ def main() -> None:
         server_file_path = None
         refreshed_metadata = None
         updated_size_kb = None
-        preserve_host_busy_cooldown = False
         input_filename = None
 
         try:
@@ -838,21 +771,8 @@ def main() -> None:
             # ==========================================================
             # ACT I — Fetch one pending backup FILE_TASK and atomically lock its host
             # ==========================================================
-            row = db.read_file_task(
-                task_status=k.TASK_PENDING,
-                task_type=k.FILE_TASK_BACKUP_TYPE,
-                check_host_busy=True,
-                check_host_offline=True,
-                lock_host=True,
-                reserve_hosts_for_discovery=True,
-                fair_by_host=True,
-            )
-
-            # The selector applies two scheduling rules before we ever touch
-            # the host: reserve hosts that have pending discovery work and pick
-            # backup candidates fairly across hosts instead of draining one host
-            # to exhaustion while the rest of the fleet waits.
-            if not row:
+            task = _read_next_task(db)
+            if task is None:
                 idle_cycles += 1
                 process_status["idle_cycles"] = idle_cycles
 
@@ -874,13 +794,11 @@ def main() -> None:
                 # path instead of spinning hot when the queue is empty.
                 continue
 
-            task, host_id, file_task_id = row
+            host_id = task["host_id"]
+            file_task_id = task["file_task_id"]
+            input_filename = task["input_filename"]
             idle_cycles = 0
             process_status["idle_cycles"] = 0
-            input_filename = os.path.join(
-                task["FILE_TASK__NA_HOST_FILE_PATH"],
-                task["FILE_TASK__NA_HOST_FILE_NAME"],
-            )
 
             # ==========================================================
             # ACT II — Mark the selected FILE_TASK as RUNNING
@@ -923,29 +841,7 @@ def main() -> None:
                 )
                 continue
 
-            sftp_conn, preserve_host_busy_cooldown = (
-                host_context.init_host_context_with_retry(
-                    task=task,
-                    log=log,
-                    err=err,
-                    host_id=host_id,
-                    task_id=file_task_id,
-                    transient_retry_handler=_requeue_transient_bootstrap_failure,
-                    retry_handler_kwargs={
-                        "db": db,
-                        "worker_id": worker_id,
-                        "host_id": host_id,
-                        "file_task_id": file_task_id,
-                        "task": task,
-                    },
-                    retry_failure_reason="Failed to requeue transient backup task",
-                )
-            )
-            if sftp_conn is None:
-                # The shared bootstrap flow already decided whether this was:
-                #   - a transient retryable failure, or
-                #   - a fatal AUTH/CONNECT/SSH error stored in `err`
-                continue
+            sftp_conn = host_context.init_host_context(task, log)
             
             # ==========================================================
             # ACT IV — Prepare the local repository destination
@@ -1035,9 +931,14 @@ def main() -> None:
         # -------------------------------------------------
         except Exception as e:
             if not err.triggered:
+                stage = (
+                    errors.classify_ssh_connect_exc(e).stage
+                    if sftp_conn is None and host_id is not None
+                    else "BACKUP"
+                )
                 err.capture(
                     reason="Unexpected backup worker failure",
-                    stage="BACKUP",
+                    stage=stage,
                     exc=e,
                     worker_id=worker_id,
                     host_id=host_id,
@@ -1081,9 +982,8 @@ def main() -> None:
                 except Exception:
                     pass
 
-            # Phase 3 — Release the host unless transient bootstrap retry is
-            # intentionally preserving BUSY for its short cooldown window.
-            if host_id is not None and not preserve_host_busy_cooldown:
+            # Phase 3 — Release the host after the transfer.
+            if host_id is not None:
                 # This is the single normal-path release point for the host
                 # claimed by `read_file_task(..., lock_host=True)`.
                 host_runtime.release_locked_host(

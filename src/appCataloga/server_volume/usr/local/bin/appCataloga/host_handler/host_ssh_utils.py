@@ -114,26 +114,12 @@ def ssh_probe(addr: str, port: int, user: str, password: str) -> ConnectivityPro
             state=k.HOST_CONN_ONLINE, reason="ssh_connect_ok",
             icmp_online=True, ssh_online=True,
         )
-    except paramiko.AuthenticationException as e:
-        if errors.is_auth_timeout_error(e):
-            return _probe_result(
-                state=k.HOST_CONN_DEGRADED, reason="ssh_auth_timeout",
-                icmp_online=True, ssh_online=True, error=str(e),
-            )
-        return _probe_result(
-            state=k.HOST_CONN_AUTH_ERROR, reason="ssh_auth_failed",
-            icmp_online=True, ssh_online=True, error=str(e),
-        )
-    except paramiko.ssh_exception.NoValidConnectionsError as e:
-        return _probe_result(
-            state=k.HOST_CONN_DEGRADED, reason="ssh_no_valid_connections",
-            icmp_online=True, ssh_online=False, error=str(e),
-        )
     except Exception as e:
-        reason = "ssh_timeout" if isinstance(e, (socket.timeout, TimeoutError)) else "ssh_unreachable"
+        classification = errors.classify_ssh_connect_exc(e)
         return _probe_result(
-            state=k.HOST_CONN_DEGRADED, reason=reason,
-            icmp_online=True, ssh_online=False, error=str(e),
+            state=classification.state, reason=classification.reason,
+            icmp_online=True, ssh_online=classification.ssh_online,
+            error=str(e),
         )
 
 
@@ -247,8 +233,9 @@ class sftpConnection:
             )
 
         except Exception as e:
+            classification = errors.classify_ssh_connect_exc(e)
             self.log.error(
-                f"[SSH] Error initializing SSH to "
+                f"[SSH][{classification.reason}] Error initializing SSH to "
                 f"'{self.host_uid}' ({self.host_addr} -> {self.connect_addr}): {e}"
             )
             raise
@@ -446,6 +433,9 @@ class sftpConnection:
             while not stop_event.wait(progress_poll_seconds):
                 now = time.monotonic()
 
+                # Cross-check with on-disk size: some SFTP implementations call
+                # the progress callback less frequently than expected, so a
+                # growing local file counts as proof of forward progress.
                 try:
                     local_size = os.path.getsize(local_file)
                 except OSError:
@@ -529,6 +519,9 @@ class sftpConnection:
             except Exception:
                 pass
 
+        # sftp.get returned without raising, but the watchdog may have raced
+        # and set abort_exc just as the download finished. Honour the timeout
+        # rather than treating a timed-out transfer as a success.
         with state_lock:
             abort_exc = state["abort_exc"]
 
@@ -564,6 +557,10 @@ class sftpConnection:
 
             if self.sftp:
                 try:
+                    # Soft probe: can surface a stale transport before the
+                    # keepalive does. Failure is swallowed because transport.is_active()
+                    # is the decisive liveness signal; we do not want to report
+                    # dead just because the working directory is inaccessible.
                     self.sftp.listdir(".")
                 except Exception:
                     pass
@@ -734,6 +731,7 @@ class sftpConnection:
         except Exception:
             pass
 
+        # Both probes failed; assume Linux as the safer default for unknown hosts.
         return "linux"
 
     # =================================================================
@@ -757,6 +755,7 @@ class sftpConnection:
 
         remote_path = remote_path.rstrip("/").rstrip("\\")
         pattern = pattern.strip().replace('"', "").replace("'", "")
+        # Ensure the pattern acts as a suffix glob, not an exact filename match.
         if not pattern.startswith("*"):
             pattern = "*" + pattern
 

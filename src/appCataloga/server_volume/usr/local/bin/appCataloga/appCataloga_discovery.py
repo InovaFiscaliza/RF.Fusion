@@ -1,79 +1,45 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Discovery worker for the appCataloga ecosystem.
+Discovery worker: scans remote hosts for candidate files.
 
-This service scans remote hosts for candidate files, writes immutable discovery
-history, and hands off backlog promotion to a dedicated worker.
-
-In the larger pipeline, discovery is the bridge between:
-    - one HOST_TASK of type PROCESSING for a host
-    - many FILE_TASK rows of type DISCOVERY for the files found on that host
-
-That makes this worker both host-aware and file-aware. It owns one remote
-session at a time, but it can emit many downstream file tasks from that single
-host pass.
-
-The loop is intentionally linear:
-    1. claim PROCESSING host task
-    2. bootstrap remote host context
-    3. stream discovery batches into task/history tables
-    4. queue backlog management for downstream promotion
-    5. release the host and schedule statistics refresh
-
-Keeping those steps explicit makes lock handling, retries, and backlog
-promotion easier to audit in production.
+Consumes HOST_TASK rows of type PROCESSING and locks HOST.IS_BUSY during each scan.
+One SFTP session per iteration; discovered metadata is persisted in bounded batches.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import traceback
+import time
 from datetime import datetime
 
 from bootstrap_paths import bootstrap_app_paths
-# Every worker needs the same app/config/db import paths. Centralizing that
-# bootstrap keeps the entrypoint focused on discovery flow instead of sys.path.
+
 PROJECT_ROOT = bootstrap_app_paths(__file__)
 
-# Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
 from host_handler import host_context, host_runtime
+from host_handler.host_ssh_utils import sftpConnection
 from server_handler import signal_runtime, sleep as runtime_sleep
-from shared import (
-    errors,
-    filter,
-    logging_utils,
-    tools,
-)
+from shared import errors, logging_utils, tools
+from shared.filter import Filter
 import config as k
 
 
-# ======================================================================
-# Globals
-# ======================================================================
 SERVICE_NAME = "appCataloga_discovery"
 log = logging_utils.log()
 process_status = {"running": True}
 
 
-# ============================================================
-# Signal handling
-# ============================================================
 def _shutdown_cleanup(signal_name: str) -> None:
-    """
-    Release BUSY host locks during process shutdown.
-
-    Discovery does not own any sibling worker pool, so shutdown cleanup is
-    intentionally narrow here: release any HOST rows still marked BUSY by this
-    PID and let the normal daemon stop path do the rest.
-    """
+    """Release BUSY host locks during process shutdown."""
     host_runtime.release_busy_hosts_for_current_pid(
         db_factory=dbHandlerBKP,
         database_name=k.BKP_DATABASE_NAME,
         logger=log,
     )
+
 
 signal_runtime.install_shutdown_handlers(
     process_status=process_status,
@@ -82,144 +48,63 @@ signal_runtime.install_shutdown_handlers(
 )
 
 
-def _claim_processing_task(
-    db: dbHandlerBKP,
-    *,
-    task_id: int,
-    host_id: int,
-    hostname: str | None,
-) -> bool:
-    """
-    Atomically convert one PROCESSING host task from PENDING to RUNNING.
+# --- loop helpers ---
 
-    Discovery claims the HOST_TASK before touching SSH/SFTP on purpose.
-    That keeps ownership deterministic and avoids an extra pre-flight probe
-    racing with sibling workers for the same host.
+def _read_next_task(db: dbHandlerBKP) -> dict | None:
+    """Return the next PROCESSING host task as a normalized task dict, or None when empty."""
+    task_row = db.host_task_read(
+        task_type=k.HOST_TASK_PROCESSING_TYPE,
+        task_status=k.TASK_PENDING,
+        check_host_busy=True,
+        check_host_offline=True,
+        lock_host=True,
+    )
+    if task_row is None:
+        return None
+    return {
+        **task_row,
+        "host_id"    : task_row["HOST__ID_HOST"],
+        "task_id"    : task_row["HOST_TASK__ID_HOST_TASK"],
+        "hostname"   : task_row["HOST__NA_HOST_NAME"],
+        "host_filter": task_row.get("host_filter") or dict(k.NONE_FILTER),
+        "now"        : datetime.now(),
+    }
 
-    Returns:
-        bool: False when another worker already moved this row out of the
-        claimable state and the caller should simply fetch another task.
+
+def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     """
-    lock_result = db.host_task_update(
-        where_dict={
-            "ID_HOST_TASK": task_id,
-            "NU_STATUS": k.TASK_PENDING,
-        },
+    Atomically flip the HOST_TASK from PENDING to RUNNING.
+
+    Discovery claims the task before opening SSH/SFTP so ownership is deterministic
+    and avoids a race with sibling workers for the same host.
+    Returns False if another worker claimed this row first.
+    """
+    result = db.host_task_update(
+        task_id=task["task_id"],
+        expected_status=k.TASK_PENDING,
         NU_STATUS=k.TASK_RUNNING,
         NU_PID=os.getpid(),
         DT_HOST_TASK=datetime.now(),
         NA_MESSAGE="Discovery task running",
     )
-
-    if lock_result["rows_affected"] != 1:
-        log.warning(
-            f"event=host_task_claim_race host_id={host_id} task_id={task_id}"
+    if result["rows_affected"] == 1:
+        log.event(
+            "discovery_started",
+            host_id=task["host_id"],
+            task_id=task["task_id"],
+            host=task["hostname"],
         )
-        return False
-
-    log.event(
-        "discovery_started",
-        host_id=host_id,
-        task_id=task_id,
-        host=hostname,
-    )
-    return True
+        return True
+    log.event("host_task_claim_race", host_id=task["host_id"], task_id=task["task_id"])
+    return False
 
 
-def _requeue_transient_bootstrap_failure(
-    db: dbHandlerBKP,
-    *,
-    host_id: int,
-    task_id: int,
-    exc: Exception,
-) -> bool:
-    """
-    Return the same HOST_TASK to PENDING after a transient SSH/SFTP failure.
-
-    This helper owns the full retry policy for bootstrap contention:
-        1. optionally queue CHECK_CONNECTION for stronger network-like symptoms
-        2. requeue the discovery HOST_TASK back to PENDING
-        3. start a short BUSY cooldown so backup does not immediately
-           reclaim the same host and recreate the same contention
-
-    Returns:
-        bool: True when the BUSY flag should be preserved for cooldown.
-
-    Important:
-        "transient" here does not mean "proven contention". It means the
-        bootstrap failure is weak evidence and should be retried instead of
-        immediately converting the task into TASK_ERROR.
-    """
-    retry_detail = errors.get_transient_sftp_retry_detail(exc)
-
-    # Some transient failures look suspicious enough that host_check should
-    # reconcile host state explicitly instead of leaving discovery/backups to
-    # keep guessing.
-    if errors.should_queue_host_check(exc):
-        try:
-            db.queue_host_task(
-                host_id=host_id,
-                task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
-                task_status=k.TASK_PENDING,
-                filter_dict=k.NONE_FILTER,
-            )
-        except Exception as queue_exc:
-            log.error(
-                "event=queue_host_check_failed "
-                f"service={SERVICE_NAME} host_id={host_id} "
-                f"task_id={task_id} error={queue_exc}"
-            )
-
-    # The same HOST_TASK row is recycled back to PENDING so discovery remains
-    # observable as a stable per-host workflow instead of creating new rows.
-    db.host_task_update(
-        task_id=task_id,
-        NU_STATUS=k.TASK_PENDING,
-        DT_HOST_TASK=datetime.now(),
-        NA_MESSAGE=tools.compose_message(
-            task_type=k.FILE_TASK_DISCOVERY,
-            task_status=k.TASK_PENDING,
-            detail=retry_detail,
-        ),
-    )
-
-    preserve_host_busy_cooldown = db.host_start_transient_busy_cooldown(
-        host_id=host_id,
-        owner_pid=os.getpid(),
-        cooldown_seconds=k.SFTP_BUSY_COOLDOWN_SECONDS,
-    )
-
-    log.warning_event(
-        "sftp_init_retry",
-        service=SERVICE_NAME,
-        host_id=host_id,
-        task_id=task_id,
-        timeout_like=errors.is_timeout_like_sftp_init_error(exc),
-        retry_detail=retry_detail,
-        error=exc,
-    )
-
-    # The short cooldown reserves the next slot for discovery recovery instead
-    # of letting backup immediately reclaim the same host and recreate the same
-    # contention pattern.
-    if preserve_host_busy_cooldown:
-        log.warning(
-            "event=sftp_busy_cooldown_started "
-            f"service={SERVICE_NAME} host_id={host_id} "
-            f"task_id={task_id} "
-            f"cooldown_seconds={k.SFTP_BUSY_COOLDOWN_SECONDS}"
-        )
-
-    return preserve_host_busy_cooldown
-
+# --- work ---
 
 def _stream_discovery_batches(
     db: dbHandlerBKP,
-    sftp_conn,
-    *,
+    sftp: sftpConnection,
     task: dict,
-    host_id: int,
-    hostname: str | None,
 ) -> int:
     """
     Persist discovered metadata in bounded batches and return rows written.
@@ -229,144 +114,103 @@ def _stream_discovery_batches(
         - FILE_TASK_HISTORY stores the immutable audit trail
 
     The DB callbacks handle deduplication and last-seen cutoffs, so this loop
-    can stay focused on streaming batches instead of trying to keep the full
-    remote inventory in memory.
+    can stay focused on streaming batches instead of keeping the full remote
+    inventory in memory.
     """
-    host_filter = filter.Filter(task["host_filter"], log=log)
+    host_filter = Filter(task["host_filter"], log=log)
     processed = 0
 
     for batch in host_context.iter_metadata_files(
-        sftp_conn,
+        sftp,
         log,
-        host_id=host_id,
-        hostname=hostname,
+        host_id=task["host_id"],
+        hostname=task["hostname"],
         filter_obj=host_filter,
         callBackCheckFile=db.filter_existing_file_batch,
         callBackGetLastDBDate=db.get_last_discovery,
         batch_size=k.DISCOVERY_BATCH_SIZE,
     ):
-        # FILE_TASK is the live queue entry that later workers may still
-        # mutate, suspend, resume, or promote.
         db.file_task_create(
-            host_id=host_id,
+            host_id=task["host_id"],
             file_metadata=batch,
             task_type=k.FILE_TASK_DISCOVERY,
             task_status=k.TASK_DONE,
         )
-
-        # FILE_TASK_HISTORY is the immutable audit trail for what discovery
-        # observed on the source host during this pass.
         db.file_history_create(
-            host_id=host_id,
+            host_id=task["host_id"],
             file_metadata=batch,
             task_type=k.FILE_TASK_DISCOVERY,
             task_status=k.TASK_DONE,
         )
-
         processed += len(batch)
         log.event(
             "discovery_progress",
-            host_id=host_id,
+            host_id=task["host_id"],
             processed_files=processed,
         )
 
     return processed
 
 
-def _queue_backlog_control_task(
-    db: dbHandlerBKP,
-    *,
-    task: dict,
-    task_id: int,
-    host_id: int,
-    hostname: str | None,
-    processed: int,
-) -> dict:
-    """
-    Queue backlog management after discovery and close the HOST_TASK.
-
-    Discovery and backlog control are intentionally separate stages:
-        1. discovery records what exists
-        2. backlog management decides what should become backup work
-
-    Keeping those concerns separate makes re-runs and backlog diagnosis much
-    easier in production.
-    """
+def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> int:
+    """Stream discovered files and queue backlog control. Returns file count."""
+    processed = _stream_discovery_batches(db, sftp, task)
     db.queue_host_task(
-        host_id=host_id,
+        host_id=task["host_id"],
         task_type=k.HOST_TASK_BACKLOG_CONTROL_TYPE,
         task_status=k.TASK_PENDING,
         filter_dict=task["host_filter"],
     )
+    log.event("backlog_control_queued", host_id=task["host_id"])
+    return processed
 
-    log.event(
-        "backlog_control_queued",
-        host_id=host_id,
-        queued_backlog_tasks=1,
-    )
 
+# --- finalization ---
+
+def _finalize_success(db: dbHandlerBKP, task: dict, *, processed: int, elapsed_sec: float) -> None:
+    """Write TASK_DONE, log completion, and schedule deferred statistics."""
     db.host_task_update(
-        task_id=task_id,
+        task_id=task["task_id"],
         NU_STATUS=k.TASK_DONE,
         NU_PID=k.HOST_UNLOCKED_PID,
         DT_HOST_TASK=datetime.now(),
         NA_MESSAGE=tools.compose_message(
             task_type=k.FILE_TASK_DISCOVERY,
             task_status=k.TASK_DONE,
-            detail=(
-                f"host_id={host_id} "
-                "queued_backlog_control=1"
-            ),
+            detail=f"host_id={task['host_id']} queued_backlog_control=1",
         ),
     )
-
     log.event(
         "discovery_completed",
-        host_id=host_id,
-        task_id=task_id,
-        host=hostname,
+        host_id=task["host_id"],
+        task_id=task["task_id"],
+        host=task["hostname"],
         discovered_files=processed,
         queued_backlog_tasks=1,
+        elapsed_sec=round(elapsed_sec, 3),
     )
+    if processed > 0:
+        try:
+            db.host_task_statistics_create(host_id=task["host_id"])
+        except Exception as e:
+            log.event("statistics_update_failed", host_id=task["host_id"], error=e)
 
-    return {
-        "queued_backlog_tasks": 1,
-    }
 
-
-def _persist_discovery_error(
+def _finalize_error(
     db: dbHandlerBKP,
+    task: dict | None,
     err: errors.ErrorHandler,
-    *,
-    host_id: int | None,
-    task_id: int,
-    hostname: str | None,
-    processed: int,
-    backlog_result: dict,
-    ) -> None:
-    """
-    Persist TASK_ERROR state and schedule host reconciliation when needed.
+) -> None:
+    """Persist TASK_ERROR and queue a host-check if the failure is bootstrap-class."""
+    if task is None:
+        err.log_error()
+        return
 
-    This helper is the single error-finalization path for non-transient
-    discovery failures. Keeping it centralized makes it easier to audit which
-    failures only affect the current HOST_TASK and which ones also ask the
-    host-check worker for deeper reconciliation.
-    """
-    # Emit one structured operational log before we touch persistence so
-    # diagnosis still has context even if the DB update itself fails.
-    err.log_error(
-        host_id=host_id,
-        task_id=task_id,
-        host=hostname,
-        discovered_files=processed,
-        queued_backlog_tasks=backlog_result.get("queued_backlog_tasks", 0),
-    )
+    err.log_error(host_id=task["host_id"], task_id=task["task_id"])
 
     try:
-        # TASK_ERROR closes the host-level discovery pass, but the row itself
-        # stays in place for observability instead of being deleted.
         db.host_task_update(
-            task_id=task_id,
+            task_id=task["task_id"],
             NU_STATUS=k.TASK_ERROR,
             NU_PID=k.HOST_UNLOCKED_PID,
             NA_MESSAGE=tools.compose_message(
@@ -376,285 +220,125 @@ def _persist_discovery_error(
             ),
             DT_HOST_TASK=datetime.now(),
         )
-    except Exception as update_exc:
-        log.error(
-            "event=discovery_error_persist_failed "
-            f"service={SERVICE_NAME} host_id={host_id} "
-            f"task_id={task_id} error={update_exc}"
-        )
+    except Exception as e2:
+        log.event("finalize_error_failed", task_id=task["task_id"], error=e2)
 
-    # Bootstrap failures need a second opinion from host_check. AUTH joins the
-    # same path so explicit credential problems also pass through the shared
-    # host-state reconciliation flow.
+    # Bootstrap failures need a second opinion from host_check.
+    # AUTH joins the same path so credential problems pass through too.
     if err.stage in {k.STAGE_AUTH, k.STAGE_CONNECT, k.STAGE_SSH}:
         try:
             db.queue_host_task(
-                host_id=host_id,
+                host_id=task["host_id"],
                 task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
                 task_status=k.TASK_PENDING,
                 filter_dict=k.NONE_FILTER,
             )
-        except Exception as queue_exc:
-            log.error(
-                "event=queue_host_check_failed "
-                f"service={SERVICE_NAME} host_id={host_id} "
-                f"task_id={task_id} error={queue_exc}"
+        except Exception as e:
+            log.event(
+                "queue_host_check_failed",
+                service=SERVICE_NAME,
+                host_id=task["host_id"],
+                task_id=task["task_id"],
+                error=e,
             )
 
-    log.error_event(
-        "discovery_error",
-        host_id=host_id,
-        task_id=task_id,
-        host=hostname,
-        discovered_files=processed,
-        queued_backlog_tasks=backlog_result.get("queued_backlog_tasks", 0),
-        error=err.format_error() or "Discovery failed",
+
+def _cleanup(
+    sftp: sftpConnection | None,
+    db: dbHandlerBKP,
+    task: dict | None,
+) -> None:
+    """Close SFTP and release the host lock. Never raises."""
+    try:
+        if sftp:
+            sftp.close()
+    except Exception as e:
+        log.event("cleanup_sftp_failed", error=e)
+
+    if task is None:
+        return
+
+    # This is the single release point for hosts locked by _read_next_task.
+    host_runtime.release_locked_host(
+        db,
+        task["host_id"],
+        logger=log,
+        service_name=SERVICE_NAME,
     )
 
 
-# ======================================================================
-# Main daemon loop
-# ======================================================================
-def main() -> None:
-    """
-    Run the discovery worker until shutdown is requested.
-
-    The entrypoint deliberately keeps ownership of the daemon loop while
-    delegating the dense domain steps to a few meaningful helpers:
-        1. claim PROCESSING work
-        2. bootstrap SSH/SFTP
-        3. persist discovery batches
-        4. queue backlog management
-        5. finalize HOST_TASK state and release the host
-
-    That split is intentional: the helpers hide repeated local policy, but the
-    full lifecycle of one discovery pass still reads top-to-bottom in this
-    file.
-    """
-
-    log.service_start(SERVICE_NAME)
+def _init_db() -> dbHandlerBKP:
+    """Connect to the operational database. Exits the process on failure."""
     try:
-        db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error(f"event=db_init_failed service={SERVICE_NAME} error={e}")
+        log.event("db_init_failed", service=SERVICE_NAME, error=e)
         sys.exit(1)
 
-    # ===============================================================
-    # MAIN LOOP
-    # ===============================================================
-    while process_status["running"]:
 
-        sftp = None
+def main() -> None:
+    log.service_start(SERVICE_NAME)
+    db = _init_db()
+
+    while process_status["running"]:
         err = errors.ErrorHandler(log)
         task = None
-        host_id = None
-        task_id = None
-        hostname = None
-        preserve_host_busy_cooldown = False
-        processed = 0
-        backlog_result = {"queued_backlog_tasks": 0}
+        sftp = None
 
         try:
-            # ==========================================================
-            # ACT I — Fetch the next PROCESSING host task and lock the host
-            # ==========================================================
-            task = db.host_task_read(
-                task_type=k.HOST_TASK_PROCESSING_TYPE,
-                task_status=k.TASK_PENDING,
-                check_host_busy=True,
-                check_host_offline=True,
-                lock_host=True,
-            )
-
-            if not task:
-                # Idle discovery should stay cheap: no extra work, no extra
-                # logs, just jitter and poll again on the next loop.
+            # --- read ---
+            task = _read_next_task(db)
+            if task is None:
+                runtime_sleep.random_jitter_sleep()
                 continue
 
-            host_id = task["HOST__ID_HOST"]
-            task_id = task["HOST_TASK__ID_HOST_TASK"]
-            hostname = task["HOST__NA_HOST_NAME"]
-
-            # ==========================================================
-            # ACT II — Mark the claimed host task as RUNNING
-            # ==========================================================
-            try:
-                if not _claim_processing_task(
-                    db,
-                    task_id=task_id,
-                    host_id=host_id,
-                    hostname=hostname,
-                ):
-                    continue
-            except Exception as e:
-                err.capture(
-                    "Failed to lock HOST or HOST_TASK",
-                    k.STAGE_LOCK_TASK,
-                    e,
-                    host_id=host_id,
-                    task_id=task_id,
-                )
+            # --- claim ---
+            if not _claim_task(db, task):
+                runtime_sleep.random_jitter_sleep()
                 continue
 
-            # ==========================================================
-            # ACT III — Bootstrap remote SSH/SFTP context
-            # ==========================================================
-            sftp, preserve_host_busy_cooldown = (
-                host_context.init_host_context_with_retry(
-                    task=task,
-                    log=log,
-                    err=err,
-                    host_id=host_id,
-                    task_id=task_id,
-                    transient_retry_handler=_requeue_transient_bootstrap_failure,
-                    retry_handler_kwargs={
-                        "db": db,
-                        "host_id": host_id,
-                        "task_id": task_id,
-                    },
-                    retry_failure_reason="Failed to requeue transient discovery task",
-                )
-            )
-            if sftp is None:
-                # The shared bootstrap flow already decided whether this was:
-                #   - a transient retryable failure, or
-                #   - a fatal AUTH/SSH/CONNECT error stored in `err`
-                continue
+            # --- work ---
+            sftp = host_context.init_host_context(task, log)
 
-            # ==========================================================
-            # ACT IV — Stream discovery batches into task and history tables
-            # ==========================================================
-            try:
-                processed = _stream_discovery_batches(
-                    db,
-                    sftp,
-                    task=task,
-                    host_id=host_id,
-                    hostname=hostname,
-                )
-            except Exception as e:
-                err.capture(
-                    "Discovery failed",
-                    k.STAGE_DISCOVERY,
-                    e,
-                    host_id=host_id,
-                    task_id=task_id,
-                )
-                continue
+            start = time.monotonic()
+            processed = _do_work(db, sftp, task)
+            elapsed_sec = time.monotonic() - start
 
-            # ==========================================================
-            # ACT V — Hand off discovery backlog to the dedicated manager
-            # ==========================================================
-            try:
-                backlog_result = _queue_backlog_control_task(
-                    db,
-                    task=task,
-                    task_id=task_id,
-                    host_id=host_id,
-                    hostname=hostname,
-                    processed=processed,
-                )
-            except Exception as e:
-                err.capture(
-                    "Backlog handoff failed",
-                    k.STAGE_BACKLOG,
-                    e,
-                    host_id=host_id,
-                    task_id=task_id,
-                )
-                continue
+            # --- finalize ---
+            _finalize_success(db, task, processed=processed, elapsed_sec=elapsed_sec)
 
-        # ==============================================================
-        # OUTER EXCEPTIONS
-        # ==============================================================
         except Exception as e:
-            err.capture(
-                reason="Unexpected discovery loop failure",
-                stage=k.STAGE_MAIN,
-                exc=e,
-                host_id=host_id,
-                task_id=task_id,
-                traceback=traceback.format_exc(),
-            )
+            if not err.triggered:
+                # sftp is None after a claimed task means SSH bootstrap failed;
+                # classify the exception to route the error to the right stage.
+                stage = (
+                    errors.classify_ssh_connect_exc(e).stage
+                    if sftp is None and task is not None
+                    else k.STAGE_MAIN
+                )
+                err.capture(
+                    reason="Discovery task failed",
+                    stage=stage,
+                    exc=e,
+                    host_id=task["host_id"] if task else None,
+                    task_id=task["task_id"] if task else None,
+                )
+            _finalize_error(db, task, err)
 
-        # ==============================================================
-        # FINALLY — UNLOCK + CLEANUP (ALWAYS EXECUTED)
-        # ==============================================================
         finally:
+            _cleanup(sftp, db, task)
 
-            # Phase 1 — Persist terminal task failure, if this discovery pass
-            # crossed from "retryable uncertainty" into a stable error state.
-            if err.triggered and task_id:
-                _persist_discovery_error(
-                    db,
-                    err,
-                    host_id=host_id,
-                    task_id=task_id,
-                    hostname=hostname,
-                    processed=processed,
-                    backlog_result=backlog_result,
-                )
+        runtime_sleep.random_jitter_sleep()
 
-            # Phase 2 — Close transport objects defensively. Cleanup must never
-            # replace the real workflow error with a secondary close failure.
-            try:
-                if sftp:
-                    try:
-                        sftp.close()
-                    except Exception:
-                        pass
-            except Exception as e:
-                log.warning(f"event=cleanup_host_context_failed error={e}")
-
-            # Phase 3 — Release the host unless transient bootstrap retry
-            # deliberately kept the BUSY flag for its short cooldown window.
-            if host_id is not None and not preserve_host_busy_cooldown:
-                # This remains the single normal release point for the host
-                # claimed by `host_task_read(..., lock_host=True)`.
-                host_runtime.release_locked_host(
-                    db,
-                    host_id,
-                    logger=log,
-                    service_name=SERVICE_NAME,
-                )
-
-                # Phase 4 — Schedule deferred statistics refresh only after the
-                # host is safely released. Statistics are secondary bookkeeping,
-                # not part of the critical path of discovery itself.
-                try:
-                    if (not err.triggered) and processed > 0:
-                        # Statistics refresh stays deferred so lock release is
-                        # not delayed by host aggregation work.
-                        db.host_task_statistics_create(host_id=host_id)
-                except Exception as e:
-                    log.warning(
-                        f"event=statistics_update_failed host_id={host_id} error={e}"
-                    )
-
-            # Phase 5 — End every iteration with the same jitter contract so a
-            # hot host or a hot error path does not spin the worker too hard.
-            runtime_sleep.random_jitter_sleep()
+    log.service_stop(SERVICE_NAME)
 
 
-
-
-# ======================================================================
-# Entry Point
-# ======================================================================
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # This outer boundary is the last line of defense for the daemon
-        # process itself, not for one host pass. By the time we get here the
-        # worker is crashing as a service, so we log once, release BUSY locks,
-        # and let the exception terminate the process.
         err = errors.ErrorHandler(log)
-        err.capture(
-            reason="Fatal discovery worker crash",
-            stage=k.STAGE_MAIN,
-            exc=e,
-        )
+        err.capture(reason="Fatal discovery worker crash", stage=k.STAGE_MAIN, exc=e)
         err.log_error()
         host_runtime.release_busy_hosts_for_current_pid(
             db_factory=dbHandlerBKP,

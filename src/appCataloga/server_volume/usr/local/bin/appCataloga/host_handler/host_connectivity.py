@@ -451,6 +451,9 @@ def run_check(
                 logger=logger,
             )
         case _:
+            # Covers HOST_CONN_ONLINE and HOST_CONN_OFFLINE.
+            # A non-zero error count means previous degraded probes already
+            # suspended dependent queues; resume them on a successful recovery.
             return _finalize_check(
                 db, task,
                 online=(connectivity["state"] == k.HOST_CONN_ONLINE),
