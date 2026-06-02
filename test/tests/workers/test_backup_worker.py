@@ -309,7 +309,7 @@ class BackupFlowTests(unittest.TestCase):
                 backup_worker.k.BACKUP_TRANSFER_PROGRESS_POLL_SECONDS,
             )
 
-    def test_finalize_successful_backup_persists_refreshed_metadata(self) -> None:
+    def test_finalize_success_persists_refreshed_metadata(self) -> None:
         fake_db = FakeTaskDB()
         refreshed_metadata = backup_worker.file_metadata.FileMetadata(
             NA_FULL_PATH="/remote/sample.bin",
@@ -325,21 +325,19 @@ class BackupFlowTests(unittest.TestCase):
             NA_PERMISSIONS="-rw-r--r--",
         )
         task = {
+            "host_id": 11,
+            "file_task_id": 22,
+            "input_filename": "/remote/sample.bin",
+            "server_filename": "server.bin",
+            "server_file_path": "/repo/tmp",
             "FILE_TASK__NA_HOST_FILE_PATH": "/remote",
             "FILE_TASK__NA_HOST_FILE_NAME": "sample.bin",
         }
 
-        backup_worker._finalize_successful_backup(
+        backup_worker._finalize_success(
             fake_db,
-            worker_id=1,
-            host_id=11,
-            file_task_id=22,
-            task=task,
-            input_filename="/remote/sample.bin",
-            server_filename="server.bin",
-            server_file_path="/repo/tmp",
-            refreshed_metadata=refreshed_metadata,
-            updated_size_kb=7.0,
+            task,
+            {"refreshed_metadata": refreshed_metadata, "updated_size_kb": 7.0, "elapsed_sec": 1.23},
         )
 
         self.assertEqual(fake_db.file_history_updates[0]["NA_EXTENSION"], ".zip")
@@ -363,11 +361,16 @@ class BackupFlowTests(unittest.TestCase):
             refreshed_metadata.DT_FILE_MODIFIED,
         )
 
-    def test_persist_backup_error_clears_pid_and_queues_host_check_for_auth(self) -> None:
+    def test_finalize_error_clears_pid_and_queues_host_check_for_auth(self) -> None:
         fake_db = FakeTaskDB()
         fake_log = FakeLog()
         err = backup_worker.errors.ErrorHandler(fake_log)
         task = {
+            "host_id": 11,
+            "file_task_id": 22,
+            "input_filename": "/remote/sample.bin",
+            "server_filename": "server.bin",
+            "server_file_path": "/repo/tmp",
             "FILE_TASK__NA_HOST_FILE_PATH": "/remote",
             "FILE_TASK__NA_HOST_FILE_NAME": "sample.bin",
         }
@@ -380,17 +383,7 @@ class BackupFlowTests(unittest.TestCase):
         )
 
         with patch.object(backup_worker, "log", fake_log):
-            backup_worker._persist_backup_error(
-                fake_db,
-                err,
-                worker_id=1,
-                host_id=11,
-                file_task_id=22,
-                task=task,
-                input_filename="/remote/sample.bin",
-                server_filename="server.bin",
-                server_file_path="/repo/tmp",
-            )
+            backup_worker._finalize_error(fake_db, task, err)
 
         self.assertEqual(len(fake_db.file_task_updates), 1)
         self.assertEqual(

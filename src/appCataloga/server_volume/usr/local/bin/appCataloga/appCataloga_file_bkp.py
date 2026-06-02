@@ -1,34 +1,9 @@
 #! /usr/bin/python3
 """
-Backup worker for remote host payload collection.
+Backup worker: transfers FILE_TASK rows from remote hosts to the central repository.
 
-This worker transfers pending backup FILE_TASK rows from remote hosts into the
-central repository through SFTP and then promotes successful rows into the
-processing queue.
-
-In the larger pipeline, backup is the bridge between:
-    - one FILE_TASK row in BACKUP state for a remote source artifact
-    - the same FILE_TASK row promoted to PROCESS after a successful transfer
-
-So unlike discovery, which fans out one host pass into many file tasks, backup
-walks a single file artifact through transfer, validation, and promotion while
-still honoring host-level BUSY ownership.
-
-Architecture principles:
-    • One process per worker
-    • One HOST per worker (BUSY lock enforced in DB)
-    • No shared SSH/SFTP sessions
-    • Worker 0 acts as manager and spawns additional workers
-
-Design goals:
-    • Deterministic server-side filenames
-    • No filename collisions
-    • Reprocessable without database
-    • Compatible with RFeye proprietary software
-
-Compatible with Debian 7 (systemd-free). The pool grows on demand instead of
-starting all workers eagerly, so worker lifecycle, host ownership, and retry
-rules are kept very explicit in this file.
+Consumes FILE_TASK rows of type BACKUP and locks HOST.IS_BUSY during each transfer.
+Worker 0 manages a small on-demand pool; siblings are spawned after each successful claim.
 """
 
 # ======================================================================
@@ -104,11 +79,27 @@ def build_server_filename(host_uid: str, remote_path: str, filename: str) -> str
     Returns:
         str: Server-side filename
     """
+    # CelPlan payloads keep their original filename because the station
+    # naming is already unique and downstream tooling expects it.
+    if "CW" in host_uid:
+        return filename
+
     h = hashlib.sha1(
         f"{host_uid}:{remote_path}".encode("utf-8")
     ).hexdigest()[:8]
 
     return f"p-{h}--{filename}"
+
+
+def build_server_filepath(host_uid: str) -> str:
+    """
+    Build and guarantee the server-side staging directory for a host.
+
+    Creates the directory if it does not exist. Returns the absolute path.
+    """
+    path = os.path.join(k.REPO_FOLDER, k.TMP_FOLDER, host_uid)
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 # ======================================================================
@@ -250,33 +241,21 @@ def _has_discovery_metadata_drift(
     ))
 
 
-def _finalize_successful_backup(
+def _finalize_success(
     db: dbHandlerBKP,
-    *,
-    worker_id: int,
-    host_id: int,
-    file_task_id: int,
     task: dict,
-    input_filename: str,
-    server_filename: str,
-    server_file_path: str,
-    refreshed_metadata: file_metadata.FileMetadata,
-    updated_size_kb: float,
+    result: dict,
 ) -> None:
-    """
-    Persist the successful BACKUP stage and promote the live row to PROCESS.
-
-    FILE_TASK_HISTORY records the immutable audit of the completed backup.
-    The live FILE_TASK row then moves forward to PROCESS so the pipeline keeps
-    one mutable queue row per source artifact.
-
-    That split is intentional:
-        - history answers "what happened?"
-        - the live task answers "what should happen next?"
-
-    Discovery-time metadata may already be stale when backup finally runs, so
-    this step persists the refreshed remote snapshot gathered during transfer.
-    """
+    """Persist BACKUP DONE, promote the row to PROCESS, and log completion. Never raises."""
+    worker_id = process_status["worker"]
+    host_id = task["host_id"]
+    file_task_id = task["file_task_id"]
+    input_filename = task["input_filename"]
+    server_filename = task["server_filename"]
+    server_file_path = task["server_file_path"]
+    refreshed_metadata = result["refreshed_metadata"]
+    updated_size_kb = result["updated_size_kb"]
+    elapsed_sec = result["elapsed_sec"]
     backup_completed_at = datetime.now()
     history_message = tools.compose_message(
         task_type=k.FILE_TASK_BACKUP_TYPE,
@@ -327,44 +306,38 @@ def _finalize_successful_backup(
         task_id=file_task_id,
         file=input_filename,
         final_file=os.path.join(server_file_path, server_filename),
+        elapsed_sec=round(elapsed_sec, 3),
     )
 
 
-def _persist_backup_error(
+def _finalize_error(
     db: dbHandlerBKP,
-    err: errors.ErrorHandler,
-    *,
-    worker_id: int,
-    host_id: int | None,
-    file_task_id: int,
     task: dict | None,
-    input_filename: str | None,
-    server_filename: str | None,
-    server_file_path: str | None,
+    err: errors.ErrorHandler,
 ) -> None:
-    """
-    Persist a terminal backup failure or prune source drift when the file vanished.
+    """Write ERROR to queue or prune source drift. Queue host-check on bootstrap failure. Never raises."""
+    worker_id = process_status["worker"]
 
-    Backup has one special terminal case that discovery does not have: the file
-    may legitimately disappear between discovery and backup. That case is
-    treated as source drift and pruned, not persisted as TASK_ERROR.
+    if task is None:
+        err.log_error(worker_id=worker_id)
+        return
 
-    This helper therefore has two finalization modes:
-        1. prune source drift when the remote file vanished after discovery
-        2. persist FILE_TASK / FILE_TASK_HISTORY error state for everything else
-    """
-    remote_file_missing = (
-        err.stage == "TRANSFER"
-        and isinstance(err.exc, FileNotFoundError)
-        and task is not None
-    )
+    host_id = task.get("host_id")
+    file_task_id = task.get("file_task_id")
+    input_filename = task.get("input_filename")
+    server_filename = task.get("server_filename")
+    server_file_path = task.get("server_file_path")
 
-    if remote_file_missing:
+    if file_task_id is None:
+        err.log_error(worker_id=worker_id, host_id=host_id)
+        return
+
+    # Source drift: the remote file vanished between discovery and backup.
+    # Prune both queue rows instead of persisting a misleading TASK_ERROR.
+    if err.stage == k.STAGE_TRANSFER and isinstance(err.exc, FileNotFoundError):
         deleted_file_task = None
         deleted_history = None
 
-        # Best-effort prune per table. A partial cleanup is still better than
-        # leaving both rows around to be resurrected later.
         try:
             deleted_file_task = db.file_task_delete(file_task_id)
         except Exception as e_db:
@@ -401,8 +374,7 @@ def _persist_backup_error(
         )
         return
 
-    # For ordinary terminal failures, log once with the structured root cause
-    # before persisting the queue/history error state.
+    # Ordinary terminal failure: log once then persist the error state.
     err.log_error(
         worker_id=worker_id,
         host_id=host_id,
@@ -413,8 +385,8 @@ def _persist_backup_error(
     na_message = tools.compose_message(
         task_type=k.FILE_TASK_BACKUP_TYPE,
         task_status=k.TASK_ERROR,
-        path=task["FILE_TASK__NA_HOST_FILE_PATH"] if task else None,
-        name=task["FILE_TASK__NA_HOST_FILE_NAME"] if task else None,
+        path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+        name=task["FILE_TASK__NA_HOST_FILE_NAME"],
         error=err.format_persisted_error(),
     )
     error_at = datetime.now()
@@ -442,8 +414,8 @@ def _persist_backup_error(
         db.file_history_update(
             task_type=k.FILE_TASK_BACKUP_TYPE,
             host_id=host_id,
-            host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"] if task else None,
-            host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"] if task else None,
+            host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+            host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
             DT_BACKUP=error_at,
             NA_SERVER_FILE_NAME=server_filename,
             NA_SERVER_FILE_PATH=server_file_path,
@@ -452,9 +424,9 @@ def _persist_backup_error(
             **structured_error_fields,
         )
 
-        # Fatal bootstrap failures ask host_check to reconcile host state out of
-        # band so this worker can close the FILE_TASK deterministically.
-        if err.stage in {"AUTH", "CONNECT", "SSH"}:
+        # Fatal bootstrap failures ask host_check to reconcile host state out
+        # of band so this worker can close the FILE_TASK deterministically.
+        if err.stage in {k.STAGE_AUTH, k.STAGE_CONNECT, k.STAGE_SSH}:
             db.queue_host_task(
                 host_id=host_id,
                 task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
@@ -740,20 +712,16 @@ def main() -> None:
     # =======================================================
     while process_status["running"]:
 
-        sftp_conn = None
-        host = None
         err = errors.ErrorHandler(log)
-        file_was_transferred = False
-        idle_cycles = process_status.get("idle_cycles", 0)
-
         task = None
+        sftp_conn = None
         host_id = None
         file_task_id = None
+        input_filename = None
         server_filename = None
         server_file_path = None
-        refreshed_metadata = None
-        updated_size_kb = None
-        input_filename = None
+        file_was_transferred = False
+        _stage = k.STAGE_MAIN
 
         try:
             # Keep the pool self-healing: if worker 0 disappeared unexpectedly,
@@ -768,12 +736,10 @@ def main() -> None:
                 logger=log,
             )
 
-            # ==========================================================
-            # ACT I — Fetch one pending backup FILE_TASK and atomically lock its host
-            # ==========================================================
+            # --- read ---
             task = _read_next_task(db)
             if task is None:
-                idle_cycles += 1
+                idle_cycles = process_status.get("idle_cycles", 0) + 1
                 process_status["idle_cycles"] = idle_cycles
 
                 if worker_pool.should_retire_idle_worker(
@@ -790,154 +756,88 @@ def main() -> None:
                     )
                     break
 
-                # Idle workers just drift back to the common finally/jitter
-                # path instead of spinning hot when the queue is empty.
+                runtime_sleep.random_jitter_sleep()
                 continue
 
             host_id = task["host_id"]
             file_task_id = task["file_task_id"]
             input_filename = task["input_filename"]
-            idle_cycles = 0
             process_status["idle_cycles"] = 0
 
-            # ==========================================================
-            # ACT II — Mark the selected FILE_TASK as RUNNING
-            # ==========================================================
-            try:
-                if not _claim_backup_task(
-                    db,
-                    worker_id=worker_id,
-                    host_id=host_id,
-                    file_task_id=file_task_id,
-                    task=task,
-                    input_filename=input_filename,
-                ):
-                    continue
-            except Exception as e:
-                err.capture(
-                    "Failed to lock HOST or FILE_TASK",
-                    "LOCK",
-                    e,
-                    worker_id=worker_id,
-                    host_id=host_id,
-                    task_id=file_task_id,
-                )
+            # --- claim ---
+            if not _claim_backup_task(
+                db,
+                worker_id=worker_id,
+                host_id=host_id,
+                file_task_id=file_task_id,
+                task=task,
+                input_filename=input_filename,
+            ):
+                runtime_sleep.random_jitter_sleep()
                 continue
             
-            # ==========================================================
-            # ACT III — Bootstrap the remote SSH/SFTP session
-            # ==========================================================
             # Read the authoritative host view after the task claim. Backup
             # needs host metadata both for the SSH session and for local file
             # naming/layout decisions.
             host = db.host_read_access(host_id)
             if not host:
-                err.capture(
-                    "Host not found in database",
-                    "HOST_READ",
-                    worker_id=worker_id,
-                    host_id=host_id,
-                    task_id=file_task_id,
-                )
-                continue
+                raise RuntimeError(f"Host {host_id} not found in database")
 
+            # --- SSH bootstrap ---
+            # _stage is set before init so a bootstrap exception gets the right
+            # stage without needing an inner try/except.
+            _stage = k.STAGE_SSH
             sftp_conn = host_context.init_host_context(task, log)
-            
-            # ==========================================================
-            # ACT IV — Prepare the local repository destination
-            # ==========================================================
-            server_file_path = os.path.join(
-                k.REPO_FOLDER, k.TMP_FOLDER, host["host_uid"]
+            _stage = k.STAGE_MAIN  # SSH established; file prep errors are not SSH-related
+
+            server_file_path = build_server_filepath(host["host_uid"])
+
+            server_filename = build_server_filename(
+                host_uid=host["host_uid"],
+                remote_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
             )
-            os.makedirs(server_file_path, exist_ok=True)
+            # Enrich task so _finalize_error can access server paths if needed.
+            task["server_file_path"] = server_file_path
+            task["server_filename"] = server_filename
 
-            # ---------------------------------------------------
-            # Build deterministic server filename
-            # ---------------------------------------------------
-            # CelPlan payloads keep their original filename because the station
-            # naming is already unique enough and downstream tooling expects it.
-            # Other hosts use the deterministic hashed naming contract above.
-            if "CW" in host["host_uid"]:
-                server_filename = task["FILE_TASK__NA_HOST_FILE_NAME"]
-            else:
-                server_filename = build_server_filename(
-                    host_uid=host["host_uid"],
-                    remote_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
-                    filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
-                )
-
-            # ==========================================================
-            # ACT V — Transfer and validate the payload
-            # ==========================================================
-            try:
-                updated_size_kb, refreshed_metadata = transfer_file_task(
-                    sftp=sftp_conn,
-                    remote_dir=task["FILE_TASK__NA_HOST_FILE_PATH"],
-                    remote_filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
-                    local_path=server_file_path,
-                    server_filename=server_filename,
-                    task=task,
-                )
-            except Exception as e:
-                # Keep the stage-level reason stable here. The persisted
-                # message is enriched later by ErrorHandler.format_error(),
-                # which now extracts actionable detail from the exception
-                # itself without fragmenting dashboards by raw text.
-                err.capture(
-                    "File transfer failed",
-                    "TRANSFER",
-                    e,
-                    worker_id=worker_id,
-                    host_id=host_id,
-                    task_id=file_task_id,
-                )
-                continue
-
+            # --- transfer ---
+            _stage = k.STAGE_TRANSFER
+            start = time.monotonic()
+            updated_size_kb, refreshed_metadata = transfer_file_task(
+                sftp=sftp_conn,
+                remote_dir=task["FILE_TASK__NA_HOST_FILE_PATH"],
+                remote_filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
+                local_path=server_file_path,
+                server_filename=server_filename,
+                task=task,
+            )
+            elapsed_sec = time.monotonic() - start
             file_was_transferred = True
 
-            # ---------------------------------------------------
-            # Update FILE_TASK_HISTORY and promote the pipeline row
-            # ---------------------------------------------------
+            # --- finalize success ---
             # `(FK_HOST, NA_HOST_FILE_PATH, NA_HOST_FILE_NAME)` is the logical
             # identity of the source file, so the history row can be updated in
             # place after the transfer succeeds.
-            try:
-                _finalize_successful_backup(
-                    db,
-                    worker_id=worker_id,
-                    host_id=host_id,
-                    file_task_id=file_task_id,
-                    task=task,
-                    input_filename=input_filename,
-                    server_filename=server_filename,
-                    server_file_path=server_file_path,
-                    refreshed_metadata=refreshed_metadata,
-                    updated_size_kb=updated_size_kb,
-                )
-            except Exception as e:
-                err.capture(
-                    "Post-transfer update failed",
-                    "FINALIZE",
-                    e,
-                    worker_id=worker_id,
-                    host_id=host_id,
-                    task_id=file_task_id,
-                )
-                continue
+            _stage = k.STAGE_MAIN
+            _finalize_success(db, task, {
+                "refreshed_metadata": refreshed_metadata,
+                "updated_size_kb": updated_size_kb,
+                "elapsed_sec": elapsed_sec,
+            })
 
 
-        # -------------------------------------------------
-        # Unexpected error handling (catch-all)
-        # -------------------------------------------------
         except Exception as e:
             if not err.triggered:
+                # _stage == STAGE_SSH means the bootstrap failed; use the SSH
+                # classifier to route to AUTH, CONNECT, or SSH stage correctly.
                 stage = (
                     errors.classify_ssh_connect_exc(e).stage
-                    if sftp_conn is None and host_id is not None
-                    else "BACKUP"
+                    if _stage == k.STAGE_SSH
+                    else _stage
                 )
                 err.capture(
-                    reason="Unexpected backup worker failure",
+                    reason="Backup worker failure",
                     stage=stage,
                     exc=e,
                     worker_id=worker_id,
@@ -945,36 +845,9 @@ def main() -> None:
                     task_id=file_task_id,
                     traceback=traceback.format_exc(),
                 )
+            _finalize_error(db, task, err)
 
-        
-        # ==============================================================
-        # FINALLY — UNLOCK + CLEANUP (ALWAYS EXECUTED)
-        # ==============================================================
         finally:
-            # Phase 1 — Persist the final task outcome if this loop iteration
-            # crossed from retryable uncertainty into a stable terminal error.
-            if err.triggered:
-                if file_task_id is not None:
-                    _persist_backup_error(
-                        db,
-                        err,
-                        worker_id=worker_id,
-                        host_id=host_id,
-                        file_task_id=file_task_id,
-                        task=task,
-                        input_filename=input_filename,
-                        server_filename=server_filename,
-                        server_file_path=server_file_path,
-                    )
-                else:
-                    err.log_error(
-                        worker_id=worker_id,
-                        host_id=host_id,
-                        task_id=file_task_id,
-                    )
-
-            # Phase 2 — Close transport objects defensively. Cleanup must never
-            # overwrite the actual transfer result with a secondary close issue.
             if sftp_conn:
                 try:
                     sftp_conn.close()
@@ -982,31 +855,23 @@ def main() -> None:
                 except Exception:
                     pass
 
-            # Phase 3 — Release the host after the transfer.
             if host_id is not None:
-                # This is the single normal-path release point for the host
-                # claimed by `read_file_task(..., lock_host=True)`.
+                # Single release point for the host claimed by read_file_task(..., lock_host=True).
                 host_runtime.release_locked_host(
                     db,
                     host_id,
                     logger=log,
                     service_name=SERVICE_NAME,
                 )
-
-                # Phase 4 — Successful backup activity schedules deferred
-                # statistics refresh only after repository I/O and host release
-                # are already complete.
+                # Stats are deferred so repository I/O finishes before
+                # any host-level aggregation work begins.
                 if not err.triggered and file_was_transferred:
                     try:
-                        # Stats are deferred on purpose so repository I/O is
-                        # done before any host-level aggregation work begins.
                         db.host_task_statistics_create(host_id=host_id)
                     except Exception:
                         pass
 
-            # Phase 5 — Every iteration ends with the same jitter contract so
-            # the worker does not spin too aggressively on hot success/error paths.
-            runtime_sleep.random_jitter_sleep()
+        runtime_sleep.random_jitter_sleep()
 
     log.service_stop(SERVICE_NAME, worker_id=worker_id)
 
@@ -1022,7 +887,7 @@ if __name__ == "__main__":
         err = errors.ErrorHandler(log)
         err.capture(
             reason="Fatal backup worker crash",
-            stage="MAIN",
+            stage=k.STAGE_MAIN,
             exc=e,
             worker_id=worker_id,
         )
