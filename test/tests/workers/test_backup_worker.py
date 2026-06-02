@@ -13,11 +13,12 @@ What is covered here:
 from __future__ import annotations
 
 import io
+import signal
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -141,9 +142,9 @@ class WorkerDetectionTests(unittest.TestCase):
 
         with patch.object(backup_worker, "log", fake_log):
             with patch.object(
-                backup_worker.worker_pool.os,
-                "popen",
-                return_value=io.StringIO("100\n101\n"),
+                backup_worker.worker_pool.subprocess,
+                "run",
+                return_value=MagicMock(stdout="100\n101\n"),
             ):
                 with patch.object(
                     backup_worker.worker_pool.os.path,
@@ -178,9 +179,9 @@ class WorkerDetectionTests(unittest.TestCase):
             return io.StringIO(cmdlines[path])
 
         with patch.object(
-            backup_worker.worker_pool.os,
-            "popen",
-            return_value=io.StringIO("100\n101\n"),
+            backup_worker.worker_pool.subprocess,
+            "run",
+            return_value=MagicMock(stdout="100\n101\n"),
         ):
             with patch.object(
                 backup_worker.worker_pool.os.path,
@@ -225,8 +226,8 @@ class WorkerDetectionTests(unittest.TestCase):
         self.assertEqual(
             sent_signals,
             [
-                (101, backup_worker.signal.SIGTERM),
-                (102, backup_worker.signal.SIGTERM),
+                (101, signal.SIGTERM),
+                (102, signal.SIGTERM),
             ],
         )
         self.assertTrue(

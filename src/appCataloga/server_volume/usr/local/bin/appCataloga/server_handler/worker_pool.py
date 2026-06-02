@@ -6,7 +6,7 @@ helpers here lets the worker file focus on the file pipeline instead of mixing
 process-management utilities ahead of `main()`.
 
 Reading guide:
-    1. discovery helpers
+    1. pool scan helpers
        Find currently running workers and recover worker IDs from command
        lines.
     2. growth helpers
@@ -64,13 +64,19 @@ def list_running_worker_processes(process_filename: str) -> list[tuple[int, int]
     """
     processes = []
     try:
-        pids = os.popen(f"pgrep -f {process_filename}").read().splitlines()
+        result = subprocess.run(
+            ["pgrep", "-f", process_filename],
+            capture_output=True,
+            text=True,
+        )
+        pids = result.stdout.splitlines()
         for pid_text in pids:
             cmdline = f"/proc/{pid_text}/cmdline"
             if not os.path.exists(cmdline):
                 continue
 
-            args = open(cmdline).read().split("\x00")
+            with open(cmdline) as fh:
+                args = fh.read().split("\x00")
             worker_id = extract_worker_id_from_cmdline(args, process_filename)
             if worker_id is None:
                 continue
@@ -166,8 +172,6 @@ def spawn_additional_worker(
     worker exits.
     """
     next_worker = 0
-    # Reuse the first free worker ID instead of only appending at the end.
-    # This keeps the pool shape compact and predictable after isolated exits.
     while next_worker in current_workers:
         next_worker += 1
 

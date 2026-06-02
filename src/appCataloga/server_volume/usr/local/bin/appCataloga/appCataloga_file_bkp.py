@@ -11,7 +11,6 @@ Worker 0 manages a small on-demand pool; siblings are spawned after each success
 # ======================================================================
 import os
 import hashlib
-import signal
 import sys
 import time
 import traceback
@@ -23,7 +22,6 @@ from bootstrap_paths import bootstrap_app_paths
 # config directory, and local DB package for every worker.
 PROJECT_ROOT = bootstrap_app_paths(__file__)
 
-# Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
 from host_handler import host_context, host_runtime
 from server_handler import signal_runtime, sleep as runtime_sleep, worker_pool
@@ -246,7 +244,13 @@ def _finalize_success(
     task: dict,
     result: dict,
 ) -> None:
-    """Persist BACKUP DONE, promote the row to PROCESS, and log completion. Never raises."""
+    """
+    Persist BACKUP DONE, promote the row to PROCESS, and log completion. Never raises.
+
+    `(FK_HOST, NA_HOST_FILE_PATH, NA_HOST_FILE_NAME)` is the logical identity
+    of the source file, so the FILE_TASK row is updated in place rather than
+    creating a second row for the same artifact.
+    """
     worker_id = process_status["worker"]
     host_id = task["host_id"]
     file_task_id = task["file_task_id"]
@@ -451,6 +455,40 @@ def _finalize_error(
     )
 
 
+def _cleanup(
+    sftp,
+    db: dbHandlerBKP,
+    host_id: int | None,
+    err: errors.ErrorHandler,
+    file_was_transferred: bool,
+) -> None:
+    """Close SFTP, release the host lock, and run deferred statistics. Never raises."""
+    if sftp:
+        try:
+            sftp.close()
+            time.sleep(0.3)  # Allow the remote side to close the session cleanly.
+        except Exception:
+            pass
+
+    if host_id is None:
+        return
+
+    # Single release point for the host claimed by read_file_task(..., lock_host=True).
+    host_runtime.release_locked_host(
+        db,
+        host_id,
+        logger=log,
+        service_name=SERVICE_NAME,
+    )
+    # Stats are deferred so repository I/O finishes before
+    # any host-level aggregation work begins.
+    if not err.triggered and file_was_transferred:
+        try:
+            db.host_task_statistics_create(host_id=host_id)
+        except Exception:
+            pass
+
+
 # ======================================================================
 # Argument Parsing
 # ======================================================================
@@ -506,7 +544,7 @@ def transfer_file_task(
     the file was recreated in place weeks later, backup should refresh the
     metadata instead of failing because the old discovery size no longer fits.
 
-    `FILE_THRESHOLD_SIZE_KB` is now used only for the "already present"
+    `FILE_THRESHOLD_SIZE_KB` is used only for the "already present"
     shortcut. We skip a download only when:
         - the existing local payload still matches the current remote size, and
         - the current remote metadata still matches the old discovery snapshot
@@ -700,7 +738,6 @@ def main() -> None:
     log.service_start(SERVICE_NAME, worker_id=worker_id)
     runtime_sleep.random_jitter_sleep()
 
-    # Initialize database handler
     try:
         db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
@@ -816,9 +853,6 @@ def main() -> None:
             file_was_transferred = True
 
             # --- finalize success ---
-            # `(FK_HOST, NA_HOST_FILE_PATH, NA_HOST_FILE_NAME)` is the logical
-            # identity of the source file, so the history row can be updated in
-            # place after the transfer succeeds.
             _stage = k.STAGE_MAIN
             _finalize_success(db, task, {
                 "refreshed_metadata": refreshed_metadata,
@@ -848,28 +882,7 @@ def main() -> None:
             _finalize_error(db, task, err)
 
         finally:
-            if sftp_conn:
-                try:
-                    sftp_conn.close()
-                    time.sleep(0.3)  # Ensure proper closure before next connection
-                except Exception:
-                    pass
-
-            if host_id is not None:
-                # Single release point for the host claimed by read_file_task(..., lock_host=True).
-                host_runtime.release_locked_host(
-                    db,
-                    host_id,
-                    logger=log,
-                    service_name=SERVICE_NAME,
-                )
-                # Stats are deferred so repository I/O finishes before
-                # any host-level aggregation work begins.
-                if not err.triggered and file_was_transferred:
-                    try:
-                        db.host_task_statistics_create(host_id=host_id)
-                    except Exception:
-                        pass
+            _cleanup(sftp_conn, db, host_id, err, file_was_transferred)
 
         runtime_sleep.random_jitter_sleep()
 
