@@ -13,12 +13,12 @@ reorganization, while newer entrypoints can import the context packages
 directly.
 """
 
-from appAnalise import task_flow
+from appAnalise import processing_bin
 from host_handler import host_connectivity, host_runtime
 from server_handler import signal_runtime, sleep, timeout_utils, worker_pool
 
 __all__ = [
-    "task_flow",
+    "processing_bin",
     "host_connectivity",
     "host_runtime",
     "signal_runtime",

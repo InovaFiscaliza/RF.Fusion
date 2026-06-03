@@ -54,15 +54,6 @@ ERMX_FAMILY_PREFIXES = ("ermx", "emrx")
 _FIXED_SITE_UPDATE_AGGREGATOR = None
 
 
-def _structured_error_fields_for_handler(err, *, message=None):
-    """Build explicit structured error fields for worker persistence."""
-    return errors.persisted_error_fields_from_handler(
-        err,
-        message=message,
-        clear_when_empty=True,
-    )
-
-
 def is_transient_filesystem_error(exc: Exception) -> bool:
     """
     Return whether a filesystem failure is worth retrying later.
@@ -206,36 +197,6 @@ def _build_repository_hostname_key(hostname: str) -> str:
     """
     normalized = NON_ALNUM_RE.sub("_", (hostname or "").strip().lower()).strip("_")
     return normalized or "unknown_host"
-
-
-def resolve_history_file_metadata(
-    file_was_processed,
-    file_meta,
-    server_name,
-    extension,
-    vl_file_size_kb,
-    dt_created,
-    dt_modified,
-):
-    """
-    Resolve which file metadata should be written to FILE_TASK_HISTORY.
-
-    History should describe the artifact that became canonical after the
-    attempt:
-        - success: the processed/exported artifact when one exists
-        - ordinary error: the original server payload that was attempted
-        - post-export semantic error: the exported artifact rejected by RF.Fusion
-    """
-    if file_was_processed and file_meta:
-        return build_history_metadata_from_file_meta(file_meta)
-
-    return {
-        "name": server_name,
-        "extension": extension,
-        "size_kb": vl_file_size_kb,
-        "dt_created": dt_created,
-        "dt_modified": dt_modified,
-    }
 
 
 def build_history_metadata_from_file_meta(file_meta):
@@ -701,86 +662,6 @@ def build_repository_destination_path(db_rfm, bin_data, hostname_db):
     )
 
 
-def return_task_to_pending(db_bp, file_task_id, err):
-    """
-    Requeue the current FILE_TASK to PENDING after a transient appAnalise failure.
-
-    This helper is intentionally retained but is NOT invoked by the current
-    worker policy: the worker now freezes transient failures for manual review
-    instead of automatically requeueing them.  The function is kept here so
-    future policy changes (e.g., automatic retry with a back-off counter) can
-    restore requeueing without having to reconstruct the correct DB update.
-    """
-    message = tools.compose_message(
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        task_status=k.TASK_PENDING,
-        detail="APP_ANALISE transient failure, task returned for retry",
-        error=err.format_persisted_error(),
-    )
-
-    db_bp.file_task_update(
-        task_id=file_task_id,
-        NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
-        NU_STATUS=k.TASK_PENDING,
-        DT_FILE_TASK=datetime.now(),
-        NA_MESSAGE=message,
-        **_structured_error_fields_for_handler(err, message=message),
-    )
-
-
-def freeze_task_for_manual_review(
-    db_bp,
-    *,
-    file_task_id,
-    host_id,
-    host_file_name,
-    host_path,
-    err,
-    detail,
-):
-    """
-    Freeze one PROCESS FILE_TASK and its processing history for manual review.
-
-    This helper keeps the live row and `FILE_TASK_HISTORY` aligned on
-    `TASK_FROZEN` while preserving the underlying artifact on disk.
-    """
-    message = tools.compose_message(
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        task_status=k.TASK_FROZEN,
-        detail=detail,
-        error=err.format_persisted_error(),
-    )
-
-    db_bp.begin_transaction()
-    try:
-        db_bp.file_task_update(
-            task_id=file_task_id,
-            NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
-            NU_STATUS=k.TASK_FROZEN,
-            NU_PID=None,
-            DT_FILE_TASK=datetime.now(),
-            NA_MESSAGE=message,
-            **_structured_error_fields_for_handler(err, message=message),
-        )
-
-        db_bp.file_history_update(
-            task_type=k.FILE_TASK_PROCESS_TYPE,
-            host_id=host_id,
-            host_file_path=host_path,
-            host_file_name=host_file_name,
-            NU_STATUS_PROCESSING=k.TASK_FROZEN,
-            NA_MESSAGE=message,
-            **_structured_error_fields_for_handler(err, message=message),
-        )
-
-        db_bp.commit()
-    except Exception:
-        db_bp.rollback()
-        raise
-
-    db_bp.host_task_statistics_create(host_id=host_id, log_if_active=False)
-
-
 def is_same_file(file_a, file_b):
     """
     Check whether two metadata dictionaries point to the same filesystem path.
@@ -874,11 +755,8 @@ def build_resolved_files_trash_path():
     )
 
 
-def finalize_successful_processing(
-    db_rfm,
-    spectrum_ids,
-    bin_data,
-    hostname_db,
+def promote_final_artifact(
+    new_path,
     file_meta,
     source_file_meta,
     export,
@@ -887,21 +765,16 @@ def finalize_successful_processing(
     logger=None,
 ):
     """
-    Move the final artifact, register it in RFDATA, and retire superseded input.
+    Move the canonical artifact into the repository folder and retire any
+    superseded source payload. Pure filesystem — no DB writes.
 
-    Success has two filesystem concerns:
-        1. promote the canonical artifact into the repository tree
-        2. retire any superseded source payload when export created a new file
+    Caller is responsible for:
+      - computing ``new_path`` via ``build_repository_destination_path``
+      - registering the moved file in RFDATA (``db_rfm.insert_file`` +
+        ``db_rfm.insert_bridge_spectrum_file``) after this call returns.
+
+    Returns updated ``file_meta`` for the file in its final location.
     """
-    # Repository placement stays site-based when the processed payload maps to
-    # one locality only. Multi-site payloads move into a neutral appAnalise
-    # bucket so the archive does not pretend the whole file belongs to a
-    # single arbitrary site.
-    new_path = build_repository_destination_path(
-        db_rfm=db_rfm,
-        bin_data=bin_data,
-        hostname_db=hostname_db,
-    )
     final_file_meta = move_file_if_present(
         file_meta,
         new_path,
@@ -914,26 +787,10 @@ def finalize_successful_processing(
             f"Final output file unavailable: {file_meta}"
         )
 
-    server_file_id = db_rfm.insert_file(
-        hostname=hostname_db,
-        NA_VOLUME=k.REPO_VOLUME_NAME,
-        NA_PATH=new_path,
-        NA_FILE=final_file_meta["file_name"],
-        NA_EXTENSION=final_file_meta["extension"],
-        VL_FILE_SIZE_KB=final_file_meta["size_kb"],
-        DT_FILE_CREATED=final_file_meta["dt_created"],
-        DT_FILE_MODIFIED=final_file_meta["dt_modified"],
-        log_success=False,
-    )
-
-    db_rfm.insert_bridge_spectrum_file(spectrum_ids, [server_file_id])
-
     if export and not is_same_file(source_file_meta, final_file_meta):
         # Export mode can produce a new canonical artifact (`.mat`) while the
-        # original source payload remains on disk. Once the server file is
-        # registered, the source payload becomes only an operator-inspection
-        # artifact and is moved out of the live inbox. Refresh its mtime so
-        # `trash/resolved_files` retention starts when it entered quarantine.
+        # original source payload remains on disk. Retire the source to
+        # quarantine; refresh its mtime so retention starts from now.
         move_file_if_present(
             source_file_meta,
             build_resolved_files_trash_path(),
@@ -950,256 +807,85 @@ def finalize_successful_processing(
             final_file=final_file_meta["full_path"],
         )
 
-    return new_path, final_file_meta
+    return final_file_meta
 
 
-def finalize_task_resolution(
-    db_bp,
-    *,
-    file_task_id,
-    host_id,
-    host_file_name,
-    host_path,
-    server_name,
-    extension,
-    vl_file_size_kb,
-    dt_created,
-    dt_modified,
-    file_was_processed,
-    new_path,
+def quarantine_error_artifact(
     file_meta,
     source_file_meta,
     export,
-    err,
+    *,
     logger=None,
 ):
     """
-    Apply the final FILE_TASK resolution once retry is no longer an option.
+    Move error artifacts to quarantine. Pure filesystem — no DB writes.
 
-    This is the single exit point for the worker lifecycle: the live FILE_TASK
-    is retired, the history row is updated, and on-disk artifacts are moved
-    into their canonical success or trash locations.
+    Returns ``(server_path, history_meta_override)``:
 
-    Success and fatal error share this helper so queue state,
-    FILE_TASK_HISTORY, and filesystem cleanup cannot drift apart.
+    * ``server_path``: directory where the canonical error artifact landed, or
+      the original source location when nothing was moved (for history linkage).
+    * ``history_meta_override``: file metadata dict when the export becomes the
+      error artifact (distinct name/size from source); ``None`` otherwise.
 
-    Artifact decision tree
-    ----------------------
-    Success (`file_was_processed=True`):
-        Filesystem has already been finalized by `finalize_successful_processing()`.
-        This function only closes the DB queue row.
-
-    Fatal error, no export artifact (`export=False` or `file_meta == source_file_meta`):
-        source_file_meta  →  trash/           (error artifact for operator review)
-
-    Fatal error after stable export artifact exists (`export=True`, distinct file_meta):
-        appAnalise already materialized a `.mat` file and RF.Fusion later rejected it.
-        In that case the export is the error artifact, not the original source:
-            source_file_meta  →  trash/resolved_files/  (resolved input, quarantined)
-            file_meta         →  trash/                  (error artifact for review)
-        If the export disappeared before finalization:
-            source_file_meta  →  trash/                  (fallback error artifact)
-
-    DB atomicity contract:
-        The history update and FILE_TASK delete are wrapped in a single BKP
-        transaction.  If either fails, the transaction rolls back so the live
-        queue row remains recoverable — the worker loop will eventually retry
-        or the stale-task sweep will catch it.
-
-    Args:
-        file_was_processed (bool): True only when spectra were fully persisted
-            and `finalize_successful_processing()` already moved the file.
-        new_path (str | None): Canonical output directory set by the success
-            path.  None on the error path; this function resolves it from trash.
-        file_meta (dict | None): Worker-side metadata for the output artifact
-            (may differ from `source_file_meta` when export produced a new file).
-        source_file_meta (dict | None): Metadata for the original server payload.
-        export (bool | None): Whether appAnalise was asked to produce a `.mat`
-            export for this file.
-
-    Returns:
-        dict with keys:
-            status       — TASK_DONE or TASK_ERROR
-            new_path     — final directory written to FILE_TASK_HISTORY
-            history_meta — name/extension/size/timestamps of the canonical artifact
-            final_file   — absolute path of the canonical artifact, or None
+    Per INSTRUCTIONS §1.9 the filesystem half is separated from the DB half so
+    callers can keep the two concerns apart.
     """
-    history_meta_override = None
-    history_server_path = new_path
+    if not source_file_meta:
+        return None, None
 
-    if not file_was_processed and new_path is None:
-        trash_path = f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}"
-        resolved_trash_path = build_resolved_files_trash_path()
-        distinct_export_artifact = (
-            export
-            and file_meta
-            and not is_same_file(file_meta, source_file_meta)
+    trash_path = f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}"
+    resolved_trash_path = build_resolved_files_trash_path()
+    history_meta_override = None
+    server_path = None
+
+    distinct_export = export and file_meta and not is_same_file(file_meta, source_file_meta)
+
+    if distinct_export:
+        # appAnalise produced a stable `.mat` export before RF.Fusion rejected
+        # the payload.  Treat the source as a resolved input and the export as
+        # the operator-facing error artifact.
+        resolved_source_meta = move_file_if_present(
+            source_file_meta,
+            resolved_trash_path,
+            refresh_mtime=True,
+            move_kind="quarantine_source",
+            logger=logger,
+        )
+        trashed_export_meta = move_file_if_present(
+            file_meta,
+            trash_path,
+            move_kind="quarantine_error_export",
+            logger=logger,
         )
 
-        if distinct_export_artifact:
-            # If appAnalise already produced a stable exported artifact, then
-            # RF.Fusion's later semantic rejection is about that derived file,
-            # not about the original source payload. Preserve the source as a
-            # resolved input and treat the export as the error artifact.
-            resolved_source_meta = move_file_if_present(
-                source_file_meta,
-                resolved_trash_path,
-                refresh_mtime=True,
-                move_kind="quarantine_source",
-                logger=logger,
-            )
-            trashed_export_meta = move_file_if_present(
-                file_meta,
-                trash_path,
-                move_kind="quarantine_error_export",
-                logger=logger,
-            )
-
-            if trashed_export_meta:
-                new_path = trashed_export_meta["file_path"]
-                history_server_path = trashed_export_meta["file_path"]
-                history_meta_override = build_history_metadata_from_file_meta(
-                    trashed_export_meta
-                )
-            else:
-                # If the export unexpectedly disappeared before finalization,
-                # fall back to the original payload as the operator-facing
-                # error artifact instead of leaving history without a file.
-                fallback_source_meta = resolved_source_meta or source_file_meta
-                trashed_source_meta = move_file_if_present(
-                    fallback_source_meta,
-                    trash_path,
-                    move_kind="quarantine_error_source",
-                    logger=logger,
-                )
-                if trashed_source_meta:
-                    new_path = trashed_source_meta["file_path"]
-                    history_server_path = trashed_source_meta["file_path"]
+        if trashed_export_meta:
+            server_path = trashed_export_meta["file_path"]
+            history_meta_override = build_history_metadata_from_file_meta(trashed_export_meta)
         else:
-            # Fatal processing failures without a stable exported artifact keep
-            # the original payload as the error artifact for operator review.
+            # Export disappeared before finalization — fall back to the source.
+            fallback = resolved_source_meta or source_file_meta
             trashed_source_meta = move_file_if_present(
-                source_file_meta,
+                fallback,
                 trash_path,
                 move_kind="quarantine_error_source",
                 logger=logger,
             )
-
             if trashed_source_meta:
-                new_path = trashed_source_meta["file_path"]
-                history_server_path = trashed_source_meta["file_path"]
-
-    status = k.TASK_DONE if file_was_processed else k.TASK_ERROR
-
-    history_meta = history_meta_override or resolve_history_file_metadata(
-        file_was_processed=file_was_processed,
-        file_meta=file_meta,
-        server_name=server_name,
-        extension=extension,
-        vl_file_size_kb=vl_file_size_kb,
-        dt_created=dt_created,
-        dt_modified=dt_modified,
-    )
-
-    if (
-        not file_was_processed
-        and history_server_path is None
-        and source_file_meta
-    ):
-        # If resolution failed before we managed to move anything, history
-        # should still point to the original server payload location so the
-        # operator can find the artifact referenced by the error row.
-        history_server_path = source_file_meta["file_path"]
-
-    # The history message is the durable operator-facing explanation of what
-    # happened in this processing attempt, so success and error both converge
-    # into one composed message here.
-    na_message = tools.compose_message(
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        task_status=status,
-        path=new_path if file_was_processed else None,
-        name=history_meta["name"] if file_was_processed else None,
-        error=err.format_persisted_error() if err.triggered else None,
-    )
-    processed_at = datetime.now()
-    structured_error_fields = _structured_error_fields_for_handler(
-        err if err.triggered else None,
-        message=na_message,
-    )
-
-    # Closing processing must be atomic on BPDATA. If history cannot be
-    # finalized, the live queue row must remain recoverable; if deletion
-    # fails, the history update must roll back so the task does not vanish
-    # from FILE_TASK while staying pending in FILE_TASK_HISTORY.
-    db_bp.begin_transaction()
-    try:
-        history_result = db_bp.file_history_update(
-            host_id=host_id,
-            task_type=k.FILE_TASK_PROCESS_TYPE,
-            host_file_name=host_file_name,
-            host_file_path=host_path,
-            DT_PROCESSED=processed_at,
-            NA_SERVER_FILE_NAME=history_meta["name"],
-            NA_SERVER_FILE_PATH=history_server_path,
-            NA_EXTENSION=history_meta["extension"],
-            VL_FILE_SIZE_KB=history_meta["size_kb"],
-            DT_FILE_CREATED=history_meta["dt_created"],
-            DT_FILE_MODIFIED=history_meta["dt_modified"],
-            NU_STATUS_PROCESSING=status,
-            NA_MESSAGE=na_message,
-            **structured_error_fields,
+                server_path = trashed_source_meta["file_path"]
+    else:
+        trashed_source_meta = move_file_if_present(
+            source_file_meta,
+            trash_path,
+            move_kind="quarantine_error_source",
+            logger=logger,
         )
+        if trashed_source_meta:
+            server_path = trashed_source_meta["file_path"]
 
-        if history_result.get("rows_affected") != 1:
-            raise RuntimeError(
-                "FILE_TASK_HISTORY finalization affected "
-                f"{history_result.get('rows_affected')} rows "
-                f"(expected 1 for host={host_id}, path={host_path}, "
-                f"name={host_file_name})"
-            )
+    # If nothing could be moved, fall back to the original location so history
+    # still points to an artifact the operator can locate.
+    if server_path is None:
+        server_path = source_file_meta.get("file_path")
 
-        deleted_rows = db_bp.file_task_delete(task_id=file_task_id)
-        if deleted_rows != 1:
-            raise RuntimeError(
-                f"FILE_TASK delete affected {deleted_rows} rows "
-                f"(expected 1 for task_id={file_task_id})"
-            )
+    return server_path, history_meta_override
 
-        db_bp.commit()
-    except Exception:
-        db_bp.rollback()
-        raise
-
-    # Statistics are updated after history so host-level counters see the same
-    # finalized state that the operator would read from FILE_TASK_HISTORY.
-    db_bp.host_task_statistics_create(host_id=host_id, log_if_active=False)
-
-    # Resolve the durable ID_HISTORY for the caller (used by error-list writers).
-    # Best-effort: a lookup failure must not disrupt the finalization result.
-    id_file_history = None
-    try:
-        history_rows = db_bp._select_rows(
-            table="FILE_TASK_HISTORY",
-            where={
-                "FK_HOST": host_id,
-                "NA_HOST_FILE_PATH": host_path,
-                "NA_HOST_FILE_NAME": host_file_name,
-            },
-            cols=["ID_HISTORY"],
-            limit=1,
-        )
-        if history_rows:
-            id_file_history = history_rows[0].get("ID_HISTORY")
-    except Exception:
-        pass
-
-    return {
-        "status": status,
-        "new_path": history_server_path,
-        "history_meta": history_meta,
-        "id_file_history": id_file_history,
-        "final_file": (
-            os.path.join(history_server_path, history_meta["name"])
-            if history_server_path else None
-        ),
-    }

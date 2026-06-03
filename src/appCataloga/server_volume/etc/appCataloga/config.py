@@ -222,6 +222,9 @@ STAGE_BACKLOG       = "BACKLOG"
 STAGE_TRANSFER      = "TRANSFER"
 STAGE_PROCESS       = "PROCESS"
 STAGE_CONNECTIVITY  = "CONNECTIVITY"
+STAGE_SITE          = "SITE"
+STAGE_DB            = "DB"
+STAGE_FS            = "FS"
 
 # Connectivity probe state identifiers — used in match/case and comparisons
 HOST_CONN_ONLINE     = "online"

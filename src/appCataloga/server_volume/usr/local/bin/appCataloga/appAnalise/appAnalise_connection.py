@@ -44,6 +44,104 @@ if CONFIG_PATH not in sys.path:
 import config as k  # noqa
 
 
+class _OutageTracker:
+    """
+    Throttle repeated preflight warning logs during an appAnalise outage.
+
+    The first failure is logged immediately. Repeated identical failures
+    are suppressed until the configured interval elapses or the error
+    text changes. Recovery is logged once with an outage summary.
+    """
+
+    def __init__(self, log_interval_sec: int) -> None:
+        self._interval = log_interval_sec
+        self._down = False
+        self._current_error: str | None = None
+        self._first_failure: float | None = None
+        self._last_warning: float | None = None
+        self._suppressed_since: int = 0
+        self._suppressed_total: int = 0
+
+    def _get_monotonic(self) -> float:
+        """Return current monotonic time. Isolated so tests can patch it."""
+        return time.monotonic()
+
+    def _outage_sec(self, now: float) -> int:
+        return int(max(0.0, now - float(self._first_failure or now)))
+
+    def reset(self) -> None:
+        """Reset all state as if no outage was ever recorded."""
+        self._down = False
+        self._current_error = None
+        self._first_failure = None
+        self._last_warning = None
+        self._suppressed_since = 0
+        self._suppressed_total = 0
+
+    def record_failure(self, error_text: str, logger) -> None:
+        """Log the failure, throttling repeated identical messages."""
+        now = self._get_monotonic()
+
+        if not self._down:
+            self._down = True
+            self._current_error = error_text
+            self._first_failure = now
+            self._last_warning = now
+            self._suppressed_since = 0
+            self._suppressed_total = 0
+            logger.warning_event("appanalise_unavailable_retry", error=error_text)
+            return
+
+        if self._current_error != error_text:
+            # Error text changed — log immediately to show the new failure.
+            logger.warning_event(
+                "appanalise_unavailable_retry",
+                error=error_text,
+                previous_error=self._current_error,
+                outage_sec=self._outage_sec(now),
+                suppressed_retries=self._suppressed_since,
+                suppressed_retries_total=self._suppressed_total,
+            )
+            self._current_error = error_text
+            self._last_warning = now
+            self._suppressed_since = 0
+            return
+
+        if (
+            self._last_warning is not None
+            and now - float(self._last_warning) < self._interval
+        ):
+            self._suppressed_since += 1
+            self._suppressed_total += 1
+            return
+
+        # Interval elapsed — emit a "still down" summary.
+        logger.warning_event(
+            "appanalise_unavailable_still_down",
+            error=error_text,
+            outage_sec=self._outage_sec(now),
+            suppressed_retries=self._suppressed_since,
+            suppressed_retries_total=self._suppressed_total,
+        )
+        self._last_warning = now
+        self._suppressed_since = 0
+
+    def record_recovery(self, logger) -> None:
+        """Emit one recovery event and reset state. No-op if not tracking an outage."""
+        if not self._down:
+            return
+
+        now = self._get_monotonic()
+        logger.event(
+            "appanalise_recovered",
+            outage_sec=self._outage_sec(now),
+            previous_error=self._current_error,
+            suppressed_retries=self._suppressed_since,
+            suppressed_retries_total=self._suppressed_total,
+        )
+        self.reset()
+
+
 class AppAnaliseConnection:
     """
     Transport adapter for the external `appAnalise` service.
@@ -77,6 +175,9 @@ class AppAnaliseConnection:
         self.last_payload: Optional[Dict[str, Any]] = None
         self.last_answer: Optional[Dict[str, Any]] = None
         self.last_output_meta: Optional[Dict[str, Any]] = None
+        self._outage_tracker = _OutageTracker(
+            log_interval_sec=int(getattr(k, "APP_ANALISE_PREFLIGHT_LOG_INTERVAL_SEC", 300))
+        )
 
     def _reset_last_result(self) -> None:
         """
@@ -173,6 +274,21 @@ class AppAnaliseConnection:
             sock.close()
         except Exception:
             pass
+
+    def check_connection_with_log(self, logger) -> bool:
+        """
+        Preflight check with throttled outage logging.
+
+        Returns True when appAnalise is reachable. Returns False and emits a
+        throttled warning when the service is unavailable. Never raises.
+        """
+        try:
+            self.check_connection()
+            self._outage_tracker.record_recovery(logger)
+            return True
+        except errors.ExternalServiceTransientError as e:
+            self._outage_tracker.record_failure(str(e), logger)
+            return False
 
     def check_connection(self) -> bool:
         """

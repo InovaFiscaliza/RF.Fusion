@@ -1,5 +1,5 @@
 """
-Validation tests for `appCataloga_file_bin_proces_appAnalise.py`.
+Validation tests for `appCataloga_file_bin_process_appAnalise.py`.
 
 How to run:
     /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/workers/test_appanalise_worker.py -q
@@ -44,9 +44,9 @@ with bind_real_shared_package():
         with bind_real_package("appAnalise", APPANALISE_ROOT):
             worker = load_module_from_path(
                 "test_appanalise_worker_module",
-                str(APP_ROOT / "appCataloga_file_bin_proces_appAnalise.py"),
+                str(APP_ROOT / "appCataloga_file_bin_process_appAnalise.py"),
             )
-            processing = worker.task_flow
+            processing = worker.processing
 
 
 class FakeWorkerLog:
@@ -72,8 +72,16 @@ class FakeWorkerLog:
     def error_event(self, event: str, **fields) -> None:
         self.errors.append((event, fields))
 
+    def warning_event(self, event: str, **fields) -> None:
+        parts = [f"event={event}"]
+        parts.extend(f"{k}={v}" for k, v in fields.items() if v is not None)
+        self.warnings.append(" ".join(parts))
+
     def service_start(self, service: str) -> None:
         self.entries.append(("service_start", service))
+
+    def service_stop(self, service: str) -> None:
+        self.entries.append(("service_stop", service))
 
 
 class FakeDbBkp:
@@ -716,9 +724,9 @@ class SpectrumInsertTests(unittest.TestCase):
 
 
 class FileMetadataTests(unittest.TestCase):
-    """Validate which artifact FILE_TASK_HISTORY should point to."""
+    """Validate file metadata helpers in processing module."""
 
-    def test_resolve_history_file_metadata_prefers_processed_artifact(self) -> None:
+    def test_build_history_metadata_from_file_meta_returns_canonical_fields(self) -> None:
         created = datetime(2026, 3, 16, 12, 0, 0)
         file_meta = {
             "file_name": "sample_DONE.mat",
@@ -728,36 +736,27 @@ class FileMetadataTests(unittest.TestCase):
             "dt_modified": created,
         }
 
-        history = processing.resolve_history_file_metadata(
-            file_was_processed=True,
-            file_meta=file_meta,
-            server_name="sample_DONE.zip",
-            extension=".zip",
-            vl_file_size_kb=10,
-            dt_created=created,
-            dt_modified=created,
-        )
+        history = processing.build_history_metadata_from_file_meta(file_meta)
 
         self.assertEqual(history["name"], "sample_DONE.mat")
         self.assertEqual(history["extension"], ".mat")
         self.assertEqual(history["size_kb"], 42)
 
-    def test_resolve_history_file_metadata_falls_back_to_original_file(self) -> None:
+    def test_build_history_metadata_from_file_meta_preserves_timestamps(self) -> None:
         created = datetime(2026, 3, 16, 12, 0, 0)
+        modified = datetime(2026, 3, 17, 8, 0, 0)
+        file_meta = {
+            "file_name": "out.mat",
+            "extension": ".mat",
+            "size_kb": 10,
+            "dt_created": created,
+            "dt_modified": modified,
+        }
 
-        history = processing.resolve_history_file_metadata(
-            file_was_processed=False,
-            file_meta=None,
-            server_name="sample_DONE.zip",
-            extension=".zip",
-            vl_file_size_kb=10,
-            dt_created=created,
-            dt_modified=created,
-        )
+        history = processing.build_history_metadata_from_file_meta(file_meta)
 
-        self.assertEqual(history["name"], "sample_DONE.zip")
-        self.assertEqual(history["extension"], ".zip")
-        self.assertEqual(history["size_kb"], 10)
+        self.assertEqual(history["dt_created"], created)
+        self.assertEqual(history["dt_modified"], modified)
 
     def test_is_same_file_normalizes_equivalent_paths(self) -> None:
         file_a = {"full_path": "/mnt/reposfi/tmp/../tmp/file.zip"}
@@ -950,33 +949,38 @@ class RetryTests(unittest.TestCase):
     """Validate retry-only paths that must preserve the claimed FILE_TASK row."""
 
     def setUp(self) -> None:
-        worker._reset_preflight_log_state()
+        self.app = worker.AppAnaliseConnection()
+        self.app._outage_tracker.reset()
 
     def test_preflight_app_analise_connection_returns_false_without_claiming_task(self) -> None:
-        class FakeApp:
-            def check_connection(self) -> None:
-                raise worker.errors.ExternalServiceTransientError("service down")
-
         fake_log = FakeWorkerLog()
 
-        with patch.object(worker, "log", fake_log):
-            self.assertFalse(worker.preflight_app_analise_connection(FakeApp()))
+        with patch.object(
+            self.app,
+            "check_connection",
+            side_effect=worker.errors.ExternalServiceTransientError("service down"),
+        ):
+            self.assertFalse(self.app.check_connection_with_log(fake_log))
 
         self.assertEqual(len(fake_log.warnings), 1)
         self.assertIn("appanalise_unavailable_retry", fake_log.warnings[0])
 
     def test_preflight_app_analise_connection_throttles_repeated_identical_outage_logs(self) -> None:
-        class FakeApp:
-            def check_connection(self) -> None:
-                raise worker.errors.ExternalServiceTransientError("Connection refused")
-
         fake_log = FakeWorkerLog()
 
-        with patch.object(worker, "log", fake_log):
-            with patch.object(worker.time, "monotonic", side_effect=[100.0, 110.0, 401.0]):
-                self.assertFalse(worker.preflight_app_analise_connection(FakeApp()))
-                self.assertFalse(worker.preflight_app_analise_connection(FakeApp()))
-                self.assertFalse(worker.preflight_app_analise_connection(FakeApp()))
+        with patch.object(
+            self.app,
+            "check_connection",
+            side_effect=worker.errors.ExternalServiceTransientError("Connection refused"),
+        ):
+            with patch.object(
+                self.app._outage_tracker,
+                "_get_monotonic",
+                side_effect=[100.0, 110.0, 401.0],
+            ):
+                self.assertFalse(self.app.check_connection_with_log(fake_log))
+                self.assertFalse(self.app.check_connection_with_log(fake_log))
+                self.assertFalse(self.app.check_connection_with_log(fake_log))
 
         self.assertEqual(len(fake_log.warnings), 2)
         self.assertIn("appanalise_unavailable_retry", fake_log.warnings[0])
@@ -985,23 +989,22 @@ class RetryTests(unittest.TestCase):
         self.assertIn("suppressed_retries=1", fake_log.warnings[1])
 
     def test_preflight_app_analise_connection_logs_recovery_after_suppressed_failures(self) -> None:
-        class FlakyApp:
-            def __init__(self) -> None:
-                self.calls = 0
-
-            def check_connection(self) -> None:
-                self.calls += 1
-                if self.calls < 3:
-                    raise worker.errors.ExternalServiceTransientError("Connection refused")
-
         fake_log = FakeWorkerLog()
-        app = FlakyApp()
+        side_effects = [
+            worker.errors.ExternalServiceTransientError("Connection refused"),
+            worker.errors.ExternalServiceTransientError("Connection refused"),
+            None,
+        ]
 
-        with patch.object(worker, "log", fake_log):
-            with patch.object(worker.time, "monotonic", side_effect=[200.0, 210.0, 260.0]):
-                self.assertFalse(worker.preflight_app_analise_connection(app))
-                self.assertFalse(worker.preflight_app_analise_connection(app))
-                self.assertTrue(worker.preflight_app_analise_connection(app))
+        with patch.object(self.app, "check_connection", side_effect=side_effects):
+            with patch.object(
+                self.app._outage_tracker,
+                "_get_monotonic",
+                side_effect=[200.0, 210.0, 260.0],
+            ):
+                self.assertFalse(self.app.check_connection_with_log(fake_log))
+                self.assertFalse(self.app.check_connection_with_log(fake_log))
+                self.assertTrue(self.app.check_connection_with_log(fake_log))
 
         self.assertEqual(len(fake_log.warnings), 1)
         self.assertIn("appanalise_unavailable_retry", fake_log.warnings[0])
@@ -1010,61 +1013,19 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(fake_log.entries[0][1]["previous_error"], "Connection refused")
         self.assertEqual(fake_log.entries[0][1]["suppressed_retries_total"], 1)
 
-    def test_return_task_to_pending_requeues_with_standard_message(self) -> None:
-        class FakeDb:
-            def __init__(self) -> None:
-                self.calls = []
-
-            def file_task_update(self, **kwargs) -> None:
-                self.calls.append(kwargs)
-
-        class FakeErr:
-            def format_error(self) -> str:
-                return "[ERROR] timeout"
-
-            def format_persisted_error(self) -> str:
-                return "[ERROR] timeout"
-
-        db = FakeDb()
-
-        processing.return_task_to_pending(db, file_task_id=321, err=FakeErr())
-
-        self.assertEqual(len(db.calls), 1)
-        payload = db.calls[0]
-        self.assertEqual(payload["task_id"], 321)
-        self.assertEqual(payload["NU_STATUS"], worker.k.TASK_PENDING)
-        self.assertNotIn("NU_PID", payload)
-        self.assertIn("Processing Pending", payload["NA_MESSAGE"])
-        self.assertIn("task returned for retry", payload["NA_MESSAGE"])
-        self.assertIn("[ERROR] timeout", payload["NA_MESSAGE"])
-
-    def test_return_task_to_pending_retries_without_deleting_history(self) -> None:
+    def test_finalize_freeze_freezes_timeout_row_and_history(self) -> None:
         db = FakeDbBkp()
-        processing.return_task_to_pending(
-            db,
-            file_task_id=321,
-            err=FakeErr("[ERROR] timeout", triggered=True),
-        )
+        task = {
+            "file_task_id": 321,
+            "host_id": 77,
+            "host_file_name": "sample.bin",
+            "host_path": "/host/path",
+            "filename": "sample.bin",
+        }
+        err = FakeErr("[ERROR] timeout", triggered=True)
+        err.exc = worker.errors.AppAnaliseReadTimeoutError("timeout")
 
-        self.assertEqual(len(db.task_updates), 1)
-        self.assertEqual(len(db.task_deletes), 0)
-        self.assertEqual(len(db.history_updates), 0)
-        self.assertEqual(len(db.statistics_updates), 0)
-        self.assertEqual(db.task_updates[0]["NU_STATUS"], worker.k.TASK_PENDING)
-        self.assertIn("task returned for retry", db.task_updates[0]["NA_MESSAGE"])
-
-    def test_freeze_task_for_manual_review_freezes_timeout_row_and_history(self) -> None:
-        db = FakeDbBkp()
-
-        processing.freeze_task_for_manual_review(
-            db,
-            file_task_id=321,
-            host_id=77,
-            host_file_name="sample.bin",
-            host_path="/host/path",
-            err=FakeErr("[ERROR] timeout", triggered=True),
-            detail="APP_ANALISE read timeout, task frozen for manual review",
-        )
+        worker._finalize_freeze(db, task, err)
 
         self.assertEqual(len(db.task_updates), 1)
         self.assertEqual(db.task_updates[0]["NU_STATUS"], worker.k.TASK_FROZEN)
@@ -1082,18 +1043,19 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(len(db.task_deletes), 0)
         self.assertEqual(len(db.statistics_updates), 1)
 
-    def test_freeze_task_for_manual_review_freezes_file_unavailable_row_and_history(self) -> None:
+    def test_finalize_freeze_freezes_file_unavailable_row_and_history(self) -> None:
         db = FakeDbBkp()
+        task = {
+            "file_task_id": 654,
+            "host_id": 88,
+            "host_file_name": "sample.bin",
+            "host_path": "/host/path",
+            "filename": "sample.bin",
+        }
+        err = FakeErr("[ERROR] file unavailable", triggered=True)
+        err.exc = worker.errors.AppAnaliseFileUnavailableError("file unavailable")
 
-        processing.freeze_task_for_manual_review(
-            db,
-            file_task_id=654,
-            host_id=88,
-            host_file_name="sample.bin",
-            host_path="/host/path",
-            err=FakeErr("[ERROR] file unavailable", triggered=True),
-            detail="APP_ANALISE file unavailable, task frozen for manual review",
-        )
+        worker._finalize_freeze(db, task, err)
 
         self.assertEqual(len(db.task_updates), 1)
         self.assertEqual(db.task_updates[0]["NU_STATUS"], worker.k.TASK_FROZEN)
@@ -1136,7 +1098,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             def __init__(self, *args, **kwargs) -> None:
                 self.in_transaction = False
 
-        class FakeApp:
+        class FakeApp(worker.AppAnaliseConnection):
             def check_connection(self) -> None:
                 worker.process_status["running"] = False
                 raise worker.errors.ExternalServiceTransientError("service down")
@@ -1203,7 +1165,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             def __init__(self, *args, **kwargs) -> None:
                 self.in_transaction = False
 
-        class FakeApp:
+        class FakeApp(worker.AppAnaliseConnection):
             def check_connection(self) -> None:
                 return None
 
@@ -1280,9 +1242,9 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 def __init__(self, *args, **kwargs) -> None:
                     self.in_transaction = False
 
-            class FakeApp:
+            class FakeApp(worker.AppAnaliseConnection):
                 def __init__(self) -> None:
-                    self.last_output_meta = None
+                    super().__init__()
 
                 def check_connection(self) -> None:
                     return None
@@ -1369,6 +1331,9 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 self.rollback_calls = 0
                 FakeDbRfmMain.last_instance = self
 
+            def build_path(self, site_id: int) -> str:
+                return f"site_{site_id}/catalog"
+
             def begin_transaction(self) -> None:
                 self.in_transaction = True
 
@@ -1380,7 +1345,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 self.rollback_calls += 1
                 self.in_transaction = False
 
-        class FakeApp:
+        class FakeApp(worker.AppAnaliseConnection):
             def check_connection(self) -> None:
                 return None
 
@@ -1421,18 +1386,18 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 with patch.object(worker, "dbHandlerRFM", FakeDbRfmMain):
                     with patch.object(worker, "AppAnaliseConnection", FakeApp):
                         with patch.object(
-                            worker.task_flow,
+                            worker.processing,
                             "resolve_spectrum_sites",
                             return_value=[219],
                         ):
                             with patch.object(
-                                worker.task_flow,
+                                worker.processing,
                                 "insert_spectra_batch",
                                 return_value=[9001],
                             ):
                                 with patch.object(
-                                    worker.task_flow,
-                                    "finalize_successful_processing",
+                                    worker.processing,
+                                    "promote_final_artifact",
                                     side_effect=OSError(
                                         errno.EBUSY,
                                         "Device or resource busy",
@@ -1469,7 +1434,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         self.assertTrue(
             any(
                 isinstance(item, tuple) and item[0] == "processing_frozen"
-                for item in fake_log.entries
+                for item in fake_log.errors
             )
         )
 
@@ -1510,7 +1475,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             def __init__(self, *args, **kwargs) -> None:
                 self.in_transaction = False
 
-        class FakeApp:
+        class FakeApp(worker.AppAnaliseConnection):
             def check_connection(self) -> None:
                 return None
 
@@ -1554,7 +1519,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         self.assertTrue(
             any(
                 isinstance(item, tuple) and item[0] == "processing_frozen"
-                for item in fake_log.entries
+                for item in fake_log.errors
             )
         )
 
@@ -1575,46 +1540,67 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             db_bp = FakeDbBkp()
             fake_log = FakeWorkerLog()
 
+            bin_data = {
+                "spectrum": [
+                    SimpleNamespace(
+                        start_dateidx=datetime(2026, 1, 31, 20, 18, 51),
+                        site_id=5,
+                    )
+                ]
+            }
+            hostname_db = "CWSM21100001"
+            spectrum_ids = [10, 11]
+
             with patch.object(worker.k, "REPO_FOLDER", str(repo_root)):
                 with patch.object(worker.k, "TRASH_FOLDER", "trash"):
                     with patch.object(worker, "log", fake_log):
-                        new_path, final_meta = processing.finalize_successful_processing(
+                        # Step 1: resolve destination path (DB read, no write)
+                        new_path = processing.build_repository_destination_path(
                             db_rfm=db_rfm,
-                            spectrum_ids=[10, 11],
-                            bin_data={
-                                "spectrum": [
-                                    SimpleNamespace(
-                                        start_dateidx=datetime(2026, 1, 31, 20, 18, 51),
-                                        site_id=5,
-                                    )
-                                ]
-                            },
-                            hostname_db="CWSM21100001",
+                            bin_data=bin_data,
+                            hostname_db=hostname_db,
+                        )
+                        # Step 2: pure filesystem — move artifact, retire source
+                        final_meta = processing.promote_final_artifact(
+                            new_path=new_path,
                             file_meta=exported_meta,
                             source_file_meta=source_meta,
                             export=True,
                             filename=str(source_file),
                             logger=fake_log,
                         )
-
-                        result = processing.finalize_task_resolution(
-                            db_bp,
-                            file_task_id=99,
-                            host_id=7,
-                            host_file_name="host_sample.zip",
-                            host_path="/host/path",
-                            server_name=source_file.name,
-                            extension=".zip",
-                            vl_file_size_kb=source_meta["size_kb"],
-                            dt_created=source_meta["dt_created"],
-                            dt_modified=source_meta["dt_modified"],
-                            file_was_processed=True,
-                            new_path=new_path,
-                            file_meta=final_meta,
-                            source_file_meta=source_meta,
-                            export=True,
-                            err=FakeErr(),
+                        # Step 3: register the moved artifact in RFDATA
+                        server_file_id = db_rfm.insert_file(
+                            hostname=hostname_db,
+                            NA_VOLUME=worker.k.REPO_VOLUME_NAME,
+                            NA_PATH=new_path,
+                            NA_FILE=final_meta["file_name"],
+                            NA_EXTENSION=final_meta["extension"],
+                            VL_FILE_SIZE_KB=final_meta["size_kb"],
+                            DT_FILE_CREATED=final_meta["dt_created"],
+                            DT_FILE_MODIFIED=final_meta["dt_modified"],
+                            log_success=False,
                         )
+                        db_rfm.insert_bridge_spectrum_file(spectrum_ids, [server_file_id])
+
+                        # Step 4: close queue row as DONE in BKP
+                        task = {
+                            "file_task_id": 99,
+                            "host_id": 7,
+                            "host_file_name": "host_sample.zip",
+                            "host_path": "/host/path",
+                            "filename": "host_sample.zip",
+                        }
+                        result_data = {
+                            "file_meta": final_meta,
+                            "new_path": new_path,
+                            "started_at": 0.0,
+                            "phase_durations": {},
+                            "bin_data": bin_data,
+                            "resolved_site_ids": None,
+                            "spectrum_ids": None,
+                        }
+                        worker._finalize_success(db_bp, task, result_data)
 
             final_file = Path(final_meta["full_path"])
             resolved_source = repo_root / "trash" / "resolved_files" / source_file.name
@@ -1631,7 +1617,6 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             self.assertFalse(source_file.exists())
             self.assertFalse(exported_file.exists())
 
-            self.assertEqual(result["status"], worker.k.TASK_DONE)
             self.assertEqual(len(db_rfm.insert_file_calls), 1)
             self.assertEqual(db_rfm.insert_file_calls[0]["NA_FILE"], "sample_DONE.mat")
             self.assertFalse(db_rfm.insert_file_calls[0]["log_success"])
@@ -1655,7 +1640,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 )
             )
 
-    def test_finalize_successful_processing_uses_neutral_path_for_multi_site_payload(self) -> None:
+    def test_promote_artifact_uses_neutral_path_for_multi_site_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir) / "reposfi"
             source_dir = repo_root / "incoming"
@@ -1667,23 +1652,27 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             exported_meta = build_test_file_meta(exported_file)
             db_rfm = FakeDbRfm()
 
+            bin_data = {
+                "spectrum": [
+                    SimpleNamespace(
+                        start_dateidx=datetime(2026, 1, 31, 20, 18, 51),
+                        site_id=5,
+                    ),
+                    SimpleNamespace(
+                        start_dateidx=datetime(2026, 1, 31, 20, 19, 51),
+                        site_id=6,
+                    ),
+                ]
+            }
+
             with patch.object(worker.k, "REPO_FOLDER", str(repo_root)):
-                new_path, final_meta = processing.finalize_successful_processing(
+                new_path = processing.build_repository_destination_path(
                     db_rfm=db_rfm,
-                    spectrum_ids=[10, 11],
-                    bin_data={
-                        "spectrum": [
-                            SimpleNamespace(
-                                start_dateidx=datetime(2026, 1, 31, 20, 18, 51),
-                                site_id=5,
-                            ),
-                            SimpleNamespace(
-                                start_dateidx=datetime(2026, 1, 31, 20, 19, 51),
-                                site_id=6,
-                            ),
-                        ]
-                    },
+                    bin_data=bin_data,
                     hostname_db="EMRx001",
+                )
+                final_meta = processing.promote_final_artifact(
+                    new_path=new_path,
                     file_meta=exported_meta,
                     source_file_meta=exported_meta,
                     export=False,
@@ -1710,28 +1699,28 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             db_bp = FakeDbBkp()
             fake_log = FakeWorkerLog()
             err = FakeErr("[ERROR] validation failed", triggered=True)
+            err.exc = SimpleNamespace(file_meta=partial_meta)
+
+            task = {
+                "file_task_id": 101,
+                "host_id": 8,
+                "host_file_name": "host_sample.zip",
+                "host_path": "/host/path",
+                "filename": str(source_file),
+                "source_file_meta": source_meta,
+                "export": True,
+                "server_name": source_file.name,
+                "extension": ".zip",
+                "vl_file_size_kb": source_meta["size_kb"],
+                "dt_created": source_meta["dt_created"],
+                "dt_modified": source_meta["dt_modified"],
+                "server_path": str(source_dir),
+            }
 
             with patch.object(worker.k, "REPO_FOLDER", str(repo_root)):
                 with patch.object(worker.k, "TRASH_FOLDER", "trash"):
                     with patch.object(worker, "log", fake_log):
-                        result = processing.finalize_task_resolution(
-                            db_bp,
-                            file_task_id=101,
-                            host_id=8,
-                            host_file_name="host_sample.zip",
-                            host_path="/host/path",
-                            server_name=source_file.name,
-                            extension=".zip",
-                            vl_file_size_kb=source_meta["size_kb"],
-                            dt_created=source_meta["dt_created"],
-                            dt_modified=source_meta["dt_modified"],
-                            file_was_processed=False,
-                            new_path=None,
-                            file_meta=partial_meta,
-                            source_file_meta=source_meta,
-                            export=True,
-                            err=err,
-                        )
+                        worker._write_task_error(db_bp, task, err)
 
             resolved_source = repo_root / "trash" / "resolved_files" / source_file.name
             trashed_artifact = repo_root / "trash" / partial_artifact.name
@@ -1749,8 +1738,6 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             self.assertFalse(source_file.exists())
             self.assertFalse(partial_artifact.exists())
 
-            self.assertEqual(result["status"], worker.k.TASK_ERROR)
-            self.assertEqual(result["new_path"], str(repo_root / "trash"))
             self.assertEqual(len(db_bp.task_deletes), 1)
             self.assertEqual(len(db_bp.history_updates), 1)
             self.assertEqual(db_bp.transaction_events, ["begin", "commit"])
@@ -1773,50 +1760,44 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             self.assertIn("[ERROR] validation failed", db_bp.history_updates[0]["NA_MESSAGE"])
             self.assertEqual(len(db_bp.statistics_updates), 1)
 
-    def test_finalize_task_resolution_rolls_back_when_history_update_affects_zero_rows(self) -> None:
+    def test_finalize_success_rolls_back_when_history_update_affects_zero_rows(self) -> None:
+        fake_log = FakeWorkerLog()
         db_bp = FakeDbBkp()
         db_bp.history_rows_affected = 0
+        task = {
+            "file_task_id": 101,
+            "host_id": 8,
+            "host_file_name": "host_sample.zip",
+            "host_path": "/host/path",
+            "filename": "sample.zip",
+        }
+        result = {
+            "file_meta": {
+                "file_path": "/mnt/reposfi/2026/DF/1/2",
+                "file_name": "sample_DONE.mat",
+                "extension": ".mat",
+                "size_kb": 123,
+                "dt_created": datetime(2026, 1, 1, 0, 0, 0),
+                "dt_modified": datetime(2026, 1, 1, 0, 0, 0),
+                "full_path": "/mnt/reposfi/2026/DF/1/2/sample_DONE.mat",
+            },
+            "new_path": "/mnt/reposfi/2026/DF/1/2",
+            "started_at": 0.0,
+            "phase_durations": {},
+            "bin_data": None,
+            "resolved_site_ids": None,
+            "spectrum_ids": None,
+        }
 
-        with self.assertRaisesRegex(RuntimeError, "FILE_TASK_HISTORY finalization affected 0 rows"):
-            processing.finalize_task_resolution(
-                db_bp,
-                file_task_id=101,
-                host_id=8,
-                host_file_name="host_sample.zip",
-                host_path="/host/path",
-                server_name="sample_DONE.zip",
-                extension=".zip",
-                vl_file_size_kb=123,
-                dt_created=datetime(2026, 1, 1, 0, 0, 0),
-                dt_modified=datetime(2026, 1, 1, 0, 0, 0),
-                file_was_processed=True,
-                new_path="/mnt/reposfi/2026/DF/1/2",
-                file_meta={
-                    "file_path": "/mnt/reposfi/2026/DF/1/2",
-                    "file_name": "sample_DONE.mat",
-                    "extension": ".mat",
-                    "size_kb": 123,
-                    "dt_created": datetime(2026, 1, 1, 0, 0, 0),
-                    "dt_modified": datetime(2026, 1, 1, 0, 0, 0),
-                    "full_path": "/mnt/reposfi/2026/DF/1/2/sample_DONE.mat",
-                },
-                source_file_meta={
-                    "file_path": "/mnt/reposfi/tmp",
-                    "file_name": "sample_DONE.zip",
-                    "extension": ".zip",
-                    "size_kb": 123,
-                    "dt_created": datetime(2026, 1, 1, 0, 0, 0),
-                    "dt_modified": datetime(2026, 1, 1, 0, 0, 0),
-                    "full_path": "/mnt/reposfi/tmp/sample_DONE.zip",
-                },
-                export=True,
-                err=FakeErr(),
-            )
+        with patch.object(worker, "log", fake_log):
+            worker._finalize_success(db_bp, task, result)
 
+        # _finalize_success swallows the error — check transaction was rolled back
         self.assertEqual(len(db_bp.history_updates), 1)
         self.assertEqual(len(db_bp.task_deletes), 0)
         self.assertEqual(len(db_bp.statistics_updates), 0)
         self.assertEqual(db_bp.transaction_events, ["begin", "rollback"])
+        self.assertTrue(any("task_finalization_failed" in str(e) for e in fake_log.errors))
 
 
 if __name__ == "__main__":
