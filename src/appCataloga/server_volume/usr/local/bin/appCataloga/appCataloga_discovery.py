@@ -88,14 +88,21 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
         NA_MESSAGE="Discovery task running",
     )
     if result["rows_affected"] == 1:
-        log.event(
-            "discovery_started",
+        log.task_claimed(
+            SERVICE_NAME,
             host_id=task["host_id"],
             task_id=task["task_id"],
+            task_type=k.HOST_TASK_PROCESSING_TYPE,
             host=task["hostname"],
         )
         return True
-    log.event("host_task_claim_race", host_id=task["host_id"], task_id=task["task_id"])
+    log.warning_event(
+        "task_claim_race",
+        service=SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["task_id"],
+        task_type=k.HOST_TASK_PROCESSING_TYPE,
+    )
     return False
 
 
@@ -143,31 +150,62 @@ def _stream_discovery_batches(
             task_status=k.TASK_DONE,
         )
         processed += len(batch)
-        log.event(
-            "discovery_progress",
-            host_id=task["host_id"],
-            processed_files=processed,
-        )
 
     return processed
 
 
-def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> int:
-    """Stream discovered files and queue backlog control. Returns file count."""
+def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
+    """Stream discovered files and queue backlog control. Returns summary fields."""
+    started = time.monotonic()
     processed = _stream_discovery_batches(db, sftp, task)
+    scan_elapsed_sec = round(time.monotonic() - started, 3)
+    log.task_phase(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["task_id"],
+        task_type=k.HOST_TASK_PROCESSING_TYPE,
+        phase="scan",
+        elapsed_sec=scan_elapsed_sec,
+        since_start_sec=scan_elapsed_sec,
+        host=task["hostname"],
+        discovered_files=processed,
+    )
+
+    started = time.monotonic()
     db.queue_host_task(
         host_id=task["host_id"],
         task_type=k.HOST_TASK_BACKLOG_CONTROL_TYPE,
         task_status=k.TASK_PENDING,
         filter_dict=task["host_filter"],
     )
-    log.event("backlog_control_queued", host_id=task["host_id"])
-    return processed
+    queue_elapsed_sec = round(time.monotonic() - started, 3)
+    total_elapsed_sec = round(scan_elapsed_sec + queue_elapsed_sec, 3)
+    log.task_phase(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["task_id"],
+        task_type=k.HOST_TASK_PROCESSING_TYPE,
+        phase="queue_backlog",
+        elapsed_sec=queue_elapsed_sec,
+        since_start_sec=total_elapsed_sec,
+        host=task["hostname"],
+        queued_backlog_tasks=1,
+    )
+
+    return {
+        "processed": processed,
+    }
 
 
 # --- finalization ---
 
-def _finalize_success(db: dbHandlerBKP, task: dict, *, processed: int, elapsed_sec: float) -> None:
+def _finalize_success(
+    db: dbHandlerBKP,
+    task: dict,
+    *,
+    processed: int,
+    elapsed_sec: float,
+) -> None:
     """Write TASK_DONE, log completion, and schedule deferred statistics."""
     db.host_task_update(
         task_id=task["task_id"],
@@ -180,20 +218,26 @@ def _finalize_success(db: dbHandlerBKP, task: dict, *, processed: int, elapsed_s
             detail=f"host_id={task['host_id']} queued_backlog_control=1",
         ),
     )
-    log.event(
-        "discovery_completed",
+    log.task_done(
+        SERVICE_NAME,
         host_id=task["host_id"],
         task_id=task["task_id"],
+        task_type=k.HOST_TASK_PROCESSING_TYPE,
+        elapsed_sec=round(elapsed_sec, 3),
         host=task["hostname"],
         discovered_files=processed,
         queued_backlog_tasks=1,
-        elapsed_sec=round(elapsed_sec, 3),
     )
     if processed > 0:
         try:
             db.host_task_statistics_create(host_id=task["host_id"])
         except Exception as e:
-            log.event("statistics_update_failed", host_id=task["host_id"], error=e)
+            log.warning_event(
+                "statistics_update_failed",
+                service=SERVICE_NAME,
+                host_id=task["host_id"],
+                error=e,
+            )
 
 
 def _finalize_error(
@@ -221,7 +265,24 @@ def _finalize_error(
             DT_HOST_TASK=datetime.now(),
         )
     except Exception as e2:
-        log.event("finalize_error_failed", task_id=task["task_id"], error=e2)
+        log.error_event(
+            "task_finalization_failed",
+            service=SERVICE_NAME,
+            host_id=task["host_id"],
+            task_id=task["task_id"],
+            task_type=k.HOST_TASK_PROCESSING_TYPE,
+            exception=repr(e2),
+        )
+
+    log.task_error(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["task_id"],
+        task_type=k.HOST_TASK_PROCESSING_TYPE,
+        stage=err.stage,
+        error=err.format_error() or "Discovery failed",
+        host=task["hostname"],
+    )
 
     # Bootstrap failures need a second opinion from host_check.
     # AUTH joins the same path so credential problems pass through too.
@@ -234,7 +295,7 @@ def _finalize_error(
                 filter_dict=k.NONE_FILTER,
             )
         except Exception as e:
-            log.event(
+            log.error_event(
                 "queue_host_check_failed",
                 service=SERVICE_NAME,
                 host_id=task["host_id"],
@@ -253,7 +314,7 @@ def _cleanup(
         if sftp:
             sftp.close()
     except Exception as e:
-        log.event("cleanup_sftp_failed", error=e)
+        log.warning_event("cleanup_sftp_failed", service=SERVICE_NAME, error=e)
 
     if task is None:
         return
@@ -272,7 +333,7 @@ def _init_db() -> dbHandlerBKP:
     try:
         return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
-        log.event("db_init_failed", service=SERVICE_NAME, error=e)
+        log.error_event("db_init_failed", service=SERVICE_NAME, error=e)
         sys.exit(1)
 
 
@@ -301,11 +362,16 @@ def main() -> None:
             sftp = host_context.init_host_context(task, log)
 
             start = time.monotonic()
-            processed = _do_work(db, sftp, task)
+            result = _do_work(db, sftp, task)
             elapsed_sec = time.monotonic() - start
 
             # --- finalize ---
-            _finalize_success(db, task, processed=processed, elapsed_sec=elapsed_sec)
+            _finalize_success(
+                db,
+                task,
+                processed=result["processed"],
+                elapsed_sec=elapsed_sec,
+            )
 
         except Exception as e:
             if not err.triggered:

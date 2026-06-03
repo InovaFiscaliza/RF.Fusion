@@ -17,7 +17,7 @@ import sys
 import os
 import json
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Protocol, Union
 from . import tools
 
 
@@ -35,6 +35,13 @@ if CONFIG_PATH not in sys.path:
     sys.path.insert(0, CONFIG_PATH)
 
 import config as k  # noqa: E402  (must be available at runtime)
+
+
+class FilterLogger(Protocol):
+    """Minimal logger contract required by `Filter`."""
+
+    def warning_event(self, event: str, **fields: Any) -> None:
+        ...
 
 # =====================================================================
 # Filter class + parse_filter wrapper
@@ -69,7 +76,11 @@ class Filter:
         MODE_REDISCOVERY,
     )
 
-    def __init__(self, filter_raw: Union[str, Dict[str, Any], None] = None, log: Optional[Any] = None):
+    def __init__(
+        self,
+        filter_raw: Union[str, Dict[str, Any], None] = None,
+        log: Optional["FilterLogger"] = None,
+    ):
         """Initialize a Filter instance.
 
         Args:
@@ -79,6 +90,14 @@ class Filter:
         self.log = log
         self.raw = filter_raw
         self.data = self._parse_and_validate()
+
+    def _warning_event(self, event: str, **fields: Any) -> None:
+        """Emit one structured warning when a logger is attached."""
+        if self.log is None:
+            return
+
+        payload = {"component": "shared_filter", **fields}
+        self.log.warning_event(event, **payload)
 
     # ------------------------------------------------------------------
     # Parsing & Validation
@@ -113,8 +132,14 @@ class Filter:
             self._validate(f)
             return f
         except Exception as e:
-            if self.log:
-                self.log.warning(f"[Filter] Parse/validate failed: {e}")
+            self._warning_event(
+                "filter_parse_validate_failed",
+                operation="parse_validate",
+                reason="filter_parse_or_validation_failed",
+                raw_type=type(self.raw).__name__,
+                error_type=type(e).__name__,
+                error=str(e),
+            )
             return self._default_dict()
 
     def _parse_raw(self) -> Dict[str, Any]:
@@ -130,8 +155,14 @@ class Filter:
             try:
                 f = json.loads(self.raw)
             except Exception as e:
-                if self.log:
-                    self.log.entry(f"[Filter] JSON parse error: {e}")
+                self._warning_event(
+                    "filter_json_parse_failed",
+                    operation="parse_raw",
+                    reason="invalid_json_payload",
+                    raw_type=type(self.raw).__name__,
+                    error_type=type(e).__name__,
+                    error=str(e),
+                )
                 return self._default_dict()
         elif isinstance(self.raw, dict):
             f = dict(self.raw)

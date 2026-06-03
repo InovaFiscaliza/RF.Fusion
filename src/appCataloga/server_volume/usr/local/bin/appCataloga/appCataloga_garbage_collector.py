@@ -34,6 +34,7 @@ PROJECT_ROOT = bootstrap_app_paths(__file__)
 # Internal modules
 # ---------------------------------------------------------------
 import config as k
+from shared import file_utils
 from server_handler import signal_runtime
 from shared import errors, logging_utils
 from db.dbHandlerBKP import dbHandlerBKP
@@ -103,11 +104,7 @@ def build_resolved_files_trash_path() -> str:
     processing attempt. Because `FILE_TASK_HISTORY` now points elsewhere, the
     garbage collector must clean this area directly from the filesystem.
     """
-    return os.path.join(
-        k.REPO_FOLDER,
-        k.TRASH_FOLDER,
-        k.RESOLVED_FILES_TRASH_SUBDIR,
-    )
+    return file_utils.build_resolved_files_trash_path()
 
 
 def get_resolved_files_gc_candidates(batch_size: int, quarantine_days: int):

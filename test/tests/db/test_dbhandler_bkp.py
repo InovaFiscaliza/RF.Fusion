@@ -59,8 +59,10 @@ class HostCooldownTests(unittest.TestCase):
 
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
+        handler.database = "BPDATA_TEST"
         handler._connect = lambda: None
         handler._disconnect = lambda: None
+        handler._summary_publish_host_scope = lambda *args, **kwargs: None
         handler.db_connection = type(
             "FakeConnection",
             (),
@@ -79,9 +81,6 @@ class HostCooldownTests(unittest.TestCase):
         handler.host_release_safe(host_id=10, current_pid=999)
 
         self.assertEqual(updates, [])
-        self.assertTrue(
-            any("Preserving transient host cooldown" in msg for msg in handler.log.entries)
-        )
 
     def test_host_cleanup_stale_locks_preserves_recent_sftp_cooldown(self) -> None:
         """Recent cooldowns must not be released by the janitor prematurely."""
@@ -106,9 +105,6 @@ class HostCooldownTests(unittest.TestCase):
 
         self.assertEqual(released, [])
         self.assertEqual(queued, [])
-        self.assertTrue(
-            any("Preserving transient SFTP cooldown" in msg for msg in handler.log.entries)
-        )
 
     def test_host_cleanup_stale_locks_releases_expired_sftp_cooldown(self) -> None:
         """Expired cooldowns must be reopened so backup/discovery can retry."""
@@ -239,8 +235,10 @@ class HostStatisticsRefreshTests(unittest.TestCase):
     def make_handler(self):
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
+        handler.database = "BPDATA_TEST"
         handler._connect = lambda: None
         handler._disconnect = lambda: None
+        handler._summary_publish_host_scope = lambda *args, **kwargs: None
         handler.db_connection = type(
             "FakeConnection",
             (),
@@ -378,6 +376,7 @@ class GarbageCollectorQueryTests(unittest.TestCase):
 
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
+        handler.database = "BPDATA_TEST"
         handler._connect = lambda: None
         return handler
 
@@ -427,9 +426,11 @@ class FileTaskSelectionTests(unittest.TestCase):
 
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
+        handler.database = "BPDATA_TEST"
         handler._connect = lambda: None
         handler._disconnect = lambda: None
         handler._release_expired_transient_busy_cooldowns = lambda: None
+        handler._summary_publish_host_scope = lambda *args, **kwargs: None
         return handler
 
     def test_read_file_task_backup_can_reserve_hosts_for_discovery_and_fair_by_host(self) -> None:
@@ -505,8 +506,10 @@ class BacklogBudgetTests(unittest.TestCase):
     def make_handler(self):
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
+        handler.database = "BPDATA_TEST"
         handler._connect = lambda: None
         handler._disconnect = lambda: None
+        handler._summary_publish_host_scope = lambda *args, **kwargs: None
         handler.db_connection = type(
             "FakeConnection",
             (),
@@ -574,6 +577,7 @@ class HostTaskQueueTests(unittest.TestCase):
 
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
+        handler.database = "BPDATA_TEST"
         handler.host_update_statistics = lambda host_id: None
         handler.host_read_status = lambda host_id: {"ID_HOST": host_id}
         return handler
@@ -649,7 +653,7 @@ class HostTaskQueueTests(unittest.TestCase):
         self.assertEqual(created, [])
         self.assertEqual(updated, [])
         self.assertTrue(
-            any("HOST_TASK already RUNNING" in msg for msg in handler.log.warnings)
+            any("db_running_singleton_preserved" in msg for msg in handler.log.warnings)
         )
 
     def test_queue_host_task_matches_non_operational_filter_semantically(self) -> None:
@@ -748,7 +752,7 @@ class HostTaskQueueTests(unittest.TestCase):
         self.assertEqual(len(updated), 1)
         self.assertEqual(updated[0]["task_id"], 201)
         self.assertTrue(
-            any("Multiple HOST_TASK rows matched" in msg for msg in handler.log.warnings)
+            any("db_duplicate_singleton_rows" in msg for msg in handler.log.warnings)
         )
 
     def test_host_task_update_serializes_filter_canonically(self) -> None:
@@ -826,6 +830,8 @@ class HostTaskConnectivityLifecycleTests(unittest.TestCase):
 
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
+        handler.database = "BPDATA_TEST"
+        handler._summary_publish_host_scope = lambda *args, **kwargs: None
         return handler
 
     def test_host_task_suspend_by_host_excludes_statistics_tasks(self) -> None:

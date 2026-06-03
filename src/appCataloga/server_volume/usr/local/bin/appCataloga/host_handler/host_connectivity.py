@@ -14,10 +14,12 @@ import ipaddress
 import os
 import socket
 import sys
-from typing import Any, TYPE_CHECKING
+import time
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from db.dbHandlerBKP import dbHandlerBKP
+    from shared.logging_utils import log as logger_type
 
 from ping3 import ping
 
@@ -94,23 +96,23 @@ def resolve_host_addresses(host_addr: str) -> list[str]:
     return preferred_172 if preferred_172 else addresses
 
 
-def log_connectivity_probe(
+def build_connectivity_probe_fields(
     *,
-    log: Any,
-    event_name: str,
     host_id: int,
     addr: str,
     probe: ConnectivityProbePayload,
     port: int | None = None,
     host_name: str | None = None,
-) -> None:
+) -> dict:
     """
-    Emit one structured connectivity-probe log record.
+    Build one structured connectivity-probe payload.
 
-    The probe helpers return data; this helper explains that data in a stable
-    logging shape so different workers do not drift on field names over time.
+    The probe helpers return data; this helper maps that data into the stable
+    field names shared by host workers and maintenance flows.
     """
     payload = {
+        "component": "host_connectivity",
+        "operation": "probe",
         "host_id": host_id,
         "address": addr,
         "state": probe["state"],
@@ -133,7 +135,7 @@ def log_connectivity_probe(
     if "resolved_candidates" in probe:
         payload["resolved_candidates"] = probe["resolved_candidates"]
 
-    log.event(event_name, **payload)
+    return payload
 
 
 def _ping_address(addr: str, timeout_sec: float) -> bool:
@@ -147,7 +149,7 @@ def _ping_address(addr: str, timeout_sec: float) -> bool:
 def persist_host_connectivity_state(
     *,
     db: dbHandlerBKP,
-    log: Any,
+    log: logger_type,
     host_id: int,
     was_offline: bool,
     online: bool,
@@ -211,6 +213,8 @@ def persist_host_connectivity_state(
             # resumed exactly once on the transition.
             log.event(
                 "host_state_transition",
+                component="host_connectivity",
+                operation="persist_state",
                 host_id=host_id,
                 previous_state="offline",
                 current_state="online",
@@ -225,6 +229,8 @@ def persist_host_connectivity_state(
             # suspended work even though `(was_offline, online) == (0,1)`.
             log.event(
                 "host_operational_recovery",
+                component="host_connectivity",
+                operation="persist_state",
                 host_id=host_id,
                 previous_state="degraded_or_auth",
                 current_state="online",
@@ -247,6 +253,8 @@ def persist_host_connectivity_state(
         # because host_update would otherwise *increment* the positive integer.
         log.event(
             "host_state_transition",
+            component="host_connectivity",
+            operation="persist_state",
             host_id=host_id,
             previous_state="online",
             current_state="offline",
@@ -369,7 +377,7 @@ def _finalize_check(
     *,
     promote_to_processing: bool,
     resume_dependent_tasks: bool,
-    logger: Any,
+    logger: logger_type,
 ) -> tuple[int, str]:
     """
     Apply the final connectivity result to HOST and return the task close state.
@@ -408,7 +416,8 @@ def run_check(
     db: dbHandlerBKP,
     task: dict,
     *,
-    logger: Any,
+    service_name: str,
+    logger: logger_type,
     promote_to_processing: bool,
 ) -> tuple[int, str]:
     """
@@ -423,8 +432,14 @@ def run_check(
     Returns (status, message) for the caller to close the task.
     Raises on any DB failure — does not catch internally.
     """
-    event_name = k.EVENT_HOST_CHECK if promote_to_processing else k.EVENT_CHECK_CONNECTION
+    event_name = (
+        k.EVENT_HOST_CHECK
+        if promote_to_processing else
+        k.EVENT_CHECK_CONNECTION
+    )
+    started_at = time.monotonic()
 
+    probe_started_at = time.monotonic()
     connectivity = probe_host_connectivity(
         addr=task["addr"],
         port=task["port"],
@@ -432,20 +447,34 @@ def run_check(
         password=task["password"],
     )
 
-    log_connectivity_probe(
-        log=logger,
-        event_name=event_name,
+    logger.event(
+        event_name,
+        **build_connectivity_probe_fields(
+            host_id=task["host_id"],
+            addr=task["addr"],
+            port=task["port"],
+            probe=connectivity,
+        )
+    )
+    probe_elapsed_sec = round(time.monotonic() - probe_started_at, 3)
+    logger.task_phase(
+        service_name,
         host_id=task["host_id"],
-        addr=task["addr"],
-        port=task["port"],
-        probe=connectivity,
+        task_id=task["task_id"],
+        task_type=task["task_type"],
+        phase="probe",
+        elapsed_sec=probe_elapsed_sec,
+        since_start_sec=round(time.monotonic() - started_at, 3),
+        reason=connectivity["reason"],
+        state=connectivity["state"],
     )
 
+    persist_started_at = time.monotonic()
     match connectivity["state"]:
         case k.HOST_CONN_DEGRADED:
-            return _persist_degraded(db, task)
+            result = _persist_degraded(db, task)
         case k.HOST_CONN_AUTH_ERROR:
-            return persist_auth_error(
+            result = persist_auth_error(
                 db, task,
                 detail=connectivity["error"] or connectivity["reason"],
                 logger=logger,
@@ -454,10 +483,38 @@ def run_check(
             # Covers HOST_CONN_ONLINE and HOST_CONN_OFFLINE.
             # A non-zero error count means previous degraded probes already
             # suspended dependent queues; resume them on a successful recovery.
-            return _finalize_check(
+            result = _finalize_check(
                 db, task,
                 online=(connectivity["state"] == k.HOST_CONN_ONLINE),
                 promote_to_processing=promote_to_processing,
                 resume_dependent_tasks=(task["host_check_error_count"] > 0),
                 logger=logger,
             )
+
+    persist_elapsed_sec = round(time.monotonic() - persist_started_at, 3)
+    since_start_sec = round(time.monotonic() - started_at, 3)
+    logger.task_phase(
+        service_name,
+        host_id=task["host_id"],
+        task_id=task["task_id"],
+        task_type=task["task_type"],
+        phase="persist",
+        elapsed_sec=persist_elapsed_sec,
+        since_start_sec=since_start_sec,
+        state=connectivity["state"],
+        status=result[0],
+    )
+
+    if promote_to_processing and connectivity["state"] == k.HOST_CONN_ONLINE:
+        logger.task_phase(
+            service_name,
+            host_id=task["host_id"],
+            task_id=task["task_id"],
+            task_type=task["task_type"],
+            phase="queue_followup",
+            elapsed_sec=0.0,
+            since_start_sec=since_start_sec,
+            queued_task_type=k.HOST_TASK_PROCESSING_TYPE,
+        )
+
+    return result

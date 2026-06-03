@@ -21,9 +21,13 @@ wrapper object that only renames dictionary keys.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from host_handler import host_connectivity
+
+if TYPE_CHECKING:
+    from db.dbHandlerBKP import dbHandlerBKP
+    from shared.logging_utils import log as logger_type
 
 
 def select_due_hosts(
@@ -67,8 +71,8 @@ def select_due_hosts(
 
 def _recover_offline_host_if_operational(
     *,
-    db: Any,
-    log: Any,
+    db: dbHandlerBKP,
+    log: logger_type,
     host: dict,
     checked_at: datetime,
     connectivity_module: Any,
@@ -96,14 +100,15 @@ def _recover_offline_host_if_operational(
         user=host["NA_HOST_USER"],
         password=host["NA_HOST_PASSWORD"],
     )
-    connectivity_module.log_connectivity_probe(
-        log=log,
-        event_name="host_check_all_recovery_probe",
-        host_id=host["ID_HOST"],
-        host_name=host.get("NA_HOST_NAME"),
-        addr=host["NA_HOST_ADDRESS"],
-        port=int(host["NA_HOST_PORT"]),
-        probe=connectivity,
+    log.event(
+        "host_check_all_recovery_probe",
+        **connectivity_module.build_connectivity_probe_fields(
+            host_id=host["ID_HOST"],
+            host_name=host.get("NA_HOST_NAME"),
+            addr=host["NA_HOST_ADDRESS"],
+            port=int(host["NA_HOST_PORT"]),
+            probe=connectivity,
+        ),
     )
 
     if connectivity["state"] == "online":
@@ -134,8 +139,8 @@ def _recover_offline_host_if_operational(
 
 def process_due_host(
     *,
-    db: Any,
-    log: Any,
+    db: dbHandlerBKP,
+    log: logger_type,
     host: dict,
     checked_at: datetime,
     icmp_timeout_sec: float,
@@ -214,8 +219,8 @@ def process_due_host(
 
 def run_host_check_all_batch(
     *,
-    db: Any,
-    log: Any,
+    db: dbHandlerBKP,
+    log: logger_type,
     now: datetime,
     process_status: dict,
     stale_after_sec: int,
@@ -292,10 +297,14 @@ def run_host_check_all_batch(
         except Exception as e:
             # A per-host maintenance failure is logged with enough identity to
             # investigate later, while the batch keeps moving forward.
-            log.error(
-                f"event=host_check_all_failed host_id={host['ID_HOST']} "
-                f"host={host.get('NA_HOST_NAME')} "
-                f"address={host['NA_HOST_ADDRESS']} error={e}"
+            log.error_event(
+                "host_check_all_failed",
+                component="host_maintenance",
+                operation="run_host_check_all_batch",
+                host_id=host["ID_HOST"],
+                host=host.get("NA_HOST_NAME"),
+                address=host["NA_HOST_ADDRESS"],
+                error=e,
             )
 
     # Emit one compact batch summary for the whole maintenance pass instead of
@@ -318,8 +327,8 @@ def run_host_check_all_batch(
 
 def run_periodic_host_cleanup(
     *,
-    db: Any,
-    log: Any,
+    db: dbHandlerBKP,
+    log: logger_type,
     task_stale_after_sec: int,
     host_busy_timeout_sec: int,
 ) -> None:
@@ -340,7 +349,12 @@ def run_periodic_host_cleanup(
             stale_after_seconds=task_stale_after_sec
         )
     except Exception as e:
-        log.error(f"event=host_task_cleanup_failed error={e}")
+        log.error_event(
+            "host_task_cleanup_failed",
+            component="host_maintenance",
+            operation="cleanup_stale_operational_tasks",
+            error=e,
+        )
 
     try:
         # Step 2: release HOST.IS_BUSY locks whose owner process no longer
@@ -349,4 +363,9 @@ def run_periodic_host_cleanup(
             threshold_seconds=host_busy_timeout_sec
         )
     except Exception as e:
-        log.error(f"event=host_cleanup_failed error={e}")
+        log.error_event(
+            "host_cleanup_failed",
+            component="host_maintenance",
+            operation="cleanup_stale_host_locks",
+            error=e,
+        )

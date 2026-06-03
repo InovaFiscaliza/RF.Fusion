@@ -176,7 +176,6 @@ class dbHandlerBKP(DBHandlerBase):
             log=log,
             reuse_connection=reuse_connection,
         )
-        self.log.entry(f"[dbHandlerBKP] Initialized for DB '{database}'")
         self.in_transaction: bool = False
 
     def begin_transaction(self) -> None:
@@ -256,11 +255,14 @@ class dbHandlerBKP(DBHandlerBase):
                 commit=not getattr(self, "in_transaction", False),
             )
         except Exception as exc:
-            if hasattr(self.log, "warning"):
-                self.log.warning(
-                    f"[dbHandlerBKP] Failed to enqueue SUMMARY dirty scope "
-                    f"(host={host_id}, reason={reason}): {exc}"
-                )
+            self._log_db_warning(
+                "summary_scope_publish_failed",
+                operation="summary_publish_host_scope",
+                host_id=host_id,
+                reason=reason,
+                error=repr(exc),
+                full_reconcile=full_reconcile,
+            )
 
     def _summary_lookup_host_task_host(self, task_id: int) -> Optional[int]:
         """Resolve `HOST_TASK.FK_HOST` before publishing a dirty scope."""
@@ -384,60 +386,23 @@ class dbHandlerBKP(DBHandlerBase):
                 commit=True
             )
 
-            self.log.entry(
-                f"[DBHandlerBKP] HOST {data.get('ID_HOST')} ({data.get('NA_HOST_UID')}) "
-                f"created or updated successfully."
-            )
             self._summary_publish_host_scope(
                 data.get("ID_HOST"),
                 reason="host_upsert",
             )
 
         except Exception as e:
-            self.log.error(f"[DBHandlerBKP] Failed to upsert HOST record: {e}")
+            self._log_db_error(
+                "db_update_failed",
+                operation="host_upsert",
+                table="HOST",
+                error=repr(e),
+            )
             raise
 
         finally:
             self._disconnect()
     
-    def host_read_access(self, host_id: int) -> Dict[str, Any]:
-        """Read connection credentials and network parameters for a host.
-
-        Args:
-            host_id (int): `HOST.ID_HOST` primary key.
-
-        Returns:
-            Dict[str, Any]: A dictionary with fields:
-                - host_id (int)
-                - host_uid (str)
-                - host_addr (str): IP / DNS
-                - port (int)
-                - user (str)
-                - password (str)
-            Returns an empty dict if no row exists.
-
-        Raises:
-            mysql.connector.Error: On SELECT failure.
-        """
-        self._connect()
-        try:
-            rows = self._select_rows(
-                table="HOST",
-                where={"ID_HOST": host_id},
-                limit=1,
-                cols=[
-                    "ID_HOST AS host_id",
-                    "NA_HOST_NAME AS host_uid",
-                    "NA_HOST_ADDRESS AS host_addr",
-                    "NA_HOST_PORT AS port",
-                    "NA_HOST_USER AS user",
-                    "NA_HOST_PASSWORD AS password",
-                ],
-            )
-            return rows[0] if rows else {}
-        finally:
-            self._disconnect()
-
     def host_read_status(self, host_id: int) -> Dict[str, Any]:
         """
         Read the full operational snapshot of a host.
@@ -537,7 +502,13 @@ class dbHandlerBKP(DBHandlerBase):
                 limit=1,
             )
         except Exception as e:
-            self.log.error(f"[DB] Failed to read DT_LAST_DISCOVERY: {e}")
+            self._log_db_error(
+                "db_select_failed",
+                operation="get_last_discovery",
+                table="HOST",
+                host_id=host_id,
+                error=repr(e),
+            )
             return None
 
         if not rows:
@@ -607,16 +578,18 @@ class dbHandlerBKP(DBHandlerBase):
                 if row["IS_BUSY"] and row["DT_BUSY"]:
                     elapsed = (datetime.now() - row["DT_BUSY"]).total_seconds()
                     if elapsed > busy_timeout_seconds:
-                        self.log.entry(
-                            f"[DBHandlerBKP] HOST {host_id} exceeded busy-timeout "
-                            f"({elapsed:.1f}s > {busy_timeout_seconds}s). Forcing release."
-                        )
                         kwargs["IS_BUSY"] = False
                         kwargs["DT_BUSY"] = None
                         kwargs["NU_PID"]  = k.HOST_UNLOCKED_PID
 
         if not kwargs:
-            self.log.warning(f"No fields provided for host_update (ID={host_id}).")
+            self._log_db_warning(
+                "db_invalid_input",
+                operation="host_update",
+                table="HOST",
+                host_id=host_id,
+                error="No fields provided for host_update.",
+            )
             return
 
         for key in kwargs.keys():
@@ -694,7 +667,6 @@ class dbHandlerBKP(DBHandlerBase):
                 self.cursor.execute(sql, tuple(params))
 
             self.db_connection.commit()
-            self.log.entry(f"[DBHandlerBKP] HOST {host_id} updated successfully.")
             self._summary_publish_host_scope(
                 host_id,
                 reason="host_update",
@@ -702,7 +674,13 @@ class dbHandlerBKP(DBHandlerBase):
             self._disconnect()
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[DBHandlerBKP] host_update failed for HOST {host_id}: {e}")
+            self._log_db_error(
+                "db_update_failed",
+                operation="host_update",
+                table="HOST",
+                host_id=host_id,
+                error=repr(e),
+            )
             self._disconnect()
             raise
 
@@ -847,31 +825,27 @@ class dbHandlerBKP(DBHandlerBase):
         host_read = self.host_read_status(host_id=host_id)
 
         if not host_read:
-            self.log.warning(f"[CLEANUP] Host not found (host_id={host_id})")
+            self._log_db_warning(
+                "db_invalid_input",
+                operation="host_release_safe",
+                table="HOST",
+                host_id=host_id,
+                error="Host not found.",
+            )
             return
 
         is_busy = host_read.get("IS_BUSY")
         pid = host_read.get("NU_PID")
 
         if not is_busy:
-            self.log.entry(f"[CLEANUP] Host already released (host_id={host_id})")
             return
 
         # `HOST_TRANSIENT_BUSY_PID` means "temporarily quarantined after a
         # transient SFTP bootstrap error", not "free to release right now".
         if pid == k.HOST_TRANSIENT_BUSY_PID:
-            self.log.entry(
-                f"[CLEANUP] Preserving transient host cooldown "
-                f"(host_id={host_id})"
-            )
             return
 
         if pid == current_pid:
-            self.log.warning(
-                f"[CLEANUP] Releasing host lock owned by this worker "
-                f"(host_id={host_id}, pid={current_pid})"
-            )
-
             self.host_update(
                 host_id=host_id,
                 IS_BUSY=False,
@@ -882,22 +856,12 @@ class dbHandlerBKP(DBHandlerBase):
         # Stale ownership is safe to recover because no live process can still
         # legitimately hold the lock.
         if not tools.pid_exists(pid):
-            self.log.warning(
-                f"[CLEANUP] Stale PID detected (host_id={host_id}, pid={pid}). "
-                f"Releasing lock."
-            )
-
             self.host_update(
                 host_id=host_id,
                 IS_BUSY=False,
                 NU_PID=k.HOST_UNLOCKED_PID,
             )
             return
-
-        self.log.entry(
-            f"[CLEANUP] Host lock owned by another worker "
-            f"(host_id={host_id}, owner_pid={pid})"
-        )
 
     def host_start_transient_busy_cooldown(
         self,
@@ -947,15 +911,14 @@ class dbHandlerBKP(DBHandlerBase):
             )
 
             if affected == 1:
-                self.log.entry(
-                    f"[HOST_COOLDOWN] Started transient SFTP cooldown "
-                    f"(host_id={host_id}, cooldown_seconds={cooldown_seconds})"
-                )
                 return True
 
-            self.log.warning(
-                f"[HOST_COOLDOWN] Failed to start cooldown because host lock "
-                f"ownership changed (host_id={host_id}, owner_pid={owner_pid})"
+            self._log_db_warning(
+                "db_update_no_match",
+                operation="host_start_transient_busy_cooldown",
+                table="HOST",
+                host_id=host_id,
+                error="Host lock ownership changed before cooldown start.",
             )
             return False
 
@@ -990,12 +953,6 @@ class dbHandlerBKP(DBHandlerBase):
             },
             commit=True,
         )
-
-        if affected:
-            self.log.entry(
-                f"[HOST_COOLDOWN] Released {affected} expired transient "
-                f"SFTP cooldown host lock(s)"
-            )
 
         return affected
 
@@ -1046,10 +1003,6 @@ class dbHandlerBKP(DBHandlerBase):
         if not rows:
             return
 
-        self.log.entry(
-            f"[HOST_CLEANUP] Evaluating {len(rows)} busy hosts"
-        )
-
         for row in rows:
 
             host_id = row["ID_HOST"]
@@ -1072,10 +1025,6 @@ class dbHandlerBKP(DBHandlerBase):
             # not a stale worker lock. Preserve it only for the configured
             # cooldown window.
             if pid == k.HOST_TRANSIENT_BUSY_PID and elapsed <= k.SFTP_BUSY_COOLDOWN_SECONDS:
-                self.log.entry(
-                    f"[HOST_CLEANUP] Preserving transient SFTP cooldown "
-                    f"(host_id={host_id}, host={host_name}, busy_for={elapsed:.1f}s)"
-                )
                 continue
 
             if pid == k.HOST_TRANSIENT_BUSY_PID:
@@ -1091,11 +1040,7 @@ class dbHandlerBKP(DBHandlerBase):
                 reason = "NO_RUNNING_TASKS"
 
             elif not file_running and not host_processing_running:
-                self.log.entry(
-                    f"[HOST_CLEANUP] Preserving recently claimed busy host "
-                    f"(host_id={host_id}, host={host_name}, pid={pid}, "
-                    f"busy_for={elapsed:.1f}s, grace={k.HOST_CLEANUP_NO_TASK_GRACE_SEC}s)"
-                )
+                pass
 
             elif elapsed > threshold_seconds and (
                 pid in (None, k.HOST_UNLOCKED_PID) or not tools.pid_exists(pid)
@@ -1104,20 +1049,17 @@ class dbHandlerBKP(DBHandlerBase):
                 reason = "BUSY_TIMEOUT_STALE_PID"
 
             elif elapsed > threshold_seconds:
-                self.log.warning(
-                    f"[HOST_CLEANUP] Preserving long-running busy host "
-                    f"(host_id={host_id}, host={host_name}, pid={pid}, "
-                    f"busy_for={elapsed:.1f}s)"
+                self._log_db_warning(
+                    "db_long_running_lock",
+                    operation="host_cleanup_stale_locks",
+                    table="HOST",
+                    host_id=host_id,
+                    owner_pid=pid,
+                    busy_for_sec=round(elapsed, 1),
                 )
 
             if not release:
                 continue
-
-            self.log.warning(
-                f"[HOST_CLEANUP] Releasing stale host "
-                f"(host_id={host_id}, host={host_name}, "
-                f"pid={pid}, busy_for={elapsed:.1f}s, reason={reason})"
-            )
 
             try:
                 self.host_update(
@@ -1126,9 +1068,12 @@ class dbHandlerBKP(DBHandlerBase):
                     NU_PID=k.HOST_UNLOCKED_PID
                 )
             except Exception as e:
-                self.log.error(
-                    f"[HOST_CLEANUP] Failed to release host "
-                    f"(host_id={host_id}): {e}"
+                self._log_db_error(
+                    "db_update_failed",
+                    operation="host_cleanup_stale_locks",
+                    table="HOST",
+                    host_id=host_id,
+                    error=repr(e),
                 )
                 continue
 
@@ -1144,16 +1089,14 @@ class dbHandlerBKP(DBHandlerBase):
                 )
                 self._disconnect()
 
-                self.log.entry(
-                    f"[HOST_CLEANUP] Connection check scheduled "
-                    f"(host_id={host_id})"
-                )
-
             except Exception as e:
                 self._disconnect()
-                self.log.error(
-                    f"[HOST_CLEANUP] Failed to queue connection check "
-                    f"(host_id={host_id}): {e}"
+                self._log_db_error(
+                    "db_insert_failed",
+                    operation="host_cleanup_queue_connection_check",
+                    table="HOST_TASK",
+                    host_id=host_id,
+                    error=repr(e),
                 )
 
     def host_task_cleanup_stale_operational_tasks(
@@ -1210,10 +1153,6 @@ class dbHandlerBKP(DBHandlerBase):
         if not rows:
             return
 
-        self.log.entry(
-            f"[HOST_TASK_CLEANUP] Evaluating {len(rows)} active operational HOST_TASK entries"
-        )
-
         for row in rows:
             task_id = row["ID_HOST_TASK"]
             host_id = row["FK_HOST"]
@@ -1237,9 +1176,13 @@ class dbHandlerBKP(DBHandlerBase):
                         ),
                     )
                 except Exception as e:
-                    self.log.error(
-                        f"[HOST_TASK_CLEANUP] Failed to normalize pending HOST_TASK "
-                        f"(task_id={task_id}, host_id={host_id}, type={task_type}): {e}"
+                    self._log_db_error(
+                        "db_update_failed",
+                        operation="host_task_cleanup_normalize_pending",
+                        table="HOST_TASK",
+                        task_id=task_id,
+                        host_id=host_id,
+                        error=repr(e),
                     )
                 continue
 
@@ -1265,11 +1208,6 @@ class dbHandlerBKP(DBHandlerBase):
                 and task_pid_alive
                 and host_owner_pid == task_pid
             ):
-                self.log.entry(
-                    f"[HOST_TASK_CLEANUP] Preserving active long-running HOST_TASK "
-                    f"(task_id={task_id}, host_id={host_id}, type={task_type}, "
-                    f"busy_for={elapsed:.1f}s)"
-                )
                 continue
 
             reasons = []
@@ -1290,12 +1228,6 @@ class dbHandlerBKP(DBHandlerBase):
             if not reasons:
                 reasons.append("STALE_RUNNING_TTL_EXPIRED")
 
-            self.log.warning(
-                f"[HOST_TASK_CLEANUP] Recovering stale operational HOST_TASK "
-                f"(task_id={task_id}, host_id={host_id}, type={task_type}, "
-                f"busy_for={elapsed:.1f}s, reasons={','.join(reasons)})"
-            )
-
             try:
                 self.host_task_update(
                     task_id=task_id,
@@ -1307,9 +1239,13 @@ class dbHandlerBKP(DBHandlerBase):
                     ),
                 )
             except Exception as e:
-                self.log.error(
-                    f"[HOST_TASK_CLEANUP] Failed to recover HOST_TASK "
-                    f"(task_id={task_id}, host_id={host_id}): {e}"
+                self._log_db_error(
+                    "db_update_failed",
+                    operation="host_task_cleanup_recover_running",
+                    table="HOST_TASK",
+                    task_id=task_id,
+                    host_id=host_id,
+                    error=repr(e),
                 )
                 continue
 
@@ -1335,14 +1271,14 @@ class dbHandlerBKP(DBHandlerBase):
                     IS_BUSY=False,
                     NU_PID=k.HOST_UNLOCKED_PID,
                 )
-                self.log.warning(
-                    f"[HOST_TASK_CLEANUP] Released stale host lock while recovering "
-                    f"HOST_TASK (task_id={task_id}, host_id={host_id})"
-                )
             except Exception as e:
-                self.log.error(
-                    f"[HOST_TASK_CLEANUP] Failed to release stale host lock "
-                    f"(task_id={task_id}, host_id={host_id}): {e}"
+                self._log_db_error(
+                    "db_update_failed",
+                    operation="host_task_cleanup_release_host_lock",
+                    table="HOST",
+                    task_id=task_id,
+                    host_id=host_id,
+                    error=repr(e),
                 )
         
     # ======================================================================
@@ -1472,10 +1408,13 @@ class dbHandlerBKP(DBHandlerBase):
         existing, match_count = self._find_reusable_singleton_host_task(tasks)
 
         if match_count > 1:
-            self.log.warning(
-                "[DBHandlerBKP] Multiple HOST_TASK rows matched "
-                f"host={host_id}, type={task_type}, matches={match_count}. "
-                "Reusing one row and leaving cleanup to maintenance tooling."
+            self._log_db_warning(
+                "db_duplicate_singleton_rows",
+                operation="queue_host_task",
+                table="HOST_TASK",
+                host_id=host_id,
+                task_type=task_type,
+                matches=match_count,
             )
 
         if existing:
@@ -1484,11 +1423,13 @@ class dbHandlerBKP(DBHandlerBase):
             # RUNNING task → preserve the live execution context. A new request
             # should not rewrite the filter of an in-flight worker.
             if status == k.TASK_RUNNING:
-                self.log.warning(
-                    "[DBHandlerBKP] HOST_TASK already RUNNING; "
-                    f"preserving current execution (host={host_id}, "
-                    f"task_id={existing['HOST_TASK__ID_HOST_TASK']}, "
-                    f"type={task_type})."
+                self._log_db_warning(
+                    "db_running_singleton_preserved",
+                    operation="queue_host_task",
+                    table="HOST_TASK",
+                    host_id=host_id,
+                    task_id=existing["HOST_TASK__ID_HOST_TASK"],
+                    task_type=task_type,
                 )
 
             # PENDING task or terminal row -> refresh in place and keep the
@@ -1559,9 +1500,6 @@ class dbHandlerBKP(DBHandlerBase):
                 commit=True
             )
 
-            self.log.entry(
-                f"[DBHandlerBKP] HOST_TASK created (ID={task_id}, host={payload.get('FK_HOST')}, type={payload.get('NU_TYPE')})."
-            )
             self._summary_publish_host_scope(
                 payload.get("FK_HOST"),
                 reason="host_task_create",
@@ -1570,7 +1508,13 @@ class dbHandlerBKP(DBHandlerBase):
 
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[DBHandlerBKP] Failed to create HOST_TASK: {e}")
+            self._log_db_error(
+                "db_insert_failed",
+                operation="host_task_create",
+                table="HOST_TASK",
+                host_id=payload.get("FK_HOST") if "payload" in locals() else None,
+                error=repr(e),
+            )
             raise
 
         finally:
@@ -1621,11 +1565,6 @@ class dbHandlerBKP(DBHandlerBase):
                 status = existing.get("HOST_TASK__NU_STATUS", k.TASK_PENDING)
 
                 if status in (k.TASK_PENDING, k.TASK_RUNNING):
-                    if log_if_active:
-                        self.log.entry(
-                            f"[DBHandlerBKP] Statistics HOST_TASK already active "
-                            f"(host={host_id}, ID={tid}, status={status}). No action taken."
-                        )
                     return tid
 
                 # Reactivate the existing singleton row instead of creating
@@ -1637,25 +1576,19 @@ class dbHandlerBKP(DBHandlerBase):
                     NA_MESSAGE=payload["NA_MESSAGE"],
                 )
 
-                self.log.entry(
-                    f"[DBHandlerBKP] Reactivated statistics HOST_TASK to PENDING "
-                    f"(host={host_id}, ID={tid})."
-                )
                 return tid
 
             task_id = self.host_task_create(**payload)
 
-            self.log.entry(
-                f"[DBHandlerBKP] Created statistics HOST_TASK "
-                f"(host={host_id}, ID={task_id})."
-            )
-
             return int(task_id)
 
         except Exception as e:
-            self.log.error(
-                f"[DBHandlerBKP] Failed to create statistics HOST_TASK "
-                f"(host={host_id}): {e}"
+            self._log_db_error(
+                "db_insert_failed",
+                operation="host_task_statistics_create",
+                table="HOST_TASK",
+                host_id=host_id,
+                error=repr(e),
             )
             return -1
 
@@ -1793,7 +1726,12 @@ class dbHandlerBKP(DBHandlerBase):
             if key in valid_fields:
                 set_dict[key] = value
             else:
-                self.log.warning(f"[DB] Ignored invalid field '{key}' in host_task_update().")
+                self._log_db_warning(
+                    "db_invalid_input",
+                    operation="host_task_update",
+                    table="HOST_TASK",
+                    error=f"Ignored invalid field '{key}'.",
+                )
 
         # Pending rows should not keep ownership PIDs; running rows should.
         if "NU_STATUS" in set_dict:
@@ -1812,7 +1750,12 @@ class dbHandlerBKP(DBHandlerBase):
             )
 
         if not set_dict:
-            self.log.warning(f"[DB] host_task_update() called with no valid fields for update.")
+            self._log_db_warning(
+                "db_invalid_input",
+                operation="host_task_update",
+                table="HOST_TASK",
+                error="No valid fields for update.",
+            )
             return {"success": False, "rows_affected": 0, "updated_fields": {}}
 
         where = where_dict if where_dict else {"ID_HOST_TASK": task_id}
@@ -1828,16 +1771,14 @@ class dbHandlerBKP(DBHandlerBase):
                 commit=True,
             )
 
-            msg_prefix = f"[DB] HOST_TASK update"
-            if task_id:
-                msg_prefix += f" (ID={task_id})"
-            elif where_dict:
-                msg_prefix += f" (WHERE={where_dict})"
-
             if rows_affected == 0:
-                self.log.warning(f"{msg_prefix}: no matching rows found.")
-            else:
-                self.log.entry(f"{msg_prefix}: {rows_affected} row(s) updated → {set_dict}")
+                self._log_db_warning(
+                    "db_update_no_match",
+                    operation="host_task_update",
+                    table="HOST_TASK",
+                    task_id=task_id,
+                    where_mode="task_id" if task_id is not None else "where_dict",
+                )
 
             host_scope_id = None
             if task_id is not None:
@@ -1854,39 +1795,16 @@ class dbHandlerBKP(DBHandlerBase):
 
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[DB] Failed to update HOST_TASK ({task_id or where_dict}): {e}")
+            self._log_db_error(
+                "db_update_failed",
+                operation="host_task_update",
+                table="HOST_TASK",
+                task_id=task_id,
+                error=repr(e),
+            )
             raise
 
             
-    def host_task_delete(self, task_id: int) -> bool:
-        """Delete one `HOST_TASK` row by primary key and report success."""
-        try:
-            self._connect()
-            host_scope_id = self._summary_lookup_host_task_host(task_id)
-            deleted = self._delete_row(
-                table="HOST_TASK",
-                where={"ID_HOST_TASK": task_id},
-                commit=True,
-            )
-
-            if deleted > 0:
-                self.log.entry(f"[DB] HOST_TASK {task_id} deleted successfully.")
-                self._summary_publish_host_scope(
-                    host_scope_id,
-                    reason="host_task_delete",
-                )
-                return True
-            else:
-                self.log.warning(f"[DB] HOST_TASK {task_id} not found for deletion.")
-                return False
-
-        except Exception as e:
-            self.db_connection.rollback()
-            self.log.error(f"[DB] Error deleting HOST_TASK {task_id}: {e}")
-            return False
-        finally:
-            self._disconnect()
-        
     def host_task_suspend_by_host(self, host_id: int) -> None:
         """
         Suspend host-dependent HOST_TASK entries for a specific host.
@@ -1929,13 +1847,18 @@ class dbHandlerBKP(DBHandlerBase):
                 )
 
             if affected:
-                self.log.entry(f"[DBHandlerBKP] Suspended {affected} HOST_TASK entries for host {host_id}.")
                 self._summary_publish_host_scope(
                     host_id,
                     reason="host_task_suspend_by_host",
                 )
         except Exception as e:
-            self.log.error(f"[DBHandlerBKP] Failed to suspend HOST_TASK entries for host {host_id}: {e}")
+            self._log_db_error(
+                "db_update_failed",
+                operation="host_task_suspend_by_host",
+                table="HOST_TASK",
+                host_id=host_id,
+                error=repr(e),
+            )
 
 
     def host_task_resume_by_host(
@@ -2035,22 +1958,18 @@ class dbHandlerBKP(DBHandlerBase):
             total_resumed = resumed_suspended + resumed_error + resumed_stale_running
 
             if total_resumed > 0:
-                self.log.entry(
-                    f"[DBHandlerBKP] Resumed {total_resumed} HOST_TASK entries for host {host_id} "
-                    f"(stale if > {busy_timeout_seconds}s)."
-                )
                 self._summary_publish_host_scope(
                     host_id,
                     reason="host_task_resume_by_host",
                 )
-            else:
-                self.log.entry(
-                    f"[DBHandlerBKP] No HOST_TASK entries required resumption for host {host_id}."
-                )
 
         except Exception as e:
-            self.log.error(
-                f"[DBHandlerBKP] Failed to resume HOST_TASK entries for host {host_id}: {e}"
+            self._log_db_error(
+                "db_update_failed",
+                operation="host_task_resume_by_host",
+                table="HOST_TASK",
+                host_id=host_id,
+                error=repr(e),
             )
 
 
@@ -2277,10 +2196,6 @@ class dbHandlerBKP(DBHandlerBase):
 
             self.db_connection.commit()
 
-            self.log.entry(
-                f"[file_task_create] Upserted {processed} FILE_TASK entries "
-                f"for host {host_id}"
-            )
             self._summary_publish_host_scope(
                 host_id,
                 reason="file_task_create",
@@ -2290,7 +2205,13 @@ class dbHandlerBKP(DBHandlerBase):
 
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[file_task_create] failed: {e}")
+            self._log_db_error(
+                "db_execute_failed",
+                operation="file_task_create",
+                table="FILE_TASK",
+                host_id=host_id,
+                error=repr(e),
+            )
             raise
 
         finally:
@@ -2338,7 +2259,12 @@ class dbHandlerBKP(DBHandlerBase):
         # Validate update fields
         # -------------------------------------------------
         if not kwargs:
-            self.log.warning("[DBHandlerBKP] No fields provided for file_task_update.")
+            self._log_db_warning(
+                "db_invalid_input",
+                operation="file_task_update",
+                table="FILE_TASK",
+                error="No fields provided for file_task_update.",
+            )
             self._disconnect()
             return {
                 "success": False,
@@ -2421,14 +2347,12 @@ class dbHandlerBKP(DBHandlerBase):
             )
 
             if affected != 1:
-                self.log.warning(
-                    f"[DBHandlerBKP] FILE_TASK update affected {affected} rows "
-                    f"(expected 1). WHERE={where_dict}"
-                )
-            else:
-                self.log.entry(
-                    f"[DBHandlerBKP] FILE_TASK updated successfully "
-                    f"WHERE={where_dict} | fields={list(kwargs.keys())}"
+                self._log_db_warning(
+                    "db_update_no_match",
+                    operation="file_task_update",
+                    table="FILE_TASK",
+                    task_id=task_id,
+                    rows_affected=affected,
                 )
 
             host_scope_id = host_id
@@ -2449,9 +2373,12 @@ class dbHandlerBKP(DBHandlerBase):
 
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(
-                f"[DBHandlerBKP] Failed to update FILE_TASK "
-                f"(WHERE={where_dict}): {e}"
+            self._log_db_error(
+                "db_update_failed",
+                operation="file_task_update",
+                table="FILE_TASK",
+                task_id=task_id,
+                error=repr(e),
             )
             raise
 
@@ -2575,18 +2502,18 @@ class dbHandlerBKP(DBHandlerBase):
                 )
 
             if affected:
-                self.log.entry(
-                    f"[DBHandlerBKP] Suspended {affected} HOST-dependent FILE_TASK entries "
-                    f"for host {host_id}."
-                )
                 self._summary_publish_host_scope(
                     host_id,
                     reason="file_task_suspend_by_host",
                 )
 
         except Exception as e:
-            self.log.error(
-                f"[DBHandlerBKP] Failed to suspend FILE_TASK entries for host {host_id}: {e}"
+            self._log_db_error(
+                "db_update_failed",
+                operation="file_task_suspend_by_host",
+                table="FILE_TASK",
+                host_id=host_id,
+                error=repr(e),
             )
 
  
@@ -2688,22 +2615,18 @@ class dbHandlerBKP(DBHandlerBase):
             total_resumed = resumed_suspended + resumed_error + resumed_stale_running
 
             if total_resumed > 0:
-                self.log.entry(
-                    f"[DBHandlerBKP] Resumed {total_resumed} FILE_TASK entries for host {host_id} "
-                    f"(stale if > {busy_timeout_seconds}s)."
-                )
                 self._summary_publish_host_scope(
                     host_id,
                     reason="file_task_resume_by_host",
                 )
-            else:
-                self.log.entry(
-                    f"[DBHandlerBKP] No FILE_TASK entries required resumption for host {host_id}."
-                )
 
         except Exception as e:
-            self.log.error(
-                f"[DBHandlerBKP] Failed to resume FILE_TASK entries for host {host_id}: {e}"
+            self._log_db_error(
+                "db_update_failed",
+                operation="file_task_resume_by_host",
+                table="FILE_TASK",
+                host_id=host_id,
+                error=repr(e),
             )
 
     def file_history_suspend_by_host(self, host_id: int, reason: str = None) -> None:
@@ -2758,18 +2681,18 @@ class dbHandlerBKP(DBHandlerBase):
             total_suspended = suspended_discovery + suspended_backup
 
             if total_suspended:
-                self.log.entry(
-                    f"[DBHandlerBKP] Suspended {total_suspended} FILE_TASK_HISTORY phases "
-                    f"(discovery + backup) for host {host_id}."
-                )
                 self._summary_publish_host_scope(
                     host_id,
                     reason="file_history_suspend_by_host",
                 )
 
         except Exception as e:
-            self.log.error(
-                f"[DBHandlerBKP] Failed to suspend FILE_TASK_HISTORY entries for host {host_id}: {e}"
+            self._log_db_error(
+                "db_update_failed",
+                operation="file_history_suspend_by_host",
+                table="FILE_TASK_HISTORY",
+                host_id=host_id,
+                error=repr(e),
             )
 
     def file_history_resume_by_host(
@@ -2834,64 +2757,22 @@ class dbHandlerBKP(DBHandlerBase):
             # 3) Final log
             # -------------------------------------------------------------
             if total_resumed > 0:
-                self.log.entry(
-                    f"[DBHandlerBKP] Resumed {total_resumed} FILE_TASK_HISTORY entries "
-                    f"(discovery + backup) for host {host_id}"
-                )
                 self._summary_publish_host_scope(
                     host_id,
                     reason="file_history_resume_by_host",
                 )
-            else:
-                self.log.entry(
-                    f"[DBHandlerBKP] No FILE_TASK_HISTORY entries required resumption for host {host_id}."
-                )
 
         except Exception as e:
-            self.log.error(
-                f"[DBHandlerBKP] Failed to resume FILE_TASK_HISTORY entries for host {host_id}: {e}"
+            self._log_db_error(
+                "db_update_failed",
+                operation="file_history_resume_by_host",
+                table="FILE_TASK_HISTORY",
+                host_id=host_id,
+                error=repr(e),
             )
 
 
             
-    def check_file_task(self, **kwargs) -> list[dict]:
-        """
-        Query `FILE_TASK` with dynamic equality filters.
-
-        This helper still exists for maintenance scripts that need a lightweight
-        FILE_TASK lookup without the heavier worker-oriented joins.
-        """
-        valid_fields = self.VALID_FIELDS_FILE_TASK
-        
-        self._connect()
-
-        where_clause = {}
-        for key, value in kwargs.items():
-            if key not in valid_fields:
-                raise ValueError(f"Invalid field in _check_file_history(): '{key}' is not a valid column.")
-            where_clause[key] = value
-
-        rows = self._select_rows(
-            table="FILE_TASK",
-            where=where_clause,
-            order_by="ID_FILE_TASK DESC",
-            cols=[
-                "ID_FILE_TASK",
-                "FK_HOST",
-                "DT_FILE_TASK",
-                "NA_HOST_FILE_PATH",
-                "NA_HOST_FILE_NAME",
-                "NU_TYPE",
-                "NU_STATUS",
-                "VL_FILE_SIZE_KB",
-                "NA_SERVER_FILE_PATH",
-                "NA_SERVER_FILE_NAME",
-                "NA_MESSAGE",
-            ],
-        )
-
-        return rows or None
-    
     def update_backlog_by_filter(
         self,
         host_id: int,
@@ -2954,9 +2835,6 @@ class dbHandlerBKP(DBHandlerBase):
 
             # Some filter combinations intentionally resolve to "no-op".
             if not where:
-                self.log.entry(
-                    "[update_backlog_by_filter] Filter resolved to no-op. Skipping UPDATE."
-                )
                 return summary
 
             sql_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -3000,10 +2878,6 @@ class dbHandlerBKP(DBHandlerBase):
                 summary["selected_total_kb"] = selected_total_kb
 
                 if not selected_ids:
-                    self.log.entry(
-                        "[update_backlog_by_filter] Budget-limited promotion selected no rows "
-                        f"(host_id={host_id}, max_total_kb={max_total_kb})"
-                    )
                     return summary
 
                 update_where = dict(where)
@@ -3031,11 +2905,6 @@ class dbHandlerBKP(DBHandlerBase):
             elif new_type == k.FILE_TASK_DISCOVERY:
                 summary["moved_to_discovery"] = rows_updated
 
-            self.log.entry(
-                f"[update_backlog_by_filter] Updated {rows_updated} FILE_TASK rows "
-                f"(new_type={new_type}, new_status={new_status}, "
-                f"selected_total_kb={summary['selected_total_kb']}) for host {host_id}"
-            )
             if rows_updated > 0:
                 self._summary_publish_host_scope(
                     host_id,
@@ -3046,7 +2915,13 @@ class dbHandlerBKP(DBHandlerBase):
 
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[update_backlog_by_filter] Failed: {e}")
+            self._log_db_error(
+                "db_update_failed",
+                operation="update_backlog_by_filter",
+                table="FILE_TASK",
+                host_id=host_id,
+                error=repr(e),
+            )
             raise
 
         finally:
@@ -3132,10 +3007,6 @@ class dbHandlerBKP(DBHandlerBase):
 
             self.db_connection.commit()
 
-            self.log.entry(
-                f"[file_history_create] Upserted {processed} FILE_TASK_HISTORY entries "
-                f"for host {host_id}"
-            )
             self._summary_publish_host_scope(
                 host_id,
                 reference_months=[
@@ -3149,7 +3020,13 @@ class dbHandlerBKP(DBHandlerBase):
 
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[file_history_create] failed: {e}")
+            self._log_db_error(
+                "db_execute_failed",
+                operation="file_history_create",
+                table="FILE_TASK_HISTORY",
+                host_id=host_id,
+                error=repr(e),
+            )
             raise
 
         finally:
@@ -3309,9 +3186,11 @@ class dbHandlerBKP(DBHandlerBase):
             )
 
             if affected_rows != 1:
-                self.log.warning(
-                    f"[DBHandlerBKP] FILE_TASK_HISTORY update affected {affected_rows} rows "
-                    f"(expected 1). WHERE={where_dict}"
+                self._log_db_warning(
+                    "db_update_no_match",
+                    operation="file_history_update",
+                    table="FILE_TASK_HISTORY",
+                    rows_affected=affected_rows,
                 )
             elif not getattr(self, "in_transaction", False):
                 self._summary_publish_host_scope(
@@ -3329,9 +3208,11 @@ class dbHandlerBKP(DBHandlerBase):
 
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(
-                f"[DBHandlerBKP] Failed to update FILE_TASK_HISTORY "
-                f"(WHERE={where_dict}): {e}"
+            self._log_db_error(
+                "db_update_failed",
+                operation="file_history_update",
+                table="FILE_TASK_HISTORY",
+                error=repr(e),
             )
             raise
 

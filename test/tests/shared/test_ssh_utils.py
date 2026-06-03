@@ -99,6 +99,16 @@ class FakeTransferLog:
             message = f"{message} {kwargs}".strip()
         self.entries.append(message)
 
+    def warning_event(self, message: str = "", **kwargs) -> None:
+        if kwargs:
+            message = f"{message} {kwargs}".strip()
+        self.warnings.append(message)
+
+    def error_event(self, message: str = "", **kwargs) -> None:
+        if kwargs:
+            message = f"{message} {kwargs}".strip()
+        self.errors.append(message)
+
     def error(self, message: str) -> None:
         self.errors.append(message)
 
@@ -119,13 +129,22 @@ class SshConnectionResolutionTests(unittest.TestCase):
             "SSHClient",
             return_value=fake_client,
         ):
+            fake_log = type(
+                "FakeLog",
+                (),
+                {
+                    "event": lambda *a, **k: None,
+                    "warning_event": lambda *a, **k: None,
+                    "error_event": lambda *a, **k: None,
+                },
+            )()
             conn = ssh_utils.sftpConnection(
                 host_uid="RFEye002158",
                 host_addr="172.24.1.147",
                 port=2828,
                 user="root",
                 password="secret",
-                log=type("FakeLog", (), {"entry": lambda *a, **k: None, "error": lambda *a, **k: None})(),
+                log=fake_log,
             )
 
         self.assertEqual(conn.connect_addr, "172.24.1.147")

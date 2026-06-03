@@ -15,7 +15,10 @@ import os
 import signal
 import subprocess
 import time
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from shared.logging_utils import log as logger_type
 
 
 def wake_selector(write_fd: int) -> None:
@@ -34,7 +37,7 @@ def wake_selector(write_fd: int) -> None:
 def stop_self_service(
     *,
     script_name: str,
-    logger: Any,
+    logger: logger_type,
     grace_seconds: float = 2.0,
 ) -> None:
     """
@@ -69,7 +72,12 @@ def stop_self_service(
         current_pid = os.getpid()
 
         if not pids:
-            logger.event("service_stop_scan_empty", script_name=script_name)
+            logger.event(
+                "service_stop_scan_empty",
+                component="process_control",
+                operation="stop_self_service",
+                script_name=script_name,
+            )
             return
 
         # Phase 1: ask sibling processes to stop cleanly first.
@@ -81,6 +89,8 @@ def stop_self_service(
                 os.kill(pid, signal.SIGTERM)
                 logger.event(
                     "service_stop_signal_sent",
+                    component="process_control",
+                    operation="stop_self_service",
                     signal="SIGTERM",
                     pid=pid,
                 )
@@ -89,6 +99,8 @@ def stop_self_service(
             except Exception as exc:
                 logger.warning_event(
                     "service_stop_signal_failed",
+                    component="process_control",
+                    operation="stop_self_service",
                     signal="SIGTERM",
                     pid=pid,
                     error=exc,
@@ -112,6 +124,8 @@ def stop_self_service(
             os.kill(pid, signal.SIGKILL)
             logger.warning_event(
                 "service_stop_signal_sent",
+                component="process_control",
+                operation="stop_self_service",
                 signal="SIGKILL",
                 pid=pid,
             )
@@ -121,6 +135,8 @@ def stop_self_service(
         # process-control cleanup raise back into the caller.
         logger.error_event(
             "service_stop_failed",
+            component="process_control",
+            operation="stop_self_service",
             script_name=script_name,
             error=exc,
         )

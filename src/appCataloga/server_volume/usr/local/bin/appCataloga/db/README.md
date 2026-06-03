@@ -126,7 +126,6 @@ Main interface groups:
 Host operations:
 
 - `host_upsert()`
-- `host_read_access()`
 - `host_read_status()`
 - `get_last_discovery()`
 - `host_release_by_pid()`
@@ -144,7 +143,6 @@ Host task operations:
 - `host_task_statistics_create()`
 - `host_task_read()`
 - `host_task_update()`
-- `host_task_delete()`
 - `host_task_suspend_by_host()`
 - `host_task_resume_by_host()`
 
@@ -156,7 +154,6 @@ File task operations:
 - `file_task_delete()`
 - `file_task_suspend_by_host()`
 - `file_task_resume_by_host()`
-- `check_file_task()`
 - `update_backlog_by_filter()`
 
 File history operations:
@@ -235,9 +232,6 @@ File and spectrum registration:
 - `insert_bridge_spectrum_file()`
 
 Publication support:
-
-- `export_parquet()`
-- `get_latest_processing_time()`
 
 Operational notes:
 

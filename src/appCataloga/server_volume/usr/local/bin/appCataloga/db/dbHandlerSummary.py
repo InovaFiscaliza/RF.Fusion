@@ -81,7 +81,6 @@ class dbHandlerSummary(DBHandlerBase):
             log=log,
             reuse_connection=reuse_connection,
         )
-        self.log.entry(f"[dbHandlerSummary] Initialized for DB '{database}'")
         self.in_transaction: bool = False
 
     def begin_transaction(self) -> None:
@@ -836,7 +835,13 @@ class dbHandlerSummary(DBHandlerBase):
                     f"live_columns={live_col_names} "
                     f"shadow_columns={shadow_col_names}"
                 )
-                self.log.error(f"[dbHandlerSummary] {message}")
+                self._log_db_error(
+                    "db_schema_drift_detected",
+                    operation="replace_table_rows",
+                    table=table,
+                    shadow_table=shadow,
+                    error=message,
+                )
                 raise RuntimeError(message)
 
             # TRUNCATE is DDL → implicit commit; shadow is guaranteed empty from here.

@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Tuple
 from datetime import datetime
-import pandas as pd
 import unicodedata
 import re
 
@@ -41,7 +40,6 @@ class dbHandlerRFM(DBHandlerBase):
             log=log,
             reuse_connection=reuse_connection,
         )
-        self.log.entry(f"[dbHandlerRFM] Initialized for DB '{database}'")
         self.in_transaction: bool = False
         
     
@@ -126,11 +124,15 @@ class dbHandlerRFM(DBHandlerBase):
                 commit=not self.in_transaction,
             )
         except Exception as exc:
-            if hasattr(self.log, "warning"):
-                self.log.warning(
-                    f"[dbHandlerRFM] Failed to enqueue SUMMARY dirty scope "
-                    f"(sites={site_ids}, equipments={equipment_ids}, reason={reason}): {exc}"
-                )
+            self._log_db_warning(
+                "summary_scope_publish_failed",
+                operation="summary_publish_scope",
+                reason=reason,
+                site_ids=site_ids,
+                equipment_ids=equipment_ids,
+                error=repr(exc),
+                full_reconcile=full_reconcile,
+            )
  
         
     # ======================================================================
@@ -438,12 +440,6 @@ class dbHandlerRFM(DBHandlerBase):
                 commit=not self.in_transaction,
             )
 
-            if hasattr(self, "log"):
-                self.log.entry(
-                    f"[dbHandlerRFM] Refreshed geography for site ID={site_id} "
-                    f"(state={db_state_id}, county={db_county_id}, district={db_district_id})"
-                )
-
             self._summary_publish_scope(
                 site_ids=[int(site_id)],
                 reason="refresh_site_geography",
@@ -542,12 +538,6 @@ class dbHandlerRFM(DBHandlerBase):
 
             site_id = int(self.cursor.lastrowid)
 
-            if hasattr(self, "log"):
-                self.log.entry(
-                    f"[DBHandlerRFM] Inserted site ID={site_id} "
-                    f"({data['latitude']}, {data['longitude']})"
-                )
-
             self._summary_publish_scope(
                 site_ids=[site_id],
                 reason="insert_site",
@@ -627,11 +617,6 @@ class dbHandlerRFM(DBHandlerBase):
                     "existing_gnss": db_nu_gnss,
                     "limit": int(k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS),
                 }
-                if log_result and hasattr(self, "log"):
-                    self.log.entry(
-                        f"Site {site} reached {db_nu_gnss} GNSS measurements "
-                        f"(limit={k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS}). No update performed."
-                    )
                 return result
 
             # Fold the new samples into the historical centroid using the
@@ -667,13 +652,6 @@ class dbHandlerRFM(DBHandlerBase):
                 "total_gnss": int(nu_total),
                 "previous_gnss": db_nu_gnss,
             }
-            if log_result and hasattr(self, "log"):
-                self.log.entry(
-                    f"Updated site {site}: "
-                    f"lat={new_latitude:.6f}, "
-                    f"lon={new_longitude:.6f}, "
-                    f"alt={new_altitude:.2f}"
-                )
             self._summary_publish_scope(
                 site_ids=[int(site)],
                 reason="update_site",
@@ -1648,92 +1626,3 @@ class dbHandlerRFM(DBHandlerBase):
                 self._disconnect()
 
     
-    # ======================================================================
-    # PARQUET OPERATIONS
-    # ======================================================================
-    def export_parquet(self, file_name: str) -> None:
-        """Export every table from the current schema as Parquet files.
-
-        This is used by the metadata publisher to materialize a filesystem
-        snapshot of the current RFDATA schema.
-        """
-        try:
-            self._connect()
-
-            # Export the whole schema table by table so a failure in one table
-            # does not discard the others.
-            self.cursor.execute("SHOW TABLES;")
-            tables = [t[0] for t in self.cursor.fetchall()]
-
-            if not tables:
-                raise Exception("No tables found in the current database schema.")
-
-            for table_name in tables:
-                try:
-                    # Read rows and column names separately so the Parquet file
-                    # preserves the live table layout without hardcoded schema.
-                    query = f"SELECT * FROM {table_name};"
-                    self.cursor.execute(query)
-                    table_data = self.cursor.fetchall()
-
-                    self.cursor.execute(f"SHOW COLUMNS FROM {table_name};")
-                    columns = [c[0] for c in self.cursor.fetchall()]
-
-                    table_df = pd.DataFrame(table_data, columns=columns)
-                    table_df = table_df.fillna("na")
-
-                    composed_file_name = f"{file_name}.{table_name}.parquet"
-
-                    table_df.to_parquet(composed_file_name)
-
-                    if hasattr(self, "log"):
-                        self.log.entry(f"[EXPORT] Table '{table_name}' → {composed_file_name}")
-
-                except Exception as e:
-                    if hasattr(self, "log"):
-                        self.log.error(f"[EXPORT] Failed exporting '{table_name}': {e}")
-                    # Keep exporting the remaining tables.
-                    continue
-
-        except Exception as e:
-            raise Exception(f"Error exporting database to parquet: {e}")
-
-        finally:
-            try:
-                self._disconnect()
-            except Exception:
-                pass
-
-
-    def get_latest_processing_time(self):
-        """Return the newest `DT_FILE_LOGGED` value as a UNIX timestamp.
-
-        The metadata publisher compares this value with filesystem mtimes to
-        decide whether a new Parquet export is needed.
-        """
-        try:
-            self._connect()
-
-            # A single aggregate is enough here; the caller only needs a
-            # coarse "database changed or not" signal.
-            rows = self._select_rows(
-                table="DIM_SPECTRUM_FILE",
-                cols=["MAX(DT_FILE_LOGGED) AS LATEST"],
-                limit=1
-            )
-
-            if not rows or not rows[0]["LATEST"]:
-                return None
-
-            latest = rows[0]["LATEST"]
-            # Match the publisher's use of filesystem mtimes when possible.
-            return latest.timestamp() if hasattr(latest, "timestamp") else latest
-
-        except Exception as e:
-            raise Exception(f"Error getting latest processing time: {e}")
-
-        finally:
-            try:
-                self._disconnect()
-            except Exception:
-                pass

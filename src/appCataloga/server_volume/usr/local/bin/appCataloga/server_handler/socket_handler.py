@@ -22,7 +22,12 @@ from __future__ import annotations
 import json
 import os
 import socket
-from typing import Any, Protocol, TypeAlias
+from typing import Any, Protocol, TYPE_CHECKING, TypeAlias
+
+if TYPE_CHECKING:
+    from db.dbHandlerBKP import dbHandlerBKP
+    from shared.errors import ErrorHandler
+    from shared.logging_utils import log as logger_type
 
 
 SocketPayload: TypeAlias = dict[str, Any]
@@ -42,10 +47,16 @@ class HostRequestHandler(Protocol):
     def __call__(
         self,
         host: HostRequest,
-        err: Any,
-        db: Any,
+        err: ErrorHandler,
+        db: dbHandlerBKP,
     ) -> RequestResult:
         ...
+
+
+class ErrorsModule(Protocol):
+    """Minimal module contract required by the socket transport layer."""
+
+    ErrorHandler: type[ErrorHandler]
 
 
 def open_listening_socket(*, port: int, backlog: int) -> socket.socket:
@@ -77,7 +88,7 @@ def parse_socket_message(
     peername: tuple[str, int],
     data: str,
     none_filter: dict,
-    logger: Any,
+    logger: logger_type,
 ) -> HostRequest:
     """
     Parse one short TCP request received by the appCataloga control socket.
@@ -121,7 +132,16 @@ def parse_socket_message(
     except Exception as exc:
         # Parsing failures are normalized instead of raised so the caller can
         # keep all request errors on one response path.
-        logger.entry(f"[parse_socket_message] JSON parse failed: {exc} | raw={data}")
+        logger.warning_event(
+            "socket_message_parse_failed",
+            component="socket_handler",
+            operation="parse_message",
+            peer_ip=peer_ip,
+            peer_port=peer_port,
+            payload_size=len(data),
+            reason="invalid_json_payload",
+            error=exc,
+        )
         return {
             "peer": {"ip": peer_ip, "port": peer_port},
             "command": None,
@@ -164,7 +184,7 @@ def send_response(
     client_socket: socket.socket,
     payload: SocketPayload,
     peer_ip: str,
-    logger: Any,
+    logger: logger_type,
     start_tag: str,
     end_tag: str,
 ) -> None:
@@ -177,16 +197,27 @@ def send_response(
     try:
         framed = frame_payload(payload, start_tag=start_tag, end_tag=end_tag)
         client_socket.sendall(framed.encode("utf-8"))
-        logger.event("response_sent", peer_ip=peer_ip)
+        logger.event(
+            "response_sent",
+            component="socket_handler",
+            operation="send_response",
+            peer_ip=peer_ip,
+        )
     except Exception as exc:
-        logger.warning_event("response_send_failed", peer_ip=peer_ip, error=exc)
+        logger.warning_event(
+            "response_send_failed",
+            component="socket_handler",
+            operation="send_response",
+            peer_ip=peer_ip,
+            error=exc,
+        )
 
 
 def read_host_request(
     *,
     client_socket: socket.socket,
-    logger: Any,
-    err,
+    logger: logger_type,
+    err: ErrorHandler,
     none_filter: dict,
 ) -> HostRequest:
     """
@@ -215,9 +246,9 @@ def finalize_client_request(
     client_socket: socket.socket,
     peer_ip: str,
     response_payload: SocketPayload,
-    err,
+    err: ErrorHandler,
     host_id: int | None,
-    logger: Any,
+    logger: logger_type,
     start_tag: str,
     end_tag: str,
 ) -> None:
@@ -255,9 +286,9 @@ def serve_client_request(
     *,
     client_socket: socket.socket,
     handle_host_request: HostRequestHandler,
-    db: Any,
-    logger: Any,
-    errors_module,
+    db: dbHandlerBKP,
+    logger: logger_type,
+    errors_module: ErrorsModule,
     none_filter: dict,
     start_tag: str,
     end_tag: str,
@@ -318,9 +349,9 @@ def handle_ready_server_socket(
     server_socket: socket.socket,
     process_status: dict,
     handle_host_request: HostRequestHandler,
-    db: Any,
-    logger: Any,
-    errors_module,
+    db: dbHandlerBKP,
+    logger: logger_type,
+    errors_module: ErrorsModule,
     none_filter: dict,
     shutdown_payload: SocketPayload,
     start_tag: str,
@@ -340,7 +371,12 @@ def handle_ready_server_socket(
         if process_status["running"]:
             # Normal service path: accept one client and execute the full
             # request lifecycle synchronously.
-            logger.event("client_connected", client_address=client_address)
+            logger.event(
+                "client_connected",
+                component="socket_handler",
+                operation="accept_client",
+                client_address=client_address,
+            )
             serve_client_request(
                 client_socket=client_socket,
                 handle_host_request=handle_host_request,

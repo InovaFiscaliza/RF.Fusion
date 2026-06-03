@@ -288,6 +288,25 @@ class log:
 
         return str(value)
 
+    @staticmethod
+    def _normalize_phase_timings(phase_durations: dict | None) -> dict:
+        """
+        Convert one phase-duration mapping into `<phase>_sec` log fields.
+        """
+        if not isinstance(phase_durations, dict):
+            return {}
+
+        normalized = {}
+        for phase_name, duration in phase_durations.items():
+            if duration is None:
+                continue
+            key = re.sub(r"[^A-Za-z0-9_]+", "_", str(phase_name)).strip("_")
+            if not key:
+                continue
+            normalized[f"{key}_sec"] = duration
+
+        return normalized
+
     def format_event(self, event: str, **fields) -> str:
         """
         Build a structured event message in `event=... key=value` format.
@@ -362,6 +381,178 @@ class log:
         Write a standard service stop event.
         """
         self.event("service_stop", service=service, **fields)
+
+    def task_claimed(
+        self,
+        service: str,
+        *,
+        host_id=None,
+        task_id=None,
+        task_type=None,
+        worker_id=None,
+        file=None,
+        **fields,
+    ) -> None:
+        """
+        Write the canonical event for one claimed queue row.
+        """
+        self.event(
+            "task_claimed",
+            service=service,
+            host_id=host_id,
+            task_id=task_id,
+            task_type=task_type,
+            worker_id=worker_id,
+            file=file,
+            **fields,
+        )
+
+    def task_done(
+        self,
+        service: str,
+        *,
+        host_id=None,
+        task_id=None,
+        task_type=None,
+        worker_id=None,
+        file=None,
+        elapsed_sec=None,
+        **fields,
+    ) -> None:
+        """
+        Write the canonical event for one successfully completed queue row.
+        """
+        self.event(
+            "task_done",
+            service=service,
+            host_id=host_id,
+            task_id=task_id,
+            task_type=task_type,
+            worker_id=worker_id,
+            file=file,
+            elapsed_sec=elapsed_sec,
+            **fields,
+        )
+
+    def task_phase(
+        self,
+        service: str,
+        *,
+        host_id=None,
+        task_id=None,
+        task_type=None,
+        worker_id=None,
+        file=None,
+        phase=None,
+        elapsed_sec=None,
+        since_start_sec=None,
+        **fields,
+    ) -> None:
+        """
+        Write the canonical intermediate progress event for one task phase.
+        """
+        self.event(
+            "task_phase",
+            service=service,
+            host_id=host_id,
+            task_id=task_id,
+            task_type=task_type,
+            worker_id=worker_id,
+            file=file,
+            phase=phase,
+            elapsed_sec=elapsed_sec,
+            since_start_sec=since_start_sec,
+            **fields,
+        )
+
+    def task_error(
+        self,
+        service: str,
+        *,
+        host_id=None,
+        task_id=None,
+        task_type=None,
+        worker_id=None,
+        file=None,
+        stage=None,
+        error=None,
+        **fields,
+    ) -> None:
+        """
+        Write the canonical event for one terminal task failure.
+        """
+        self.error_event(
+            "task_error",
+            service=service,
+            host_id=host_id,
+            task_id=task_id,
+            task_type=task_type,
+            worker_id=worker_id,
+            file=file,
+            stage=stage,
+            error=error,
+            **fields,
+        )
+
+    def task_frozen(
+        self,
+        service: str,
+        *,
+        host_id=None,
+        task_id=None,
+        task_type=None,
+        worker_id=None,
+        file=None,
+        stage=None,
+        error=None,
+        **fields,
+    ) -> None:
+        """
+        Write the canonical event for one task frozen for manual review.
+        """
+        self.warning_event(
+            "task_frozen",
+            service=service,
+            host_id=host_id,
+            task_id=task_id,
+            task_type=task_type,
+            worker_id=worker_id,
+            file=file,
+            stage=stage,
+            error=error,
+            **fields,
+        )
+
+    def task_phase_timings(
+        self,
+        service: str,
+        *,
+        host_id=None,
+        task_id=None,
+        task_type=None,
+        worker_id=None,
+        file=None,
+        outcome: str,
+        total_sec: float,
+        phase_durations: dict | None = None,
+        **fields,
+    ) -> None:
+        """
+        Write the canonical timing event for one task iteration.
+        """
+        self.event(
+            "task_phase_timings",
+            service=service,
+            host_id=host_id,
+            task_id=task_id,
+            task_type=task_type,
+            worker_id=worker_id,
+            file=file,
+            outcome=outcome,
+            total_sec=round(total_sec, 3),
+            **self._normalize_phase_timings(phase_durations),
+            **fields,
+        )
 
     def signal_received(self, signal_name: str, **fields) -> None:
         """

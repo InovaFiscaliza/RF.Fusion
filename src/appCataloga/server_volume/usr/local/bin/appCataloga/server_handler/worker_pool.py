@@ -22,10 +22,13 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from shared.logging_utils import log as logger_type
 
 
-def extract_worker_id_from_cmdline(args: list, process_filename: str):
+def extract_worker_id_from_cmdline(args: list, process_filename: str) -> int | None:
     """
     Resolve the worker ID represented by a process command line.
 
@@ -95,7 +98,7 @@ def list_running_worker_processes(process_filename: str) -> list[tuple[int, int]
     return sorted(set(processes), key=lambda item: (item[1], item[0]))
 
 
-def list_running_workers(process_filename: str, *, logger: Any) -> list[int]:
+def list_running_workers(process_filename: str, *, logger: logger_type) -> list[int]:
     """
     Return the currently running worker IDs for a worker script.
 
@@ -105,7 +108,13 @@ def list_running_workers(process_filename: str, *, logger: Any) -> list[int]:
     workers = sorted(
         {worker_id for _, worker_id in list_running_worker_processes(process_filename)}
     )
-    logger.event("worker_pool_scan", active_workers=workers)
+    logger.event(
+        "worker_pool_scan",
+        component="worker_pool",
+        operation="scan",
+        script_name=process_filename,
+        active_workers=workers,
+    )
     return workers
 
 
@@ -113,7 +122,7 @@ def broadcast_shutdown_to_worker_pool(
     signal_name: str,
     *,
     process_status: dict,
-    logger: Any,
+    logger: logger_type,
     script_path: str,
 ) -> None:
     """
@@ -138,9 +147,14 @@ def broadcast_shutdown_to_worker_pool(
     if not targets:
         return
 
-    logger.warning(
-        f"event=worker_pool_shutdown_broadcast signal={signal_name} "
-        f"sender_pid={current_pid} targets={targets}"
+    logger.event(
+        "worker_pool_shutdown_broadcast",
+        component="worker_pool",
+        operation="broadcast_shutdown",
+        script_name=script_name,
+        signal=signal_name,
+        pid=current_pid,
+        targets=targets,
     )
 
     # The broadcast is intentionally one-way and best effort. Workers may have
@@ -151,9 +165,14 @@ def broadcast_shutdown_to_worker_pool(
         except ProcessLookupError:
             continue
         except Exception as e:
-            logger.warning(
-                f"event=worker_pool_shutdown_broadcast_failed "
-                f"target_pid={pid} worker_id={worker_id} error={e}"
+            logger.warning_event(
+                "worker_pool_shutdown_broadcast_failed",
+                component="worker_pool",
+                operation="broadcast_shutdown",
+                script_name=script_name,
+                pid=pid,
+                worker_id=worker_id,
+                error=e,
             )
 
 
@@ -162,7 +181,7 @@ def spawn_additional_worker(
     *,
     script_path: str,
     max_workers: int,
-    logger: Any,
+    logger: logger_type,
 ) -> None:
     """
     Spawn the next detached worker if the pool still has capacity.
@@ -188,12 +207,30 @@ def spawn_additional_worker(
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        logger.event("worker_spawned", worker_id=next_worker)
+        logger.event(
+            "worker_spawned",
+            component="worker_pool",
+            operation="spawn",
+            script_name=os.path.basename(script_path),
+            worker_id=next_worker,
+        )
     except Exception as e:
-        logger.error(f"event=worker_spawn_failed worker_id={next_worker} error={e}")
+        logger.error_event(
+            "worker_spawn_failed",
+            component="worker_pool",
+            operation="spawn",
+            script_name=os.path.basename(script_path),
+            worker_id=next_worker,
+            error=e,
+        )
 
 
-def spawn_specific_worker(worker_id: int, *, script_path: str, logger: Any) -> bool:
+def spawn_specific_worker(
+    worker_id: int,
+    *,
+    script_path: str,
+    logger: logger_type,
+) -> bool:
     """
     Spawn a specific worker ID when a gap in the pool must be repaired.
 
@@ -207,12 +244,24 @@ def spawn_specific_worker(worker_id: int, *, script_path: str, logger: Any) -> b
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        logger.event("worker_spawned", worker_id=worker_id, reason="pool_recovery")
+        logger.event(
+            "worker_spawned",
+            component="worker_pool",
+            operation="spawn",
+            script_name=os.path.basename(script_path),
+            worker_id=worker_id,
+            reason="pool_recovery",
+        )
         return True
     except Exception as e:
-        logger.error(
-            f"event=worker_spawn_failed worker_id={worker_id} "
-            f"reason=pool_recovery error={e}"
+        logger.error_event(
+            "worker_spawn_failed",
+            component="worker_pool",
+            operation="spawn",
+            script_name=os.path.basename(script_path),
+            worker_id=worker_id,
+            reason="pool_recovery",
+            error=e,
         )
         return False
 
@@ -222,7 +271,7 @@ def maybe_spawn_next_worker(
     *,
     script_path: str,
     max_workers: int,
-    logger: Any,
+    logger: logger_type,
 ) -> None:
     """
     Expand the pool only when the current highest worker is already busy.
@@ -257,8 +306,13 @@ def maybe_spawn_next_worker(
         )
 
     except Exception as e:
-        logger.warning(
-            f"event=worker_pool_scale_out_failed worker_id={worker_id} error={e}"
+        logger.warning_event(
+            "worker_pool_scale_out_failed",
+            component="worker_pool",
+            operation="scale_out",
+            script_name=os.path.basename(script_path),
+            worker_id=worker_id,
+            error=e,
         )
 
 
@@ -269,7 +323,7 @@ def ensure_seed_worker_alive(
     script_path: str,
     max_workers: int,
     retry_seconds: float,
-    logger: Any,
+    logger: logger_type,
 ) -> bool:
     """
     Ensure worker 0 exists so the on-demand pool can recover itself.
@@ -314,15 +368,24 @@ def ensure_seed_worker_alive(
         # Only one worker should attempt the repair, and only after the retry
         # window opens, otherwise the pool can thrash on repeated spawn tries.
         process_status["seed_recovery_last_attempt"] = now
-        logger.warning(
-            f"event=worker_seed_missing worker_id={worker_id} "
-            f"active_workers={current_workers}"
+        logger.warning_event(
+            "worker_seed_missing",
+            component="worker_pool",
+            operation="ensure_seed_worker_alive",
+            script_name=os.path.basename(script_path),
+            worker_id=worker_id,
+            active_workers=current_workers,
         )
         return spawn_specific_worker(0, script_path=script_path, logger=logger)
 
     except Exception as e:
-        logger.warning(
-            f"event=worker_seed_guard_failed worker_id={worker_id} error={e}"
+        logger.warning_event(
+            "worker_seed_guard_failed",
+            component="worker_pool",
+            operation="ensure_seed_worker_alive",
+            script_name=os.path.basename(script_path),
+            worker_id=worker_id,
+            error=e,
         )
         return False
 
@@ -333,7 +396,7 @@ def should_retire_idle_worker(
     *,
     script_path: str,
     idle_exit_cycles: int,
-    logger: Any,
+    logger: logger_type,
 ) -> bool:
     """
     Decide whether an extra worker should exit after repeated idle polls.

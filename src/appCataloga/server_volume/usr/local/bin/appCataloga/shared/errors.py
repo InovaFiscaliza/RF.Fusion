@@ -20,8 +20,8 @@ import socket
 import sys
 import os
 import paramiko
-from . import constants
-from typing import Any, Dict, NamedTuple, Optional
+from . import constants, file_utils
+from typing import Any, Dict, NamedTuple, Optional, Protocol
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 
@@ -40,6 +40,13 @@ if CONFIG_PATH not in sys.path:
     sys.path.insert(0, CONFIG_PATH)
 
 import config as k  # noqa: E402  (must be available at runtime)
+
+
+class ErrorEventLogger(Protocol):
+    """Minimal logger contract required by `ErrorHandler`."""
+
+    def error_event(self, event: str, **fields: Any) -> None:
+        ...
 
 
 ERROR_CLASSIFIER_VERSION = 1
@@ -759,6 +766,32 @@ class AppAnaliseReadTimeoutError(Exception):
     pass
 
 
+PROCESSING_FREEZE_DETAILS = {
+    AppAnaliseReadTimeoutError: "APP_ANALISE read timeout, task frozen for manual review",
+    AppAnaliseFileUnavailableError: "APP_ANALISE file unavailable, task frozen for manual review",
+    ExternalServiceTransientError: "Transient appAnalise service failure, task frozen for manual review",
+}
+
+
+def should_freeze_processing_task(exc: BaseException | None) -> bool:
+    """Return whether one processing failure should freeze the task."""
+    return (
+        isinstance(exc, tuple(PROCESSING_FREEZE_DETAILS.keys()))
+        or file_utils.is_transient_filesystem_error(exc)
+    )
+
+
+def freeze_processing_detail(exc: BaseException | None) -> str:
+    """Return the operator-facing freeze detail for one processing failure."""
+    if exc is not None:
+        detail = PROCESSING_FREEZE_DETAILS.get(type(exc))
+        if detail:
+            return detail
+        if file_utils.is_transient_filesystem_error(exc):
+            return "Transient filesystem finalization failure, task frozen for manual review"
+    return "Task frozen for manual review"
+
+
 AUTH_TIMEOUT_MESSAGE_SNIPPETS = (
     "authentication timeout",
     "auth timeout",
@@ -854,7 +887,7 @@ class ErrorHandler:
         - let the caller decide later whether to log, persist, or both
     """
 
-    def __init__(self, log):
+    def __init__(self, log: "ErrorEventLogger"):
         self.logger = log
         self.reason = None
         self.stage = None
@@ -925,37 +958,28 @@ class ErrorHandler:
                 merged_context[str(key)] = value
 
         payload = {
+            "component": "shared_errors",
+            "operation": "log_error",
             "stage": self.stage,
             "reason": self.reason or "Unknown error",
             "error_type": type(self.exc).__name__ if self.exc else "Unknown",
         }
+        error_code, _, detail = _canonicalize_error_reason(
+            self.reason,
+            self.exc,
+            stage=self.stage,
+        )
+        if error_code:
+            payload["error_code"] = error_code
+        if detail:
+            payload["error_detail"] = detail
         payload.update(merged_context)
 
         if self.exc is not None:
             payload["exception"] = repr(self.exc)
 
-        # Prefer the richer structured logger when available, but keep a
-        # readable fallback for plain logger implementations used in tests or
-        # stripped-down environments.
-        if hasattr(self.logger, "error_event"):
-            self.logger.error_event("error_handler_triggered", **payload)
-            return
+        self.logger.error_event("error_handler_triggered", **payload)
 
-        parts = ["[ERROR_HANDLER]"]
-
-        if self.stage:
-            parts.append(f"[{self.stage}]")
-
-        for key, value in merged_context.items():
-            parts.append(f"[{key}={value}]")
-
-        parts.append(self.reason or "Unknown error")
-
-        if self.exc:
-            parts.append(f"Exception: {repr(self.exc)}")
-
-        self.logger.error(" ".join(parts))
-        
     def _format_structured_error(
         self,
         *,

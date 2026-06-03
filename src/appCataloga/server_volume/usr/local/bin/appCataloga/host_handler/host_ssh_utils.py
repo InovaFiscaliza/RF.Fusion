@@ -25,6 +25,7 @@ from shared.file_metadata import FileMetadata
 from shared.logging_utils import log
 
 
+
 # ---------------------------------------------------------------------
 # Config import path (as in original code). We keep the behavior so the
 # module remains drop-in compatible with existing deployments.
@@ -42,6 +43,7 @@ import config as k  # noqa: E402  (must be available at runtime)
 
 if TYPE_CHECKING:
     from db.dbHandlerBKP import dbHandlerBKP
+    from shared.logging_utils import log as logger_type
 
 
 
@@ -128,7 +130,7 @@ def persist_auth_error(
     task: dict,
     detail: str,
     *,
-    logger: Any,
+    logger: logger_type,
 ) -> tuple[int, str]:
     """
     Suspend host-dependent work after an SSH authentication failure.
@@ -167,6 +169,28 @@ def persist_auth_error(
 # =====================================================================
 class sftpConnection:
     """Light wrapper over Paramiko SSH/SFTP with convenience methods."""
+
+    def _base_log_fields(self) -> dict[str, object]:
+        """Return stable host transport fields shared by this connection."""
+        return {
+            "host": self.host_uid,
+            "address": self.host_addr,
+            "connect_addr": self.connect_addr,
+            "port": self.port,
+            "user": self.user,
+        }
+
+    def _event(self, event: str, **fields) -> None:
+        """Emit one structured transport event."""
+        self.log.event(event, **self._base_log_fields(), **fields)
+
+    def _warning_event(self, event: str, **fields) -> None:
+        """Emit one structured transport warning."""
+        self.log.warning_event(event, **self._base_log_fields(), **fields)
+
+    def _error_event(self, event: str, **fields) -> None:
+        """Emit one structured transport error."""
+        self.log.error_event(event, **self._base_log_fields(), **fields)
 
     def __init__(
         self,
@@ -227,16 +251,20 @@ class sftpConnection:
 
             self.sftp = self.ssh_client.open_sftp()
 
-            self.log.entry(
-                f"[SSH] Connected to {self.host_uid} "
-                f"({self.host_addr} -> {self.connect_addr}:{self.port}) as {self.user}"
+            self._event(
+                "ssh_connected",
+                component="host_ssh",
+                operation="connect",
             )
 
         except Exception as e:
             classification = errors.classify_ssh_connect_exc(e)
-            self.log.error(
-                f"[SSH][{classification.reason}] Error initializing SSH to "
-                f"'{self.host_uid}' ({self.host_addr} -> {self.connect_addr}): {e}"
+            self._error_event(
+                "ssh_connect_failed",
+                component="host_ssh",
+                operation="connect",
+                reason=classification.reason,
+                error=e,
             )
             raise
 
@@ -249,9 +277,12 @@ class sftpConnection:
         except FileNotFoundError:
             return False
         except Exception as e:
-            self.log.error(
-                f"Error checking '{filename}' in "
-                f"'{self.host_uid}'({self.host_addr}). {e}"
+            self._error_event(
+                "ssh_file_check_failed",
+                component="host_ssh",
+                operation="test",
+                file=filename,
+                error=e,
             )
             raise
 
@@ -263,9 +294,12 @@ class sftpConnection:
             with self.sftp.open(filename, "w"):
                 pass
         except Exception as e:
-            self.log.error(
-                f"Error touching '{filename}' in "
-                f"'{self.host_uid}'({self.host_addr}). {e}"
+            self._error_event(
+                "ssh_file_touch_failed",
+                component="host_ssh",
+                operation="touch",
+                file=filename,
+                error=e,
             )
             raise
 
@@ -275,9 +309,12 @@ class sftpConnection:
             with self.sftp.open(filename, "a", encoding="utf-8") as f:
                 f.write(content)
         except Exception as e:
-            self.log.error(
-                f"Error appending to '{filename}' in "
-                f"'{self.host_uid}'({self.host_addr}). {e}"
+            self._error_event(
+                "ssh_file_append_failed",
+                component="host_ssh",
+                operation="append",
+                file=filename,
+                error=e,
             )
             raise
 
@@ -287,9 +324,12 @@ class sftpConnection:
             with self.sftp.open(filename, "w") as f:
                 f.write(content)
         except Exception as e:
-            self.log.error(
-                f"Error writing '{filename}' in "
-                f"'{self.host_uid}'({self.host_addr}). {e}"
+            self._error_event(
+                "ssh_file_write_failed",
+                component="host_ssh",
+                operation="write",
+                file=filename,
+                error=e,
             )
             raise
 
@@ -303,15 +343,20 @@ class sftpConnection:
                 with self.sftp.open(filename, "r") as f:
                     return f.read()
         except FileNotFoundError:
-            self.log.error(
-                f"File '{filename}' not found in "
-                f"'{self.host_uid}'({self.host_addr})"
+            self._error_event(
+                "ssh_file_read_missing",
+                component="host_ssh",
+                operation="read",
+                file=filename,
             )
             return "" if "b" not in mode else b""
         except Exception as e:
-            self.log.error(
-                f"Error reading '{filename}' in "
-                f"'{self.host_uid}'({self.host_addr}). {e}"
+            self._error_event(
+                "ssh_file_read_failed",
+                component="host_ssh",
+                operation="read",
+                file=filename,
+                error=e,
             )
             raise
     
@@ -326,7 +371,13 @@ class sftpConnection:
                 return []
             return [ln.strip() for ln in str(data).splitlines() if ln.strip()]
         except Exception as e:
-            self.log.error(f"Error reading cookie list '{filename}' from '{self.host_uid}'. {e}")
+            self._error_event(
+                "ssh_cookie_list_read_failed",
+                component="host_ssh",
+                operation="read_cookie_list",
+                file=filename,
+                error=e,
+            )
             return []
 
     def write_cookie_list(self, filename: str, lines: list[str]) -> None:
@@ -339,17 +390,23 @@ class sftpConnection:
             content = "\n".join(lines) + "\n" if lines else ""
             self.write(filename, content)
         except Exception as e:
-            self.log.error(f"Error writing cookie list '{filename}' to '{self.host_uid}'. {e}")
+            self._error_event(
+                "ssh_cookie_list_write_failed",
+                component="host_ssh",
+                operation="write_cookie_list",
+                file=filename,
+                error=e,
+            )
             raise
 
     
     def abort_transfer(self, reason: str | None = None) -> None:
         """Force-close the active SFTP/SSH transport during a stalled transfer."""
         if reason:
-            self.log.event(
+            self._event(
                 "backup_transfer_abort",
-                host=self.host_uid,
-                address=self.host_addr,
+                component="host_ssh",
+                operation="abort_transfer",
                 reason=reason,
             )
 
@@ -456,17 +513,17 @@ class sftpConnection:
 
                     if heartbeat_seconds > 0 and (now - state["last_log_at"]) >= heartbeat_seconds:
                         state["last_log_at"] = now
-                        if hasattr(self.log, "event"):
-                            self.log.event(
-                                "backup_transfer_progress",
-                                host=self.host_uid,
-                                remote_file=remote_file,
-                                local_file=local_file,
-                                transferred_bytes=transferred,
-                                total_bytes=total,
-                                elapsed_seconds=round(elapsed, 1),
-                                stalled_for_seconds=round(stalled_for, 1),
-                            )
+                        self._event(
+                            "backup_transfer_progress",
+                            component="host_ssh",
+                            operation="transfer",
+                            remote_file=remote_file,
+                            local_file=local_file,
+                            transferred_bytes=transferred,
+                            total_bytes=total,
+                            elapsed_seconds=round(elapsed, 1),
+                            stalled_for_seconds=round(stalled_for, 1),
+                        )
 
                     if max_seconds > 0 and elapsed > max_seconds:
                         abort_exc = TimeoutError(
@@ -507,8 +564,13 @@ class sftpConnection:
             if abort_exc is not None:
                 raise abort_exc from e
 
-            self.log.error(
-                f"Error transferring '{remote_file}' from '{self.host_uid}'({self.host_addr}) to '{local_file}'. {e}"
+            self._error_event(
+                "ssh_file_transfer_failed",
+                component="host_ssh",
+                operation="transfer",
+                remote_file=remote_file,
+                local_file=local_file,
+                error=e,
             )
             raise
         finally:
@@ -534,14 +596,19 @@ class sftpConnection:
         try:
             self.sftp.remove(filename)
         except FileNotFoundError:
-            self.log.error(
-                f"File '{filename}' not found in "
-                f"'{self.host_uid}'({self.host_addr})"
+            self._error_event(
+                "ssh_file_remove_missing",
+                component="host_ssh",
+                operation="remove",
+                file=filename,
             )
         except Exception as e:
-            self.log.error(
-                f"Error removing '{filename}' in "
-                f"'{self.host_uid}'({self.host_addr}). {e}"
+            self._error_event(
+                "ssh_file_remove_failed",
+                component="host_ssh",
+                operation="remove",
+                file=filename,
+                error=e,
             )
             raise
 
@@ -577,9 +644,11 @@ class sftpConnection:
             if self.ssh_client:
                 self.ssh_client.close()
         except Exception as e:
-            self.log.error(
-                f"Error closing SFTP/SSH for "
-                f"'{self.host_uid}'({self.host_addr}). {e}"
+            self._error_event(
+                "ssh_close_failed",
+                component="host_ssh",
+                operation="close",
+                error=e,
             )
             
     def size(self, filename: str) -> int:
@@ -594,9 +663,12 @@ class sftpConnection:
         except FileNotFoundError:
             raise
         except Exception as e:
-            self.log.error(
-                f"Error getting size of '{filename}' in "
-                f"'{self.host_uid}'({self.host_addr}). {e}"
+            self._error_event(
+                "ssh_file_size_failed",
+                component="host_ssh",
+                operation="size",
+                file=filename,
+                error=e,
             )
             raise
 
@@ -629,7 +701,12 @@ class sftpConnection:
             err = stderr.read().decode("utf-8", errors="ignore").strip()
 
             if err:
-                self.log.warning(f"[META][LINUX][ONE] STDERR: {err}")
+                self._warning_event(
+                    "metadata_single_probe_stderr",
+                    component="host_metadata",
+                    operation="read_file_metadata_linux",
+                    error=err,
+                )
 
             if not raw:
                 raise FileNotFoundError(f"Remote file not found: {normalized_path}")
@@ -678,7 +755,12 @@ class sftpConnection:
             err = stderr.read().decode("utf-8", errors="ignore").strip()
 
             if err:
-                self.log.warning(f"[META][WINDOWS][ONE] STDERR: {err}")
+                self._warning_event(
+                    "metadata_single_probe_stderr",
+                    component="host_metadata",
+                    operation="read_file_metadata_windows",
+                    error=err,
+                )
 
             if not raw:
                 raise FileNotFoundError(f"Remote file not found: {normalized_path}")
@@ -762,10 +844,15 @@ class sftpConnection:
         os_type = self.detect_remote_os()
         batch: list[FileMetadata] = []
 
-        self.log.entry(
-            f"[META][ITER] start | os={os_type} | path={remote_path} | "
-            f"pattern={pattern} | batch_size={batch_size} | "
-            f"incremental={'yes' if newer_than else 'no'}"
+        self._event(
+            "metadata_iteration_started",
+            component="host_metadata",
+            operation="iterate",
+            remote_path=remote_path,
+            reason=os_type,
+            pattern=pattern,
+            batch_size=batch_size,
+            incremental=bool(newer_than),
         )
 
         # ============================================================
@@ -813,7 +900,13 @@ class sftpConnection:
                     )
 
                 except Exception as e:
-                    self.log.warning(f"[META][LINUX] invalid line skipped: {raw} ({e})")
+                    self._warning_event(
+                        "metadata_linux_line_invalid",
+                        component="host_metadata",
+                        operation="iterate_linux",
+                        reason="invalid_line",
+                        error=e,
+                    )
                     continue
 
                 if len(batch) >= batch_size:
@@ -855,7 +948,12 @@ class sftpConnection:
 
                 parts = raw.split("|")
                 if len(parts) != 5:
-                    self.log.warning(f"[META][WINDOWS] noisy line ignored: {raw}")
+                    self._warning_event(
+                        "metadata_windows_line_ignored",
+                        component="host_metadata",
+                        operation="iterate_windows",
+                        reason="noisy_line",
+                    )
                     continue
 
                 fullpath, size, c_at, m_at, perms = parts
@@ -886,11 +984,266 @@ class sftpConnection:
                     batch = []
 
         else:
-            self.log.error(f"[META][ITER] Unsupported OS '{os_type}'")
+            self._error_event(
+                "metadata_iteration_unsupported_os",
+                component="host_metadata",
+                operation="iterate",
+                reason=os_type,
+            )
             return
 
         # flush final
         if batch:
             yield batch
 
-        self.log.entry("[META][ITER] completed")
+        self._event(
+            "metadata_iteration_completed",
+            component="host_metadata",
+            operation="iterate",
+            remote_path=remote_path,
+            pattern=pattern,
+        )
+        
+    
+    # ======================================================================
+    # File Transfer
+    # ======================================================================
+    def transfer_file_task(
+        sftp: sftpConnection,
+        remote_dir: str,
+        remote_filename: str,
+        local_path: str,
+        server_filename: str,
+        discovery_snapshot: dict,
+    ) -> dict:
+        """
+        Transfer a file from a remote host to the local repository with integrity validation.
+
+        Backup re-checks the remote file metadata immediately before transfer. That
+        fresh snapshot becomes the source of truth for this stage, because the file
+        may have changed since discovery originally queued the FILE_TASK row.
+
+        Validation rules:
+
+            1. Remote file must exist.
+            2. Remote metadata is refreshed before any skip decision is made.
+            3. Local file must exist after transfer.
+            4. Local file size must be > 0.
+            5. Local file must NOT be smaller than the authoritative remote size.
+            6. Remote file growth during transfer is accepted.
+
+        The discovery snapshot is still useful, but only as drift detection. If
+        the file was recreated in place weeks later, backup should refresh the
+        metadata instead of failing because the old discovery size no longer fits.
+
+        `FILE_THRESHOLD_SIZE_KB` is used only for the "already present"
+        shortcut. We skip a download only when:
+            - the existing local payload still matches the current remote size, and
+            - the current remote metadata still matches the old discovery snapshot
+
+        Returns
+        -------
+        dict
+            Result payload with transfer status and refreshed metadata.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the remote file does not exist.
+
+        RuntimeError
+            If integrity validation fails.
+
+        TimeoutError
+            If the transfer stalls or exceeds the configured watchdog limits.
+        """
+
+        remote_path = f"{remote_dir}/{remote_filename}"
+        final_file = os.path.join(local_path, server_filename)
+        tmp_file = final_file + ".tmp"
+        remote_metadata = sftp.read_file_metadata(remote_path)
+        remote_size_bytes = sftp.size(remote_path)
+
+        if remote_size_bytes <= 0:
+            raise RuntimeError(
+                f"Remote file size invalid: {remote_size_bytes} bytes"
+            )
+
+        metadata_drift = sftp._has_discovery_metadata_drift(
+            discovery_snapshot,
+            remote_metadata,
+        )
+        if metadata_drift:
+            sftp._warning_event(
+                "backup_metadata_refreshed",
+                component="host_backup",
+                operation="transfer_file_task",
+                server_file=server_filename,
+                remote_file=remote_path,
+                old_size_kb=discovery_snapshot.get("size_kb"),
+                new_size_kb=remote_metadata.VL_FILE_SIZE_KB,
+            )
+
+        # ---------------------------------------------------------
+        # 0) Local file pre-check (skip download if already valid)
+        # ---------------------------------------------------------
+        if os.path.exists(final_file):
+            local_size_bytes = os.path.getsize(final_file)
+
+            if local_size_bytes > 0:
+                local_size_kb = local_size_bytes // 1024
+
+                if (
+                    not metadata_drift
+                    and abs(local_size_kb - remote_metadata.VL_FILE_SIZE_KB)
+                    <= k.FILE_THRESHOLD_SIZE_KB
+                ):
+                    sftp._event(
+                        "backup_transfer_skipped",
+                        component="host_backup",
+                        operation="transfer_file_task",
+                        reason="file_already_present",
+                        server_file=server_filename,
+                    )
+
+                    return {
+                        "updated_size_kb": local_size_kb,
+                        "refreshed_metadata": remote_metadata,
+                        "file_was_transferred": True,
+                    }
+                else:
+                    sftp._warning_event(
+                        "backup_transfer_redownload",
+                        component="host_backup",
+                        operation="transfer_file_task",
+                        reason=(
+                            "metadata_drift"
+                            if metadata_drift else
+                            "remote_size_mismatch"
+                        ),
+                        server_file=server_filename,
+                    )
+                    try:
+                        os.remove(final_file)
+                    except Exception:
+                        pass
+            else:
+                try:
+                    os.remove(final_file)
+                except Exception:
+                    pass
+
+        # ---------------------------------------------------------
+        # Remove leftover tmp from previous crash
+        # ---------------------------------------------------------
+        if os.path.exists(tmp_file):
+            try:
+                os.remove(tmp_file)
+            except Exception:
+                pass
+
+        # ---------------------------------------------------------
+        # 1) Transfer to temporary file
+        # ---------------------------------------------------------
+        sftp.transfer(
+            remote_path,
+            tmp_file,
+            max_seconds=k.BACKUP_TRANSFER_MAX_SECONDS,
+            stall_timeout_seconds=k.BACKUP_TRANSFER_STALL_TIMEOUT_SECONDS,
+            progress_poll_seconds=k.BACKUP_TRANSFER_PROGRESS_POLL_SECONDS,
+            heartbeat_seconds=k.BACKUP_TRANSFER_HEARTBEAT_SECONDS,
+        )
+
+        # ---------------------------------------------------------
+        # 2) Validate local existence
+        # ---------------------------------------------------------
+        if not os.path.exists(tmp_file):
+            raise RuntimeError(
+                "Backup failed: local file not created after transfer"
+            )
+
+        local_size_bytes = os.path.getsize(tmp_file)
+
+        if local_size_bytes <= 0:
+            raise RuntimeError(
+                "Backup failed: local file size is 0 bytes"
+            )
+
+        local_size_kb = local_size_bytes // 1024
+
+        # ---------------------------------------------------------
+        # 3) Must not be smaller than remote
+        # ---------------------------------------------------------
+        # Remote size is the authoritative source during transfer.
+        # If the local file is smaller, the transfer is considered corrupted.
+        if local_size_bytes < remote_size_bytes:
+            raise RuntimeError(
+                f"Backup corrupted: local size ({local_size_bytes} bytes) "
+                f"is smaller than remote size ({remote_size_bytes} bytes)"
+            )
+
+        # ---------------------------------------------------------
+        # 4) Accept remote growth (informational only)
+        # ---------------------------------------------------------
+        if local_size_bytes > remote_size_bytes:
+            sftp._warning_event(
+                "backup_remote_growth",
+                component="host_backup",
+                operation="transfer_file_task",
+                remote_size_bytes=remote_size_bytes,
+                local_size_bytes=local_size_bytes,
+            )
+
+        # ---------------------------------------------------------
+        # 5) Atomic rename
+        # ---------------------------------------------------------
+        # `os.rename()` moves only the file entry and does not prune empty source
+        # directories, which keeps TMP folders stable even when the last file in a
+        # batch is finalized here.
+        os.rename(tmp_file, final_file)
+
+        return {
+            "updated_size_kb": local_size_kb,
+            "refreshed_metadata": remote_metadata,
+            "file_was_transferred": True,
+        }
+    
+    
+    def _has_discovery_metadata_drift(
+        discovery_snapshot: dict,
+        remote_metadata: FileMetadata,
+    ) -> bool:
+        """
+        Return True when the transfer-time remote snapshot differs from discovery.
+
+        Discovery may run long before backup, so a remote file can be recreated in
+        place with the same pathname but different size or timestamps. Backup
+        treats that as legitimate source drift and refreshes the stored metadata
+        instead of rejecting the transfer as corrupted.
+        """
+        discovery_created = discovery_snapshot.get("dt_created")
+        if isinstance(discovery_created, datetime):
+            discovery_created = discovery_created.replace(microsecond=0)
+        else:
+            discovery_created = None
+
+        discovery_modified = discovery_snapshot.get("dt_modified")
+        if isinstance(discovery_modified, datetime):
+            discovery_modified = discovery_modified.replace(microsecond=0)
+        else:
+            discovery_modified = None
+
+        remote_created = remote_metadata.DT_FILE_CREATED
+        if isinstance(remote_created, datetime):
+            remote_created = remote_created.replace(microsecond=0)
+
+        remote_modified = remote_metadata.DT_FILE_MODIFIED
+        if isinstance(remote_modified, datetime):
+            remote_modified = remote_modified.replace(microsecond=0)
+
+        return any((
+            discovery_snapshot.get("extension") != remote_metadata.NA_EXTENSION,
+            discovery_snapshot.get("size_kb") != remote_metadata.VL_FILE_SIZE_KB,
+            discovery_created != remote_created,
+            discovery_modified != remote_modified,
+        ))

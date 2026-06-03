@@ -10,7 +10,7 @@ What is covered here:
     - geographic code resolution and district auto-create
     - repository path and file type resolution
     - idempotent inserts for file and spectrum dimensions
-    - bridge inserts, parquet export, and latest-processing lookup
+    - bridge inserts
 """
 
 from __future__ import annotations
@@ -91,11 +91,13 @@ class DbHandlerRfmBaseTests(unittest.TestCase):
     def make_handler(self):
         handler = object.__new__(db_rfm_module.dbHandlerRFM)
         handler.log = FakeLog()
+        handler.database = "RFDATA_TEST"
         handler.db_connection = FakeConnection()
         handler.cursor = FakeCursor()
         handler.in_transaction = False
         handler._connect = lambda: None
         handler._disconnect = lambda: None
+        handler._summary_publish_scope = lambda *args, **kwargs: None
         return handler
 
 
@@ -256,9 +258,6 @@ class SiteWriteTests(DbHandlerRfmBaseTests):
         )
 
         self.assertEqual(handler.cursor.executed, [])
-        self.assertTrue(
-            any("No update performed" in entry for entry in handler.log.entries)
-        )
 
     def test_update_site_updates_weighted_centroid(self) -> None:
         handler = self.make_handler()
@@ -790,46 +789,6 @@ class SpectrumAndBridgeTests(DbHandlerRfmBaseTests):
         self.assertIn("INSERT IGNORE INTO BRIDGE_SPECTRUM_FILE", sql)
         self.assertEqual(params, [(1, 10), (1, 11), (2, 10), (2, 11)])
         self.assertEqual(handler.db_connection.commits, 1)
-
-
-class PublicationTests(DbHandlerRfmBaseTests):
-    """Validate helpers used by metadata publication and export."""
-
-    def test_export_parquet_writes_one_file_per_table(self) -> None:
-        handler = self.make_handler()
-        handler.cursor = FakeCursor(
-            fetch_batches=[
-                [("FACT_SPECTRUM",), ("DIM_SPECTRUM_FILE",)],
-                [(1, "desc")],
-                [("ID_SPECTRUM",), ("NA_DESCRIPTION",)],
-                [(10, "sample.mat")],
-                [("ID_FILE",), ("NA_FILE",)],
-            ]
-        )
-        written = []
-
-        def fake_to_parquet(self, file_name):
-            written.append(file_name)
-
-        with patch.object(db_rfm_module.pd.DataFrame, "to_parquet", fake_to_parquet):
-            handler.export_parquet("/tmp/rfdata_snapshot")
-
-        self.assertEqual(
-            written,
-            [
-                "/tmp/rfdata_snapshot.FACT_SPECTRUM.parquet",
-                "/tmp/rfdata_snapshot.DIM_SPECTRUM_FILE.parquet",
-            ],
-        )
-
-    def test_get_latest_processing_time_returns_unix_timestamp(self) -> None:
-        handler = self.make_handler()
-        latest = datetime(2026, 3, 26, 12, 30, 0)
-        handler._select_rows = lambda **kwargs: [{"LATEST": latest}]
-
-        result = handler.get_latest_processing_time()
-
-        self.assertEqual(result, latest.timestamp())
 
 
 if __name__ == "__main__":

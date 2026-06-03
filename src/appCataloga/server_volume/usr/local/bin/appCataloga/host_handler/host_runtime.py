@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from db.dbHandlerBKP import dbHandlerBKP
+    from shared.logging_utils import log as logger_type
 
 BASE_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../../../../../")
@@ -30,14 +31,19 @@ def release_busy_hosts_for_current_pid(
     *,
     db_factory,
     database_name: str,
-    logger: Any,
+    logger: logger_type,
 ) -> None:
     """
     Release all HOST rows marked as BUSY by the current worker PID.
     """
     try:
         pid = os.getpid()
-        logger.event("cleanup_busy_hosts", pid=pid)
+        logger.event(
+            "cleanup_busy_hosts",
+            component="host_runtime",
+            operation="release_busy_hosts_by_pid",
+            pid=pid,
+        )
         # Fresh connection: the regular one may have been left in a dirty
         # state if the worker was interrupted mid-transaction.
         db = db_factory(
@@ -47,14 +53,20 @@ def release_busy_hosts_for_current_pid(
         )
         db.host_release_by_pid(pid)
     except Exception as exc:
-        logger.error(f"event=cleanup_busy_hosts_failed error={exc}")
+        logger.error_event(
+            "cleanup_busy_hosts_failed",
+            component="host_runtime",
+            operation="release_busy_hosts_by_pid",
+            pid=os.getpid(),
+            error=exc,
+        )
 
 
 def release_locked_host(
-    db,
+    db: dbHandlerBKP,
     host_id: int | None,
     *,
-    logger: Any,
+    logger: logger_type,
     service_name: str,
 ) -> None:
     """
@@ -69,9 +81,13 @@ def release_locked_host(
             current_pid=os.getpid(),
         )
     except Exception as exc:
-        logger.warning(
-            f"event=host_release_failed service={service_name} "
-            f"host_id={host_id} error={exc}"
+        logger.warning_event(
+            "host_release_failed",
+            component="host_runtime",
+            operation="release_locked_host",
+            service=service_name,
+            host_id=host_id,
+            error=exc,
         )
 
 
@@ -79,7 +95,7 @@ def run_update_statistics(
     db: dbHandlerBKP,
     task: dict,
     *,
-    logger: Any,
+    logger: logger_type,
 ) -> tuple[int, str]:
     """Refresh host statistics. Returns (status, message) for the caller to close the task."""
 

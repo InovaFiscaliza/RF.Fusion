@@ -23,7 +23,6 @@ That split mirrors the worker lifecycle in
 
 from __future__ import annotations
 
-import errno
 import json
 import os
 import time
@@ -33,17 +32,10 @@ import re
 import config as k
 from appAnalise.payload_parser import canonicalize_equipment_identifier
 from geopy.exc import GeocoderServiceError
-from shared import errors, geolocation_utils, tools
+from shared import errors, file_utils, geolocation_utils, tools
 
 
 NON_ALNUM_RE = re.compile(r"[^a-z0-9]+", re.IGNORECASE)
-TRANSIENT_FILESYSTEM_ERRNOS = {
-    errno.EBUSY,
-    errno.EAGAIN,
-    errno.ESTALE,
-    errno.ETXTBSY,
-}
-
 ERMX_FAMILY_PREFIXES = ("ermx", "emrx")
 # Module-level buffer used exclusively within `resolve_spectrum_sites()` call frames.
 # `resolve_spectrum_sites()` sets this to a fresh dict at entry and restores None
@@ -61,55 +53,7 @@ def is_transient_filesystem_error(exc: Exception) -> bool:
     These errors usually come from busy or stale files on shared storage. They
     are operationally noisy, but they do not mean the payload itself is bad.
     """
-    return isinstance(exc, OSError) and exc.errno in TRANSIENT_FILESYSTEM_ERRNOS
-
-
-def file_move(filename, path, new_path, *, refresh_mtime: bool = False):
-    """
-    Move one artifact into its next canonical directory.
-
-    This helper intentionally does not decide *why* the file is being moved.
-    Callers use it for three different semantic outcomes:
-        - promote the final artifact into the repository tree
-        - quarantine the original source payload
-        - quarantine superseded exported leftovers
-
-    `refresh_mtime=True` is reserved for quarantine folders whose retention is
-    driven by filesystem age. In that case we "touch" the moved file so the GC
-    clock starts when the artifact entered quarantine, not when it was first
-    created by the station or by appAnalise.
-    """
-    source = f"{path}/{filename}"
-    target = f"{new_path}/{filename}"
-
-    os.makedirs(new_path, exist_ok=True)
-
-    for attempt in range(3):
-        try:
-            os.rename(source, target)
-            break
-        except OSError as exc:
-            if not is_transient_filesystem_error(exc) or attempt == 2:
-                raise OSError(
-                    exc.errno,
-                    f"{exc.strerror}: {source} -> {target}",
-                ) from exc
-            time.sleep(0.5)
-
-    if refresh_mtime:
-        for attempt in range(3):
-            try:
-                os.utime(target, None)
-                break
-            except OSError as exc:
-                if not is_transient_filesystem_error(exc) or attempt == 2:
-                    raise OSError(
-                        exc.errno,
-                        f"{exc.strerror}: {target}",
-                    ) from exc
-                time.sleep(0.5)
-
-    return {"filename": filename, "path": new_path}
+    return file_utils.is_transient_filesystem_error(exc)
 
 
 def should_export(hostname: str) -> bool:
@@ -197,24 +141,6 @@ def _build_repository_hostname_key(hostname: str) -> str:
     """
     normalized = NON_ALNUM_RE.sub("_", (hostname or "").strip().lower()).strip("_")
     return normalized or "unknown_host"
-
-
-def build_history_metadata_from_file_meta(file_meta):
-    """
-    Project worker file metadata into the FILE_TASK_HISTORY column set.
-
-    Several resolution branches already operate on the richer worker-side
-    metadata dict (`file_name`, `file_path`, timestamps, ...). This helper
-    extracts only the history-facing subset so error and success branches can
-    reuse the same shape without retyping the mapping.
-    """
-    return {
-        "name": file_meta["file_name"],
-        "extension": file_meta["extension"],
-        "size_kb": file_meta["size_kb"],
-        "dt_created": file_meta["dt_created"],
-        "dt_modified": file_meta["dt_modified"],
-    }
 
 
 def upsert_site(db_rfm, site_data):
@@ -661,231 +587,4 @@ def build_repository_destination_path(db_rfm, bin_data, hostname_db):
         f"{k.APP_ANALISE_MULTI_SITE_REPO_SUBDIR}/{host_key}"
     )
 
-
-def is_same_file(file_a, file_b):
-    """
-    Check whether two metadata dictionaries point to the same filesystem path.
-    """
-    if not file_a or not file_b:
-        return False
-
-    path_a = os.path.normpath(file_a["full_path"])
-    path_b = os.path.normpath(file_b["full_path"])
-    return path_a == path_b
-
-
-def move_file_if_present(
-    file_meta,
-    destination_path,
-    *,
-    refresh_mtime: bool = False,
-    move_kind: str | None = None,
-    logger=None,
-):
-    """
-    Move a file when it still exists and return its new metadata.
-
-    The helper is intentionally forgiving: by the time final resolution runs,
-    the worker may already have partially moved or deleted one of the
-    candidate artifacts. Returning `None` keeps callers idempotent.
-
-    Quarantine moves may opt into `refresh_mtime=True` so later filesystem
-    sweeps treat the move time as the start of retention.
-    """
-    if not file_meta or not os.path.exists(file_meta["full_path"]):
-        return None
-
-    source_path = file_meta["full_path"]
-    target_path = os.path.join(destination_path, file_meta["file_name"])
-    event_fields = {
-        "file": file_meta["file_name"],
-        "source_dir": file_meta["file_path"],
-        "destiny_dir": destination_path,
-        "success": False,
-        "refresh_mtime": refresh_mtime,
-    }
-    if move_kind:
-        event_fields["kind"] = move_kind
-
-    try:
-        file_move(
-            filename=file_meta["file_name"],
-            path=file_meta["file_path"],
-            new_path=destination_path,
-            refresh_mtime=refresh_mtime,
-        )
-    except Exception as exc:
-        if logger is not None and hasattr(logger, "error_event"):
-            logger.error_event(
-                "file_move",
-                **event_fields,
-                source=source_path,
-                destiny=target_path,
-                error_type=type(exc).__name__,
-                error=str(exc),
-            )
-        raise
-
-    if logger is not None:
-        event_fields["success"] = True
-        logger.event(
-            "file_move",
-            **event_fields,
-        )
-
-    moved_meta = dict(file_meta)
-    moved_meta["file_path"] = destination_path
-    moved_meta["full_path"] = os.path.join(
-        destination_path,
-        file_meta["file_name"],
-    )
-    return moved_meta
-
-
-def build_resolved_files_trash_path():
-    """
-    Return the dedicated quarantine for export-resolved leftovers.
-
-    This keeps "main trash" and "superseded derived artifacts" separated, which
-    makes post-mortem inspection less noisy.
-    """
-    return (
-        f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}/"
-        f"{k.RESOLVED_FILES_TRASH_SUBDIR}"
-    )
-
-
-def promote_final_artifact(
-    new_path,
-    file_meta,
-    source_file_meta,
-    export,
-    filename,
-    *,
-    logger=None,
-):
-    """
-    Move the canonical artifact into the repository folder and retire any
-    superseded source payload. Pure filesystem — no DB writes.
-
-    Caller is responsible for:
-      - computing ``new_path`` via ``build_repository_destination_path``
-      - registering the moved file in RFDATA (``db_rfm.insert_file`` +
-        ``db_rfm.insert_bridge_spectrum_file``) after this call returns.
-
-    Returns updated ``file_meta`` for the file in its final location.
-    """
-    final_file_meta = move_file_if_present(
-        file_meta,
-        new_path,
-        move_kind="promote_final",
-        logger=logger,
-    )
-
-    if final_file_meta is None:
-        raise FileNotFoundError(
-            f"Final output file unavailable: {file_meta}"
-        )
-
-    if export and not is_same_file(source_file_meta, final_file_meta):
-        # Export mode can produce a new canonical artifact (`.mat`) while the
-        # original source payload remains on disk. Retire the source to
-        # quarantine; refresh its mtime so retention starts from now.
-        move_file_if_present(
-            source_file_meta,
-            build_resolved_files_trash_path(),
-            refresh_mtime=True,
-            move_kind="quarantine_source",
-            logger=logger,
-        )
-
-    if logger is not None:
-        logger.event(
-            "processing_completed",
-            file=filename,
-            export=export,
-            final_file=final_file_meta["full_path"],
-        )
-
-    return final_file_meta
-
-
-def quarantine_error_artifact(
-    file_meta,
-    source_file_meta,
-    export,
-    *,
-    logger=None,
-):
-    """
-    Move error artifacts to quarantine. Pure filesystem — no DB writes.
-
-    Returns ``(server_path, history_meta_override)``:
-
-    * ``server_path``: directory where the canonical error artifact landed, or
-      the original source location when nothing was moved (for history linkage).
-    * ``history_meta_override``: file metadata dict when the export becomes the
-      error artifact (distinct name/size from source); ``None`` otherwise.
-
-    Per INSTRUCTIONS §1.9 the filesystem half is separated from the DB half so
-    callers can keep the two concerns apart.
-    """
-    if not source_file_meta:
-        return None, None
-
-    trash_path = f"{k.REPO_FOLDER}/{k.TRASH_FOLDER}"
-    resolved_trash_path = build_resolved_files_trash_path()
-    history_meta_override = None
-    server_path = None
-
-    distinct_export = export and file_meta and not is_same_file(file_meta, source_file_meta)
-
-    if distinct_export:
-        # appAnalise produced a stable `.mat` export before RF.Fusion rejected
-        # the payload.  Treat the source as a resolved input and the export as
-        # the operator-facing error artifact.
-        resolved_source_meta = move_file_if_present(
-            source_file_meta,
-            resolved_trash_path,
-            refresh_mtime=True,
-            move_kind="quarantine_source",
-            logger=logger,
-        )
-        trashed_export_meta = move_file_if_present(
-            file_meta,
-            trash_path,
-            move_kind="quarantine_error_export",
-            logger=logger,
-        )
-
-        if trashed_export_meta:
-            server_path = trashed_export_meta["file_path"]
-            history_meta_override = build_history_metadata_from_file_meta(trashed_export_meta)
-        else:
-            # Export disappeared before finalization — fall back to the source.
-            fallback = resolved_source_meta or source_file_meta
-            trashed_source_meta = move_file_if_present(
-                fallback,
-                trash_path,
-                move_kind="quarantine_error_source",
-                logger=logger,
-            )
-            if trashed_source_meta:
-                server_path = trashed_source_meta["file_path"]
-    else:
-        trashed_source_meta = move_file_if_present(
-            source_file_meta,
-            trash_path,
-            move_kind="quarantine_error_source",
-            logger=logger,
-        )
-        if trashed_source_meta:
-            server_path = trashed_source_meta["file_path"]
-
-    # If nothing could be moved, fall back to the original location so history
-    # still points to an artifact the operator can locate.
-    if server_path is None:
-        server_path = source_file_meta.get("file_path")
-
-    return server_path, history_meta_override
 

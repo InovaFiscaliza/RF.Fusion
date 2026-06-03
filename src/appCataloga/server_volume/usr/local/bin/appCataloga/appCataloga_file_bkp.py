@@ -6,11 +6,7 @@ Consumes FILE_TASK rows of type BACKUP and locks HOST.IS_BUSY during each transf
 Worker 0 manages a small on-demand pool; siblings are spawned after each successful claim.
 """
 
-# ======================================================================
-# Imports
-# ======================================================================
 import os
-import hashlib
 import sys
 import time
 import traceback
@@ -24,10 +20,11 @@ PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 from db.dbHandlerBKP import dbHandlerBKP
 from host_handler import host_context, host_runtime
+from host_handler.host_ssh_utils import sftpConnection
 from server_handler import signal_runtime, sleep as runtime_sleep, worker_pool
 from shared import (
     errors,
-    file_metadata,
+    file_utils,
     logging_utils,
     tools,
 )
@@ -45,59 +42,6 @@ process_status = {
     "seed_recovery_last_attempt": 0.0,
     "shutdown_broadcast_sent": False,
 }
-
-
-# ======================================================================
-# Server filename builder (ARCHITECTURAL CONTRACT)
-# ======================================================================
-def build_server_filename(host_uid: str, remote_path: str, filename: str) -> str:
-    """
-    Build a deterministic server-side filename.
-
-    This is the single source of truth for server-side backup filenames.
-    It must not be reimplemented elsewhere, otherwise reprocessing and file
-    lineage become inconsistent.
-
-    Pattern:
-        p-<hash>--<original_filename>
-
-    Hash source:
-        sha1(host_uid + ":" + remote_path)[:8]
-
-    The hash:
-        • Prevents filename collisions
-        • Is stable across reprocessing
-        • Does NOT depend on server paths
-
-    Args:
-        host_uid (str): Unique identifier of the host/station
-        remote_path (str): Absolute path on the remote host
-        filename (str): Original filename on the host
-
-    Returns:
-        str: Server-side filename
-    """
-    # CelPlan payloads keep their original filename because the station
-    # naming is already unique and downstream tooling expects it.
-    if "CW" in host_uid:
-        return filename
-
-    h = hashlib.sha1(
-        f"{host_uid}:{remote_path}".encode("utf-8")
-    ).hexdigest()[:8]
-
-    return f"p-{h}--{filename}"
-
-
-def build_server_filepath(host_uid: str) -> str:
-    """
-    Build and guarantee the server-side staging directory for a host.
-
-    Creates the directory if it does not exist. Returns the absolute path.
-    """
-    path = os.path.join(k.REPO_FOLDER, k.TMP_FOLDER, host_uid)
-    os.makedirs(path, exist_ok=True)
-    return path
 
 
 # ======================================================================
@@ -132,15 +76,7 @@ signal_runtime.install_shutdown_handlers(
 )
 
 
-def _claim_backup_task(
-    db: dbHandlerBKP,
-    *,
-    worker_id: int,
-    host_id: int,
-    file_task_id: int,
-    task: dict,
-    input_filename: str,
-) -> bool:
+def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     """
     Atomically convert one backup FILE_TASK from PENDING to RUNNING.
 
@@ -155,6 +91,7 @@ def _claim_backup_task(
     Claim and pool-growth live together here because they are one policy
     bundle: backup only scales out after a worker has secured concrete work.
     """
+    worker_id = process_status["worker"]
     message = tools.compose_message(
         task_type=k.FILE_TASK_BACKUP_TYPE,
         task_status=k.TASK_RUNNING,
@@ -163,7 +100,7 @@ def _claim_backup_task(
     )
 
     result = db.file_task_update(
-        task_id=file_task_id,
+        task_id=task["file_task_id"],
         expected_status=k.TASK_PENDING,
         DT_FILE_TASK=datetime.now(),
         NU_STATUS=k.TASK_RUNNING,
@@ -173,18 +110,23 @@ def _claim_backup_task(
     )
 
     if result["rows_affected"] != 1:
-        log.warning(
-            f"event=file_task_claim_race worker_id={worker_id} "
-            f"host_id={host_id} task_id={file_task_id}"
+        log.warning_event(
+            "task_claim_race",
+            service=SERVICE_NAME,
+            worker_id=worker_id,
+            host_id=task["host_id"],
+            task_id=task["file_task_id"],
+            task_type=k.FILE_TASK_BACKUP_TYPE,
         )
         return False
 
-    log.event(
-        "backup_started",
+    log.task_claimed(
+        SERVICE_NAME,
         worker_id=worker_id,
-        host_id=host_id,
-        task_id=file_task_id,
-        file=input_filename,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_BACKUP_TYPE,
+        file=task["input_filename"],
     )
 
     # Only a worker that already owns concrete work is allowed to ask for the
@@ -199,50 +141,13 @@ def _claim_backup_task(
     return True
 
 
-def _has_discovery_metadata_drift(
-    task: dict,
-    remote_metadata: file_metadata.FileMetadata,
-) -> bool:
-    """
-    Return True when the transfer-time remote snapshot differs from discovery.
-
-    Discovery may run long before backup, so a remote file can be recreated in
-    place with the same pathname but different size or timestamps. Backup
-    treats that as legitimate source drift and refreshes the stored metadata
-    instead of rejecting the transfer as corrupted.
-    """
-    discovery_created = task.get("FILE_TASK__DT_FILE_CREATED")
-    if isinstance(discovery_created, datetime):
-        discovery_created = discovery_created.replace(microsecond=0)
-    else:
-        discovery_created = None
-
-    discovery_modified = task.get("FILE_TASK__DT_FILE_MODIFIED")
-    if isinstance(discovery_modified, datetime):
-        discovery_modified = discovery_modified.replace(microsecond=0)
-    else:
-        discovery_modified = None
-
-    remote_created = remote_metadata.DT_FILE_CREATED
-    if isinstance(remote_created, datetime):
-        remote_created = remote_created.replace(microsecond=0)
-
-    remote_modified = remote_metadata.DT_FILE_MODIFIED
-    if isinstance(remote_modified, datetime):
-        remote_modified = remote_modified.replace(microsecond=0)
-
-    return any((
-        task.get("FILE_TASK__NA_EXTENSION") != remote_metadata.NA_EXTENSION,
-        task.get("FILE_TASK__VL_FILE_SIZE_KB") != remote_metadata.VL_FILE_SIZE_KB,
-        discovery_created != remote_created,
-        discovery_modified != remote_modified,
-    ))
-
 
 def _finalize_success(
     db: dbHandlerBKP,
     task: dict,
     result: dict,
+    *,
+    elapsed_sec: float,
 ) -> None:
     """
     Persist BACKUP DONE, promote the row to PROCESS, and log completion. Never raises.
@@ -259,7 +164,6 @@ def _finalize_success(
     server_file_path = task["server_file_path"]
     refreshed_metadata = result["refreshed_metadata"]
     updated_size_kb = result["updated_size_kb"]
-    elapsed_sec = result["elapsed_sec"]
     backup_completed_at = datetime.now()
     history_message = tools.compose_message(
         task_type=k.FILE_TASK_BACKUP_TYPE,
@@ -303,11 +207,12 @@ def _finalize_success(
         **errors.persisted_error_fields_from_handler(message=history_message),
     )
 
-    log.event(
-        "backup_completed",
+    log.task_done(
+        SERVICE_NAME,
         worker_id=worker_id,
         host_id=host_id,
         task_id=file_task_id,
+        task_type=k.FILE_TASK_BACKUP_TYPE,
         file=input_filename,
         final_file=os.path.join(server_file_path, server_filename),
         elapsed_sec=round(elapsed_sec, 3),
@@ -345,11 +250,15 @@ def _finalize_error(
         try:
             deleted_file_task = db.file_task_delete(file_task_id)
         except Exception as e_db:
-            log.error(
-                "event=backup_missing_remote_file_task_delete_failed "
-                f"worker_id={worker_id} host_id={host_id} "
-                f"task_id={file_task_id} file={input_filename} "
-                f"error={e_db}"
+            log.error_event(
+                "backup_missing_remote_file_task_delete_failed",
+                service=SERVICE_NAME,
+                worker_id=worker_id,
+                host_id=host_id,
+                task_id=file_task_id,
+                task_type=k.FILE_TASK_BACKUP_TYPE,
+                file=input_filename,
+                error=e_db,
             )
 
         try:
@@ -359,15 +268,20 @@ def _finalize_error(
                 host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
             )
         except Exception as e_db:
-            log.error(
-                "event=backup_missing_remote_history_delete_failed "
-                f"worker_id={worker_id} host_id={host_id} "
-                f"task_id={file_task_id} file={input_filename} "
-                f"error={e_db}"
+            log.error_event(
+                "backup_missing_remote_history_delete_failed",
+                service=SERVICE_NAME,
+                worker_id=worker_id,
+                host_id=host_id,
+                task_id=file_task_id,
+                task_type=k.FILE_TASK_BACKUP_TYPE,
+                file=input_filename,
+                error=e_db,
             )
 
         log.warning_event(
             "backup_remote_file_missing_pruned",
+            service=SERVICE_NAME,
             worker_id=worker_id,
             host_id=host_id,
             task_id=file_task_id,
@@ -439,14 +353,24 @@ def _finalize_error(
             )
 
     except Exception as e_db:
-        log.error(f"event=finalize_error_persist_failed error={e_db}")
+        log.error_event(
+            "task_finalization_failed",
+            service=SERVICE_NAME,
+            worker_id=worker_id,
+            host_id=host_id,
+            task_id=file_task_id,
+            task_type=k.FILE_TASK_BACKUP_TYPE,
+            exception=repr(e_db),
+        )
 
-    log.error_event(
-        "backup_error",
+    log.task_error(
+        SERVICE_NAME,
         worker_id=worker_id,
         host_id=host_id,
         task_id=file_task_id,
+        task_type=k.FILE_TASK_BACKUP_TYPE,
         file=input_filename,
+        stage=err.stage,
         final_file=(
             os.path.join(server_file_path, server_filename)
             if server_file_path and server_filename else None
@@ -456,7 +380,7 @@ def _finalize_error(
 
 
 def _cleanup(
-    sftp,
+    sftp: sftpConnection | None,
     db: dbHandlerBKP,
     host_id: int | None,
     err: errors.ErrorHandler,
@@ -508,190 +432,40 @@ def parse_arguments() -> None:
             try:
                 worker = int(arg.split("=")[1])
             except ValueError:
-                log.warning("event=worker_arg_invalid fallback_worker=0")
+                log.warning_event(
+                    "worker_arg_invalid",
+                    service=SERVICE_NAME,
+                    fallback_worker=0,
+                )
     process_status["worker"] = worker
-    log.event("worker_configured", worker_id=worker)
 
 
-# ======================================================================
-# File Transfer
-# ======================================================================
-def transfer_file_task(
-    sftp,
-    remote_dir: str,
-    remote_filename: str,
-    local_path: str,
-    server_filename: str,
-    task: dict,
-) -> tuple[float, file_metadata.FileMetadata]:
-    """
-    Transfer a file from a remote host to the local repository with integrity validation.
-
-    Backup re-checks the remote file metadata immediately before transfer. That
-    fresh snapshot becomes the source of truth for this stage, because the file
-    may have changed since discovery originally queued the FILE_TASK row.
-
-    Validation rules:
-
-        1. Remote file must exist.
-        2. Remote metadata is refreshed before any skip decision is made.
-        3. Local file must exist after transfer.
-        4. Local file size must be > 0.
-        5. Local file must NOT be smaller than the authoritative remote size.
-        6. Remote file growth during transfer is accepted.
-
-    The discovery snapshot is still useful, but only as drift detection. If
-    the file was recreated in place weeks later, backup should refresh the
-    metadata instead of failing because the old discovery size no longer fits.
-
-    `FILE_THRESHOLD_SIZE_KB` is used only for the "already present"
-    shortcut. We skip a download only when:
-        - the existing local payload still matches the current remote size, and
-        - the current remote metadata still matches the old discovery snapshot
-
-    Returns
-    -------
-    tuple[float, FileMetadata]
-        Final local file size in KB and the refreshed remote metadata snapshot.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the remote file does not exist.
-
-    RuntimeError
-        If integrity validation fails.
-
-    TimeoutError
-        If the transfer stalls or exceeds the configured watchdog limits.
-    """
-
-    remote_path = f"{remote_dir}/{remote_filename}"
-    final_file = os.path.join(local_path, server_filename)
-    tmp_file = final_file + ".tmp"
-    remote_metadata = sftp.read_file_metadata(remote_path)
-    remote_size_bytes = sftp.size(remote_path)
-
-    if remote_size_bytes <= 0:
-        raise RuntimeError(
-            f"Remote file size invalid: {remote_size_bytes} bytes"
-        )
-
-    metadata_drift = _has_discovery_metadata_drift(task, remote_metadata)
-    if metadata_drift:
-        sftp.log.warning(
-            "event=backup_metadata_refreshed "
-            f"server_file={server_filename} remote_file={remote_path} "
-            f"old_size_kb={task.get('FILE_TASK__VL_FILE_SIZE_KB')} "
-            f"new_size_kb={remote_metadata.VL_FILE_SIZE_KB}"
-        )
-
-    # ---------------------------------------------------------
-    # 0) Local file pre-check (skip download if already valid)
-    # ---------------------------------------------------------
-    if os.path.exists(final_file):
-        local_size_bytes = os.path.getsize(final_file)
-
-        if local_size_bytes > 0:
-            local_size_kb = local_size_bytes // 1024
-
-            if (
-                not metadata_drift
-                and abs(local_size_kb - remote_metadata.VL_FILE_SIZE_KB)
-                <= k.FILE_THRESHOLD_SIZE_KB
-            ):
-                sftp.log.event(
-                    "backup_transfer_skipped",
-                    reason="file_already_present",
-                    server_file=server_filename,
-                )
-
-                return local_size_kb, remote_metadata
-            else:
-                sftp.log.warning(
-                    f"event=backup_transfer_redownload "
-                    f"reason={'metadata_drift' if metadata_drift else 'remote_size_mismatch'} "
-                    f"server_file={server_filename}"
-                )
-                try:
-                    os.remove(final_file)
-                except Exception:
-                    pass
-        else:
-            try:
-                os.remove(final_file)
-            except Exception:
-                pass
-
-    # ---------------------------------------------------------
-    # Remove leftover tmp from previous crash
-    # ---------------------------------------------------------
-    if os.path.exists(tmp_file):
-        try:
-            os.remove(tmp_file)
-        except Exception:
-            pass
-
-    # ---------------------------------------------------------
-    # 1) Transfer to temporary file
-    # ---------------------------------------------------------
-    sftp.transfer(
-        remote_path,
-        tmp_file,
-        max_seconds=k.BACKUP_TRANSFER_MAX_SECONDS,
-        stall_timeout_seconds=k.BACKUP_TRANSFER_STALL_TIMEOUT_SECONDS,
-        progress_poll_seconds=k.BACKUP_TRANSFER_PROGRESS_POLL_SECONDS,
-        heartbeat_seconds=k.BACKUP_TRANSFER_HEARTBEAT_SECONDS,
+def _do_work(sftp: sftpConnection, task: dict) -> dict:
+    """Transfer one remote file to the repository and return backup artifacts."""
+    transfer_result = sftp.transfer_file_task(
+        remote_dir=task["host_file_path"],
+        remote_filename=task["host_file_name"],
+        local_path=task["server_file_path"],
+        server_filename=task["server_filename"],
+        discovery_snapshot=task["discovery_snapshot"],
     )
 
-    # ---------------------------------------------------------
-    # 2) Validate local existence
-    # ---------------------------------------------------------
-    if not os.path.exists(tmp_file):
-        raise RuntimeError(
-            "Backup failed: local file not created after transfer"
-        )
-
-    local_size_bytes = os.path.getsize(tmp_file)
-
-    if local_size_bytes <= 0:
-        raise RuntimeError(
-            "Backup failed: local file size is 0 bytes"
-        )
-
-    local_size_kb = local_size_bytes // 1024
-
-    # ---------------------------------------------------------
-    # 3) Must not be smaller than remote
-    # ---------------------------------------------------------
-    # Remote size is the authoritative source during transfer.
-    # If the local file is smaller, the transfer is considered corrupted.
-    if local_size_bytes < remote_size_bytes:
-        raise RuntimeError(
-            f"Backup corrupted: local size ({local_size_bytes} bytes) "
-            f"is smaller than remote size ({remote_size_bytes} bytes)"
-        )
-
-    # ---------------------------------------------------------
-    # 4) Accept remote growth (informational only)
-    # ---------------------------------------------------------
-    if local_size_bytes > remote_size_bytes:
-        sftp.log.warning(
-            f"event=backup_remote_growth remote_size_bytes={remote_size_bytes} "
-            f"local_size_bytes={local_size_bytes}"
-        )
-
-    # ---------------------------------------------------------
-    # 5) Atomic rename
-    # ---------------------------------------------------------
-    # `os.rename()` moves only the file entry and does not prune empty source
-    # directories, which keeps TMP folders stable even when the last file in a
-    # batch is finalized here.
-    os.rename(tmp_file, final_file)
-
-    return local_size_kb, remote_metadata
+    return {
+        "refreshed_metadata": transfer_result["refreshed_metadata"],
+        "updated_size_kb": transfer_result["updated_size_kb"],
+        "file_was_transferred": transfer_result["file_was_transferred"],
+    }
 
 
+
+def _init_db() -> dbHandlerBKP:
+    """Connect to the operational database. Exits the process on failure."""
+    try:
+        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+    except Exception as e:
+        log.error_event("db_init_failed", service=SERVICE_NAME, error=e)
+        sys.exit(1)
+        
 def _read_next_task(db: dbHandlerBKP) -> dict | None:
     """Return the next pending backup FILE_TASK as a normalized task dict, or None."""
     row = db.read_file_task(
@@ -706,14 +480,32 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
     if not row:
         return None
     task_row, host_id, file_task_id = row
+    host_file_path = task_row["FILE_TASK__NA_HOST_FILE_PATH"]
+    host_file_name = task_row["FILE_TASK__NA_HOST_FILE_NAME"]
+    host_uid = task_row["HOST__NA_HOST_NAME"]
     return {
         **task_row,
-        "host_id"       : host_id,
-        "file_task_id"  : file_task_id,
+        "host_id"      : host_id,
+        "file_task_id" : file_task_id,
+        "host_uid"     : host_uid,
+        "host_file_path": host_file_path,
+        "host_file_name": host_file_name,
         "input_filename": os.path.join(
-            task_row["FILE_TASK__NA_HOST_FILE_PATH"],
-            task_row["FILE_TASK__NA_HOST_FILE_NAME"],
+            host_file_path,
+            host_file_name,
         ),
+        "server_file_path": file_utils.build_server_filepath(host_uid),
+        "server_filename": file_utils.build_server_filename(
+            host_uid=host_uid,
+            remote_path=host_file_path,
+            filename=host_file_name,
+        ),
+        "discovery_snapshot": {
+            "extension": task_row["FILE_TASK__NA_EXTENSION"],
+            "size_kb": task_row["FILE_TASK__VL_FILE_SIZE_KB"],
+            "dt_created": task_row["FILE_TASK__DT_FILE_CREATED"],
+            "dt_modified": task_row["FILE_TASK__DT_FILE_MODIFIED"],
+        },
     }
 
 
@@ -737,12 +529,7 @@ def main() -> None:
 
     log.service_start(SERVICE_NAME, worker_id=worker_id)
     runtime_sleep.random_jitter_sleep()
-
-    try:
-        db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
-    except Exception as e:
-        log.error(f"event=db_init_failed service={SERVICE_NAME} error={e}")
-        sys.exit(1)
+    db = _init_db()
 
     # =======================================================
     # MAIN LOOP
@@ -752,13 +539,7 @@ def main() -> None:
         err = errors.ErrorHandler(log)
         task = None
         sftp_conn = None
-        host_id = None
-        file_task_id = None
-        input_filename = None
-        server_filename = None
-        server_file_path = None
-        file_was_transferred = False
-        _stage = k.STAGE_MAIN
+        result = {"file_was_transferred": False}
 
         try:
             # Keep the pool self-healing: if worker 0 disappeared unexpectedly,
@@ -779,6 +560,9 @@ def main() -> None:
                 idle_cycles = process_status.get("idle_cycles", 0) + 1
                 process_status["idle_cycles"] = idle_cycles
 
+                # Stop worker if is idle for too long without claiming work. 
+                # This keeps the pool size right-sized to the demand and allows 
+                # workers to gracefully retire when the queue is drained.
                 if worker_pool.should_retire_idle_worker(
                     worker_id,
                     idle_cycles,
@@ -786,8 +570,9 @@ def main() -> None:
                     idle_exit_cycles=k.BKP_TASK_IDLE_EXIT_CYCLES,
                     logger=log,
                 ):
-                    log.event(
+                    log.warning_event(
                         "worker_retired_idle",
+                        service=SERVICE_NAME,
                         worker_id=worker_id,
                         idle_cycles=idle_cycles,
                     )
@@ -796,93 +581,67 @@ def main() -> None:
                 runtime_sleep.random_jitter_sleep()
                 continue
 
-            host_id = task["host_id"]
-            file_task_id = task["file_task_id"]
-            input_filename = task["input_filename"]
             process_status["idle_cycles"] = 0
 
             # --- claim ---
-            if not _claim_backup_task(
-                db,
-                worker_id=worker_id,
-                host_id=host_id,
-                file_task_id=file_task_id,
-                task=task,
-                input_filename=input_filename,
-            ):
+            if not _claim_task(db, task):
                 runtime_sleep.random_jitter_sleep()
                 continue
-            
-            # Read the authoritative host view after the task claim. Backup
-            # needs host metadata both for the SSH session and for local file
-            # naming/layout decisions.
-            host = db.host_read_access(host_id)
-            if not host:
-                raise RuntimeError(f"Host {host_id} not found in database")
 
             # --- SSH bootstrap ---
-            # _stage is set before init so a bootstrap exception gets the right
-            # stage without needing an inner try/except.
-            _stage = k.STAGE_SSH
             sftp_conn = host_context.init_host_context(task, log)
-            _stage = k.STAGE_MAIN  # SSH established; file prep errors are not SSH-related
-
-            server_file_path = build_server_filepath(host["host_uid"])
-
-            server_filename = build_server_filename(
-                host_uid=host["host_uid"],
-                remote_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
-                filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
-            )
-            # Enrich task so _finalize_error can access server paths if needed.
-            task["server_file_path"] = server_file_path
-            task["server_filename"] = server_filename
 
             # --- transfer ---
-            _stage = k.STAGE_TRANSFER
             start = time.monotonic()
-            updated_size_kb, refreshed_metadata = transfer_file_task(
-                sftp=sftp_conn,
-                remote_dir=task["FILE_TASK__NA_HOST_FILE_PATH"],
-                remote_filename=task["FILE_TASK__NA_HOST_FILE_NAME"],
-                local_path=server_file_path,
-                server_filename=server_filename,
-                task=task,
-            )
+            result = _do_work(sftp_conn, task)
             elapsed_sec = time.monotonic() - start
-            file_was_transferred = True
+            log.task_phase(
+                SERVICE_NAME,
+                worker_id=worker_id,
+                host_id=task["host_id"],
+                task_id=task["file_task_id"],
+                task_type=k.FILE_TASK_BACKUP_TYPE,
+                file=task["input_filename"],
+                phase="transfer",
+                elapsed_sec=round(elapsed_sec, 3),
+                since_start_sec=round(elapsed_sec, 3),
+                final_file=os.path.join(
+                    task["server_file_path"],
+                    task["server_filename"],
+                ),
+            )
 
             # --- finalize success ---
-            _stage = k.STAGE_MAIN
-            _finalize_success(db, task, {
-                "refreshed_metadata": refreshed_metadata,
-                "updated_size_kb": updated_size_kb,
-                "elapsed_sec": elapsed_sec,
-            })
+            _finalize_success(db, task, result, elapsed_sec=elapsed_sec)
 
 
         except Exception as e:
             if not err.triggered:
-                # _stage == STAGE_SSH means the bootstrap failed; use the SSH
-                # classifier to route to AUTH, CONNECT, or SSH stage correctly.
-                stage = (
-                    errors.classify_ssh_connect_exc(e).stage
-                    if _stage == k.STAGE_SSH
-                    else _stage
-                )
+                if sftp_conn is None and task is not None:
+                    stage = errors.classify_ssh_connect_exc(e).stage
+                elif not result["file_was_transferred"] and task is not None:
+                    stage = k.STAGE_TRANSFER
+                else:
+                    stage = k.STAGE_MAIN
                 err.capture(
                     reason="Backup worker failure",
                     stage=stage,
                     exc=e,
                     worker_id=worker_id,
-                    host_id=host_id,
-                    task_id=file_task_id,
+                    host_id=task["host_id"] if task else None,
+                    task_id=task["file_task_id"] if task else None,
                     traceback=traceback.format_exc(),
                 )
             _finalize_error(db, task, err)
 
         finally:
-            _cleanup(sftp_conn, db, host_id, err, file_was_transferred)
+            _cleanup(
+                sftp_conn,
+                db,
+                task["host_id"] if task else None,
+                err,
+                result["file_was_transferred"],
+            )
 
         runtime_sleep.random_jitter_sleep()
 

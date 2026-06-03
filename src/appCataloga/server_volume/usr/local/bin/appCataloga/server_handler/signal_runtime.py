@@ -14,13 +14,16 @@ the same `signal.signal(...)` boilerplate.
 from __future__ import annotations
 
 import signal
-from typing import Any, Callable
+from typing import Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from shared.logging_utils import log as logger_type
 
 
 def install_shutdown_handlers(
     *,
     process_status: dict,
-    logger: Any,
+    logger: logger_type,
     on_shutdown: Callable[[str], None] | None = None,
     log_fields: dict | None = None,
 ) -> None:
@@ -32,7 +35,11 @@ def install_shutdown_handlers(
         2. emit one structured shutdown log line
         3. run optional caller-specific cleanup, such as waking a selector
     """
-    extra_fields = dict(log_fields or {})
+    extra_fields = {
+        "component": "signal_runtime",
+        "operation": "handle_signal",
+        **dict(log_fields or {}),
+    }
 
     def _build_handler(signal_name: str, handler_name: str):
         def _handler(signum=None, frame=None) -> None:

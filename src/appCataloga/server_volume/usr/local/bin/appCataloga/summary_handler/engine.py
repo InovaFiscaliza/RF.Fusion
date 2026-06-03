@@ -44,7 +44,20 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
+
+if TYPE_CHECKING:
+    from db.dbHandlerSummary import dbHandlerSummary
+
+
+class SummaryLogger(Protocol):
+    """Minimal logger contract required by the summary refresh engine."""
+
+    def event(self, event: str, **fields: Any) -> None:
+        ...
+
+    def warning_event(self, event: str, **fields: Any) -> None:
+        ...
 
 
 def _safe_int(value: Any) -> Optional[int]:
@@ -467,7 +480,7 @@ class SummaryRefreshEngine:
         log: The application logger (``logging_utils.log()``).
     """
 
-    def __init__(self, db, logger) -> None:
+    def __init__(self, db: dbHandlerSummary, logger: SummaryLogger) -> None:
         """Bind the summary DB handler and application logger.
 
         Args:
@@ -477,6 +490,22 @@ class SummaryRefreshEngine:
         """
         self.db = db
         self.log = logger
+
+    def _event(self, event: str, **fields: Any) -> None:
+        """Emit one structured summary-engine event."""
+        self.log.event(
+            event,
+            component="summary_engine",
+            **fields,
+        )
+
+    def _warning_event(self, event: str, **fields: Any) -> None:
+        """Emit one structured summary-engine warning."""
+        self.log.warning_event(
+            event,
+            component="summary_engine",
+            **fields,
+        )
 
     def refresh_all(self, *, reason: str) -> List[str]:
         """Rebuild every public summary object in dependency order.
@@ -506,8 +535,9 @@ class SummaryRefreshEngine:
         refreshed.append(self._run_refresh("SERVER_ERROR_SUMMARY", self._refresh_server_error_summary))
         refreshed.append(self._run_refresh("HOST_CURRENT_SNAPSHOT", self._refresh_host_current_snapshot))
         refreshed.append(self._run_refresh("SERVER_CURRENT_SUMMARY", self._refresh_server_current_summary))
-        self.log.event(
+        self._event(
             "summary_full_reconcile_completed",
+            operation="refresh_all",
             reason=reason,
             objects=refreshed,
         )
@@ -588,8 +618,9 @@ class SummaryRefreshEngine:
 
         refreshed = [name for name in refreshed if name]
         if refreshed:
-            self.log.event(
+            self._event(
                 "summary_incremental_refresh_completed",
+                operation="refresh_for_events",
                 refreshed=refreshed,
                 host_ids=sorted(scope.host_ids),
                 site_ids=sorted(scope.site_ids),
@@ -1608,8 +1639,9 @@ class SummaryRefreshEngine:
             )
 
         if invalid_rows:
-            self.log.warning_event(
+            self._warning_event(
                 "summary_host_monthly_metric_invalid_month_skipped",
+                operation="refresh_host_monthly_metric",
                 skipped=len(invalid_rows),
                 examples=invalid_rows[:5],
             )

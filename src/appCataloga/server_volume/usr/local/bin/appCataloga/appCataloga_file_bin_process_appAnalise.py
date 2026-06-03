@@ -9,8 +9,6 @@ Transient failures (service unreachable, filesystem busy) freeze the task
 for manual review instead of writing a definitive ERROR.
 """
 
-import csv
-import fcntl
 import os
 import sys
 import time
@@ -27,7 +25,7 @@ from appAnalise import processing_bin
 from appAnalise.appAnalise_connection import AppAnaliseConnection
 from host_handler import host_runtime
 from server_handler import signal_runtime, sleep as runtime_sleep
-from shared import errors, logging_utils, tools
+from shared import errors, file_utils, logging_utils, tools
 
 from db.dbHandlerBKP import dbHandlerBKP
 from db.dbHandlerRFM import dbHandlerRFM
@@ -39,21 +37,6 @@ SERVICE_NAME = "appCataloga_file_bin_process_appAnalise"
 log = logging_utils.log(target_screen=False)
 process_status = {"running": True}
 
-_ERROR_LIST_FILE: str = os.path.join(
-    getattr(k, "LOG_DIR", "/var/log"),
-    getattr(k, "ERROR_LIST_FILE_NAME", "appCataloga_file_errolist.csv"),
-)
-
-_ERROR_LIST_COLUMNS = [
-    "DT_PROCESSING",
-    "FILE_PATH",
-    "FILE_NAME",
-    "ID_FILE_TASK",
-    "ID_FILE_HISTORY",
-    "ERROR_MESSAGE",
-    "ERROR_DETAIL",
-]
-
 
 def _error_fields(err, message: str) -> dict:
     """Structured error fields for FILE_TASK_HISTORY writes."""
@@ -62,59 +45,6 @@ def _error_fields(err, message: str) -> dict:
         message=message,
         clear_when_empty=True,
     )
-
-
-def _append_to_error_list(
-    *,
-    file_path: str,
-    file_name: str,
-    id_file_task: int | None,
-    id_file_history: int | None,
-    error_message: str,
-    error_detail: str,
-    dt_processing: datetime | None = None,
-) -> None:
-    """Append one error entry to the CSV error list.
-
-    Best-effort: any I/O failure is swallowed so a log-write problem never
-    disrupts the worker loop. An exclusive advisory lock serialises concurrent
-    writes from multiple worker processes.
-    """
-    if dt_processing is None:
-        dt_processing = datetime.now()
-
-    row = {
-        "DT_PROCESSING": dt_processing.isoformat(sep=" ", timespec="seconds"),
-        "FILE_PATH": file_path or "",
-        "FILE_NAME": file_name or "",
-        "ID_FILE_TASK": "" if id_file_task is None else str(id_file_task),
-        "ID_FILE_HISTORY": "" if id_file_history is None else str(id_file_history),
-        "ERROR_MESSAGE": error_message or "",
-        "ERROR_DETAIL": error_detail or "",
-    }
-
-    log_dir = os.path.dirname(_ERROR_LIST_FILE) or "."
-    try:
-        os.makedirs(log_dir, exist_ok=True)
-        write_header = not os.path.exists(_ERROR_LIST_FILE)
-        with open(_ERROR_LIST_FILE, "a", newline="", encoding="utf-8") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
-            try:
-                fh.seek(0, os.SEEK_END)
-                write_header = write_header or (fh.tell() == 0)
-                writer = csv.DictWriter(
-                    fh,
-                    fieldnames=_ERROR_LIST_COLUMNS,
-                    quoting=csv.QUOTE_MINIMAL,
-                    lineterminator="\n",
-                )
-                if write_header:
-                    writer.writeheader()
-                writer.writerow(row)
-            finally:
-                fcntl.flock(fh, fcntl.LOCK_UN)
-    except Exception:
-        pass
 
 
 # --- signal handling ---
@@ -208,43 +138,28 @@ def _claim_task(db_bp: dbHandlerBKP, task: dict) -> bool:
         rows_affected = claim_result.get("rows_affected", 0)
 
     if rows_affected != 1:
-        log.warning(
-            f"event=file_task_claim_lost host_id={task['host_id']} "
-            f"task_id={task['file_task_id']} rows_affected={rows_affected}"
+        log.warning_event(
+            "task_claim_race",
+            service=SERVICE_NAME,
+            host_id=task["host_id"],
+            task_id=task["file_task_id"],
+            task_type=k.FILE_TASK_PROCESS_TYPE,
+            rows_affected=rows_affected,
         )
         return False
 
+    log.task_claimed(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        file=task["filename"],
+        export=task["export"],
+    )
     return True
 
 
 # --- work ---
-
-# Exception types that freeze the task instead of writing a definitive ERROR.
-_FREEZE_DETAILS: dict = {
-    errors.AppAnaliseReadTimeoutError    : "APP_ANALISE read timeout, task frozen for manual review",
-    errors.AppAnaliseFileUnavailableError: "APP_ANALISE file unavailable, task frozen for manual review",
-    errors.ExternalServiceTransientError : "Transient appAnalise service failure, task frozen for manual review",
-}
-
-
-def _should_freeze(exc: BaseException | None) -> bool:
-    """Return True when the failure should freeze the task for manual review."""
-    return (
-        isinstance(exc, tuple(_FREEZE_DETAILS.keys()))
-        or processing_bin.is_transient_filesystem_error(exc)
-    )
-
-
-def _freeze_detail(exc: BaseException | None) -> str:
-    """Return the human-readable freeze reason for the queue message."""
-    if exc is not None:
-        detail = _FREEZE_DETAILS.get(type(exc))
-        if detail:
-            return detail
-        if processing_bin.is_transient_filesystem_error(exc):
-            return "Transient filesystem finalization failure, task frozen for manual review"
-    return "Task frozen for manual review"
-
 
 def _classify_work_failure(exc: Exception) -> tuple[str, str]:
     """Return (reason, stage) for err.capture based on the exception type."""
@@ -281,8 +196,6 @@ def _do_work(
     started = time.monotonic()
     phase: dict = {}
 
-    # --- process ---
-    log.event("processing_started", file=task["filename"], export=task["export"])
     t = time.monotonic()
     bin_data, file_meta = app_analise.process(
         file_path=task["server_path"],
@@ -321,7 +234,7 @@ def _do_work(
     # retire any superseded source payload.  DB registration of the server-side
     # file follows once the move is confirmed.
     t = time.monotonic()
-    file_meta = processing_bin.promote_final_artifact(
+    file_meta = file_utils.promote_final_artifact(
         new_path=new_path,
         file_meta=file_meta,
         source_file_meta=task["source_file_meta"],
@@ -374,15 +287,20 @@ def _log_phase_timings(
     if isinstance(bin_data, dict) and isinstance(bin_data.get("spectrum"), list):
         spectrum_count = len(bin_data["spectrum"])
 
-    log.event(
-        "processing_phase_timings",
+    log.task_phase_timings(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
         file=task["filename"],
         outcome=outcome,
-        total_sec=round(time.monotonic() - started_at, 3),
-        process_sec=phase_durations.get("process"),
-        site_sec=phase_durations.get("site"),
-        db_sec=phase_durations.get("db"),
-        finalize_sec=phase_durations.get("fs"),
+        total_sec=time.monotonic() - started_at,
+        phase_durations={
+            "process": phase_durations.get("process"),
+            "site": phase_durations.get("site"),
+            "db": phase_durations.get("db"),
+            "finalize": phase_durations.get("fs"),
+        },
         spectra=spectrum_count,
         resolved_sites=(len(set(resolved_site_ids)) if resolved_site_ids else None),
         persisted_spectra=(len(spectrum_ids) if spectrum_ids else None),
@@ -448,6 +366,15 @@ def _finalize_success(db_bp: dbHandlerBKP, task: dict, result: dict) -> None:
             resolved_site_ids=result["resolved_site_ids"],
             spectrum_ids=result["spectrum_ids"],
         )
+        log.task_done(
+            SERVICE_NAME,
+            host_id=task["host_id"],
+            task_id=task["file_task_id"],
+            task_type=k.FILE_TASK_PROCESS_TYPE,
+            file=task["filename"],
+            elapsed_sec=round(time.monotonic() - result["started_at"], 3),
+            final_file=os.path.join(new_path, file_meta["file_name"]),
+        )
     except Exception as e:
         log.error_event(
             "task_finalization_failed",
@@ -464,7 +391,7 @@ def _finalize_freeze(
     err: errors.ErrorHandler,
 ) -> None:
     """Write FROZEN to queue. Raises on DB failure — caught by _finalize_error."""
-    detail = _freeze_detail(err.exc)
+    detail = errors.freeze_processing_detail(err.exc)
     message = tools.compose_message(
         task_type=k.FILE_TASK_PROCESS_TYPE,
         task_status=k.TASK_FROZEN,
@@ -497,9 +424,13 @@ def _finalize_freeze(
         db_bp.rollback()
         raise
     db_bp.host_task_statistics_create(host_id=task["host_id"], log_if_active=False)
-    log.error_event(
-        "processing_frozen",
+    log.task_frozen(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
         file=task["filename"],
+        stage=err.stage,
         error=err.format_error() or detail,
     )
 
@@ -511,7 +442,7 @@ def _write_task_error(
 ) -> None:
     """Quarantine the error artifact and write ERROR. Raises on failure."""
     file_meta = getattr(err.exc, "file_meta", None)
-    server_path, history_meta_override = processing_bin.quarantine_error_artifact(
+    server_path, history_meta_override = file_utils.quarantine_error_artifact(
         file_meta=file_meta,
         source_file_meta=task["source_file_meta"],
         export=task.get("export"),
@@ -575,20 +506,16 @@ def _write_task_error(
     final_file = (
         os.path.join(server_path, history_name) if server_path else None
     )
-    log.error_event(
-        "processing_error",
+    log.task_error(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
         file=task["filename"],
+        stage=err.stage,
+        error=err.format_error() or "Processing failed",
         export=task.get("export"),
         final_file=final_file,
-        error=err.format_error() or "Processing failed",
-    )
-    _append_to_error_list(
-        file_path=task["server_path"],
-        file_name=task["server_name"],
-        id_file_task=task["file_task_id"],
-        id_file_history=None,
-        error_message=err.format_error() or "Processing failed",
-        error_detail=err.format_persisted_error(),
     )
 
 
@@ -602,7 +529,7 @@ def _finalize_error(
         return
 
     try:
-        if _should_freeze(err.exc):
+        if errors.should_freeze_processing_task(err.exc):
             _finalize_freeze(db_bp, task, err)
         else:
             _write_task_error(db_bp, task, err)
@@ -626,13 +553,20 @@ def _cleanup(db_rfm: dbHandlerRFM, task: dict | None) -> None:  # noqa: ARG001
 
 
 # --- main ---
-
+def _init_db() -> tuple[dbHandlerBKP, dbHandlerRFM]:
+    """Connect to the operational database. Exits the process on failure."""
+    try:
+        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log), dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)
+    except Exception as e:
+        log.error_event("db_init_failed", service=SERVICE_NAME, error=e)
+        sys.exit(1)
+        
 def main() -> None:
     """Run the appAnalise processing worker until shutdown is requested."""
+    
+    # Initialize logging, DB connections, and appAnalise client outside the loop to
     log.service_start(SERVICE_NAME)
-
-    db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
-    db_rfm = dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)
+    db_bp, db_rfm = _init_db()
     app_analise = AppAnaliseConnection()
 
     while process_status["running"]:

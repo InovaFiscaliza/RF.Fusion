@@ -82,8 +82,13 @@ def iter_metadata_files(
                 batch_size=batch_size,
             )
         else:
-            log.entry(
-                f"[META] MODE_FILE active \u2014 skipping deduplication for host {host_id}"
+            log.event(
+                "metadata_mode_file_skip_dedup",
+                component="host_metadata",
+                operation="dedup",
+                host=hostname,
+                host_id=host_id,
+                mode="file",
             )
 
         if not batch:

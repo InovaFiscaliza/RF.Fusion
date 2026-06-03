@@ -76,7 +76,47 @@ class DBHandlerBase:
     def _log_connection_lifecycle(self, message: str, *, force: bool = False) -> None:
         """Write low-level DB session lifecycle logs only when explicitly enabled."""
         if force or self.log_connection_lifecycle:
-            self.log.entry(message)
+            self._log_db_event(
+                "db_connection_lifecycle",
+                operation="connection_lifecycle",
+                detail=message,
+            )
+
+    def _log_db_event(self, event: str, **fields: Any) -> None:
+        """Emit one structured informational DB event."""
+        payload = {
+            "db_handler": self.__class__.__name__,
+            "database": getattr(self, "database", None),
+            **fields,
+        }
+        if hasattr(self.log, "event"):
+            self.log.event(event, **payload)
+            return
+        self.log.entry(f"{event} {payload}")
+
+    def _log_db_warning(self, event: str, **fields: Any) -> None:
+        """Emit one structured non-fatal DB warning."""
+        payload = {
+            "db_handler": self.__class__.__name__,
+            "database": getattr(self, "database", None),
+            **fields,
+        }
+        if hasattr(self.log, "warning_event"):
+            self.log.warning_event(event, **payload)
+            return
+        self.log.warning(f"{event} {payload}")
+
+    def _log_db_error(self, event: str, **fields: Any) -> None:
+        """Emit one structured DB failure event."""
+        payload = {
+            "db_handler": self.__class__.__name__,
+            "database": getattr(self, "database", None),
+            **fields,
+        }
+        if hasattr(self.log, "error_event"):
+            self.log.error_event(event, **payload)
+            return
+        self.log.error(f"{event} {payload}")
 
     def _drain_cursor(self) -> None:
         """
@@ -197,8 +237,10 @@ class DBHandlerBase:
                     return
 
                 except Error:
-                    self.log.warning(
-                        "Database reconnect failed, creating a new session."
+                    self._log_db_warning(
+                        "db_reconnect_failed",
+                        operation="reconnect",
+                        error="Database reconnect failed, creating a new session.",
                     )
 
             # ==========================================================
@@ -221,7 +263,11 @@ class DBHandlerBase:
             self._drain_cursor()
 
         except Error as e:
-            self.log.error(f"Error connecting to database: {e}")
+            self._log_db_error(
+                "db_connect_failed",
+                operation="connect",
+                error=repr(e),
+            )
             raise
 
 
@@ -276,7 +322,11 @@ class DBHandlerBase:
                     )
 
         except Exception as e:
-            self.log.warning(f"Error while closing database connection: {e}")
+            self._log_db_warning(
+                "db_disconnect_failed",
+                operation="disconnect",
+                error=repr(e),
+            )
 
 
     # ======================================================================
@@ -574,7 +624,12 @@ class DBHandlerBase:
             Exception: Re-raises any SQL failure after logging and rollback.
         """
         if not data:
-            self.log.warning(f"[DBHandlerBase] Empty data dictionary for table '{table}'. Skipping insert.")
+            self._log_db_warning(
+                "db_invalid_input",
+                operation="insert",
+                table=table,
+                error="Empty data dictionary. Insert skipped.",
+            )
             return 0
 
         cols = ", ".join(data.keys())
@@ -594,11 +649,6 @@ class DBHandlerBase:
                 self.db_connection.commit()
 
             last_id = int(self.cursor.lastrowid or 0)
-            if manage_own_transaction and log_success:
-                self.log.entry(
-                    f"[DBHandlerBase] {insert_kw} executed successfully on {table} "
-                    f"(ID={last_id})."
-                )
             return last_id
 
         except Exception as e:
@@ -607,7 +657,13 @@ class DBHandlerBase:
                     self.db_connection.rollback()
                 except Exception:
                     pass
-            self.log.error(f"[DBHandlerBase] {insert_kw} failed on {table}: {e}")
+            self._log_db_error(
+                "db_insert_failed",
+                operation=insert_kw.lower().replace(" ", "_"),
+                table=table,
+                error=repr(e),
+                commit=commit,
+            )
             raise
 
     def _update_row(
@@ -703,7 +759,13 @@ class DBHandlerBase:
         except Exception as e:
             if not getattr(self, "in_transaction", False):
                 self.db_connection.rollback()
-            self.log.error(f"[DB] UPDATE failed: {e}")
+            self._log_db_error(
+                "db_update_failed",
+                operation="update",
+                table=table,
+                error=repr(e),
+                commit=commit,
+            )
             raise
 
 
@@ -745,7 +807,12 @@ class DBHandlerBase:
         """
 
         if not data:
-            self.log.warning(f"[DBHandlerBase] UPSERT skipped: no data for {table}")
+            self._log_db_warning(
+                "db_invalid_input",
+                operation="upsert",
+                table=table,
+                error="No data provided. Upsert skipped.",
+            )
             return 0
 
         columns = ", ".join(data.keys())
@@ -774,17 +841,17 @@ class DBHandlerBase:
             if commit:
                 self.db_connection.commit()
 
-            # Only log if explicitly requested
-            if log_each:
-                self.log.entry(
-                    f"[DBHandlerBase] UPSERT executed on {table} ({affected} row affected): {data.get('NA_HOST_FILE_NAME')}"
-                )
-
             return affected
 
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[DBHandlerBase] UPSERT failed on {table}: {e}")
+            self._log_db_error(
+                "db_update_failed",
+                operation="upsert",
+                table=table,
+                error=repr(e),
+                commit=commit,
+            )
             raise
 
 
@@ -816,7 +883,12 @@ class DBHandlerBase:
         """
         # Ensure safe deletion (require WHERE clause)
         if not where:
-            self.log.warning(f"[DBHandlerBase] DELETE skipped: no WHERE provided for {table}")
+            self._log_db_warning(
+                "db_invalid_input",
+                operation="delete",
+                table=table,
+                error="No WHERE provided. Delete skipped.",
+            )
             return 0
 
         # `col` is used as the loop variable intentionally to avoid shadowing
@@ -836,7 +908,13 @@ class DBHandlerBase:
         except Exception as e:
             if not getattr(self, "in_transaction", False):
                 self.db_connection.rollback()
-            self.log.error(f"[DBHandlerBase] DELETE failed on {table}: {e}")
+            self._log_db_error(
+                "db_delete_failed",
+                operation="delete",
+                table=table,
+                error=repr(e),
+                commit=commit,
+            )
             raise
     
     def _select_raw(self, sql: str, params: tuple = ()):
@@ -874,10 +952,13 @@ class DBHandlerBase:
             return self._map_cursor_rows(self.cursor.fetchall() or [])
 
         except Exception as e:
-            self.log.error(
-                f"[DB][SELECT_RAW] {e}\n"
-                f"SQL:\n{sql}\n"
-                f"PARAMS: {params}"
+            self._log_db_error(
+                "db_select_failed",
+                operation="select_raw",
+                table="raw_sql",
+                error=repr(e),
+                sql=sql,
+                params=params,
             )
             raise
      
@@ -937,7 +1018,12 @@ class DBHandlerBase:
             return self._map_cursor_rows(self.cursor.fetchall() or [])
 
         except Exception as e:
-            self.log.error(f"[DBHandlerBase] SELECT failed on {table}: {e}")
+            self._log_db_error(
+                "db_select_failed",
+                operation="select",
+                table=table,
+                error=repr(e),
+            )
             raise
 
 
@@ -1119,8 +1205,13 @@ class DBHandlerBase:
             return self._map_cursor_rows(self.cursor.fetchall() or [])
 
         except Exception as e:
-            self.log.error(
-                f"[DB][SELECT_CUSTOM] {e}\nSQL:\n{sql}\nPARAMS: {params}"
+            self._log_db_error(
+                "db_select_failed",
+                operation="select_custom",
+                table=table,
+                error=repr(e),
+                sql=sql,
+                params=params,
             )
             raise
 
@@ -1148,7 +1239,13 @@ class DBHandlerBase:
             return affected
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[DBHandlerBase] execute_custom failed: {e}")
+            self._log_db_error(
+                "db_execute_failed",
+                operation="execute_custom",
+                table="custom_sql",
+                error=repr(e),
+                commit=commit,
+            )
             raise
 
     def _execute_many_custom(self, sql: str, values: List[Tuple[Any, ...]], *, commit: bool = True) -> int:
@@ -1173,7 +1270,14 @@ class DBHandlerBase:
             return affected
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[DBHandlerBase] executemany failed: {e}")
+            self._log_db_error(
+                "db_executemany_failed",
+                operation="execute_many_custom",
+                table="custom_sql",
+                error=repr(e),
+                commit=commit,
+                batch_size=len(values),
+            )
             raise
         
     def _upsert_batch(
@@ -1273,15 +1377,18 @@ class DBHandlerBase:
             if commit:
                 self.db_connection.commit()
 
-            self.log.entry(
-                f"[DB] Batch UPSERT | table={table} | rows={processed} | batch={batch_size}"
-            )
-
             return processed
 
         except Exception as e:
             self.db_connection.rollback()
-            self.log.error(f"[DB] Batch UPSERT failed on {table}: {e}")
+            self._log_db_error(
+                "db_executemany_failed",
+                operation="upsert_batch",
+                table=table,
+                error=repr(e),
+                commit=commit,
+                batch_size=batch_size,
+            )
             raise
 
         finally:

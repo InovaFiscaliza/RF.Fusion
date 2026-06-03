@@ -94,8 +94,20 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
         NA_MESSAGE="Host check task running",
     )
     if result["rows_affected"] == 1:
+        log.task_claimed(
+            SERVICE_NAME,
+            host_id=task["host_id"],
+            task_id=task["task_id"],
+            task_type=task["task_type"],
+        )
         return True
-    log.event("claim_race_lost", host_id=task["host_id"], task_id=task["task_id"])
+    log.warning_event(
+        "task_claim_race",
+        service=SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["task_id"],
+        task_type=task["task_type"],
+    )
     return False
 
 
@@ -107,16 +119,40 @@ def _do_work(db: dbHandlerBKP, task: dict) -> tuple[int, str]:
 
         case k.HOST_TASK_CHECK_TYPE:
             return host_connectivity.run_check(
-                db, task, logger=log, promote_to_processing=True
+                db,
+                task,
+                service_name=SERVICE_NAME,
+                logger=log,
+                promote_to_processing=True,
             )
 
         case k.HOST_TASK_CHECK_CONNECTION_TYPE:
             return host_connectivity.run_check(
-                db, task, logger=log, promote_to_processing=False
+                db,
+                task,
+                service_name=SERVICE_NAME,
+                logger=log,
+                promote_to_processing=False,
             )
 
         case _:
             raise ValueError(f"Unsupported HOST_TASK type: {task['task_type']}")
+
+
+def _log_work_phase(task: dict, elapsed_sec: float) -> None:
+    """Emit the canonical intermediate phase for the claimed host task."""
+    if task["task_type"] != k.HOST_TASK_UPDATE_STATISTICS_TYPE:
+        return
+
+    log.task_phase(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["task_id"],
+        task_type=task["task_type"],
+        phase="persist",
+        elapsed_sec=round(elapsed_sec, 3),
+        since_start_sec=round(elapsed_sec, 3),
+    )
 
 
 def _finalize_success(
@@ -130,8 +166,8 @@ def _finalize_success(
         DT_HOST_TASK=task["now"],
         NA_MESSAGE=message,
     )
-    log.event(
-        "work_completed",
+    log.task_done(
+        SERVICE_NAME,
         host_id=task["host_id"],
         task_id=task["task_id"],
         task_type=task["task_type"],
@@ -162,7 +198,23 @@ def _finalize_error(
             DT_HOST_TASK=datetime.now(),
         )
     except Exception as e2:
-        log.event("finalize_error_failed", task_id=task["task_id"], error=e2)
+        log.error_event(
+            "task_finalization_failed",
+            service=SERVICE_NAME,
+            host_id=task["host_id"],
+            task_id=task["task_id"],
+            task_type=task["task_type"],
+            exception=repr(e2),
+        )
+
+    log.task_error(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["task_id"],
+        task_type=task["task_type"],
+        stage=err.stage,
+        error=err.format_error() or "Host check failed",
+    )
 
 
 def _init_db() -> dbHandlerBKP:
@@ -170,7 +222,7 @@ def _init_db() -> dbHandlerBKP:
     try:
         return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
-        log.event("db_init_failed", service=SERVICE_NAME, error=e)
+        log.error_event("db_init_failed", service=SERVICE_NAME, error=e)
         sys.exit(1)
 
 
@@ -183,19 +235,23 @@ def main() -> None:
         task = None
 
         try:
+            # --- read ---
             task = _read_next_task(db)
             if task is None:
                 runtime_sleep.random_jitter_sleep()
                 continue
-
+            
+            # --- claim ---
             if not _claim_task(db, task):
                 # Another worker got this task first. Not an error, just skip.
                 runtime_sleep.random_jitter_sleep()
                 continue
-
+            
+            # --- work ---
             start = time.monotonic()
             status, message = _do_work(db, task)
             elapsed_sec = time.monotonic() - start
+            _log_work_phase(task, elapsed_sec)
 
             _finalize_success(db, task, status, message, elapsed_sec)
 
@@ -230,4 +286,3 @@ if __name__ == "__main__":
             logger=log,
         )
         raise
-
