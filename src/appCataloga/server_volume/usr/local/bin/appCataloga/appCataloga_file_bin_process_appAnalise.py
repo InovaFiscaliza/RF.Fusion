@@ -192,127 +192,19 @@ def _do_work(
     task: dict,
     app_analise: AppAnaliseConnection,
 ) -> dict:
-    """Execute the full processing pipeline for one FILE_TASK. Raises on any failure."""
-    # The entrypoint measures the full `_do_work()` duration for `task_done`.
-    # This function measures only completed domain phases.
-    work_started_at = time.monotonic()
+    """
+    Delegate the processing pipeline to the appAnalise domain flow.
 
-    phase_started_at = time.monotonic()
-    bin_data, file_meta = app_analise.process(
-        file_path=task["server_path"],
-        file_name=task["server_name"],
-        export=task["export"],
-    )
-    process_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
-    log.task_phase(
-        SERVICE_NAME,
-        host_id=task["host_id"],
-        task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        phase="process",
-        elapsed_sec=process_elapsed_sec,
-        since_start_sec=round(time.monotonic() - work_started_at, 3),
-        file=task["filename"],
-        export=task["export"],
-    )
-
-    # --- site resolution ---
-    # Stays outside the RFDATA transaction to keep geocoding latency out of
-    # the DB critical section.
-    phase_started_at = time.monotonic()
-    resolved_site_ids = processing_bin.resolve_spectrum_sites(db_rfm, bin_data, logger=log)
-    site_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
-    log.task_phase(
-        SERVICE_NAME,
-        host_id=task["host_id"],
-        task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        phase="site",
-        elapsed_sec=site_elapsed_sec,
-        since_start_sec=round(time.monotonic() - work_started_at, 3),
-        file=task["filename"],
-        resolved_sites=len(set(resolved_site_ids)) if resolved_site_ids else 0,
-    )
-
-    # --- db persist ---
-    phase_started_at = time.monotonic()
-    new_path = processing_bin.build_repository_destination_path(db_rfm, bin_data, task["hostname_db"])
-    db_rfm.begin_transaction()
-    spectrum_ids = processing_bin.insert_spectra_batch(
-        db_rfm=db_rfm,
-        bin_data=bin_data,
-        hostname_db=task["hostname_db"],
-        host_path=task["host_path"],
-        host_file_name=task["host_file_name"],
-        extension=task["extension"],
-        vl_file_size_kb=task["vl_file_size_kb"],
-        dt_created=task["dt_created"],
-        dt_modified=task["dt_modified"],
-    )
-    db_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
-    log.task_phase(
-        SERVICE_NAME,
-        host_id=task["host_id"],
-        task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        phase="db",
-        elapsed_sec=db_elapsed_sec,
-        since_start_sec=round(time.monotonic() - work_started_at, 3),
-        file=task["filename"],
-        spectra=len(spectrum_ids),
-    )
-
-    # --- filesystem: promote artifact ---
-    # Pure filesystem step: move the canonical artifact to the repository and
-    # retire any superseded source payload.  DB registration of the server-side
-    # file follows once the move is confirmed.
-    phase_started_at = time.monotonic()
-    file_meta = file_utils.promote_final_artifact(
-        new_path=new_path,
-        file_meta=file_meta,
-        source_file_meta=task["source_file_meta"],
-        export=task["export"],
-        filename=task["filename"],
+    The worker keeps queue lifecycle ownership. The domain flow owns the
+    processing stages and emits the intermediate `task_phase` events.
+    """
+    return processing_bin.run_processing_flow(
+        db_rfm,
+        task,
+        app_analise,
         logger=log,
+        service_name=SERVICE_NAME,
     )
-    # Register the moved artifact in RFDATA.  These two writes span two tables
-    # and must be inside a transaction (ARCHITECTURE §3.4).  They happen after
-    # the file is in its final location so the recorded path is always valid.
-    #db_rfm.begin_transaction()
-    server_file_id = db_rfm.insert_file(
-        hostname=task["hostname_db"],
-        NA_VOLUME=k.REPO_VOLUME_NAME,
-        NA_PATH=new_path,
-        NA_FILE=file_meta["file_name"],
-        NA_EXTENSION=file_meta["extension"],
-        VL_FILE_SIZE_KB=file_meta["size_kb"],
-        DT_FILE_CREATED=file_meta["dt_created"],
-        DT_FILE_MODIFIED=file_meta["dt_modified"],
-        log_success=False,
-    )
-    db_rfm.insert_bridge_spectrum_file(spectrum_ids, [server_file_id])
-    db_rfm.commit()
-    finalize_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
-    log.task_phase(
-        SERVICE_NAME,
-        host_id=task["host_id"],
-        task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        phase="finalize",
-        elapsed_sec=finalize_elapsed_sec,
-        since_start_sec=round(time.monotonic() - work_started_at, 3),
-        file=task["filename"],
-        persisted_spectra=len(spectrum_ids),
-        final_file=os.path.join(new_path, file_meta["file_name"]),
-    )
-
-    return {
-        "file_meta"        : file_meta,
-        "new_path"         : new_path,
-        "bin_data"         : bin_data,
-        "resolved_site_ids": resolved_site_ids,
-        "spectrum_ids"     : spectrum_ids,
-    }
 
 
 # --- finalization ---

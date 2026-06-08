@@ -301,11 +301,6 @@ class ShouldExportTests(unittest.TestCase):
     def test_should_export_disables_mat_for_unknown_hosts(self) -> None:
         self.assertFalse(processing.should_export("unknown_station"))
 
-    def test_should_map_host_source_file_uses_allowlist(self) -> None:
-        self.assertTrue(processing.should_map_host_source_file("rfeye002106"))
-        self.assertTrue(processing.should_map_host_source_file("MIAerCentral"))
-        self.assertFalse(processing.should_map_host_source_file("keysight_n9936b"))
-
 
 class SiteResolutionTests(unittest.TestCase):
     """Validate per-spectrum SITE resolution and selective discard behavior."""
@@ -528,7 +523,7 @@ class SpectrumInsertTests(unittest.TestCase):
             metadata={},
         )
 
-    def test_insert_spectra_batch_skips_host_file_for_non_allowlisted_family(self) -> None:
+    def test_insert_spectra_batch_always_registers_host_file_lineage(self) -> None:
         db = FakeDbRfmIngest()
         bin_data = {
             "method": "Drive test",
@@ -550,8 +545,9 @@ class SpectrumInsertTests(unittest.TestCase):
             dt_modified=datetime(2026, 1, 1, 12, 0, 0),
         )
 
-        self.assertEqual(len(db.insert_file_calls), 0)
-        self.assertEqual(len(db.bridge_calls), 0)
+        self.assertEqual(len(db.insert_file_calls), 1)
+        self.assertEqual(len(db.bridge_calls), 1)
+        self.assertEqual(db.bridge_calls[0][1], [901])
         self.assertEqual(len(spectrum_ids), 2)
         self.assertEqual(db.insert_spectrum_calls[0]["id_site"], 10)
         self.assertEqual(db.insert_spectrum_calls[1]["id_site"], 11)
@@ -676,7 +672,7 @@ class SpectrumInsertTests(unittest.TestCase):
         self.assertEqual(spectrum_ids, [801, 802])
         self.assertEqual(len(db.insert_spectrum_calls), 2)
 
-    def test_insert_spectra_batch_falls_back_to_host_for_malformed_cwsm_receiver(self) -> None:
+    def test_insert_spectra_batch_rejects_malformed_cwsm_receiver(self) -> None:
         db = FakeDbRfmIngest()
         spectrum = self._build_spectrum(site_id=10, equipment_name="cwsm2110000")
         bin_data = {
@@ -684,21 +680,22 @@ class SpectrumInsertTests(unittest.TestCase):
             "spectrum": [spectrum],
         }
 
-        processing.insert_spectra_batch(
-            db_rfm=db,
-            bin_data=bin_data,
-            hostname_db="CWSM211005",
-            host_path="/host/path",
-            host_file_name="source.zip",
-            extension=".zip",
-            vl_file_size_kb=1,
-            dt_created=datetime(2026, 1, 1, 12, 0, 0),
-            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
-        )
+        with self.assertRaises(worker.errors.BinValidationError):
+            processing.insert_spectra_batch(
+                db_rfm=db,
+                bin_data=bin_data,
+                hostname_db="CWSM211005",
+                host_path="/host/path",
+                host_file_name="source.zip",
+                extension=".zip",
+                vl_file_size_kb=1,
+                dt_created=datetime(2026, 1, 1, 12, 0, 0),
+                dt_modified=datetime(2026, 1, 1, 12, 0, 0),
+            )
 
         self.assertEqual(
             db.equipment_calls,
-            [{"name": "cwsm21100005", "type_hint": "cwsm21100005"}],
+            [],
         )
 
     def test_insert_spectra_batch_uses_host_identity_and_receiver_type_for_ermx(self) -> None:

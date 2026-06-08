@@ -28,11 +28,17 @@ import os
 import time
 from datetime import datetime
 import re
+from typing import TYPE_CHECKING
 
 import config as k
 from appAnalise.payload_parser import canonicalize_equipment_identifier
 from geopy.exc import GeocoderServiceError
 from shared import errors, file_utils, geolocation_utils, tools
+
+if TYPE_CHECKING:
+    from appAnalise.appAnalise_connection import AppAnaliseConnection
+    from db.dbHandlerRFM import dbHandlerRFM
+    from shared.logging_utils import log as logger_type
 
 
 NON_ALNUM_RE = re.compile(r"[^a-z0-9]+", re.IGNORECASE)
@@ -74,23 +80,6 @@ def should_export(hostname: str) -> bool:
     return normalized.startswith("cwsm")
 
 
-def should_map_host_source_file(hostname: str) -> bool:
-    """
-    Decide whether the worker should register the original host-side source file.
-
-    Only station families with a trustworthy 1:1 lineage between the queued
-    FILE_TASK and the physical source file should create a `host_file` entry.
-    Aggregated analyzer exports can still persist spectra and the canonical
-    repository artifact without inventing a fake host-side lineage row.
-    """
-    normalized = (hostname or "").strip().lower()
-
-    return any(
-        normalized.startswith(family)
-        for family in k.APP_ANALISE_SOURCE_LINEAGE_FAMILIES
-    )
-
-
 def resolve_equipment_persistence_identity(
     *,
     hostname_db: str,
@@ -99,12 +88,12 @@ def resolve_equipment_persistence_identity(
     """
     Resolve the catalog identity and equipment-type hint for one spectrum.
 
-    Most station families use the same canonical identifier both as the
-    persisted equipment name and as the type-inference source. ERMx/EMRx is
-    the exception: the operational asset is the Windows measurement station
-    (the hostname), while the payload's equipment string names the analyzer
-    model attached to that station. We persist the station hostname as the
-    equipment name but use the analyzer string to infer the equipment type.
+    Most station families must persist the equipment identity coming from the
+    payload itself. ERMx/EMRx is the only exception: the operational asset is
+    the Windows measurement station (the hostname), while the payload's
+    equipment string names the analyzer model attached to that station. We
+    persist the station hostname as the equipment name only for that family
+    and use the analyzer string to infer the equipment type.
 
     Returns:
         tuple[str, str]:
@@ -128,10 +117,7 @@ def resolve_equipment_persistence_identity(
         type_hint = raw_spectrum_name or hostname_db
         return normalized_host, type_hint
 
-    canonical_name = canonicalize_equipment_identifier(
-        raw_spectrum_name or hostname_db,
-        fallback_hostname=hostname_db,
-    )
+    canonical_name = canonicalize_equipment_identifier(raw_spectrum_name)
     return canonical_name, canonical_name
 
 
@@ -233,20 +219,27 @@ def _flush_fixed_site_updates(db_rfm, site_updates, *, logger=None):
 
         occurrences = int(payload["occurrences"])
         if update_result["action"] == "skipped_limit":
-            logger.entry(
-                f"Site {site_id} reached {update_result['existing_gnss']} GNSS "
-                f"measurements (limit={update_result['limit']}). No update "
-                f"performed. occurrences={occurrences}"
+            logger.event(
+                "site_gnss_update_skipped_limit",
+                component="appanalise_processing",
+                operation="flush_fixed_site_updates",
+                site_id=site_id,
+                existing_gnss=update_result["existing_gnss"],
+                limit=update_result["limit"],
+                occurrences=occurrences,
             )
             continue
 
-        logger.entry(
-            f"Updated site {site_id}: "
-            f"lat={update_result['latitude']:.6f}, "
-            f"lon={update_result['longitude']:.6f}, "
-            f"alt={update_result['altitude']:.2f}, "
-            f"occurrences={occurrences}, "
-            f"gnss_samples={len(payload['longitude_raw'])}"
+        logger.event(
+            "site_gnss_updated",
+            component="appanalise_processing",
+            operation="flush_fixed_site_updates",
+            site_id=site_id,
+            latitude=round(update_result["latitude"], 6),
+            longitude=round(update_result["longitude"], 6),
+            altitude=round(update_result["altitude"], 2),
+            occurrences=occurrences,
+            gnss_samples=len(payload["longitude_raw"]),
         )
 
 
@@ -365,10 +358,12 @@ def resolve_spectrum_sites(db_rfm, bin_data, *, logger=None):
                 discarded_here += 1
 
                 if logger is not None:
-                    logger.warning(
-                        "appanalise_site_resolution_discard "
-                        f"spectrum={getattr(spectrum, 'description', None)!r} "
-                        f"reason={exc}"
+                    logger.warning_event(
+                        "appanalise_site_resolution_discard",
+                        component="appanalise_processing",
+                        operation="resolve_spectrum_sites",
+                        spectrum=getattr(spectrum, "description", None),
+                        reason=str(exc),
                     )
                 continue
 
@@ -413,9 +408,11 @@ def insert_spectra_batch(
     vl_file_size_kb,
     dt_created,
     dt_modified,
+    *,
+    logger=None,
 ):
     """
-    Persist source-file lineage (when applicable) and all normalized spectra.
+    Persist source-file lineage and all normalized spectra.
 
     Dimension rows (trace type, equipment, measure unit) are resolved once per
     unique value and cached locally for the duration of this batch, so the
@@ -447,20 +444,18 @@ def insert_spectra_batch(
     duplicate_spectrum_hits = 0
     spectrum_batch_started = time.monotonic()
 
-    if should_map_host_source_file(hostname_db):
-        # Only 1:1 station families register a host-side lineage file. Mobile
-        # analyzer exports can aggregate several physical source files, so
-        # forcing one synthetic host file row would misrepresent provenance.
-        host_file_id = db_rfm.insert_file(
-            hostname=hostname_db,
-            NA_VOLUME=hostname_db,
-            NA_PATH=host_path,
-            NA_FILE=host_file_name,
-            NA_EXTENSION=extension,
-            VL_FILE_SIZE_KB=vl_file_size_kb,
-            DT_FILE_CREATED=dt_created,
-            DT_FILE_MODIFIED=dt_modified,
-        )
+    # The original host-side file is always part of the lineage. The finalized
+    # repository artifact is registered later in the flow as a second file row.
+    host_file_id = db_rfm.insert_file(
+        hostname=hostname_db,
+        NA_VOLUME=hostname_db,
+        NA_PATH=host_path,
+        NA_FILE=host_file_name,
+        NA_EXTENSION=extension,
+        VL_FILE_SIZE_KB=vl_file_size_kb,
+        DT_FILE_CREATED=dt_created,
+        DT_FILE_MODIFIED=dt_modified,
+    )
 
     procedure_id = db_rfm.insert_procedure(bin_data["method"])
     spectrum_ids = []
@@ -546,19 +541,165 @@ def insert_spectra_batch(
     if host_file_id is not None:
         db_rfm.insert_bridge_spectrum_file(spectrum_ids, [host_file_id])
 
-    if hasattr(db_rfm, "log"):
-        db_rfm.log.event(
+    if logger is not None:
+        unique_spectrum_ids = len(set(spectrum_ids))
+        spectrum_id_min = min(spectrum_ids) if spectrum_ids else None
+        spectrum_id_max = max(spectrum_ids) if spectrum_ids else None
+        logger.event(
             "fact_spectrum_batch_staged",
+            component="appanalise_processing",
+            operation="insert_spectra_batch",
             spectra=len(spectrum_ids),
+            unique_spectrum_ids=unique_spectrum_ids,
+            spectrum_id_min=spectrum_id_min,
+            spectrum_id_max=spectrum_id_max,
             unique_spectrum_keys=len(spectrum_id_cache),
             duplicate_spectrum_hits=duplicate_spectrum_hits,
             unique_trace_types=len(trace_type_cache),
             unique_equipments=len(equipment_cache),
             unique_measure_units=len(measure_unit_cache),
-            bridge_file_links=(len(spectrum_ids) if host_file_id is not None else 0),
+            bridge_file_links=len(spectrum_ids),
             duration_sec=round(time.monotonic() - spectrum_batch_started, 3),
         )
     return spectrum_ids
+
+
+def run_processing_flow(
+    db_rfm: dbHandlerRFM,
+    task: dict,
+    app_analise: AppAnaliseConnection,
+    *,
+    logger: logger_type,
+    service_name: str,
+) -> dict:
+    """
+    Execute the full appAnalise domain pipeline for one FILE_TASK.
+
+    The worker entrypoint owns queue lifecycle and total elapsed time. This
+    domain flow owns the real processing stages and emits `task_phase` when
+    each stage completes.
+    """
+    work_started_at = time.monotonic()
+
+    # Transport and payload validation stay inside the appAnalise adapter.
+    # This flow only consumes the accepted domain payload and artifact.
+    phase_started_at = time.monotonic()
+    bin_data, file_meta = app_analise.process(
+        file_path=task["server_path"],
+        file_name=task["server_name"],
+        export=task["export"],
+    )
+    process_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
+    logger.task_phase(
+        service_name,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        phase="process",
+        elapsed_sec=process_elapsed_sec,
+        since_start_sec=round(time.monotonic() - work_started_at, 3),
+        file=task["filename"],
+        export=task["export"],
+    )
+
+    # SITE resolution stays outside the transaction because geocoding and
+    # locality reconciliation are slower and fail differently from DB writes.
+    phase_started_at = time.monotonic()
+    resolved_site_ids = resolve_spectrum_sites(db_rfm, bin_data, logger=logger)
+    site_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
+    logger.task_phase(
+        service_name,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        phase="site",
+        elapsed_sec=site_elapsed_sec,
+        since_start_sec=round(time.monotonic() - work_started_at, 3),
+        file=task["filename"],
+        resolved_sites=len(set(resolved_site_ids)) if resolved_site_ids else 0,
+    )
+
+    # The DB phase writes the host-side source lineage and the spectra rows
+    # before any repository artifact is promoted to its final location.
+    phase_started_at = time.monotonic()
+    new_path = build_repository_destination_path(
+        db_rfm,
+        bin_data,
+        task["hostname_db"],
+    )
+    db_rfm.begin_transaction()
+    spectrum_ids = insert_spectra_batch(
+        db_rfm=db_rfm,
+        bin_data=bin_data,
+        hostname_db=task["hostname_db"],
+        host_path=task["host_path"],
+        host_file_name=task["host_file_name"],
+        extension=task["extension"],
+        vl_file_size_kb=task["vl_file_size_kb"],
+        dt_created=task["dt_created"],
+        dt_modified=task["dt_modified"],
+        logger=logger,
+    )
+    db_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
+    logger.task_phase(
+        service_name,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        phase="db",
+        elapsed_sec=db_elapsed_sec,
+        since_start_sec=round(time.monotonic() - work_started_at, 3),
+        file=task["filename"],
+        spectra=len(spectrum_ids),
+    )
+
+    # Finalization promotes the canonical repository artifact and then records
+    # that second file lineage against the same persisted spectra.
+    phase_started_at = time.monotonic()
+    file_meta = file_utils.promote_final_artifact(
+        new_path=new_path,
+        file_meta=file_meta,
+        source_file_meta=task["source_file_meta"],
+        export=task["export"],
+        filename=task["filename"],
+        logger=logger,
+    )
+    server_file_id = db_rfm.insert_file(
+        hostname=task["hostname_db"],
+        NA_VOLUME=k.REPO_VOLUME_NAME,
+        NA_PATH=new_path,
+        NA_FILE=file_meta["file_name"],
+        NA_EXTENSION=file_meta["extension"],
+        VL_FILE_SIZE_KB=file_meta["size_kb"],
+        DT_FILE_CREATED=file_meta["dt_created"],
+        DT_FILE_MODIFIED=file_meta["dt_modified"],
+        log_success=False,
+    )
+    db_rfm.insert_bridge_spectrum_file(spectrum_ids, [server_file_id])
+    db_rfm.commit()
+    finalize_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
+    logger.task_phase(
+        service_name,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        phase="finalize",
+        elapsed_sec=finalize_elapsed_sec,
+        since_start_sec=round(time.monotonic() - work_started_at, 3),
+        file=task["filename"],
+        persisted_spectra=len(spectrum_ids),
+        final_file=os.path.join(new_path, file_meta["file_name"]),
+    )
+
+    # The worker finalizes queue state later. The domain returns only the
+    # artifacts needed to persist DONE/ERROR against FILE_TASK history.
+    return {
+        "file_meta": file_meta,
+        "new_path": new_path,
+        "bin_data": bin_data,
+        "resolved_site_ids": resolved_site_ids,
+        "spectrum_ids": spectrum_ids,
+    }
 
 
 def build_repository_destination_path(db_rfm, bin_data, hostname_db):
@@ -586,5 +727,3 @@ def build_repository_destination_path(db_rfm, bin_data, hostname_db):
         f"{k.REPO_FOLDER}/{year}/"
         f"{k.APP_ANALISE_MULTI_SITE_REPO_SUBDIR}/{host_key}"
     )
-
-
