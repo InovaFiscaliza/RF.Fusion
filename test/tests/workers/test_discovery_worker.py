@@ -40,6 +40,15 @@ class FakeLog:
     def event(self, event_name: str, **fields) -> None:
         self.events.append(("event", event_name, fields))
 
+    def task_phase(self, service: str, **fields) -> None:
+        self.events.append(("task_phase", service, fields))
+
+    def task_done(self, service: str, **fields) -> None:
+        self.events.append(("task_done", service, fields))
+
+    def task_error(self, service: str, **fields) -> None:
+        self.events.append(("task_error", service, fields))
+
     def warning(self, message: str) -> None:
         self.events.append(("warning", message, {}))
 
@@ -119,7 +128,13 @@ class DiscoveryWorkerTests(unittest.TestCase):
         }
 
         with patch.object(discovery_worker, "log", fake_log):
-            discovery_worker._finalize_success(fake_db, task, processed=12, elapsed_sec=1.5)
+            discovery_worker._finalize_success(
+                fake_db,
+                task,
+                processed=12,
+                queued_backlog_tasks=1,
+                elapsed_sec=1.5,
+            )
 
         self.assertEqual(len(fake_db.host_task_updates), 1)
         self.assertEqual(
@@ -145,9 +160,10 @@ class DiscoveryWorkerTests(unittest.TestCase):
             with patch.object(
                 discovery_worker, "_stream_discovery_batches", return_value=5
             ):
-                count = discovery_worker._do_work(fake_db, object(), task)
+                result = discovery_worker._do_work(fake_db, object(), task)
 
-        self.assertEqual(count, 5)
+        self.assertEqual(result["processed"], 5)
+        self.assertEqual(result["queued_backlog_tasks"], 1)
         self.assertEqual(len(fake_db.queued_tasks), 1)
         self.assertEqual(
             fake_db.queued_tasks[0]["task_type"],

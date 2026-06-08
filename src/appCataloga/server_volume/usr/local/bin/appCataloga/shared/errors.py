@@ -822,6 +822,21 @@ class SshConnectClass(NamedTuple):
     ssh_online: bool  # True when the TCP/SSH layer was reached before failure
 
 
+def _is_ssh_connect_exception(exc: Exception) -> bool:
+    """Return whether `exc` looks like an SSH bootstrap failure."""
+    return isinstance(
+        exc,
+        (
+            paramiko.AuthenticationException,
+            paramiko.SSHException,
+            paramiko.ssh_exception.NoValidConnectionsError,
+            socket.timeout,
+            TimeoutError,
+            OSError,
+        ),
+    )
+
+
 def classify_ssh_connect_exc(exc: Exception) -> SshConnectClass:
     """
     Classify any SSH connect-time exception into a stable four-field descriptor.
@@ -865,6 +880,32 @@ def classify_ssh_connect_exc(exc: Exception) -> SshConnectClass:
         stage=k.STAGE_CONNECT,
         ssh_online=False,
     )
+
+
+def classify_ssh_connect_failure(exc: Exception) -> tuple[str, str] | None:
+    """
+    Return canonical `(reason, stage)` for worker-level SSH bootstrap failures.
+
+    Workers use this helper only when they need to translate a raw exception
+    into `err.capture(...)` fields. Non-SSH exceptions return `None` so the
+    worker can apply its local fallback without misclassifying DB or queue
+    failures as transport errors.
+    """
+    if not _is_ssh_connect_exception(exc):
+        return None
+
+    classification = classify_ssh_connect_exc(exc)
+    match classification.reason:
+        case "ssh_auth_timeout":
+            return "SSH authentication timed out", classification.stage
+        case "ssh_auth_failed":
+            return "SSH authentication failed", classification.stage
+        case "ssh_no_valid_connections":
+            return "SSH connection failed: no valid connections", classification.stage
+        case "ssh_timeout":
+            return "SSH connection timed out", classification.stage
+        case _:
+            return "SSH connection failed", classification.stage
 
 class ErrorHandler:
     """

@@ -441,7 +441,13 @@ def parse_arguments() -> None:
 
 
 def _do_work(sftp: sftpConnection, task: dict) -> dict:
-    """Transfer one remote file to the repository and return backup artifacts."""
+    """
+    Transfer one remote file to the repository and return backup artifacts.
+
+    The entrypoint measures total `_do_work()` duration for `task_done`.
+    This function emits the completed domain phase `transfer`.
+    """
+    transfer_started_at = time.monotonic()
     transfer_result = sftp.transfer_file_task(
         remote_dir=task["host_file_path"],
         remote_filename=task["host_file_name"],
@@ -449,12 +455,48 @@ def _do_work(sftp: sftpConnection, task: dict) -> dict:
         server_filename=task["server_filename"],
         discovery_snapshot=task["discovery_snapshot"],
     )
+    transfer_elapsed_sec = round(time.monotonic() - transfer_started_at, 3)
+
+    log.task_phase(
+        SERVICE_NAME,
+        worker_id=process_status["worker"],
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_BACKUP_TYPE,
+        file=task["input_filename"],
+        phase="transfer",
+        elapsed_sec=transfer_elapsed_sec,
+        since_start_sec=transfer_elapsed_sec,
+        final_file=os.path.join(
+            task["server_file_path"],
+            task["server_filename"],
+        ),
+    )
 
     return {
         "refreshed_metadata": transfer_result["refreshed_metadata"],
         "updated_size_kb": transfer_result["updated_size_kb"],
         "file_was_transferred": transfer_result["file_was_transferred"],
     }
+
+
+def _classify_work_failure(
+    exc: Exception,
+    *,
+    task: dict | None,
+    sftp_conn: sftpConnection | None,
+    result: dict,
+) -> tuple[str, str]:
+    """Translate a raised work exception into the canonical worker error fields."""
+    if task is not None and sftp_conn is None:
+        ssh_failure = errors.classify_ssh_connect_failure(exc)
+        if ssh_failure is not None:
+            return ssh_failure
+
+    if task is not None and not result["file_was_transferred"]:
+        return "Backup worker failure", k.STAGE_TRANSFER
+
+    return "Backup worker failure", k.STAGE_MAIN
 
 
 
@@ -592,24 +634,9 @@ def main() -> None:
             sftp_conn = host_context.init_host_context(task, log)
 
             # --- transfer ---
-            start = time.monotonic()
+            work_started_at = time.monotonic()
             result = _do_work(sftp_conn, task)
-            elapsed_sec = time.monotonic() - start
-            log.task_phase(
-                SERVICE_NAME,
-                worker_id=worker_id,
-                host_id=task["host_id"],
-                task_id=task["file_task_id"],
-                task_type=k.FILE_TASK_BACKUP_TYPE,
-                file=task["input_filename"],
-                phase="transfer",
-                elapsed_sec=round(elapsed_sec, 3),
-                since_start_sec=round(elapsed_sec, 3),
-                final_file=os.path.join(
-                    task["server_file_path"],
-                    task["server_filename"],
-                ),
-            )
+            elapsed_sec = time.monotonic() - work_started_at
 
             # --- finalize success ---
             _finalize_success(db, task, result, elapsed_sec=elapsed_sec)
@@ -617,14 +644,14 @@ def main() -> None:
 
         except Exception as e:
             if not err.triggered:
-                if sftp_conn is None and task is not None:
-                    stage = errors.classify_ssh_connect_exc(e).stage
-                elif not result["file_was_transferred"] and task is not None:
-                    stage = k.STAGE_TRANSFER
-                else:
-                    stage = k.STAGE_MAIN
+                reason, stage = _classify_work_failure(
+                    e,
+                    task=task,
+                    sftp_conn=sftp_conn,
+                    result=result,
+                )
                 err.capture(
-                    reason="Backup worker failure",
+                    reason=reason,
                     stage=stage,
                     exc=e,
                     worker_id=worker_id,

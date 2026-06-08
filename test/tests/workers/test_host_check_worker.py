@@ -143,13 +143,14 @@ class HostConnectivityTests(unittest.TestCase):
                         user="root",
                         password="secret",
                     )
-                    host_check_worker.host_connectivity.log_connectivity_probe(
-                        log=fake_log,
-                        event_name="host_check_connection",
-                        host_id=101,
-                        addr="172.24.1.11",
-                        port=22,
-                        probe=connectivity,
+                    fake_log.event(
+                        "host_check_connection",
+                        **host_check_worker.host_connectivity.build_connectivity_probe_fields(
+                            host_id=101,
+                            addr="172.24.1.11",
+                            port=22,
+                            probe=connectivity,
+                        ),
                     )
 
         self.assertEqual(connectivity["state"], "online")
@@ -186,13 +187,14 @@ class HostConnectivityTests(unittest.TestCase):
                         user="root",
                         password="secret",
                     )
-                    host_check_worker.host_connectivity.log_connectivity_probe(
-                        log=fake_log,
-                        event_name="host_check_connection",
-                        host_id=202,
-                        addr="172.24.1.12",
-                        port=22,
-                        probe=connectivity,
+                    fake_log.event(
+                        "host_check_connection",
+                        **host_check_worker.host_connectivity.build_connectivity_probe_fields(
+                            host_id=202,
+                            addr="172.24.1.12",
+                            port=22,
+                            probe=connectivity,
+                        ),
                     )
 
         # ICMP success plus SSH timeout is the exact case where we want the
@@ -280,7 +282,21 @@ class HostConnectivityTests(unittest.TestCase):
             "now": now,
         }
 
-        status, message = host_check_worker.host_connectivity._persist_degraded(db=db, task=task)
+        status, message, queued_followup = (
+            host_check_worker.host_connectivity._persist_connectivity_outcome(
+                db=db,
+                task=task,
+                connectivity={
+                    "state": host_check_worker.k.HOST_CONN_DEGRADED,
+                    "reason": "ssh_timeout",
+                    "icmp_online": True,
+                    "ssh_online": False,
+                    "error": "timed out",
+                },
+                promote_to_processing=False,
+                logger=FakeLog(),
+            )
+        )
 
         self.assertEqual(
             db.host_updates,
@@ -297,6 +313,7 @@ class HostConnectivityTests(unittest.TestCase):
         # task close happens at entrypoint (_finalize_success), not inside _persist_degraded
         self.assertEqual(db.host_task_updates, [])
         self.assertEqual(status, host_check_worker.k.TASK_ERROR)
+        self.assertFalse(queued_followup)
         self.assertIn("threshold reached", message)
         self.assertIn("3/3", message)
 
@@ -325,13 +342,14 @@ class HostConnectivityTests(unittest.TestCase):
                         user="root",
                         password="secret",
                     )
-                    host_check_worker.host_connectivity.log_connectivity_probe(
-                        log=fake_log,
-                        event_name="host_check",
-                        host_id=303,
-                        addr="172.24.1.13",
-                        port=22,
-                        probe=connectivity,
+                    fake_log.event(
+                        "host_check",
+                        **host_check_worker.host_connectivity.build_connectivity_probe_fields(
+                            host_id=303,
+                            addr="172.24.1.13",
+                            port=22,
+                            probe=connectivity,
+                        ),
                     )
 
         # Once ICMP is down there is no value in burning SSH timeouts on top.
@@ -458,6 +476,7 @@ class HostMaintenanceTests(unittest.TestCase):
                 "probe_host_connectivity",
                 return_value={
                     "state": "online",
+                    "online": True,
                     "reason": "ssh_connect_ok",
                     "icmp_online": True,
                     "ssh_online": True,
@@ -518,6 +537,7 @@ class HostMaintenanceTests(unittest.TestCase):
                 "probe_host_connectivity",
                 return_value={
                     "state": "degraded",
+                    "online": False,
                     "reason": "ssh_timeout",
                     "icmp_online": True,
                     "ssh_online": False,

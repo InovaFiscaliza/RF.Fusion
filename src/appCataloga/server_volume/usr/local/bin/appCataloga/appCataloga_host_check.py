@@ -115,7 +115,12 @@ def _do_work(db: dbHandlerBKP, task: dict) -> tuple[int, str]:
     """Dispatch the claimed task by type. Returns (status, message). Raises on any failure."""
     match task["task_type"]:
         case k.HOST_TASK_UPDATE_STATISTICS_TYPE:
-            return host_runtime.run_update_statistics(db, task, logger=log)
+            return host_runtime.run_update_statistics(
+                db,
+                task,
+                service_name=SERVICE_NAME,
+                logger=log,
+            )
 
         case k.HOST_TASK_CHECK_TYPE:
             return host_connectivity.run_check(
@@ -139,20 +144,21 @@ def _do_work(db: dbHandlerBKP, task: dict) -> tuple[int, str]:
             raise ValueError(f"Unsupported HOST_TASK type: {task['task_type']}")
 
 
-def _log_work_phase(task: dict, elapsed_sec: float) -> None:
-    """Emit the canonical intermediate phase for the claimed host task."""
-    if task["task_type"] != k.HOST_TASK_UPDATE_STATISTICS_TYPE:
-        return
+def _classify_work_failure(exc: Exception, *, task: dict | None) -> tuple[str, str]:
+    """Translate a raised work exception into the canonical worker error fields."""
+    if task and task["task_type"] in {
+        k.HOST_TASK_CHECK_TYPE,
+        k.HOST_TASK_CHECK_CONNECTION_TYPE,
+    }:
+        ssh_failure = errors.classify_ssh_connect_failure(exc)
+        if ssh_failure is not None:
+            return ssh_failure
+        return "Host connectivity check failed", k.STAGE_MAIN
 
-    log.task_phase(
-        SERVICE_NAME,
-        host_id=task["host_id"],
-        task_id=task["task_id"],
-        task_type=task["task_type"],
-        phase="persist",
-        elapsed_sec=round(elapsed_sec, 3),
-        since_start_sec=round(elapsed_sec, 3),
-    )
+    if task and task["task_type"] == k.HOST_TASK_UPDATE_STATISTICS_TYPE:
+        return "Host statistics update failed", k.STAGE_MAIN
+
+    return "Host check task failed", k.STAGE_MAIN
 
 
 def _finalize_success(
@@ -251,15 +257,15 @@ def main() -> None:
             start = time.monotonic()
             status, message = _do_work(db, task)
             elapsed_sec = time.monotonic() - start
-            _log_work_phase(task, elapsed_sec)
 
             _finalize_success(db, task, status, message, elapsed_sec)
 
         except Exception as e:
             if not err.triggered:
+                reason, stage = _classify_work_failure(e, task=task)
                 err.capture(
-                    reason="Host check task failed",
-                    stage=k.STAGE_MAIN,
+                    reason=reason,
+                    stage=stage,
                     exc=e,
                     host_id=task["host_id"] if task else None,
                     task_id=task["task_id"] if task else None,

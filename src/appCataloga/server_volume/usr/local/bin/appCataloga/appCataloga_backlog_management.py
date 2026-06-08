@@ -135,6 +135,23 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     return False
 
 
+def _promote_backlog(db: dbHandlerBKP, task: dict) -> dict:
+    """
+    Promote the selected discovery slice into backup work.
+
+    Discovery already created the queue rows. Backlog management only changes
+    which subset becomes eligible for transfer.
+    """
+    return db.update_backlog_by_filter(
+        host_id=task["host_id"],
+        task_filter=task["host_filter"],
+        search_type=k.FILE_TASK_DISCOVERY,
+        search_status=k.TASK_DONE,
+        new_type=k.FILE_TASK_BACKUP_TYPE,
+        new_status=k.TASK_PENDING,
+    )
+
+
 def _cancel_pending_backlog_promotions(
     db: dbHandlerBKP,
     *,
@@ -159,6 +176,28 @@ def _cancel_pending_backlog_promotions(
     )
 
 
+def _rollback_backlog(db: dbHandlerBKP, task: dict) -> dict:
+    """
+    Roll back pending backup work into the discovery queue.
+
+    Rollback is stronger than queued promotion for the same host. We cancel
+    those promotion rows first so STOP does not recreate backup work later.
+    """
+    _cancel_pending_backlog_promotions(
+        db,
+        host_id=task["host_id"],
+        now=task["now"],
+    )
+    return db.update_backlog_by_filter(
+        host_id=task["host_id"],
+        task_filter=task["host_filter"],
+        search_type=k.FILE_TASK_BACKUP_TYPE,
+        search_status=k.TASK_PENDING,
+        new_type=k.FILE_TASK_DISCOVERY,
+        new_status=k.TASK_DONE,
+    )
+
+
 def _do_work(db: dbHandlerBKP, task: dict) -> dict:
     """
     Execute one backlog transition and return a small action summary.
@@ -169,37 +208,17 @@ def _do_work(db: dbHandlerBKP, task: dict) -> dict:
         - target type/status
         - the pre-step that cancels pending promotion when STOP wins
     """
+    # The entrypoint measures the full `_do_work()` duration for `task_done`.
+    # This function measures only the completed domain phase.
+    phase_started_at = time.monotonic()
+
     match task["task_type"]:
         case k.HOST_TASK_BACKLOG_CONTROL_TYPE:
-            # Normal steady-state path: discovery already wrote FILE_TASK rows,
-            # now backlog management promotes the selected slice into backup.
-            result = db.update_backlog_by_filter(
-                host_id=task["host_id"],
-                task_filter=task["host_filter"],
-                search_type=k.FILE_TASK_DISCOVERY,
-                search_status=k.TASK_DONE,
-                new_type=k.FILE_TASK_BACKUP_TYPE,
-                new_status=k.TASK_PENDING,
-            )
+            result = _promote_backlog(db, task)
             action = "promote"
 
         case k.HOST_TASK_BACKLOG_ROLLBACK_TYPE:
-            # STOP/rollback is intentionally stronger than any queued promotion for
-            # the same host. We first neutralize pending promote rows, then move
-            # BACKUP/PENDING back to DISCOVERY/DONE.
-            _cancel_pending_backlog_promotions(
-                db,
-                host_id=task["host_id"],
-                now=task["now"],
-            )
-            result = db.update_backlog_by_filter(
-                host_id=task["host_id"],
-                task_filter=task["host_filter"],
-                search_type=k.FILE_TASK_BACKUP_TYPE,
-                search_status=k.TASK_PENDING,
-                new_type=k.FILE_TASK_DISCOVERY,
-                new_status=k.TASK_DONE,
-            )
+            result = _rollback_backlog(db, task)
             action = "rollback"
 
         case _:
@@ -210,13 +229,36 @@ def _do_work(db: dbHandlerBKP, task: dict) -> dict:
     if result.get("rows_updated", 0) > 0:
         db.host_task_statistics_create(host_id=task["host_id"])
 
-    return {
+    outcome = {
         "action": action,
         "rows_updated": result.get("rows_updated", 0),
         "moved_to_backup": result.get("moved_to_backup", 0),
         "moved_to_discovery": result.get("moved_to_discovery", 0),
         "selected_total_kb": result.get("selected_total_kb", 0),
     }
+    phase_elapsed_sec = time.monotonic() - phase_started_at
+    log.task_phase(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["task_id"],
+        task_type=task["task_type"],
+        phase="work",
+        elapsed_sec=round(phase_elapsed_sec, 3),
+        since_start_sec=round(phase_elapsed_sec, 3),
+        action=outcome["action"],
+        rows_updated=outcome["rows_updated"],
+        moved_to_backup=outcome["moved_to_backup"],
+        moved_to_discovery=outcome["moved_to_discovery"],
+        selected_total_kb=outcome["selected_total_kb"],
+    )
+    return outcome
+
+
+def _classify_work_failure(exc: Exception, *, task: dict | None) -> tuple[str, str]:
+    """Translate a raised work exception into the canonical worker error fields."""
+    if task is not None:
+        return "Backlog management failed", k.STAGE_BACKLOG
+    return "Backlog management failed", k.STAGE_MAIN
 
 
 def _finalize_success(
@@ -332,30 +374,17 @@ def main() -> None:
                 runtime_sleep.random_jitter_sleep()
                 continue
 
-            start = time.monotonic()
+            work_started_at = time.monotonic()
             result = _do_work(db, task)
-            elapsed_sec = time.monotonic() - start
-            log.task_phase(
-                SERVICE_NAME,
-                host_id=task["host_id"],
-                task_id=task["task_id"],
-                task_type=task["task_type"],
-                phase="work",
-                elapsed_sec=round(elapsed_sec, 3),
-                since_start_sec=round(elapsed_sec, 3),
-                action=result["action"],
-                rows_updated=result["rows_updated"],
-                moved_to_backup=result["moved_to_backup"],
-                moved_to_discovery=result["moved_to_discovery"],
-                selected_total_kb=result["selected_total_kb"],
-            )
+            elapsed_sec = time.monotonic() - work_started_at
             _finalize_success(db, task, result, elapsed_sec=elapsed_sec)
 
         except Exception as e:
             if not err.triggered:
+                reason, stage = _classify_work_failure(e, task=task)
                 err.capture(
-                    reason="Backlog management failed",
-                    stage=k.STAGE_BACKLOG if task else k.STAGE_MAIN,
+                    reason=reason,
+                    stage=stage,
                     exc=e,
                     host_id=task["host_id"] if task else None,
                     task_id=task["task_id"] if task else None,

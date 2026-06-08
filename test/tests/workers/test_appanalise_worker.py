@@ -83,6 +83,18 @@ class FakeWorkerLog:
     def service_stop(self, service: str) -> None:
         self.entries.append(("service_stop", service))
 
+    def task_phase(self, service: str, **fields) -> None:
+        self.entries.append(("task_phase", {"service": service, **fields}))
+
+    def task_done(self, service: str, **fields) -> None:
+        self.entries.append(("task_done", {"service": service, **fields}))
+
+    def task_error(self, service: str, **fields) -> None:
+        self.errors.append(("task_error", {"service": service, **fields}))
+
+    def task_frozen(self, service: str, **fields) -> None:
+        self.entries.append(("task_frozen", {"service": service, **fields}))
+
 
 class FakeDbBkp:
     """Minimal FILE_TASK persistence double with in-memory call recording."""
@@ -1594,13 +1606,16 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                         result_data = {
                             "file_meta": final_meta,
                             "new_path": new_path,
-                            "started_at": 0.0,
-                            "phase_durations": {},
                             "bin_data": bin_data,
                             "resolved_site_ids": None,
                             "spectrum_ids": None,
                         }
-                        worker._finalize_success(db_bp, task, result_data)
+                        worker._finalize_success(
+                            db_bp,
+                            task,
+                            result_data,
+                            elapsed_sec=1.234,
+                        )
 
             final_file = Path(final_meta["full_path"])
             resolved_source = repo_root / "trash" / "resolved_files" / source_file.name
@@ -1782,15 +1797,13 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 "full_path": "/mnt/reposfi/2026/DF/1/2/sample_DONE.mat",
             },
             "new_path": "/mnt/reposfi/2026/DF/1/2",
-            "started_at": 0.0,
-            "phase_durations": {},
             "bin_data": None,
             "resolved_site_ids": None,
             "spectrum_ids": None,
         }
 
         with patch.object(worker, "log", fake_log):
-            worker._finalize_success(db_bp, task, result)
+            worker._finalize_success(db_bp, task, result, elapsed_sec=1.234)
 
         # _finalize_success swallows the error — check transaction was rolled back
         self.assertEqual(len(db_bp.history_updates), 1)

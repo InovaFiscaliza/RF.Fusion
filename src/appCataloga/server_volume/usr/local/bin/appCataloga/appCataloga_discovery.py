@@ -155,10 +155,15 @@ def _stream_discovery_batches(
 
 
 def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
-    """Stream discovered files and queue backlog control. Returns summary fields."""
-    started = time.monotonic()
+    """
+    Stream discovered files and queue backlog control.
+
+    The entrypoint measures total `_do_work()` duration for `task_done`.
+    This function measures only completed internal phases for `task_phase`.
+    """
+    scan_started_at = time.monotonic()
     processed = _stream_discovery_batches(db, sftp, task)
-    scan_elapsed_sec = round(time.monotonic() - started, 3)
+    scan_elapsed_sec = round(time.monotonic() - scan_started_at, 3)
     log.task_phase(
         SERVICE_NAME,
         host_id=task["host_id"],
@@ -171,14 +176,14 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
         discovered_files=processed,
     )
 
-    started = time.monotonic()
+    queue_started_at = time.monotonic()
     db.queue_host_task(
         host_id=task["host_id"],
         task_type=k.HOST_TASK_BACKLOG_CONTROL_TYPE,
         task_status=k.TASK_PENDING,
         filter_dict=task["host_filter"],
     )
-    queue_elapsed_sec = round(time.monotonic() - started, 3)
+    queue_elapsed_sec = round(time.monotonic() - queue_started_at, 3)
     total_elapsed_sec = round(scan_elapsed_sec + queue_elapsed_sec, 3)
     log.task_phase(
         SERVICE_NAME,
@@ -194,7 +199,23 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
 
     return {
         "processed": processed,
+        "queued_backlog_tasks": 1,
     }
+
+
+def _classify_work_failure(
+    exc: Exception,
+    *,
+    task: dict | None,
+    sftp: sftpConnection | None,
+) -> tuple[str, str]:
+    """Translate a raised work exception into the canonical worker error fields."""
+    if task is not None and sftp is None:
+        ssh_failure = errors.classify_ssh_connect_failure(exc)
+        if ssh_failure is not None:
+            return ssh_failure
+
+    return "Discovery task failed", k.STAGE_MAIN
 
 
 # --- finalization ---
@@ -204,6 +225,7 @@ def _finalize_success(
     task: dict,
     *,
     processed: int,
+    queued_backlog_tasks: int,
     elapsed_sec: float,
 ) -> None:
     """Write TASK_DONE, log completion, and schedule deferred statistics."""
@@ -215,7 +237,7 @@ def _finalize_success(
         NA_MESSAGE=tools.compose_message(
             task_type=k.FILE_TASK_DISCOVERY,
             task_status=k.TASK_DONE,
-            detail=f"host_id={task['host_id']} queued_backlog_control=1",
+            detail=f"host_id={task['host_id']} queued_backlog_control={queued_backlog_tasks}",
         ),
     )
     log.task_done(
@@ -226,7 +248,7 @@ def _finalize_success(
         elapsed_sec=round(elapsed_sec, 3),
         host=task["hostname"],
         discovered_files=processed,
-        queued_backlog_tasks=1,
+        queued_backlog_tasks=queued_backlog_tasks,
     )
     if processed > 0:
         try:
@@ -361,29 +383,24 @@ def main() -> None:
             # --- work ---
             sftp = host_context.init_host_context(task, log)
 
-            start = time.monotonic()
+            work_started_at = time.monotonic()
             result = _do_work(db, sftp, task)
-            elapsed_sec = time.monotonic() - start
+            elapsed_sec = time.monotonic() - work_started_at
 
             # --- finalize ---
             _finalize_success(
                 db,
                 task,
                 processed=result["processed"],
+                queued_backlog_tasks=result["queued_backlog_tasks"],
                 elapsed_sec=elapsed_sec,
             )
 
         except Exception as e:
             if not err.triggered:
-                # sftp is None after a claimed task means SSH bootstrap failed;
-                # classify the exception to route the error to the right stage.
-                stage = (
-                    errors.classify_ssh_connect_exc(e).stage
-                    if sftp is None and task is not None
-                    else k.STAGE_MAIN
-                )
+                reason, stage = _classify_work_failure(e, task=task, sftp=sftp)
                 err.capture(
-                    reason="Discovery task failed",
+                    reason=reason,
                     stage=stage,
                     exc=e,
                     host_id=task["host_id"] if task else None,

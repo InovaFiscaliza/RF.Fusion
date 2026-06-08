@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -95,9 +96,20 @@ def run_update_statistics(
     db: dbHandlerBKP,
     task: dict,
     *,
+    service_name: str,
     logger: logger_type,
 ) -> tuple[int, str]:
     """Refresh host statistics. Returns (status, message) for the caller to close the task."""
-
+    started_at = time.monotonic()
     db.host_update_statistics(host_id=task["host_id"])
+    elapsed_sec = round(time.monotonic() - started_at, 3)
+    logger.task_phase(
+        service_name,
+        host_id=task["host_id"],
+        task_id=task["task_id"],
+        task_type=task["task_type"],
+        phase="persist",
+        elapsed_sec=elapsed_sec,
+        since_start_sec=elapsed_sec,
+    )
     return (k.TASK_DONE, f"Host statistics refreshed for host {task['host_id']}")

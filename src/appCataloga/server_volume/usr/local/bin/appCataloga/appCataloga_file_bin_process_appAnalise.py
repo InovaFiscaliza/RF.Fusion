@@ -193,26 +193,49 @@ def _do_work(
     app_analise: AppAnaliseConnection,
 ) -> dict:
     """Execute the full processing pipeline for one FILE_TASK. Raises on any failure."""
-    started = time.monotonic()
-    phase: dict = {}
+    # The entrypoint measures the full `_do_work()` duration for `task_done`.
+    # This function measures only completed domain phases.
+    work_started_at = time.monotonic()
 
-    t = time.monotonic()
+    phase_started_at = time.monotonic()
     bin_data, file_meta = app_analise.process(
         file_path=task["server_path"],
         file_name=task["server_name"],
         export=task["export"],
     )
-    phase["process"] = round(time.monotonic() - t, 3)
+    process_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
+    log.task_phase(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        phase="process",
+        elapsed_sec=process_elapsed_sec,
+        since_start_sec=round(time.monotonic() - work_started_at, 3),
+        file=task["filename"],
+        export=task["export"],
+    )
 
     # --- site resolution ---
     # Stays outside the RFDATA transaction to keep geocoding latency out of
     # the DB critical section.
-    t = time.monotonic()
+    phase_started_at = time.monotonic()
     resolved_site_ids = processing_bin.resolve_spectrum_sites(db_rfm, bin_data, logger=log)
-    phase["site"] = round(time.monotonic() - t, 3)
+    site_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
+    log.task_phase(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        phase="site",
+        elapsed_sec=site_elapsed_sec,
+        since_start_sec=round(time.monotonic() - work_started_at, 3),
+        file=task["filename"],
+        resolved_sites=len(set(resolved_site_ids)) if resolved_site_ids else 0,
+    )
 
     # --- db persist ---
-    t = time.monotonic()
+    phase_started_at = time.monotonic()
     new_path = processing_bin.build_repository_destination_path(db_rfm, bin_data, task["hostname_db"])
     db_rfm.begin_transaction()
     spectrum_ids = processing_bin.insert_spectra_batch(
@@ -226,14 +249,24 @@ def _do_work(
         dt_created=task["dt_created"],
         dt_modified=task["dt_modified"],
     )
-    db_rfm.commit()
-    phase["db"] = round(time.monotonic() - t, 3)
+    db_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
+    log.task_phase(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        phase="db",
+        elapsed_sec=db_elapsed_sec,
+        since_start_sec=round(time.monotonic() - work_started_at, 3),
+        file=task["filename"],
+        spectra=len(spectrum_ids),
+    )
 
     # --- filesystem: promote artifact ---
     # Pure filesystem step: move the canonical artifact to the repository and
     # retire any superseded source payload.  DB registration of the server-side
     # file follows once the move is confirmed.
-    t = time.monotonic()
+    phase_started_at = time.monotonic()
     file_meta = file_utils.promote_final_artifact(
         new_path=new_path,
         file_meta=file_meta,
@@ -245,7 +278,7 @@ def _do_work(
     # Register the moved artifact in RFDATA.  These two writes span two tables
     # and must be inside a transaction (ARCHITECTURE §3.4).  They happen after
     # the file is in its final location so the recorded path is always valid.
-    db_rfm.begin_transaction()
+    #db_rfm.begin_transaction()
     server_file_id = db_rfm.insert_file(
         hostname=task["hostname_db"],
         NA_VOLUME=k.REPO_VOLUME_NAME,
@@ -259,7 +292,19 @@ def _do_work(
     )
     db_rfm.insert_bridge_spectrum_file(spectrum_ids, [server_file_id])
     db_rfm.commit()
-    phase["fs"] = round(time.monotonic() - t, 3)
+    finalize_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
+    log.task_phase(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        phase="finalize",
+        elapsed_sec=finalize_elapsed_sec,
+        since_start_sec=round(time.monotonic() - work_started_at, 3),
+        file=task["filename"],
+        persisted_spectra=len(spectrum_ids),
+        final_file=os.path.join(new_path, file_meta["file_name"]),
+    )
 
     return {
         "file_meta"        : file_meta,
@@ -267,49 +312,18 @@ def _do_work(
         "bin_data"         : bin_data,
         "resolved_site_ids": resolved_site_ids,
         "spectrum_ids"     : spectrum_ids,
-        "started_at"       : started,
-        "phase_durations"  : phase,
     }
-
-
-def _log_phase_timings(
-    *,
-    task: dict,
-    outcome: str,
-    started_at: float,
-    phase_durations: dict,
-    bin_data: dict | None = None,
-    resolved_site_ids: list | None = None,
-    spectrum_ids: list | None = None,
-) -> None:
-    """Emit one structured timing event for the completed FILE_TASK iteration."""
-    spectrum_count = None
-    if isinstance(bin_data, dict) and isinstance(bin_data.get("spectrum"), list):
-        spectrum_count = len(bin_data["spectrum"])
-
-    log.task_phase_timings(
-        SERVICE_NAME,
-        host_id=task["host_id"],
-        task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        file=task["filename"],
-        outcome=outcome,
-        total_sec=time.monotonic() - started_at,
-        phase_durations={
-            "process": phase_durations.get("process"),
-            "site": phase_durations.get("site"),
-            "db": phase_durations.get("db"),
-            "finalize": phase_durations.get("fs"),
-        },
-        spectra=spectrum_count,
-        resolved_sites=(len(set(resolved_site_ids)) if resolved_site_ids else None),
-        persisted_spectra=(len(spectrum_ids) if spectrum_ids else None),
-    )
 
 
 # --- finalization ---
 
-def _finalize_success(db_bp: dbHandlerBKP, task: dict, result: dict) -> None:
+def _finalize_success(
+    db_bp: dbHandlerBKP,
+    task: dict,
+    result: dict,
+    *,
+    elapsed_sec: float,
+) -> None:
     """Write DONE to queue and emit timing. Never raises."""
     try:
         file_meta = result["file_meta"]
@@ -357,22 +371,13 @@ def _finalize_success(db_bp: dbHandlerBKP, task: dict, result: dict) -> None:
             db_bp.rollback()
             raise
         db_bp.host_task_statistics_create(host_id=task["host_id"], log_if_active=False)
-        _log_phase_timings(
-            task=task,
-            outcome="done",
-            started_at=result["started_at"],
-            phase_durations=result["phase_durations"],
-            bin_data=result["bin_data"],
-            resolved_site_ids=result["resolved_site_ids"],
-            spectrum_ids=result["spectrum_ids"],
-        )
         log.task_done(
             SERVICE_NAME,
             host_id=task["host_id"],
             task_id=task["file_task_id"],
             task_type=k.FILE_TASK_PROCESS_TYPE,
             file=task["filename"],
-            elapsed_sec=round(time.monotonic() - result["started_at"], 3),
+            elapsed_sec=round(elapsed_sec, 3),
             final_file=os.path.join(new_path, file_meta["file_name"]),
         )
     except Exception as e:
@@ -592,10 +597,12 @@ def main() -> None:
                 continue
 
             # --- work ---
+            work_started_at = time.monotonic()
             result = _do_work(db_rfm, task, app_analise)
+            elapsed_sec = time.monotonic() - work_started_at
 
             # --- finalize ---
-            _finalize_success(db_bp, task, result)
+            _finalize_success(db_bp, task, result, elapsed_sec=elapsed_sec)
 
         except Exception as e:
             # If appAnalise produced a partial export artifact, attach it to

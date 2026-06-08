@@ -117,7 +117,7 @@ def build_connectivity_probe_fields(
         "address": addr,
         "state": probe["state"],
         "reason": probe["reason"],
-        "online": probe["state"] == "online",
+        "online": probe["online"],
         "icmp_online": probe["icmp_online"],
         "ssh_online": probe["ssh_online"],
         "error": probe["error"],
@@ -307,6 +307,7 @@ def probe_host_connectivity(
     if not reachable:
         return {
             "state": k.HOST_CONN_OFFLINE,
+            "online": False,
             "reason": "icmp_unreachable",
             "icmp_online": False,
             "ssh_online": False,
@@ -336,80 +337,102 @@ def probe_host_connectivity(
 # --- connectivity task handlers (called from appCataloga_host_check.py) ---
 
 
-def _persist_degraded(
+def _persist_connectivity_outcome(
     db: dbHandlerBKP,
     task: dict,
-) -> tuple[int, str]:
-    """
-    Persist degraded connectivity state for a host.
-
-    Outcomes:
-        - below threshold:  increments error counter; returns PENDING
-        - at threshold:     returns ERROR; host stays BUSY until recovery
-    """
-    next_count = max(0, int(task["host_check_error_count"] or 0)) + 1
-    threshold = k.HOST_CHECK_SSH_TIMEOUT_CONFIRMATIONS
-
-    db.host_update(
-        host_id=task["host_id"],
-        reset=True,
-        DT_LAST_CHECK=task["now"],
-        DT_LAST_FAIL=task["now"],
-        NU_HOST_CHECK_ERROR=next_count,
-    )
-
-    if next_count >= threshold:
-        return (
-            k.TASK_ERROR,
-            f"SSH supervision degraded threshold reached while ICMP still responds ({next_count}/{threshold})",
-        )
-
-    return (
-        k.TASK_PENDING,
-        f"SSH supervision degraded while ICMP still responds | confirmation {next_count}/{threshold}",
-    )
-
-
-def _finalize_check(
-    db: dbHandlerBKP,
-    task: dict,
-    online: bool,
+    connectivity: ConnectivityProbePayload,
     *,
     promote_to_processing: bool,
-    resume_dependent_tasks: bool,
     logger: logger_type,
-) -> tuple[int, str]:
+) -> tuple[int, str, bool]:
     """
-    Apply the final connectivity result to HOST and return the task close state.
+    Persist one connectivity outcome and return `(status, message, queued_followup)`.
 
-    Outcomes:
-        - offline:             returns ERROR
-        - online + promote:    queues discovery task; returns DONE
-        - online + no promote: returns DONE (connectivity-only check)
+    This keeps the state machine linear inside `run_check()`:
+        1. probe
+        2. persist outcome
+        3. return worker task status/message
     """
-    persist_host_connectivity_state(
-        db=db,
-        log=logger,
-        host_id=task["host_id"],
-        was_offline=task["was_offline"],
-        online=online,
-        now=task["now"],
-        resume_dependent_tasks=resume_dependent_tasks,
-    )
+    match connectivity["state"]:
+        case k.HOST_CONN_DEGRADED:
+            # SSH degradation is treated as a confirmation flow: keep the host
+            # operational for now, but escalate to definitive ERROR after the
+            # configured number of consecutive degraded probes.
+            next_count = max(0, int(task["host_check_error_count"] or 0)) + 1
+            threshold = k.HOST_CHECK_SSH_TIMEOUT_CONFIRMATIONS
 
-    if not online:
-        return (k.TASK_ERROR, "Host unreachable (connectivity check failed)")
+            db.host_update(
+                host_id=task["host_id"],
+                reset=True,
+                DT_LAST_CHECK=task["now"],
+                DT_LAST_FAIL=task["now"],
+                NU_HOST_CHECK_ERROR=next_count,
+            )
 
-    if promote_to_processing:
-        db.queue_host_task(
-            host_id=task["host_id"],
-            task_type=k.HOST_TASK_PROCESSING_TYPE,
-            task_status=k.TASK_PENDING,
-            filter_dict=task["host_filter"],
-        )
-        return (k.TASK_DONE, "Host check completed; discovery task queued")
+            if next_count >= threshold:
+                return (
+                    k.TASK_ERROR,
+                    f"SSH supervision degraded threshold reached while ICMP still responds ({next_count}/{threshold})",
+                    False,
+                )
 
-    return (k.TASK_DONE, "Host connectivity reconciliation completed successfully")
+            return (
+                k.TASK_PENDING,
+                f"SSH supervision degraded while ICMP still responds | confirmation {next_count}/{threshold}",
+                False,
+            )
+
+        case k.HOST_CONN_AUTH_ERROR:
+            # Auth rejection is not transient operational noise. We suspend all
+            # dependent work immediately and let credentials be fixed manually.
+            status, message = persist_auth_error(
+                db,
+                task,
+                detail=connectivity["error"] or connectivity["reason"],
+                logger=logger,
+            )
+            return status, message, False
+
+        case k.HOST_CONN_OFFLINE:
+            # Offline is a definitive connectivity failure, so the host state
+            # machine is persisted first and the worker task closes as ERROR.
+            persist_host_connectivity_state(
+                db=db,
+                log=logger,
+                host_id=task["host_id"],
+                was_offline=task["was_offline"],
+                online=connectivity["online"],
+                now=task["now"],
+                resume_dependent_tasks=(task["host_check_error_count"] > 0),
+            )
+            return (k.TASK_ERROR, "Host unreachable (connectivity check failed)", False)
+
+        case k.HOST_CONN_ONLINE:
+            # A successful supervisory probe reconciles the persisted host state
+            # and may queue discovery only for the full CHECK task variant.
+            persist_host_connectivity_state(
+                db=db,
+                log=logger,
+                host_id=task["host_id"],
+                was_offline=task["was_offline"],
+                online=connectivity["online"],
+                now=task["now"],
+                resume_dependent_tasks=(task["host_check_error_count"] > 0),
+            )
+
+            if promote_to_processing:
+                db.queue_host_task(
+                    host_id=task["host_id"],
+                    task_type=k.HOST_TASK_PROCESSING_TYPE,
+                    task_status=k.TASK_PENDING,
+                    filter_dict=task["host_filter"],
+                )
+                return (k.TASK_DONE, "Host check completed; discovery task queued", True)
+
+            return (k.TASK_DONE, "Host connectivity reconciliation completed successfully", False)
+
+        case _:
+            raise ValueError(f"Unsupported connectivity state: {connectivity['state']}")
 
 
 def run_check(
@@ -437,9 +460,12 @@ def run_check(
         if promote_to_processing else
         k.EVENT_CHECK_CONNECTION
     )
-    started_at = time.monotonic()
 
+    # The entrypoint measures total `_do_work()` time. The domain only measures
+    # completed internal phases (`probe`, `persist`, `queue_followup`).
     probe_started_at = time.monotonic()
+
+    # Run connectivity test - ICMP + SSH probe
     connectivity = probe_host_connectivity(
         addr=task["addr"],
         port=task["port"],
@@ -457,6 +483,7 @@ def run_check(
         )
     )
     probe_elapsed_sec = round(time.monotonic() - probe_started_at, 3)
+    since_start_sec = probe_elapsed_sec
     logger.task_phase(
         service_name,
         host_id=task["host_id"],
@@ -464,35 +491,23 @@ def run_check(
         task_type=task["task_type"],
         phase="probe",
         elapsed_sec=probe_elapsed_sec,
-        since_start_sec=round(time.monotonic() - started_at, 3),
+        since_start_sec=since_start_sec,
         reason=connectivity["reason"],
         state=connectivity["state"],
     )
 
     persist_started_at = time.monotonic()
-    match connectivity["state"]:
-        case k.HOST_CONN_DEGRADED:
-            result = _persist_degraded(db, task)
-        case k.HOST_CONN_AUTH_ERROR:
-            result = persist_auth_error(
-                db, task,
-                detail=connectivity["error"] or connectivity["reason"],
-                logger=logger,
-            )
-        case _:
-            # Covers HOST_CONN_ONLINE and HOST_CONN_OFFLINE.
-            # A non-zero error count means previous degraded probes already
-            # suspended dependent queues; resume them on a successful recovery.
-            result = _finalize_check(
-                db, task,
-                online=(connectivity["state"] == k.HOST_CONN_ONLINE),
-                promote_to_processing=promote_to_processing,
-                resume_dependent_tasks=(task["host_check_error_count"] > 0),
-                logger=logger,
-            )
-
+    # Persistence decides both queue outcome and whether this online probe
+    # should fan out into a follow-up discovery task.
+    status, message, queued_followup = _persist_connectivity_outcome(
+        db,
+        task,
+        connectivity,
+        promote_to_processing=promote_to_processing,
+        logger=logger,
+    )
     persist_elapsed_sec = round(time.monotonic() - persist_started_at, 3)
-    since_start_sec = round(time.monotonic() - started_at, 3)
+    since_start_sec = round(since_start_sec + persist_elapsed_sec, 3)
     logger.task_phase(
         service_name,
         host_id=task["host_id"],
@@ -502,10 +517,10 @@ def run_check(
         elapsed_sec=persist_elapsed_sec,
         since_start_sec=since_start_sec,
         state=connectivity["state"],
-        status=result[0],
+        status=status,
     )
 
-    if promote_to_processing and connectivity["state"] == k.HOST_CONN_ONLINE:
+    if queued_followup:
         logger.task_phase(
             service_name,
             host_id=task["host_id"],
@@ -517,4 +532,4 @@ def run_check(
             queued_task_type=k.HOST_TASK_PROCESSING_TYPE,
         )
 
-    return result
+    return status, message

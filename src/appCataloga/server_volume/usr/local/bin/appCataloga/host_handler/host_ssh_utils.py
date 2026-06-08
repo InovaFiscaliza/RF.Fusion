@@ -18,11 +18,10 @@ import time
 import paramiko
 from collections.abc import Iterator
 from datetime import datetime
-from typing import Any, TypeAlias, TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from shared import errors, tools
 from shared.file_metadata import FileMetadata
-from shared.logging_utils import log
 
 
 
@@ -51,7 +50,22 @@ if TYPE_CHECKING:
 # Connectivity probe types and SSH probe helpers
 # =====================================================================
 
-ConnectivityProbePayload: TypeAlias = dict[str, Any]
+class _ConnectivityProbeBase(TypedDict):
+    """Stable connectivity-probe contract shared across host supervision flows."""
+
+    state: str
+    online: bool
+    reason: str
+    icmp_online: bool
+    ssh_online: bool
+    error: str | None
+
+
+class ConnectivityProbePayload(_ConnectivityProbeBase, total=False):
+    """Connectivity probe plus optional address-resolution diagnostics."""
+
+    resolved_addr: str
+    resolved_candidates: list[str]
 
 def _probe_result(
     *,
@@ -63,6 +77,7 @@ def _probe_result(
 ) -> ConnectivityProbePayload:
     return {
         "state": state,
+        "online": state == k.HOST_CONN_ONLINE,
         "reason": reason,
         "icmp_online": icmp_online,
         "ssh_online": ssh_online,
@@ -180,18 +195,6 @@ class sftpConnection:
             "user": self.user,
         }
 
-    def _event(self, event: str, **fields) -> None:
-        """Emit one structured transport event."""
-        self.log.event(event, **self._base_log_fields(), **fields)
-
-    def _warning_event(self, event: str, **fields) -> None:
-        """Emit one structured transport warning."""
-        self.log.warning_event(event, **self._base_log_fields(), **fields)
-
-    def _error_event(self, event: str, **fields) -> None:
-        """Emit one structured transport error."""
-        self.log.error_event(event, **self._base_log_fields(), **fields)
-
     def __init__(
         self,
         host_uid: str,
@@ -199,7 +202,7 @@ class sftpConnection:
         port: int,
         user: str,
         password: str,
-        log: log,
+        log: logger_type,
     ) -> None:
         """Initialize SSH and SFTP connections with stability tuning.
 
@@ -251,16 +254,18 @@ class sftpConnection:
 
             self.sftp = self.ssh_client.open_sftp()
 
-            self._event(
+            self.log.event(
                 "ssh_connected",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="connect",
             )
 
         except Exception as e:
             classification = errors.classify_ssh_connect_exc(e)
-            self._error_event(
+            self.log.error_event(
                 "ssh_connect_failed",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="connect",
                 reason=classification.reason,
@@ -277,8 +282,9 @@ class sftpConnection:
         except FileNotFoundError:
             return False
         except Exception as e:
-            self._error_event(
+            self.log.error_event(
                 "ssh_file_check_failed",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="test",
                 file=filename,
@@ -294,8 +300,9 @@ class sftpConnection:
             with self.sftp.open(filename, "w"):
                 pass
         except Exception as e:
-            self._error_event(
+            self.log.error_event(
                 "ssh_file_touch_failed",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="touch",
                 file=filename,
@@ -309,8 +316,9 @@ class sftpConnection:
             with self.sftp.open(filename, "a", encoding="utf-8") as f:
                 f.write(content)
         except Exception as e:
-            self._error_event(
+            self.log.error_event(
                 "ssh_file_append_failed",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="append",
                 file=filename,
@@ -324,8 +332,9 @@ class sftpConnection:
             with self.sftp.open(filename, "w") as f:
                 f.write(content)
         except Exception as e:
-            self._error_event(
+            self.log.error_event(
                 "ssh_file_write_failed",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="write",
                 file=filename,
@@ -343,16 +352,18 @@ class sftpConnection:
                 with self.sftp.open(filename, "r") as f:
                     return f.read()
         except FileNotFoundError:
-            self._error_event(
+            self.log.error_event(
                 "ssh_file_read_missing",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="read",
                 file=filename,
             )
             return "" if "b" not in mode else b""
         except Exception as e:
-            self._error_event(
+            self.log.error_event(
                 "ssh_file_read_failed",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="read",
                 file=filename,
@@ -371,8 +382,9 @@ class sftpConnection:
                 return []
             return [ln.strip() for ln in str(data).splitlines() if ln.strip()]
         except Exception as e:
-            self._error_event(
+            self.log.error_event(
                 "ssh_cookie_list_read_failed",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="read_cookie_list",
                 file=filename,
@@ -390,8 +402,9 @@ class sftpConnection:
             content = "\n".join(lines) + "\n" if lines else ""
             self.write(filename, content)
         except Exception as e:
-            self._error_event(
+            self.log.error_event(
                 "ssh_cookie_list_write_failed",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="write_cookie_list",
                 file=filename,
@@ -403,8 +416,9 @@ class sftpConnection:
     def abort_transfer(self, reason: str | None = None) -> None:
         """Force-close the active SFTP/SSH transport during a stalled transfer."""
         if reason:
-            self._event(
+            self.log.event(
                 "backup_transfer_abort",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="abort_transfer",
                 reason=reason,
@@ -513,8 +527,9 @@ class sftpConnection:
 
                     if heartbeat_seconds > 0 and (now - state["last_log_at"]) >= heartbeat_seconds:
                         state["last_log_at"] = now
-                        self._event(
+                        self.log.event(
                             "backup_transfer_progress",
+                            **self._base_log_fields(),
                             component="host_ssh",
                             operation="transfer",
                             remote_file=remote_file,
@@ -564,8 +579,9 @@ class sftpConnection:
             if abort_exc is not None:
                 raise abort_exc from e
 
-            self._error_event(
+            self.log.error_event(
                 "ssh_file_transfer_failed",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="transfer",
                 remote_file=remote_file,
@@ -596,15 +612,17 @@ class sftpConnection:
         try:
             self.sftp.remove(filename)
         except FileNotFoundError:
-            self._error_event(
+            self.log.error_event(
                 "ssh_file_remove_missing",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="remove",
                 file=filename,
             )
         except Exception as e:
-            self._error_event(
+            self.log.error_event(
                 "ssh_file_remove_failed",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="remove",
                 file=filename,
@@ -644,8 +662,9 @@ class sftpConnection:
             if self.ssh_client:
                 self.ssh_client.close()
         except Exception as e:
-            self._error_event(
+            self.log.error_event(
                 "ssh_close_failed",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="close",
                 error=e,
@@ -663,8 +682,9 @@ class sftpConnection:
         except FileNotFoundError:
             raise
         except Exception as e:
-            self._error_event(
+            self.log.error_event(
                 "ssh_file_size_failed",
+                **self._base_log_fields(),
                 component="host_ssh",
                 operation="size",
                 file=filename,
@@ -701,8 +721,9 @@ class sftpConnection:
             err = stderr.read().decode("utf-8", errors="ignore").strip()
 
             if err:
-                self._warning_event(
+                self.log.warning_event(
                     "metadata_single_probe_stderr",
+                    **self._base_log_fields(),
                     component="host_metadata",
                     operation="read_file_metadata_linux",
                     error=err,
@@ -755,8 +776,9 @@ class sftpConnection:
             err = stderr.read().decode("utf-8", errors="ignore").strip()
 
             if err:
-                self._warning_event(
+                self.log.warning_event(
                     "metadata_single_probe_stderr",
+                    **self._base_log_fields(),
                     component="host_metadata",
                     operation="read_file_metadata_windows",
                     error=err,
@@ -844,8 +866,9 @@ class sftpConnection:
         os_type = self.detect_remote_os()
         batch: list[FileMetadata] = []
 
-        self._event(
+        self.log.event(
             "metadata_iteration_started",
+            **self._base_log_fields(),
             component="host_metadata",
             operation="iterate",
             remote_path=remote_path,
@@ -900,8 +923,9 @@ class sftpConnection:
                     )
 
                 except Exception as e:
-                    self._warning_event(
+                    self.log.warning_event(
                         "metadata_linux_line_invalid",
+                        **self._base_log_fields(),
                         component="host_metadata",
                         operation="iterate_linux",
                         reason="invalid_line",
@@ -948,8 +972,9 @@ class sftpConnection:
 
                 parts = raw.split("|")
                 if len(parts) != 5:
-                    self._warning_event(
+                    self.log.warning_event(
                         "metadata_windows_line_ignored",
+                        **self._base_log_fields(),
                         component="host_metadata",
                         operation="iterate_windows",
                         reason="noisy_line",
@@ -984,8 +1009,9 @@ class sftpConnection:
                     batch = []
 
         else:
-            self._error_event(
+            self.log.error_event(
                 "metadata_iteration_unsupported_os",
+                **self._base_log_fields(),
                 component="host_metadata",
                 operation="iterate",
                 reason=os_type,
@@ -996,8 +1022,9 @@ class sftpConnection:
         if batch:
             yield batch
 
-        self._event(
+        self.log.event(
             "metadata_iteration_completed",
+            **self._base_log_fields(),
             component="host_metadata",
             operation="iterate",
             remote_path=remote_path,
@@ -1009,7 +1036,7 @@ class sftpConnection:
     # File Transfer
     # ======================================================================
     def transfer_file_task(
-        sftp: sftpConnection,
+        self,
         remote_dir: str,
         remote_filename: str,
         local_path: str,
@@ -1061,21 +1088,22 @@ class sftpConnection:
         remote_path = f"{remote_dir}/{remote_filename}"
         final_file = os.path.join(local_path, server_filename)
         tmp_file = final_file + ".tmp"
-        remote_metadata = sftp.read_file_metadata(remote_path)
-        remote_size_bytes = sftp.size(remote_path)
+        remote_metadata = self.read_file_metadata(remote_path)
+        remote_size_bytes = self.size(remote_path)
 
         if remote_size_bytes <= 0:
             raise RuntimeError(
                 f"Remote file size invalid: {remote_size_bytes} bytes"
             )
 
-        metadata_drift = sftp._has_discovery_metadata_drift(
+        metadata_drift = self._has_discovery_metadata_drift(
             discovery_snapshot,
             remote_metadata,
         )
         if metadata_drift:
-            sftp._warning_event(
+            self.log.warning_event(
                 "backup_metadata_refreshed",
+                **self._base_log_fields(),
                 component="host_backup",
                 operation="transfer_file_task",
                 server_file=server_filename,
@@ -1098,8 +1126,9 @@ class sftpConnection:
                     and abs(local_size_kb - remote_metadata.VL_FILE_SIZE_KB)
                     <= k.FILE_THRESHOLD_SIZE_KB
                 ):
-                    sftp._event(
+                    self.log.event(
                         "backup_transfer_skipped",
+                        **self._base_log_fields(),
                         component="host_backup",
                         operation="transfer_file_task",
                         reason="file_already_present",
@@ -1112,8 +1141,9 @@ class sftpConnection:
                         "file_was_transferred": True,
                     }
                 else:
-                    sftp._warning_event(
+                    self.log.warning_event(
                         "backup_transfer_redownload",
+                        **self._base_log_fields(),
                         component="host_backup",
                         operation="transfer_file_task",
                         reason=(
@@ -1145,7 +1175,7 @@ class sftpConnection:
         # ---------------------------------------------------------
         # 1) Transfer to temporary file
         # ---------------------------------------------------------
-        sftp.transfer(
+        self.transfer(
             remote_path,
             tmp_file,
             max_seconds=k.BACKUP_TRANSFER_MAX_SECONDS,
@@ -1186,8 +1216,9 @@ class sftpConnection:
         # 4) Accept remote growth (informational only)
         # ---------------------------------------------------------
         if local_size_bytes > remote_size_bytes:
-            sftp._warning_event(
+            self.log.warning_event(
                 "backup_remote_growth",
+                **self._base_log_fields(),
                 component="host_backup",
                 operation="transfer_file_task",
                 remote_size_bytes=remote_size_bytes,
@@ -1210,6 +1241,7 @@ class sftpConnection:
     
     
     def _has_discovery_metadata_drift(
+        self,
         discovery_snapshot: dict,
         remote_metadata: FileMetadata,
     ) -> bool:
