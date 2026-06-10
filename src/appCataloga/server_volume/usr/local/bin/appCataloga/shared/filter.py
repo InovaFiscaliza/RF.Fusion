@@ -402,7 +402,7 @@ class Filter:
         Returns:
             {
                 "where": { ... },
-                "order_by": "DT_FILE_CREATED DESC, ID_FILE_TASK DESC",
+                "order_by": "DT_FILE_CREATED_HOST DESC, ID_FILE_TASK DESC",
                 "limit": 30,
                 "max_total_kb": 31457280,
                 "extra_sql": "ORDER BY ... LIMIT ...",
@@ -421,9 +421,9 @@ class Filter:
                 max_total_kb = None
 
         if sort_order == self.SORT_OLDEST_FIRST:
-            ordered_by_created = "DT_FILE_CREATED ASC, ID_FILE_TASK ASC"
+            ordered_by_created = "DT_FILE_CREATED_HOST ASC, ID_FILE_TASK ASC"
         else:
-            ordered_by_created = "DT_FILE_CREATED DESC, ID_FILE_TASK DESC"
+            ordered_by_created = "DT_FILE_CREATED_HOST DESC, ID_FILE_TASK DESC"
 
         # ============================================================
         # Base WHERE (always FK_HOST)
@@ -453,7 +453,7 @@ class Filter:
             extension = extension.strip().lower() or None
 
         if extension:
-            where["NA_EXTENSION__like"] = f"%{extension}"
+            where["NA_EXTENSION_HOST__like"] = f"%{extension}"
 
         # ------------------------------------------------------------
         # Extra SQL
@@ -539,11 +539,11 @@ class Filter:
             end = self.data.get("end_date")
 
             if start and end:
-                where["DT_FILE_CREATED__between"] = (start, end)
+                where["DT_FILE_CREATED_HOST__between"] = (start, end)
             elif start:
-                where["DT_FILE_CREATED__gte"] = start
+                where["DT_FILE_CREATED_HOST__gte"] = start
             elif end:
-                where["DT_FILE_CREATED__lte"] = end
+                where["DT_FILE_CREATED_HOST__lte"] = end
             else:
                 return {
                     "where": None,
@@ -573,7 +573,7 @@ class Filter:
                     "msg_prefix": None,
                 }
 
-            order_by = "DT_FILE_CREATED DESC, ID_FILE_TASK DESC"
+            order_by = "DT_FILE_CREATED_HOST DESC, ID_FILE_TASK DESC"
             limit = last_n
 
             return {

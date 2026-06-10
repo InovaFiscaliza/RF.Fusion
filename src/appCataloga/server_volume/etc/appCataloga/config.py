@@ -34,6 +34,7 @@ LOG_MAX_BACKUP_FILES = 5          # Keep at most this many rotated log generatio
 #------------------------------------------
 SERVER_PORT             = 5555
 TOTAL_CONNECTIONS       = 50
+GATEWAY_SELECT_TIMEOUT_SEC = 1
 BACKUP_QUERY_TAG        = "backup"
 STOP_QUERY_TAG          = "stop"
 START_TAG               = "<json>"
@@ -73,6 +74,7 @@ APP_ANALISE_SOURCE_LINEAGE_FAMILIES = (
     "emrx",
     "ermx",
 )
+APP_ANALISE_CWSM_FILENAME_UTC_OFFSET_HOURS = 3
 APP_ANALISE_MOBILE_TASK_MARKERS = (
     "drive-test",
     "drive test",

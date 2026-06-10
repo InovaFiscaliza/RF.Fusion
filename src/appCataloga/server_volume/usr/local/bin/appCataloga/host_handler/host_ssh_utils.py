@@ -26,8 +26,7 @@ from shared.file_metadata import FileMetadata
 
 
 # ---------------------------------------------------------------------
-# Config import path (as in original code). We keep the behavior so the
-# module remains drop-in compatible with existing deployments.
+# Keep the legacy config bootstrap so deployment behavior stays unchanged.
 # ---------------------------------------------------------------------
 BASE_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../../../../../")
@@ -89,8 +88,8 @@ def _connect_short_ssh_probe(addr: str, port: int, user: str, password: str) -> 
     """
     Attempt the short supervisory SSH login used by host probes.
 
-    Intentionally raises the original Paramiko/socket exception so callers
-    can classify the failure without losing stage-specific details.
+    Intentionally raises the original exception so callers can classify the
+    failure without losing transport details.
     """
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -183,10 +182,10 @@ def persist_auth_error(
 # SFTP Connection
 # =====================================================================
 class sftpConnection:
-    """Light wrapper over Paramiko SSH/SFTP with convenience methods."""
+    """Light Paramiko wrapper with appCataloga transport conventions."""
 
     def _base_log_fields(self) -> dict[str, object]:
-        """Return stable host transport fields shared by this connection."""
+        """Return the stable host transport fields shared by this connection."""
         return {
             "host": self.host_uid,
             "address": self.host_addr,
@@ -223,7 +222,7 @@ class sftpConnection:
                 paramiko.AutoAddPolicy()
             )
 
-            # Timeouts cover connection/auth only; data transfer timeouts are separate.
+            # These timeouts cover connect and auth only.
             self.ssh_client.connect(
                 hostname=self.connect_addr,
                 port=port,
@@ -236,20 +235,19 @@ class sftpConnection:
                 allow_agent=False,
             )
 
-            # Transport tuning matters here because some hosts stream large
-            # directory listings and stay connected for long periods.
+            # Some hosts stream large listings and stay connected for a long time.
             transport = self.ssh_client.get_transport()
             if not transport:
                 raise RuntimeError("SSH transport not available")
 
-            # Prevent idle disconnects (firewalls / OpenSSH)
+            # Keep idle links alive across firewalls and SSH gateways.
             transport.set_keepalive(30)
 
-            # Disable rekey during heavy stdout streaming
+            # Avoid rekey pauses during large stdout and listing streams.
             transport.packetizer.REKEY_BYTES = 2**40
             transport.packetizer.REKEY_PACKETS = 2**40
 
-            # Increase SSH window size to avoid stdout backpressure
+            # Increase SSH window size to reduce stdout backpressure.
             transport.window_size = 2**24  # 16 MB
 
             self.sftp = self.ssh_client.open_sftp()

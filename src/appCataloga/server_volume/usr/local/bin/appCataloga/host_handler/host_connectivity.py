@@ -49,19 +49,15 @@ def resolve_host_addresses(host_addr: str) -> list[str]:
     """
     Resolve a host into a stable list of candidate IP addresses.
 
-    Some stations publish multiple A records, for example a stable 172.x.x.x
-    operational network plus another VPN-facing IP that may not be reachable
-    from the RF.Fusion VM. Resolving once and picking the preferred family
-    avoids intra-probe DNS flapping where ICMP and SSH accidentally land on
-    different endpoints.
+    Some stations publish multiple A records. We resolve once and pick a
+    stable preference so ICMP and SSH do not probe different endpoints.
     """
     try:
         literal_ip = ipaddress.ip_address(host_addr)
     except ValueError:
         literal_ip = None
 
-    # Literal IPs bypass DNS. This keeps explicit host entries deterministic
-    # and avoids surprising resolver behavior when operators pin a station.
+    # Literal IPs bypass DNS so explicit host entries stay deterministic.
     if literal_ip is not None:
         return [str(literal_ip)]
 
@@ -90,9 +86,7 @@ def resolve_host_addresses(host_addr: str) -> list[str]:
         except ValueError:
             pass
 
-    # When a station exposes both VPN/public and operational network addresses,
-    # the operational 172.x.x.x endpoint is the one we want. Falling back to
-    # other records was the source of many false offline/degraded diagnoses.
+    # Prefer the operational 172.x.x.x endpoint when it exists.
     return preferred_172 if preferred_172 else addresses
 
 
@@ -107,8 +101,8 @@ def build_connectivity_probe_fields(
     """
     Build one structured connectivity-probe payload.
 
-    The probe helpers return data; this helper maps that data into the stable
-    field names shared by host workers and maintenance flows.
+    The probe helpers return data. This helper maps it to the stable log fields
+    shared by host workers and maintenance flows.
     """
     payload = {
         "component": "host_connectivity",
@@ -139,7 +133,7 @@ def build_connectivity_probe_fields(
 
 
 def _ping_address(addr: str, timeout_sec: float) -> bool:
-    """Ping a concrete address without triggering another DNS lookup."""
+    """Ping one concrete address without triggering another DNS lookup."""
     try:
         return ping(addr, timeout=timeout_sec) is not None
     except Exception:

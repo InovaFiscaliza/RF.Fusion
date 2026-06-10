@@ -43,9 +43,8 @@ def select_due_hosts(
     The DB query is already ordered by age, so the first fresh row lets the
     sweep stop early instead of scanning the entire HOST table every cycle.
 
-    The returned rows are the original DB dictionaries, not transformed copies.
-    That keeps the maintenance flow transparent: the caller can still see the
-    actual HOST columns being read during the sweep.
+    The returned rows are the original DB dictionaries.
+    That keeps the sweep transparent and avoids a wrapper that only renames keys.
     """
     stale_after = timedelta(seconds=stale_after_sec)
     due_hosts: list[dict] = []
@@ -61,8 +60,7 @@ def select_due_hosts(
 
         due_hosts.append(row)
 
-        # The recurring daemon refreshes only a bounded slice per iteration so
-        # maintenance work stays predictable even on very large host fleets.
+        # The sweep stays bounded even on very large host fleets.
         if len(due_hosts) >= batch_size:
             break
 
@@ -88,12 +86,11 @@ def _recover_offline_host_if_operational(
         - `ICMP up + SSH online`  -> recover the host
         - anything else           -> keep the host offline
 
-    That conservatism avoids "reviving" a queue that would just fail again on
-    the first real SSH/SFTP use.
+    That conservatism avoids reviving a queue that would fail again on the
+    first real SSH/SFTP use.
     """
-    # This is the heavy path of the recurring sweep. We only pay for the
-    # operational SSH probe when the host is already marked offline and ICMP
-    # now suggests it may have come back.
+    # This is the expensive branch of the recurring sweep.
+    # We only pay for SSH confirmation after ICMP suggests recovery.
     connectivity = connectivity_module.probe_host_connectivity(
         addr=host["NA_HOST_ADDRESS"],
         port=int(host["NA_HOST_PORT"]),
@@ -112,7 +109,7 @@ def _recover_offline_host_if_operational(
     )
 
     if connectivity["state"] == "online":
-        # Only a fully operational result is allowed to resume suspended work.
+        # Only a fully operational result may resume suspended work.
         connectivity_module.persist_host_connectivity_state(
             db=db,
             log=log,
@@ -123,9 +120,8 @@ def _recover_offline_host_if_operational(
         )
         return
 
-    # Keep the host offline until the operational SSH endpoint is confirmed.
-    # Reuse the shared offline persistence path so host-dependent queues are
-    # re-suspended if they drifted back to PENDING while the app was down.
+    # Keep the host offline until the SSH endpoint is confirmed.
+    # Reuse the shared offline path so drifted queues are suspended again.
     connectivity_module.persist_host_connectivity_state(
         db=db,
         log=log,
@@ -158,12 +154,10 @@ def process_due_host(
     Return a small structured result used by the batch summary.
 
     The maintenance daemon is high-frequency, so the caller aggregates these
-    per-host outcomes into one compact batch log instead of emitting a
-    standalone steady-state line for every touched host.
+    results into one compact batch log.
     """
     if bool(host.get("IS_BUSY")):
-        # The recurring sweep must not compete with the data plane for the
-        # same SSH endpoint. Busy hosts are deferred to a later maintenance pass.
+        # The recurring sweep must not compete with the data plane.
         return {
             "checked": False,
             "skipped_busy": True,
@@ -178,9 +172,7 @@ def process_due_host(
     recovery_probe = False
 
     if online and bool(host.get("IS_OFFLINE")):
-        # This is the only branch that attempts a real recovery. A host that
-        # was already offline needs stronger proof than ICMP before queues are
-        # resumed.
+        # Offline recovery needs stronger proof than ICMP alone.
         recovery_probe = True
         _recover_offline_host_if_operational(
             db=db,
@@ -190,16 +182,13 @@ def process_due_host(
             connectivity_module=connectivity_module,
         )
     elif online:
-        # Steady online refresh: the host still answers ICMP and was not marked
-        # offline before this pass, so there is nothing to resume or suspend.
+        # Steady online refresh: no queue side effect is needed here.
         db.host_update(
             host_id=host["ID_HOST"],
             DT_LAST_CHECK=checked_at,
         )
     else:
-        # Steady offline refresh or a fresh online -> offline transition. The
-        # state machine in `host_connectivity` decides which side effects apply
-        # based on `(was_offline, online)`.
+        # The shared state machine decides the offline side effects.
         connectivity_module.persist_host_connectivity_state(
             db=db,
             log=log,
@@ -237,18 +226,15 @@ def run_host_check_all_batch(
         - it works from stale HOST timestamps instead of queued tasks
         - it still uses the same host connectivity/state machine helpers
 
-    The batch is deliberately small and oldest-first so the daemon can make
-    continuous forward progress without monopolizing the service loop.
+    The batch stays small and oldest-first so the daemon keeps making progress
+    without monopolizing the service loop.
     """
-    # Phase 1: take one ordered snapshot of the HOST table. The DB query is
-    # already responsible for returning rows oldest-first by `DT_LAST_CHECK`.
+    # Phase 1: take one ordered snapshot of the HOST table.
     hosts = db.host_list_for_connectivity_check()
     if not hosts:
         return 0
 
-    # Phase 2: reduce the full snapshot to the stale slice this pass should
-    # actually touch. Everything fresher than that is intentionally left for a
-    # later loop iteration.
+    # Phase 2: trim the full snapshot to the stale slice for this pass.
     due_hosts = select_due_hosts(
         hosts,
         now,
@@ -264,8 +250,8 @@ def run_host_check_all_batch(
     icmp_offline = 0
     recovery_probes = 0
 
-    # Phase 4: process each due host independently. One bad station must not
-    # abort the rest of the maintenance batch.
+    # Process each due host independently.
+    # One bad station must not abort the rest of the batch.
     for host in due_hosts:
         if not process_status["running"]:
             # Shutdown should stop the batch between hosts, never in the middle
@@ -307,11 +293,12 @@ def run_host_check_all_batch(
                 error=e,
             )
 
-    # Emit one compact batch summary for the whole maintenance pass instead of
-    # one steady-state event per host. Recovery probes and state transitions
-    # still keep their own dedicated logs where that extra detail matters.
+    # Emit one compact batch summary for the whole maintenance pass.
+    # Recovery probes and state transitions keep their own detailed logs.
     log.event(
         "host_check_all_batch_done",
+        component="host_maintenance",
+        operation="run_host_check_all_batch",
         selected=len(due_hosts),
         checked=checked,
         skipped_busy=skipped_busy,

@@ -38,7 +38,7 @@ Startup flow:
 
 After the container is up, the deployment script applies the project schemas:
 
-- [/RFFusion/src/mariadb/scripts/createProcessingDB-v9.sql](/RFFusion/src/mariadb/scripts/createProcessingDB-v9.sql)
+- [/RFFusion/src/mariadb/scripts/createProcessingDB-v11.sql](/RFFusion/src/mariadb/scripts/createProcessingDB-v11.sql)
 - [/RFFusion/src/mariadb/scripts/createMeasureDB-v5.sql](/RFFusion/src/mariadb/scripts/createMeasureDB-v5.sql)
 - [/RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql](/RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql)
 - [/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v2-error-aggregation.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v2-error-aggregation.sql)
@@ -100,7 +100,7 @@ The entrypoint itself guarantees the MariaDB runtime is bootstrapped.
 
 The deployment script then loads the RF.Fusion schemas:
 
-- `BPDATA` from `createProcessingDB-v9.sql`
+- `BPDATA` from `createProcessingDB-v11.sql`
 - `RFDATA` from `createMeasureDB-v5.sql`
 - `RFFUSION_SUMMARY` from `createFusionSummaryDB-v1.sql`
 - `RFFUSION_SUMMARY` refinements from the `v2`, `v3` and `v4` migration scripts

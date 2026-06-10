@@ -33,7 +33,7 @@ process_status = {"running": True}
 
 
 def _shutdown_cleanup(signal_name: str) -> None:
-    """Release BUSY host locks during process shutdown."""
+    """Release BUSY host marks owned by this PID during shutdown."""
     host_runtime.release_busy_hosts_for_current_pid(
         db_factory=dbHandlerBKP,
         database_name=k.BKP_DATABASE_NAME,
@@ -51,7 +51,11 @@ signal_runtime.install_shutdown_handlers(
 # --- loop helpers ---
 
 def _read_next_task(db: dbHandlerBKP) -> dict | None:
-    """Return the next PROCESSING host task as a normalized task dict, or None when empty."""
+    """Read the next discovery task and normalize the worker context.
+
+    Discovery claims a host-level PROCESSING row because one remote scan
+    may produce many file rows, but the host still needs one queue owner.
+    """
     task_row = db.host_task_read(
         task_type=k.HOST_TASK_PROCESSING_TYPE,
         task_status=k.TASK_PENDING,
@@ -73,11 +77,10 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
 
 def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     """
-    Atomically flip the HOST_TASK from PENDING to RUNNING.
+    Atomically move the HOST_TASK from PENDING to RUNNING.
 
-    Discovery claims the task before opening SSH/SFTP so ownership is deterministic
-    and avoids a race with sibling workers for the same host.
-    Returns False if another worker claimed this row first.
+    Discovery claims before opening SSH/SFTP so remote work starts only after
+    queue ownership is stable. Another worker may still win this race first.
     """
     result = db.host_task_update(
         task_id=task["task_id"],
@@ -120,9 +123,8 @@ def _stream_discovery_batches(
         - FILE_TASK stores the mutable pipeline queue
         - FILE_TASK_HISTORY stores the immutable audit trail
 
-    The DB callbacks handle deduplication and last-seen cutoffs, so this loop
-    can stay focused on streaming batches instead of keeping the full remote
-    inventory in memory.
+    The DB callbacks own deduplication and date cutoffs.
+    This loop stays focused on streaming remote metadata.
     """
     host_filter = Filter(task["host_filter"], log=log)
     processed = 0
@@ -159,7 +161,7 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
     Stream discovered files and queue backlog control.
 
     The entrypoint measures total `_do_work()` duration for `task_done`.
-    This function measures only completed internal phases for `task_phase`.
+    This function measures only completed internal phases.
     """
     scan_started_at = time.monotonic()
     processed = _stream_discovery_batches(db, sftp, task)
@@ -209,7 +211,11 @@ def _classify_work_failure(
     task: dict | None,
     sftp: sftpConnection | None,
 ) -> tuple[str, str]:
-    """Translate a raised work exception into the canonical worker error fields."""
+    """Map a raised exception to the worker error reason and stage.
+
+    SSH bootstrap failures reuse the shared classifier because the same
+    transport errors appear in backup and host-check too.
+    """
     if task is not None and sftp is None:
         ssh_failure = errors.classify_ssh_connect_failure(exc)
         if ssh_failure is not None:
@@ -228,7 +234,7 @@ def _finalize_success(
     queued_backlog_tasks: int,
     elapsed_sec: float,
 ) -> None:
-    """Write TASK_DONE, log completion, and schedule deferred statistics."""
+    """Persist TASK_DONE, log completion, and request deferred statistics."""
     db.host_task_update(
         task_id=task["task_id"],
         NU_STATUS=k.TASK_DONE,
@@ -267,7 +273,7 @@ def _finalize_error(
     task: dict | None,
     err: errors.ErrorHandler,
 ) -> None:
-    """Persist TASK_ERROR and queue a host-check if the failure is bootstrap-class."""
+    """Persist TASK_ERROR and request host-check follow-up for bootstrap failures."""
     if task is None:
         err.log_error()
         return
@@ -331,7 +337,7 @@ def _cleanup(
     db: dbHandlerBKP,
     task: dict | None,
 ) -> None:
-    """Close SFTP and release the host lock. Never raises."""
+    """Close SFTP and release the claimed host lock. Never raises."""
     try:
         if sftp:
             sftp.close()
@@ -351,7 +357,7 @@ def _cleanup(
 
 
 def _init_db() -> dbHandlerBKP:
-    """Connect to the operational database. Exits the process on failure."""
+    """Create the operational DB handler or stop the process early."""
     try:
         return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
@@ -372,17 +378,22 @@ def main() -> None:
             # --- read ---
             task = _read_next_task(db)
             if task is None:
+                # Idle polls use jitter to avoid synchronized worker wakeups.
                 runtime_sleep.random_jitter_sleep()
                 continue
 
             # --- claim ---
             if not _claim_task(db, task):
+                # Another worker got here first. This is not a task failure.
                 runtime_sleep.random_jitter_sleep()
                 continue
 
             # --- work ---
+            # Open one remote session after the queue claim succeeds.
             sftp = host_context.init_host_context(task, log)
 
+            # The entrypoint measures total work time.
+            # `_do_work()` measures only completed internal phases.
             work_started_at = time.monotonic()
             result = _do_work(db, sftp, task)
             elapsed_sec = time.monotonic() - work_started_at
@@ -420,6 +431,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
+        # The loop already handles normal task failures.
+        # Reaching this block means the process itself is unstable.
         err = errors.ErrorHandler(log)
         err.capture(reason="Fatal discovery worker crash", stage=k.STAGE_MAIN, exc=e)
         err.log_error()

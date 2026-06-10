@@ -16,7 +16,7 @@ bootstrap process.
 
 ### Schema scripts
 
-- [createProcessingDB-v9.sql](/RFFusion/src/mariadb/scripts/createProcessingDB-v9.sql)
+- [createProcessingDB-v11.sql](/RFFusion/src/mariadb/scripts/createProcessingDB-v11.sql)
   Builds `BPDATA`.
   This is the operational database used mainly by `appCataloga`.
 
@@ -137,7 +137,7 @@ The normal order is:
 That means:
 
 ```bash
-mysql -u root -p < /RFFusion/src/mariadb/scripts/createProcessingDB-v9.sql
+mysql -u root -p < /RFFusion/src/mariadb/scripts/createProcessingDB-v11.sql
 mysql -u root -p < /RFFusion/src/mariadb/scripts/createMeasureDB-v5.sql
 mysql -u root -p < /RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql
 ```
@@ -185,7 +185,7 @@ MariaDB event scheduler.
 
 Today the model is:
 
-- `createProcessingDB-v9.sql` creates `SUMMARY_OUTBOX` and `SUMMARY_WORKER_STATE` in `BPDATA`
+- `createProcessingDB-v11.sql` creates `SUMMARY_OUTBOX` and `SUMMARY_WORKER_STATE` in `BPDATA`
 - `appCataloga` publishers append dirty scopes into that outbox
 - `appCataloga_rffusion_summary_worker.py` consumes the outbox and refreshes the public summary tables
 - `createFusionSummaryDB-v1.sql` still defines the public summary schema and its diagnostics tables

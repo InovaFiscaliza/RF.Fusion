@@ -53,8 +53,8 @@ def _shutdown_cleanup(signal_name: str) -> None:
 
     Backup is the only main worker here that owns a small process pool, so its
     shutdown cleanup has two responsibilities:
-        1. tell sibling workers to stop
-        2. release any HOST rows still marked BUSY by this PID
+        1. stop sibling workers
+        2. release HOST rows still owned by this PID
     """
     worker_pool.broadcast_shutdown_to_worker_pool(
         signal_name,
@@ -78,18 +78,10 @@ signal_runtime.install_shutdown_handlers(
 
 def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     """
-    Atomically convert one backup FILE_TASK from PENDING to RUNNING.
+    Atomically move one backup FILE_TASK from PENDING to RUNNING.
 
-    This helper owns two related policies:
-        1. deterministic claim of the queue row before opening SSH/SFTP
-        2. opportunistic pool growth only after a worker has secured real work
-
-    Returns:
-        bool: False when another worker already claimed the row and the caller
-        should simply fetch another candidate.
-
-    Claim and pool-growth live together here because they are one policy
-    bundle: backup only scales out after a worker has secured concrete work.
+    Backup grows its worker pool only after a real claim succeeds.
+    This keeps scale-out tied to actual queue pressure.
     """
     worker_id = process_status["worker"]
     message = tools.compose_message(
@@ -150,7 +142,7 @@ def _finalize_success(
     elapsed_sec: float,
 ) -> None:
     """
-    Persist BACKUP DONE, promote the row to PROCESS, and log completion. Never raises.
+    Persist BACKUP DONE, promote the row to PROCESS, and log completion.
 
     `(FK_HOST, NA_HOST_FILE_PATH, NA_HOST_FILE_NAME)` is the logical identity
     of the source file, so the FILE_TASK row is updated in place rather than
@@ -182,10 +174,14 @@ def _finalize_success(
         NA_SERVER_FILE_NAME=server_filename,
         NA_SERVER_FILE_PATH=server_file_path,
         NU_STATUS_BACKUP=k.TASK_DONE,
-        NA_EXTENSION=refreshed_metadata.NA_EXTENSION,
-        VL_FILE_SIZE_KB=updated_size_kb,
-        DT_FILE_CREATED=refreshed_metadata.DT_FILE_CREATED,
-        DT_FILE_MODIFIED=refreshed_metadata.DT_FILE_MODIFIED,
+        NA_EXTENSION_HOST=refreshed_metadata.NA_EXTENSION,
+        VL_FILE_SIZE_KB_HOST=updated_size_kb,
+        DT_FILE_CREATED_HOST=refreshed_metadata.DT_FILE_CREATED,
+        DT_FILE_MODIFIED_HOST=refreshed_metadata.DT_FILE_MODIFIED,
+        NA_EXTENSION_SERVER=refreshed_metadata.NA_EXTENSION,
+        VL_FILE_SIZE_KB_SERVER=updated_size_kb,
+        DT_FILE_CREATED_SERVER=refreshed_metadata.DT_FILE_CREATED,
+        DT_FILE_MODIFIED_SERVER=refreshed_metadata.DT_FILE_MODIFIED,
         NA_MESSAGE=history_message,
         **errors.persisted_error_fields_from_handler(message=history_message),
     )
@@ -199,10 +195,14 @@ def _finalize_success(
         NU_STATUS=k.TASK_PENDING,
         NA_SERVER_FILE_PATH=server_file_path,
         NA_SERVER_FILE_NAME=server_filename,
-        NA_EXTENSION=refreshed_metadata.NA_EXTENSION,
-        VL_FILE_SIZE_KB=updated_size_kb,
-        DT_FILE_CREATED=refreshed_metadata.DT_FILE_CREATED,
-        DT_FILE_MODIFIED=refreshed_metadata.DT_FILE_MODIFIED,
+        NA_EXTENSION_HOST=refreshed_metadata.NA_EXTENSION,
+        VL_FILE_SIZE_KB_HOST=updated_size_kb,
+        DT_FILE_CREATED_HOST=refreshed_metadata.DT_FILE_CREATED,
+        DT_FILE_MODIFIED_HOST=refreshed_metadata.DT_FILE_MODIFIED,
+        NA_EXTENSION_SERVER=refreshed_metadata.NA_EXTENSION,
+        VL_FILE_SIZE_KB_SERVER=updated_size_kb,
+        DT_FILE_CREATED_SERVER=refreshed_metadata.DT_FILE_CREATED,
+        DT_FILE_MODIFIED_SERVER=refreshed_metadata.DT_FILE_MODIFIED,
         NA_MESSAGE=history_message,
         **errors.persisted_error_fields_from_handler(message=history_message),
     )
@@ -224,7 +224,7 @@ def _finalize_error(
     task: dict | None,
     err: errors.ErrorHandler,
 ) -> None:
-    """Write ERROR to queue or prune source drift. Queue host-check on bootstrap failure. Never raises."""
+    """Persist backup failure or prune source drift when the file vanished."""
     worker_id = process_status["worker"]
 
     if task is None:
@@ -386,7 +386,7 @@ def _cleanup(
     err: errors.ErrorHandler,
     file_was_transferred: bool,
 ) -> None:
-    """Close SFTP, release the host lock, and run deferred statistics. Never raises."""
+    """Close SFTP, release the host lock, and run deferred statistics."""
     if sftp:
         try:
             sftp.close()
@@ -418,13 +418,7 @@ def _cleanup(
 # ======================================================================
 def parse_arguments() -> None:
     """
-    Parse command-line arguments.
-
-    Supported arguments:
-        worker=<id>
-
-    Sets:
-        process_status["worker"]
+    Parse the optional worker id used by the backup pool.
     """
     worker = 0
     for arg in sys.argv[1:]:
@@ -445,7 +439,7 @@ def _do_work(sftp: sftpConnection, task: dict) -> dict:
     Transfer one remote file to the repository and return backup artifacts.
 
     The entrypoint measures total `_do_work()` duration for `task_done`.
-    This function emits the completed domain phase `transfer`.
+    This function emits only the completed `transfer` phase.
     """
     transfer_started_at = time.monotonic()
     transfer_result = sftp.transfer_file_task(
@@ -487,7 +481,11 @@ def _classify_work_failure(
     sftp_conn: sftpConnection | None,
     result: dict,
 ) -> tuple[str, str]:
-    """Translate a raised work exception into the canonical worker error fields."""
+    """Map a raised exception to the worker error reason and stage.
+
+    SSH bootstrap failures reuse the shared classifier because the same
+    transport errors appear in discovery and host-check too.
+    """
     if task is not None and sftp_conn is None:
         ssh_failure = errors.classify_ssh_connect_failure(exc)
         if ssh_failure is not None:
@@ -501,7 +499,7 @@ def _classify_work_failure(
 
 
 def _init_db() -> dbHandlerBKP:
-    """Connect to the operational database. Exits the process on failure."""
+    """Create the operational DB handler or stop the process early."""
     try:
         return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
@@ -509,7 +507,7 @@ def _init_db() -> dbHandlerBKP:
         sys.exit(1)
         
 def _read_next_task(db: dbHandlerBKP) -> dict | None:
-    """Return the next pending backup FILE_TASK as a normalized task dict, or None."""
+    """Read the next pending backup FILE_TASK and normalize worker context."""
     row = db.read_file_task(
         task_status=k.TASK_PENDING,
         task_type=k.FILE_TASK_BACKUP_TYPE,
@@ -543,10 +541,10 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
             filename=host_file_name,
         ),
         "discovery_snapshot": {
-            "extension": task_row["FILE_TASK__NA_EXTENSION"],
-            "size_kb": task_row["FILE_TASK__VL_FILE_SIZE_KB"],
-            "dt_created": task_row["FILE_TASK__DT_FILE_CREATED"],
-            "dt_modified": task_row["FILE_TASK__DT_FILE_MODIFIED"],
+            "extension": task_row["FILE_TASK__NA_EXTENSION_HOST"],
+            "size_kb": task_row["FILE_TASK__VL_FILE_SIZE_KB_HOST"],
+            "dt_created": task_row["FILE_TASK__DT_FILE_CREATED_HOST"],
+            "dt_modified": task_row["FILE_TASK__DT_FILE_MODIFIED_HOST"],
         },
     }
 
@@ -562,9 +560,9 @@ def main() -> None:
         4. transfer and validate the payload
         5. update history and promote the row to PROCESS
 
-    The worker keeps those phases visible in this file on purpose. The helpers
-    extracted above remove repeated local policy, but the full lifecycle of one
-    backup pass should still read top-to-bottom in the entrypoint.
+    The entrypoint keeps this lifecycle visible on purpose.
+    Helpers remove repeated policy, but the file flow should still read
+    top-to-bottom in one place.
     """
     parse_arguments()
     worker_id = process_status["worker"]
@@ -602,9 +600,7 @@ def main() -> None:
                 idle_cycles = process_status.get("idle_cycles", 0) + 1
                 process_status["idle_cycles"] = idle_cycles
 
-                # Stop worker if is idle for too long without claiming work. 
-                # This keeps the pool size right-sized to the demand and allows 
-                # workers to gracefully retire when the queue is drained.
+                # Idle siblings retire so the pool shrinks with demand.
                 if worker_pool.should_retire_idle_worker(
                     worker_id,
                     idle_cycles,
@@ -627,13 +623,17 @@ def main() -> None:
 
             # --- claim ---
             if not _claim_task(db, task):
+                # Another worker got this FILE_TASK first.
                 runtime_sleep.random_jitter_sleep()
                 continue
 
             # --- SSH bootstrap ---
+            # Open the remote session only after queue ownership is stable.
             sftp_conn = host_context.init_host_context(task, log)
 
             # --- transfer ---
+            # The entrypoint measures total work time.
+            # `_do_work()` measures only the completed transfer phase.
             work_started_at = time.monotonic()
             result = _do_work(sftp_conn, task)
             elapsed_sec = time.monotonic() - work_started_at
@@ -679,9 +679,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # This outer boundary is for daemon-level failure, not one file pass.
-        # If we get here the worker process itself is crashing, so we log once,
-        # release BUSY hosts owned by this PID, and let the exception terminate.
+        # The loop already handles normal task failures.
+        # Reaching this block means the process itself is unstable.
         worker_id = process_status.get("worker", 0)
         err = errors.ErrorHandler(log)
         err.capture(

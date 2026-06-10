@@ -1006,9 +1006,18 @@ class dbHandlerRFM(DBHandlerBase):
     ) -> int:
         """Insert or retrieve one row from `DIM_SPECTRUM_FILE`.
 
-        The file row represents the stored artifact itself. Deduplication is
-        based on repository location, while `hostname` is only used to resolve
-        the file type dimension.
+        `DIM_SPECTRUM_FILE` keeps one row per physical file artifact with the
+        original column names (`NA_EXTENSION`, `VL_FILE_SIZE_KB`,
+        `DT_FILE_CREATED`, `DT_FILE_MODIFIED`).
+
+        Callers are responsible for passing the correct metadata source:
+            - host-side source file  -> values from the `_HOST` contract
+            - repository artifact    -> values from the `_SERVER` contract
+
+        This handler stores the artifact metadata exactly as received. It does
+        not infer whether the row represents a host file or a server artifact.
+        Deduplication is based on the artifact location, while `hostname` is
+        used only to resolve the file type dimension.
         """
 
         if not isinstance(hostname, str) or not hostname:
@@ -1026,12 +1035,13 @@ class dbHandlerRFM(DBHandlerBase):
         self._connect()
         try:
             # Resolve the type before checking file identity so a newly-seen
-            # artifact is always inserted with a complete dimension reference.
+            # artifact always lands with a complete dimension reference.
             ID_TYPE_FILE = self.get_file_type_id_by_hostname(
                 HOSTNAME=hostname
             )
 
-            # Repository location is the file identity contract in RFDATA.
+            # RFDATA identifies one file by its persisted artifact location.
+            # The caller chooses whether that artifact is host-side or server-side.
             rows = self._select_rows(
                 table="DIM_SPECTRUM_FILE",
                 where={

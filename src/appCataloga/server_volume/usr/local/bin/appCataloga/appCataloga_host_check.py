@@ -44,7 +44,7 @@ HOST_TASK_PRIORITY = (
 
 
 def _shutdown_cleanup(signal_name: str) -> None:
-    """Release BUSY host locks when the process shuts down."""
+    """Release BUSY host marks owned by this PID during shutdown."""
     host_runtime.release_busy_hosts_for_current_pid(
         db_factory=dbHandlerBKP,
         database_name=k.BKP_DATABASE_NAME,
@@ -60,7 +60,11 @@ signal_runtime.install_shutdown_handlers(
 
 
 def _read_next_task(db: dbHandlerBKP) -> dict | None:
-    """Return the next queued HOST_TASK as a normalized task dict, or None when empty."""
+    """Read the next pending HOST_TASK and normalize the worker context.
+
+    The worker reads one task type at a time in fixed priority order.
+    This keeps heavy bootstrap checks ahead of lighter reconciliation work.
+    """
     for task_type in HOST_TASK_PRIORITY:
         task_row = db.host_task_read(task_status=k.TASK_PENDING, task_type=task_type)
         if task_row:
@@ -82,8 +86,10 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
 
 def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     """
-    Atomically flip the task from PENDING to RUNNING.
-    Returns False if another worker claimed it first (race lost).
+    Atomically move the task from PENDING to RUNNING.
+
+    Another worker may win the race between read and claim.
+    That case is normal and should not be logged as a failure.
     """
     result = db.host_task_update(
         task_id=task["task_id"],
@@ -112,7 +118,11 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
 
 
 def _do_work(db: dbHandlerBKP, task: dict) -> tuple[int, str]:
-    """Dispatch the claimed task by type. Returns (status, message). Raises on any failure."""
+    """Dispatch the claimed task to the domain flow for its task type.
+
+    The entrypoint keeps ownership of queue lifecycle only.
+    Domain handlers decide the connectivity or statistics result.
+    """
     match task["task_type"]:
         case k.HOST_TASK_UPDATE_STATISTICS_TYPE:
             return host_runtime.run_update_statistics(
@@ -145,7 +155,11 @@ def _do_work(db: dbHandlerBKP, task: dict) -> tuple[int, str]:
 
 
 def _classify_work_failure(exc: Exception, *, task: dict | None) -> tuple[str, str]:
-    """Translate a raised work exception into the canonical worker error fields."""
+    """Map a raised exception to the worker error reason and stage.
+
+    SSH bootstrap failures reuse the shared classifier because the same
+    transport errors appear in other workers too.
+    """
     if task and task["task_type"] in {
         k.HOST_TASK_CHECK_TYPE,
         k.HOST_TASK_CHECK_CONNECTION_TYPE,
@@ -164,7 +178,7 @@ def _classify_work_failure(exc: Exception, *, task: dict | None) -> tuple[str, s
 def _finalize_success(
     db: dbHandlerBKP, task: dict, status: int, message: str, elapsed_sec: float
 ) -> None:
-    """Write the domain result to the queue and log task completion."""
+    """Persist the final queue state after domain work completes cleanly."""
     db.host_task_update(
         task_id=task["task_id"],
         NU_STATUS=status,
@@ -184,7 +198,7 @@ def _finalize_success(
 def _finalize_error(
     db: dbHandlerBKP, task: dict | None, err: errors.ErrorHandler
 ) -> None:
-    """Write ERROR to the queue and log the failure. Safe when task is None.
+    """Persist ERROR state and emit the final failure log. Safe when task is None.
 
     Unlike discovery, this worker never re-queues a host-check on failure:
     it IS the host-check worker, so re-queuing on error would create a loop.
@@ -224,7 +238,7 @@ def _finalize_error(
 
 
 def _init_db() -> dbHandlerBKP:
-    """Connect to the operational database. Exits the process on failure."""
+    """Create the operational DB handler or stop the process early."""
     try:
         return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
@@ -244,6 +258,7 @@ def main() -> None:
             # --- read ---
             task = _read_next_task(db)
             if task is None:
+                # Idle polls use jitter to avoid synchronized worker wakeups.
                 runtime_sleep.random_jitter_sleep()
                 continue
             
@@ -254,6 +269,8 @@ def main() -> None:
                 continue
             
             # --- work ---
+            # The entrypoint measures total work time.
+            # Domain handlers measure only their completed phases.
             start = time.monotonic()
             status, message = _do_work(db, task)
             elapsed_sec = time.monotonic() - start
@@ -281,8 +298,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # True last-resort crash. The main loop handles per-iteration failures.
-        # If we reach here, the process itself is no longer trustworthy.
+        # The loop already handles normal task failures.
+        # Reaching this block means the process itself is unstable.
         err = errors.ErrorHandler(log)
         err.capture(reason="Fatal host check worker crash", stage=k.STAGE_MAIN, exc=e)
         err.log_error()

@@ -507,4 +507,4 @@ class AppAnaliseConnection:
         # accepted do we expose canonical `bin_data` to the worker.
         self.bin_data = self.payload_parser.normalize_payload(self.last_payload)
 
-        return self.bin_data, self.last_output_meta
+        return self.bin_data, self.last_output_meta, self.last_answer, self.last_payload

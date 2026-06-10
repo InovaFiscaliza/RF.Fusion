@@ -1519,13 +1519,13 @@ class SummaryRefreshEngine:
         """Refresh per-host monthly file/size counters from ``FILE_TASK_HISTORY``.
 
         Aggregates backup and processing status counts and volumes grouped by
-        (FK_HOST, DT_REFERENCE_MONTH).  Rows with ``DT_FILE_CREATED`` before
+        (FK_HOST, DT_REFERENCE_MONTH).  Rows with ``DT_FILE_CREATED_HOST`` before
         ``1000-01-01`` (invalid sentinel dates) are silently skipped.
         Rows where the Python-side :func:`_month_start` normalisation fails
         (e.g. NULL month) are logged as warnings and skipped.
 
         When ``reference_months`` is provided, each month generates a
-        ``(f.DT_FILE_CREATED >= start AND f.DT_FILE_CREATED < next_month_start)``
+        ``(f.DT_FILE_CREATED_HOST >= start AND f.DT_FILE_CREATED_HOST < next_month_start)``
         range clause rather than an exact-match, so partial months are correctly
         included during incremental refreshes.
 
@@ -1547,8 +1547,8 @@ class SummaryRefreshEngine:
         # Both guards pre-filter rows with NULL or epoch-zero dates which can
         # produce wildly wrong month buckets when formatted with DATE_FORMAT.
         clauses = [
-            "f.DT_FILE_CREATED IS NOT NULL",
-            "f.DT_FILE_CREATED >= '1000-01-01 00:00:00'",
+            "f.DT_FILE_CREATED_HOST IS NOT NULL",
+            "f.DT_FILE_CREATED_HOST >= '1000-01-01 00:00:00'",
         ]
         host_clause = self._build_in_clause("f.FK_HOST", host_ids or [], params)
         if host_clause:
@@ -1562,7 +1562,7 @@ class SummaryRefreshEngine:
                 # "day=28 + 4 days" is a portable trick to always land in the next
                 # month regardless of how many days the current month has.
                 next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
-                month_subclauses.append("(f.DT_FILE_CREATED >= %s AND f.DT_FILE_CREATED < %s)")
+                month_subclauses.append("(f.DT_FILE_CREATED_HOST >= %s AND f.DT_FILE_CREATED_HOST < %s)")
                 params.extend([month_start, next_month])
             # Combine month ranges with OR; the whole block is ANDed with other clauses.
             clauses.append("(" + " OR ".join(month_subclauses) + ")")
@@ -1572,29 +1572,29 @@ class SummaryRefreshEngine:
             f"""
             SELECT
                 f.FK_HOST,
-                DATE_FORMAT(f.DT_FILE_CREATED, '%Y-%m-01') AS DT_REFERENCE_MONTH,
+                DATE_FORMAT(f.DT_FILE_CREATED_HOST, '%Y-%m-01') AS DT_REFERENCE_MONTH,
                 h.NA_HOST_NAME,
                 COUNT(*) AS NU_DISCOVERED_FILES,
-                ROUND(COALESCE(SUM(f.VL_FILE_SIZE_KB), 0) / 1024 / 1024, 2) AS VL_DISCOVERED_GB,
+                ROUND(COALESCE(SUM(f.VL_FILE_SIZE_KB_HOST), 0) / 1024 / 1024, 2) AS VL_DISCOVERED_GB,
                 SUM(CASE WHEN f.NU_STATUS_BACKUP = 0 THEN 1 ELSE 0 END) AS NU_BACKUP_DONE_FILES,
-                ROUND(COALESCE(SUM(CASE WHEN f.NU_STATUS_BACKUP = 0 THEN f.VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_DONE_GB,
+                ROUND(COALESCE(SUM(CASE WHEN f.NU_STATUS_BACKUP = 0 THEN f.VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_DONE_GB,
                 SUM(CASE WHEN f.NU_STATUS_BACKUP = 1 THEN 1 ELSE 0 END) AS NU_BACKUP_PENDING_FILES,
-                ROUND(COALESCE(SUM(CASE WHEN f.NU_STATUS_BACKUP = 1 THEN f.VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_PENDING_GB,
+                ROUND(COALESCE(SUM(CASE WHEN f.NU_STATUS_BACKUP = 1 THEN f.VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_PENDING_GB,
                 SUM(CASE WHEN f.NU_STATUS_BACKUP = -1 THEN 1 ELSE 0 END) AS NU_BACKUP_ERROR_FILES,
-                ROUND(COALESCE(SUM(CASE WHEN f.NU_STATUS_BACKUP = -1 THEN f.VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_ERROR_GB,
+                ROUND(COALESCE(SUM(CASE WHEN f.NU_STATUS_BACKUP = -1 THEN f.VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_ERROR_GB,
                 SUM(CASE WHEN f.NU_STATUS_PROCESSING = 0 THEN 1 ELSE 0 END) AS NU_PROCESSING_DONE_FILES,
-                ROUND(COALESCE(SUM(CASE WHEN f.NU_STATUS_PROCESSING = 0 THEN f.VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_DONE_GB,
+                ROUND(COALESCE(SUM(CASE WHEN f.NU_STATUS_PROCESSING = 0 THEN f.VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_DONE_GB,
                 SUM(CASE WHEN f.NU_STATUS_PROCESSING = 1 THEN 1 ELSE 0 END) AS NU_PROCESSING_PENDING_FILES,
-                ROUND(COALESCE(SUM(CASE WHEN f.NU_STATUS_PROCESSING = 1 THEN f.VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_PENDING_GB,
+                ROUND(COALESCE(SUM(CASE WHEN f.NU_STATUS_PROCESSING = 1 THEN f.VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_PENDING_GB,
                 SUM(CASE WHEN f.NU_STATUS_PROCESSING = -1 THEN 1 ELSE 0 END) AS NU_PROCESSING_ERROR_FILES,
-                ROUND(COALESCE(SUM(CASE WHEN f.NU_STATUS_PROCESSING = -1 THEN f.VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_ERROR_GB
+                ROUND(COALESCE(SUM(CASE WHEN f.NU_STATUS_PROCESSING = -1 THEN f.VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_ERROR_GB
             FROM BPDATA.FILE_TASK_HISTORY f
             JOIN BPDATA.HOST h
               ON h.ID_HOST = f.FK_HOST
             WHERE {" AND ".join(clauses)}
             GROUP BY
                 f.FK_HOST,
-                DATE_FORMAT(f.DT_FILE_CREATED, '%Y-%m-01'),
+                DATE_FORMAT(f.DT_FILE_CREATED_HOST, '%Y-%m-01'),
                 h.NA_HOST_NAME
             """,
             params,
@@ -1722,7 +1722,12 @@ class SummaryRefreshEngine:
                 'BACKUP' AS NA_ERROR_SCOPE,
                 f.FK_HOST,
                 h.NA_HOST_NAME,
-                COALESCE(f.DT_BACKUP, f.DT_DISCOVERED, f.DT_FILE_CREATED, f.DT_FILE_MODIFIED) AS DT_EVENT_AT,
+                COALESCE(
+                    f.DT_BACKUP,
+                    f.DT_DISCOVERED,
+                    f.DT_FILE_CREATED_HOST,
+                    f.DT_FILE_MODIFIED_HOST
+                ) AS DT_EVENT_AT,
                 NULLIF(TRIM(f.NA_ERROR_DOMAIN), '') AS NA_ERROR_DOMAIN,
                 NULLIF(TRIM(f.NA_ERROR_STAGE), '') AS NA_ERROR_STAGE,
                 NULLIF(TRIM(f.NA_ERROR_CODE), '') AS NA_ERROR_CODE,
@@ -1742,7 +1747,13 @@ class SummaryRefreshEngine:
                 'PROCESSING' AS NA_ERROR_SCOPE,
                 f.FK_HOST,
                 h.NA_HOST_NAME,
-                COALESCE(f.DT_PROCESSED, f.DT_BACKUP, f.DT_DISCOVERED, f.DT_FILE_CREATED, f.DT_FILE_MODIFIED) AS DT_EVENT_AT,
+                COALESCE(
+                    f.DT_PROCESSED,
+                    f.DT_BACKUP,
+                    f.DT_DISCOVERED,
+                    f.DT_FILE_CREATED_HOST,
+                    f.DT_FILE_MODIFIED_HOST
+                ) AS DT_EVENT_AT,
                 NULLIF(TRIM(f.NA_ERROR_DOMAIN), '') AS NA_ERROR_DOMAIN,
                 NULLIF(TRIM(f.NA_ERROR_STAGE), '') AS NA_ERROR_STAGE,
                 NULLIF(TRIM(f.NA_ERROR_CODE), '') AS NA_ERROR_CODE,
@@ -1766,7 +1777,11 @@ class SummaryRefreshEngine:
                 END AS NA_ERROR_SCOPE,
                 t.FK_HOST,
                 h.NA_HOST_NAME,
-                COALESCE(t.DT_FILE_TASK, t.DT_FILE_CREATED, t.DT_FILE_MODIFIED) AS DT_EVENT_AT,
+                COALESCE(
+                    t.DT_FILE_TASK,
+                    t.DT_FILE_CREATED_HOST,
+                    t.DT_FILE_MODIFIED_HOST
+                ) AS DT_EVENT_AT,
                 NULLIF(TRIM(t.NA_ERROR_DOMAIN), '') AS NA_ERROR_DOMAIN,
                 NULLIF(TRIM(t.NA_ERROR_STAGE), '') AS NA_ERROR_STAGE,
                 NULLIF(TRIM(t.NA_ERROR_CODE), '') AS NA_ERROR_CODE,
@@ -2064,9 +2079,9 @@ class SummaryRefreshEngine:
             SELECT
                 FK_HOST,
                 SUM(CASE WHEN NU_TYPE = 1 AND NU_STATUS = 1 THEN 1 ELSE 0 END) AS NU_BACKUP_QUEUE_FILES_TOTAL,
-                ROUND(COALESCE(SUM(CASE WHEN NU_TYPE = 1 AND NU_STATUS = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_QUEUE_GB_TOTAL,
+                ROUND(COALESCE(SUM(CASE WHEN NU_TYPE = 1 AND NU_STATUS = 1 THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_QUEUE_GB_TOTAL,
                 SUM(CASE WHEN NU_TYPE = 2 AND NU_STATUS = 1 THEN 1 ELSE 0 END) AS NU_PROCESSING_QUEUE_FILES_TOTAL,
-                ROUND(COALESCE(SUM(CASE WHEN NU_TYPE = 2 AND NU_STATUS = 1 THEN VL_FILE_SIZE_KB ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_QUEUE_GB_TOTAL
+                ROUND(COALESCE(SUM(CASE WHEN NU_TYPE = 2 AND NU_STATUS = 1 THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_QUEUE_GB_TOTAL
             FROM BPDATA.FILE_TASK
             GROUP BY FK_HOST
             """
@@ -2092,7 +2107,7 @@ class SummaryRefreshEngine:
             SELECT
                 FK_HOST,
                 COUNT(*) AS NU_BACKUP_DONE_THIS_MONTH,
-                ROUND(COALESCE(SUM(VL_FILE_SIZE_KB), 0) / 1024 / 1024, 2) AS VL_BACKUP_DONE_GB_THIS_MONTH
+                ROUND(COALESCE(SUM(VL_FILE_SIZE_KB_HOST), 0) / 1024 / 1024, 2) AS VL_BACKUP_DONE_GB_THIS_MONTH
             FROM BPDATA.FILE_TASK_HISTORY
             WHERE NU_STATUS_BACKUP = 0
               AND DT_BACKUP >= %s

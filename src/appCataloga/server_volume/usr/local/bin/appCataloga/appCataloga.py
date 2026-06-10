@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-TCP entrypoint for the appCataloga service.
+TCP gateway for the appCataloga control service.
 
-This service accepts host requests, ensures the HOST exists in the backup
-database and queues the corresponding HOST_TASK for downstream processing.
+This daemon accepts short host requests from Zabbix, ensures the target HOST
+exists in `BPDATA`, and queues the matching `HOST_TASK` for downstream workers.
 
-The implementation intentionally stays synchronous and explicit:
-- one request is fully handled before the next
-- signal handling wakes the selector for fast shutdown
-- request validation is centralized through ErrorHandler
+This entrypoint is a gateway, not a queue worker:
+- the loop waits on `accept()` with a short timeout
+- each accepted request is handled synchronously
+- socket transport stays in `server_handler/socket_handler.py`
 """
 
-import os
+import socket
 import sys
 from datetime import datetime
-from selectors import DefaultSelector, EVENT_READ
+from typing import Any
 
 from bootstrap_paths import bootstrap_app_paths
 PROJECT_ROOT = bootstrap_app_paths(__file__)
@@ -45,33 +45,19 @@ COMMAND_TASK_MAP = {
 # Global state
 # ======================================================================
 process_status = {"running": True}
-# The selector waits on both the listening socket and this pipe so that
-# signal handlers can wake the loop immediately instead of waiting for
-# network activity.
-WAKE_R_FD, WAKE_W_FD = os.pipe()
 log = logging_utils.log()
 
 
 # ======================================================================
-def _shutdown_cleanup(signal_name: str) -> None:
-    """
-    Wake the selector loop so shutdown is noticed immediately.
-    """
-    process_control.wake_selector(WAKE_W_FD)
-
-
 signal_runtime.install_shutdown_handlers(
     process_status=process_status,
     logger=log,
-    on_shutdown=_shutdown_cleanup,
     log_fields={"action": "shutdown"},
 )
 
 
-def build_success_response(task_result: dict, host_filter) -> dict:
-    """
-    Build the success payload returned after queueing one HOST_TASK.
-    """
+def _build_success_response(task_result: dict, host_filter: dict[str, Any]) -> dict:
+    """Build the payload returned after one HOST_TASK is queued."""
     response = dict(task_result)
     response.update(
         {
@@ -83,90 +69,60 @@ def build_success_response(task_result: dict, host_filter) -> dict:
     return response
 
 
-def stop_service_siblings() -> None:
-    """
-    Ask sibling `appCataloga.py` processes to terminate.
-
-    The entrypoint uses this both after fatal startup/runtime failure and
-    during final teardown so the service does not leave duplicate daemons
-    behind.
-    """
+def _stop_service_siblings() -> None:
+    """Ask sibling `appCataloga.py` processes to terminate."""
     process_control.stop_self_service(
         script_name=SCRIPT_NAME,
         logger=log,
     )
 
 
-def build_service_selector(*, server_socket) -> DefaultSelector:
-    """
-    Create the selector owned by this appCataloga daemon instance.
-
-    The service listens to exactly two readiness sources:
-    - the listening TCP socket for incoming clients
-    - the wake-up pipe used by signal-driven shutdown
-    """
-    selector = DefaultSelector()
-    selector.register(server_socket, EVENT_READ)
-    selector.register(WAKE_R_FD, EVENT_READ)
-    return selector
+def _init_db() -> dbHandlerBKP:
+    """Create the BPDATA handler owned by this gateway process."""
+    return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
 
 
-def close_service_runtime(*, selector, server_socket) -> None:
-    """
-    Best-effort release of local runtime resources owned by `main()`.
-
-    This helper closes only in-process resources. Process-level shutdown of
-    sibling daemons is handled separately by `stop_service_siblings()`.
-    """
-    try:
-        if selector is not None:
-            selector.close()
-    except Exception:
-        pass
-
-    try:
-        if server_socket:
-            server_socket.close()
-    except Exception:
-        pass
+def _init_server_socket() -> socket.socket:
+    """Open the listening socket owned by this daemon instance."""
+    server_socket = socket_handler.open_listening_socket(
+        port=k.SERVER_PORT,
+        backlog=k.TOTAL_CONNECTIONS,
+    )
+    server_socket.settimeout(k.GATEWAY_SELECT_TIMEOUT_SEC)
+    log.event("server_listening", port=k.SERVER_PORT)
+    return server_socket
 
 
-def handle_host_request(host: dict, err, db) -> tuple[int | None, dict]:
-    """
-    Execute the appCataloga-specific business action for one parsed request.
-
-    This is the only place in this module that knows what a valid
-    appCataloga TCP request actually means.
-
-    `socket_handler` stops at transport/protocol concerns and hands us a
-    normalized `host` payload. From here on we are in pure service/domain
-    flow: validate the request, persist HOST state, queue one HOST_TASK and
-    return the payload that will go back to the client.
-
-    Flow:
-        1. validate the request contract expected by appCataloga
-        2. upsert the HOST row
-        3. enqueue the initial HOST_TASK
-        4. return `(host_id, response_payload)` for socket finalization
-    """
-    command = str(host.get("command") or "").strip().lower()
+def _resolve_task_type(command: str, err: errors.ErrorHandler) -> int:
+    """Translate one request command into the queued HOST_TASK type."""
     task_type = COMMAND_TASK_MAP.get(command)
-
     if task_type is None:
         err.capture("Unsupported command", stage="COMMAND")
         raise ValueError("Unsupported command")
+    return task_type
 
+
+def _validate_host_request(
+    host: dict[str, Any],
+    err: errors.ErrorHandler,
+) -> tuple[int, dict[str, Any]]:
+    """Validate the minimal request fields needed by the gateway."""
     host_id = host.get("host_id")
     if host_id is None or host_id <= 0:
         err.capture("Invalid host_id", stage="PARSE")
         raise ValueError("Invalid host_id")
 
-    # The filter is carried through to the queued HOST_TASK. Keeping it in a
-    # local variable early makes the success and failure paths easier to read.
-    host_filter = host["filter"]
+    return int(host_id), host["filter"]
 
+
+def _read_host_status(
+    db: dbHandlerBKP,
+    host_id: int,
+    err: errors.ErrorHandler,
+) -> dict[str, Any]:
+    """Read the current HOST status used by request guards."""
     try:
-        host_status = db.host_read_status(host_id=host_id) or {"status": 0}
+        return db.host_read_status(host_id=host_id) or {"status": 0}
     except Exception as exc:
         err.capture(
             "Failed to read HOST status",
@@ -176,6 +132,15 @@ def handle_host_request(host: dict, err, db) -> tuple[int | None, dict]:
         )
         raise
 
+
+def _guard_offline_backup_request(
+    *,
+    command: str,
+    host_id: int,
+    host_status: dict[str, Any],
+    err: errors.ErrorHandler,
+) -> None:
+    """Reject backup requests for hosts already marked offline."""
     if (
         command == k.BACKUP_QUERY_TAG
         and int(host_status.get("status", 0)) == 1
@@ -188,11 +153,19 @@ def handle_host_request(host: dict, err, db) -> tuple[int | None, dict]:
         )
         raise ValueError("HOST is offline")
 
+
+def _ensure_host(
+    db: dbHandlerBKP,
+    host: dict[str, Any],
+    *,
+    host_id: int,
+    host_status: dict[str, Any],
+    err: errors.ErrorHandler,
+) -> None:
+    """Ensure the HOST row exists with the latest connection fields."""
     try:
-        # Phase 1: ensure the HOST row exists and is refreshed with the
-        # connection details received from the client.
         log.event("host_upsert", host_id=host_id, host_uid=host["host_uid"])
-        host_upsert_data = {
+        host_data = {
             "ID_HOST": host_id,
             "NA_HOST_NAME": host["host_uid"],
             "NA_HOST_ADDRESS": host["host_addr"],
@@ -201,13 +174,10 @@ def handle_host_request(host: dict, err, db) -> tuple[int | None, dict]:
             "NA_HOST_PASSWORD": host["password"],
         }
         if int(host_status.get("status", 0)) != 1:
-            # New hosts bootstrap online and then immediately prove their real
-            # state through the downstream CHECK worker.
-            host_upsert_data["IS_OFFLINE"] = False
+            # New hosts bootstrap online and prove their real state later.
+            host_data["IS_OFFLINE"] = False
 
-        db.host_upsert(
-            **host_upsert_data,
-        )
+        db.host_upsert(**host_data)
     except Exception as exc:
         err.capture(
             "Failed to create/ensure HOST",
@@ -217,22 +187,25 @@ def handle_host_request(host: dict, err, db) -> tuple[int | None, dict]:
         )
         raise
 
+
+def _queue_host_task(
+    db: dbHandlerBKP,
+    *,
+    host_id: int,
+    task_type: int,
+    host_filter: dict[str, Any],
+    err: errors.ErrorHandler,
+) -> dict[str, Any]:
+    """Queue the HOST_TASK requested by the gateway client."""
     try:
-        # Phase 2: queue the entry task for the requested command.
-        #
-        # backup -> CHECK host task, which later opens discovery
-        # stop   -> direct backlog rollback task, without host connectivity hop
-        task_result = db.queue_host_task(
+        return db.queue_host_task(
             host_id=host_id,
             task_type=task_type,
             task_status=k.TASK_PENDING,
             filter_dict=host_filter,
         )
-        return host_id, build_success_response(task_result, host_filter)
     except Exception as exc:
-        # If queueing fails after the HOST row exists, record that the host
-        # needs attention. The structured error returned to the socket still
-        # comes from ErrorHandler below.
+        # The HOST row already exists here, so mark it for attention.
         db.host_update(host_id=host_id, NU_HOST_CHECK_ERROR=1)
         err.capture(
             "Failed to queue HOST_TASK",
@@ -243,96 +216,155 @@ def handle_host_request(host: dict, err, db) -> tuple[int | None, dict]:
         raise
 
 
+def _process_host_request(
+    host: dict[str, Any],
+    err: errors.ErrorHandler,
+    db: dbHandlerBKP,
+) -> tuple[int | None, dict]:
+    """Process one parsed gateway request from start to finish."""
+    command = str(host.get("command") or "").strip().lower()
+    task_type = _resolve_task_type(command, err)
+    host_id, host_filter = _validate_host_request(host, err)
+    host_status = _read_host_status(db, host_id, err)
+    # Offline hosts reject new backup requests early. This keeps the gateway
+    # cheap and leaves real recovery to the connectivity worker.
+    _guard_offline_backup_request(
+        command=command,
+        host_id=host_id,
+        host_status=host_status,
+        err=err,
+    )
+    _ensure_host(
+        db,
+        host,
+        host_id=host_id,
+        host_status=host_status,
+        err=err,
+    )
+    task_result = _queue_host_task(
+        db,
+        host_id=host_id,
+        task_type=task_type,
+        host_filter=host_filter,
+        err=err,
+    )
+    return host_id, _build_success_response(task_result, host_filter)
+
+
+def _send_shutdown_response(*, client_socket: socket.socket, client_address) -> None:
+    """Reply explicitly when shutdown starts after `accept()`."""
+    socket_handler.send_response(
+        client_socket=client_socket,
+        payload=SHUTDOWN_PAYLOAD,
+        peer_ip=str(client_address),
+        logger=log,
+        start_tag=k.START_TAG,
+        end_tag=k.END_TAG,
+    )
+    socket_handler.close_client_socket(client_socket)
+
+
+def _serve_client_connection(
+    *,
+    client_socket: socket.socket,
+    db_bp: dbHandlerBKP,
+) -> None:
+    """Handle one accepted client connection from start to finish."""
+    peer_ip = socket_handler.get_client_peer_ip(client_socket)
+    err = errors.ErrorHandler(log)
+    response_payload: dict[str, Any] = {"status": 0, "message": "Unexpected error"}
+    host_id = None
+
+    try:
+        # Transport stops at a normalized host payload. From here on we are in
+        # gateway business flow: validate, ensure HOST, queue HOST_TASK.
+        host = socket_handler.read_host_request(
+            client_socket=client_socket,
+            logger=log,
+            err=err,
+            none_filter=k.NONE_FILTER,
+        )
+        host_id, response_payload = _process_host_request(host, err, db_bp)
+    except Exception:
+        # Request failures are already normalized through ErrorHandler.
+        pass
+    finally:
+        socket_handler.finalize_client_request(
+            client_socket=client_socket,
+            peer_ip=peer_ip,
+            response_payload=response_payload,
+            err=err,
+            host_id=host_id,
+            logger=log,
+            start_tag=k.START_TAG,
+            end_tag=k.END_TAG,
+        )
+
+
 # ======================================================================
 # Entrypoint
 # ======================================================================
 def main() -> None:
-    """
-    Create the listening socket and run the main server loop.
-
-    Reading guide:
-        1. bootstrap server resources (socket + DB)
-        2. declare the request/runtime objects used by the selector loop
-        3. wire the selector owned by this process
-        4. dispatch ready events until shutdown flips `process_status`
-    """
+    """Create the listening socket and run the gateway loop."""
     log.service_start(SERVICE_NAME)
-    err = errors.ErrorHandler(log)
     server_socket = None
-    selector = None
+    db_bp = None
 
     try:
-        # --------------------------------------------------------------
-        # ACT I — Bring up the listening TCP socket
-        # --------------------------------------------------------------
-        server_socket = socket_handler.open_listening_socket(
-            port=k.SERVER_PORT,
-            backlog=k.TOTAL_CONNECTIONS,
-        )
-        log.event("server_listening", port=k.SERVER_PORT)
-
-        # --------------------------------------------------------------
-        # ACT II — Initialize dependencies after the port is live
-        # --------------------------------------------------------------
+        server_socket = _init_server_socket()
         # DB initialization happens only after the socket is listening, so
-        # startup failures clearly distinguish network setup from DB setup.
-        db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+        # startup failures stay easy to classify.
+        db_bp = _init_db()
 
-        # --------------------------------------------------------------
-        # ACT III — Build the selector owned by this process
-        # --------------------------------------------------------------
-        selector = build_service_selector(server_socket=server_socket)
-
-        # --------------------------------------------------------------
-        # ACT IV — Main service loop
-        # --------------------------------------------------------------
         while process_status["running"]:
-            for key, _ in selector.select():
-                # The selector has only two event sources. Keeping this branch
-                # inline makes the daemon easier to debug than bouncing
-                # through generic dispatch helpers.
-                if key.fileobj == server_socket:
-                    socket_handler.handle_ready_server_socket(
-                        server_socket=server_socket,
-                        process_status=process_status,
-                        handle_host_request=handle_host_request,
-                        db=db_bp,
-                        logger=log,
-                        errors_module=errors,
-                        none_filter=k.NONE_FILTER,
-                        shutdown_payload=SHUTDOWN_PAYLOAD,
-                        start_tag=k.START_TAG,
-                        end_tag=k.END_TAG,
-                    )
-                elif key.fileobj == WAKE_R_FD:
-                    socket_handler.drain_wakeup_pipe(WAKE_R_FD)
+            try:
+                # The gateway accepts one client at a time. The short timeout
+                # keeps shutdown bounded without extra wakeup plumbing.
+                client_socket, client_address = server_socket.accept()
+            except socket.timeout:
+                continue
+
+            client_socket.setblocking(True)
+
+            if not process_status["running"]:
+                # Shutdown may begin between `accept()` and request handling.
+                # Reply explicitly instead of dropping the socket.
+                _send_shutdown_response(
+                    client_socket=client_socket,
+                    client_address=client_address,
+                )
+                continue
+
+            log.event(
+                "client_connected",
+                component="socket_handler",
+                operation="accept_client",
+                client_address=client_address,
+            )
+            _serve_client_connection(
+                client_socket=client_socket,
+                db_bp=db_bp,
+            )
 
     except Exception as exc:
-        # Any exception here means the daemon itself failed, not a single
-        # client request. Capture it once, log it, and ask sibling processes
-        # with the same script name to terminate as part of self-recovery.
+        err = errors.ErrorHandler(log)
         err.capture(
             reason="Fatal appCataloga service error",
-            stage="MAIN",
+            stage=k.STAGE_MAIN,
             exc=exc,
         )
         err.log_error()
-        stop_service_siblings()
+        _stop_service_siblings()
         sys.exit(1)
 
     finally:
-        # Teardown is intentionally defensive. We are already leaving the
-        # service loop, so cleanup must not raise and mask the original exit
-        # reason.
-        close_service_runtime(
-            selector=selector,
-            server_socket=server_socket,
-        )
-
-        # This best-effort stop mirrors the fatal path above and helps avoid
-        # orphaned sibling instances if shutdown happened through signal flow
-        # instead of the explicit exception path.
-        stop_service_siblings()
+        # Teardown is defensive because the process is already leaving.
+        try:
+            if server_socket is not None:
+                server_socket.close()
+        except Exception:
+            pass
+        _stop_service_siblings()
         log.service_stop(SERVICE_NAME)
 
 

@@ -39,7 +39,7 @@ process_status = {"running": True}
 
 
 def _error_fields(err, message: str) -> dict:
-    """Structured error fields for FILE_TASK_HISTORY writes."""
+    """Build structured error fields for queue and history writes."""
     return errors.persisted_error_fields_from_handler(
         err,
         message=message,
@@ -50,7 +50,7 @@ def _error_fields(err, message: str) -> dict:
 # --- signal handling ---
 
 def _shutdown_cleanup(signal_name: str) -> None:
-    """Release BUSY host locks on process shutdown."""
+    """Release BUSY host marks owned by this PID during shutdown."""
     host_runtime.release_busy_hosts_for_current_pid(
         db_factory=dbHandlerBKP,
         database_name=k.BKP_DATABASE_NAME,
@@ -68,7 +68,7 @@ signal_runtime.install_shutdown_handlers(
 # --- loop helpers ---
 
 def _read_next_task(db_bp: dbHandlerBKP) -> dict | None:
-    """Return the next pending PROCESS FILE_TASK, or None if queue is empty."""
+    """Read the next pending PROCESS FILE_TASK and normalize worker context."""
     result = db_bp.read_file_task(
         task_type=k.FILE_TASK_PROCESS_TYPE,
         task_status=k.TASK_PENDING,
@@ -81,10 +81,10 @@ def _read_next_task(db_bp: dbHandlerBKP) -> dict | None:
     server_path     = row["FILE_TASK__NA_SERVER_FILE_PATH"]
     server_name     = row["FILE_TASK__NA_SERVER_FILE_NAME"]
     hostname_db     = row["HOST__NA_HOST_NAME"]
-    extension       = row["FILE_TASK__NA_EXTENSION"]
-    dt_created      = row["FILE_TASK__DT_FILE_CREATED"]
-    dt_modified     = row["FILE_TASK__DT_FILE_MODIFIED"]
-    vl_file_size_kb = row["FILE_TASK__VL_FILE_SIZE_KB"]
+    extension       = row["FILE_TASK__NA_EXTENSION_SERVER"]
+    dt_created      = row["FILE_TASK__DT_FILE_CREATED_SERVER"]
+    dt_modified     = row["FILE_TASK__DT_FILE_MODIFIED_SERVER"]
+    vl_file_size_kb = row["FILE_TASK__VL_FILE_SIZE_KB_SERVER"]
 
     return {
         "file_task_id"    : row["FILE_TASK__ID_FILE_TASK"],
@@ -113,7 +113,11 @@ def _read_next_task(db_bp: dbHandlerBKP) -> dict | None:
 
 
 def _claim_task(db_bp: dbHandlerBKP, task: dict) -> bool:
-    """Atomically mark FILE_TASK RUNNING. Return False if another worker claimed it first."""
+    """Atomically move the FILE_TASK from PENDING to RUNNING.
+
+    Another worker may win the race between read and claim.
+    That case is normal and should not be treated as a task failure.
+    """
     claim_message = tools.compose_message(
         task_type=k.FILE_TASK_PROCESS_TYPE,
         task_status=k.TASK_RUNNING,
@@ -162,26 +166,25 @@ def _claim_task(db_bp: dbHandlerBKP, task: dict) -> bool:
 # --- work ---
 
 def _classify_work_failure(exc: Exception) -> tuple[str, str]:
-    """Return (reason, stage) for err.capture based on the exception type."""
+    """Map a raised exception to the worker error reason and stage."""
     
-    # When appAnalise returns explict timeout error during processing phase
+    # appAnalise reached the processing phase but timed out while replying.
     if isinstance(exc, errors.AppAnaliseReadTimeoutError):
         return "APP_ANALISE read timeout during processing", k.STAGE_PROCESS
     
-    # When appANalise does not found  the file in filesystem
+    # appAnalise could not find the expected server-side input file.
     if isinstance(exc, errors.AppAnaliseFileUnavailableError):
         return "APP_ANALISE file unavailable during processing", k.STAGE_PROCESS
     
-    # When appAnalise started to process binary file and does not responded within expected time
-    # Maybe connection was loose or appAnalise service was under heavy load, but the failure is likely transient
+    # The remote service started work but failed in a likely transient way.
     if isinstance(exc, errors.ExternalServiceTransientError):
         return "Transient appAnalise processing failure", k.STAGE_PROCESS
     
-    # When binary is not validated in payload_parser.py
+    # Payload validation already rejected this artifact as invalid input.
     if isinstance(exc, errors.BinValidationError):
         return "Payload validation failed during processing", k.STAGE_PROCESS
     
-    # When binary is not found in expected location
+    # Finalization can fail on short-lived filesystem contention.
     if processing_bin.is_transient_filesystem_error(exc):
         return "Transient filesystem finalization failure", k.STAGE_FS
     return "Unexpected processing loop failure", k.STAGE_MAIN
@@ -216,7 +219,7 @@ def _finalize_success(
     *,
     elapsed_sec: float,
 ) -> None:
-    """Write DONE to queue and emit timing. Never raises."""
+    """Persist DONE state, delete the live queue row, and log completion."""
     try:
         file_meta = result["file_meta"]
         new_path = result["new_path"]
@@ -237,10 +240,10 @@ def _finalize_success(
                 DT_PROCESSED=processed_at,
                 NA_SERVER_FILE_NAME=file_meta["file_name"],
                 NA_SERVER_FILE_PATH=new_path,
-                NA_EXTENSION=file_meta["extension"],
-                VL_FILE_SIZE_KB=file_meta["size_kb"],
-                DT_FILE_CREATED=file_meta["dt_created"],
-                DT_FILE_MODIFIED=file_meta["dt_modified"],
+                NA_EXTENSION_SERVER=file_meta["extension"],
+                VL_FILE_SIZE_KB_SERVER=file_meta["size_kb"],
+                DT_FILE_CREATED_SERVER=file_meta["dt_created"],
+                DT_FILE_MODIFIED_SERVER=file_meta["dt_modified"],
                 NU_STATUS_PROCESSING=k.TASK_DONE,
                 NA_MESSAGE=message,
                 **_error_fields(None, message),
@@ -287,7 +290,7 @@ def _finalize_freeze(
     task: dict,
     err: errors.ErrorHandler,
 ) -> None:
-    """Write FROZEN to queue. Raises on DB failure — caught by _finalize_error."""
+    """Persist FROZEN state for failures that require manual review."""
     detail = errors.freeze_processing_detail(err.exc)
     message = tools.compose_message(
         task_type=k.FILE_TASK_PROCESS_TYPE,
@@ -337,7 +340,7 @@ def _write_task_error(
     task: dict,
     err: errors.ErrorHandler,
 ) -> None:
-    """Quarantine the error artifact and write ERROR. Raises on failure."""
+    """Quarantine the error artifact and persist ERROR state."""
     file_meta = getattr(err.exc, "file_meta", None)
     server_path, history_meta_override = file_utils.quarantine_error_artifact(
         file_meta=file_meta,
@@ -374,10 +377,10 @@ def _write_task_error(
             DT_PROCESSED=error_at,
             NA_SERVER_FILE_NAME=history_name,
             NA_SERVER_FILE_PATH=server_path,
-            NA_EXTENSION=history_extension,
-            VL_FILE_SIZE_KB=history_size_kb,
-            DT_FILE_CREATED=history_dt_created,
-            DT_FILE_MODIFIED=history_dt_modified,
+            NA_EXTENSION_SERVER=history_extension,
+            VL_FILE_SIZE_KB_SERVER=history_size_kb,
+            DT_FILE_CREATED_SERVER=history_dt_created,
+            DT_FILE_MODIFIED_SERVER=history_dt_modified,
             NU_STATUS_PROCESSING=k.TASK_ERROR,
             NA_MESSAGE=message,
             **structured,
@@ -421,7 +424,7 @@ def _finalize_error(
     task: dict | None,
     err: errors.ErrorHandler,
 ) -> None:
-    """Route to freeze or error finalization. Never raises."""
+    """Route to freeze or error finalization."""
     if task is None:
         return
 
@@ -441,7 +444,7 @@ def _finalize_error(
 
 
 def _cleanup(db_rfm: dbHandlerRFM, task: dict | None) -> None:  # noqa: ARG001
-    """Rollback any open RFDATA transaction. Never raises."""
+    """Roll back any open RFDATA transaction left by a failed iteration."""
     try:
         if db_rfm.in_transaction:
             db_rfm.rollback()
@@ -451,7 +454,7 @@ def _cleanup(db_rfm: dbHandlerRFM, task: dict | None) -> None:  # noqa: ARG001
 
 # --- main ---
 def _init_db() -> tuple[dbHandlerBKP, dbHandlerRFM]:
-    """Connect to the operational database. Exits the process on failure."""
+    """Create the operational and analytical DB handlers or stop early."""
     try:
         return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log), dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)
     except Exception as e:
@@ -459,9 +462,14 @@ def _init_db() -> tuple[dbHandlerBKP, dbHandlerRFM]:
         sys.exit(1)
         
 def main() -> None:
-    """Run the appAnalise processing worker until shutdown is requested."""
-    
-    # Initialize logging, DB connections, and appAnalise client outside the loop to
+    """
+    Run the appAnalise processing worker until shutdown is requested.
+
+    The worker keeps queue ownership in the entrypoint.
+    The appAnalise domain flow owns the processing pipeline itself.
+    """
+
+    # These dependencies are long-lived and should not be rebuilt per task.
     log.service_start(SERVICE_NAME)
     db_bp, db_rfm = _init_db()
     app_analise = AppAnaliseConnection()
@@ -471,24 +479,28 @@ def main() -> None:
         task = None
 
         try:
+            # --- read ---
+            task = _read_next_task(db_bp)
+            if task is None:
+                # Processing is heavier than the other queues, so idle polls wait longer.
+                runtime_sleep.random_jitter_sleep(interval=10)
+                continue
+            
             # --- preflight ---
-            # Do not claim any FILE_TASK while appAnalise is unreachable.
+            # Do not claim work while the external processing service is down.
             if not app_analise.check_connection_with_log(log):
                 runtime_sleep.random_jitter_sleep()
                 continue
 
-            # --- read ---
-            task = _read_next_task(db_bp)
-            if task is None:
-                runtime_sleep.random_jitter_sleep(interval=10)
-                continue
-
             # --- claim ---
             if not _claim_task(db_bp, task):
+                # Another worker may claim the same FILE_TASK first.
                 runtime_sleep.random_jitter_sleep()
                 continue
 
             # --- work ---
+            # The entrypoint measures total work time.
+            # The domain flow emits its own completed phases.
             work_started_at = time.monotonic()
             result = _do_work(db_rfm, task, app_analise)
             elapsed_sec = time.monotonic() - work_started_at
@@ -497,8 +509,8 @@ def main() -> None:
             _finalize_success(db_bp, task, result, elapsed_sec=elapsed_sec)
 
         except Exception as e:
-            # If appAnalise produced a partial export artifact, attach it to
-            # the exception so _write_task_error can quarantine it.
+            # Partial export artifacts must travel with the exception so the
+            # finalizer can quarantine them consistently.
             if getattr(app_analise, "last_output_meta", None) and not hasattr(e, "file_meta"):
                 e.file_meta = app_analise.last_output_meta
             if not err.triggered:
@@ -521,6 +533,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
+        # The loop already handles normal task failures.
+        # Reaching this block means the process itself is unstable.
         err = errors.ErrorHandler(log)
         err.capture(
             reason="Fatal appAnalise processing worker crash",

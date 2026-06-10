@@ -44,10 +44,10 @@ def iter_metadata_files(
     """
     High-level metadata discovery orchestrator for one remote host.
 
-    Database-agnostic; delegates deduplication and cutoff decisions to callbacks.
-    Memory usage is bounded by `batch_size`.
+    Database-agnostic; deduplication and cutoff decisions stay in callbacks.
+    Memory use is bounded by `batch_size`.
 
-    Discovery modes (derived from Filter):
+    Discovery modes come from `Filter`:
         - NONE / DEFAULT:  incremental using the last DB timestamp
         - FILE:            explicit file list (timestamp ignored)
         - REDISCOVERY:     full rescan (timestamp ignored)
@@ -65,7 +65,7 @@ def iter_metadata_files(
         if last_dt:
             newer_than = last_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    # REDISCOVERY ignores the DB cutoff — force a full remote scan.
+    # REDISCOVERY ignores the DB cutoff on purpose.
     if mode == Filter.MODE_REDISCOVERY:
         newer_than = None
 
@@ -101,9 +101,8 @@ def iter_metadata_files(
 
 
 def init_host_context(host: dict, log) -> sftpConnection:
-    """Initialize one remote SSH/SFTP session from a host row."""
-    # resolve_host_addresses returns 172.x.x.x operational addresses first;
-    # [0] is the highest-priority candidate.
+    """Initialize one remote SSH/SFTP session from a HOST row."""
+    # Address resolution already sorts operational 172.x.x.x endpoints first.
     resolved_addr = resolve_host_addresses(host["HOST__NA_HOST_ADDRESS"])[0]
     return sftpConnection(
         host_uid=host["HOST__NA_HOST_NAME"],

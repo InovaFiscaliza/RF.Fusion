@@ -99,10 +99,14 @@ class dbHandlerBKP(DBHandlerBase):
         "NA_SERVER_FILE_NAME",
         "NU_STATUS",
         "NU_PID",
-        "NA_EXTENSION",
-        "VL_FILE_SIZE_KB",
-        "DT_FILE_CREATED",
-        "DT_FILE_MODIFIED",
+        "NA_EXTENSION_HOST",
+        "VL_FILE_SIZE_KB_HOST",
+        "DT_FILE_CREATED_HOST",
+        "DT_FILE_MODIFIED_HOST",
+        "NA_EXTENSION_SERVER",
+        "VL_FILE_SIZE_KB_SERVER",
+        "DT_FILE_CREATED_SERVER",
+        "DT_FILE_MODIFIED_SERVER",
         "NA_MESSAGE",
         "NA_ERROR_DOMAIN",
         "NA_ERROR_STAGE",
@@ -136,10 +140,14 @@ class dbHandlerBKP(DBHandlerBase):
         "NA_HOST_FILE_NAME",
         "NA_SERVER_FILE_PATH",
         "NA_SERVER_FILE_NAME",
-        "VL_FILE_SIZE_KB",
-        "DT_FILE_CREATED",
-        "DT_FILE_MODIFIED",
-        "NA_EXTENSION",
+        "NA_EXTENSION_HOST",
+        "VL_FILE_SIZE_KB_HOST",
+        "DT_FILE_CREATED_HOST",
+        "DT_FILE_MODIFIED_HOST",
+        "NA_EXTENSION_SERVER",
+        "VL_FILE_SIZE_KB_SERVER",
+        "DT_FILE_CREATED_SERVER",
+        "DT_FILE_MODIFIED_SERVER",
         "NA_MESSAGE",
         "NA_ERROR_DOMAIN",
         "NA_ERROR_STAGE",
@@ -324,7 +332,7 @@ class dbHandlerBKP(DBHandlerBase):
         rows = self._select_rows(
             table="FILE_TASK_HISTORY",
             where=where,
-            cols=["FK_HOST", "DT_FILE_CREATED"],
+            cols=["FK_HOST", "DT_FILE_CREATED_HOST"],
             limit=1,
         )
         if not rows:
@@ -333,7 +341,7 @@ class dbHandlerBKP(DBHandlerBase):
         row = rows[0]
         resolved_host_id = row.get("FK_HOST")
         month = self._normalize_summary_reference_month(
-            row.get("DT_FILE_CREATED")
+            row.get("DT_FILE_CREATED_HOST")
         )
         return (
             int(resolved_host_id) if resolved_host_id is not None else host_id,
@@ -472,6 +480,7 @@ class dbHandlerBKP(DBHandlerBase):
                     "#CUSTOM#HOST_ADDRESS": (
                         "NA_HOST_ADDRESS IS NOT NULL "
                         "AND TRIM(NA_HOST_ADDRESS) <> ''"
+                        "AND IS_OFFLINE = 0"
                     ),
                 },
                 order_by="DT_LAST_CHECK IS NULL DESC, DT_LAST_CHECK ASC, ID_HOST ASC",
@@ -487,6 +496,37 @@ class dbHandlerBKP(DBHandlerBase):
                     "DT_LAST_CHECK",
                 ],
             )
+        finally:
+            self._disconnect()
+
+    def host_list_for_cwsm_zip_reconciliation(
+        self,
+        host_ids: List[int],
+    ) -> List[Dict[str, Any]]:
+        """Return the host rows needed by the one-shot CWSM ZIP reconciler."""
+
+        if not host_ids:
+            return []
+
+        self._connect()
+        try:
+            placeholders = ", ".join(["%s"] * len(host_ids))
+            sql = f"""
+                SELECT
+                    ID_HOST,
+                    NA_HOST_NAME,
+                    NA_HOST_ADDRESS,
+                    NA_HOST_PORT,
+                    NA_HOST_USER,
+                    NA_HOST_PASSWORD,
+                    IS_BUSY,
+                    IS_OFFLINE,
+                    DT_LAST_CHECK
+                FROM HOST
+                WHERE ID_HOST IN ({placeholders})
+                ORDER BY ID_HOST ASC
+            """
+            return self._select_raw(sql, tuple(host_ids))
         finally:
             self._disconnect()
 
@@ -516,6 +556,63 @@ class dbHandlerBKP(DBHandlerBase):
 
         dt = rows[0].get("DT_LAST_DISCOVERY")
         return dt if dt else None
+
+    def file_history_list_cwsm_zip_reconciliation_candidates(
+        self,
+        host_id: Optional[int] = None,
+        include_offline: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return CWSM `.mat` history rows that still miss host-side `.zip` metadata.
+
+        This helper exists only for one-shot operational reconciliation after
+        the host/server metadata split. Runtime workers should not depend on it.
+        """
+
+        self._connect()
+        try:
+            sql = """
+                SELECT
+                    h.ID_HISTORY,
+                    h.FK_HOST,
+                    h.NA_HOST_FILE_PATH,
+                    h.NA_HOST_FILE_NAME,
+                    h.NA_SERVER_FILE_PATH,
+                    h.NA_SERVER_FILE_NAME,
+                    h.NA_EXTENSION_HOST,
+                    h.NA_EXTENSION_SERVER,
+                    h.VL_FILE_SIZE_KB_HOST,
+                    h.VL_FILE_SIZE_KB_SERVER,
+                    h.DT_FILE_CREATED_HOST,
+                    h.DT_FILE_CREATED_SERVER,
+                    h.DT_FILE_MODIFIED_HOST,
+                    h.DT_FILE_MODIFIED_SERVER
+                FROM FILE_TASK_HISTORY h
+                JOIN HOST host
+                  ON host.ID_HOST = h.FK_HOST
+                WHERE h.NA_SERVER_FILE_NAME LIKE '%.mat'
+                  AND (
+                      h.NA_EXTENSION_HOST IS NULL
+                      OR h.VL_FILE_SIZE_KB_HOST IS NULL
+                      OR h.DT_FILE_CREATED_HOST IS NULL
+                      OR h.DT_FILE_MODIFIED_HOST IS NULL
+                  )
+                  AND host.NA_HOST_NAME LIKE 'CWSM%'
+            """
+
+            if not include_offline:
+                sql += " AND host.IS_OFFLINE = 0"
+
+            params: list[Any] = []
+            if host_id is not None:
+                sql += " AND h.FK_HOST = %s"
+                params.append(host_id)
+
+            sql += " ORDER BY h.FK_HOST ASC, h.ID_HISTORY ASC"
+            return self._select_raw(sql, tuple(params))
+
+        finally:
+            self._disconnect()
 
     
     def host_release_by_pid(self, pid: int) -> None:
@@ -749,7 +846,7 @@ class dbHandlerBKP(DBHandlerBase):
                         CASE
                             WHEN NU_STATUS_DISCOVERY = 0
                             AND NU_STATUS_BACKUP = 1
-                            THEN VL_FILE_SIZE_KB
+                            THEN VL_FILE_SIZE_KB_HOST
                             ELSE 0
                         END
                     ) AS pending_kb,
@@ -757,7 +854,7 @@ class dbHandlerBKP(DBHandlerBase):
                     SUM(
                         CASE
                             WHEN NU_STATUS_BACKUP = 0
-                            THEN VL_FILE_SIZE_KB
+                            THEN VL_FILE_SIZE_KB_HOST
                             ELSE 0
                         END
                     ) AS done_kb
@@ -2028,7 +2125,7 @@ class dbHandlerBKP(DBHandlerBase):
                 where["FT.NU_TYPE"] = task_type
 
             if extension is not None:
-                where["FT.NA_EXTENSION"] = extension
+                where["FT.NA_EXTENSION_HOST"] = extension
 
             if check_host_busy:
                 where["H.IS_BUSY"] = False
@@ -2156,10 +2253,10 @@ class dbHandlerBKP(DBHandlerBase):
                     "FK_HOST": host_id,
                     "NA_HOST_FILE_PATH": file.NA_PATH,
                     "NA_HOST_FILE_NAME": file.NA_FILE,
-                    "NA_EXTENSION": file.NA_EXTENSION,
-                    "VL_FILE_SIZE_KB": file.VL_FILE_SIZE_KB,
-                    "DT_FILE_CREATED": file.DT_FILE_CREATED,
-                    "DT_FILE_MODIFIED": file.DT_FILE_MODIFIED,
+                    "NA_EXTENSION_HOST": file.NA_EXTENSION,
+                    "VL_FILE_SIZE_KB_HOST": file.VL_FILE_SIZE_KB,
+                    "DT_FILE_CREATED_HOST": file.DT_FILE_CREATED,
+                    "DT_FILE_MODIFIED_HOST": file.DT_FILE_MODIFIED,
                     "NU_PID": os.getpid(),
                     "NU_TYPE": task_type,
                     "NU_STATUS": task_status,
@@ -2858,7 +2955,7 @@ class dbHandlerBKP(DBHandlerBase):
                     limit=limit,
                     cols=[
                         "ID_FILE_TASK",
-                        "VL_FILE_SIZE_KB",
+                        "VL_FILE_SIZE_KB_HOST",
                     ],
                 )
 
@@ -2867,7 +2964,7 @@ class dbHandlerBKP(DBHandlerBase):
 
                 for row in candidate_rows:
                     file_id = int(row["ID_FILE_TASK"])
-                    file_size_kb = max(0, int(row.get("VL_FILE_SIZE_KB") or 0))
+                    file_size_kb = max(0, int(row.get("VL_FILE_SIZE_KB_HOST") or 0))
 
                     if selected_total_kb + file_size_kb > max_total_kb:
                         break
@@ -2965,10 +3062,10 @@ class dbHandlerBKP(DBHandlerBase):
                     "FK_HOST": host_id,
                     "NA_HOST_FILE_PATH": file.NA_PATH,
                     "NA_HOST_FILE_NAME": file.NA_FILE,
-                    "NA_EXTENSION": file.NA_EXTENSION,
-                    "VL_FILE_SIZE_KB": file.VL_FILE_SIZE_KB,
-                    "DT_FILE_CREATED": file.DT_FILE_CREATED,
-                    "DT_FILE_MODIFIED": file.DT_FILE_MODIFIED,
+                    "NA_EXTENSION_HOST": file.NA_EXTENSION,
+                    "VL_FILE_SIZE_KB_HOST": file.VL_FILE_SIZE_KB,
+                    "DT_FILE_CREATED_HOST": file.DT_FILE_CREATED,
+                    "DT_FILE_MODIFIED_HOST": file.DT_FILE_MODIFIED,
 
                     # Discovery is creating the durable history row, so the
                     # first phase is immediately DONE while the later phases
@@ -3171,9 +3268,15 @@ class dbHandlerBKP(DBHandlerBase):
                     host_file_name=host_file_name,
                 )
 
-            if "DT_FILE_CREATED" in update_data:
+            if "DT_FILE_CREATED_HOST" in update_data:
                 override_month = self._normalize_summary_reference_month(
-                    update_data.get("DT_FILE_CREATED")
+                    update_data.get("DT_FILE_CREATED_HOST")
+                )
+                if override_month is not None:
+                    reference_months = [override_month]
+            elif "DT_FILE_CREATED_SERVER" in update_data:
+                override_month = self._normalize_summary_reference_month(
+                    update_data.get("DT_FILE_CREATED_SERVER")
                 )
                 if override_month is not None:
                     reference_months = [override_month]
@@ -3230,7 +3333,7 @@ class dbHandlerBKP(DBHandlerBase):
         Deduplicate a batch of `FileMetadata` objects against file history.
 
         Identity definition (logical key):
-            (FK_HOST, NA_HOST_FILE_NAME, VL_FILE_SIZE_KB, minute(DT_FILE_CREATED))
+            (FK_HOST, NA_HOST_FILE_NAME, VL_FILE_SIZE_KB_HOST, minute(DT_FILE_CREATED_HOST))
 
         IMPORTANT:
             Timestamp comparison is intentionally performed at MINUTE precision.
@@ -3271,8 +3374,12 @@ class dbHandlerBKP(DBHandlerBase):
             JOIN FILE_TASK_HISTORY h
                 ON h.FK_HOST = %s
                 AND h.NA_HOST_FILE_NAME = f.name
-                AND h.VL_FILE_SIZE_KB = f.size
-                AND TIMESTAMPDIFF(MINUTE, h.DT_FILE_CREATED, f.created) = 0
+                AND h.VL_FILE_SIZE_KB_HOST = f.size
+                AND TIMESTAMPDIFF(
+                    MINUTE,
+                    h.DT_FILE_CREATED_HOST,
+                    f.created
+                ) = 0
         """
 
         params: list[object] = []
@@ -3319,16 +3426,14 @@ class dbHandlerBKP(DBHandlerBase):
         # filename can grow over time, so a different size means the file
         # must be re-backed-up.
         #
-        # For CelPlan .zip files the original asset never grows, but an
-        # older version of the processing worker overwrote VL_FILE_SIZE_KB
-        # and DT_FILE_CREATED in FILE_TASK_HISTORY with the server .mat
-        # values. Those corrupted rows never match the primary key, causing
-        # duplicate FILE_TASKs for files that had already been processed.
+        # For CelPlan .zip files the original asset never grows.
         #
         # Guard: if FILE_TASK_HISTORY already holds a row for this host +
-        # path + filename where NA_SERVER_FILE_NAME ends in '.mat' and
-        # NU_STATUS_PROCESSING is terminal (DONE or ERROR), the .zip is
-        # considered done regardless of the primary identity key.
+        # path + filename where the persisted server-side artifact is `.mat`
+        # and NU_STATUS_PROCESSING is terminal (DONE or ERROR), the `.zip`
+        # is considered done regardless of the primary identity key.
+        #
+        # Server-side extension now lives in `NA_EXTENSION_SERVER`.
         # ------------------------------------------------------------
         processed_zip_keys: set[tuple] = set()
         zip_files = [
@@ -3342,7 +3447,7 @@ class dbHandlerBKP(DBHandlerBase):
                 FROM FILE_TASK_HISTORY h
                 WHERE h.FK_HOST = %s
                   AND h.NA_HOST_FILE_NAME IN ({placeholders})
-                  AND h.NA_SERVER_FILE_NAME LIKE '%.mat'
+                  AND LOWER(h.NA_EXTENSION_SERVER) = '.mat'
                   AND h.NU_STATUS_PROCESSING IN (%s, %s)
             """
             secondary_params = tuple(
@@ -3387,8 +3492,12 @@ class dbHandlerBKP(DBHandlerBase):
                 JOIN FILE_TASK_HISTORY h
                     ON h.FK_HOST = %s
                    AND h.NA_HOST_FILE_NAME = f.name
-                   AND ABS(h.VL_FILE_SIZE_KB - f.size) <= %s
-                   AND TIMESTAMPDIFF(MINUTE, h.DT_FILE_CREATED, f.created) = 0
+                   AND ABS(h.VL_FILE_SIZE_KB_HOST - f.size) <= %s
+                   AND TIMESTAMPDIFF(
+                        MINUTE,
+                        h.DT_FILE_CREATED_HOST,
+                        f.created
+                   ) = 0
             """
             fuzzy_params: list[object] = []
             for m in zip_files:
@@ -3455,9 +3564,9 @@ class dbHandlerBKP(DBHandlerBase):
 
         The quarantine anchor is `DT_PROCESSED` when available because GC
         should start counting from the moment the worker retired the artifact
-        into trash, not from the original payload creation time. Older history
-        rows may still lack `DT_PROCESSED`, so `DT_FILE_CREATED` remains a
-        fallback to avoid leaking legacy trash entries forever.
+        into trash, not from the original payload creation time. When that
+        timestamp is absent, the current server-side artifact creation time
+        remains the fallback anchor.
 
         Scope:
             This query covers only the artifact still referenced by
@@ -3480,8 +3589,8 @@ class dbHandlerBKP(DBHandlerBase):
             "NU_STATUS_PROCESSING": -1,
             "IS_PAYLOAD_DELETED": 0,
             "#CUSTOM#QUARANTINE": (
-                f"(COALESCE(DT_PROCESSED, DT_FILE_CREATED) IS NULL OR "
-                f"COALESCE(DT_PROCESSED, DT_FILE_CREATED) "
+                f"(COALESCE(DT_PROCESSED, DT_FILE_CREATED_SERVER) IS NULL OR "
+                f"COALESCE(DT_PROCESSED, DT_FILE_CREATED_SERVER) "
                 f"< NOW() - INTERVAL {quarantine_days} DAY)"
             )
         }
@@ -3489,7 +3598,7 @@ class dbHandlerBKP(DBHandlerBase):
         return self._select_rows(
             table="FILE_TASK_HISTORY",
             where=where,
-            order_by="COALESCE(DT_PROCESSED, DT_FILE_CREATED), ID_HISTORY",
+            order_by="COALESCE(DT_PROCESSED, DT_FILE_CREATED_SERVER), ID_HISTORY",
             limit=batch_size,
             cols=[
                 "ID_HISTORY",

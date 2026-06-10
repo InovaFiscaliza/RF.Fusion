@@ -21,7 +21,6 @@ incidents.
 
 import os
 import sys
-import time
 from datetime import datetime
 
 from bootstrap_paths import bootstrap_app_paths
@@ -34,8 +33,8 @@ PROJECT_ROOT = bootstrap_app_paths(__file__)
 # Internal modules
 # ---------------------------------------------------------------
 import config as k
-from shared import file_utils
-from server_handler import signal_runtime
+from gc_handler import gc_maintenance
+from server_handler import signal_runtime, sleep as runtime_sleep
 from shared import errors, logging_utils
 from db.dbHandlerBKP import dbHandlerBKP
 
@@ -43,7 +42,7 @@ from db.dbHandlerBKP import dbHandlerBKP
 # ===============================================================
 # GLOBAL STATE
 # ===============================================================
-
+SERVICE_NAME = "appCataloga_garbage_collector"
 log = logging_utils.log(target_screen=False)
 process_status = {"running": True}
 
@@ -54,273 +53,135 @@ signal_runtime.install_shutdown_handlers(
 )
 
 
-# ===============================================================
-# File operations
-# ===============================================================
-def _is_path_within(path: str, root: str) -> bool:
-    """
-    Return whether `path` is inside the managed directory `root`.
-
-    Garbage collection must stay conservative. Using normalized ancestry checks
-    is safer than substring matching because a corrupted history path like
-    `/mnt/reposfi/trash_bkp` should not be treated as the real trash tree.
-    """
+def _init_db() -> dbHandlerBKP:
+    """Create the operational DB handler or stop the process early."""
     try:
-        normalized_path = os.path.normpath(path)
-        normalized_root = os.path.normpath(root)
-        return os.path.commonpath([normalized_path, normalized_root]) == normalized_root
-    except ValueError:
-        return False
-
-
-def delete_file(path):
-    """
-    Delete one quarantined artifact.
-
-    Behavior:
-        - If file exists → delete
-        - If file missing → treat as already deleted
-    """
-
-    try:
-        os.remove(path)
-        log.event("garbage_file_deleted", path=path)
-        return True
-
-    except FileNotFoundError:
-        log.warning(f"event=garbage_file_missing path={path}")
-        return True
-
+        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
-        log.error(f"event=garbage_delete_failed path={path} error={e}")
-        return False
+        log.error_event(
+            "db_init_failed",
+            service=SERVICE_NAME,
+            component="garbage_collector_daemon",
+            operation="init_db",
+            error=e,
+        )
+        sys.exit(1)
 
 
-def build_resolved_files_trash_path() -> str:
-    """
-    Return the dedicated quarantine used by appAnalise export leftovers.
-
-    Files in this folder are no longer the canonical artifact of the
-    processing attempt. Because `FILE_TASK_HISTORY` now points elsewhere, the
-    garbage collector must clean this area directly from the filesystem.
-    """
-    return file_utils.build_resolved_files_trash_path()
+def _read_next_cycle(*, now: datetime, trash_root: str, resolved_root: str) -> dict:
+    """Build the minimal GC cycle context for one loop iteration."""
+    return {
+        "now": now,
+        "trash_root": trash_root,
+        "resolved_root": resolved_root,
+    }
 
 
-def get_resolved_files_gc_candidates(batch_size: int, quarantine_days: int):
-    """
-    Return aged files from `trash/resolved_files` for direct filesystem cleanup.
+def _do_maintenance(db_bp: dbHandlerBKP, cycle: dict) -> dict:
+    """Run one GC pass and return a compact batch summary."""
+    history_rows, resolved_rows = gc_maintenance.collect_gc_candidates(db_bp, logger=log)
 
-    `task_flow` refreshes the file mtime when an artifact enters this
-    quarantine, so filesystem age reflects "time spent in resolved_files"
-    rather than the original creation time of the payload.
-    """
-    resolved_root = build_resolved_files_trash_path()
+    if not history_rows and not resolved_rows:
+        return {
+            "had_candidates": False,
+            "deleted": 0,
+            "deleted_history_payloads": 0,
+            "deleted_resolved_files": 0,
+        }
 
-    if not os.path.isdir(resolved_root):
-        return []
+    deleted_history_payloads = gc_maintenance.delete_history_artifacts(
+        db_bp,
+        history_rows,
+        trash_root=cycle["trash_root"],
+        resolved_root=cycle["resolved_root"],
+        logger=log,
+    )
+    deleted_resolved_files = gc_maintenance.delete_resolved_files_artifacts(
+        resolved_rows,
+        resolved_root=cycle["resolved_root"],
+        logger=log,
+    )
 
-    cutoff_ts = time.time() - (quarantine_days * 86400)
-    candidates = []
-
-    for root, _, files in os.walk(resolved_root):
-        for name in files:
-            full_path = os.path.join(root, name)
-
-            try:
-                modified_at = os.path.getmtime(full_path)
-            except FileNotFoundError:
-                continue
-            except Exception as e:
-                log.error(
-                    f"event=garbage_resolved_files_stat_failed path={full_path} error={e}"
-                )
-                continue
-
-            if modified_at <= cutoff_ts:
-                candidates.append((modified_at, full_path))
-
-    candidates.sort(key=lambda item: item[0])
-    return [path for _, path in candidates[:batch_size]]
+    return {
+        "had_candidates": True,
+        "deleted": deleted_history_payloads + deleted_resolved_files,
+        "deleted_history_payloads": deleted_history_payloads,
+        "deleted_resolved_files": deleted_resolved_files,
+    }
 
 
-def log_gc_configuration(*, trash_root: str, resolved_root: str) -> None:
-    """
-    Log the effective retention contract used by the worker.
+def _finalize_success(result: dict) -> None:
+    """Emit the final batch log for one successful GC cycle."""
+    if not result["had_candidates"]:
+        log.event(
+            "garbage_candidates_empty",
+            service=SERVICE_NAME,
+            component="garbage_collector_daemon",
+            operation="finalize_success",
+        )
+        return
 
-    Startup logs should make the two GC channels obvious during production
-    incidents: one window for the history-owned artifact and a shorter one for
-    superseded `resolved_files` leftovers.
-    """
     log.event(
-        "garbage_configuration",
-        trash_root=trash_root,
-        trash_quarantine_days=k.GC_QUARANTINE_DAYS,
-        resolved_root=resolved_root,
-        resolved_quarantine_days=k.GC_RESOLVED_FILES_QUARANTINE_DAYS,
-        batch_size=k.GC_BATCH_SIZE,
+        "garbage_batch_processed",
+        service=SERVICE_NAME,
+        component="garbage_collector_daemon",
+        operation="finalize_success",
+        deleted=result["deleted"],
+        deleted_history_payloads=result["deleted_history_payloads"],
+        deleted_resolved_files=result["deleted_resolved_files"],
     )
 
 
-def collect_gc_candidates(db_bp):
-    """
-    Gather the next batch of candidates from both GC channels.
-
-    Returns:
-        tuple[list[dict], list[str]]: history-owned trash rows and direct
-        `resolved_files` filesystem paths.
-    """
-    history_rows = db_bp.file_history_get_gc_candidates(
-        batch_size=k.GC_BATCH_SIZE,
-        quarantine_days=k.GC_QUARANTINE_DAYS,
-    )
-    resolved_rows = get_resolved_files_gc_candidates(
-        batch_size=k.GC_BATCH_SIZE,
-        quarantine_days=k.GC_RESOLVED_FILES_QUARANTINE_DAYS,
-    )
-    return history_rows, resolved_rows
+def _classify_cycle_failure(exc: Exception) -> tuple[str, str]:
+    """Map a cycle-level exception to the canonical error fields."""
+    return "Garbage collector cycle failed", k.STAGE_MAIN
 
 
-def delete_history_artifacts(db_bp, history_rows, *, trash_root: str, resolved_root: str) -> int:
-    """
-    Delete main-trash artifacts still referenced by `FILE_TASK_HISTORY`.
-
-    Every successful delete updates `IS_PAYLOAD_DELETED/DT_PAYLOAD_DELETED`
-    because the history row is the source of truth for operator-facing error
-    artifacts.
-    """
-    deleted = 0
-
-    for row in history_rows:
-        server_path = row["NA_SERVER_FILE_PATH"]
-        server_file = row["NA_SERVER_FILE_NAME"]
-
-        if not server_path or not server_file:
-            log.warning("event=garbage_invalid_path_metadata")
-            continue
-
-        # History rows are allowed to delete only the operator-facing
-        # artifact that was explicitly finalized into the main trash.
-        if not _is_path_within(server_path, trash_root):
-            log.error(f"event=garbage_refused_outside_trash path={server_path}")
-            continue
-        if _is_path_within(server_path, resolved_root):
-            log.warning(
-                f"event=garbage_history_points_to_resolved_files path={server_path}"
-            )
-            continue
-
-        file_path = os.path.join(server_path, server_file)
-
-        if delete_file(file_path):
-            # These columns describe the lifecycle of the artifact currently
-            # referenced by FILE_TASK_HISTORY. They do not say anything about
-            # older source/export leftovers in `trash/resolved_files`.
-            db_bp.file_history_update(
-                history_id=row["ID_HISTORY"],
-                IS_PAYLOAD_DELETED=1,
-                DT_PAYLOAD_DELETED=datetime.now(),
-            )
-            log.event(
-                "garbage_history_artifact_deleted",
-                history_id=row["ID_HISTORY"],
-                path=file_path,
-            )
-            deleted += 1
-
-    return deleted
+def _finalize_error(err: errors.ErrorHandler) -> None:
+    """Emit the final GC cycle failure log."""
+    err.log_error()
 
 
-def delete_resolved_files_artifacts(resolved_rows, *, resolved_root: str) -> int:
-    """
-    Delete superseded artifacts from `trash/resolved_files`.
+def main() -> None:
+    """Run the garbage-collection daemon until shutdown is requested."""
+    log.service_start(SERVICE_NAME)
 
-    These files are no longer referenced by FILE_TASK_HISTORY, so filesystem
-    retention is their only cleanup contract.
-    """
-    deleted = 0
-
-    for file_path in resolved_rows:
-        if not _is_path_within(file_path, resolved_root):
-            log.error(
-                f"event=garbage_refused_outside_resolved_files path={file_path}"
-            )
-            continue
-
-        if delete_file(file_path):
-            log.event("garbage_resolved_artifact_deleted", path=file_path)
-            deleted += 1
-
-    return deleted
-
-
-# ===============================================================
-# Main loop
-# ===============================================================
-def main():
-    """
-    Run the garbage-collection loop until shutdown is requested.
-
-    Processing contract summary:
-        - main `trash`:
-            contains the artifact still referenced by `FILE_TASK_HISTORY`
-        - `trash/resolved_files`:
-            contains superseded artifacts that no longer have history ownership
-
-    The loop therefore collects from both places, but only the main-trash path
-    updates `IS_PAYLOAD_DELETED/DT_PAYLOAD_DELETED`.
-
-    Retention policy:
-        - main `trash` uses `GC_QUARANTINE_DAYS`
-        - `trash/resolved_files` uses the shorter
-          `GC_RESOLVED_FILES_QUARANTINE_DAYS`
-    """
-
-    log.service_start("appCataloga_garbage_collector")
-
-    db_bp = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+    db_bp = _init_db()
     trash_root = os.path.join(k.REPO_FOLDER, k.TRASH_FOLDER)
-    resolved_root = build_resolved_files_trash_path()
-    log_gc_configuration(
+    resolved_root = gc_maintenance.build_resolved_files_trash_path()
+    gc_maintenance.log_gc_configuration(
+        logger=log,
         trash_root=trash_root,
         resolved_root=resolved_root,
     )
 
     while process_status["running"]:
+        err = errors.ErrorHandler(log)
+        sleep_interval = k.GC_LOOP_SLEEP
 
         try:
-            history_rows, resolved_rows = collect_gc_candidates(db_bp)
-
-            if not history_rows and not resolved_rows:
-                log.event("garbage_candidates_empty")
-                time.sleep(k.GC_IDLE_SLEEP)
-                continue
-
-            deleted_history_payloads = delete_history_artifacts(
-                db_bp,
-                history_rows,
+            # Build one small cycle context so cadence stays explicit.
+            cycle = _read_next_cycle(
+                now=datetime.now(),
                 trash_root=trash_root,
                 resolved_root=resolved_root,
             )
-            deleted_resolved_files = delete_resolved_files_artifacts(
-                resolved_rows,
-                resolved_root=resolved_root,
-            )
-            deleted = deleted_history_payloads + deleted_resolved_files
 
-            db_bp.commit()
-
-            log.event(
-                "garbage_batch_processed",
-                deleted=deleted,
-                deleted_history_payloads=deleted_history_payloads,
-                deleted_resolved_files=deleted_resolved_files,
-            )
-
+            # Run one GC pass and keep only a compact batch summary in the loop.
+            result = _do_maintenance(db_bp, cycle)
+            _finalize_success(result)
+            if not result["had_candidates"]:
+                sleep_interval = k.GC_IDLE_SLEEP
         except Exception as e:
-            log.error(f"event=garbage_loop_error error={e}")
+            if not err.triggered:
+                reason, stage = _classify_cycle_failure(e)
+                err.capture(reason=reason, stage=stage, exc=e)
+            _finalize_error(err)
 
-        time.sleep(k.GC_LOOP_SLEEP)
+        # Empty cycles back off longer than active cleanup cycles.
+        runtime_sleep.random_jitter_sleep(interval=sleep_interval)
+
+    log.service_stop(SERVICE_NAME)
 
 
 if __name__ == "__main__":
@@ -330,7 +191,7 @@ if __name__ == "__main__":
         err = errors.ErrorHandler(log)
         err.capture(
             reason="Fatal garbage-collector worker crash",
-            stage="MAIN",
+            stage=k.STAGE_MAIN,
             exc=e,
         )
         err.log_error()

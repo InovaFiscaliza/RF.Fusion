@@ -64,8 +64,8 @@ def _shutdown_cleanup(signal_name: str) -> None:
     """
     Keep the shutdown hook explicit even though this worker owns no host locks.
 
-    The other workers already use the same signal-runtime pattern, and keeping
-    it here makes the service contract easy to scan during incidents.
+    The other workers already use the same signal-runtime pattern.
+    Keeping it here makes the service contract easier to scan.
     """
 
 
@@ -80,7 +80,7 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
     """
     Return the next queued backlog-control HOST_TASK by fixed priority.
 
-    Priority belongs to the worker contract, not to a random SQL ordering:
+    Priority belongs to the worker contract, not to random SQL ordering:
         1. rollback / STOP requests
         2. normal promotion requests
     """
@@ -102,7 +102,7 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
 
 def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     """
-    Atomically claim one queued backlog-control HOST_TASK.
+    Atomically move one backlog-control HOST_TASK to RUNNING.
 
     Backlog management is DB-only, so there is no `HOST.IS_BUSY` lock here.
     The claim boundary is the HOST_TASK row itself.
@@ -139,8 +139,8 @@ def _promote_backlog(db: dbHandlerBKP, task: dict) -> dict:
     """
     Promote the selected discovery slice into backup work.
 
-    Discovery already created the queue rows. Backlog management only changes
-    which subset becomes eligible for transfer.
+    Discovery already created the rows.
+    This worker only changes which subset becomes backup work.
     """
     return db.update_backlog_by_filter(
         host_id=task["host_id"],
@@ -161,8 +161,7 @@ def _cancel_pending_backlog_promotions(
     """
     Cancel queued promotion rows before applying a rollback.
 
-    Without this step a pending DISCOVERY->BACKUP promotion could run right
-    after STOP/rollback and recreate the queue the operator just removed.
+    Without this step, STOP could recreate backup work right after rollback.
     """
     db.host_task_update(
         where_dict={
@@ -180,8 +179,8 @@ def _rollback_backlog(db: dbHandlerBKP, task: dict) -> dict:
     """
     Roll back pending backup work into the discovery queue.
 
-    Rollback is stronger than queued promotion for the same host. We cancel
-    those promotion rows first so STOP does not recreate backup work later.
+    Rollback is stronger than queued promotion for the same host.
+    STOP should win before any new backup work is recreated.
     """
     _cancel_pending_backlog_promotions(
         db,
@@ -202,8 +201,8 @@ def _do_work(db: dbHandlerBKP, task: dict) -> dict:
     """
     Execute one backlog transition and return a small action summary.
 
-    Promotion and rollback deliberately share the same DB primitive
-    (`update_backlog_by_filter`). The difference lives only in:
+    Promotion and rollback deliberately share the same DB primitive.
+    The difference lives only in:
         - source type/status
         - target type/status
         - the pre-step that cancels pending promotion when STOP wins
@@ -224,8 +223,8 @@ def _do_work(db: dbHandlerBKP, task: dict) -> dict:
         case _:
             raise ValueError(f"Unsupported backlog task type: {task['task_type']}")
 
-    # Statistics stay deferred and coarse-grained, just like the rest of the
-    # appCataloga workers. Only meaningful row movement triggers a refresh.
+    # Statistics stay deferred and coarse-grained.
+    # Only real row movement triggers a refresh.
     if result.get("rows_updated", 0) > 0:
         db.host_task_statistics_create(host_id=task["host_id"])
 
@@ -255,7 +254,7 @@ def _do_work(db: dbHandlerBKP, task: dict) -> dict:
 
 
 def _classify_work_failure(exc: Exception, *, task: dict | None) -> tuple[str, str]:
-    """Translate a raised work exception into the canonical worker error fields."""
+    """Map a raised exception to the worker error reason and stage."""
     if task is not None:
         return "Backlog management failed", k.STAGE_BACKLOG
     return "Backlog management failed", k.STAGE_MAIN
@@ -268,7 +267,7 @@ def _finalize_success(
     *,
     elapsed_sec: float,
 ) -> None:
-    """Persist TASK_DONE for one successfully applied backlog transition."""
+    """Persist TASK_DONE for one completed backlog transition."""
     db.host_task_update(
         task_id=task["task_id"],
         NU_STATUS=k.TASK_DONE,
@@ -334,11 +333,11 @@ def _finalize_error(
 
 
 def _cleanup(task: dict | None) -> None:  # noqa: ARG001
-    """Release per-iteration resources. This worker owns none. Never raises."""
+    """Release per-iteration resources. This worker owns none."""
 
 
 def _init_db() -> dbHandlerBKP:
-    """Connect to the operational database. Exits the process on failure."""
+    """Create the operational DB handler or stop the process early."""
     try:
         return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
     except Exception as e:
@@ -367,13 +366,17 @@ def main() -> None:
         try:
             task = _read_next_task(db)
             if task is None:
+                # Idle polls use jitter to avoid synchronized worker wakeups.
                 runtime_sleep.random_jitter_sleep()
                 continue
 
             if not _claim_task(db, task):
+                # Another worker may claim the HOST_TASK first.
                 runtime_sleep.random_jitter_sleep()
                 continue
 
+            # The entrypoint measures total work time.
+            # `_do_work()` measures only the completed `work` phase.
             work_started_at = time.monotonic()
             result = _do_work(db, task)
             elapsed_sec = time.monotonic() - work_started_at
@@ -403,8 +406,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # This is the last-resort daemon crash path. Per-task failures are
-        # already normalized inside `main()`.
+        # The loop already handles normal task failures.
+        # Reaching this block means the process itself is unstable.
         err = errors.ErrorHandler(log)
         err.capture(
             reason="Fatal backlog management worker crash",

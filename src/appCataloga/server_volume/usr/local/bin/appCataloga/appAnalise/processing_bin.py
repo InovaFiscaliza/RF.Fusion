@@ -584,7 +584,7 @@ def run_processing_flow(
     # Transport and payload validation stay inside the appAnalise adapter.
     # This flow only consumes the accepted domain payload and artifact.
     phase_started_at = time.monotonic()
-    bin_data, file_meta = app_analise.process(
+    bin_data, file_meta, answer, payload = app_analise.process(
         file_path=task["server_path"],
         file_name=task["server_name"],
         export=task["export"],
@@ -699,6 +699,8 @@ def run_processing_flow(
         "bin_data": bin_data,
         "resolved_site_ids": resolved_site_ids,
         "spectrum_ids": spectrum_ids,
+        "answer": answer,
+        "payload": payload,
     }
 
 

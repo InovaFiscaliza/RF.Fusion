@@ -35,7 +35,7 @@ def release_busy_hosts_for_current_pid(
     logger: logger_type,
 ) -> None:
     """
-    Release all HOST rows marked as BUSY by the current worker PID.
+    Release all HOST rows still owned by the current worker PID.
     """
     try:
         pid = os.getpid()
@@ -45,8 +45,7 @@ def release_busy_hosts_for_current_pid(
             operation="release_busy_hosts_by_pid",
             pid=pid,
         )
-        # Fresh connection: the regular one may have been left in a dirty
-        # state if the worker was interrupted mid-transaction.
+        # Use a fresh connection in case the regular one was interrupted.
         db = db_factory(
             database=database_name,
             log=logger,
@@ -71,7 +70,7 @@ def release_locked_host(
     service_name: str,
 ) -> None:
     """
-    Release a single HOST lock claimed by the current loop iteration.
+    Release one HOST lock claimed by the current loop iteration.
     """
     if host_id is None:
         return
@@ -99,7 +98,7 @@ def run_update_statistics(
     service_name: str,
     logger: logger_type,
 ) -> tuple[int, str]:
-    """Refresh host statistics. Returns (status, message) for the caller to close the task."""
+    """Refresh host statistics and return the final task result tuple."""
     started_at = time.monotonic()
     db.host_update_statistics(host_id=task["host_id"])
     elapsed_sec = round(time.monotonic() - started_at, 3)
