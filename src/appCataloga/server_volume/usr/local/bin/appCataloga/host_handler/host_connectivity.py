@@ -51,6 +51,9 @@ def resolve_host_addresses(host_addr: str) -> list[str]:
 
     Some stations publish multiple A records. We resolve once and pick a
     stable preference so ICMP and SSH do not probe different endpoints.
+
+    DNS failures return an empty list. Callers should treat that as
+    "unreachable" instead of passing the raw hostname into the ICMP library.
     """
     try:
         literal_ip = ipaddress.ip_address(host_addr)
@@ -64,9 +67,9 @@ def resolve_host_addresses(host_addr: str) -> list[str]:
     try:
         infos = socket.getaddrinfo(host_addr, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
     except socket.gaierror:
-        return [host_addr]
+        return []
     except Exception:
-        return [host_addr]
+        return []
 
     addresses: list[str] = []
     for _family, _type, _proto, _canonname, sockaddr in infos:
@@ -75,7 +78,7 @@ def resolve_host_addresses(host_addr: str) -> list[str]:
             addresses.append(addr)
 
     if not addresses:
-        return [host_addr]
+        return []
 
     preferred_172 = []
     for addr in addresses:
@@ -277,7 +280,8 @@ def is_host_online(host_addr: str, timeout_sec: float | None = None) -> bool:
     as "not reachable" so callers can stay focused on state transitions.
     """
     timeout = k.ICMP_TIMEOUT_SEC if timeout_sec is None else timeout_sec
-    return any(_ping_address(addr, timeout) for addr in resolve_host_addresses(host_addr))
+    addr = resolve_host_addresses(host_addr)
+    return any(_ping_address(a, timeout) for a in addr)
 
 
 def probe_host_connectivity(

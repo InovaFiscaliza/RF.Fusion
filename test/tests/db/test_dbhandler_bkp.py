@@ -229,6 +229,52 @@ class HostCooldownTests(unittest.TestCase):
         )
 
 
+class HostConnectivityListTests(unittest.TestCase):
+    """Validate the HOST snapshot read used by the maintenance sweep."""
+
+    def make_handler(self):
+        handler = object.__new__(db_bkp_module.dbHandlerBKP)
+        handler.log = FakeLog()
+        handler.database = "BPDATA_TEST"
+        handler._connect = lambda: None
+        handler._disconnect = lambda: None
+        handler._summary_publish_host_scope = lambda *args, **kwargs: None
+        handler.db_connection = type(
+            "FakeConnection",
+            (),
+            {"rollback": lambda self: None},
+        )()
+        return handler
+
+    def test_host_list_for_connectivity_check_keeps_offline_hosts_in_snapshot(self) -> None:
+        """The maintenance sweep must read online and offline hosts alike."""
+
+        handler = self.make_handler()
+        captured = {}
+
+        def fake_select_rows(*, table, where, order_by, cols):
+            captured["table"] = table
+            captured["where"] = where
+            captured["order_by"] = order_by
+            captured["cols"] = cols
+            return []
+
+        handler._select_rows = fake_select_rows
+
+        handler.host_list_for_connectivity_check()
+
+        self.assertEqual(captured["table"], "HOST")
+        self.assertEqual(
+            captured["where"]["#CUSTOM#HOST_ADDRESS"],
+            "NA_HOST_ADDRESS IS NOT NULL AND TRIM(NA_HOST_ADDRESS) <> ''",
+        )
+        self.assertNotIn("IS_OFFLINE", captured["where"]["#CUSTOM#HOST_ADDRESS"])
+        self.assertEqual(
+            captured["order_by"],
+            "IS_OFFLINE ASC, DT_LAST_CHECK IS NULL DESC, DT_LAST_CHECK ASC, ID_HOST ASC",
+        )
+
+
 class HostStatisticsRefreshTests(unittest.TestCase):
     """Validate durable HOST aggregates derived from FILE_TASK_HISTORY."""
 

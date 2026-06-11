@@ -10,7 +10,7 @@ Reading guide:
     1. `select_due_hosts(...)` trims the full HOST list to the stale batch the
        recurring sweep should touch right now.
     2. `_recover_offline_host_if_operational(...)` handles the strict recovery
-       path used only when a host is already marked offline.
+       path used when a host is already marked offline.
     3. `process_due_host(...)` applies one maintenance pass to one HOST row.
 
 The helpers intentionally work with the raw DB row shape. For this sweep, a
@@ -20,43 +20,155 @@ wrapper object that only renames dictionary keys.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from host_handler import host_connectivity
 
 if TYPE_CHECKING:
     from db.dbHandlerBKP import dbHandlerBKP
+    from host_handler.host_ssh_utils import ConnectivityProbePayload
     from shared.logging_utils import log as logger_type
 
 
+class HostSnapshot(TypedDict, total=False):
+    """Minimal HOST row shape used by the maintenance sweep."""
+
+    ID_HOST: int
+    NA_HOST_NAME: str
+    NA_HOST_ADDRESS: str
+    NA_HOST_PORT: int
+    NA_HOST_USER: str
+    NA_HOST_PASSWORD: str
+    IS_BUSY: bool
+    IS_OFFLINE: bool
+    DT_LAST_CHECK: datetime | None
+
+
+class HostSweepResult(TypedDict):
+    """Structured one-host outcome used by the batch summary."""
+
+    checked: bool
+    skipped_busy: bool
+    icmp_online: bool
+    recovery_probe: bool
+
+
+def _probe_host_icmp(host: HostSnapshot, timeout_sec: float) -> bool:
+    """Run the lightweight ICMP pre-check for one host snapshot."""
+
+    return host_connectivity.is_host_online(
+        host["NA_HOST_ADDRESS"],
+        timeout_sec=timeout_sec,
+    )
+
+
+def _probe_host_operational_state(host: HostSnapshot) -> ConnectivityProbePayload:
+    """Run the shared operational probe for one host snapshot."""
+
+    return host_connectivity.probe_host_connectivity(
+        addr=host["NA_HOST_ADDRESS"],
+        port=int(host["NA_HOST_PORT"]),
+        user=host["NA_HOST_USER"],
+        password=host["NA_HOST_PASSWORD"],
+    )
+
+
+def _run_icmp_probe_batch(
+    hosts: list[HostSnapshot],
+    *,
+    timeout_sec: float,
+    max_workers: int,
+) -> dict[int, bool]:
+    """Probe ICMP reachability in parallel and return one result per host."""
+
+    if not hosts:
+        return {}
+
+    worker_count = min(max_workers, len(hosts))
+    if worker_count <= 1:
+        return {
+            host["ID_HOST"]: _probe_host_icmp(host, timeout_sec)
+            for host in hosts
+        }
+
+    results: dict[int, bool] = {}
+    with ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="host-maint-icmp",
+    ) as executor:
+        future_to_host = {
+            executor.submit(_probe_host_icmp, host, timeout_sec): host
+            for host in hosts
+        }
+
+        for future in as_completed(future_to_host):
+            host = future_to_host[future]
+            results[host["ID_HOST"]] = bool(future.result())
+
+    return results
+
+
+def _run_operational_probe_batch(
+    hosts: list[HostSnapshot],
+    *,
+    max_workers: int,
+) -> dict[int, ConnectivityProbePayload]:
+    """Probe operational connectivity in parallel and return one result per host."""
+
+    if not hosts:
+        return {}
+
+    worker_count = min(max_workers, len(hosts))
+    if worker_count <= 1:
+        return {
+            host["ID_HOST"]: _probe_host_operational_state(host)
+            for host in hosts
+        }
+
+    results: dict[int, ConnectivityProbePayload] = {}
+    with ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="host-maint-probe",
+    ) as executor:
+        future_to_host = {
+            executor.submit(_probe_host_operational_state, host): host
+            for host in hosts
+        }
+
+        for future in as_completed(future_to_host):
+            host = future_to_host[future]
+            results[host["ID_HOST"]] = future.result()
+
+    return results
+
+
 def select_due_hosts(
-    host_rows: list[dict],
+    host_rows: list[HostSnapshot],
     now: datetime,
     *,
     stale_after_sec: int,
     batch_size: int,
-) -> list[dict]:
+) -> list[HostSnapshot]:
     """
     Return the oldest stale hosts that should be inspected in this batch.
 
-    The DB query is already ordered by age, so the first fresh row lets the
-    sweep stop early instead of scanning the entire HOST table every cycle.
+    The source snapshot may prioritize online hosts ahead of offline hosts, so
+    freshness can no longer be inferred from the first fresh row alone. Filter
+    the full snapshot and keep only stale rows until the batch is full.
 
     The returned rows are the original DB dictionaries.
     That keeps the sweep transparent and avoids a wrapper that only renames keys.
     """
     stale_after = timedelta(seconds=stale_after_sec)
-    due_hosts: list[dict] = []
+    due_hosts: list[HostSnapshot] = []
 
     for row in host_rows:
         last_check = row.get("DT_LAST_CHECK")
 
-        # The source query is oldest-first. As soon as we encounter one host
-        # that is still fresh enough, every row after it is also fresh enough
-        # for this pass and the loop can stop immediately.
         if last_check and (now - last_check) < stale_after:
-            break
+            continue
 
         due_hosts.append(row)
 
@@ -67,39 +179,24 @@ def select_due_hosts(
     return due_hosts
 
 
-def _recover_offline_host_if_operational(
+def _persist_recovery_probe_result(
     *,
     db: dbHandlerBKP,
     log: logger_type,
-    host: dict,
+    host: HostSnapshot,
     checked_at: datetime,
-    connectivity_module: Any,
+    connectivity: ConnectivityProbePayload,
 ) -> None:
     """
-    Recover an offline host only after both ICMP and SSH confirm it is back.
+    Persist the recovery decision for one host already marked offline.
 
-    ICMP alone is not enough for stations that keep a modem alive while the
-    industrial PC behind the modem is still hung. Recovery therefore uses the
-    short operational probe before any suspended work is resumed.
-
-    This helper is deliberately strict:
+    Recovery stays deliberately strict:
         - `ICMP up + SSH online`  -> recover the host
         - anything else           -> keep the host offline
-
-    That conservatism avoids reviving a queue that would fail again on the
-    first real SSH/SFTP use.
     """
-    # This is the expensive branch of the recurring sweep.
-    # We only pay for SSH confirmation after ICMP suggests recovery.
-    connectivity = connectivity_module.probe_host_connectivity(
-        addr=host["NA_HOST_ADDRESS"],
-        port=int(host["NA_HOST_PORT"]),
-        user=host["NA_HOST_USER"],
-        password=host["NA_HOST_PASSWORD"],
-    )
     log.event(
         "host_check_all_recovery_probe",
-        **connectivity_module.build_connectivity_probe_fields(
+        **host_connectivity.build_connectivity_probe_fields(
             host_id=host["ID_HOST"],
             host_name=host.get("NA_HOST_NAME"),
             addr=host["NA_HOST_ADDRESS"],
@@ -110,7 +207,7 @@ def _recover_offline_host_if_operational(
 
     if connectivity["state"] == "online":
         # Only a fully operational result may resume suspended work.
-        connectivity_module.persist_host_connectivity_state(
+        host_connectivity.persist_host_connectivity_state(
             db=db,
             log=log,
             host_id=host["ID_HOST"],
@@ -122,7 +219,7 @@ def _recover_offline_host_if_operational(
 
     # Keep the host offline until the SSH endpoint is confirmed.
     # Reuse the shared offline path so drifted queues are suspended again.
-    connectivity_module.persist_host_connectivity_state(
+    host_connectivity.persist_host_connectivity_state(
         db=db,
         log=log,
         host_id=host["ID_HOST"],
@@ -133,22 +230,67 @@ def _recover_offline_host_if_operational(
     return
 
 
+def _persist_offline_confirmation_result(
+    *,
+    db: dbHandlerBKP,
+    log: logger_type,
+    host: HostSnapshot,
+    checked_at: datetime,
+    connectivity: ConnectivityProbePayload,
+) -> None:
+    """
+    Persist the confirmation result for one host still marked online.
+
+    The short ICMP sweep is only a pre-check. The canonical probe decides
+    whether the host stays online or transitions to offline.
+    """
+    log.event(
+        "host_check_all_offline_confirmation_probe",
+        **host_connectivity.build_connectivity_probe_fields(
+            host_id=host["ID_HOST"],
+            host_name=host.get("NA_HOST_NAME"),
+            addr=host["NA_HOST_ADDRESS"],
+            port=int(host["NA_HOST_PORT"]),
+            probe=connectivity,
+        ),
+    )
+
+    if connectivity["icmp_online"]:
+        # The host still answers ICMP with the canonical timeout. Keep the
+        # current operational state and only refresh the observation timestamp.
+        db.host_update(
+            host_id=host["ID_HOST"],
+            DT_LAST_CHECK=checked_at,
+        )
+        return
+
+    host_connectivity.persist_host_connectivity_state(
+        db=db,
+        log=log,
+        host_id=host["ID_HOST"],
+        was_offline=bool(host.get("IS_OFFLINE")),
+        online=False,
+        now=checked_at,
+    )
+
+
 def process_due_host(
     *,
     db: dbHandlerBKP,
     log: logger_type,
-    host: dict,
+    host: HostSnapshot,
     checked_at: datetime,
     icmp_timeout_sec: float,
-    connectivity_module: Any = host_connectivity,
-) -> dict[str, Any]:
+    icmp_online: bool | None = None,
+    connectivity: ConnectivityProbePayload | None = None,
+) -> HostSweepResult:
     """
     Process one stale host snapshot from the recurring maintenance sweep.
 
     Flow:
         1. skip BUSY hosts so maintenance does not compete with real work
         2. run the lightweight ICMP sweep
-        3. if the host was offline and now pings, run the strict recovery probe
+        3. if the host was offline, run the strict recovery probe
         4. otherwise persist the steady-state online/offline refresh
 
     Return a small structured result used by the batch summary.
@@ -165,21 +307,29 @@ def process_due_host(
             "recovery_probe": False,
         }
 
-    online = connectivity_module.is_host_online(
-        host["NA_HOST_ADDRESS"],
-        timeout_sec=icmp_timeout_sec,
+    online = (
+        _probe_host_icmp(host, icmp_timeout_sec)
+        if icmp_online is None
+        else bool(icmp_online)
     )
     recovery_probe = False
 
-    if online and bool(host.get("IS_OFFLINE")):
-        # Offline recovery needs stronger proof than ICMP alone.
+    if bool(host.get("IS_OFFLINE")):
+        # Offline recovery must use the canonical operational probe. This lets
+        # maintenance correct stale offline state even when the short ICMP
+        # sweep misses a host that still answers the longer shared probe.
         recovery_probe = True
-        _recover_offline_host_if_operational(
+        probe_result = (
+            _probe_host_operational_state(host)
+            if connectivity is None
+            else connectivity
+        )
+        _persist_recovery_probe_result(
             db=db,
             log=log,
             host=host,
             checked_at=checked_at,
-            connectivity_module=connectivity_module,
+            connectivity=probe_result,
         )
     elif online:
         # Steady online refresh: no queue side effect is needed here.
@@ -188,15 +338,29 @@ def process_due_host(
             DT_LAST_CHECK=checked_at,
         )
     else:
-        # The shared state machine decides the offline side effects.
-        connectivity_module.persist_host_connectivity_state(
-            db=db,
-            log=log,
-            host_id=host["ID_HOST"],
-            was_offline=bool(host.get("IS_OFFLINE")),
-            online=False,
-            now=checked_at,
-        )
+        if bool(host.get("IS_OFFLINE")):
+            # Already-offline hosts can stay on the lightweight path.
+            host_connectivity.persist_host_connectivity_state(
+                db=db,
+                log=log,
+                host_id=host["ID_HOST"],
+                was_offline=bool(host.get("IS_OFFLINE")),
+                online=False,
+                now=checked_at,
+            )
+        else:
+            probe_result = (
+                _probe_host_operational_state(host)
+                if connectivity is None
+                else connectivity
+            )
+            _persist_offline_confirmation_result(
+                db=db,
+                log=log,
+                host=host,
+                checked_at=checked_at,
+                connectivity=probe_result,
+            )
 
     return {
         "checked": True,
@@ -211,11 +375,12 @@ def run_host_check_all_batch(
     db: dbHandlerBKP,
     log: logger_type,
     now: datetime,
-    process_status: dict,
+    process_status: dict[str, bool],
     stale_after_sec: int,
     batch_size: int,
     icmp_timeout_sec: float,
-    connectivity_module: Any = host_connectivity,
+    icmp_max_workers: int,
+    probe_max_workers: int,
 ) -> int:
     """
     Refresh one bounded oldest-first batch of stale HOST connectivity snapshots.
@@ -244,14 +409,35 @@ def run_host_check_all_batch(
     if not due_hosts:
         return 0
 
+    non_busy_hosts = [
+        host
+        for host in due_hosts
+        if not bool(host.get("IS_BUSY"))
+    ]
+    icmp_results = _run_icmp_probe_batch(
+        non_busy_hosts,
+        timeout_sec=icmp_timeout_sec,
+        max_workers=icmp_max_workers,
+    )
+    operational_probe_hosts = [
+        host
+        for host in non_busy_hosts
+        if bool(host.get("IS_OFFLINE"))
+        or not icmp_results.get(host["ID_HOST"], False)
+    ]
+    operational_probe_results = _run_operational_probe_batch(
+        operational_probe_hosts,
+        max_workers=probe_max_workers,
+    )
+
     checked = 0
     skipped_busy = 0
     icmp_online = 0
     icmp_offline = 0
     recovery_probes = 0
 
-    # Process each due host independently.
-    # One bad station must not abort the rest of the batch.
+    # Phase 3: apply the probe results sequentially.
+    # Network fan-out is parallel, but persisted host state remains linear.
     for host in due_hosts:
         if not process_status["running"]:
             # Shutdown should stop the batch between hosts, never in the middle
@@ -265,7 +451,8 @@ def run_host_check_all_batch(
                 host=host,
                 checked_at=now,
                 icmp_timeout_sec=icmp_timeout_sec,
-                connectivity_module=connectivity_module,
+                icmp_online=icmp_results.get(host["ID_HOST"]),
+                connectivity=operational_probe_results.get(host["ID_HOST"]),
             )
 
             if result["skipped_busy"]:

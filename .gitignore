@@ -102,3 +102,5 @@ list.csv
 src/appCataloga/server_volume/usr/local/bin/appCataloga/ARCHITECTURE.md
 src/appCataloga/server_volume/usr/local/bin/appCataloga/INSTRUCTIONS.md
 src/appCataloga/server_volume/usr/local/bin/appCataloga/METADATA_HOST_SERVER_MIGRATION_PLAN.md
+src/appCataloga/server_volume/usr/local/bin/appCataloga/RFFUSION_SUMMARY_REFACTOR_PLAN.md
+src/appCataloga/server_volume/usr/local/bin/appCataloga/appAnalise/DBHandler.m

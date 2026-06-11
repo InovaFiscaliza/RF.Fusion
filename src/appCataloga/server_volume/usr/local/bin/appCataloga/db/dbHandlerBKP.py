@@ -471,6 +471,12 @@ class dbHandlerBKP(DBHandlerBase):
         The background connectivity sweep reads the whole HOST table in memory
         because the dataset is small and the logic benefits from simple
         oldest-first scheduling.
+
+        Offline hosts must stay in this snapshot too. The maintenance daemon is
+        responsible for reconciling them back to online after recovery.
+        Online hosts are ordered first so stale false-positive "online" states
+        are corrected quickly even when many offline hosts are waiting on the
+        slower recovery probe path.
         """
         self._connect()
         try:
@@ -480,10 +486,12 @@ class dbHandlerBKP(DBHandlerBase):
                     "#CUSTOM#HOST_ADDRESS": (
                         "NA_HOST_ADDRESS IS NOT NULL "
                         "AND TRIM(NA_HOST_ADDRESS) <> ''"
-                        "AND IS_OFFLINE = 0"
                     ),
                 },
-                order_by="DT_LAST_CHECK IS NULL DESC, DT_LAST_CHECK ASC, ID_HOST ASC",
+                order_by=(
+                    "IS_OFFLINE ASC, "
+                    "DT_LAST_CHECK IS NULL DESC, DT_LAST_CHECK ASC, ID_HOST ASC"
+                ),
                 cols=[
                     "ID_HOST",
                     "NA_HOST_NAME",

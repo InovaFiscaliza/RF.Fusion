@@ -94,8 +94,10 @@ SSH_AUTH_TIMEOUT       = 30
 ICMP_TIMEOUT_SEC = 10
 HOST_CHECK_ALL_ENABLED = True              # Periodic HOST table sweep outside HOST_TASK queue
 HOST_CHECK_ALL_STALE_AFTER_SEC = 300       # Re-check hosts whose DT_LAST_CHECK is older than this
-HOST_CHECK_ALL_BATCH_SIZE = 10             # Max hosts per idle sweep batch
-HOST_CHECK_ALL_ICMP_TIMEOUT_SEC = 3        # Short ICMP timeout for background sweep
+HOST_CHECK_ALL_BATCH_SIZE = 25             # Max hosts per idle sweep batch
+HOST_CHECK_ALL_ICMP_TIMEOUT_SEC = 5       # Short ICMP timeout for background sweep
+HOST_CHECK_ALL_ICMP_MAX_WORKERS = HOST_CHECK_ALL_BATCH_SIZE  # Parallel ICMP fan-out for the maintenance sweep
+HOST_CHECK_ALL_PROBE_MAX_WORKERS = 8      # Parallel short SSH probe fan-out for the maintenance sweep
 #------------------------------------------
 # backup module configuration
 #------------------------------------------

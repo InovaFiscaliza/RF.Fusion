@@ -120,7 +120,8 @@ def _do_maintenance(db: dbHandlerBKP, cycle: dict) -> dict:
                 stale_after_sec=k.HOST_CHECK_ALL_STALE_AFTER_SEC,
                 batch_size=k.HOST_CHECK_ALL_BATCH_SIZE,
                 icmp_timeout_sec=k.HOST_CHECK_ALL_ICMP_TIMEOUT_SEC,
-                connectivity_module=host_connectivity,
+                icmp_max_workers=k.HOST_CHECK_ALL_ICMP_MAX_WORKERS,
+                probe_max_workers=k.HOST_CHECK_ALL_PROBE_MAX_WORKERS,
             )
         except Exception as e:
             log.error_event(

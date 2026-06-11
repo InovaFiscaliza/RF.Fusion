@@ -240,6 +240,29 @@ class HostConnectivityTests(unittest.TestCase):
         self.assertTrue(connectivity["icmp_online"])
         self.assertFalse(connectivity["ssh_online"])
 
+    def test_check_host_connectivity_marks_dns_resolution_failure_as_offline(self) -> None:
+        with patch.object(
+            host_check_worker.host_connectivity,
+            "resolve_host_addresses",
+            return_value=[],
+        ):
+            with patch.object(
+                host_check_worker.host_connectivity,
+                "_ping_address",
+            ) as ping_address:
+                connectivity = host_check_worker.host_connectivity.probe_host_connectivity(
+                    addr="ERMXBA01.anatel.gov.br",
+                    port=2828,
+                    user="root",
+                    password="secret",
+                )
+
+        self.assertEqual(connectivity["state"], "offline")
+        self.assertFalse(connectivity["icmp_online"])
+        self.assertFalse(connectivity["ssh_online"])
+        self.assertEqual(connectivity["resolved_candidates"], [])
+        ping_address.assert_not_called()
+
     def test_check_host_connectivity_marks_auth_timeout_as_degraded(self) -> None:
         ssh_client = FakeSSHClient(
             connect_side_effect=paramiko.AuthenticationException("Authentication timeout.")
@@ -422,6 +445,18 @@ class HostConnectivityTests(unittest.TestCase):
         self.assertEqual(addresses, ["172.24.1.35"])
         getaddrinfo.assert_not_called()
 
+    def test_resolve_host_addresses_returns_empty_list_on_dns_failure(self) -> None:
+        with patch.object(
+            socket,
+            "getaddrinfo",
+            side_effect=socket.gaierror(-2, "Name or service not known"),
+        ):
+            addresses = host_check_worker.host_connectivity.resolve_host_addresses(
+                "ERMXBA01.anatel.gov.br"
+            )
+
+        self.assertEqual(addresses, [])
+
     def test_resolve_host_addresses_keeps_literal_192_ip_without_dns_lookup(self) -> None:
         with patch.object(
             socket,
@@ -437,6 +472,25 @@ class HostConnectivityTests(unittest.TestCase):
 class HostMaintenanceTests(unittest.TestCase):
     """Protect the background sweep that resumes or keeps hosts suspended."""
 
+    def test_select_due_hosts_keeps_scanning_after_fresh_row(self) -> None:
+        now = datetime(2026, 3, 23, 12, 0, 0)
+
+        due_hosts = host_maintenance_worker.maintenance_flow.select_due_hosts(
+            [
+                {"ID_HOST": 1, "DT_LAST_CHECK": now - timedelta(seconds=60), "IS_OFFLINE": 0},
+                {"ID_HOST": 2, "DT_LAST_CHECK": now - timedelta(seconds=601), "IS_OFFLINE": 1},
+                {"ID_HOST": 3, "DT_LAST_CHECK": now - timedelta(seconds=900), "IS_OFFLINE": 0},
+            ],
+            now,
+            stale_after_sec=300,
+            batch_size=10,
+        )
+
+        self.assertEqual(
+            [row["ID_HOST"] for row in due_hosts],
+            [2, 3],
+        )
+
     def _run_maintenance_batch(self, db: FakeDB, now: datetime) -> int:
         return host_maintenance_worker.maintenance_flow.run_host_check_all_batch(
             db=db,
@@ -446,7 +500,8 @@ class HostMaintenanceTests(unittest.TestCase):
             stale_after_sec=host_maintenance_worker.k.HOST_CHECK_ALL_STALE_AFTER_SEC,
             batch_size=host_maintenance_worker.k.HOST_CHECK_ALL_BATCH_SIZE,
             icmp_timeout_sec=host_maintenance_worker.k.HOST_CHECK_ALL_ICMP_TIMEOUT_SEC,
-            connectivity_module=host_maintenance_worker.host_connectivity,
+            icmp_max_workers=host_maintenance_worker.k.HOST_CHECK_ALL_ICMP_MAX_WORKERS,
+            probe_max_workers=host_maintenance_worker.k.HOST_CHECK_ALL_PROBE_MAX_WORKERS,
         )
 
     def test_run_host_check_all_batch_recovers_offline_host_only_after_ssh_probe(self) -> None:
@@ -590,7 +645,19 @@ class HostMaintenanceTests(unittest.TestCase):
             "is_host_online",
             return_value=False,
         ):
-            checked = self._run_maintenance_batch(db=db, now=now)
+            with patch.object(
+                host_maintenance_worker.host_connectivity,
+                "probe_host_connectivity",
+                return_value={
+                    "state": "offline",
+                    "online": False,
+                    "reason": "icmp_unreachable",
+                    "icmp_online": False,
+                    "ssh_online": False,
+                    "error": None,
+                },
+            ) as probe_host_connectivity:
+                checked = self._run_maintenance_batch(db=db, now=now)
 
         self.assertEqual(checked, 1)
         self.assertEqual(
@@ -611,6 +678,66 @@ class HostMaintenanceTests(unittest.TestCase):
             ],
         )
         self.assertEqual(db.resumed_hosts, [])
+        probe_host_connectivity.assert_called_once()
+
+    def test_run_host_check_all_batch_recovers_offline_host_even_when_short_ping_misses(self) -> None:
+        now = datetime(2026, 3, 23, 12, 0, 0)
+        db = FakeDB(
+            hosts=[
+                {
+                    "ID_HOST": 80,
+                    "NA_HOST_NAME": "station-offline-short-ping-miss",
+                    "NA_HOST_ADDRESS": "172.24.1.80",
+                    "NA_HOST_PORT": 22,
+                    "NA_HOST_USER": "root",
+                    "NA_HOST_PASSWORD": "secret",
+                    "IS_BUSY": False,
+                    "IS_OFFLINE": True,
+                    "DT_LAST_CHECK": now - timedelta(hours=1),
+                }
+            ]
+        )
+
+        with patch.object(
+            host_maintenance_worker.host_connectivity,
+            "is_host_online",
+            return_value=False,
+        ):
+            with patch.object(
+                host_maintenance_worker.host_connectivity,
+                "probe_host_connectivity",
+                return_value={
+                    "state": "online",
+                    "online": True,
+                    "reason": "ssh_connect_ok",
+                    "icmp_online": True,
+                    "ssh_online": True,
+                    "error": None,
+                },
+            ) as probe_host_connectivity:
+                checked = self._run_maintenance_batch(db=db, now=now)
+
+        self.assertEqual(checked, 1)
+        self.assertEqual(
+            db.host_updates,
+            [{
+                "host_id": 80,
+                "reset": True,
+                "IS_OFFLINE": False,
+                "check_busy_timeout": True,
+                "DT_LAST_CHECK": now,
+                "NU_HOST_CHECK_ERROR": 0,
+            }],
+        )
+        self.assertEqual(
+            db.resumed_hosts,
+            [
+                ("host_task", 80),
+                ("file_task", 80),
+                ("file_history", 80),
+            ],
+        )
+        probe_host_connectivity.assert_called_once()
 
     def test_run_host_check_all_batch_does_not_clear_timeout_counter_on_ping_only_success(self) -> None:
         now = datetime(2026, 3, 23, 12, 0, 0)
@@ -643,6 +770,52 @@ class HostMaintenanceTests(unittest.TestCase):
             [{"host_id": 88, "DT_LAST_CHECK": now}],
         )
         self.assertEqual(db.queued_tasks, [])
+
+    def test_run_host_check_all_batch_does_not_mark_online_host_offline_after_short_ping_miss(self) -> None:
+        now = datetime(2026, 3, 23, 12, 0, 0)
+        db = FakeDB(
+            hosts=[
+                {
+                    "ID_HOST": 89,
+                    "NA_HOST_NAME": "station-short-ping-miss",
+                    "NA_HOST_ADDRESS": "172.24.1.89",
+                    "NA_HOST_PORT": 22,
+                    "NA_HOST_USER": "root",
+                    "NA_HOST_PASSWORD": "secret",
+                    "IS_BUSY": False,
+                    "IS_OFFLINE": False,
+                    "DT_LAST_CHECK": now - timedelta(hours=1),
+                }
+            ]
+        )
+
+        with patch.object(
+            host_maintenance_worker.host_connectivity,
+            "is_host_online",
+            return_value=False,
+        ):
+            with patch.object(
+                host_maintenance_worker.host_connectivity,
+                "probe_host_connectivity",
+                return_value={
+                    "state": "online",
+                    "online": True,
+                    "reason": "ssh_connect_ok",
+                    "icmp_online": True,
+                    "ssh_online": True,
+                    "error": None,
+                },
+            ) as probe_host_connectivity:
+                checked = self._run_maintenance_batch(db=db, now=now)
+
+        self.assertEqual(checked, 1)
+        self.assertEqual(
+            db.host_updates,
+            [{"host_id": 89, "DT_LAST_CHECK": now}],
+        )
+        self.assertEqual(db.suspended_hosts, [])
+        self.assertEqual(db.resumed_hosts, [])
+        probe_host_connectivity.assert_called_once()
 
     def test_run_host_check_all_batch_skips_busy_host(self) -> None:
         now = datetime(2026, 3, 23, 12, 0, 0)
@@ -708,16 +881,29 @@ class HostMaintenanceTests(unittest.TestCase):
             "is_host_online",
             return_value=False,
         ):
-            checked = host_maintenance_worker.maintenance_flow.run_host_check_all_batch(
-                db=db,
-                log=fake_log,
-                now=now,
-                process_status=host_maintenance_worker.process_status,
-                stale_after_sec=host_maintenance_worker.k.HOST_CHECK_ALL_STALE_AFTER_SEC,
-                batch_size=host_maintenance_worker.k.HOST_CHECK_ALL_BATCH_SIZE,
-                icmp_timeout_sec=host_maintenance_worker.k.HOST_CHECK_ALL_ICMP_TIMEOUT_SEC,
-                connectivity_module=host_maintenance_worker.host_connectivity,
-            )
+            with patch.object(
+                host_maintenance_worker.host_connectivity,
+                "probe_host_connectivity",
+                return_value={
+                    "state": "offline",
+                    "online": False,
+                    "reason": "icmp_unreachable",
+                    "icmp_online": False,
+                    "ssh_online": False,
+                    "error": None,
+                },
+            ):
+                checked = host_maintenance_worker.maintenance_flow.run_host_check_all_batch(
+                    db=db,
+                    log=fake_log,
+                    now=now,
+                    process_status=host_maintenance_worker.process_status,
+                    stale_after_sec=host_maintenance_worker.k.HOST_CHECK_ALL_STALE_AFTER_SEC,
+                    batch_size=host_maintenance_worker.k.HOST_CHECK_ALL_BATCH_SIZE,
+                    icmp_timeout_sec=host_maintenance_worker.k.HOST_CHECK_ALL_ICMP_TIMEOUT_SEC,
+                    icmp_max_workers=host_maintenance_worker.k.HOST_CHECK_ALL_ICMP_MAX_WORKERS,
+                    probe_max_workers=host_maintenance_worker.k.HOST_CHECK_ALL_PROBE_MAX_WORKERS,
+                )
 
         self.assertEqual(checked, 1)
         self.assertNotIn("host_check_all", [name for name, _ in fake_log.events])
