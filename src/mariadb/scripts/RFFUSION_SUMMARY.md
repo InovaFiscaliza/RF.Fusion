@@ -37,24 +37,44 @@ O `RFFUSION_SUMMARY` e um banco de leitura. Ele concentra read models derivados 
 | `RFDATA` espectro, site, equipamento e geografia | `SITE_EQUIPMENT_OBS_SUMMARY`, `HOST_LOCATION_SUMMARY`, `MAP_SITE_STATION_SUMMARY`, `MAP_SITE_SUMMARY` |
 | `VW_ERROR_EVENT_CANONICAL` | `HOST_ERROR_SUMMARY`, `SERVER_ERROR_SUMMARY`, ultimo erro no snapshot do host |
 
-## `SUMMARY_REFRESH_STATE`
+## `SUMMARY_OUTBOX`
 
-Finalidade: estado mais recente de refresh por objeto do summary.
+Finalidade: conjunto coalescido de escopos sujos pendentes consumido pelo worker Python.
 
 | Coluna | Significado |
 | --- | --- |
-| `NA_OBJECT_NAME` | nome logico do objeto refrescado, normalmente o nome da tabela ou do read model |
-| `DT_LAST_START` | instante de inicio da ultima execucao |
-| `DT_LAST_END` | instante de fim da ultima execucao |
-| `IS_SUCCESS` | `1` se a ultima execucao terminou com sucesso, `0` se falhou ou ainda estava em andamento |
-| `NU_LAST_ROW_COUNT` | quantidade de linhas produzidas na ultima execucao bem sucedida |
-| `NA_SOURCE_HIGH_WATERMARK` | watermark textual da origem usada no refresh; o formato varia por objeto |
-| `NA_ERROR_MESSAGE` | mensagem de erro da ultima falha, quando existir |
-| `DT_UPDATED_AT` | ultima atualizacao da linha de estado |
+| `ID_OUTBOX` | identificador tecnico monotonicamente crescente da ultima publicacao pendente desse escopo |
+| `NA_SCOPE_TYPE` | tipo do escopo sujo, por exemplo `host`, `site`, `equipment`, `reference_month` ou `full_reconcile` |
+| `NA_SCOPE_VALUE` | chave do escopo sujo; host/site/equipment usam o ID em texto e `full_reconcile` usa `*` |
+| `NA_SOURCE_HANDLER` | handler publicador para rastreabilidade diagnostica |
+| `NA_REASON` | razao curta da invalidacao, usada apenas para diagnostico |
+| `DT_CREATED_AT` | instante da ultima publicacao pendente desse escopo |
+
+## `SUMMARY_WORKER_STATE`
+
+Finalidade: checkpoint duravel e saude do consumidor Python do summary.
+
+| Coluna | Significado |
+| --- | --- |
+| `NA_CONSUMER` | nome logico do consumidor |
+| `ID_LAST_OUTBOX` | ultimo `ID_OUTBOX` processado com sucesso |
+| `DT_LAST_START` | inicio do ultimo ciclo do worker |
+| `DT_LAST_END` | fim do ultimo ciclo do worker |
+| `DT_LAST_SUCCESS` | ultimo ciclo finalizado com sucesso |
+| `DT_LAST_FAILURE` | ultimo ciclo finalizado com erro |
+| `NU_LAST_BATCH_SIZE` | batch-size configurado no ultimo sucesso |
+| `NU_LAST_EVENT_COUNT` | quantidade de eventos no ultimo sucesso |
+| `NA_STATUS` | status resumido do worker, por exemplo `idle`, `running` ou `error` |
+| `NA_ERROR_MESSAGE` | ultima mensagem de erro no nivel do worker |
 
 ## `SUMMARY_REFRESH_LOG`
 
-Finalidade: historico append-only das execucoes de refresh.
+Finalidade: historico rolling append-only das execucoes de refresh por objeto.
+
+Observacao: esta tabela substitui o antigo `SUMMARY_REFRESH_STATE` como fonte
+de telemetria por objeto. O estado mais recente e obtido pela ultima linha de
+cada `NA_OBJECT_NAME`, enquanto a saude global do daemon continua em
+`SUMMARY_WORKER_STATE`.
 
 | Coluna | Significado |
 | --- | --- |

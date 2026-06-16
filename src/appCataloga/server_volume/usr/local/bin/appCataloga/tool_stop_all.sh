@@ -26,7 +26,7 @@ echo
 
 services=(
   # Stop the summary consumer first so no refresh starts during shutdown.
-  appCataloga_rffusion_summary_worker
+  appCataloga_summary_database
   appCataloga_file_bkp
   appCataloga_file_bin_proces
   appCataloga_file_bin_process_appAnalise

@@ -270,6 +270,16 @@ class TestHostService(unittest.TestCase):
                     "NU_PROCESSING_QUEUE_FILES_TOTAL": 4,
                     "VL_PROCESSING_QUEUE_GB_TOTAL": 8.25,
                     "NU_FACT_SPECTRUM_TOTAL": 987,
+                },
+                {
+                    "NU_DISCOVERED_FILES_TOTAL": 120,
+                    "VL_DISCOVERED_GB_TOTAL": 55.5,
+                    "NU_BACKUP_DONE_FILES_TOTAL": 88,
+                    "VL_BACKUP_DONE_GB_TOTAL": 44.25,
+                    "VL_BACKUP_ERROR_GB_TOTAL": 1.75,
+                    "VL_PROCESSING_PENDING_GB_TOTAL": 9.5,
+                    "VL_PROCESSING_DONE_GB_TOTAL": 28.0,
+                    "VL_PROCESSING_ERROR_GB_TOTAL": 0.5,
                 }
             ]
         )
@@ -301,8 +311,9 @@ class TestHostService(unittest.TestCase):
         self.assertEqual(summary["PROCESSING_QUEUE_GB_TOTAL"], 8.25)
         self.assertEqual(summary["FACT_SPECTRUM_TOTAL"], 987)
         self.assertTrue(summary_connection.closed)
-        self.assertEqual(len(summary_cursor.executed), 1)
+        self.assertEqual(len(summary_cursor.executed), 2)
         self.assertIn("FROM SERVER_CURRENT_SUMMARY", summary_cursor.executed[0][0])
+        self.assertIn("FROM HOST_MONTHLY_METRIC", summary_cursor.executed[1][0])
 
     def test_get_server_processing_error_overview_reads_summary_only(self):
         class FakeCursor:

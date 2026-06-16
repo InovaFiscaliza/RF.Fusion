@@ -11,12 +11,25 @@ define table semantics, while this module provides the reusable execution
 machinery.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from datetime import date, datetime
-import json
 import mysql.connector
 from mysql.connector import Error
 import config as k
+
+SUMMARY_OUTBOX_TABLE = f"{k.SUMMARY_DATABASE_NAME}.SUMMARY_OUTBOX"
+SUMMARY_OUTBOX_REQUIRED_COLUMNS = {
+    "ID_OUTBOX",
+    "NA_SCOPE_TYPE",
+    "NA_SCOPE_VALUE",
+    "NA_SOURCE_HANDLER",
+    "NA_REASON",
+    "DT_CREATED_AT",
+}
+SUMMARY_OUTBOX_REQUIRED_UNIQUE_INDEX = "UQ_SUMMARY_OUTBOX_SCOPE"
+SUMMARY_OUTBOX_CANONICAL_SCHEMA_SCRIPT = (
+    "src/mariadb/scripts/createFusionSummaryDB.sql"
+)
 
 
 class DBHandlerBase:
@@ -368,6 +381,127 @@ class DBHandlerBase:
         except ValueError:
             return None
 
+    def _build_summary_scope_rows(
+        self,
+        *,
+        source_handler: str,
+        reason: Optional[str],
+        host_ids: List[int],
+        site_ids: List[int],
+        equipment_ids: List[int],
+        reference_months: List[str],
+        full_reconcile: bool,
+    ) -> List[Tuple[str, str, str, Optional[str]]]:
+        """Expand one invalidation request into one row per dirty key."""
+        if full_reconcile:
+            return [
+                (
+                    k.SUMMARY_SCOPE_FULL_RECONCILE,
+                    k.SUMMARY_SCOPE_FULL_RECONCILE_KEY,
+                    source_handler,
+                    reason,
+                )
+            ]
+
+        rows: List[Tuple[str, str, str, Optional[str]]] = []
+
+        for host_id in host_ids:
+            rows.append((k.SUMMARY_SCOPE_HOST, str(host_id), source_handler, reason))
+
+        for site_id in site_ids:
+            rows.append((k.SUMMARY_SCOPE_SITE, str(site_id), source_handler, reason))
+
+        for equipment_id in equipment_ids:
+            rows.append(
+                (
+                    k.SUMMARY_SCOPE_EQUIPMENT,
+                    str(equipment_id),
+                    source_handler,
+                    reason,
+                )
+            )
+
+        for reference_month in reference_months:
+            rows.append(
+                (
+                    k.SUMMARY_SCOPE_REFERENCE_MONTH,
+                    reference_month,
+                    source_handler,
+                    reason,
+                )
+            )
+
+        return rows
+
+    def _assert_summary_outbox_schema(self) -> None:
+        """Fail fast when `SUMMARY_OUTBOX` is not in the canonical scope schema."""
+        cached_error = getattr(self, "_summary_outbox_schema_error", None)
+        if cached_error is not None:
+            raise RuntimeError(cached_error)
+
+        if getattr(self, "_summary_outbox_schema_validated", False):
+            return
+
+        column_rows = self._select_raw(
+            """
+            SELECT COLUMN_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'SUMMARY_OUTBOX'
+            """,
+            (k.SUMMARY_DATABASE_NAME,),
+        )
+        columns: Set[str] = {
+            str(row.get("COLUMN_NAME"))
+            for row in column_rows
+            if row.get("COLUMN_NAME")
+        }
+        missing_columns = sorted(SUMMARY_OUTBOX_REQUIRED_COLUMNS - columns)
+
+        index_rows = self._select_raw(
+            """
+            SELECT INDEX_NAME
+            FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = %s
+              AND TABLE_NAME = 'SUMMARY_OUTBOX'
+              AND INDEX_NAME = %s
+            LIMIT 1
+            """,
+            (k.SUMMARY_DATABASE_NAME, SUMMARY_OUTBOX_REQUIRED_UNIQUE_INDEX),
+        )
+        missing_index = not bool(index_rows)
+
+        if not missing_columns and not missing_index:
+            self._summary_outbox_schema_validated = True
+            return
+
+        details: List[str] = []
+        if missing_columns:
+            details.append(
+                "missing columns: " + ", ".join(missing_columns)
+            )
+        if missing_index:
+            details.append(
+                "missing unique index " + SUMMARY_OUTBOX_REQUIRED_UNIQUE_INDEX
+            )
+
+        error_message = (
+            "RFFUSION_SUMMARY.SUMMARY_OUTBOX is not in the canonical scope-only "
+            f"schema ({'; '.join(details)}). Recreate `RFFUSION_SUMMARY` from "
+            f"`{SUMMARY_OUTBOX_CANONICAL_SCHEMA_SCRIPT}`."
+        )
+        self._summary_outbox_schema_error = error_message
+        self._log_db_error(
+            "summary_outbox_schema_invalid",
+            operation="validate_summary_outbox_schema",
+            missing_columns=",".join(missing_columns) if missing_columns else None,
+            missing_unique_index=(
+                SUMMARY_OUTBOX_REQUIRED_UNIQUE_INDEX if missing_index else None
+            ),
+            canonical_schema_script=SUMMARY_OUTBOX_CANONICAL_SCHEMA_SCRIPT,
+        )
+        raise RuntimeError(error_message)
+
     def summary_enqueue_refresh(
         self,
         *,
@@ -381,11 +515,12 @@ class DBHandlerBase:
         commit: Optional[bool] = None,
     ) -> int:
         """
-        Append one dirty-scope event into `BPDATA.SUMMARY_OUTBOX`.
+        Append one dirty-scope request into `RFFUSION_SUMMARY.SUMMARY_OUTBOX`.
 
-        Callers describe which operational or analytical scope changed; the
-        summary worker later coalesces many such events into one refresh cycle.
-        An event is only written when at least one non-empty scope is provided.
+        The outbox keeps one pending row per dirty key (`host`, `site`,
+        `equipment`, `reference_month`, or `full_reconcile`). Re-publishing
+        the same key uses `REPLACE INTO`, which refreshes the pending row with
+        a fresh `ID_OUTBOX`.
 
         Args:
             host_ids: IDs of HOST rows whose file counts or errors changed.
@@ -403,8 +538,8 @@ class DBHandlerBase:
                 caller is not inside an explicit ``begin_transaction()`` block.
 
         Returns:
-            int: ``lastrowid`` of the inserted outbox row, or 0 when all
-                provided scopes were empty and no event was written.
+            int: Number of dirty keys published, or ``0`` when all provided
+                scopes were empty and no outbox row was written.
         """
         normalized_host_ids = sorted(
             {
@@ -446,42 +581,41 @@ class DBHandlerBase:
             and not full_reconcile
         ):
             return 0
-
-        # The outbox stores invalidation scope, not precomputed summary rows.
-        payload = {
-            "host_ids": normalized_host_ids,
-            "site_ids": normalized_site_ids,
-            "equipment_ids": normalized_equipment_ids,
-            "reference_months": normalized_months,
-            "full_reconcile": bool(full_reconcile),
-            "reason": reason,
-        }
-        row = {
-            "NA_EVENT_TYPE": "summary_dirty",
-            "NA_SOURCE_HANDLER": (
-                source_handler
-                or getattr(self, "__class__", type(self)).__name__
-            ),
-            "JS_PAYLOAD": json.dumps(
-                payload,
-                ensure_ascii=True,
-                sort_keys=True,
-            ),
-        }
+        source_handler_name = (
+            source_handler
+            or getattr(self, "__class__", type(self)).__name__
+        )
 
         self._connect()
         try:
+            self._assert_summary_outbox_schema()
             auto_commit = (
                 not getattr(self, "in_transaction", False)
                 if commit is None
                 else bool(commit)
             )
-            return self._insert_row(
-                table="BPDATA.SUMMARY_OUTBOX",
-                data=row,
-                commit=auto_commit,
-                log_success=False,
+            scope_rows = self._build_summary_scope_rows(
+                source_handler=source_handler_name,
+                reason=reason,
+                host_ids=normalized_host_ids,
+                site_ids=normalized_site_ids,
+                equipment_ids=normalized_equipment_ids,
+                reference_months=normalized_months,
+                full_reconcile=bool(full_reconcile),
             )
+            if not scope_rows:
+                return 0
+
+            self._execute_many_custom(
+                (
+                    f"REPLACE INTO {SUMMARY_OUTBOX_TABLE} "
+                    "(NA_SCOPE_TYPE, NA_SCOPE_VALUE, NA_SOURCE_HANDLER, NA_REASON) "
+                    "VALUES (%s, %s, %s, %s)"
+                ),
+                scope_rows,
+                commit=auto_commit,
+            )
+            return len(scope_rows)
         finally:
             self._disconnect()
 

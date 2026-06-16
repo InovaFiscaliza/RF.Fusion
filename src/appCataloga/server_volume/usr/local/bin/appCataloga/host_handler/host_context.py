@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime
 from collections.abc import Iterator
+from typing import Callable
 from shared.file_metadata import FileMetadata
 from shared.filter import Filter
 from shared.logging_utils import log
@@ -30,14 +32,43 @@ import config as k  # noqa: E402
 from .host_connectivity import resolve_host_addresses
 from .host_ssh_utils import sftpConnection
 
+
+def _metadata_incremental_cutoff(last_dt: datetime | None) -> str | None:
+    """Return the safe cutoff for incremental remote metadata discovery.
+
+    CelPlan `.zip` files can appear after the exact last DB timestamp. Using
+    the start of the previous month keeps the current month safe from misses.
+    """
+    if last_dt is None:
+        return None
+
+    current_month_start = last_dt.replace(
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    if current_month_start.month == 1:
+        previous_month_start = current_month_start.replace(
+            year=current_month_start.year - 1,
+            month=12,
+        )
+    else:
+        previous_month_start = current_month_start.replace(
+            month=current_month_start.month - 1,
+        )
+    return previous_month_start.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def iter_metadata_files(
     sftp_conn: sftpConnection,
     log: log,
     hostname: str,
     host_id: int,
     filter_obj: Filter,
-    callBackCheckFile,
-    callBackGetLastDBDate,
+    callBackCheckFile: Callable[..., list[FileMetadata]],
+    callBackGetLastDBDate: Callable[[int], datetime | None],
     *,
     batch_size: int = 1000,
 ) -> Iterator[list[FileMetadata]]:
@@ -48,7 +79,7 @@ def iter_metadata_files(
     Memory use is bounded by `batch_size`.
 
     Discovery modes come from `Filter`:
-        - NONE / DEFAULT:  incremental using the last DB timestamp
+        - NONE / DEFAULT:  incremental using the safe monthly cutoff
         - FILE:            explicit file list (timestamp ignored)
         - REDISCOVERY:     full rescan (timestamp ignored)
     """
@@ -62,8 +93,7 @@ def iter_metadata_files(
     newer_than = None
     if mode != Filter.MODE_FILE:
         last_dt = callBackGetLastDBDate(host_id)
-        if last_dt:
-            newer_than = last_dt.strftime("%Y-%m-%d %H:%M:%S")
+        newer_than = _metadata_incremental_cutoff(last_dt)
 
     # REDISCOVERY ignores the DB cutoff on purpose.
     if mode == Filter.MODE_REDISCOVERY:

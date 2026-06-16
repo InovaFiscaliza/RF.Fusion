@@ -11,13 +11,13 @@ It exists so that the web dashboard and Grafana can query pre-aggregated data
 without touching the transactional databases and without relying on MariaDB stored
 events, which caused heavy deadlocks under concurrent workloads.
 
-The engine is driven by ``appCataloga_rffusion_summary_worker.py``, which runs as
+The engine is driven by ``appCataloga_summary_database.py``, which runs as
 a long-lived daemon.  Each polling loop either:
 
-  * performs a **full reconcile** (once per
-    ``SUMMARY_WORKER_RECONCILE_INTERVAL_SEC``) by calling :meth:`refresh_all`;
+  * performs a **full reconcile** on startup when needed and on the daily
+    02:00 BRT maintenance slot by calling :meth:`refresh_all`;
   * or processes an incremental **outbox batch** by calling
-    :meth:`refresh_for_events`, which coalesces the payload into a
+    :meth:`refresh_for_events`, which coalesces the outbox rows into a
     :class:`DirtyScope` and refreshes only the affected summary objects.
 
 Dependency order of public summary objects
@@ -44,7 +44,9 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
+
+import config as k
 
 if TYPE_CHECKING:
     from db.dbHandlerSummary import dbHandlerSummary
@@ -67,13 +69,6 @@ def _safe_int(value: Any) -> Optional[int]:
     return int(value)
 
 
-def _safe_float(value: Any) -> Optional[float]:
-    """Convert a DB value to ``float``, returning ``None`` for SQL NULLs."""
-    if value is None:
-        return None
-    return float(value)
-
-
 def _coalesce_text(*values: Any) -> Optional[str]:
     """Return the first non-None, non-empty string among the candidates.
 
@@ -94,39 +89,6 @@ def _coalesce_text(*values: Any) -> Optional[str]:
         if text:
             return text
     return None
-
-
-def _error_summary_text(raw_summary: Any, raw_message: Any) -> str:
-    """Return the stable error text used for grouping and dashboard display.
-
-    Prefers the structured ``NA_ERROR_SUMMARY`` field over the free-form
-    ``NA_MESSAGE`` field.  Falls back to ``"(Sem mensagem)"`` when both are
-    empty so that grouping keys are never NULL.
-
-    Args:
-        raw_summary: Value of the ``NA_ERROR_SUMMARY`` column (may be None).
-        raw_message:  Value of the ``NA_MESSAGE`` column (may be None).
-
-    Returns:
-        A non-empty string suitable for use as a grouping key.
-    """
-    return _coalesce_text(raw_summary, raw_message, "(Sem mensagem)") or "(Sem mensagem)"
-
-
-def _summary_hash(summary: str) -> str:
-    """Generate the deterministic SHA-256 hex digest used as the grouping key.
-
-    Stored in ``NA_ERROR_SUMMARY_HASH`` so that rows with identical error text
-    can be matched across refreshes without a full-text column comparison.
-    The hash is over the UTF-8 encoding of the summary string.
-
-    Args:
-        summary: A non-empty error summary string (see :func:`_error_summary_text`).
-
-    Returns:
-        64-character lowercase hex string.
-    """
-    return hashlib.sha256(summary.encode("utf-8")).hexdigest()
 
 
 def _kb_to_gb(value_kb: Any) -> float:
@@ -371,37 +333,18 @@ def _build_locality_label(row: Dict[str, Any]) -> str:
     return label.strip()
 
 
-def _sort_key_for_event_time(row: Dict[str, Any]) -> Tuple[datetime, int]:
-    """Return a comparable key for ordering error events newest-first.
-
-    Used when updating the ``DT_LAST_SEEN_AT`` / ``ID_LAST_SOURCE_ROW`` fields
-    of an error group bucket: the incoming row replaces the stored "last" only
-    when its sort key is greater-or-equal.
-
-    Args:
-        row: A canonical error event dict (output of :meth:`_read_error_events`).
-             Uses ``DT_EVENT_AT`` and ``ID_SOURCE_ROW``.
-
-    Returns:
-        A ``(datetime, int)`` tuple suitable for direct ``>=`` comparison.
-        Falls back to ``datetime(1970, 1, 1)`` / ``0`` for NULL fields.
-    """
-    event_at = row.get("DT_EVENT_AT") or datetime(1970, 1, 1)
-    source_row = int(row.get("ID_SOURCE_ROW") or 0)
-    return event_at, source_row
-
-
 class DirtyScope:
-    """Coalesced invalidation scope extracted from one outbox batch.
+    """Coalesced invalidation scope extracted from canonical outbox rows.
 
-    Each ``SUMMARY_OUTBOX`` event carries a JSON payload describing which
-    entities were touched (host IDs, site IDs, equipment IDs, reference months).
-    ``DirtyScope`` merges all events in a batch into a single set of affected
-    keys so that the engine can refresh only the minimum set of summary objects.
+    Each ``SUMMARY_OUTBOX`` row carries one explicit dirty-scope key
+    (host/site/equipment/reference_month/full_reconcile). ``DirtyScope`` merges
+    a batch of those rows into one consolidated set of affected keys so the
+    engine can refresh only the minimum set of summary objects.
 
-    When any event carries ``{"full_reconcile": true}`` the scope short-circuits:
-    ``full_reconcile`` is set to ``True`` and :meth:`SummaryRefreshEngine.refresh_for_events`
-    delegates to a full :meth:`SummaryRefreshEngine.refresh_all` pass.
+    When any row carries the ``full_reconcile`` scope, the scope short-circuits:
+    ``full_reconcile`` is set to ``True`` and
+    :meth:`SummaryRefreshEngine.refresh_for_events` delegates to a full
+    :meth:`SummaryRefreshEngine.refresh_all` pass.
 
     Attributes:
         host_ids:         FK_HOST values invalidated by this batch.
@@ -412,7 +355,7 @@ class DirtyScope:
     """
 
     def __init__(self) -> None:
-        """Initialize an empty scope; populate via :meth:`from_events`."""
+        """Initialize an empty scope; populate via :meth:`from_outbox_rows`."""
         self.host_ids: set[int] = set()
         self.site_ids: set[int] = set()
         self.equipment_ids: set[int] = set()
@@ -420,45 +363,52 @@ class DirtyScope:
         self.full_reconcile: bool = False
 
     @classmethod
-    def from_events(cls, events: Sequence[Dict[str, Any]]) -> "DirtyScope":
-        """Merge many outbox event rows into one consolidated refresh scope.
-
-        Each event's ``JS_PAYLOAD`` dict may contain any subset of:
-        ``host_ids``, ``site_ids``, ``equipment_ids``, ``reference_months``,
-        ``full_reconcile``.  All present values are union-merged across events.
+    def from_outbox_rows(cls, rows: Sequence[Dict[str, Any]]) -> "DirtyScope":
+        """Merge many canonical outbox rows into one consolidated refresh scope.
 
         Args:
-            events: List of dicts as returned by
-                    :meth:`dbHandlerSummary.read_outbox_batch`.  The
-                    ``JS_PAYLOAD`` field must already be a parsed dict
-                    (not a raw JSON string).
+            rows: List of dicts as returned by
+                  :meth:`dbHandlerSummary.read_outbox_batch`.
 
         Returns:
             A populated :class:`DirtyScope` instance.
+
+        Raises:
+            RuntimeError: When one outbox row has an invalid scope type or value.
         """
         scope = cls()
-        for event in events:
-            payload = event.get("JS_PAYLOAD") or {}
-            scope.host_ids.update(
-                int(value) for value in payload.get("host_ids", []) if value is not None
-            )
-            scope.site_ids.update(
-                int(value) for value in payload.get("site_ids", []) if value is not None
-            )
-            scope.equipment_ids.update(
-                int(value) for value in payload.get("equipment_ids", []) if value is not None
-            )
-            scope.reference_months.update(
-                month
-                # Normalise to YYYY-MM-01 and drop values that can't be parsed.
-                for month in (
-                    _month_start(value) for value in payload.get("reference_months", [])
-                )
-                if month is not None
-            )
-            scope.full_reconcile = scope.full_reconcile or bool(
-                payload.get("full_reconcile")
-            )
+        for row in rows:
+            row_id = row.get("ID_OUTBOX")
+            scope_type = row.get("NA_SCOPE_TYPE")
+            scope_value = row.get("NA_SCOPE_VALUE")
+
+            try:
+                if scope_type == k.SUMMARY_SCOPE_HOST:
+                    scope.host_ids.add(int(scope_value))
+                elif scope_type == k.SUMMARY_SCOPE_SITE:
+                    scope.site_ids.add(int(scope_value))
+                elif scope_type == k.SUMMARY_SCOPE_EQUIPMENT:
+                    scope.equipment_ids.add(int(scope_value))
+                elif scope_type == k.SUMMARY_SCOPE_REFERENCE_MONTH:
+                    normalized_month = _month_start(scope_value)
+                    if normalized_month is None:
+                        raise ValueError(f"invalid reference month {scope_value!r}")
+                    scope.reference_months.add(normalized_month)
+                elif scope_type == k.SUMMARY_SCOPE_FULL_RECONCILE:
+                    if str(scope_value) != k.SUMMARY_SCOPE_FULL_RECONCILE_KEY:
+                        raise ValueError(
+                            f"invalid full_reconcile key {scope_value!r}"
+                        )
+                    scope.full_reconcile = True
+                else:
+                    raise ValueError(f"unknown scope type {scope_type!r}")
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "Invalid SUMMARY_OUTBOX row "
+                    f"ID_OUTBOX={row_id!r} "
+                    f"NA_SCOPE_TYPE={scope_type!r} "
+                    f"NA_SCOPE_VALUE={scope_value!r}: {exc}"
+                ) from exc
         return scope
 
 
@@ -486,35 +436,18 @@ class SummaryRefreshEngine:
         Args:
             db:     A connected :class:`dbHandlerSummary` instance.
             logger: Application logger supporting ``.event()``,
-                    ``.warning_event()``, and ``.error_event()`` methods.
+                    and ``.warning_event()`` methods.
         """
         self.db = db
         self.log = logger
 
-    def _event(self, event: str, **fields: Any) -> None:
-        """Emit one structured summary-engine event."""
-        self.log.event(
-            event,
-            component="summary_engine",
-            **fields,
-        )
-
-    def _warning_event(self, event: str, **fields: Any) -> None:
-        """Emit one structured summary-engine warning."""
-        self.log.warning_event(
-            event,
-            component="summary_engine",
-            **fields,
-        )
-
     def refresh_all(self, *, reason: str) -> List[str]:
         """Rebuild every public summary object in dependency order.
 
-        This is the **full reconcile** path.  It is triggered at worker startup
-        and then once per ``SUMMARY_WORKER_RECONCILE_INTERVAL_SEC`` (default:
-        daily).  All summary tables are rebuilt from scratch using the
-        ``replace_table_rows`` strategy (truncate + bulk-insert) when no
-        incremental scope is available.
+        This is the **full reconcile** path.  It runs at worker startup when
+        freshness requires it and on the scheduled daily reconcile window.
+        All summary tables are rebuilt from scratch using the
+        ``replace_table_rows`` strategy (truncate + bulk-insert).
 
         Args:
             reason: Free-form label logged with the completion event
@@ -523,20 +456,24 @@ class SummaryRefreshEngine:
         Returns:
             Ordered list of object names that were successfully refreshed.
         """
-        refreshed: List[str] = []
-        # Keep the sequence explicit because later tables depend on earlier ones.
-        refreshed.append(self._run_refresh("SITE_EQUIPMENT_OBS_SUMMARY", self._refresh_site_equipment_obs_summary))
-        refreshed.append(self._run_refresh("HOST_EQUIPMENT_LINK", self._refresh_host_equipment_link))
-        refreshed.append(self._run_refresh("HOST_LOCATION_SUMMARY", self._refresh_host_location_summary))
-        refreshed.append(self._run_refresh("MAP_SITE_STATION_SUMMARY", self._refresh_map_site_station_summary))
-        refreshed.append(self._run_refresh("MAP_SITE_SUMMARY", self._refresh_map_site_summary))
-        refreshed.append(self._run_refresh("HOST_MONTHLY_METRIC", self._refresh_host_monthly_metric))
-        refreshed.append(self._run_refresh("HOST_ERROR_SUMMARY", self._refresh_host_error_summary))
-        refreshed.append(self._run_refresh("SERVER_ERROR_SUMMARY", self._refresh_server_error_summary))
-        refreshed.append(self._run_refresh("HOST_CURRENT_SNAPSHOT", self._refresh_host_current_snapshot))
-        refreshed.append(self._run_refresh("SERVER_CURRENT_SUMMARY", self._refresh_server_current_summary))
-        self._event(
+        refreshed = [
+            self._run_refresh(object_name, refresh_fn)
+            for object_name, refresh_fn in (
+                ("SITE_EQUIPMENT_OBS_SUMMARY", self._refresh_site_equipment_obs_summary),
+                ("HOST_EQUIPMENT_LINK", self._refresh_host_equipment_link),
+                ("HOST_LOCATION_SUMMARY", self._refresh_host_location_summary),
+                ("MAP_SITE_STATION_SUMMARY", self._refresh_map_site_station_summary),
+                ("MAP_SITE_SUMMARY", self._refresh_map_site_summary),
+                ("HOST_MONTHLY_METRIC", self._refresh_host_monthly_metric),
+                ("HOST_ERROR_SUMMARY", self._refresh_host_error_summary),
+                ("SERVER_ERROR_SUMMARY", self._refresh_server_error_summary),
+                ("HOST_CURRENT_SNAPSHOT", self._refresh_host_current_snapshot),
+                ("SERVER_CURRENT_SUMMARY", self._refresh_server_current_summary),
+            )
+        ]
+        self.log.event(
             "summary_full_reconcile_completed",
+            component="summary_engine",
             operation="refresh_all",
             reason=reason,
             objects=refreshed,
@@ -556,29 +493,27 @@ class SummaryRefreshEngine:
         - ``host_ids`` or ``reference_months`` → HOST_MONTHLY_METRIC,
           HOST_ERROR_SUMMARY, SERVER_ERROR_SUMMARY.
         - Any of the above → HOST_CURRENT_SNAPSHOT, SERVER_CURRENT_SUMMARY.
-        - ``full_reconcile`` flag in any event payload → delegates to
-          :meth:`refresh_all`.
+        - ``full_reconcile`` outbox scope → delegates to :meth:`refresh_all`.
 
         For objects that support scoped incremental refresh the engine uses the
         delete-then-upsert strategy: it deletes only the rows matching the dirty
         scope and re-inserts the freshly computed rows for those keys.
 
         Args:
-            events: List of outbox event dicts as returned by
+            events: List of outbox row dicts as returned by
                     :meth:`dbHandlerSummary.read_outbox_batch`.
 
         Returns:
             List of object names that were actually refreshed (empty if the
             scope contained no relevant keys).
         """
-        scope = DirtyScope.from_events(events)
+        scope = DirtyScope.from_outbox_rows(events)
         if scope.full_reconcile:
             return self.refresh_all(reason="outbox_full_reconcile")
 
         refreshed: List[str] = []
 
         if scope.site_ids or scope.equipment_ids:
-            # Site/equipment changes fan out into link and map read models first.
             refreshed.append(
                 self._run_refresh(
                     "SITE_EQUIPMENT_OBS_SUMMARY",
@@ -588,13 +523,15 @@ class SummaryRefreshEngine:
                     ),
                 )
             )
-            refreshed.append(self._run_refresh("HOST_EQUIPMENT_LINK", self._refresh_host_equipment_link))
-            refreshed.append(self._run_refresh("HOST_LOCATION_SUMMARY", self._refresh_host_location_summary))
-            refreshed.append(self._run_refresh("MAP_SITE_STATION_SUMMARY", self._refresh_map_site_station_summary))
-            refreshed.append(self._run_refresh("MAP_SITE_SUMMARY", self._refresh_map_site_summary))
+            for object_name, refresh_fn in (
+                ("HOST_EQUIPMENT_LINK", self._refresh_host_equipment_link),
+                ("HOST_LOCATION_SUMMARY", self._refresh_host_location_summary),
+                ("MAP_SITE_STATION_SUMMARY", self._refresh_map_site_station_summary),
+                ("MAP_SITE_SUMMARY", self._refresh_map_site_summary),
+            ):
+                refreshed.append(self._run_refresh(object_name, refresh_fn))
 
         if scope.host_ids or scope.reference_months:
-            # Host/month scopes drive operational metrics and grouped errors.
             refreshed.append(
                 self._run_refresh(
                     "HOST_MONTHLY_METRIC",
@@ -613,13 +550,16 @@ class SummaryRefreshEngine:
             refreshed.append(self._run_refresh("SERVER_ERROR_SUMMARY", self._refresh_server_error_summary))
 
         if scope.host_ids or scope.site_ids or scope.equipment_ids or scope.reference_months:
-            refreshed.append(self._run_refresh("HOST_CURRENT_SNAPSHOT", self._refresh_host_current_snapshot))
-            refreshed.append(self._run_refresh("SERVER_CURRENT_SUMMARY", self._refresh_server_current_summary))
+            for object_name, refresh_fn in (
+                ("HOST_CURRENT_SNAPSHOT", self._refresh_host_current_snapshot),
+                ("SERVER_CURRENT_SUMMARY", self._refresh_server_current_summary),
+            ):
+                refreshed.append(self._run_refresh(object_name, refresh_fn))
 
-        refreshed = [name for name in refreshed if name]
         if refreshed:
-            self._event(
+            self.log.event(
                 "summary_incremental_refresh_completed",
+                component="summary_engine",
                 operation="refresh_for_events",
                 refreshed=refreshed,
                 host_ids=sorted(scope.host_ids),
@@ -630,17 +570,22 @@ class SummaryRefreshEngine:
             )
         return refreshed
 
-    def _run_refresh(self, object_name: str, refresh_fn) -> str:
+    def _run_refresh(
+        self,
+        object_name: str,
+        refresh_fn: Callable[[], Tuple[int, str]],
+    ) -> str:
         """Execute one refresh step with lifecycle bookkeeping.
 
         Calls ``refresh_fn()``, which must return ``(row_count, watermark)``.
-        Before the call, :meth:`dbHandlerSummary.summary_refresh_start` records
-        the start timestamp.  On success, :meth:`dbHandlerSummary.summary_refresh_success`
-        records the result; on exception, :meth:`dbHandlerSummary.summary_refresh_failure`
-        records the error and re-raises so the worker loop can catch it.
+        The start timestamp is captured locally. On success,
+        :meth:`dbHandlerSummary.summary_refresh_success` appends the success row
+        to the rolling audit log; on exception,
+        :meth:`dbHandlerSummary.summary_refresh_failure` appends the failure row
+        and re-raises so the worker loop can catch it.
 
         Args:
-            object_name: The summary table name (used as the state-table key).
+            object_name: The summary table name used in the audit log.
             refresh_fn:  A zero-argument callable returning ``(int, str)``:
                          ``(row_count, high_watermark)``.
 
@@ -650,7 +595,7 @@ class SummaryRefreshEngine:
         Raises:
             Exception: Whatever ``refresh_fn`` raises, after recording failure.
         """
-        started_at = self.db.summary_refresh_start(object_name)
+        started_at = datetime.utcnow()
         try:
             row_count, watermark = refresh_fn()
         except Exception as exc:
@@ -972,7 +917,8 @@ class SummaryRefreshEngine:
         For equipment with multiple candidate hosts only the highest-confidence
         match is marked ``IS_PRIMARY_LINK = 1`` (single best match, no tie).
         All candidates are written with ``IS_ACTIVE = 1`` so callers can audit
-        the full matching landscape.
+        the full matching landscape. The public table keeps only the fields
+        consumed by downstream summary builders and ``webfusion`` readers.
 
         Write strategy: always ``replace_table_rows`` (full rebuild) because
         the reconciliation is global and any host or equipment rename can affect
@@ -1104,7 +1050,6 @@ class SummaryRefreshEngine:
         for candidate in candidates.values():
             grouped_by_equipment.setdefault(candidate["FK_EQUIPMENT"], []).append(candidate)
 
-        refresh_time = datetime.utcnow()
         payload_rows: List[Dict[str, Any]] = []
         # Tiebreaker rank when confidence and is_manual are equal (lower is better).
         match_type_rank = {
@@ -1138,10 +1083,14 @@ class SummaryRefreshEngine:
             for index, candidate in enumerate(equipment_candidates):
                 payload_rows.append(
                     {
-                        **candidate,
+                        "FK_HOST": candidate["FK_HOST"],
+                        "FK_EQUIPMENT": candidate["FK_EQUIPMENT"],
+                        "NA_EQUIPMENT": candidate["NA_EQUIPMENT"],
+                        "NA_MATCH_TYPE": candidate["NA_MATCH_TYPE"],
+                        "VL_MATCH_CONFIDENCE": candidate["VL_MATCH_CONFIDENCE"],
+                        "IS_MANUAL_OVERRIDE": candidate["IS_MANUAL_OVERRIDE"],
                         "IS_PRIMARY_LINK": 1 if index == 0 and top_tie_count == 1 else 0,
                         "IS_ACTIVE": 1,
-                        "DT_REFRESHED_AT": refresh_time,
                     }
                 )
 
@@ -1573,7 +1522,6 @@ class SummaryRefreshEngine:
             SELECT
                 f.FK_HOST,
                 DATE_FORMAT(f.DT_FILE_CREATED_HOST, '%Y-%m-01') AS DT_REFERENCE_MONTH,
-                h.NA_HOST_NAME,
                 COUNT(*) AS NU_DISCOVERED_FILES,
                 ROUND(COALESCE(SUM(f.VL_FILE_SIZE_KB_HOST), 0) / 1024 / 1024, 2) AS VL_DISCOVERED_GB,
                 SUM(CASE WHEN f.NU_STATUS_BACKUP = 0 THEN 1 ELSE 0 END) AS NU_BACKUP_DONE_FILES,
@@ -1589,18 +1537,14 @@ class SummaryRefreshEngine:
                 SUM(CASE WHEN f.NU_STATUS_PROCESSING = -1 THEN 1 ELSE 0 END) AS NU_PROCESSING_ERROR_FILES,
                 ROUND(COALESCE(SUM(CASE WHEN f.NU_STATUS_PROCESSING = -1 THEN f.VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_ERROR_GB
             FROM BPDATA.FILE_TASK_HISTORY f
-            JOIN BPDATA.HOST h
-              ON h.ID_HOST = f.FK_HOST
             WHERE {" AND ".join(clauses)}
             GROUP BY
                 f.FK_HOST,
-                DATE_FORMAT(f.DT_FILE_CREATED_HOST, '%Y-%m-01'),
-                h.NA_HOST_NAME
+                DATE_FORMAT(f.DT_FILE_CREATED_HOST, '%Y-%m-01')
             """,
             params,
         )
 
-        refreshed_at = datetime.utcnow()
         payload_rows = []
         invalid_rows = []
         for row in rows:
@@ -1609,7 +1553,6 @@ class SummaryRefreshEngine:
                 invalid_rows.append(
                     {
                         "FK_HOST": row.get("FK_HOST"),
-                        "NA_HOST_NAME": row.get("NA_HOST_NAME"),
                         "DT_REFERENCE_MONTH": row.get("DT_REFERENCE_MONTH"),
                     }
                 )
@@ -1619,7 +1562,6 @@ class SummaryRefreshEngine:
                 {
                     "FK_HOST": int(row["FK_HOST"]),
                     "DT_REFERENCE_MONTH": reference_month,
-                    "NA_HOST_NAME": row.get("NA_HOST_NAME"),
                     "NU_DISCOVERED_FILES": int(row.get("NU_DISCOVERED_FILES") or 0),
                     "VL_DISCOVERED_GB": row.get("VL_DISCOVERED_GB") or 0,
                     "NU_BACKUP_DONE_FILES": int(row.get("NU_BACKUP_DONE_FILES") or 0),
@@ -1634,13 +1576,13 @@ class SummaryRefreshEngine:
                     "VL_PROCESSING_PENDING_GB": row.get("VL_PROCESSING_PENDING_GB") or 0,
                     "NU_PROCESSING_ERROR_FILES": int(row.get("NU_PROCESSING_ERROR_FILES") or 0),
                     "VL_PROCESSING_ERROR_GB": row.get("VL_PROCESSING_ERROR_GB") or 0,
-                    "DT_REFRESHED_AT": refreshed_at,
                 }
             )
 
         if invalid_rows:
-            self._warning_event(
+            self.log.warning_event(
                 "summary_host_monthly_metric_invalid_month_skipped",
+                component="summary_engine",
                 operation="refresh_host_monthly_metric",
                 skipped=len(invalid_rows),
                 examples=invalid_rows[:5],
@@ -1826,8 +1768,9 @@ class SummaryRefreshEngine:
         Calls :meth:`_read_error_events` to union all four BPDATA error sources,
         then groups the result by
         (FK_HOST, NA_ERROR_SCOPE, NA_ERROR_DOMAIN, NA_ERROR_STAGE, NA_ERROR_CODE,
-        NA_ERROR_SUMMARY_HASH).  Each group tracks error count, first/last seen
-        timestamps, and the most-recent source row details.
+        NA_ERROR_SUMMARY_HASH). Each group tracks error count plus the
+        timestamp and source-row id of the latest event. Older audit-heavy
+        fields are not persisted in the public read model anymore.
 
         The ``NA_ERROR_SUMMARY_HASH`` key lets the table survive mesage text
         changes without creating duplicate rows (grouping is hash-stable).
@@ -1851,80 +1794,66 @@ class SummaryRefreshEngine:
             host_id = _safe_int(row.get("FK_HOST"))
             if host_id is None:
                 continue
-            error_summary = _error_summary_text(
+            error_summary = _coalesce_text(
                 row.get("NA_ERROR_SUMMARY"),
                 row.get("NA_RAW_MESSAGE"),
-            )
+                "(Sem mensagem)",
+            ) or "(Sem mensagem)"
+            error_summary_hash = hashlib.sha256(
+                error_summary.encode("utf-8")
+            ).hexdigest()
             key = (
                 host_id,
-                _coalesce_text(row.get("NA_HOST_NAME"), f"Host {host_id}") or f"Host {host_id}",
                 row.get("NA_ERROR_SCOPE"),
                 row.get("NA_ERROR_DOMAIN"),
                 row.get("NA_ERROR_STAGE"),
                 row.get("NA_ERROR_CODE"),
-                _summary_hash(error_summary),
+                error_summary_hash,
                 error_summary,
             )
             current = grouped.get(key)
             if current is None:
                 current = {
                     "FK_HOST": host_id,
-                    "NA_HOST_NAME": key[1],
-                    "NA_ERROR_SCOPE": key[2],
-                    "NA_ERROR_DOMAIN": key[3],
-                    "NA_ERROR_STAGE": key[4],
-                    "NA_ERROR_CODE": key[5],
-                    "NA_ERROR_SUMMARY_HASH": key[6],
-                    "NA_ERROR_SUMMARY": key[7],
+                    "NA_ERROR_SCOPE": key[1],
+                    "NA_ERROR_DOMAIN": key[2],
+                    "NA_ERROR_STAGE": key[3],
+                    "NA_ERROR_CODE": key[4],
+                    "NA_ERROR_SUMMARY_HASH": key[5],
+                    "NA_ERROR_SUMMARY": key[6],
                     "NU_ERROR_COUNT": 0,
-                    "DT_FIRST_SEEN_AT": row.get("DT_EVENT_AT"),
                     "DT_LAST_SEEN_AT": row.get("DT_EVENT_AT"),
-                    "NA_LAST_SOURCE_TABLE": row.get("NA_SOURCE_TABLE"),
                     "ID_LAST_SOURCE_ROW": row.get("ID_SOURCE_ROW"),
-                    "NA_LAST_ERROR_DETAIL": row.get("NA_ERROR_DETAIL"),
-                    "NA_LAST_RAW_MESSAGE": row.get("NA_RAW_MESSAGE"),
                 }
                 grouped[key] = current
 
             current["NU_ERROR_COUNT"] += 1
-            event_at = row.get("DT_EVENT_AT")
-            if event_at and (
-                current["DT_FIRST_SEEN_AT"] is None or event_at < current["DT_FIRST_SEEN_AT"]
-            ):
-                current["DT_FIRST_SEEN_AT"] = event_at
-            if _sort_key_for_event_time(row) >= (
+            event_sort_key = (
+                row.get("DT_EVENT_AT") or datetime(1970, 1, 1),
+                int(row.get("ID_SOURCE_ROW") or 0),
+            )
+            if event_sort_key >= (
                 current.get("DT_LAST_SEEN_AT") or datetime(1970, 1, 1),
                 int(current.get("ID_LAST_SOURCE_ROW") or 0),
             ):
-                current["DT_LAST_SEEN_AT"] = event_at
-                current["NA_LAST_SOURCE_TABLE"] = row.get("NA_SOURCE_TABLE")
+                current["DT_LAST_SEEN_AT"] = row.get("DT_EVENT_AT")
                 current["ID_LAST_SOURCE_ROW"] = row.get("ID_SOURCE_ROW")
-                current["NA_LAST_ERROR_DETAIL"] = row.get("NA_ERROR_DETAIL")
-                current["NA_LAST_RAW_MESSAGE"] = row.get("NA_RAW_MESSAGE")
 
-        refreshed_at = datetime.utcnow()
-        payload_rows = []
-        for row in grouped.values():
-            payload_rows.append(
-                {
-                    "FK_HOST": row["FK_HOST"],
-                    "NA_HOST_NAME": row["NA_HOST_NAME"],
-                    "NA_ERROR_SCOPE": row["NA_ERROR_SCOPE"],
-                    "NA_ERROR_DOMAIN": row["NA_ERROR_DOMAIN"],
-                    "NA_ERROR_STAGE": row["NA_ERROR_STAGE"],
-                    "NA_ERROR_CODE": row["NA_ERROR_CODE"],
-                    "NA_ERROR_SUMMARY_HASH": row["NA_ERROR_SUMMARY_HASH"],
-                    "NA_ERROR_SUMMARY": row["NA_ERROR_SUMMARY"],
-                    "NU_ERROR_COUNT": int(row["NU_ERROR_COUNT"]),
-                    "DT_FIRST_SEEN_AT": row["DT_FIRST_SEEN_AT"],
-                    "DT_LAST_SEEN_AT": row["DT_LAST_SEEN_AT"],
-                    "NA_LAST_SOURCE_TABLE": row["NA_LAST_SOURCE_TABLE"],
-                    "ID_LAST_SOURCE_ROW": row["ID_LAST_SOURCE_ROW"],
-                    "NA_LAST_ERROR_DETAIL": row["NA_LAST_ERROR_DETAIL"],
-                    "NA_LAST_RAW_MESSAGE": row["NA_LAST_RAW_MESSAGE"],
-                    "DT_REFRESHED_AT": refreshed_at,
-                }
-            )
+        payload_rows = [
+            {
+                "FK_HOST": row["FK_HOST"],
+                "NA_ERROR_SCOPE": row["NA_ERROR_SCOPE"],
+                "NA_ERROR_DOMAIN": row["NA_ERROR_DOMAIN"],
+                "NA_ERROR_STAGE": row["NA_ERROR_STAGE"],
+                "NA_ERROR_CODE": row["NA_ERROR_CODE"],
+                "NA_ERROR_SUMMARY_HASH": row["NA_ERROR_SUMMARY_HASH"],
+                "NA_ERROR_SUMMARY": row["NA_ERROR_SUMMARY"],
+                "NU_ERROR_COUNT": int(row["NU_ERROR_COUNT"]),
+                "DT_LAST_SEEN_AT": row["DT_LAST_SEEN_AT"],
+                "ID_LAST_SOURCE_ROW": row["ID_LAST_SOURCE_ROW"],
+            }
+            for row in grouped.values()
+        ]
 
         if not host_ids:
             self.db.replace_table_rows("HOST_ERROR_SUMMARY", payload_rows)
@@ -1953,8 +1882,8 @@ class SummaryRefreshEngine:
         All per-host error group rows from ``HOST_ERROR_SUMMARY`` are merged
         into cross-host buckets keyed on
         (NA_ERROR_SCOPE, NA_ERROR_DOMAIN, NA_ERROR_STAGE, NA_ERROR_CODE,
-        NA_ERROR_SUMMARY_HASH).  Error counts are summed; first/last-seen
-        and latest source-row details are tracked.
+        NA_ERROR_SUMMARY_HASH). Error counts are summed into the exact UI
+        payload consumed by the global diagnostics page.
 
         Note: all four BPDATA error sources (FILE_TASK_HISTORY, FILE_TASK,
         HOST_TASK) carry a non-NULL FK_HOST in every row, so there are no
@@ -1990,37 +1919,11 @@ class SummaryRefreshEngine:
                     "NA_ERROR_SUMMARY_HASH": key[4],
                     "NA_ERROR_SUMMARY": key[5],
                     "NU_ERROR_COUNT": 0,
-                    "DT_FIRST_SEEN_AT": row.get("DT_FIRST_SEEN_AT"),
-                    "DT_LAST_SEEN_AT": row.get("DT_LAST_SEEN_AT"),
-                    "NA_LAST_SOURCE_TABLE": row.get("NA_LAST_SOURCE_TABLE"),
-                    "ID_LAST_SOURCE_ROW": row.get("ID_LAST_SOURCE_ROW"),
-                    "NA_LAST_ERROR_DETAIL": row.get("NA_LAST_ERROR_DETAIL"),
-                    "NA_LAST_RAW_MESSAGE": row.get("NA_LAST_RAW_MESSAGE"),
                 }
                 grouped[key] = current
 
             current["NU_ERROR_COUNT"] += int(row.get("NU_ERROR_COUNT") or 0)
-            if row.get("DT_FIRST_SEEN_AT") and (
-                current["DT_FIRST_SEEN_AT"] is None
-                or row["DT_FIRST_SEEN_AT"] < current["DT_FIRST_SEEN_AT"]
-            ):
-                current["DT_FIRST_SEEN_AT"] = row["DT_FIRST_SEEN_AT"]
-            row_key = (
-                row.get("DT_LAST_SEEN_AT") or datetime(1970, 1, 1),
-                int(row.get("ID_LAST_SOURCE_ROW") or 0),
-            )
-            current_key = (
-                current.get("DT_LAST_SEEN_AT") or datetime(1970, 1, 1),
-                int(current.get("ID_LAST_SOURCE_ROW") or 0),
-            )
-            if row_key >= current_key:
-                current["DT_LAST_SEEN_AT"] = row.get("DT_LAST_SEEN_AT")
-                current["NA_LAST_SOURCE_TABLE"] = row.get("NA_LAST_SOURCE_TABLE")
-                current["ID_LAST_SOURCE_ROW"] = row.get("ID_LAST_SOURCE_ROW")
-                current["NA_LAST_ERROR_DETAIL"] = row.get("NA_LAST_ERROR_DETAIL")
-                current["NA_LAST_RAW_MESSAGE"] = row.get("NA_LAST_RAW_MESSAGE")
 
-        refreshed_at = datetime.utcnow()
         payload_rows = [
             {
                 "NA_ERROR_SCOPE": row["NA_ERROR_SCOPE"],
@@ -2030,13 +1933,6 @@ class SummaryRefreshEngine:
                 "NA_ERROR_SUMMARY_HASH": row["NA_ERROR_SUMMARY_HASH"],
                 "NA_ERROR_SUMMARY": row["NA_ERROR_SUMMARY"],
                 "NU_ERROR_COUNT": int(row["NU_ERROR_COUNT"]),
-                "DT_FIRST_SEEN_AT": row["DT_FIRST_SEEN_AT"],
-                "DT_LAST_SEEN_AT": row["DT_LAST_SEEN_AT"],
-                "NA_LAST_SOURCE_TABLE": row["NA_LAST_SOURCE_TABLE"],
-                "ID_LAST_SOURCE_ROW": row["ID_LAST_SOURCE_ROW"],
-                "NA_LAST_ERROR_DETAIL": row["NA_LAST_ERROR_DETAIL"],
-                "NA_LAST_RAW_MESSAGE": row["NA_LAST_RAW_MESSAGE"],
-                "DT_REFRESHED_AT": refreshed_at,
             }
             for row in grouped.values()
         ]
@@ -2059,9 +1955,9 @@ class SummaryRefreshEngine:
           the raw ``NU_HOST_FILES`` counter which may lag).
         - ``HOST_EQUIPMENT_LINK`` — matched equipment count.
         - ``SITE_EQUIPMENT_OBS_SUMMARY`` — total spectrum fact count.
-        - ``HOST_LOCATION_SUMMARY`` — current site coordinates and label
+        - ``HOST_LOCATION_SUMMARY`` — current site label and UF
           (most recent ``IS_CURRENT_LOCATION = 1`` row).
-        - ``HOST_ERROR_SUMMARY`` — most recent error scope/code/summary.
+        - ``HOST_ERROR_SUMMARY`` — most recent error code/summary.
 
         BPDATA KB columns are converted to GB by :func:`_kb_to_gb` before
         storage (summary tables use GB throughout).
@@ -2149,7 +2045,12 @@ class SummaryRefreshEngine:
         )
         current_location_rows = self._select(
             """
-            SELECT *
+            SELECT
+                FK_HOST,
+                NA_SITE_LABEL,
+                NA_STATE_CODE,
+                DT_LAST_SEEN_AT,
+                DT_FIRST_SEEN_AT
             FROM HOST_LOCATION_SUMMARY
             WHERE IS_CURRENT_LOCATION = 1
             ORDER BY
@@ -2161,7 +2062,12 @@ class SummaryRefreshEngine:
         )
         last_error_rows = self._select(
             """
-            SELECT *
+            SELECT
+                FK_HOST,
+                NA_ERROR_CODE,
+                NA_ERROR_SUMMARY,
+                DT_LAST_SEEN_AT,
+                ID_LAST_SOURCE_ROW
             FROM HOST_ERROR_SUMMARY
             ORDER BY
                 FK_HOST ASC,
@@ -2184,7 +2090,6 @@ class SummaryRefreshEngine:
             host_id = int(row["FK_HOST"])
             last_error_map.setdefault(host_id, row)
 
-        refreshed_at = datetime.utcnow()
         payload_rows = []
         for host in hosts:
             host_id = int(host["ID_HOST"])
@@ -2210,11 +2115,8 @@ class SummaryRefreshEngine:
                     "DT_LAST_CHECK": host.get("DT_LAST_CHECK"),
                     "NU_HOST_CHECK_ERROR": host.get("NU_HOST_CHECK_ERROR"),
                     "DT_LAST_DISCOVERY": host.get("DT_LAST_DISCOVERY"),
-                    "NU_DONE_FILE_DISCOVERY_TASKS": host.get("NU_DONE_FILE_DISCOVERY_TASKS"),
-                    "NU_ERROR_FILE_DISCOVERY_TASKS": host.get("NU_ERROR_FILE_DISCOVERY_TASKS"),
                     "DT_LAST_BACKUP": host.get("DT_LAST_BACKUP"),
                     "NU_PENDING_FILE_BACKUP_TASKS": host.get("NU_PENDING_FILE_BACKUP_TASKS"),
-                    "NU_DONE_FILE_BACKUP_TASKS": host.get("NU_DONE_FILE_BACKUP_TASKS"),
                     "NU_ERROR_FILE_BACKUP_TASKS": host.get("NU_ERROR_FILE_BACKUP_TASKS"),
                     "NU_BACKUP_DONE_THIS_MONTH": int(backup_month.get("NU_BACKUP_DONE_THIS_MONTH") or 0),
                     "VL_PENDING_BACKUP_GB": _kb_to_gb(host.get("VL_PENDING_BACKUP_KB")),
@@ -2222,7 +2124,6 @@ class SummaryRefreshEngine:
                     "VL_DONE_BACKUP_GB": _kb_to_gb(host.get("VL_DONE_BACKUP_KB")),
                     "DT_LAST_PROCESSING": host.get("DT_LAST_PROCESSING"),
                     "NU_PENDING_FILE_PROCESS_TASKS": host.get("NU_PENDING_FILE_PROCESS_TASKS"),
-                    "NU_DONE_FILE_PROCESS_TASKS": host.get("NU_DONE_FILE_PROCESS_TASKS"),
                     "NU_ERROR_FILE_PROCESS_TASKS": host.get("NU_ERROR_FILE_PROCESS_TASKS"),
                     "NU_HOST_FILES": int(
                         monthly.get("NU_DISCOVERED_FILES_TOTAL")
@@ -2235,17 +2136,11 @@ class SummaryRefreshEngine:
                     "VL_PROCESSING_QUEUE_GB_TOTAL": queue.get("VL_PROCESSING_QUEUE_GB_TOTAL") or 0,
                     "NU_MATCHED_EQUIPMENT_TOTAL": int(link_stats.get("NU_MATCHED_EQUIPMENT_TOTAL") or 0),
                     "NU_FACT_SPECTRUM_TOTAL": int(spectrum_stats.get("NU_FACT_SPECTRUM_TOTAL") or 0),
-                    "FK_CURRENT_SITE": current_location.get("FK_SITE"),
                     "NA_CURRENT_SITE_LABEL": current_location.get("NA_SITE_LABEL"),
                     "NA_CURRENT_STATE_CODE": current_location.get("NA_STATE_CODE"),
-                    "VL_CURRENT_LATITUDE": current_location.get("VL_LATITUDE"),
-                    "VL_CURRENT_LONGITUDE": current_location.get("VL_LONGITUDE"),
-                    "DT_CURRENT_SITE_LAST_SEEN": current_location.get("DT_LAST_SEEN_AT"),
-                    "NA_LAST_ERROR_SCOPE": last_error.get("NA_ERROR_SCOPE"),
                     "NA_LAST_ERROR_CODE": last_error.get("NA_ERROR_CODE"),
                     "NA_LAST_ERROR_SUMMARY": last_error.get("NA_ERROR_SUMMARY"),
                     "DT_LAST_ERROR_AT": last_error.get("DT_LAST_SEEN_AT"),
-                    "DT_REFRESHED_AT": refreshed_at,
                 }
             )
 
@@ -2258,9 +2153,11 @@ class SummaryRefreshEngine:
 
         Aggregates across all rows in ``HOST_CURRENT_SNAPSHOT`` to produce
         server-wide totals (host counts, file counts, queue depths, GB volumes,
-        spectrum count).  Current-month backup throughput is summed from the
-        per-host snapshot fields already materialized from ``DT_BACKUP``, and
-        error-group counts come from ``SERVER_ERROR_SUMMARY``.
+        spectrum count). Current-month backup throughput is summed from the
+        per-host snapshot fields already materialized from ``DT_BACKUP``.
+        Historical processing-done totals come from ``HOST_MONTHLY_METRIC``
+        because the host snapshot no longer persists the redundant lifetime
+        counter copied from ``BPDATA.HOST``.
 
         The table always contains exactly one row with
         ``ID_SUMMARY = 1``.  The month label (``NA_CURRENT_MONTH_LABEL``) uses
@@ -2272,24 +2169,40 @@ class SummaryRefreshEngine:
             ``(1, watermark)`` always (one row written); ``watermark`` is
             ``'hosts=<n>;month=<YYYY-MM>'``.
         """
-        snapshot_rows = self._select("SELECT * FROM HOST_CURRENT_SNAPSHOT")
-        current_month = datetime.utcnow().strftime("%Y-%m-01")
-        server_error_rows = self._select(
+        snapshot_rows = self._select(
             """
             SELECT
-                NA_ERROR_SCOPE,
-                COUNT(*) AS NU_GROUPS
-            FROM SERVER_ERROR_SUMMARY
-            GROUP BY NA_ERROR_SCOPE
+                IS_OFFLINE,
+                IS_BUSY,
+                NU_HOST_FILES,
+                NU_PENDING_FILE_BACKUP_TASKS,
+                VL_PENDING_BACKUP_GB,
+                NU_ERROR_FILE_BACKUP_TASKS,
+                NU_PENDING_FILE_PROCESS_TASKS,
+                NU_ERROR_FILE_PROCESS_TASKS,
+                NU_PROCESSING_QUEUE_FILES_TOTAL,
+                VL_PROCESSING_QUEUE_GB_TOTAL,
+                NU_BACKUP_QUEUE_FILES_TOTAL,
+                VL_BACKUP_QUEUE_GB_TOTAL,
+                NU_FACT_SPECTRUM_TOTAL,
+                NU_BACKUP_DONE_THIS_MONTH,
+                VL_BACKUP_DONE_GB_THIS_MONTH
+            FROM HOST_CURRENT_SNAPSHOT
             """
         )
-
-        error_group_map = {
-            row["NA_ERROR_SCOPE"]: int(row.get("NU_GROUPS") or 0)
-            for row in server_error_rows
-        }
-
-        refreshed_at = datetime.utcnow()
+        processing_totals = self._select(
+            """
+            SELECT
+                COALESCE(SUM(NU_PROCESSING_DONE_FILES), 0) AS NU_PROCESSING_DONE_FILES_TOTAL
+            FROM HOST_MONTHLY_METRIC
+            """
+        )
+        current_month = datetime.utcnow().strftime("%Y-%m-01")
+        processing_done_files_total = 0
+        if processing_totals:
+            processing_done_files_total = int(
+                processing_totals[0].get("NU_PROCESSING_DONE_FILES_TOTAL") or 0
+            )
         payload_row = {
             "ID_SUMMARY": 1,
             "NA_CURRENT_MONTH_LABEL": current_month[:7],
@@ -2304,16 +2217,13 @@ class SummaryRefreshEngine:
             "NU_BACKUP_QUEUE_FILES_TOTAL": sum(int(row.get("NU_BACKUP_QUEUE_FILES_TOTAL") or 0) for row in snapshot_rows),
             "VL_BACKUP_QUEUE_GB_TOTAL": round(sum(float(row.get("VL_BACKUP_QUEUE_GB_TOTAL") or 0) for row in snapshot_rows), 2),
             "NU_PROCESSING_PENDING_FILES_TOTAL": sum(int(row.get("NU_PENDING_FILE_PROCESS_TASKS") or 0) for row in snapshot_rows),
-            "NU_PROCESSING_DONE_FILES_TOTAL": sum(int(row.get("NU_DONE_FILE_PROCESS_TASKS") or 0) for row in snapshot_rows),
+            "NU_PROCESSING_DONE_FILES_TOTAL": processing_done_files_total,
             "NU_PROCESSING_ERROR_FILES_TOTAL": sum(int(row.get("NU_ERROR_FILE_PROCESS_TASKS") or 0) for row in snapshot_rows),
             "NU_PROCESSING_QUEUE_FILES_TOTAL": sum(int(row.get("NU_PROCESSING_QUEUE_FILES_TOTAL") or 0) for row in snapshot_rows),
             "VL_PROCESSING_QUEUE_GB_TOTAL": round(sum(float(row.get("VL_PROCESSING_QUEUE_GB_TOTAL") or 0) for row in snapshot_rows), 2),
             "NU_FACT_SPECTRUM_TOTAL": sum(int(row.get("NU_FACT_SPECTRUM_TOTAL") or 0) for row in snapshot_rows),
             "NU_BACKUP_DONE_THIS_MONTH": sum(int(row.get("NU_BACKUP_DONE_THIS_MONTH") or 0) for row in snapshot_rows),
             "VL_BACKUP_DONE_GB_THIS_MONTH": round(sum(float(row.get("VL_BACKUP_DONE_GB_THIS_MONTH") or 0) for row in snapshot_rows), 2),
-            "NU_BACKUP_ERROR_GROUPS": int(error_group_map.get("BACKUP", 0)),
-            "NU_PROCESSING_ERROR_GROUPS": int(error_group_map.get("PROCESSING", 0)),
-            "DT_REFRESHED_AT": refreshed_at,
         }
 
         self.db.replace_table_rows("SERVER_CURRENT_SUMMARY", [payload_row])

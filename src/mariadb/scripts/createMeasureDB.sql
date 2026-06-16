@@ -1,5 +1,5 @@
 /* =====================================================================
-   createMeasureDB-v5.sql
+   createMeasureDB.sql
    - Canonical RFDATA schema reconciled with the live MariaDB instance
    - Preserves bootstrap LOAD DATA statements for static dimensions
    ===================================================================== */

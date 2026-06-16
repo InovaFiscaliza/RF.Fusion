@@ -441,8 +441,6 @@ def insert_spectra_batch(
     equipment_cache = {}
     measure_unit_cache = {}
     spectrum_id_cache = {}
-    duplicate_spectrum_hits = 0
-    spectrum_batch_started = time.monotonic()
 
     # The original host-side file is always part of the lineage. The finalized
     # repository artifact is registered later in the flow as a second file row.
@@ -531,7 +529,6 @@ def insert_spectra_batch(
             # second identical measurement. appAnalise occasionally emits
             # repeated rows when trace periods overlap at file boundaries.
             spectrum_ids.append(spectrum_id_cache[spectrum_identity_key])
-            duplicate_spectrum_hits += 1
             continue
 
         spectrum_id = db_rfm.insert_spectrum(spectrum_row)
@@ -541,27 +538,43 @@ def insert_spectra_batch(
     if host_file_id is not None:
         db_rfm.insert_bridge_spectrum_file(spectrum_ids, [host_file_id])
 
-    if logger is not None:
-        unique_spectrum_ids = len(set(spectrum_ids))
-        spectrum_id_min = min(spectrum_ids) if spectrum_ids else None
-        spectrum_id_max = max(spectrum_ids) if spectrum_ids else None
-        logger.event(
-            "fact_spectrum_batch_staged",
-            component="appanalise_processing",
-            operation="insert_spectra_batch",
-            spectra=len(spectrum_ids),
-            unique_spectrum_ids=unique_spectrum_ids,
-            spectrum_id_min=spectrum_id_min,
-            spectrum_id_max=spectrum_id_max,
-            unique_spectrum_keys=len(spectrum_id_cache),
-            duplicate_spectrum_hits=duplicate_spectrum_hits,
-            unique_trace_types=len(trace_type_cache),
-            unique_equipments=len(equipment_cache),
-            unique_measure_units=len(measure_unit_cache),
-            bridge_file_links=len(spectrum_ids),
-            duration_sec=round(time.monotonic() - spectrum_batch_started, 3),
-        )
     return spectrum_ids
+
+
+def _log_processing_completion(
+    *,
+    logger: logger_type,
+    service_name: str,
+    task: dict,
+    work_started_at: float,
+    process_elapsed_sec: float,
+    site_elapsed_sec: float,
+    db_elapsed_sec: float,
+    finalize_elapsed_sec: float,
+    resolved_site_ids: list[int],
+    spectrum_ids: list[int],
+    new_path: str,
+    file_meta: dict,
+) -> None:
+    """Emit one standardized per-file completion log for the domain flow."""
+    logger.task_phase(
+        service_name,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        phase="processing_completed",
+        elapsed_sec=round(time.monotonic() - work_started_at, 3),
+        since_start_sec=round(time.monotonic() - work_started_at, 3),
+        file=task["filename"],
+        export=task["export"],
+        process_sec=process_elapsed_sec,
+        site_sec=site_elapsed_sec,
+        db_sec=db_elapsed_sec,
+        finalize_sec=finalize_elapsed_sec,
+        resolved_sites=len(set(resolved_site_ids)) if resolved_site_ids else 0,
+        persisted_spectra=len(spectrum_ids),
+        final_file=os.path.join(new_path, file_meta["file_name"]),
+    )
 
 
 def run_processing_flow(
@@ -576,8 +589,8 @@ def run_processing_flow(
     Execute the full appAnalise domain pipeline for one FILE_TASK.
 
     The worker entrypoint owns queue lifecycle and total elapsed time. This
-    domain flow owns the real processing stages and emits `task_phase` when
-    each stage completes.
+    domain flow owns the processing stages and emits one completion log for
+    the per-file domain pipeline.
     """
     work_started_at = time.monotonic()
 
@@ -590,34 +603,11 @@ def run_processing_flow(
         export=task["export"],
     )
     process_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
-    logger.task_phase(
-        service_name,
-        host_id=task["host_id"],
-        task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        phase="process",
-        elapsed_sec=process_elapsed_sec,
-        since_start_sec=round(time.monotonic() - work_started_at, 3),
-        file=task["filename"],
-        export=task["export"],
-    )
-
     # SITE resolution stays outside the transaction because geocoding and
     # locality reconciliation are slower and fail differently from DB writes.
     phase_started_at = time.monotonic()
     resolved_site_ids = resolve_spectrum_sites(db_rfm, bin_data, logger=logger)
     site_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
-    logger.task_phase(
-        service_name,
-        host_id=task["host_id"],
-        task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        phase="site",
-        elapsed_sec=site_elapsed_sec,
-        since_start_sec=round(time.monotonic() - work_started_at, 3),
-        file=task["filename"],
-        resolved_sites=len(set(resolved_site_ids)) if resolved_site_ids else 0,
-    )
 
     # The DB phase writes the host-side source lineage and the spectra rows
     # before any repository artifact is promoted to its final location.
@@ -641,17 +631,6 @@ def run_processing_flow(
         logger=logger,
     )
     db_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
-    logger.task_phase(
-        service_name,
-        host_id=task["host_id"],
-        task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        phase="db",
-        elapsed_sec=db_elapsed_sec,
-        since_start_sec=round(time.monotonic() - work_started_at, 3),
-        file=task["filename"],
-        spectra=len(spectrum_ids),
-    )
 
     # Finalization promotes the canonical repository artifact and then records
     # that second file lineage against the same persisted spectra.
@@ -678,17 +657,19 @@ def run_processing_flow(
     db_rfm.insert_bridge_spectrum_file(spectrum_ids, [server_file_id])
     db_rfm.commit()
     finalize_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
-    logger.task_phase(
-        service_name,
-        host_id=task["host_id"],
-        task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        phase="finalize",
-        elapsed_sec=finalize_elapsed_sec,
-        since_start_sec=round(time.monotonic() - work_started_at, 3),
-        file=task["filename"],
-        persisted_spectra=len(spectrum_ids),
-        final_file=os.path.join(new_path, file_meta["file_name"]),
+    _log_processing_completion(
+        logger=logger,
+        service_name=service_name,
+        task=task,
+        work_started_at=work_started_at,
+        process_elapsed_sec=process_elapsed_sec,
+        site_elapsed_sec=site_elapsed_sec,
+        db_elapsed_sec=db_elapsed_sec,
+        finalize_elapsed_sec=finalize_elapsed_sec,
+        resolved_site_ids=resolved_site_ids,
+        spectrum_ids=spectrum_ids,
+        new_path=new_path,
+        file_meta=file_meta,
     )
 
     # The worker finalizes queue state later. The domain returns only the

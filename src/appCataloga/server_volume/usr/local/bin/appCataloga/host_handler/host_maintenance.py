@@ -55,6 +55,29 @@ class HostSweepResult(TypedDict):
     recovery_probe: bool
 
 
+def _log_maintenance_state_change(
+    *,
+    log: logger_type,
+    host: HostSnapshot,
+    previous_state: str,
+    current_state: str,
+    reason: str,
+) -> None:
+    """Emit one maintenance-specific state-change event for a host."""
+
+    log.event(
+        "host_check_all_state_change",
+        component="host_maintenance",
+        operation="process_due_host",
+        host_id=host["ID_HOST"],
+        host=host.get("NA_HOST_NAME"),
+        address=host["NA_HOST_ADDRESS"],
+        previous_state=previous_state,
+        current_state=current_state,
+        reason=reason,
+    )
+
+
 def _probe_host_icmp(host: HostSnapshot, timeout_sec: float) -> bool:
     """Run the lightweight ICMP pre-check for one host snapshot."""
 
@@ -207,6 +230,13 @@ def _persist_recovery_probe_result(
 
     if connectivity["state"] == "online":
         # Only a fully operational result may resume suspended work.
+        _log_maintenance_state_change(
+            log=log,
+            host=host,
+            previous_state="offline",
+            current_state="online",
+            reason=connectivity["reason"],
+        )
         host_connectivity.persist_host_connectivity_state(
             db=db,
             log=log,
@@ -264,6 +294,13 @@ def _persist_offline_confirmation_result(
         )
         return
 
+    _log_maintenance_state_change(
+        log=log,
+        host=host,
+        previous_state="online",
+        current_state="offline",
+        reason=connectivity["reason"],
+    )
     host_connectivity.persist_host_connectivity_state(
         db=db,
         log=log,

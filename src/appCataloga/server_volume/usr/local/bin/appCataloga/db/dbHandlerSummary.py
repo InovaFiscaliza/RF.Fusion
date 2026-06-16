@@ -5,18 +5,19 @@ Summary-domain database handler for the incremental RFFUSION_SUMMARY worker.
 
 This module provides :class:`dbHandlerSummary`, a thin specialization of
 :class:`DBHandlerBase` that adds all the database operations required by the
-``appCataloga_rffusion_summary_worker`` daemon.  It covers four areas:
+``appCataloga_summary_database`` daemon. It covers four areas:
 
-1. **Worker lifecycle state** — reading/writing ``BPDATA.SUMMARY_WORKER_STATE``
+1. **Worker lifecycle state** — reading/writing ``RFFUSION_SUMMARY.SUMMARY_WORKER_STATE``
    so the daemon can persist its outbox checkpoint across restarts and expose
    health status to monitoring.
 
-2. **Outbox consumption** — reading ``BPDATA.SUMMARY_OUTBOX`` rows in order,
-   pruning rows that are already behind the durable checkpoint.
+2. **Outbox consumption** — reading ``RFFUSION_SUMMARY.SUMMARY_OUTBOX`` rows in order,
+   advancing the durable checkpoint, and deleting rows that are already behind
+   that checkpoint.
 
-3. **Refresh audit trail** — writing start/success/failure events to
-   ``SUMMARY_REFRESH_STATE`` and ``SUMMARY_REFRESH_LOG`` for every summary
-   object rebuild attempted by the engine.
+3. **Refresh audit trail** — writing one bounded rolling audit row to
+   ``SUMMARY_REFRESH_LOG`` for every summary object rebuild attempted by the
+   engine.
 
 4. **Write operations for summary tables** — ``replace_table_rows`` (truncate
    + bulk-insert for full-snapshot rebuilds) and ``upsert_rows`` /
@@ -34,29 +35,23 @@ isolation level and lock-wait timeout are configured once at startup via
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
 import config as k
 from .dbHandlerBase import DBHandlerBase
+
+SUMMARY_OUTBOX_TABLE = f"{k.SUMMARY_DATABASE_NAME}.SUMMARY_OUTBOX"
+SUMMARY_WORKER_STATE_TABLE = f"{k.SUMMARY_DATABASE_NAME}.SUMMARY_WORKER_STATE"
 
 
 class dbHandlerSummary(DBHandlerBase):
     """Database handler for all RFFUSION_SUMMARY and outbox operations.
 
     Extends :class:`DBHandlerBase` with high-level methods that encapsulate
-    the SQL statements needed by the ``appCataloga_rffusion_summary_worker``
+    the SQL statements needed by the ``appCataloga_summary_database``
     service.  The :class:`SummaryRefreshEngine` calls these methods; it never
     touches ``_connect`` / ``_disconnect`` or raw SQL directly.
-
-    Attributes:
-        in_transaction (bool): True while a managed explicit transaction opened
-            by :meth:`begin_transaction` is active.  Most methods ignore this
-            flag; the flag is used only by the optional managed-transaction API
-            (begin / commit / rollback) which are available for callers that
-            need to group several writes atomically outside the ``autocommit``
-            default.
     """
 
     def __init__(
@@ -81,56 +76,6 @@ class dbHandlerSummary(DBHandlerBase):
             log=log,
             reuse_connection=reuse_connection,
         )
-        self.in_transaction: bool = False
-
-    def begin_transaction(self) -> None:
-        """Open a managed explicit transaction, disabling autocommit.
-
-        After this call, writes through the base-class helper methods
-        (``_insert_row``, ``_update_row``, etc.) are not committed until
-        :meth:`commit` is called.  Use :meth:`rollback` to abort.
-
-        Note:
-            Most engine methods use per-call ``commit=True`` on the base
-            helpers instead of this API.  The managed-transaction API is
-            provided for future callers that need to group multiple writes
-            atomically.
-        """
-        self.in_transaction = True
-        self._connect()
-        self.db_connection.autocommit = False
-
-    def commit(self) -> None:
-        """Commit the active managed transaction and restore autocommit.
-
-        A no-op if :meth:`begin_transaction` has not been called.
-        Restores ``autocommit=True`` and clears ``in_transaction`` regardless
-        of whether the commit itself succeeds.
-        """
-        if not self.in_transaction:
-            return
-
-        try:
-            self.db_connection.commit()
-        finally:
-            self.db_connection.autocommit = True
-            self.in_transaction = False
-
-    def rollback(self) -> None:
-        """Rollback the active managed transaction and restore autocommit.
-
-        A no-op if :meth:`begin_transaction` has not been called.
-        Restores ``autocommit=True`` and clears ``in_transaction`` regardless
-        of whether the rollback itself succeeds.
-        """
-        if not self.in_transaction:
-            return
-
-        try:
-            self.db_connection.rollback()
-        finally:
-            self.db_connection.autocommit = True
-            self.in_transaction = False
 
     def configure_worker_session(self) -> None:
         """Apply the low-contention session settings for the summary worker.
@@ -162,91 +107,42 @@ class dbHandlerSummary(DBHandlerBase):
             self._disconnect()
 
     def acquire_worker_lock(self, lock_name: str) -> bool:
-        """Attempt to claim a named MariaDB user-lock (non-blocking).
-
-        Uses ``GET_LOCK(name, 0)`` with zero timeout so the call returns
-        immediately if another session holds the lock.  This prevents two
-        summary worker processes from running concurrently.
-
-        Note:
-            In the current worker implementation, lock acquisition is handled
-            directly by the worker's ``lock_db`` connection using
-            :meth:`DBHandlerBase._select_raw` without going through this method.
-            This method is retained for use by alternative callers or testing.
-
-        Args:
-            lock_name: The MariaDB user-lock name (e.g. ``'RFFUSION_SUMMARY_PY_WORKER'``).
-
-        Returns:
-            ``True`` if the lock was acquired, ``False`` if already held.
-        """
+        """Attempt to claim a named MariaDB user-lock without blocking."""
         self._connect()
         try:
             rows = self._select_raw(
                 "SELECT GET_LOCK(%s, 0) AS LOCK_ACQUIRED",
                 (lock_name,),
             )
-            if not rows:
-                return False
-            return bool(rows[0].get("LOCK_ACQUIRED"))
-        finally:
-            self._disconnect()
+            lock_acquired = bool(rows and rows[0].get("LOCK_ACQUIRED"))
+            if lock_acquired:
+                return True
+        except Exception:
+            self._disconnect(force=True)
+            raise
+
+        self._disconnect()
+        return False
 
     def release_worker_lock(self, lock_name: str) -> None:
-        """Release a held named MariaDB user-lock.
-
-        Uses ``RELEASE_LOCK(name)``.  A no-op at the DB level if the lock is
-        not held by this session (MariaDB returns 0, which is silently ignored).
-
-        Note:
-            As with :meth:`acquire_worker_lock`, the worker currently releases
-            the lock directly on the ``lock_db`` connection in its ``finally``
-            block rather than using this method.
-
-        Args:
-            lock_name: The MariaDB user-lock name passed to
-                       :meth:`acquire_worker_lock`.
-        """
-        self._connect()
+        """Release the named user-lock and close the lock-owning connection."""
         try:
             self._select_raw("SELECT RELEASE_LOCK(%s) AS LOCK_RELEASED", (lock_name,))
         finally:
-            self._disconnect()
+            self._disconnect(force=True)
 
-    def disable_sql_event(self, event_name: str) -> None:
-        """Disable the legacy MariaDB event-scheduler refresh path.
-
-        The original RFFUSION_SUMMARY refresh was driven by a scheduled
-        MariaDB event that ran stored procedures.  When the Python worker is
-        deployed, that event should be disabled to avoid double-writes and the
-        deadlocks that motivated the migration.
-
-        Whether this method is called at startup is controlled by the
-        ``SUMMARY_WORKER_DISABLE_SQL_EVENT_ON_START`` config flag.  When the
-        event has already been removed from the schema, the ``ALTER EVENT``
-        statement fails; the worker logs a warning and continues rather than
-        aborting.
-
-        Args:
-            event_name: The MariaDB event name as stored in ``information_schema``
-                        (e.g. ``k.SUMMARY_WORKER_SQL_EVENT_NAME``).
-        """
-        self._connect()
-        try:
-            self._execute_custom(
-                f"ALTER EVENT `{event_name}` DISABLE",
-                commit=True,
-            )
-        finally:
-            self._disconnect()
+    def close(self) -> None:
+        """Close the current connection, if any."""
+        self._disconnect(force=True)
 
     def read_worker_state(self, consumer_name: str) -> Dict[str, Any]:  # noqa: D401
-        """Return the checkpoint row for one consumer, creating it if absent.
+        """Return the state row for one consumer, creating it if absent.
 
-        The state row stores the durable outbox position (``ID_LAST_OUTBOX``)
-        and simple health flags.  If the row does not exist yet (first run after
-        schema initialization), it is inserted with ``ID_LAST_OUTBOX = 0`` so
-        the worker starts reading from the beginning of the outbox.
+        The state row stores the last consumed outbox id (``ID_LAST_OUTBOX``)
+        and simple health flags. If the row does not exist yet (first run
+        after schema initialization), it is inserted with
+        ``ID_LAST_OUTBOX = 0`` so the worker starts from the oldest pending
+        outbox row.
 
         Args:
             consumer_name: The consumer identifier string stored in
@@ -260,7 +156,7 @@ class dbHandlerSummary(DBHandlerBase):
         self._connect()
         try:
             rows = self._select_rows(
-                table="BPDATA.SUMMARY_WORKER_STATE",
+                table=SUMMARY_WORKER_STATE_TABLE,
                 where={"NA_CONSUMER": consumer_name},
                 limit=1,
             )
@@ -275,7 +171,7 @@ class dbHandlerSummary(DBHandlerBase):
                 "NA_STATUS": "idle",
             }
             self._insert_row(
-                table="BPDATA.SUMMARY_WORKER_STATE",
+                table=SUMMARY_WORKER_STATE_TABLE,
                 data=payload,
                 commit=True,
                 log_success=False,
@@ -297,7 +193,7 @@ class dbHandlerSummary(DBHandlerBase):
         self._connect()
         try:
             self._update_row(
-                table="BPDATA.SUMMARY_WORKER_STATE",
+                table=SUMMARY_WORKER_STATE_TABLE,
                 data={
                     "DT_LAST_START": datetime.utcnow(),
                     "NA_STATUS": "running",
@@ -317,12 +213,14 @@ class dbHandlerSummary(DBHandlerBase):
         batch_size: int,
         event_count: int,
     ) -> None:
-        """Advance the durable outbox checkpoint after a successful refresh pass.
+        """Record one successful refresh pass in the worker state row.
 
-        Updates ``ID_LAST_OUTBOX`` to ``last_outbox_id`` so that the next
-        :meth:`read_outbox_batch` call returns only rows after this position.
-        Also stamps ``DT_LAST_SUCCESS``, resets ``NA_STATUS`` to ``'idle'``,
-        and records the batch size and event count for diagnostics.
+        Updates ``ID_LAST_OUTBOX`` to the last consumed outbox id from the
+        batch. Coalesced scope rows that are re-dirtied during processing are
+        republished with a fresh ``ID_OUTBOX`` via `REPLACE INTO`, so the
+        monotonic watermark remains safe. Also stamps ``DT_LAST_SUCCESS``,
+        resets ``NA_STATUS`` to ``'idle'``, and records the batch size and
+        event count for diagnostics.
 
         Args:
             consumer_name:  Consumer identifier.
@@ -336,7 +234,7 @@ class dbHandlerSummary(DBHandlerBase):
         try:
             now = datetime.utcnow()
             self._update_row(
-                table="BPDATA.SUMMARY_WORKER_STATE",
+                table=SUMMARY_WORKER_STATE_TABLE,
                 data={
                     "ID_LAST_OUTBOX": int(last_outbox_id),
                     "DT_LAST_END": now,
@@ -372,7 +270,7 @@ class dbHandlerSummary(DBHandlerBase):
         try:
             now = datetime.utcnow()
             self._update_row(
-                table="BPDATA.SUMMARY_WORKER_STATE",
+                table=SUMMARY_WORKER_STATE_TABLE,
                 data={
                     "DT_LAST_END": now,
                     "DT_LAST_FAILURE": now,
@@ -391,27 +289,21 @@ class dbHandlerSummary(DBHandlerBase):
         *,
         batch_size: int,
     ) -> List[Dict[str, Any]]:
-        """Return the next N append-only outbox rows after the stored checkpoint.
+        """Return the next N outbox rows after the stored watermark.
 
-        Reads ``BPDATA.SUMMARY_OUTBOX`` using the ``ID_LAST_OUTBOX`` position
-        stored in the consumer's state row.  Rows are returned in ascending
-        ``ID_OUTBOX`` order so the engine always processes events in the order
-        they were published.
-
-        The ``JS_PAYLOAD`` column is stored as opaque JSON text (or bytes on
-        some MySQL driver versions).  This method decodes it and returns a
-        Python dict in the ``'JS_PAYLOAD'`` key of each row so callers never
-        need to call ``json.loads`` themselves.  JSON parse failures silently
-        produce an empty dict rather than raising.
+        Reads ``RFFUSION_SUMMARY.SUMMARY_OUTBOX`` using the ``ID_LAST_OUTBOX``
+        position stored in the consumer's state row. Rows are returned in
+        ascending ``ID_OUTBOX`` order so the engine always processes the
+        oldest pending dirty scopes first.
 
         Args:
-            consumer_name: Consumer identifier used to look up the checkpoint.
+            consumer_name: Consumer identifier used to look up the watermark.
             batch_size:    Maximum number of rows to return (``LIMIT`` clause).
 
         Returns:
-            List of row dicts.  Each dict has: ``ID_OUTBOX`` (int),
-            ``NA_EVENT_TYPE``, ``NA_SOURCE_HANDLER``, ``JS_PAYLOAD`` (dict),
-            ``DT_CREATED_AT``.
+            List of row dicts. Each dict has at minimum:
+            ``ID_OUTBOX`` (int), ``NA_SCOPE_TYPE``, ``NA_SCOPE_VALUE``,
+            ``NA_SOURCE_HANDLER``, ``NA_REASON``, and ``DT_CREATED_AT``.
             Returns an empty list when no new rows are available.
         """
         state = self.read_worker_state(consumer_name)
@@ -419,15 +311,17 @@ class dbHandlerSummary(DBHandlerBase):
 
         self._connect()
         try:
+            self._assert_summary_outbox_schema()
             rows = self._select_raw(
-                """
+                f"""
                 SELECT
                     ID_OUTBOX,
-                    NA_EVENT_TYPE,
+                    NA_SCOPE_TYPE,
+                    NA_SCOPE_VALUE,
                     NA_SOURCE_HANDLER,
-                    JS_PAYLOAD,
+                    NA_REASON,
                     DT_CREATED_AT
-                FROM BPDATA.SUMMARY_OUTBOX
+                FROM {SUMMARY_OUTBOX_TABLE}
                 WHERE ID_OUTBOX > %s
                 ORDER BY ID_OUTBOX ASC
                 LIMIT %s
@@ -437,80 +331,14 @@ class dbHandlerSummary(DBHandlerBase):
         finally:
             self._disconnect()
 
-        # The table stores opaque JSON so producers stay decoupled from SQL shape.
-        # Some MySQL/MariaDB driver versions return BLOB columns as bytes rather than str.
-        parsed_rows: List[Dict[str, Any]] = []
-        for row in rows:
-            payload = row.get("JS_PAYLOAD") or "{}"  # NULL column → treat as empty object
-            if isinstance(payload, bytes):
-                payload = payload.decode("utf-8", errors="replace")  # driver returned BLOB bytes
-            try:
-                payload_dict = json.loads(payload)
-            except Exception:
-                payload_dict = {}  # malformed JSON → silently skip rather than crash
-
-            parsed = dict(row)
-            parsed["JS_PAYLOAD"] = payload_dict
-            parsed_rows.append(parsed)
-
-        return parsed_rows
-
-    def prune_processed_outbox(
-        self,
-        consumer_name: str,
-        *,
-        keep_days: int,
-    ) -> int:
-        """Delete outbox rows that are both behind the checkpoint and old.
-
-        The deletion is bounded by **two** conditions:
-
-        1. ``ID_OUTBOX <= ID_LAST_OUTBOX`` — only rows already durably checkpointed
-           are eligible.  This guarantees the worker can always recover from
-           ``ID_LAST_OUTBOX = 0`` by reading from the beginning of the surviving
-           rows.
-        2. ``DT_CREATED_AT < utcnow() - keep_days`` — keeps a rolling window of
-           recent rows even if they are behind the checkpoint, for debugging.
-
-        This method is called approximately once per hour when the outbox is
-        idle (no new events).
-
-        Args:
-            consumer_name: Consumer identifier used to look up the checkpoint.
-            keep_days:     Minimum age (in days) of rows to prune.  Values less
-                           than 1 are treated as 1 to prevent runaway deletion.
-
-        Returns:
-            Number of rows deleted, or ``0`` if the checkpoint is at position 0.
-        """
-        state = self.read_worker_state(consumer_name)
-        last_outbox_id = int(state.get("ID_LAST_OUTBOX") or 0)
-        if last_outbox_id <= 0:  # nothing has been checkpointed yet — no-op
-            return 0
-
-        # max(1, ...) guards against a config value of 0 which would delete everything.
-        cutoff = datetime.utcnow() - timedelta(days=max(1, int(keep_days)))
-
-        self._connect()
-        try:
-            return self._execute_custom(
-                """
-                DELETE FROM BPDATA.SUMMARY_OUTBOX
-                WHERE ID_OUTBOX <= %s
-                  AND DT_CREATED_AT < %s
-                """,
-                (last_outbox_id, cutoff),
-                commit=True,
-            )
-        finally:
-            self._disconnect()
+        return rows
 
     def drain_consumed_outbox(self, consumer_name: str) -> int:
         """Delete all outbox rows that have already been durably checkpointed.
 
         Implements true queue semantics: once a batch is committed via
         :meth:`mark_worker_success`, the consumed rows are removed immediately
-        so ``BPDATA.SUMMARY_OUTBOX`` does not grow indefinitely.
+        so ``RFFUSION_SUMMARY.SUMMARY_OUTBOX`` does not grow indefinitely.
 
         Only rows with ``ID_OUTBOX <= ID_LAST_OUTBOX`` are deleted; rows ahead
         of the checkpoint (not yet processed) are never touched.
@@ -529,7 +357,7 @@ class dbHandlerSummary(DBHandlerBase):
         self._connect()
         try:
             return self._execute_custom(
-                "DELETE FROM BPDATA.SUMMARY_OUTBOX WHERE ID_OUTBOX <= %s",
+                f"DELETE FROM {SUMMARY_OUTBOX_TABLE} WHERE ID_OUTBOX <= %s",
                 (last_outbox_id,),
                 commit=True,
             )
@@ -539,7 +367,7 @@ class dbHandlerSummary(DBHandlerBase):
     def reset_after_reconcile(self, consumer_name: str) -> None:
         """Clean up both queue tables after a successful full reconcile.
 
-        After :meth:`~summary_handler.engine.SummaryRefreshEngine.refresh_all`
+        After :meth:`~summary_handler.refresh_engine.SummaryRefreshEngine.refresh_all`
         completes, the summary database is ground truth.  Accumulated
         ``SUMMARY_OUTBOX`` rows are irrelevant (already reflected by the
         reconcile) and the outbox position must be reset to 0 so the next
@@ -547,8 +375,8 @@ class dbHandlerSummary(DBHandlerBase):
 
         What this method does:
 
-        * ``BPDATA.SUMMARY_OUTBOX`` — **all** rows deleted.
-        * ``BPDATA.SUMMARY_WORKER_STATE`` — ``ID_LAST_OUTBOX`` reset to 0,
+        * ``RFFUSION_SUMMARY.SUMMARY_OUTBOX`` — **all** rows deleted.
+        * ``RFFUSION_SUMMARY.SUMMARY_WORKER_STATE`` — ``ID_LAST_OUTBOX`` reset to 0,
           ``DT_LAST_SUCCESS`` stamped to now.  The row is **kept** (not
           deleted) so the startup heuristic can read ``DT_LAST_SUCCESS`` on
           the next restart and decide whether a new reconcile is necessary.
@@ -560,7 +388,7 @@ class dbHandlerSummary(DBHandlerBase):
         try:
             # Remove every outbox row — the full reconcile already covered them.
             self._execute_custom(
-                "DELETE FROM BPDATA.SUMMARY_OUTBOX",
+                f"DELETE FROM {SUMMARY_OUTBOX_TABLE}",
                 (),
                 commit=False,
             )
@@ -570,8 +398,8 @@ class dbHandlerSummary(DBHandlerBase):
             # survives across restarts.
             now = datetime.utcnow()
             self._execute_custom(
-                """
-                INSERT INTO BPDATA.SUMMARY_WORKER_STATE
+                f"""
+                INSERT INTO {SUMMARY_WORKER_STATE_TABLE}
                     (NA_CONSUMER, ID_LAST_OUTBOX, DT_LAST_SUCCESS, NA_STATUS)
                 VALUES (%s, 0, %s, 'idle')
                 ON DUPLICATE KEY UPDATE
@@ -585,48 +413,33 @@ class dbHandlerSummary(DBHandlerBase):
         finally:
             self._disconnect()
 
-    def summary_refresh_start(self, object_name: str) -> datetime:
-        """Record that one summary-object rebuild has been initiated.
+    def _prune_summary_refresh_log(self, *, max_rows: int) -> int:
+        """Keep only the newest refresh-log rows within one rolling window."""
+        keep_rows = max(1, int(max_rows))
 
-        Upserts a row in ``SUMMARY_REFRESH_STATE`` setting ``IS_SUCCESS = 0``
-        and a fresh ``DT_LAST_START``.  If the engine subsequently calls
-        :meth:`summary_refresh_success`, ``IS_SUCCESS`` will be updated to 1.
-        If it calls :meth:`summary_refresh_failure`, ``IS_SUCCESS`` stays 0 and
-        the error message is stored.  The state table always reflects the latest
-        attempt for each object.
-
-        Args:
-            object_name: Summary table name used as the state row key
-                         (e.g. ``'HOST_CURRENT_SNAPSHOT'``).
-
-        Returns:
-            The UTC datetime captured at the start of this call (passed back to
-            :meth:`summary_refresh_success` / :meth:`summary_refresh_failure`
-            to compute elapsed time).
-        """
-        started_at = datetime.utcnow()
         self._connect()
         try:
-            # Upsert with IS_SUCCESS=0 and cleared timestamps so a stalled
-            # refresh (no matching success/failure call) is visible in the state table.
-            self._upsert_row(
-                table="SUMMARY_REFRESH_STATE",
-                data={
-                    "NA_OBJECT_NAME": object_name,
-                    "DT_LAST_START": started_at,
-                    "DT_LAST_END": None,
-                    "IS_SUCCESS": 0,  # will be set to 1 only on explicit success call
-                    "NU_LAST_ROW_COUNT": None,
-                    "NA_SOURCE_HIGH_WATERMARK": None,
-                    "NA_ERROR_MESSAGE": None,
-                },
-                unique_keys=["NA_OBJECT_NAME"],
-                commit=True,
-                log_each=False,
+            cutoff_rows = self._select_raw(
+                """
+                SELECT ID_REFRESH_LOG
+                FROM SUMMARY_REFRESH_LOG
+                ORDER BY ID_REFRESH_LOG DESC
+                LIMIT 1 OFFSET %s
+                """,
+                (keep_rows - 1,),
             )
+            if not cutoff_rows:
+                return 0
+
+            cutoff_id = int(cutoff_rows[0]["ID_REFRESH_LOG"])
+            deleted_rows = self._execute_custom(
+                "DELETE FROM SUMMARY_REFRESH_LOG WHERE ID_REFRESH_LOG < %s",
+                (cutoff_id,),
+                commit=True,
+            )
+            return int(deleted_rows or 0)
         finally:
             self._disconnect()
-        return started_at
 
     def summary_refresh_success(
         self,
@@ -638,19 +451,13 @@ class dbHandlerSummary(DBHandlerBase):
     ) -> None:
         """Record a successful summary-object rebuild.
 
-        Performs two writes in sequence:
-
-        1. Updates ``SUMMARY_REFRESH_STATE`` with ``IS_SUCCESS = 1``, the
-           finished timestamp, row count, and the optional high-watermark tag
-           (a short diagnostic string describing the scope, e.g. ``'rows=42'``).
-           This write uses ``commit=False`` because the state row and the log
-           entry should land in the same commit.
-        2. Inserts one row in ``SUMMARY_REFRESH_LOG`` with full timing and
-           metadata for a permanent audit trail, then commits.
+        Inserts one row in ``SUMMARY_REFRESH_LOG`` with full timing and
+        metadata for a bounded rolling audit trail, then prunes older rows
+        beyond the configured rolling window.
 
         Args:
-            object_name:     Summary table name (key in SUMMARY_REFRESH_STATE).
-            started_at:      Datetime returned by :meth:`summary_refresh_start`.
+            object_name:     Summary table name being refreshed.
+            started_at:      UTC timestamp captured by the refresh engine.
             row_count:       Number of rows written by the refresh step.
             high_watermark:  Optional short diagnostic string stored for
                              monitoring (e.g. ``'hosts=12;month=2026-05'``).
@@ -658,19 +465,6 @@ class dbHandlerSummary(DBHandlerBase):
         finished_at = datetime.utcnow()
         self._connect()
         try:
-            # commit=False on state update so both writes land in the same transaction.
-            self._update_row(
-                table="SUMMARY_REFRESH_STATE",
-                data={
-                    "DT_LAST_END": finished_at,
-                    "IS_SUCCESS": 1,
-                    "NU_LAST_ROW_COUNT": int(row_count),
-                    "NA_SOURCE_HIGH_WATERMARK": high_watermark,
-                    "NA_ERROR_MESSAGE": None,
-                },
-                where={"NA_OBJECT_NAME": object_name},
-                commit=False,  # defer commit until log row is also ready
-            )
             self._insert_row(
                 table="SUMMARY_REFRESH_LOG",
                 data={
@@ -682,9 +476,20 @@ class dbHandlerSummary(DBHandlerBase):
                     "NA_SOURCE_HIGH_WATERMARK": high_watermark,
                     "NA_ERROR_MESSAGE": None,
                 },
-                commit=True,  # commits both rows atomically
+                commit=True,
                 log_success=False,
             )
+            try:
+                self._prune_summary_refresh_log(
+                    max_rows=k.SUMMARY_REFRESH_LOG_MAX_ROWS
+                )
+            except Exception as exc:
+                self._log_db_warning(
+                    "summary_refresh_log_prune_failed",
+                    operation="summary_refresh_success",
+                    max_rows=k.SUMMARY_REFRESH_LOG_MAX_ROWS,
+                    error=repr(exc),
+                )
         finally:
             self._disconnect()
 
@@ -697,30 +502,19 @@ class dbHandlerSummary(DBHandlerBase):
     ) -> None:
         """Record a failed summary-object rebuild.
 
-        Updates ``SUMMARY_REFRESH_STATE`` with ``IS_SUCCESS = 0`` and the
-        error message, then inserts one row in ``SUMMARY_REFRESH_LOG`` so the
-        failure is permanently auditable.  Mirrors the structure of
+        Inserts one row in ``SUMMARY_REFRESH_LOG`` so the failure stays in the
+        rolling audit window. Mirrors the structure of
         :meth:`summary_refresh_success` so monitoring queries can use the same
         columns against both outcomes.
 
         Args:
-            object_name:   Summary table name (key in SUMMARY_REFRESH_STATE).
-            started_at:    Datetime returned by :meth:`summary_refresh_start`.
+            object_name:   Summary table name being refreshed.
+            started_at:    UTC timestamp captured by the refresh engine.
             error_message: String representation of the caught exception.
         """
         finished_at = datetime.utcnow()
         self._connect()
         try:
-            self._update_row(
-                table="SUMMARY_REFRESH_STATE",
-                data={
-                    "DT_LAST_END": finished_at,
-                    "IS_SUCCESS": 0,
-                    "NA_ERROR_MESSAGE": error_message,
-                },
-                where={"NA_OBJECT_NAME": object_name},
-                commit=False,  # defer commit until log row is also ready
-            )
             self._insert_row(
                 table="SUMMARY_REFRESH_LOG",
                 data={
@@ -732,9 +526,20 @@ class dbHandlerSummary(DBHandlerBase):
                     "NA_SOURCE_HIGH_WATERMARK": None,
                     "NA_ERROR_MESSAGE": error_message,
                 },
-                commit=True,  # commits both rows atomically
+                commit=True,
                 log_success=False,
             )
+            try:
+                self._prune_summary_refresh_log(
+                    max_rows=k.SUMMARY_REFRESH_LOG_MAX_ROWS
+                )
+            except Exception as exc:
+                self._log_db_warning(
+                    "summary_refresh_log_prune_failed",
+                    operation="summary_refresh_failure",
+                    max_rows=k.SUMMARY_REFRESH_LOG_MAX_ROWS,
+                    error=repr(exc),
+                )
         finally:
             self._disconnect()
 

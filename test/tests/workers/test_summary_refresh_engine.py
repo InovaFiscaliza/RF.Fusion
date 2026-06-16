@@ -1,5 +1,5 @@
 """
-Focused tests for the incremental RFFUSION_SUMMARY Python engine.
+Focused tests for the incremental RFFUSION_SUMMARY refresh engine.
 """
 
 from __future__ import annotations
@@ -16,27 +16,22 @@ from _support import APP_ROOT, ensure_app_paths, load_module_from_path
 
 ensure_app_paths()
 
-engine_module = load_module_from_path(
-    "test_summary_worker_engine_module",
-    str(APP_ROOT / "summary_handler" / "engine.py"),
+refresh_engine_module = load_module_from_path(
+    "test_summary_refresh_engine_module",
+    str(APP_ROOT / "summary_handler" / "refresh_engine.py"),
 )
 
-DirtyScope = engine_module.DirtyScope
-SummaryRefreshEngine = engine_module.SummaryRefreshEngine
-_cwsm_signature = engine_module._cwsm_signature
-_normalize_key = engine_module._normalize_key
+DirtyScope = refresh_engine_module.DirtyScope
+SummaryRefreshEngine = refresh_engine_module.SummaryRefreshEngine
+_cwsm_signature = refresh_engine_module._cwsm_signature
+_normalize_key = refresh_engine_module._normalize_key
 
 
 class FakeSummaryDb:
     def __init__(self) -> None:
-        self.started = []
         self.succeeded = []
         self.failed = []
         self.replaced = {}
-
-    def summary_refresh_start(self, object_name):
-        self.started.append(object_name)
-        return datetime(2026, 5, 14, 0, 0, 0)
 
     def summary_refresh_success(self, object_name, *, started_at, row_count, high_watermark):
         self.succeeded.append((object_name, row_count, high_watermark))
@@ -62,22 +57,53 @@ class FakeSummaryLog:
 
 
 class SummaryWorkerEngineTests(unittest.TestCase):
-    def test_dirty_scope_merges_all_event_payloads(self) -> None:
-        scope = DirtyScope.from_events(
+    def test_dirty_scope_merges_all_outbox_rows(self) -> None:
+        scope = DirtyScope.from_outbox_rows(
             [
                 {
-                    "JS_PAYLOAD": {
-                        "host_ids": [10, 11],
-                        "site_ids": [100],
-                        "reference_months": ["2026-05-13", "2026-05"],
-                    }
+                    "ID_OUTBOX": 1,
+                    "NA_SCOPE_TYPE": "host",
+                    "NA_SCOPE_VALUE": "10",
                 },
                 {
-                    "JS_PAYLOAD": {
-                        "host_ids": [11, 12],
-                        "equipment_ids": [200, 201],
-                        "full_reconcile": True,
-                    }
+                    "ID_OUTBOX": 2,
+                    "NA_SCOPE_TYPE": "host",
+                    "NA_SCOPE_VALUE": "11",
+                },
+                {
+                    "ID_OUTBOX": 3,
+                    "NA_SCOPE_TYPE": "site",
+                    "NA_SCOPE_VALUE": "100",
+                },
+                {
+                    "ID_OUTBOX": 4,
+                    "NA_SCOPE_TYPE": "reference_month",
+                    "NA_SCOPE_VALUE": "2026-05-13",
+                },
+                {
+                    "ID_OUTBOX": 5,
+                    "NA_SCOPE_TYPE": "reference_month",
+                    "NA_SCOPE_VALUE": "2026-05",
+                },
+                {
+                    "ID_OUTBOX": 6,
+                    "NA_SCOPE_TYPE": "host",
+                    "NA_SCOPE_VALUE": "12",
+                },
+                {
+                    "ID_OUTBOX": 7,
+                    "NA_SCOPE_TYPE": "equipment",
+                    "NA_SCOPE_VALUE": "200",
+                },
+                {
+                    "ID_OUTBOX": 8,
+                    "NA_SCOPE_TYPE": "equipment",
+                    "NA_SCOPE_VALUE": "201",
+                },
+                {
+                    "ID_OUTBOX": 9,
+                    "NA_SCOPE_TYPE": "full_reconcile",
+                    "NA_SCOPE_VALUE": "*",
                 },
             ]
         )
@@ -87,6 +113,18 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertEqual(scope.equipment_ids, {200, 201})
         self.assertEqual(scope.reference_months, {"2026-05-01"})
         self.assertTrue(scope.full_reconcile)
+
+    def test_dirty_scope_rejects_invalid_outbox_row(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Invalid SUMMARY_OUTBOX row"):
+            DirtyScope.from_outbox_rows(
+                [
+                    {
+                        "ID_OUTBOX": 99,
+                        "NA_SCOPE_TYPE": "host",
+                        "NA_SCOPE_VALUE": "not-an-int",
+                    }
+                ]
+            )
 
     def test_refresh_for_events_runs_dependency_chain_in_order(self) -> None:
         db = FakeSummaryDb()
@@ -107,8 +145,21 @@ class SummaryWorkerEngineTests(unittest.TestCase):
 
         engine.refresh_for_events(
             [
-                {"JS_PAYLOAD": {"site_ids": [100]}},
-                {"JS_PAYLOAD": {"host_ids": [10], "reference_months": ["2026-05-01"]}},
+                {
+                    "ID_OUTBOX": 10,
+                    "NA_SCOPE_TYPE": "site",
+                    "NA_SCOPE_VALUE": "100",
+                },
+                {
+                    "ID_OUTBOX": 11,
+                    "NA_SCOPE_TYPE": "host",
+                    "NA_SCOPE_VALUE": "10",
+                },
+                {
+                    "ID_OUTBOX": 12,
+                    "NA_SCOPE_TYPE": "reference_month",
+                    "NA_SCOPE_VALUE": "2026-05-01",
+                },
             ]
         )
 
@@ -127,7 +178,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
                 "SERVER_CURRENT_SUMMARY",
             ],
         )
-        self.assertEqual(db.started, call_order)
+        self.assertEqual([name for name, _row_count, _watermark in db.succeeded], call_order)
         self.assertFalse(db.failed)
 
     def test_refresh_all_uses_full_safe_sequence(self) -> None:
@@ -206,6 +257,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
 
         self.assertEqual(by_equipment[10]["FK_HOST"], 1)
         self.assertEqual(by_equipment[10]["NA_MATCH_TYPE"], "cwsm_signature")
+        self.assertNotIn("NA_HOST_NAME_NORMALIZED", by_equipment[10])
         self.assertEqual(by_equipment[20]["FK_HOST"], 2)
         self.assertEqual(by_equipment[20]["NA_MATCH_TYPE"], "manual_override")
         self.assertEqual(by_equipment[20]["IS_MANUAL_OVERRIDE"], 1)
@@ -436,10 +488,89 @@ class SummaryWorkerEngineTests(unittest.TestCase):
             db.replaced["HOST_MONTHLY_METRIC"][0]["DT_REFERENCE_MONTH"],
             "2026-05-01",
         )
+        self.assertNotIn("NA_HOST_NAME", db.replaced["HOST_MONTHLY_METRIC"][0])
         self.assertEqual(
             log.warning_events[0][0],
             "summary_host_monthly_metric_invalid_month_skipped",
         )
+
+    def test_host_error_summary_keeps_latest_event_without_audit_bloat(self) -> None:
+        db = FakeSummaryDb()
+        log = FakeSummaryLog()
+        engine = SummaryRefreshEngine(db=db, logger=log)
+
+        engine._read_error_events = lambda host_ids=None: [
+            {
+                "FK_HOST": 10,
+                "NA_ERROR_SCOPE": "PROCESSING",
+                "NA_ERROR_DOMAIN": "parser",
+                "NA_ERROR_STAGE": "decode",
+                "NA_ERROR_CODE": "bad_header",
+                "NA_ERROR_SUMMARY": "Header error",
+                "NA_RAW_MESSAGE": "Header error",
+                "DT_EVENT_AT": datetime(2026, 5, 20, 10, 0, 0),
+                "ID_SOURCE_ROW": 101,
+            },
+            {
+                "FK_HOST": 10,
+                "NA_ERROR_SCOPE": "PROCESSING",
+                "NA_ERROR_DOMAIN": "parser",
+                "NA_ERROR_STAGE": "decode",
+                "NA_ERROR_CODE": "bad_header",
+                "NA_ERROR_SUMMARY": "Header error",
+                "NA_RAW_MESSAGE": "Header error",
+                "DT_EVENT_AT": datetime(2026, 5, 20, 12, 30, 0),
+                "ID_SOURCE_ROW": 202,
+            },
+        ]
+
+        row_count, watermark = engine._refresh_host_error_summary()
+
+        self.assertEqual(row_count, 1)
+        self.assertEqual(watermark, "rows=1")
+        row = db.replaced["HOST_ERROR_SUMMARY"][0]
+        self.assertEqual(row["NU_ERROR_COUNT"], 2)
+        self.assertEqual(row["DT_LAST_SEEN_AT"], datetime(2026, 5, 20, 12, 30, 0))
+        self.assertEqual(row["ID_LAST_SOURCE_ROW"], 202)
+        self.assertNotIn("NA_HOST_NAME", row)
+        self.assertNotIn("NA_LAST_SOURCE_TABLE", row)
+        self.assertNotIn("DT_REFRESHED_AT", row)
+
+    def test_server_error_summary_rolls_up_minimal_ui_payload(self) -> None:
+        db = FakeSummaryDb()
+        log = FakeSummaryLog()
+        engine = SummaryRefreshEngine(db=db, logger=log)
+
+        engine._select = lambda sql, params=(): [
+            {
+                "NA_ERROR_SCOPE": "BACKUP",
+                "NA_ERROR_DOMAIN": "ssh",
+                "NA_ERROR_STAGE": "connect",
+                "NA_ERROR_CODE": "timeout",
+                "NA_ERROR_SUMMARY_HASH": "abc",
+                "NA_ERROR_SUMMARY": "Connection timeout",
+                "NU_ERROR_COUNT": 2,
+            },
+            {
+                "NA_ERROR_SCOPE": "BACKUP",
+                "NA_ERROR_DOMAIN": "ssh",
+                "NA_ERROR_STAGE": "connect",
+                "NA_ERROR_CODE": "timeout",
+                "NA_ERROR_SUMMARY_HASH": "abc",
+                "NA_ERROR_SUMMARY": "Connection timeout",
+                "NU_ERROR_COUNT": 3,
+            },
+        ]
+
+        row_count, watermark = engine._refresh_server_error_summary()
+
+        self.assertEqual(row_count, 1)
+        self.assertEqual(watermark, "rows=1")
+        row = db.replaced["SERVER_ERROR_SUMMARY"][0]
+        self.assertEqual(row["NU_ERROR_COUNT"], 5)
+        self.assertNotIn("DT_LAST_SEEN_AT", row)
+        self.assertNotIn("NA_LAST_SOURCE_TABLE", row)
+        self.assertNotIn("DT_REFRESHED_AT", row)
 
     def test_host_current_snapshot_includes_current_month_backup_throughput(self) -> None:
         db = FakeSummaryDb()
@@ -449,7 +580,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         captured = {}
 
         def fake_select(sql, params=()):
-            if sql.strip() == "SELECT * FROM HOST_CURRENT_SNAPSHOT":
+            if "FROM HOST_CURRENT_SNAPSHOT" in sql:
                 raise AssertionError("HOST_CURRENT_SNAPSHOT should not be read here")
 
             if sql.strip() == "SELECT * FROM BPDATA.HOST":
@@ -574,13 +705,13 @@ class SummaryWorkerEngineTests(unittest.TestCase):
             def utcnow(cls):
                 return cls(2026, 5, 20, 17, 8, 30)
 
-        original_datetime = engine_module.datetime
-        engine_module.datetime = FrozenDateTime
+        original_datetime = refresh_engine_module.datetime
+        refresh_engine_module.datetime = FrozenDateTime
         try:
             engine._select = fake_select
             row_count, watermark = engine._refresh_host_current_snapshot()
         finally:
-            engine_module.datetime = original_datetime
+            refresh_engine_module.datetime = original_datetime
 
         self.assertEqual(row_count, 2)
         self.assertEqual(watermark, "hosts=2")
@@ -595,6 +726,9 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertEqual(by_host[10]["VL_BACKUP_DONE_GB_THIS_MONTH"], 18.58)
         self.assertEqual(by_host[11]["NU_BACKUP_DONE_THIS_MONTH"], 4)
         self.assertEqual(by_host[11]["VL_BACKUP_DONE_GB_THIS_MONTH"], 1.25)
+        self.assertNotIn("NU_DONE_FILE_BACKUP_TASKS", by_host[10])
+        self.assertNotIn("FK_CURRENT_SITE", by_host[10])
+        self.assertNotIn("DT_REFRESHED_AT", by_host[10])
 
     def test_server_current_summary_sums_snapshot_current_month_throughput(self) -> None:
         db = FakeSummaryDb()
@@ -602,7 +736,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         engine = SummaryRefreshEngine(db=db, logger=log)
 
         def fake_select(sql, params=()):
-            if sql.strip() == "SELECT * FROM HOST_CURRENT_SNAPSHOT":
+            if "FROM HOST_CURRENT_SNAPSHOT" in sql:
                 return [
                     {
                         "IS_OFFLINE": 0,
@@ -614,7 +748,6 @@ class SummaryWorkerEngineTests(unittest.TestCase):
                         "NU_BACKUP_QUEUE_FILES_TOTAL": 3,
                         "VL_BACKUP_QUEUE_GB_TOTAL": 4.25,
                         "NU_PENDING_FILE_PROCESS_TASKS": 4,
-                        "NU_DONE_FILE_PROCESS_TASKS": 5,
                         "NU_ERROR_FILE_PROCESS_TASKS": 1,
                         "NU_PROCESSING_QUEUE_FILES_TOTAL": 6,
                         "VL_PROCESSING_QUEUE_GB_TOTAL": 7.75,
@@ -632,7 +765,6 @@ class SummaryWorkerEngineTests(unittest.TestCase):
                         "NU_BACKUP_QUEUE_FILES_TOTAL": 0,
                         "VL_BACKUP_QUEUE_GB_TOTAL": 0.0,
                         "NU_PENDING_FILE_PROCESS_TASKS": 2,
-                        "NU_DONE_FILE_PROCESS_TASKS": 3,
                         "NU_ERROR_FILE_PROCESS_TASKS": 0,
                         "NU_PROCESSING_QUEUE_FILES_TOTAL": 1,
                         "VL_PROCESSING_QUEUE_GB_TOTAL": 0.25,
@@ -642,10 +774,9 @@ class SummaryWorkerEngineTests(unittest.TestCase):
                     },
                 ]
 
-            if "FROM SERVER_ERROR_SUMMARY" in sql:
+            if "FROM HOST_MONTHLY_METRIC" in sql:
                 return [
-                    {"NA_ERROR_SCOPE": "BACKUP", "NU_GROUPS": 2},
-                    {"NA_ERROR_SCOPE": "PROCESSING", "NU_GROUPS": 3},
+                    {"NU_PROCESSING_DONE_FILES_TOTAL": 8},
                 ]
 
             raise AssertionError(f"Unexpected SQL: {sql}")
@@ -655,13 +786,13 @@ class SummaryWorkerEngineTests(unittest.TestCase):
             def utcnow(cls):
                 return cls(2026, 5, 20, 17, 8, 30)
 
-        original_datetime = engine_module.datetime
-        engine_module.datetime = FrozenDateTime
+        original_datetime = refresh_engine_module.datetime
+        refresh_engine_module.datetime = FrozenDateTime
         try:
             engine._select = fake_select
             row_count, watermark = engine._refresh_server_current_summary()
         finally:
-            engine_module.datetime = original_datetime
+            refresh_engine_module.datetime = original_datetime
 
         self.assertEqual(row_count, 1)
         self.assertEqual(watermark, "hosts=2;month=2026-05")
@@ -673,10 +804,11 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertEqual(payload["NU_OFFLINE_HOSTS"], 1)
         self.assertEqual(payload["NU_BUSY_HOSTS"], 1)
         self.assertEqual(payload["NU_DISCOVERED_FILES_TOTAL"], 20)
+        self.assertEqual(payload["NU_PROCESSING_DONE_FILES_TOTAL"], 8)
         self.assertEqual(payload["NU_BACKUP_DONE_THIS_MONTH"], 18)
         self.assertEqual(payload["VL_BACKUP_DONE_GB_THIS_MONTH"], 19.83)
-        self.assertEqual(payload["NU_BACKUP_ERROR_GROUPS"], 2)
-        self.assertEqual(payload["NU_PROCESSING_ERROR_GROUPS"], 3)
+        self.assertNotIn("NU_BACKUP_ERROR_GROUPS", payload)
+        self.assertNotIn("DT_REFRESHED_AT", payload)
 
 
 if __name__ == "__main__":

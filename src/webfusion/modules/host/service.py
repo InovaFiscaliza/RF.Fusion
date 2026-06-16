@@ -867,7 +867,40 @@ def _get_host_current_snapshot_row(host_id):
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT *
+        SELECT
+            ID_HOST,
+            NA_HOST_NAME,
+            NA_HOST_ADDRESS,
+            NA_HOST_PORT,
+            IS_OFFLINE,
+            IS_BUSY,
+            NU_PID,
+            DT_BUSY,
+            DT_LAST_FAIL,
+            DT_LAST_CHECK,
+            NU_HOST_CHECK_ERROR,
+            DT_LAST_DISCOVERY,
+            DT_LAST_BACKUP,
+            NU_PENDING_FILE_BACKUP_TASKS,
+            NU_ERROR_FILE_BACKUP_TASKS,
+            NU_BACKUP_DONE_THIS_MONTH,
+            VL_PENDING_BACKUP_GB,
+            VL_BACKUP_DONE_GB_THIS_MONTH,
+            VL_DONE_BACKUP_GB,
+            DT_LAST_PROCESSING,
+            NU_PENDING_FILE_PROCESS_TASKS,
+            NU_ERROR_FILE_PROCESS_TASKS,
+            NU_HOST_FILES,
+            NU_BACKUP_QUEUE_FILES_TOTAL,
+            VL_BACKUP_QUEUE_GB_TOTAL,
+            NU_PROCESSING_QUEUE_FILES_TOTAL,
+            VL_PROCESSING_QUEUE_GB_TOTAL,
+            NU_MATCHED_EQUIPMENT_TOTAL,
+            NU_FACT_SPECTRUM_TOTAL,
+            NA_CURRENT_SITE_LABEL,
+            NA_CURRENT_STATE_CODE,
+            NA_LAST_ERROR_SUMMARY,
+            DT_LAST_ERROR_AT
         FROM HOST_CURRENT_SNAPSHOT
         WHERE ID_HOST = %s
         LIMIT 1

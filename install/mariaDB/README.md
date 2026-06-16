@@ -38,12 +38,9 @@ Startup flow:
 
 After the container is up, the deployment script applies the project schemas:
 
-- [/RFFusion/src/mariadb/scripts/createProcessingDB-v11.sql](/RFFusion/src/mariadb/scripts/createProcessingDB-v11.sql)
-- [/RFFusion/src/mariadb/scripts/createMeasureDB-v5.sql](/RFFusion/src/mariadb/scripts/createMeasureDB-v5.sql)
-- [/RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql](/RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql)
-- [/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v2-error-aggregation.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v2-error-aggregation.sql)
-- [/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v3-refresh-events.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v3-refresh-events.sql)
-- [/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v4-discovered-files.sql](/RFFusion/src/mariadb/scripts/alterFusionSummaryDB-v4-discovered-files.sql)
+- [/RFFusion/src/mariadb/scripts/createProcessingDB.sql](/RFFusion/src/mariadb/scripts/createProcessingDB.sql)
+- [/RFFusion/src/mariadb/scripts/createMeasureDB.sql](/RFFusion/src/mariadb/scripts/createMeasureDB.sql)
+- [/RFFusion/src/mariadb/scripts/createFusionSummaryDB.sql](/RFFusion/src/mariadb/scripts/createFusionSummaryDB.sql)
 
 ## Host Prerequisites
 
@@ -100,13 +97,9 @@ The entrypoint itself guarantees the MariaDB runtime is bootstrapped.
 
 The deployment script then loads the RF.Fusion schemas:
 
-- `BPDATA` from `createProcessingDB-v11.sql`
-- `RFDATA` from `createMeasureDB-v5.sql`
-- `RFFUSION_SUMMARY` from `createFusionSummaryDB-v1.sql`
-- `RFFUSION_SUMMARY` refinements from the `v2`, `v3` and `v4` migration scripts
-
-The MariaDB container is also configured with `event_scheduler=ON`, which is
-required for the periodic `RFFUSION_SUMMARY` refresh event.
+- `BPDATA` from `createProcessingDB.sql`
+- `RFDATA` from `createMeasureDB.sql`
+- `RFFUSION_SUMMARY` from `createFusionSummaryDB.sql`
 
 This means the deploy script is responsible for turning the generic MariaDB
 container into the RF.Fusion project database.

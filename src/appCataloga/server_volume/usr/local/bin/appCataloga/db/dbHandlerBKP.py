@@ -906,10 +906,6 @@ class dbHandlerBKP(DBHandlerBase):
                 VL_PENDING_BACKUP_KB=pending_kb,
                 VL_DONE_BACKUP_KB=done_kb,
             )
-            self._summary_publish_host_scope(
-                host_id,
-                reason="host_update_statistics",
-            )
 
         finally:
             self._disconnect()

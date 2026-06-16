@@ -506,6 +506,7 @@ class HostMaintenanceTests(unittest.TestCase):
 
     def test_run_host_check_all_batch_recovers_offline_host_only_after_ssh_probe(self) -> None:
         now = datetime(2026, 3, 23, 12, 0, 0)
+        fake_log = FakeLog()
         db = FakeDB(
             hosts=[
                 {
@@ -535,10 +536,20 @@ class HostMaintenanceTests(unittest.TestCase):
                     "reason": "ssh_connect_ok",
                     "icmp_online": True,
                     "ssh_online": True,
-                    "error": None,
+                "error": None,
                 },
             ) as probe_host_connectivity:
-                checked = self._run_maintenance_batch(db=db, now=now)
+                checked = host_maintenance_worker.maintenance_flow.run_host_check_all_batch(
+                    db=db,
+                    log=fake_log,
+                    now=now,
+                    process_status=host_maintenance_worker.process_status,
+                    stale_after_sec=host_maintenance_worker.k.HOST_CHECK_ALL_STALE_AFTER_SEC,
+                    batch_size=host_maintenance_worker.k.HOST_CHECK_ALL_BATCH_SIZE,
+                    icmp_timeout_sec=host_maintenance_worker.k.HOST_CHECK_ALL_ICMP_TIMEOUT_SEC,
+                    icmp_max_workers=host_maintenance_worker.k.HOST_CHECK_ALL_ICMP_MAX_WORKERS,
+                    probe_max_workers=host_maintenance_worker.k.HOST_CHECK_ALL_PROBE_MAX_WORKERS,
+                )
 
         # Recovery must only happen after a real SSH-capable probe, not just a
         # positive ICMP sweep.
@@ -562,6 +573,22 @@ class HostMaintenanceTests(unittest.TestCase):
                 ("file_task", 77),
                 ("file_history", 77),
             ],
+        )
+        self.assertIn(
+            (
+                "host_check_all_state_change",
+                {
+                    "component": "host_maintenance",
+                    "operation": "process_due_host",
+                    "host_id": 77,
+                    "host": "station-a",
+                    "address": "172.24.1.77",
+                    "previous_state": "offline",
+                    "current_state": "online",
+                    "reason": "ssh_connect_ok",
+                },
+            ),
+            fake_log.events,
         )
         probe_host_connectivity.assert_called_once()
 
@@ -925,6 +952,71 @@ class HostMaintenanceTests(unittest.TestCase):
         self.assertEqual(summary_payload["icmp_online"], 0)
         self.assertEqual(summary_payload["icmp_offline"], 1)
         self.assertEqual(summary_payload["recovery_probes"], 0)
+
+    def test_run_host_check_all_batch_logs_online_to_offline_transition(self) -> None:
+        now = datetime(2026, 3, 23, 12, 0, 0)
+        db = FakeDB(
+            hosts=[
+                {
+                    "ID_HOST": 102,
+                    "NA_HOST_NAME": "station-falls-offline",
+                    "NA_HOST_ADDRESS": "172.24.1.102",
+                    "NA_HOST_PORT": 22,
+                    "NA_HOST_USER": "root",
+                    "NA_HOST_PASSWORD": "secret",
+                    "IS_BUSY": False,
+                    "IS_OFFLINE": False,
+                    "DT_LAST_CHECK": now - timedelta(hours=1),
+                }
+            ]
+        )
+        fake_log = FakeLog()
+
+        with patch.object(
+            host_maintenance_worker.host_connectivity,
+            "is_host_online",
+            return_value=False,
+        ):
+            with patch.object(
+                host_maintenance_worker.host_connectivity,
+                "probe_host_connectivity",
+                return_value={
+                    "state": "offline",
+                    "online": False,
+                    "reason": "icmp_unreachable",
+                    "icmp_online": False,
+                    "ssh_online": False,
+                    "error": None,
+                },
+            ):
+                host_maintenance_worker.maintenance_flow.run_host_check_all_batch(
+                    db=db,
+                    log=fake_log,
+                    now=now,
+                    process_status=host_maintenance_worker.process_status,
+                    stale_after_sec=host_maintenance_worker.k.HOST_CHECK_ALL_STALE_AFTER_SEC,
+                    batch_size=host_maintenance_worker.k.HOST_CHECK_ALL_BATCH_SIZE,
+                    icmp_timeout_sec=host_maintenance_worker.k.HOST_CHECK_ALL_ICMP_TIMEOUT_SEC,
+                    icmp_max_workers=host_maintenance_worker.k.HOST_CHECK_ALL_ICMP_MAX_WORKERS,
+                    probe_max_workers=host_maintenance_worker.k.HOST_CHECK_ALL_PROBE_MAX_WORKERS,
+                )
+
+        self.assertIn(
+            (
+                "host_check_all_state_change",
+                {
+                    "component": "host_maintenance",
+                    "operation": "process_due_host",
+                    "host_id": 102,
+                    "host": "station-falls-offline",
+                    "address": "172.24.1.102",
+                    "previous_state": "online",
+                    "current_state": "offline",
+                    "reason": "icmp_unreachable",
+                },
+            ),
+            fake_log.events,
+        )
 
 
 if __name__ == "__main__":

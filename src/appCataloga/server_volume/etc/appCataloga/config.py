@@ -261,16 +261,19 @@ GC_LOOP_SLEEP = 5
 #------------------------------------------
 # RFFUSION_SUMMARY incremental worker
 #------------------------------------------
-# These values control the Python worker that consumes `BPDATA.SUMMARY_OUTBOX`
+# These values control the Python worker that consumes
+# `RFFUSION_SUMMARY.SUMMARY_OUTBOX`
 # and refreshes the public `RFFUSION_SUMMARY` tables without reviving the old
 # heavy MariaDB event refresh path.
 SUMMARY_WORKER_CONSUMER_NAME = "rffusion_summary_worker"
 SUMMARY_WORKER_BATCH_SIZE = 500
-SUMMARY_WORKER_IDLE_SLEEP_SEC = 5
-SUMMARY_WORKER_RECONCILE_INTERVAL_SEC = 86400
-SUMMARY_WORKER_OUTBOX_PRUNE_DAYS = 30
-SUMMARY_WORKER_DISABLE_SQL_EVENT_ON_START = True
-SUMMARY_WORKER_SQL_EVENT_NAME = "EVT_REFRESH_ALL_RFFUSION_SUMMARY_10MIN"
+SUMMARY_REFRESH_LOG_MAX_ROWS = 100
+SUMMARY_SCOPE_HOST = "host"
+SUMMARY_SCOPE_SITE = "site"
+SUMMARY_SCOPE_EQUIPMENT = "equipment"
+SUMMARY_SCOPE_REFERENCE_MONTH = "reference_month"
+SUMMARY_SCOPE_FULL_RECONCILE = "full_reconcile"
+SUMMARY_SCOPE_FULL_RECONCILE_KEY = "*"
 # How long the worker can have been offline before the startup reconcile is
 # considered mandatory.  If DT_LAST_SUCCESS is more recent than this threshold,
 # the startup reconcile is skipped and the worker begins with incremental

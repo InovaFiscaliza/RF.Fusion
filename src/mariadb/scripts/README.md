@@ -16,16 +16,16 @@ bootstrap process.
 
 ### Schema scripts
 
-- [createProcessingDB-v11.sql](/RFFusion/src/mariadb/scripts/createProcessingDB-v11.sql)
+- [createProcessingDB.sql](/RFFusion/src/mariadb/scripts/createProcessingDB.sql)
   Builds `BPDATA`.
   This is the operational database used mainly by `appCataloga`.
 
-- [createMeasureDB-v5.sql](/RFFusion/src/mariadb/scripts/createMeasureDB-v5.sql)
+- [createMeasureDB.sql](/RFFusion/src/mariadb/scripts/createMeasureDB.sql)
   Builds `RFDATA`.
   This is the measurement and catalog database used by `appCataloga` and
   queried by `webfusion`.
 
-- [createFusionSummaryDB-v1.sql](/RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql)
+- [createFusionSummaryDB.sql](/RFFusion/src/mariadb/scripts/createFusionSummaryDB.sql)
   Builds `RFFUSION_SUMMARY`.
   This is the materialized summary layer intended to serve `webfusion` and
   external consumers without repeatedly scanning the heaviest source tables.
@@ -76,8 +76,6 @@ Main tables:
 - `HOST_TASK`
 - `FILE_TASK`
 - `FILE_TASK_HISTORY`
-- `SUMMARY_OUTBOX`
-- `SUMMARY_WORKER_STATE`
 
 This database answers questions such as:
 
@@ -137,9 +135,9 @@ The normal order is:
 That means:
 
 ```bash
-mysql -u root -p < /RFFusion/src/mariadb/scripts/createProcessingDB-v11.sql
-mysql -u root -p < /RFFusion/src/mariadb/scripts/createMeasureDB-v5.sql
-mysql -u root -p < /RFFusion/src/mariadb/scripts/createFusionSummaryDB-v1.sql
+mysql -u root -p < /RFFusion/src/mariadb/scripts/createProcessingDB.sql
+mysql -u root -p < /RFFusion/src/mariadb/scripts/createMeasureDB.sql
+mysql -u root -p < /RFFusion/src/mariadb/scripts/createFusionSummaryDB.sql
 ```
 
 In practice, the supported path is still the MariaDB container deployment:
@@ -148,7 +146,7 @@ In practice, the supported path is still the MariaDB container deployment:
 
 ## Important Operational Notes
 
-### `createMeasureDB-v5.sql` depends on repository paths
+### `createMeasureDB.sql` depends on repository paths
 
 The `RFDATA` bootstrap script uses `LOAD DATA INFILE` with paths such as:
 
@@ -185,10 +183,10 @@ MariaDB event scheduler.
 
 Today the model is:
 
-- `createProcessingDB-v11.sql` creates `SUMMARY_OUTBOX` and `SUMMARY_WORKER_STATE` in `BPDATA`
-- `appCataloga` publishers append dirty scopes into that outbox
-- `appCataloga_rffusion_summary_worker.py` consumes the outbox and refreshes the public summary tables
-- `createFusionSummaryDB-v1.sql` still defines the public summary schema and its diagnostics tables
+- `createFusionSummaryDB.sql` creates `SUMMARY_OUTBOX` and `SUMMARY_WORKER_STATE` in `RFFUSION_SUMMARY`
+- `appCataloga` publishers coalesce dirty scopes into that outbox
+- `appCataloga_summary_database.py` consumes the outbox and refreshes the public summary tables
+- `createFusionSummaryDB.sql` still defines the public summary schema and its diagnostics tables
 
 This preserves the `RFFUSION_SUMMARY` contract for `webfusion`, MATLAB and
 other readers while avoiding heavy periodic `INSERT ... SELECT` refreshes on
@@ -202,13 +200,13 @@ That design is documented in:
 
 When changing these scripts, keep these rules in mind.
 
-### Treat bootstrap scripts as versioned contracts
+### Treat bootstrap scripts as canonical contracts
 
-The filenames are versioned for a reason.
+The current repository keeps one canonical bootstrap script per database.
 
-If a change alters schema shape, seed format or bootstrap semantics in a
-meaningful way, prefer introducing a new versioned script instead of silently
-rewriting history.
+If schema shape, seed format or bootstrap semantics change, update the
+corresponding `create*` script so a fresh deployment always lands directly on
+the current supported state.
 
 For the current repository state, the three `create*` scripts are the only
 canonical bootstrap SQL artifacts in this directory.

@@ -342,7 +342,7 @@ class HostStatisticsRefreshTests(unittest.TestCase):
         self.assertEqual(host_updates[0]["NU_DONE_FILE_BACKUP_TASKS"], 11)
         self.assertEqual(host_updates[0]["VL_PENDING_BACKUP_KB"], 2048)
         self.assertEqual(host_updates[0]["VL_DONE_BACKUP_KB"], 4096)
-        self.assertEqual(summary_scopes, [{"host_id": 88, "reason": "host_update_statistics"}])
+        self.assertEqual(summary_scopes, [])
 
 
 class FileTimestampOwnershipTests(unittest.TestCase):

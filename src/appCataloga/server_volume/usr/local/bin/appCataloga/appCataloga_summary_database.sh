@@ -1,18 +1,18 @@
 #!/bin/bash
 # =============================================================================
-# Script: appCataloga_rffusion_summary_worker.sh
+# Script: appCataloga_summary_database.sh
 # Purpose: Incremental RFFUSION_SUMMARY worker (SINGLETON)
 # =============================================================================
 
 set -e
 
-APP_NAME="appCataloga_rffusion_summary_worker.py"
+APP_NAME="appCataloga_summary_database.py"
 APP_PATH="/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/$APP_NAME"
 PYTHON_BIN="/opt/conda/envs/appdata/bin/python"
 
 PID_DIR="/var/run/appCataloga"
 LOG_DIR="/var/log/appCataloga"
-LOG_FILE="$LOG_DIR/appCataloga_rffusion_summary_worker.log"
+LOG_FILE="$LOG_DIR/appCataloga_summary_database.log"
 
 mkdir -p "$PID_DIR" "$LOG_DIR"
 
@@ -29,7 +29,7 @@ check_env() {
 }
 
 start() {
-    banner "STARTING appCataloga_rffusion_summary_worker"
+    banner "STARTING appCataloga_summary_database"
     check_env
     pgrep -f "$APP_NAME" >/dev/null && { echo "Already running."; exit 0; }
     cd "$(dirname "$APP_PATH")"
@@ -38,7 +38,7 @@ start() {
 }
 
 stop() {
-    banner "STOPPING appCataloga_rffusion_summary_worker"
+    banner "STOPPING appCataloga_summary_database"
     pkill -TERM -f "$APP_NAME" || true
     sleep 2
     pkill -KILL -f "$APP_NAME" 2>/dev/null || true
@@ -46,7 +46,7 @@ stop() {
 }
 
 status() {
-    banner "STATUS appCataloga_rffusion_summary_worker"
+    banner "STATUS appCataloga_summary_database"
     pgrep -af "$APP_NAME" || echo "Not running."
 }
 
