@@ -1094,8 +1094,6 @@ class dbHandlerRFM(DBHandlerBase):
             if not self.in_transaction:
                 self._disconnect()
 
-
-
     # ======================================================================
     # PROCEDURE OPERATIONS
     # ======================================================================

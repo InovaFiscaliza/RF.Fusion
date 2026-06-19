@@ -75,9 +75,22 @@ RUN set -eux; \
     fi
 
 # --- Config SSH ---
-RUN sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
- && sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config \
- && sed -ri 's@^#?AuthorizedKeysFile .*@AuthorizedKeysFile .ssh/authorized_keys@' /etc/ssh/sshd_config
+RUN set -eux; \
+    sshd_conf="/etc/ssh/sshd_config"; \
+    sed -ri 's/^#?Port .*/Port 2828/' "${sshd_conf}"; \
+    sed -ri 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' "${sshd_conf}"; \
+    sed -ri 's/^#?PasswordAuthentication .*/PasswordAuthentication yes/' "${sshd_conf}"; \
+    sed -ri 's/^#?KbdInteractiveAuthentication .*/KbdInteractiveAuthentication yes/' "${sshd_conf}"; \
+    sed -ri 's@^#?AuthorizedKeysFile .*@AuthorizedKeysFile .ssh/authorized_keys@' "${sshd_conf}"; \
+    sed -ri 's/^#?PermitRootLogin .*/PermitRootLogin yes/' "${sshd_conf}"; \
+    sed -ri 's/^#?UsePAM .*/UsePAM yes/' "${sshd_conf}"; \
+    grep -q '^Port 2828$' "${sshd_conf}" || printf '\nPort 2828\n' >> "${sshd_conf}"; \
+    grep -q '^PubkeyAuthentication yes$' "${sshd_conf}" || printf 'PubkeyAuthentication yes\n' >> "${sshd_conf}"; \
+    grep -q '^PasswordAuthentication yes$' "${sshd_conf}" || printf 'PasswordAuthentication yes\n' >> "${sshd_conf}"; \
+    grep -q '^KbdInteractiveAuthentication yes$' "${sshd_conf}" || printf 'KbdInteractiveAuthentication yes\n' >> "${sshd_conf}"; \
+    grep -q '^AuthorizedKeysFile .ssh/authorized_keys$' "${sshd_conf}" || printf 'AuthorizedKeysFile .ssh/authorized_keys\n' >> "${sshd_conf}"; \
+    grep -q '^PermitRootLogin yes$' "${sshd_conf}" || printf 'PermitRootLogin yes\n' >> "${sshd_conf}"; \
+    grep -q '^UsePAM yes$' "${sshd_conf}" || printf 'UsePAM yes\n' >> "${sshd_conf}"
 
 # --- Entrypoint ---
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -85,7 +98,7 @@ RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
  && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Portas expostas
-EXPOSE 22 3306
+EXPOSE 2828 3306
 
 # Volumes
 VOLUME ["/var/lib/mysql"]

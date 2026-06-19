@@ -602,9 +602,9 @@ class AppAnalisePayloadParser:
                     f"absent locally: {requested_full_path} ({answer_error})"
                 )
 
-        # Any other string in `Answer` is treated as a definitive service-side
-        # semantic error rather than a transport failure.
-        raise errors.BinValidationError(
+        # Any other string in `Answer` is an explicit appAnalise-side failure.
+        # Freeze the task so operators can inspect the returned identifier.
+        raise errors.AppAnaliseServiceResponseError(
             f"APP_ANALISE returned error in Answer: {answer_error}"
         )
 
@@ -617,14 +617,15 @@ class AppAnalisePayloadParser:
         Validate the top-level protocol structure before normalization begins.
         """
         if not isinstance(payload, dict):
-            raise errors.BinValidationError(
+            self._raise_invalid_success_payload(
                 "APP_ANALISE returned invalid payload type"
             )
 
         err = payload.get("Error")
         if err is not None:
             # `Error` is a protocol-level failure channel that bypasses the
-            # normal success shape of `Answer`.
+            # normal success shape of `Answer`. The service replied on purpose,
+            # so this should freeze instead of deleting the queue row.
             if isinstance(err, (list, tuple)) and len(err) >= 2:
                 code = err[0]
                 message = err[1]
@@ -632,14 +633,14 @@ class AppAnalisePayloadParser:
                 code = "APP_ANALISE_ERROR"
                 message = str(err)
 
-            raise errors.BinValidationError(
+            raise errors.AppAnaliseServiceResponseError(
                 f"APP_ANALISE returned error: {code} - {message}"
             )
 
         answer = payload.get("Answer")
 
         if answer is None:
-            raise errors.BinValidationError(
+            self._raise_invalid_success_payload(
                 "APP_ANALISE response missing Answer payload"
             )
 
@@ -649,23 +650,16 @@ class AppAnalisePayloadParser:
             self._raise_answer_error(answer, requested_full_path)
 
         if not isinstance(answer, dict):
-            raise errors.BinValidationError(
+            self._raise_invalid_success_payload(
                 f"APP_ANALISE returned invalid Answer payload type: {answer}"
             )
 
-        if not answer:
-            raise errors.BinValidationError(
-                f"APP_ANALISE returned empty Answer payload: {answer}"
-            )
-
-        if "Spectra" not in answer:
-            raise errors.BinValidationError(
-                f"APP_ANALISE response missing Answer.Spectra: {answer}"
-            )
-
-        # Normalize the container shape early so later stages can assume
-        # `Spectra` is list-like even when one single spectrum came back.
-        self._coerce_spectra_payload(answer.get("Spectra"), allow_empty=True)
+    @staticmethod
+    def _raise_invalid_success_payload(message: str) -> None:
+        """
+        Freeze replies that claim success but violate the response contract.
+        """
+        raise errors.AppAnaliseInvalidSuccessPayloadError(message)
 
     def _coerce_spectra_payload(
         self,

@@ -17,6 +17,9 @@ SSHPassword="changeme"
 DBPassword="changeme"
 HostSSHPort="2224"
 HostDBPort="9081"
+SSHAppUser="rffusion"
+SSHAppPassword="changeme"
+SSHAppPublicKey="${SSH_APP_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICOV2QzbKI1es3i5dc93j9zNtyfQAVPdrtQCpFjrdcWF rffusion-service}"
 
 # ------------------------------
 # Caminhos dos scripts SQL (NOVO LAYOUT)
@@ -80,7 +83,10 @@ podman run -d \
   --cap-add=NET_ADMIN \
   -e "MARIADB_ROOT_PASSWORD=${DBPassword}" \
   -e "SSH_PASSWORD=${SSHPassword}" \
-  -p "${HostSSHPort}:22" \
+  -e "SSH_APP_USER=${SSHAppUser}" \
+  -e "SSH_APP_PASSWORD=${SSHAppPassword}" \
+  -e "SSH_APP_PUBLIC_KEY=${SSHAppPublicKey}" \
+  -p "${HostSSHPort}:2828" \
   -p "${HostDBPort}:3306" \
   -v "${repoRoot}:/RFFusion:Z" \
   "${ImageName}:latest"

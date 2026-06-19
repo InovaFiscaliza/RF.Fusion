@@ -98,8 +98,10 @@ ERROR_DOMAIN_BY_CODE = {
     "SITE_GEOGRAPHIC_CODES_NOT_FOUND": "PROCESSING",
     "APP_ANALISE_READ_TIMEOUT": "PROCESSING",
     "APP_ANALISE_TRANSIENT_SERVICE_FAILURE": "PROCESSING",
+    "APP_ANALISE_SERVICE_RESPONSE_ERROR": "PROCESSING",
     "APP_ANALISE_FILE_UNAVAILABLE": "PROCESSING",
     "APP_ANALISE_OUTPUT_ARTIFACT_UNAVAILABLE": "PROCESSING",
+    "APP_ANALISE_INVALID_SUCCESS_PAYLOAD": "PROCESSING",
     "APP_ANALISE_INVALID_SPECTRA_TYPE": "PROCESSING",
     "APP_ANALISE_ANSWER_ERROR": "PROCESSING",
     "APP_ANALISE_NO_READABLE_FILES_IN_ZIP": "PROCESSING",
@@ -218,6 +220,13 @@ def _canonicalize_error_reason(
             exc_text or None,
         )
 
+    if raw_reason == "APP_ANALISE service returned processing error":
+        return (
+            "APP_ANALISE_SERVICE_RESPONSE_ERROR",
+            "APP_ANALISE service returned processing error",
+            exc_text or None,
+        )
+
     if (
         raw_reason == "APP_ANALISE file unavailable during processing"
         and isinstance(exc, AppAnaliseFileUnavailableError)
@@ -263,6 +272,13 @@ def _canonicalize_error_reason(
         canonical = "APP_ANALISE returned invalid Answer.Spectra type"
         detail = raw_reason if raw_reason != canonical else None
         return "APP_ANALISE_INVALID_SPECTRA_TYPE", canonical, detail
+
+    if raw_reason == "APP_ANALISE returned invalid success payload":
+        return (
+            "APP_ANALISE_INVALID_SUCCESS_PAYLOAD",
+            "APP_ANALISE returned invalid success payload",
+            exc_text or None,
+        )
 
     if raw_reason.startswith("APP_ANALISE returned error in Answer:"):
         detail = raw_reason.split("APP_ANALISE returned error in Answer:", 1)[1].strip()
@@ -744,6 +760,17 @@ class ExternalServiceTransientError(Exception):
     pass
 
 
+class AppAnaliseServiceResponseError(ExternalServiceTransientError):
+    """
+    Raised when appAnalise replies with an explicit service-side error.
+
+    The request reached the remote processor and produced a deliberate error
+    identifier or error payload. This is operationally different from a
+    malformed RF.Fusion payload, so the worker should freeze the task.
+    """
+    pass
+
+
 class AppAnaliseFileUnavailableError(Exception):
     """
     Raised when appAnalise cannot see or produce a concrete file artifact.
@@ -766,9 +793,21 @@ class AppAnaliseReadTimeoutError(Exception):
     pass
 
 
+class AppAnaliseInvalidSuccessPayloadError(Exception):
+    """
+    Raised when appAnalise answers without `Error` but with invalid success data.
+
+    The service stayed reachable and replied, but the returned success payload
+    is not usable by RF.Fusion. Operators should inspect the task manually.
+    """
+    pass
+
+
 PROCESSING_FREEZE_DETAILS = {
+    AppAnaliseServiceResponseError: "APP_ANALISE returned service error, task frozen for manual review",
     AppAnaliseReadTimeoutError: "APP_ANALISE read timeout, task frozen for manual review",
     AppAnaliseFileUnavailableError: "APP_ANALISE file unavailable, task frozen for manual review",
+    AppAnaliseInvalidSuccessPayloadError: "APP_ANALISE returned invalid success payload, task frozen for manual review",
     ExternalServiceTransientError: "Transient appAnalise service failure, task frozen for manual review",
 }
 

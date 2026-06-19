@@ -74,14 +74,16 @@ class DetectProtocolErrorTests(unittest.TestCase):
 
         self.parser.detect_protocol_error(payload)
 
-    def test_detect_protocol_error_rejects_answer_string(self) -> None:
+    def test_detect_protocol_error_freezes_answer_string(self) -> None:
         # Real failures from appAnalise can arrive as plain strings in `Answer`.
         payload = {
             "Request": {"type": "FileRead"},
             "Answer": "tcpServerLib:FileNotFound",
         }
 
-        with self.assertRaises(AppAnaliseErrors.BinValidationError) as ctx:
+        with self.assertRaises(
+            AppAnaliseErrors.AppAnaliseServiceResponseError
+        ) as ctx:
             self.parser.detect_protocol_error(payload)
 
         self.assertIn("APP_ANALISE returned error in Answer", str(ctx.exception))
@@ -151,11 +153,13 @@ class DetectProtocolErrorTests(unittest.TestCase):
 
         self.assertIn("Answer.Spectra", str(ctx.exception))
 
-    def test_detect_protocol_error_rejects_top_level_error_field(self) -> None:
+    def test_detect_protocol_error_freezes_top_level_error_field(self) -> None:
         # The protocol also supports an explicit top-level `Error` field.
         payload = {"Error": ["tcpServerLib", "PortClosed"]}
 
-        with self.assertRaises(AppAnaliseErrors.BinValidationError) as ctx:
+        with self.assertRaises(
+            AppAnaliseErrors.AppAnaliseServiceResponseError
+        ) as ctx:
             self.parser.detect_protocol_error(payload)
 
         self.assertIn("tcpServerLib - PortClosed", str(ctx.exception))

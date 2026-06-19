@@ -603,6 +603,7 @@ def run_processing_flow(
         export=task["export"],
     )
     process_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
+    
     # SITE resolution stays outside the transaction because geocoding and
     # locality reconciliation are slower and fail differently from DB writes.
     phase_started_at = time.monotonic()

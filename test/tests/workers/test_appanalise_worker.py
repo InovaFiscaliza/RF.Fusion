@@ -46,7 +46,7 @@ with bind_real_shared_package():
                 "test_appanalise_worker_module",
                 str(APP_ROOT / "appCataloga_file_bin_process_appAnalise.py"),
             )
-            processing = worker.processing
+            processing = worker.processing_bin
 
 
 class FakeWorkerLog:
@@ -263,6 +263,7 @@ class FakeErr:
     def __init__(self, message: str = "", triggered: bool = False) -> None:
         self._message = message
         self.triggered = triggered
+        self.stage = "PROCESS"
 
     def format_error(self) -> str:
         return self._message
@@ -1074,6 +1075,37 @@ class RetryTests(unittest.TestCase):
             worker.k.TASK_FROZEN,
         )
         self.assertIn("APP_ANALISE file unavailable", db.task_updates[0]["NA_MESSAGE"])
+        self.assertEqual(len(db.statistics_updates), 1)
+
+    def test_finalize_freeze_freezes_service_response_row_and_history(self) -> None:
+        db = FakeDbBkp()
+        task = {
+            "file_task_id": 655,
+            "host_id": 89,
+            "host_file_name": "sample.bin",
+            "host_path": "/host/path",
+            "filename": "sample.bin",
+        }
+        err = FakeErr("[ERROR] service response", triggered=True)
+        err.exc = worker.errors.AppAnaliseServiceResponseError(
+            "APP_ANALISE returned error in Answer: "
+            "server:SSHHandler:AuthenticationFailed"
+        )
+
+        worker._finalize_freeze(db, task, err)
+
+        self.assertEqual(len(db.task_updates), 1)
+        self.assertEqual(db.task_updates[0]["NU_STATUS"], worker.k.TASK_FROZEN)
+        self.assertEqual(len(db.history_updates), 1)
+        self.assertEqual(
+            db.history_updates[0]["NU_STATUS_PROCESSING"],
+            worker.k.TASK_FROZEN,
+        )
+        self.assertIn(
+            "APP_ANALISE returned service error",
+            db.task_updates[0]["NA_MESSAGE"],
+        )
+        self.assertEqual(len(db.task_deletes), 0)
         self.assertEqual(len(db.statistics_updates), 1)
 
 

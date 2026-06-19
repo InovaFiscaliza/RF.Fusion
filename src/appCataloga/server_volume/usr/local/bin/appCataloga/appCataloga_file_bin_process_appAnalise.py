@@ -167,23 +167,31 @@ def _claim_task(db_bp: dbHandlerBKP, task: dict) -> bool:
 
 def _classify_work_failure(exc: Exception) -> tuple[str, str]:
     """Map a raised exception to the worker error reason and stage."""
-    
+
     # appAnalise reached the processing phase but timed out while replying.
     if isinstance(exc, errors.AppAnaliseReadTimeoutError):
         return "APP_ANALISE read timeout during processing", k.STAGE_PROCESS
-    
+
     # appAnalise could not find the expected server-side input file.
     if isinstance(exc, errors.AppAnaliseFileUnavailableError):
         return "APP_ANALISE file unavailable during processing", k.STAGE_PROCESS
-    
+
+    # appAnalise returned an explicit error identifier for this request.
+    if isinstance(exc, errors.AppAnaliseServiceResponseError):
+        return "APP_ANALISE service returned processing error", k.STAGE_PROCESS
+
+    # appAnalise answered without `Error` but with an unusable success payload.
+    if isinstance(exc, errors.AppAnaliseInvalidSuccessPayloadError):
+        return "APP_ANALISE returned invalid success payload", k.STAGE_PROCESS
+
     # The remote service started work but failed in a likely transient way.
     if isinstance(exc, errors.ExternalServiceTransientError):
         return "Transient appAnalise processing failure", k.STAGE_PROCESS
-    
+
     # Payload validation already rejected this artifact as invalid input.
     if isinstance(exc, errors.BinValidationError):
         return "Payload validation failed during processing", k.STAGE_PROCESS
-    
+
     # Finalization can fail on short-lived filesystem contention.
     if processing_bin.is_transient_filesystem_error(exc):
         return "Transient filesystem finalization failure", k.STAGE_FS

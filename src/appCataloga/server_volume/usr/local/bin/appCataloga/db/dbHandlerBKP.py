@@ -2275,6 +2275,8 @@ class dbHandlerBKP(DBHandlerBase):
                 rows.append(self._merge_structured_error_fields(row))
 
             if len(rows) == 1:
+                # FILE_TASK keeps one live row per host-path artifact.
+                # Size decides rediscovery, but not queue identity.
                 self._upsert_row(
                     table="FILE_TASK",
                     data=rows[0],
@@ -2506,6 +2508,584 @@ class dbHandlerBKP(DBHandlerBase):
             return deleted_rows
         finally:
             self._disconnect()
+
+    def file_task_list_pending_backup_with_server_artifact(
+        self,
+        *,
+        limit: int = 1000,
+        host_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return pending BACKUP queue rows whose history already has a server artifact.
+
+        These rows are operationally inconsistent: backup is still queued even
+        though `FILE_TASK_HISTORY` already points to a repository file. The
+        reconciler can promote them directly to PROCESS.
+        """
+        self._connect()
+        try:
+            sql = """
+                SELECT
+                    t.ID_FILE_TASK,
+                    t.FK_HOST,
+                    host.NA_HOST_NAME,
+                    t.NA_HOST_FILE_PATH,
+                    t.NA_HOST_FILE_NAME,
+                    h.NA_SERVER_FILE_PATH,
+                    h.NA_SERVER_FILE_NAME,
+                    h.NA_EXTENSION_SERVER,
+                    h.VL_FILE_SIZE_KB_SERVER,
+                    h.DT_FILE_CREATED_SERVER,
+                    h.DT_FILE_MODIFIED_SERVER,
+                    h.DT_BACKUP,
+                    h.DT_PROCESSED,
+                    h.NU_STATUS_BACKUP,
+                    h.NU_STATUS_PROCESSING
+                FROM FILE_TASK t
+                JOIN FILE_TASK_HISTORY h
+                  ON h.FK_HOST = t.FK_HOST
+                 AND h.NA_HOST_FILE_PATH = t.NA_HOST_FILE_PATH
+                 AND h.NA_HOST_FILE_NAME = t.NA_HOST_FILE_NAME
+                JOIN HOST host
+                  ON host.ID_HOST = t.FK_HOST
+                WHERE t.NU_TYPE = %s
+                  AND t.NU_STATUS = %s
+                  AND h.NA_SERVER_FILE_PATH IS NOT NULL
+                  AND TRIM(h.NA_SERVER_FILE_PATH) <> ''
+                  AND h.NA_SERVER_FILE_NAME IS NOT NULL
+                  AND TRIM(h.NA_SERVER_FILE_NAME) <> ''
+            """
+            params: List[Any] = [
+                k.FILE_TASK_BACKUP_TYPE,
+                k.TASK_PENDING,
+            ]
+
+            if host_id is not None:
+                sql += " AND t.FK_HOST = %s"
+                params.append(host_id)
+
+            sql += " ORDER BY t.FK_HOST ASC, t.ID_FILE_TASK ASC LIMIT %s"
+            params.append(limit)
+
+            return self._select_raw(sql, tuple(params))
+        finally:
+            self._disconnect()
+
+    def file_history_list_inconsistent_server_artifacts(
+        self,
+        *,
+        limit: int = 1000,
+        host_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return history rows whose server artifact exists but state is inconsistent.
+
+        A row is considered inconsistent when it already points to a repository
+        artifact and at least one of these is true:
+            - processing/backup status is not `DONE`
+            - backup/processing timestamp is missing
+            - a non-running `FILE_TASK` still exists for the same source file
+        """
+        self._connect()
+        try:
+            sql = """
+                SELECT
+                    h.ID_HISTORY,
+                    h.FK_HOST,
+                    host.NA_HOST_NAME,
+                    h.NA_HOST_FILE_PATH,
+                    h.NA_HOST_FILE_NAME,
+                    h.NA_SERVER_FILE_PATH,
+                    h.NA_SERVER_FILE_NAME,
+                    h.NA_EXTENSION_SERVER,
+                    h.VL_FILE_SIZE_KB_SERVER,
+                    h.DT_FILE_CREATED_SERVER,
+                    h.DT_FILE_MODIFIED_SERVER,
+                    h.DT_BACKUP,
+                    h.DT_PROCESSED,
+                    h.NU_STATUS_BACKUP,
+                    h.NU_STATUS_PROCESSING,
+                    t.ID_FILE_TASK,
+                    t.NU_TYPE AS FILE_TASK_TYPE,
+                    t.NU_STATUS AS FILE_TASK_STATUS
+                FROM FILE_TASK_HISTORY h
+                JOIN HOST host
+                  ON host.ID_HOST = h.FK_HOST
+                LEFT JOIN FILE_TASK t USE INDEX (idx_file_task_identity)
+                  ON t.FK_HOST = h.FK_HOST
+                 AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
+                 AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
+                WHERE h.NA_SERVER_FILE_PATH IS NOT NULL
+                  AND TRIM(h.NA_SERVER_FILE_PATH) <> ''
+                  AND h.NA_SERVER_FILE_NAME IS NOT NULL
+                  AND TRIM(h.NA_SERVER_FILE_NAME) <> ''
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM FILE_TASK t_running
+                        WHERE t_running.FK_HOST = h.FK_HOST
+                          AND t_running.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
+                          AND t_running.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
+                          AND t_running.NU_STATUS = %s
+                  )
+                  AND (
+                        t.ID_FILE_TASK IS NOT NULL
+                        OR h.NU_STATUS_BACKUP <> %s
+                        OR h.NU_STATUS_PROCESSING <> %s
+                        OR h.DT_BACKUP IS NULL
+                        OR h.DT_PROCESSED IS NULL
+                  )
+            """
+            params: List[Any] = [
+                k.TASK_RUNNING,
+                k.TASK_DONE,
+                k.TASK_DONE,
+            ]
+
+            if host_id is not None:
+                sql += " AND h.FK_HOST = %s"
+                params.append(host_id)
+
+            sql += " ORDER BY h.FK_HOST ASC, h.ID_HISTORY ASC LIMIT %s"
+            params.append(limit)
+
+            return self._select_raw(sql, tuple(params))
+        finally:
+            self._disconnect()
+
+    def file_history_list_processed_artifact_reconcile_candidates(
+        self,
+        *,
+        limit: int = 1000,
+        host_id: Optional[int] = None,
+        after_history_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return inconsistent history rows already proven by `DIM_SPECTRUM_FILE`.
+
+        These rows are safe to restore directly to backup/process `DONE`
+        because the repository artifact already exists in analytical storage.
+        """
+        self._connect()
+        try:
+            sql = f"""
+                SELECT
+                    h.ID_HISTORY,
+                    h.FK_HOST,
+                    host.NA_HOST_NAME,
+                    h.NA_HOST_FILE_PATH,
+                    h.NA_HOST_FILE_NAME,
+                    h.NA_SERVER_FILE_PATH,
+                    h.NA_SERVER_FILE_NAME,
+                    h.NA_EXTENSION_SERVER,
+                    h.VL_FILE_SIZE_KB_SERVER,
+                    h.DT_FILE_CREATED_SERVER,
+                    h.DT_FILE_MODIFIED_SERVER,
+                    h.DT_BACKUP,
+                    h.DT_PROCESSED,
+                    h.NU_STATUS_BACKUP,
+                    h.NU_STATUS_PROCESSING,
+                    (
+                        SELECT t.ID_FILE_TASK
+                        FROM FILE_TASK t USE INDEX (idx_file_task_identity)
+                        WHERE t.FK_HOST = h.FK_HOST
+                          AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
+                          AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
+                        LIMIT 1
+                    ) AS ID_FILE_TASK,
+                    (
+                        SELECT t.NU_TYPE
+                        FROM FILE_TASK t USE INDEX (idx_file_task_identity)
+                        WHERE t.FK_HOST = h.FK_HOST
+                          AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
+                          AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
+                        LIMIT 1
+                    ) AS FILE_TASK_TYPE,
+                    (
+                        SELECT t.NU_STATUS
+                        FROM FILE_TASK t USE INDEX (idx_file_task_identity)
+                        WHERE t.FK_HOST = h.FK_HOST
+                          AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
+                          AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
+                        LIMIT 1
+                    ) AS FILE_TASK_STATUS,
+                    d.NA_PATH AS na_path,
+                    d.NA_FILE AS na_file,
+                    d.NA_EXTENSION AS NA_EXTENSION,
+                    d.VL_FILE_SIZE_KB AS VL_FILE_SIZE_KB,
+                    d.DT_FILE_CREATED AS DT_FILE_CREATED,
+                    d.DT_FILE_MODIFIED AS DT_FILE_MODIFIED,
+                    d.DT_FILE_LOGGED AS DT_FILE_LOGGED
+                FROM FILE_TASK_HISTORY h
+                JOIN HOST host
+                  ON host.ID_HOST = h.FK_HOST
+                JOIN {k.RFM_DATABASE_NAME}.DIM_SPECTRUM_FILE d
+                  ON d.NA_VOLUME = %s
+                 AND d.NA_PATH = h.NA_SERVER_FILE_PATH
+                 AND d.NA_FILE = h.NA_SERVER_FILE_NAME
+                WHERE h.NA_SERVER_FILE_PATH IS NOT NULL
+                  AND TRIM(h.NA_SERVER_FILE_PATH) <> ''
+                  AND h.NA_SERVER_FILE_NAME IS NOT NULL
+                  AND TRIM(h.NA_SERVER_FILE_NAME) <> ''
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM FILE_TASK t_running
+                        WHERE t_running.FK_HOST = h.FK_HOST
+                          AND t_running.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
+                          AND t_running.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
+                          AND t_running.NU_STATUS = %s
+                  )
+                  AND (
+                        EXISTS (
+                            SELECT 1
+                            FROM FILE_TASK t_any USE INDEX (idx_file_task_identity)
+                            WHERE t_any.FK_HOST = h.FK_HOST
+                              AND t_any.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
+                              AND t_any.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
+                        )
+                        OR h.NU_STATUS_BACKUP <> %s
+                        OR h.NU_STATUS_PROCESSING <> %s
+                        OR h.DT_BACKUP IS NULL
+                        OR h.DT_PROCESSED IS NULL
+                  )
+            """
+            params: List[Any] = [
+                k.REPO_VOLUME_NAME.lower(),
+                k.TASK_RUNNING,
+                k.TASK_DONE,
+                k.TASK_DONE,
+            ]
+
+            if host_id is not None:
+                sql += " AND h.FK_HOST = %s"
+                params.append(host_id)
+
+            if after_history_id is not None:
+                sql += " AND h.ID_HISTORY > %s"
+                params.append(after_history_id)
+
+            sql += " ORDER BY h.ID_HISTORY ASC LIMIT %s"
+            params.append(limit)
+
+            return self._select_raw(sql, tuple(params))
+        finally:
+            self._disconnect()
+
+    def file_history_list_queue_reconcile_candidates(
+        self,
+        *,
+        limit: int = 1000,
+        host_id: Optional[int] = None,
+        after_history_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return queued server-artifact rows that still need PROCESS reconciliation.
+
+        This batch excludes artifacts already present in `DIM_SPECTRUM_FILE`.
+        It selects only queue/history combinations that are not already aligned
+        with the expected PROCESS/PENDING state.
+        """
+        self._connect()
+        try:
+            sql = f"""
+                SELECT
+                    h.ID_HISTORY,
+                    h.FK_HOST,
+                    host.NA_HOST_NAME,
+                    h.NA_HOST_FILE_PATH,
+                    h.NA_HOST_FILE_NAME,
+                    h.NA_SERVER_FILE_PATH,
+                    h.NA_SERVER_FILE_NAME,
+                    h.NA_EXTENSION_SERVER,
+                    h.VL_FILE_SIZE_KB_SERVER,
+                    h.DT_FILE_CREATED_SERVER,
+                    h.DT_FILE_MODIFIED_SERVER,
+                    h.DT_BACKUP,
+                    h.DT_PROCESSED,
+                    h.NU_STATUS_BACKUP,
+                    h.NU_STATUS_PROCESSING,
+                    t.ID_FILE_TASK,
+                    t.NU_TYPE AS FILE_TASK_TYPE,
+                    t.NU_STATUS AS FILE_TASK_STATUS
+                FROM FILE_TASK_HISTORY h
+                JOIN HOST host
+                  ON host.ID_HOST = h.FK_HOST
+                JOIN FILE_TASK t USE INDEX (idx_file_task_identity)
+                  ON t.FK_HOST = h.FK_HOST
+                 AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
+                 AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
+                WHERE h.NA_SERVER_FILE_PATH IS NOT NULL
+                  AND TRIM(h.NA_SERVER_FILE_PATH) <> ''
+                  AND h.NA_SERVER_FILE_NAME IS NOT NULL
+                  AND TRIM(h.NA_SERVER_FILE_NAME) <> ''
+                  AND t.NU_STATUS <> %s
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM {k.RFM_DATABASE_NAME}.DIM_SPECTRUM_FILE d
+                        WHERE d.NA_VOLUME = %s
+                          AND d.NA_PATH = h.NA_SERVER_FILE_PATH
+                          AND d.NA_FILE = h.NA_SERVER_FILE_NAME
+                  )
+                  AND (
+                        t.NU_TYPE <> %s
+                        OR t.NU_STATUS <> %s
+                        OR h.NU_STATUS_BACKUP <> %s
+                        OR h.NU_STATUS_PROCESSING <> %s
+                        OR h.DT_BACKUP IS NULL
+                        OR h.DT_PROCESSED IS NOT NULL
+                        OR t.NA_SERVER_FILE_PATH IS NULL
+                        OR TRIM(t.NA_SERVER_FILE_PATH) = ''
+                        OR t.NA_SERVER_FILE_NAME IS NULL
+                        OR TRIM(t.NA_SERVER_FILE_NAME) = ''
+                  )
+            """
+            params: List[Any] = [
+                k.TASK_RUNNING,
+                k.REPO_VOLUME_NAME.lower(),
+                k.FILE_TASK_PROCESS_TYPE,
+                k.TASK_PENDING,
+                k.TASK_DONE,
+                k.TASK_PENDING,
+            ]
+
+            if host_id is not None:
+                sql += " AND h.FK_HOST = %s"
+                params.append(host_id)
+
+            if after_history_id is not None:
+                sql += " AND h.ID_HISTORY > %s"
+                params.append(after_history_id)
+
+            sql += " ORDER BY h.ID_HISTORY ASC LIMIT %s"
+            params.append(limit)
+
+            return self._select_raw(sql, tuple(params))
+        finally:
+            self._disconnect()
+
+    def file_task_promote_server_artifact_to_processing(
+        self,
+        *,
+        candidate: Dict[str, Any],
+        reconciled_at: datetime,
+    ) -> Dict[str, Any]:
+        """
+        Promote one queued server artifact directly to PROCESS/PENDING.
+
+        This repair path is used when discovery or backlog recreated a queue
+        row even though `FILE_TASK_HISTORY` already proves the payload reached
+        the repository. The row may currently be a discovery or backup task.
+        """
+        task_id = candidate.get("ID_FILE_TASK")
+        if task_id is None:
+            raise ValueError("candidate must include ID_FILE_TASK")
+
+        detail = "reconciled queued artifact already present on server"
+        message = tools.compose_message(
+            task_type=k.FILE_TASK_PROCESS_TYPE,
+            task_status=k.TASK_PENDING,
+            path=candidate["NA_SERVER_FILE_PATH"],
+            name=candidate["NA_SERVER_FILE_NAME"],
+            detail=detail,
+        )
+        structured = errors.persisted_error_fields_from_handler(message=message)
+        backup_at = candidate.get("DT_BACKUP") or reconciled_at
+        expected_status = candidate.get("FILE_TASK_STATUS", k.TASK_PENDING)
+
+        self.begin_transaction()
+        try:
+            task_result = self.file_task_update(
+                task_id=int(task_id),
+                expected_status=expected_status,
+                NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+                NU_STATUS=k.TASK_PENDING,
+                NU_PID=None,
+                DT_FILE_TASK=reconciled_at,
+                NA_SERVER_FILE_PATH=candidate["NA_SERVER_FILE_PATH"],
+                NA_SERVER_FILE_NAME=candidate["NA_SERVER_FILE_NAME"],
+                NA_EXTENSION_SERVER=candidate.get("NA_EXTENSION_SERVER"),
+                VL_FILE_SIZE_KB_SERVER=candidate.get("VL_FILE_SIZE_KB_SERVER"),
+                DT_FILE_CREATED_SERVER=candidate.get("DT_FILE_CREATED_SERVER"),
+                DT_FILE_MODIFIED_SERVER=candidate.get("DT_FILE_MODIFIED_SERVER"),
+                NA_MESSAGE=message,
+                **structured,
+            )
+            if task_result.get("rows_affected") != 1:
+                raise RuntimeError(
+                    "Queued artifact promotion affected "
+                    f"{task_result.get('rows_affected')} rows "
+                    f"(expected 1 for task_id={task_id})"
+                )
+
+            history_result = self.file_history_update(
+                task_type=k.FILE_TASK_PROCESS_TYPE,
+                host_id=int(candidate["FK_HOST"]),
+                host_file_path=candidate["NA_HOST_FILE_PATH"],
+                host_file_name=candidate["NA_HOST_FILE_NAME"],
+                DT_BACKUP=backup_at,
+                DT_PROCESSED=constants.SET_NULL,
+                NA_SERVER_FILE_PATH=candidate["NA_SERVER_FILE_PATH"],
+                NA_SERVER_FILE_NAME=candidate["NA_SERVER_FILE_NAME"],
+                NA_EXTENSION_SERVER=candidate.get("NA_EXTENSION_SERVER"),
+                VL_FILE_SIZE_KB_SERVER=candidate.get("VL_FILE_SIZE_KB_SERVER"),
+                DT_FILE_CREATED_SERVER=candidate.get("DT_FILE_CREATED_SERVER"),
+                DT_FILE_MODIFIED_SERVER=candidate.get("DT_FILE_MODIFIED_SERVER"),
+                NU_STATUS_BACKUP=k.TASK_DONE,
+                NU_STATUS_PROCESSING=k.TASK_PENDING,
+                NA_MESSAGE=message,
+                **structured,
+            )
+            if history_result.get("rows_affected") != 1:
+                raise RuntimeError(
+                    "FILE_TASK_HISTORY promotion affected "
+                    f"{history_result.get('rows_affected')} rows "
+                    f"(expected 1 for host={candidate['FK_HOST']}, "
+                    f"path={candidate['NA_HOST_FILE_PATH']}, "
+                    f"name={candidate['NA_HOST_FILE_NAME']})"
+                )
+
+            self.commit()
+            return {
+                "task_rows_affected": task_result["rows_affected"],
+                "history_rows_affected": history_result["rows_affected"],
+                "task_id": int(task_id),
+                "host_id": int(candidate["FK_HOST"]),
+            }
+        except Exception:
+            self.rollback()
+            raise
+
+    def file_task_promote_pending_backup_to_processing(
+        self,
+        *,
+        candidate: Dict[str, Any],
+        reconciled_at: datetime,
+    ) -> Dict[str, Any]:
+        """
+        Promote one pending BACKUP queue row to PROCESS using history metadata.
+
+        This is a one-shot operational recovery path for rows resurrected by
+        discovery after the payload had already reached the repository.
+        """
+        queue_candidate = dict(candidate)
+        queue_candidate["FILE_TASK_STATUS"] = k.TASK_PENDING
+        return self.file_task_promote_server_artifact_to_processing(
+            candidate=queue_candidate,
+            reconciled_at=reconciled_at,
+        )
+
+    def file_history_reconcile_processed_artifact(
+        self,
+        *,
+        candidate: Dict[str, Any],
+        repository_artifact: Dict[str, Any],
+        reconciled_at: datetime,
+    ) -> Dict[str, Any]:
+        """
+        Restore DONE state when `DIM_SPECTRUM_FILE` proves processing succeeded.
+
+        `DIM_SPECTRUM_FILE` is treated as the durable success signal for the
+        repository artifact. This repair path updates `FILE_TASK_HISTORY` back
+        to backup/process DONE and removes any stale live queue row.
+        """
+        history_id = candidate.get("ID_HISTORY")
+        if history_id is None:
+            raise ValueError("candidate must include ID_HISTORY")
+
+        def _prefer_value(*values: Any) -> Any:
+            """Return the first value that is not `None`."""
+            for value in values:
+                if value is not None:
+                    return value
+            return None
+
+        server_path = repository_artifact.get("na_path") or candidate["NA_SERVER_FILE_PATH"]
+        server_name = repository_artifact.get("na_file") or candidate["NA_SERVER_FILE_NAME"]
+        server_extension = _prefer_value(
+            repository_artifact.get("NA_EXTENSION"),
+            candidate.get("NA_EXTENSION_SERVER"),
+        )
+        server_size_kb = _prefer_value(
+            repository_artifact.get("VL_FILE_SIZE_KB"),
+            candidate.get("VL_FILE_SIZE_KB_SERVER"),
+        )
+        server_created = _prefer_value(
+            repository_artifact.get("DT_FILE_CREATED"),
+            candidate.get("DT_FILE_CREATED_SERVER"),
+        )
+        server_modified = _prefer_value(
+            repository_artifact.get("DT_FILE_MODIFIED"),
+            candidate.get("DT_FILE_MODIFIED_SERVER"),
+        )
+        backup_at = _prefer_value(
+            candidate.get("DT_BACKUP"),
+            candidate.get("DT_FILE_CREATED_SERVER"),
+            repository_artifact.get("DT_FILE_CREATED"),
+            repository_artifact.get("DT_FILE_LOGGED"),
+            reconciled_at,
+        )
+        processed_at = _prefer_value(
+            candidate.get("DT_PROCESSED"),
+            repository_artifact.get("DT_FILE_LOGGED"),
+            candidate.get("DT_FILE_MODIFIED_SERVER"),
+            repository_artifact.get("DT_FILE_MODIFIED"),
+            backup_at,
+        )
+        detail = "reconciled from DIM_SPECTRUM_FILE"
+        message = tools.compose_message(
+            task_type=k.FILE_TASK_PROCESS_TYPE,
+            task_status=k.TASK_DONE,
+            path=server_path,
+            name=server_name,
+            detail=detail,
+        )
+        structured = errors.persisted_error_fields_from_handler(message=message)
+
+        self.begin_transaction()
+        try:
+            history_result = self.file_history_update(
+                history_id=int(history_id),
+                DT_BACKUP=backup_at,
+                DT_PROCESSED=processed_at,
+                NA_SERVER_FILE_PATH=server_path,
+                NA_SERVER_FILE_NAME=server_name,
+                NA_EXTENSION_SERVER=server_extension,
+                VL_FILE_SIZE_KB_SERVER=server_size_kb,
+                DT_FILE_CREATED_SERVER=server_created,
+                DT_FILE_MODIFIED_SERVER=server_modified,
+                NU_STATUS_BACKUP=k.TASK_DONE,
+                NU_STATUS_PROCESSING=k.TASK_DONE,
+                NA_MESSAGE=message,
+                **structured,
+            )
+            if history_result.get("rows_affected") not in (0, 1):
+                raise RuntimeError(
+                    "Processed FILE_TASK_HISTORY reconciliation affected "
+                    f"{history_result.get('rows_affected')} rows "
+                    f"(expected 0 or 1 for history_id={history_id})"
+                )
+
+            task_id = candidate.get("ID_FILE_TASK")
+            deleted_rows = 0
+            if task_id is not None:
+                deleted_rows = self.file_task_delete(task_id=int(task_id))
+                if deleted_rows != 1:
+                    raise RuntimeError(
+                        "Processed FILE_TASK reconciliation deleted "
+                        f"{deleted_rows} rows "
+                        f"(expected 1 for task_id={task_id})"
+                    )
+
+            self.commit()
+            return {
+                "history_rows_affected": history_result["rows_affected"],
+                "deleted_task_rows": deleted_rows,
+                "history_id": int(history_id),
+                "task_id": int(task_id) if task_id is not None else None,
+                "host_id": int(candidate["FK_HOST"]),
+            }
+        except Exception:
+            self.rollback()
+            raise
 
 
     def file_history_delete(
@@ -3086,6 +3666,8 @@ class dbHandlerBKP(DBHandlerBase):
                 rows.append(self._merge_structured_error_fields(row))
 
             if len(rows) == 1:
+                # FILE_TASK_HISTORY keeps one durable row per host-path artifact.
+                # Size decides rediscovery, but not history identity.
                 self._upsert_row(
                     table="FILE_TASK_HISTORY",
                     data=rows[0],
@@ -3337,20 +3919,13 @@ class dbHandlerBKP(DBHandlerBase):
         Deduplicate a batch of `FileMetadata` objects against file history.
 
         Identity definition (logical key):
-            (FK_HOST, NA_HOST_FILE_NAME, VL_FILE_SIZE_KB_HOST, minute(DT_FILE_CREATED_HOST))
+            (FK_HOST, NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, VL_FILE_SIZE_KB_HOST)
 
-        IMPORTANT:
-            Timestamp comparison is intentionally performed at MINUTE precision.
-            Seconds and microseconds are considered unstable and irrelevant
-            for CelPlan DONE.zip identity semantics.
-
-        Why minute precision:
-            - NTFS may preserve sub-second precision
-            - MySQL may truncate microseconds
-            - exact datetime equality is therefore unreliable across layers
-
-        The normalized comparison keeps deduplication deterministic during
-        rediscovery without requiring schema changes.
+        Why this identity:
+            - path distinguishes same filenames stored in different folders
+            - size distinguishes files that grew in place and must be re-backed-up
+            - host-side timestamps proved too unstable across platforms for
+              rediscovery deduplication
 
         Returns:
             List[FileMetadata] containing only files not already
@@ -3366,37 +3941,28 @@ class dbHandlerBKP(DBHandlerBase):
             )
 
         # Build one derived table from the in-memory batch and let SQL perform
-        # the minute-level identity comparison in one pass.
-        row_sql = "SELECT %s AS name, %s AS created, %s AS size"
+        # the host-path identity comparison in one pass.
+        row_sql = "SELECT %s AS path, %s AS name, %s AS size"
         union_sql = " UNION ALL ".join([row_sql] * len(batch))
 
         sql = f"""
-            SELECT f.name, f.created, f.size
+            SELECT f.path, f.name, f.size
             FROM (
                 {union_sql}
             ) AS f
             JOIN FILE_TASK_HISTORY h
                 ON h.FK_HOST = %s
+                AND h.NA_HOST_FILE_PATH = f.path
                 AND h.NA_HOST_FILE_NAME = f.name
                 AND h.VL_FILE_SIZE_KB_HOST = f.size
-                AND TIMESTAMPDIFF(
-                    MINUTE,
-                    h.DT_FILE_CREATED_HOST,
-                    f.created
-                ) = 0
         """
 
         params: list[object] = []
 
         for m in batch:
-            if not isinstance(m.DT_FILE_CREATED, datetime):
-                raise TypeError(
-                    f"DT_FILE_CREATED must be datetime, got {type(m.DT_FILE_CREATED)}"
-                )
-
             params.extend([
+                m.NA_PATH,
                 m.NA_FILE,
-                m.DT_FILE_CREATED,
                 m.VL_FILE_SIZE_KB,
             ])
 
@@ -3405,21 +3971,14 @@ class dbHandlerBKP(DBHandlerBase):
         self._connect()
         rows = self._select_raw(sql, tuple(params))
 
-        # SQL already matched by minute; normalize again here so the in-memory
-        # comparison uses the exact same identity semantics.
+        # SQL already matched by host-path identity; mirror the same key
+        # in memory so the Python-side filter stays deterministic.
         existing_keys = set()
 
         for row in rows:
-            created = row["created"]
-
-            if not isinstance(created, datetime):
-                created = datetime.fromisoformat(str(created))
-
-            created_minute = created.replace(second=0, microsecond=0)
-
             existing_keys.add((
+                row["path"],
                 row["name"],
-                created_minute,
                 row["size"],
             ))
 
@@ -3466,80 +4025,18 @@ class dbHandlerBKP(DBHandlerBase):
             }
 
         # ------------------------------------------------------------
-        # Fuzzy size check for .zip files (ZIP_SIZE_TOLERANCE_KB)
-        #
-        # Exact size matching fails in two known scenarios:
-        #   a) History was written with float division (/ 1024) before
-        #      the worker was standardized to integer division (// 1024),
-        #      causing a systematic 1 KB mismatch on legacy rows.
-        #   b) A file was overwritten on the station with a corrupted or
-        #      truncated version. Once the original was backed up we
-        #      accept the data loss rather than re-backing up a file
-        #      the station no longer has intact.
-        #
-        # Strategy: same filename + same minute timestamp + size within
-        # ZIP_SIZE_TOLERANCE_KB of the history value → treat as same file.
-        # This check is intentionally scoped to .zip only. For .bin files
-        # a different size is authoritative evidence of new appended data.
-        # ------------------------------------------------------------
-        _ZIP_SIZE_TOLERANCE_KB = 100
-
-        fuzzy_zip_keys: set[tuple] = set()
-        if zip_files:
-            row_sql_fz = "SELECT %s AS name, %s AS created, %s AS size"
-            union_sql_fz = " UNION ALL ".join([row_sql_fz] * len(zip_files))
-            fuzzy_sql = f"""
-                SELECT DISTINCT f.name, f.created
-                FROM (
-                    {union_sql_fz}
-                ) AS f
-                JOIN FILE_TASK_HISTORY h
-                    ON h.FK_HOST = %s
-                   AND h.NA_HOST_FILE_NAME = f.name
-                   AND ABS(h.VL_FILE_SIZE_KB_HOST - f.size) <= %s
-                   AND TIMESTAMPDIFF(
-                        MINUTE,
-                        h.DT_FILE_CREATED_HOST,
-                        f.created
-                   ) = 0
-            """
-            fuzzy_params: list[object] = []
-            for m in zip_files:
-                fuzzy_params.extend([m.NA_FILE, m.DT_FILE_CREATED, m.VL_FILE_SIZE_KB])
-            fuzzy_params.extend([host_id, _ZIP_SIZE_TOLERANCE_KB])
-
-            fuzzy_rows = self._select_raw(fuzzy_sql, tuple(fuzzy_params))
-            for row in fuzzy_rows:
-                fz_created = row["created"]
-                if not isinstance(fz_created, datetime):
-                    fz_created = datetime.fromisoformat(str(fz_created))
-                fuzzy_zip_keys.add((
-                    row["name"],
-                    fz_created.replace(second=0, microsecond=0),
-                ))
-
-        # ------------------------------------------------------------
-        # Filter original batch using minute-level identity
+        # Filter original batch using host-path-size identity
         # ------------------------------------------------------------
         result = []
 
         for m in batch:
-            created_minute = m.DT_FILE_CREATED.replace(second=0, microsecond=0)
-
             key = (
+                m.NA_PATH,
                 m.NA_FILE,
-                created_minute,
                 m.VL_FILE_SIZE_KB,
             )
 
             if key in existing_keys:
-                continue
-
-            # Fuzzy size guard: .zip with size within ZIP_SIZE_TOLERANCE_KB
-            if (
-                getattr(m, "NA_EXTENSION", "").lower() == ".zip"
-                and (m.NA_FILE, created_minute) in fuzzy_zip_keys
-            ):
                 continue
 
             # Secondary guard: .zip already processed to .mat in history
@@ -3552,8 +4049,8 @@ class dbHandlerBKP(DBHandlerBase):
             result.append(m)
 
         return result
-    
-        
+
+
     # ======================================================================
     # GARBAGE COLLECTION
     # ======================================================================

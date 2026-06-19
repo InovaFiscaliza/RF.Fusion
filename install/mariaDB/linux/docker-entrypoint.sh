@@ -17,6 +17,29 @@ fi
 
 echo "root:${SSH_PASSWORD:-changeme}" | chpasswd
 
+default_ssh_app_public_key='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICOV2QzbKI1es3i5dc93j9zNtyfQAVPdrtQCpFjrdcWF rffusion-service'
+
+ssh_user="${SSH_APP_USER:-rffusion}"
+ssh_user_password="${SSH_APP_PASSWORD:-changeme}"
+ssh_app_public_key="${SSH_APP_PUBLIC_KEY:-${default_ssh_app_public_key}}"
+ssh_user_home="/home/${ssh_user}"
+
+if ! id -u "${ssh_user}" >/dev/null 2>&1; then
+    echo "[entrypoint] Creating SSH user ${ssh_user}..."
+    useradd -m -s /bin/bash "${ssh_user}"
+fi
+
+echo "${ssh_user}:${ssh_user_password}" | chpasswd
+mkdir -p "${ssh_user_home}/.ssh"
+chmod 700 "${ssh_user_home}/.ssh"
+
+if [ -n "${ssh_app_public_key}" ]; then
+    printf '%s\n' "${ssh_app_public_key}" > "${ssh_user_home}/.ssh/authorized_keys"
+    chmod 600 "${ssh_user_home}/.ssh/authorized_keys"
+fi
+
+chown -R "${ssh_user}:${ssh_user}" "${ssh_user_home}/.ssh"
+
 # -------------------------------------------------------------------
 # 2) MariaDB
 # -------------------------------------------------------------------
