@@ -1,206 +1,192 @@
-# Test Suite
+# Testes
 
-This directory contains the active RF.Fusion validation suite.
+Este diretório contém a suíte ativa de validação do RF.Fusion. O objetivo aqui
+não é maximizar cobertura por si só, mas proteger contratos que quebram com
+facilidade quando workers, handlers, services e rotas evoluem.
 
-Its purpose is not to prove every line of code mathematically. Its purpose is
-to protect the contracts that are easiest to break while the runtime keeps
-evolving.
+A suíte atual é focada no runtime que ainda está em uso no produto.
 
-The old `/RFFusion/test` material was archived and is not treated as a
-trustworthy base for the current system.
+## O Que a Suíte Valida Melhor
 
-This active suite is intentionally focused on the runtime that still ships.
-One-shot migration or reconciliation utilities should not keep permanent test
-surface here once they leave the product.
+Hoje os testes são mais fortes em:
 
-## What This Suite Is Optimized For
+- contratos de helpers compartilhados
+- parsing e normalização de payloads
+- regras de decisão dos workers
+- semântica de filas e histórico
+- comportamento de handlers de banco
+- regras de serviço e parte das rotas do `webfusion`
+- fluxo incremental do summary database
 
-The current suite is strongest when validating:
+O viés é para efeitos observáveis e contratos de workflow, e não para testes
+altamente mockados só para subir percentual de cobertura.
 
-- stable helper contracts
-- protocol parsing and payload normalization
-- worker decision rules
-- queue and history semantics
-- selected database-handler behavior
-- targeted `webfusion` service rules
+## Estrutura
 
-It is intentionally biased toward observable effects and workflow contracts,
-not toward mock-heavy line coverage for its own sake.
+### `tests/shared/`
 
-## Structure
+Testes determinísticos para utilitários compartilhados, como erros, filtros,
+geolocalização, logging, SSH e helpers gerais.
 
-- `tests/shared/`
-  Small deterministic tests for shared helpers and infrastructure utilities.
+### `tests/stations/`
 
-- `tests/stations/`
-  Adapter and protocol tests, especially around `appAnalise`.
+Testes de adaptação e protocolo, hoje concentrados em `appAnalise`.
 
-- `tests/workers/`
-  Worker rule tests for discovery, backup, host checks, garbage collection and
-  `appAnalise` processing.
+### `tests/workers/`
 
-- `tests/db/`
-  Handler and query-shaping tests for `dbHandlerBKP`.
+Testes dos entrypoints e regras de worker, incluindo discovery, backup,
+host-check, garbage collector, stop seguro, processamento `appAnalise` e
+refresh do summary.
 
-- `tests/webfusion/`
-  Targeted tests for `webfusion` service logic.
+### `tests/db/`
 
-- `tests/workers/drive_test/`
-  Static sample payloads used by the `appAnalise` worker tests.
+Testes de comportamento dos handlers de banco:
 
-- `tools/`
-  Small manual helpers kept near the suite when they emulate production
-  contracts but are not part of the automated pytest surface.
+- `dbHandlerBKP`
+- `dbHandlerRFM`
+- `dbHandlerSummary`
 
-## What Is Covered Today
+### `tests/webfusion/`
 
-### Shared helpers
+Testes direcionados para services e partes das rotas do `webfusion`.
 
-Covered files:
+### `tests/_support.py`
+
+Infraestrutura compartilhada da própria suíte, usada para carregar módulos,
+montar paths e criar doubles leves sem depender do runtime completo.
+
+### `fixtures/`
+
+Espaço reservado para fixtures persistentes da suíte.
+
+### `tools/`
+
+Helpers manuais próximos da suíte, quando ajudam a emular contratos de
+produção, mas não fazem parte da superfície automática do `pytest`.
+
+## Cobertura Atual
+
+### Shared
+
+Principais áreas cobertas:
 
 - `shared.errors`
+- `shared.filter`
+- `shared.geolocation_utils`
 - `shared.logging_utils`
-- `host_handler.ssh_utils`
 - `shared.tools`
+- `host_handler.ssh_utils`
 
-Main contracts covered:
+Contratos típicos:
 
-- canonical error formatting
-- first-error retention in `ErrorHandler`
-- timeout wrapper behavior
-- log rotation behavior
-- transient SSH/SFTP classification
-- audit message formatting
+- retenção do primeiro erro
+- formatação canônica de mensagens
+- comportamento de filtros
+- classificação de falhas transitórias
+- utilitários de geolocalização
+- rotação e formatação de logs
 
-### appAnalise adapter
+### Stations
 
-Covered file:
+Principal arquivo coberto:
 
 - `appAnalise/appAnalise_connection.py`
 
-Main contracts covered:
+Contratos típicos:
 
-- protocol-shape validation
-- malformed payload rejection
-- `Answer` string vs dict behavior
-- retryable versus definitive `appAnalise` failures
-- per-spectrum validation rules pushed through normalization
+- validação de payload
+- distinção entre falha definitiva e retryável
+- normalização por espectro
+- tratamento de respostas malformadas
 
 ### Workers
 
-Covered files:
+Principais áreas cobertas:
 
 - `appCataloga.py`
 - `appCataloga_backlog_management.py`
-- `appCataloga_file_bin_proces_appAnalise.py`
+- `appCataloga_file_bin_process_appAnalise.py`
 - `appCataloga_file_bkp.py`
 - `appCataloga_discovery.py`
 - `appCataloga_garbage_collector.py`
 - `appCataloga_host_check.py`
-- `appCataloga_host_maintenance.py`
+- `appCataloga_summary_database.py`
+- `summary_handler/refresh_engine.py`
 
-Main contracts covered:
+Contratos típicos:
 
-- socket-entrypoint routing for `backup` and `stop`
-- backlog promotion / rollback worker behavior
-- export decisions and artifact finalization for `appAnalise`
-- per-spectrum site resolution behavior
-- retry vs definitive processing failures
-- worker-pool detection and shutdown broadcast in backup
-- transient discovery bootstrap failures
-- cooldown and reconnect behavior
-- garbage collection retention-channel separation
-- host connectivity tri-state behavior
+- roteamento do entrypoint principal
+- promoção e rollback de backlog
+- exportação e finalização de artefatos do `appAnalise`
+- diferenciação entre erro transitório e erro definitivo
+- cooldown, reconnect e conectividade de host
+- retenção e descarte no garbage collector
+- reconcile incremental e ciclo de refresh do summary
+- parada segura do pool
 
-### Database handlers
+### Banco
 
-Covered file:
+Principais áreas cobertas:
 
 - `dbHandlerBKP.py`
 - `dbHandlerRFM.py`
+- `dbHandlerSummary.py`
 
-Main contracts covered:
+Contratos típicos:
 
-- host cooldown preservation and release
-- caller-owned timestamps for history/task updates
-- garbage-collector candidate query behavior
-- file-task identity selection
-- host-task queue lifecycle behavior
-- site lookup, insert and centroid-update rules
-- geographic-code resolution
-- file typing and repository-path construction
-- dimension idempotency for procedure/equipment/unit/detector/trace
-- spectrum insert metadata serialization
-- bridge insertion and metadata-publication helpers
+- lifecycle de `HOST_TASK` e `FILE_TASK`
+- preservação e liberação de cooldown
+- seleção e atualização de histórico
+- regras de site, arquivo e dimensões em `RFDATA`
+- idempotência de inserts
+- publicação e consumo de metadados do summary
 
 ### webfusion
 
-Covered files:
+Principais áreas cobertas:
 
 - `modules/host/service.py`
 - `modules/map/service.py`
 - `modules/spectrum/service.py`
+- `modules/spectrum/routes.py`
 - `modules/task/service.py`
+- `modules/task/routes.py`
 
-Main contracts covered:
+Contratos típicos:
 
-- host/server summary and connectivity presentation rules
-- map-side host reconciliation for Celplan/CWSM receiver naming
-- task builder reuse of durable `HOST_TASK` rows
-- exposure of only the public backup/stop actions through the UI service layer
+- regras de resumo e conectividade por host
+- reconciliação de nomes no mapa
+- normalização de filtros e ordenação em spectrum
+- exposição apenas das ações públicas de task
+- reaproveitamento de linhas duráveis de `HOST_TASK`
 
-## Main Coverage Gaps
+## Gaps Relevantes
 
-These are the biggest areas still under-covered today.
+As maiores lacunas hoje são:
 
-### `dbHandlerRFM.py` real persistence backend behavior
+- testes de integração real com MariaDB
+- integração real com filesystem do repositório
+- cobertura de rotas e app-level fora das áreas já tratadas no `webfusion`
+- parte do comportamento operacional de publicação de metadados
+- validação ponta a ponta com `nginx` e `waitress`
 
-Direct coverage improved a lot, but some parts still need either deeper mocks
-or true integration tests.
+Em outras palavras, a suíte já protege bem contratos locais e fluxos de regra,
+mas ainda não substitui testes reais de ambiente.
 
-The main gaps are:
+## Como Executar
 
-- rollback coverage in every insert helper
-- end-to-end DB behavior for real spatial SQL and Parquet export backends
-
-### `appCataloga_pub_metadata.py`
-
-Publication behavior is not yet directly covered.
-
-### `server_handler/` helpers
-
-Some process-control and runtime helpers are still only validated indirectly by
-worker tests.
-
-### `webfusion` route/application behavior beyond service rules
-
-Direct service coverage improved, but there are still no route-level or full
-app-level tests yet for:
-
-- `modules/server/routes.py`
-- `app.py` route behavior
-
-### True end-to-end integration
-
-The suite is still mostly unit and contract oriented.
-
-It does not yet provide:
-
-- real MariaDB integration tests
-- real repository filesystem integration tests
-- real `nginx` / `waitress` end-to-end checks
-
-## How To Run
-
-Fast path for the whole active suite:
+O helper padrão é [test_all.sh](/RFFusion/test/test_all.sh). Sem argumentos,
+ele executa:
 
 ```bash
 cd /RFFusion/test
 ./test_all.sh
 ```
 
-The helper accepts normal `pytest` arguments, so it can also be used as a
-single entrypoint for filtered runs:
+Internamente, isso equivale a executar `pytest tests -q` com o Python do
+ambiente `appdata`.
+
+Também é possível passar argumentos normais do `pytest`:
 
 ```bash
 cd /RFFusion/test
@@ -209,14 +195,7 @@ cd /RFFusion/test
 ./test_all.sh tests -k garbage -q
 ```
 
-Run the full active suite:
-
-```bash
-cd /RFFusion/test
-/opt/conda/envs/appdata/bin/python -m pytest tests -q
-```
-
-Run by area:
+Execução direta por área:
 
 ```bash
 /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/shared -q
@@ -226,30 +205,42 @@ Run by area:
 /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion -q
 ```
 
-Run a single file:
+Execução de um arquivo específico:
 
 ```bash
-/opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/workers/test_appanalise_worker.py -q
+/opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/workers/test_appCataloga_summary_database.py -q
 ```
 
-## How To Read These Tests
+## Convenções da Suíte
 
-The suite tries to follow a few conventions:
+As convenções principais são:
 
-- module docstrings explain what a file is trying to protect
-- fake DB and fake logger classes model only the behavior the test needs
-- test names describe the contract, not the implementation detail
-- comments are used to explain why a scenario matters, not to narrate obvious assertions
+- nomes de testes descrevem contrato, não detalhe de implementação
+- doubles locais modelam apenas o comportamento necessário
+- comentários explicam por que o cenário importa
+- `_support.py` concentra bootstraps e loaders usados por vários testes
 
-When adding new tests, prefer extending the contract of an existing module over
-creating a one-off file for a tiny assertion.
+O arquivo [pytest.ini](/RFFusion/test/pytest.ini) define:
 
-## Rule
+- `testpaths = tests`
+- `python_files = test_*.py`
+- `python_classes = Test*`
+- `python_functions = test_*`
 
-`tests/` should contain automated validation artifacts only.
+## Regra de Uso da Pasta
 
-The only intentional exception is `tools/`, which may host small manual
-helpers when they emulate production contracts for operator troubleshooting.
+`tests/` deve conter apenas artefatos automatizados de validação.
 
-Operational notebooks, ad-hoc SQL dumps and temporary lab scraps still do not
-belong here.
+Exceções intencionais:
+
+- `tools/`, para helpers manuais de emulação
+- `fixtures/`, para insumos compartilhados da suíte
+
+Rascunhos operacionais, dumps ad hoc, notebooks e experimentos temporários não
+devem ficar aqui.
+
+## Referências Relacionadas
+
+- [/RFFusion/README.md](/RFFusion/README.md)
+- [/RFFusion/src/appCataloga/README.md](/RFFusion/src/appCataloga/README.md)
+- [/RFFusion/src/webfusion/README.MD](/RFFusion/src/webfusion/README.MD)

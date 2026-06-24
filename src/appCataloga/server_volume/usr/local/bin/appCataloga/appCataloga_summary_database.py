@@ -19,7 +19,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta, timezone
 
-from bootstrap_paths import bootstrap_app_paths
+from utils.bootstrap_paths import bootstrap_app_paths
 
 
 PROJECT_ROOT = bootstrap_app_paths(__file__)

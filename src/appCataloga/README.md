@@ -1,280 +1,331 @@
 # appCataloga
 
-`appCataloga` is the operational runtime of RF.Fusion.
+O `appCataloga` e o runtime operacional do RF.Fusion.
 
-This part of the project is responsible for:
+Ele e responsavel por coordenar o ciclo de vida dos arquivos de medicao
+recebidos das estacoes remotas, desde a descoberta ate o processamento e a
+atualizacao dos resumos operacionais consumidos pela interface web.
 
-- registering and monitoring remote hosts
-- discovering candidate files on those hosts
-- backing files up into the shared repository
-- processing selected files locally or through `appAnalise`
-- publishing metadata
-- maintaining the public `RFFUSION_SUMMARY` read models
-- cleaning quarantined artifacts after retention expires
+## Papel No Sistema
 
-If the root [README.md](/RFFusion/README.md) explains the platform, this file
-explains the `appCataloga` runtime that actually moves work forward.
+De forma resumida, o `appCataloga` faz:
 
-## What Lives Here
+- cadastro e atualizacao de hosts
+- descoberta de arquivos remotos
+- promocao e controle de filas
+- backup para o repositorio `/mnt/reposfi`
+- processamento e catalogacao de espectros
+- manutencao operacional e limpeza de artefatos
+- atualizacao do `RFFUSION_SUMMARY`
 
-The active runtime code lives under:
+Se o [README raiz](/RFFusion/README.md) apresenta a plataforma, este documento
+explica o modulo que move o trabalho operacional do sistema.
 
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga)
+## Onde Fica O Runtime
 
-That directory contains the scripts and modules that run inside the
-`appCataloga` container or runtime environment.
+O codigo ativo do runtime fica em:
 
-At a high level:
+- [src/appCataloga/server_volume/usr/local/bin/appCataloga](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga)
 
-- `appCataloga.py` receives host registration / trigger requests
-- background workers consume `HOST_TASK` and `FILE_TASK`
-- shared helpers and DB handlers enforce the workflow contracts
+Esse diretorio contem:
 
-## Runtime Model
+- entrypoints Python
+- handlers de dominio
+- handlers de banco
+- utilitarios compartilhados
+- scripts shell de operacao
 
-The runtime is state-driven.
+## Arquitetura Resumida
 
-In broad terms:
+O `appCataloga` segue uma separacao arquitetural clara:
 
-1. a host is known in `BPDATA.HOST`
-2. a durable `HOST_TASK` represents the current host-level work request
-3. discovery creates `FILE_TASK` rows for candidate files
-4. backlog management promotes or rolls back queued file work
-5. backup copies the file into `/mnt/reposfi`
-6. processing validates and catalogs the file
-7. `FILE_TASK_HISTORY` becomes the authoritative lifecycle record
-8. metadata publication and garbage collection operate on top of that record
+- entrypoints: controlam loop, fila, sinais e orquestracao
+- handlers de dominio: concentram as regras operacionais
+- `shared/`: utilitarios comuns
+- `db/`: acesso a banco e SQL
 
-The important architectural split is:
+Essa separacao nao e apenas organizacional. Ela define a direcao das chamadas:
 
-- `BPDATA` stores operational state
-- `RFDATA` stores analytical state
-- `RFFUSION_SUMMARY` stores public read models consumed by dashboards and external tools
+- entrypoints podem chamar handlers, `shared/` e `db/`
+- handlers podem chamar `shared/` e `db/`
+- `shared/` nao conhece workers nem schema
+- `db/` nao contem regra de negocio
 
-`appCataloga` touches both, but for different reasons.
-It also now owns the canonical refresh path for `RFFUSION_SUMMARY` through a
-Python outbox worker instead of a heavy MariaDB event.
-
-## Main Entry Points
-
-These are the scripts that matter most in day-to-day runtime.
-
-### `appCataloga.py`
-
-Main entrypoint for host-facing requests.
-
-It is responsible for:
-
-- registering or refreshing host context
-- enqueueing the first `HOST_TASK` for the requested action
-- serving as the operational front door of the runtime
-
-Current public command contract:
-
-- `backup`
-  - registers or refreshes the host
-  - queues `HOST_TASK_CHECK_TYPE`
-  - follows the normal connectivity -> discovery -> backlog -> backup flow
-
-- `stop`
-  - registers or refreshes the host
-  - queues `HOST_TASK_BACKLOG_ROLLBACK_TYPE`
-  - skips host connectivity checks because the action is DB-only
-
-### `appCataloga_discovery.py`
-
-Discovers candidate files on remote hosts and creates `FILE_TASK` rows based on
-host filter configuration.
-
-Discovery no longer promotes directly into backup. Its responsibility now is:
-
-- discover remote candidates
-- persist `FILE_TASK` / `FILE_TASK_HISTORY`
-- hand off promotion to the backlog-management worker
-
-### `appCataloga_backlog_management.py`
-
-Applies DB-only backlog transitions after discovery or explicit operator action.
-
-This worker is responsible for:
-
-- promoting `DISCOVERY / DONE` into `BACKUP / PENDING`
-- rolling `BACKUP / PENDING` back into `DISCOVERY / DONE`
-- honoring explicit STOP-like requests without touching the remote host
-
-### `appCataloga_file_bkp.py`
-
-Moves files from remote hosts into the shared repository.
-
-This is the worker that turns a discovered remote file into a repository
-artifact that can later be processed locally.
-
-### `appCataloga_file_bin_proces_appAnalise.py`
-
-Processes files through `appAnalise`.
-
-This worker is responsible for:
-
-- calling `appAnalise`
-- validating the returned payload semantically
-- cataloging sites, files, equipment and spectra
-- resolving the final artifact contract in `FILE_TASK_HISTORY`
-- distinguishing transport outages from structured `ReadTimeout` replies
-
-### `appCataloga_host_check.py`
-
-Runs host connectivity checks and updates operational host state.
-
-### `appCataloga_host_maintenance.py`
-
-Performs background maintenance over host-level state.
-
-This reduced the need for the UI to manually create internal host tasks such as
-connection checks and statistics refresh.
-
-### `appCataloga_pub_metadata.py`
-
-Publishes derived metadata for downstream use.
-
-### `appCataloga_garbage_collector.py`
-
-Applies retention rules to quarantined repository artifacts.
-
-The collector treats:
-
-- `trash/`
-- `trash/resolved_files/`
-
-as different channels with different semantics and retention windows.
-
-### `appCataloga_rffusion_summary_worker.py`
-
-Maintains the public `RFFUSION_SUMMARY` tables.
-
-This is a long-lived daemon process that uses two complementary update
-strategies to keep `RFFUSION_SUMMARY` consistent with the operational databases:
-
-**Full reconcile** — rebuilds all summary tables from scratch by reading the
-authoritative source tables in `BPDATA` and `RFDATA`.  Triggered automatically
-at startup and nightly at 02:00 BRT (UTC-3, low-traffic window).  After a
-reconcile, both queue tables (`SUMMARY_OUTBOX` and `SUMMARY_WORKER_STATE`) are
-fully cleared because the rebuilt summary already reflects every accumulated
-event — nothing in the queue carries new information.
-
-**Incremental update** — reads the next batch of `SUMMARY_OUTBOX` events,
-determines which summary objects are affected (the *dirty scope*), and refreshes
-only those objects.  Runs continuously between reconciles so dashboards see new
-measurements within seconds of ingestion.  Processed rows are deleted from the
-outbox immediately after each successful batch (true queue semantics — the
-outbox never grows without bound).
-
-A MariaDB named lock (`RFFUSION_SUMMARY_PY_WORKER`) prevents two instances from
-running concurrently.  A second invocation exits immediately with code `0`,
-leaving the running instance undisturbed.
-
-Configuration keys (in `config.py`):
-
-| Key | Default | Meaning |
-|-----|---------|--------|
-| `SUMMARY_DATABASE_NAME` | `RFFUSION_SUMMARY` | Target schema |
-| `SUMMARY_WORKER_CONSUMER_NAME` | `rffusion_summary_worker` | Consumer identifier in `SUMMARY_WORKER_STATE` |
-| `SUMMARY_WORKER_BATCH_SIZE` | `500` | Max outbox rows per incremental pass |
-| `SUMMARY_WORKER_IDLE_SLEEP_SEC` | `5` | Sleep between polls when outbox is empty |
-| `SUMMARY_WORKER_DISABLE_SQL_EVENT_ON_START` | `True` | Disables the legacy MariaDB event at startup |
-| `SUMMARY_WORKER_SQL_EVENT_NAME` | `EVT_REFRESH_ALL_RFFUSION_SUMMARY_10MIN` | Name of the legacy event to disable |
-
-## Current Workflow
-
-The active workflow is roughly:
+### Diagrama Simplificado
 
 ```text
-HOST
-  -> HOST_TASK
-  -> discovery
-  -> backlog management
-  -> FILE_TASK
-  -> backup into /mnt/reposfi
-  -> processing
-  -> FILE_TASK_HISTORY
-  -> metadata publication / garbage collection
-  -> SUMMARY_OUTBOX
-  -> appCataloga_rffusion_summary_worker
-  -> RFFUSION_SUMMARY
+┌──────────────────────────────────────────────────────────────┐
+│ ENTRYPOINTS                                                  │
+│ appCataloga.py                                               │
+│ appCataloga_discovery.py                                     │
+│ appCataloga_file_bkp.py                                      │
+│ appCataloga_file_bin_process_appAnalise.py                   │
+│ appCataloga_host_check.py                                    │
+│ appCataloga_host_maintenance.py                              │
+│ appCataloga_garbage_collector.py                             │
+│ appCataloga_summary_database.py                              │
+└─────────────────────────────┬────────────────────────────────┘
+                              │
+                              v
+┌──────────────────────────────────────────────────────────────┐
+│ DOMAIN HANDLERS                                              │
+│ host_handler/   appAnalise/   summary_handler/   gc_handler/ │
+└─────────────────────────────┬────────────────────────────────┘
+                              │
+               ┌──────────────┴──────────────┐
+               v                             v
+┌──────────────────────────────┐   ┌───────────────────────────┐
+│ SHARED                       │   │ DB HANDLERS               │
+│ shared/                      │   │ db/                       │
+│ erros, log, filtros, utils   │   │ dbHandlerBKP              │
+└──────────────────────────────┘   │ dbHandlerRFM              │
+                                   │ dbHandlerSummary          │
+                                   └─────────────┬──────────── ┘
+                                                 │
+                                                 v
+                                   ┌───────────────────────────┐
+                                   │ DATABASES                 │
+                                   │ BPDATA                    │
+                                   │ RFDATA                    │
+                                   │ RFFUSION_SUMMARY          │
+                                   └───────────────────────────┘
 ```
 
-Operationally, there are now two important queue paths:
+Leitura pratica do diagrama:
 
-- normal backup path
-  - `appCataloga.py`
-  - `appCataloga_host_check.py`
-  - `appCataloga_discovery.py`
-  - `appCataloga_backlog_management.py`
-  - `appCataloga_file_bkp.py`
+- os entrypoints sao o ponto de orquestracao
+- os handlers executam o trabalho de dominio
+- `shared/` concentra funcoes reutilizaveis
+- `db/` isola SQL e conexoes
+- os schemas ficam abaixo dessa pilha e nao definem o fluxo por conta propria
 
-- rollback / stop path
-  - `appCataloga.py`
-  - `appCataloga_backlog_management.py`
+Na pratica, o runtime opera sobre tres camadas de dados:
 
-For `appAnalise`-based processing, the important nuance is:
+- `BPDATA`: estado operacional, filas e historico
+- `RFDATA`: persistencia analitica de espectros, sites, arquivos e equipamentos
+- `RFFUSION_SUMMARY`: read models publicos para consultas rapidas
 
-- processing may generate an exported artifact such as `.mat`
-- RF.Fusion can still reject that artifact semantically afterwards
-- in that case the exported artifact becomes the canonical error artifact
-- the original source artifact becomes a resolved input and moves to `resolved_files`
+Documentacao de referencia:
 
-There is also a second nuance around long-running source files:
+- [ARCHITECTURE.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/.instructions/ARCHITECTURE.md)
+- [INSTRUCTIONS.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/.instructions/INSTRUCTIONS.md)
 
-- RF.Fusion now requests a remote `timeoutSeconds` in the appAnalise `FileRead`
-  request
-- `APP_ANALISE_REQUEST_TIMEOUT_SECONDS` should stay lower than the local
-  RF.Fusion socket timeout `APP_ANALISE_PROCESS_TIMEOUT`
-- that ordering lets appAnalise return a structured
-  `handlers:FileReadHandler:ReadTimeout` reply before the local socket layer
-  gives up
-- structured `ReadTimeout` is not treated as a transport outage and not treated
-  as a definitive payload error
-- instead, the live `FILE_TASK` and `FILE_TASK_HISTORY.NU_STATUS_PROCESSING`
-  move to `TASK_FROZEN = -3` for manual review
+## Modelo Operacional
 
-## Summary Read Models
+O fluxo principal do `appCataloga` e orientado por estado:
 
-`webfusion`, MATLAB and other read-side consumers still read the same public
-tables in `RFFUSION_SUMMARY`.
+1. um host existe em `BPDATA.HOST`
+2. um `HOST_TASK` representa o trabalho do host
+3. a descoberta cria ou atualiza `FILE_TASK` e `FILE_TASK_HISTORY`
+4. o backlog decide o que entra em backup
+5. o backup copia o arquivo para `/mnt/reposfi`
+6. o processamento valida e persiste os dados analiticos
+7. `FILE_TASK_HISTORY` permanece como registro autoritativo do ciclo do arquivo
+8. manutencao, limpeza e resumo operam sobre esse estado consolidado
 
-What changed is the producer.  The old MariaDB Event
-(`EVT_REFRESH_ALL_RFFUSION_SUMMARY_10MIN`) ran a full rebuild every 10 minutes
-regardless of activity.  The Python worker replaces it with two targeted paths:
+## Categorias De Componentes
 
-- `dbHandlerBKP` and `dbHandlerRFM` publish lightweight dirty-scope events into
-  `BPDATA.SUMMARY_OUTBOX` whenever a measurement or task changes.
-- `appCataloga_rffusion_summary_worker.py` consumes those events,
-  determines the minimal set of affected summary objects, and refreshes only
-  those objects — leaving unaffected tables untouched.
-- On startup and nightly at 02:00 BRT, a full reconcile rebuilds all summary
-  tables from scratch as a correctness guarantee.
-- After each operation the queue tables are kept clean: the outbox is drained
-  immediately after each incremental batch, and both queue tables are fully
-  purged after each full reconcile.
+### 1. Interface Do appCataloga
 
-The public schema of `RFFUSION_SUMMARY` did not change.  All consumers read the
-same tables as before; only the refresh mechanism is different.
+O ponto de entrada de interface e:
 
-Operationally, the summary worker is part of the normal service lifecycle and
-is started and stopped by `tool_start_all.sh` and `tool_stop_all.sh`.
+- [appCataloga.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appCataloga.py)
 
-## File Filter Modes
+Esse entrypoint recebe requisicoes do host e inicia o fluxo operacional
+correspondente. Em termos praticos, ele e a porta de entrada do runtime.
 
-The operational filter contract is centralized in:
+Responsabilidades principais:
 
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shared/filter.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shared/filter.py)
+- receber requisicoes externas via socket TCP
+- validar o comando recebido
+- garantir a existencia e a atualizacao do `HOST`
+- criar ou atualizar o `HOST_TASK` correspondente
+- devolver a resposta imediata ao chamador, sem executar o pipeline pesado ali
 
-This same contract is reused by:
+Em outras palavras, `appCataloga.py` nao e um worker de fila. Ele e a
+interface externa do runtime.
 
-- host discovery
-- backlog promotion into backup
-- operator-triggered task creation from `webfusion`
+### 2. Workers De Fila
 
-Canonical filter fields today are:
+Sao os processos que consomem `HOST_TASK` e `FILE_TASK` e executam o pipeline
+principal:
+
+- [appCataloga_host_check.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appCataloga_host_check.py)
+- [appCataloga_discovery.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appCataloga_discovery.py)
+- [appCataloga_backlog_management.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appCataloga_backlog_management.py)
+- [appCataloga_file_bkp.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appCataloga_file_bkp.py)
+- [appCataloga_file_bin_process_appAnalise.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appCataloga_file_bin_process_appAnalise.py)
+
+Esses workers fazem, respectivamente:
+
+- verificacao de conectividade e estado do host
+- descoberta de arquivos candidatos
+- promocao e rollback de backlog
+- transferencia para o repositorio
+- processamento e persistencia analitica
+
+### Estilo Canonico Dos Entrypoints De Fila
+
+Os workers de fila seguem um estilo de entrypoint recorrente, alinhado ao
+`ARCHITECTURE.md`. Um exemplo simplificado desse padrao e:
+
+```python
+def main() -> None:
+    db = _init_db()
+
+    while process_status["running"]:
+        err = errors.ErrorHandler(log)
+        task = None
+        sftp = None
+
+        try:
+            task = _read_next_task(db)
+            if task is None:
+                runtime_sleep.random_jitter_sleep()
+                continue
+
+            if not _claim_task(db, task):
+                continue
+
+            result = _do_work(db, sftp, task)
+            _finalize_success(db, task, result)
+        except Exception as e:
+            if not err.triggered:
+                reason, stage = _classify_work_failure(e, task=task, sftp=sftp)
+                err.capture(reason=reason, stage=stage, exc=e)
+            _finalize_error(db, task, err)
+        finally:
+            _cleanup(sftp, db, task)
+```
+
+Na pratica, cada worker adapta esse esqueleto ao seu contexto:
+
+- alguns usam apenas `db`
+- outros usam `db_bp` e `db_rfm`
+- alguns possuem `sftp`, outros nao
+- workers recorrentes podem operar por ciclo, e nao por `task`
+
+Mesmo assim, o padrao estrutural e o mesmo:
+
+- inicializar dependencias
+- ler a proxima unidade de trabalho
+- tentar o claim
+- executar o trabalho
+- classificar falhas
+- finalizar sucesso ou erro
+- liberar recursos no fim do ciclo
+
+Isso e o que mantem o runtime previsivel entre discovery, backup, host check e
+processamento.
+
+### 3. Workers Recorrentes E De Suporte
+
+Sao processos que mantem o ambiente coerente ao longo do tempo:
+
+- [appCataloga_host_maintenance.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appCataloga_host_maintenance.py)
+- [appCataloga_garbage_collector.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appCataloga_garbage_collector.py)
+- [appCataloga_summary_database.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appCataloga_summary_database.py)
+
+Esses componentes cuidam de:
+
+- manutencao de estado e saude operacional dos hosts
+- limpeza de artefatos conforme politica de retencao
+- refresh incremental e reconciliacao do `RFFUSION_SUMMARY`
+
+Eles diferem dos workers de fila porque nao dependem de um `HOST_TASK` ou
+`FILE_TASK` por iteracao. Em vez disso, executam ciclos continuos de
+manutencao:
+
+- `appCataloga_host_maintenance.py`
+  - limpeza de locks e tarefas operacionais stale
+  - sweep recorrente de conectividade
+
+- `appCataloga_garbage_collector.py`
+  - remocao de artefatos em quarentena
+  - tratamento separado de `trash/` e `trash/resolved_files/`
+
+- `appCataloga_summary_database.py`
+  - reconcile completo em janelas programadas
+  - refresh incremental orientado por `SUMMARY_OUTBOX`
+
+### 4. Scripts De Operacao
+
+Os scripts shell usados no runtime ficam em:
+
+- [shell/](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shell)
+
+Os principais sao:
+
+- `tool_start_all.sh`
+- `tool_status_all.sh`
+- `tool_stop_all.sh`
+
+Eles iniciam, consultam e encerram o conjunto normal de servicos do
+`appCataloga`.
+
+## Estrutura Interna Relevante
+
+Os subdiretorios mais importantes do runtime sao:
+
+- `appAnalise/`: integracao e processamento orientado ao `appAnalise`
+- `db/`: handlers de banco e SQL
+- `gc_handler/`: manutencao e limpeza de artefatos
+- `host_handler/`: regras de conectividade, contexto e manutencao de hosts
+- `server_handler/`: infraestrutura do gateway e controle de processo
+- `summary_handler/`: refresh do `RFFUSION_SUMMARY`
+- `shared/`: utilitarios comuns
+- `shell/`: scripts operacionais
+- `utils/`: utilitarios administrativos pontuais
+- `.instructions/`: arquitetura, regras e documentos normativos do modulo
+
+### Pastas Do Runtime
+
+No nivel superior de `/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga`,
+as pastas mais relevantes sao:
+
+- `appAnalise/`
+  - adaptadores e fluxo de processamento orientado ao `appAnalise`
+
+- `db/`
+  - classes `dbHandler*` e consultas SQL
+
+- `gc_handler/`
+  - rotinas de coleta e remocao de artefatos em quarentena
+
+- `host_handler/`
+  - regras de conectividade, manutencao e contexto de host
+
+- `server_handler/`
+  - suporte ao gateway TCP, sinais, controle de processo e temporizacao
+
+- `shared/`
+  - funcoes utilitarias compartilhadas entre entrypoints e handlers
+
+- `shell/`
+  - scripts operacionais para start, stop e status dos servicos
+
+- `summary_handler/`
+  - logica de reconciliacao e refresh incremental do `RFFUSION_SUMMARY`
+
+- `utils/`
+  - utilitarios administrativos e scripts auxiliares
+
+- `.instructions/`
+  - documentos normativos do modulo, incluindo arquitetura e regras de refatoracao
+
+- `__pycache__/`
+  - artefatos de bytecode gerados em runtime; nao fazem parte da arquitetura funcional
+
+## Formato Do Filtro
+
+O contrato de filtro operacional e centralizado em:
+
+- [shared/filter.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shared/filter.py)
+
+Esse filtro e reutilizado em discovery, backlog e criacao de tarefas pela
+interface.
+
+Campos canonicos:
 
 - `mode`
 - `file_path`
@@ -286,214 +337,16 @@ Canonical filter fields today are:
 - `max_total_gb`
 - `sort_order`
 
-Fields are normalized before evaluation. Irrelevant fields are explicitly
-nulled per mode so downstream workers can treat the filter as canonical state
-instead of guessing which keys still matter.
+Modos principais:
 
-### Field-by-Field Semantics
+- `NONE`: discovery incremental padrao
+- `ALL`: promove todos os candidatos elegiveis
+- `RANGE`: filtra por janela de data
+- `LAST`: seleciona os arquivos mais recentes
+- `FILE`: seleciona arquivo ou padrao explicito
+- `REDISCOVERY`: forca novo scan sem cutoff incremental
 
-- `mode`
-  Selects the semantic rule. Unknown values fall back to `NONE`. Legacy
-  aliases `LAST_N` and `LAST_N_FILES` are normalized to `LAST`.
-
-- `file_path`
-  Scopes remote enumeration during discovery and rediscovery. It is not the
-  main selector for DB-side backlog promotion once rows already exist in
-  `FILE_TASK`.
-
-- `extension`
-  Optional orthogonal filter. It is normalized to lowercase and gains a
-  leading dot when missing, so `bin` and `.BIN` both become `.bin`.
-
-- `start_date`
-  Lower bound used only by `RANGE`. On the DB side it filters
-  `DT_FILE_CREATED`.
-
-- `end_date`
-  Upper bound used only by `RANGE`. If `start_date > end_date`, the two bounds
-  are swapped during normalization.
-
-- `last_n_files`
-  Used only by `LAST`. It is normalized to a positive integer and represents
-  the latest N discovered files by `DT_FILE_CREATED`.
-
-- `file_name`
-  Used only by `FILE`. Supports wildcard-style matching. If the provided name
-  already contains an extension, the separate `extension` field is discarded to
-  avoid malformed patterns such as `*.bin.bin`.
-
-- `max_total_gb`
-  Backlog budget for promotion into backup. It is converted to KB internally.
-  `null`, invalid values, or values `<= 0` mean "no budget cap". In practice
-  that means "promote every eligible row that matches the filter".
-
-- `sort_order`
-  Accepted values are `newest_first` and `oldest_first`. It matters only when
-  the worker must choose an ordered slice of already discovered `FILE_TASK`
-  rows, especially for budgeted promotion into backup.
-
-Important shared semantics:
-
-- minimum file size and minimum file age protections run before the semantic
-  mode-specific metadata filter
-- `NONE` and `REDISCOVERY` are discovery-side modes; they do not define a
-  backlog-selection rule on the DB side
-- rollback / "Retirar da Fila de Backup" does not use `max_total_gb`
-- for `ALL`, `RANGE`, `FILE`, and `LAST`, leaving `max_total_gb = null` means
-  "do not stop by volume"
-- in `ALL`, leaving `max_total_gb = null` and using `extension = ".bin"` means
-  "promote all eligible discovered `.bin` rows for that host"
-
-The principal modes are:
-
-### `NONE`
-
-Default incremental discovery mode.
-
-Behavior:
-
-- scopes discovery by `file_path`
-- optionally narrows by `extension`
-- uses the last known DB timestamp as the incremental discovery cutoff
-- does not define a DB-side backlog selection rule on its own
-
-Use it when the operator wants the normal "keep discovering forward from the
-current point" behavior.
-
-### `ALL`
-
-Broad backlog-selection mode.
-
-Behavior:
-
-- keeps `file_path` and optional `extension`
-- selects all eligible discovered files for the current queue operation
-- if `max_total_gb` is set, it promotes only the ordered slice that fits the
-  budget
-- if `max_total_gb` is `null`, it promotes every eligible row
-- `sort_order` only changes which rows are preferred when a budgeted slice is
-  needed
-
-Use it when the operator wants to promote the whole eligible backlog, possibly
-with a volume ceiling.
-
-### `RANGE`
-
-Date-window mode.
-
-Behavior:
-
-- accepts `start_date`, `end_date`, or both
-- swaps the two bounds if the payload arrives inverted
-- keeps optional `extension`
-- can still honor `max_total_gb`
-- can still honor `sort_order` when a budgeted slice must be chosen
-
-Use it when the operator wants a created-date window instead of "all" or
-"latest N".
-
-### `LAST`
-
-Latest-N mode.
-
-Behavior:
-
-- uses `last_n_files`
-- orders by `DT_FILE_CREATED DESC, ID_FILE_TASK DESC`
-- keeps optional `extension`
-- can still honor `max_total_gb` after defining the latest-N slice
-
-Legacy aliases `LAST_N` and `LAST_N_FILES` are normalized to `LAST`.
-
-Use it when the operator wants only the most recent slice of the backlog.
-
-### `FILE`
-
-Explicit file / pattern mode.
-
-Behavior:
-
-- uses `file_name`
-- supports wildcard-style matching
-- if `file_name` has no extension and `extension` is provided, the extension is
-  appended automatically
-- discovery intentionally skips the normal deduplication shortcut for this mode
-  so a specifically targeted artifact can be revisited
-- can still honor `max_total_gb` and `sort_order` on the DB side when multiple
-  discovered rows match the pattern
-
-Use it when the operator needs one explicit artifact or a narrow filename
-pattern instead of a time-based rule.
-
-### `REDISCOVERY`
-
-Special-purpose rescan mode.
-
-Behavior:
-
-- keeps `file_path` and optional `extension`
-- disables the incremental `newer_than` cutoff during remote discovery
-- intentionally does not define a DB-side backlog-selection rule
-
-Use it when the operator needs a fresh rescan of a remote path instead of the
-normal incremental walk.
-
-### Practical Examples
-
-`NONE` for normal incremental discovery:
-
-```json
-{
-  "mode": "NONE",
-  "extension": ".bin",
-  "file_path": "/mnt/internal/data"
-}
-```
-
-Effect:
-
-- discovers forward from the current incremental cutoff
-- only for `.bin`
-- does not by itself define a backlog-promotion slice
-
-`ALL` without budget:
-
-```json
-{
-  "mode": "ALL",
-  "extension": ".bin",
-  "file_path": "/mnt/internal/data",
-  "max_total_gb": null,
-  "sort_order": "newest_first"
-}
-```
-
-Effect:
-
-- on discovery: scopes remote enumeration by path and extension
-- on backlog promotion: promotes all eligible discovered `.bin` rows for the
-  host
-- `sort_order` becomes operationally irrelevant because no budgeted choice is
-  needed
-
-`ALL` with backlog budget, oldest first:
-
-```json
-{
-  "mode": "ALL",
-  "extension": ".zip",
-  "file_path": "C:/CelPlan/CellWireless RU/Spectrum/Completed",
-  "max_total_gb": 50,
-  "sort_order": "oldest_first"
-}
-```
-
-Effect:
-
-- selects all eligible discovered `.zip` rows for the host
-- promotes only the oldest slice whose cumulative size still fits inside `50 GB`
-
-`RANGE` with backlog budget:
+Exemplo:
 
 ```json
 {
@@ -507,225 +360,23 @@ Effect:
 }
 ```
 
-Effect:
+O ponto importante e que o filtro e normalizado antes de uso. Cada modo
+mantem apenas os campos semanticamente validos para aquela operacao.
 
-- restricts the selection to files created inside the given window
-- among that window, promotes the newest slice that still fits inside `50 GB`
+## Operacao Basica
 
-`LAST` for the newest 100 files:
-
-```json
-{
-  "mode": "LAST",
-  "last_n_files": 100,
-  "extension": ".zip",
-  "file_path": "C:/CelPlan/CellWireless RU/Spectrum/Completed",
-  "max_total_gb": null
-}
-```
-
-Effect:
-
-- defines the slice as the latest 100 discovered `.zip` rows
-- with no budget, promotes that whole slice
-- with a budget, promotes only the prefix of that slice that still fits
-
-`FILE` targeting one explicit artifact family:
-
-```json
-{
-  "mode": "FILE",
-  "file_name": "*rfeye002211*",
-  "extension": ".bin",
-  "file_path": "/mnt/internal/data"
-}
-```
-
-Effect:
-
-- discovery walks the configured path but only keeps filenames matching the
-  wildcard
-- DB-side backlog promotion can target the same filename family among already
-  discovered rows
-
-`REDISCOVERY` for a full rescan of one path:
-
-```json
-{
-  "mode": "REDISCOVERY",
-  "extension": ".bin",
-  "file_path": "/mnt/internal/data"
-}
-```
-
-Effect:
-
-- disables the normal incremental "newer than last seen" discovery cutoff
-- rescans the remote path from scratch
-- still does not define a DB-side backlog-promotion slice
-
-## Directory Guide
-
-Inside the runtime directory, the most important areas are:
-
-### `appAnalise/`
-
-Helpers for talking to `appAnalise`, normalizing its payload and resolving the
-processing flow.
-
-Important files:
-
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appAnalise/appAnalise_connection.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appAnalise/appAnalise_connection.py)
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appAnalise/payload_parser.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appAnalise/payload_parser.py)
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appAnalise/task_flow.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/appAnalise/task_flow.py)
-
-### `db/`
-
-Database handlers for the two project databases.
-
-Important files:
-
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/db/dbHandlerBKP.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/db/dbHandlerBKP.py)
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/db/dbHandlerRFM.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/db/dbHandlerRFM.py)
-
-### `host_handler/`
-
-Host-level orchestration helpers such as connectivity, runtime state and
-maintenance.
-
-### `server_handler/`
-
-Process control, signal handling, socket logic and worker-pool support.
-
-### `shared/`
-
-Shared infrastructure such as constants, error formatting, logging and general
-tools.
-
-### `utils/`
-
-Small auxiliary scripts. Useful, but not part of the main workflow contract.
-
-### `_oldCode/`
-
-Legacy code preserved for historical reference. It should not be treated as the
-source of truth for the active runtime.
-
-## Core Contracts
-
-These are the contracts that are easiest to break accidentally.
-
-### `HOST_TASK` Is Durable State
-
-`HOST_TASK` is not an append-only history table.
-
-Current behavior is:
-
-- one logical row per `FK_HOST + NU_TYPE`
-- status, timestamps and filter are refreshed in place
-- running rows are preserved instead of silently overwritten
-
-This matters because both the backend and `webfusion` are expected to follow
-the same queue contract.
-
-It also matters because backlog control now has its own durable task types:
-
-- `HOST_TASK_BACKLOG_CONTROL_TYPE`
-- `HOST_TASK_BACKLOG_ROLLBACK_TYPE`
-
-### `FILE_TASK` Is Transient, `FILE_TASK_HISTORY` Is Authoritative
-
-`FILE_TASK` is workflow state.
-
-`FILE_TASK_HISTORY` is the long-lived lifecycle record used by operators and by
-garbage collection.
-
-That means:
-
-- `FILE_TASK` can be retried, suspended, resumed or removed
-- the final artifact recorded in `FILE_TASK_HISTORY` is what the system treats
-  as canonical for history purposes
-- `TASK_FROZEN = -3` is the explicit exception to the normal retry/finalize
-  split for processing: the task remains live and the processing phase is put
-  on hold for manual review
-- frozen processing rows are intentionally not reactivated by
-  `file_task_resume_by_host()`
-
-### Repository Paths Are Semantic
-
-The shared repository is not just storage.
-
-Current semantics:
-
-- `trash/` holds canonical errored artifacts
-- `trash/resolved_files/` holds superseded source artifacts
-- successful final artifacts stay in their final repository path
-
-This is especially important for `appAnalise`, where source and exported
-artifacts can diverge after semantic validation.
-
-### `appAnalise` Resolves Site Per Spectrum
-
-The active `appAnalise` contract is no longer "one site per file".
-
-Current behavior:
-
-- site resolution is per spectrum
-- equipment comes from the payload receiver per spectrum
-- bad spectra are discarded selectively when possible
-- the whole file only fails when no valid spectra remain
-- structured appAnalise `ReadTimeout` replies freeze the processing task
-  instead of trashing the artifact or retrying automatically forever
-
-## Dependencies
-
-The runtime depends on:
-
-- MariaDB with both `BPDATA` and `RFDATA`
-- shared repository mounted at `/mnt/reposfi`
-- SSH/SFTP access to remote hosts
-- Zabbix host context
-- optional `appAnalise` service for selected processing flows
-
-It does not replace:
-
-- long-term archival policy
-- browser UI concerns
-- analytical reporting dashboards
-
-## How To Run
-
-Inside the runtime directory, the practical operational scripts are:
-
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_start_all.sh](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_start_all.sh)
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_status_all.sh](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_status_all.sh)
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_stop_all.sh](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_stop_all.sh)
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/safe_stop.py](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/safe_stop.py)
-
-Those scripts now include the backlog-management daemon alongside the
-traditional discovery, backup and processing workers.
-
-Typical flow:
+Dentro do ambiente onde o runtime esta montado:
 
 ```bash
-cd /RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga
+cd /RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shell
 ./tool_start_all.sh
 ./tool_status_all.sh
 ./tool_stop_all.sh
 ```
 
-Note:
+## Observacoes Importantes
 
-- the container runtime itself is documented separately
-- the container entrypoint does not automatically orchestrate every worker
-
-For container deployment details, see:
-
-- [/RFFusion/install/appCataloga/README.md](/RFFusion/install/appCataloga/README.md)
-
-## Related Documentation
-
-- [/RFFusion/README.md](/RFFusion/README.md)
-- [/RFFusion/install/appCataloga/README.md](/RFFusion/install/appCataloga/README.md)
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/db/README.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/db/README.md)
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shared/README.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shared/README.md)
+- O `appCataloga` e orientado por filas e estado persistido em banco.
+- `FILE_TASK_HISTORY` e o registro autoritativo do ciclo de vida do arquivo.
+- O runtime toca `BPDATA`, `RFDATA` e `RFFUSION_SUMMARY`, mas com papeis diferentes.
+- A documentacao arquitetural em `.instructions/` deve prevalecer sobre README quando houver conflito.

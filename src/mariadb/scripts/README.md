@@ -1,138 +1,133 @@
 # MariaDB Scripts
 
-This directory contains the RF.Fusion database bootstrap material.
+Este README concentra a visão arquitetural e operacional dos bancos do
+RF.Fusion neste diretório.
 
-In practice, these files define and seed the three project databases:
+O diretório [src/mariadb/scripts](/RFFusion/src/mariadb/scripts) contém os
+artefatos de bootstrap dos três bancos usados pelo RF.Fusion:
 
-- `BPDATA`, used for operational state
-- `RFDATA`, used for analytical cataloging
-- `RFFUSION_SUMMARY`, used for materialized cross-database summaries
+- `BPDATA`: estado operacional e filas
+- `RFDATA`: catálogo analítico de arquivos e espectros
+- `RFFUSION_SUMMARY`: read models materializados para consultas e mapas
 
-The MariaDB container deployment applies these scripts after the database
-service is up. So this directory is the schema source of truth for the project
-bootstrap process.
+## Visão Geral
 
-## What Each File Does
+No desenho atual, os bancos são complementares. Não existe ponte de chave
+estrangeira entre eles. A integração é feita pela aplicação.
 
-### Schema scripts
+![Arquitetura dos bancos do RF.Fusion](/RFFusion/docs/images/mariadb-databases-overview.svg)
 
-- [createProcessingDB.sql](/RFFusion/src/mariadb/scripts/createProcessingDB.sql)
-  Builds `BPDATA`.
-  This is the operational database used mainly by `appCataloga`.
+## Arquitetura dos Bancos
 
-- [createMeasureDB.sql](/RFFusion/src/mariadb/scripts/createMeasureDB.sql)
-  Builds `RFDATA`.
-  This is the measurement and catalog database used by `appCataloga` and
-  queried by `webfusion`.
+### BPDATA
 
-- [createFusionSummaryDB.sql](/RFFusion/src/mariadb/scripts/createFusionSummaryDB.sql)
-  Builds `RFFUSION_SUMMARY`.
-  This is the materialized summary layer intended to serve `webfusion` and
-  external consumers without repeatedly scanning the heaviest source tables.
+Banco operacional do pipeline. Ele registra hosts, filas e histórico de execução.
 
-### Seed files
-
-- [equipmentType.csv](/RFFusion/src/mariadb/scripts/equipmentType.csv)
-  Seed data for `DIM_EQUIPMENT_TYPE`.
-
-- [fileType.csv](/RFFusion/src/mariadb/scripts/fileType.csv)
-  Seed data for `DIM_FILE_TYPE`.
-
-- [measurementUnit.csv](/RFFusion/src/mariadb/scripts/measurementUnit.csv)
-  Seed data for `DIM_SPECTRUM_UNIT`.
-
-- [IBGE-BR_UF_2020_BULKLOAD.csv](/RFFusion/src/mariadb/scripts/IBGE-BR_UF_2020_BULKLOAD.csv)
-  State-level geography seed.
-
-- [IBGE-BR_Municipios_2020_BULKLOAD.csv](/RFFusion/src/mariadb/scripts/IBGE-BR_Municipios_2020_BULKLOAD.csv)
-  County-level geography seed.
-
-### Documentation and support
-
-- [DB_INTERCONNECTIONS.md](/RFFusion/src/mariadb/scripts/DB_INTERCONNECTIONS.md)
-  Explains how `BPDATA`, `RFDATA` and `RFFUSION_SUMMARY` complement each other
-  at the application level.
-
-- [README_ORPHANED_MAINTENANCE.md](/RFFusion/src/mariadb/scripts/README_ORPHANED_MAINTENANCE.md)
-  Documents the orphaned-task maintenance utilities and their operating model.
-
-- [ANALYSIS_orphaned_file_tasks.md](/RFFusion/src/mariadb/scripts/ANALYSIS_orphaned_file_tasks.md)
-  Captures the operational analysis that motivated the maintenance scripts.
-
-- [environment.yml](/RFFusion/src/mariadb/scripts/environment.yml)
-  Conda environment file historically used by the project runtime. It is not
-  the main schema artifact, but it remains useful when reproducing the RF.Fusion
-  environment locally.
-
-## Database Responsibilities
-
-### `BPDATA`
-
-`BPDATA` stores operational workflow state.
-
-Main tables:
+Tabelas centrais:
 
 - `HOST`
 - `HOST_TASK`
 - `FILE_TASK`
 - `FILE_TASK_HISTORY`
+- `SUMMARY_OUTBOX`
 
-This database answers questions such as:
+Responde perguntas como:
 
-- which host is offline or busy
-- which host task is pending or running
-- which file failed discovery, backup or processing
+- quais hosts estão online, offline ou ocupados
+- quais tarefas estão pendentes, em execução ou com erro
+- qual foi o ciclo de descoberta, backup e processamento de um arquivo
 
-### `RFDATA`
+Observação: `FILE_TASK` e `FILE_TASK_HISTORY` não possuem FK entre si no schema.
 
-`RFDATA` stores measurement and repository catalog data.
+### RFDATA
 
-Main areas:
+Banco analítico e de catálogo. Ele organiza os arquivos recuperados, suas
+localidades, equipamentos e espectros gerados.
 
-- site dimensions
-- equipment dimensions
-- file dimensions
-- procedure / detector / unit / trace dimensions
+Tabelas centrais:
+
+- `DIM_SPECTRUM_SITE`
+- `DIM_SPECTRUM_EQUIPMENT`
+- `DIM_SPECTRUM_FILE`
 - `FACT_SPECTRUM`
-- bridge tables
+- `BRIDGE_SPECTRUM_FILE`
 
-This database answers questions such as:
+Responde perguntas como:
 
-- where a spectrum was measured
-- which equipment produced it
-- which repository file contains it
+- onde uma medição foi realizada
+- qual equipamento gerou um espectro
+- quais espectros vieram de um arquivo do repositório
 
-### `RFFUSION_SUMMARY`
+### RFFUSION_SUMMARY
 
-`RFFUSION_SUMMARY` stores materialized, cross-database read models.
+Banco de leitura derivado de `BPDATA` e `RFDATA`. Ele materializa relações e
+agregações pesadas para o `webfusion` e outros consumidores.
 
-Main areas:
+Tabelas centrais:
 
-- host/equipment reconciliation
-- site/equipment observation summaries
-- map-ready site and station snapshots
-- host monthly metrics
-- canonicalized error events and grouped error summaries
-- server-wide current snapshot cards
-- refresh telemetry for the Python summary worker
+- `HOST_EQUIPMENT_LINK`
+- `SITE_EQUIPMENT_OBS_SUMMARY`
+- `HOST_LOCATION_SUMMARY`
+- `MAP_SITE_STATION_SUMMARY`
+- `MAP_SITE_SUMMARY`
+- `HOST_MONTHLY_METRIC`
+- `HOST_ERROR_SUMMARY`
+- `SERVER_ERROR_SUMMARY`
+- `HOST_CURRENT_SNAPSHOT`
+- `SERVER_CURRENT_SUMMARY`
 
-This database answers questions such as:
+Semânticas importantes:
 
-- which host most plausibly owns one measurement equipment
-- what the current and historical locality of a host is
-- which marker state the map should render for a site
-- which grouped backup or processing errors are most frequent
-- which server-wide counters should be shown without re-scanning history
+- `HOST_MONTHLY_METRIC` é mensal por `DT_FILE_CREATED`
+- métricas mensais de backup em `HOST_CURRENT_SNAPSHOT` usam `DT_BACKUP`
+- `SERVER_CURRENT_SUMMARY` agrega os snapshots correntes dos hosts
 
-## Bootstrap Order
+Observação: `RFFUSION_SUMMARY` não modela essas relações com FKs entre bancos.
+O diagrama acima representa dependência de refresh e derivação lógica.
 
-The normal order is:
+## Fluxo Entre os Bancos
 
-1. create `BPDATA`
-2. create `RFDATA`
-3. create `RFFUSION_SUMMARY`
+O fluxo lógico do dado é este:
 
-That means:
+1. `appCataloga` descobre arquivos e atualiza filas em `BPDATA`.
+2. O backup e o processamento geram catálogo e espectros em `RFDATA`.
+3. O summary consolida sinais operacionais e analíticos em `RFFUSION_SUMMARY`.
+4. O `webfusion` consulta `BPDATA` e `RFDATA` quando precisa do detalhe, e
+   usa `RFFUSION_SUMMARY` para mapas, snapshots e métricas agregadas.
+
+## Scripts de Bootstrap
+
+### Schemas
+
+- [createProcessingDB.sql](/RFFusion/src/mariadb/scripts/createProcessingDB.sql):
+  cria o `BPDATA`
+- [createMeasureDB.sql](/RFFusion/src/mariadb/scripts/createMeasureDB.sql):
+  cria o `RFDATA`
+- [createFusionSummaryDB.sql](/RFFusion/src/mariadb/scripts/createFusionSummaryDB.sql):
+  cria o `RFFUSION_SUMMARY`
+
+### Seeds
+
+- [equipmentType.csv](/RFFusion/src/mariadb/scripts/equipmentType.csv):
+  tipos de equipamento
+- [fileType.csv](/RFFusion/src/mariadb/scripts/fileType.csv):
+  tipos de arquivo
+- [measurementUnit.csv](/RFFusion/src/mariadb/scripts/measurementUnit.csv):
+  unidades de medição
+- [IBGE-BR_UF_2020_BULKLOAD.csv](/RFFusion/src/mariadb/scripts/IBGE-BR_UF_2020_BULKLOAD.csv):
+  estados
+- [IBGE-BR_Municipios_2020_BULKLOAD.csv](/RFFusion/src/mariadb/scripts/IBGE-BR_Municipios_2020_BULKLOAD.csv):
+  municípios
+
+## Ordem de Criação
+
+A ordem esperada de bootstrap é:
+
+1. `BPDATA`
+2. `RFDATA`
+3. `RFFUSION_SUMMARY`
+
+Exemplo manual:
 
 ```bash
 mysql -u root -p < /RFFusion/src/mariadb/scripts/createProcessingDB.sql
@@ -140,96 +135,38 @@ mysql -u root -p < /RFFusion/src/mariadb/scripts/createMeasureDB.sql
 mysql -u root -p < /RFFusion/src/mariadb/scripts/createFusionSummaryDB.sql
 ```
 
-In practice, the supported path is still the MariaDB container deployment:
+Na operação normal, o caminho suportado é o deploy do container MariaDB:
+[install/mariaDB/README.md](/RFFusion/install/mariaDB/README.md).
 
-- [/RFFusion/install/mariaDB/README.md](/RFFusion/install/mariaDB/README.md)
+## Notas Operacionais
 
-## Important Operational Notes
+### `createMeasureDB.sql` depende dos CSVs montados no repositório
 
-### `createMeasureDB.sql` depends on repository paths
+O script usa `LOAD DATA INFILE` com caminhos absolutos em `/RFFusion`, então o
+repositório precisa estar montado nesse caminho durante a carga.
 
-The `RFDATA` bootstrap script uses `LOAD DATA INFILE` with paths such as:
+### A carga geográfica é parte do funcionamento
 
-- `/RFFusion/src/mariadb/scripts/equipmentType.csv`
-- `/RFFusion/src/mariadb/scripts/fileType.csv`
-- `/RFFusion/src/mariadb/scripts/measurementUnit.csv`
+Os CSVs do IBGE não são apenas apoio documental. Eles sustentam a resolução de
+UF, município e localidade no `RFDATA`.
 
-So the script assumes the project repository is mounted at `/RFFusion` inside
-the runtime where MariaDB executes the SQL.
+### O summary hoje é mantido pelo worker Python
 
-### Geography seed matters to site resolution
+O modelo atual não depende do event scheduler do MariaDB como caminho canônico
+de refresh. Hoje o fluxo é:
 
-`appCataloga` site creation depends on state and county reference data loaded
-from the IBGE CSV files.
+1. a aplicação publica escopos sujos em `SUMMARY_OUTBOX`
+2. `appCataloga_summary_database.py` consome o outbox
+3. o worker atualiza as tabelas públicas de `RFFUSION_SUMMARY`
 
-If those files are missing, broken or not loaded, `RFDATA` site insertion can
-fail later even if the schema itself was created successfully.
+## Estrutura do Diretório
 
-### `BPDATA`, `RFDATA` and `RFFUSION_SUMMARY` are complementary, not FK-linked
+- [README.md](/RFFusion/src/mariadb/scripts/README.md): visão consolidada dos bancos
+- [environment.yml](/RFFusion/src/mariadb/scripts/environment.yml):
+  referência de ambiente legada
 
-There is no direct cross-database foreign key bridge between them.
-
-The relationship is application-level:
-
-- `appCataloga` writes to both
-- `webfusion` reads both
-- `RFFUSION_SUMMARY` materializes cross-database joins and grouped aggregates
-- repository artifacts help reconcile the operational and analytical worlds
-
-### Summary maintenance is now Python-owned
-
-The canonical refresh path for `RFFUSION_SUMMARY` is no longer the legacy
-MariaDB event scheduler.
-
-Today the model is:
-
-- `createFusionSummaryDB.sql` creates `SUMMARY_OUTBOX` and `SUMMARY_WORKER_STATE` in `RFFUSION_SUMMARY`
-- `appCataloga` publishers coalesce dirty scopes into that outbox
-- `appCataloga_summary_database.py` consumes the outbox and refreshes the public summary tables
-- `createFusionSummaryDB.sql` still defines the public summary schema and its diagnostics tables
-
-This preserves the `RFFUSION_SUMMARY` contract for `webfusion`, MATLAB and
-other readers while avoiding heavy periodic `INSERT ... SELECT` refreshes on
-hot operational tables during the day.
-
-That design is documented in:
-
-- [DB_INTERCONNECTIONS.md](/RFFusion/src/mariadb/scripts/DB_INTERCONNECTIONS.md)
-
-## Editing Guidance
-
-When changing these scripts, keep these rules in mind.
-
-### Treat bootstrap scripts as canonical contracts
-
-The current repository keeps one canonical bootstrap script per database.
-
-If schema shape, seed format or bootstrap semantics change, update the
-corresponding `create*` script so a fresh deployment always lands directly on
-the current supported state.
-
-For the current repository state, the three `create*` scripts are the only
-canonical bootstrap SQL artifacts in this directory.
-
-### Keep seed files aligned with runtime assumptions
-
-Examples:
-
-- `fileType.csv` affects how `appCataloga` classifies repository artifacts
-- `equipmentType.csv` affects equipment typing in `RFDATA`
-- `measurementUnit.csv` affects spectrum dimensional consistency
-
-### Do not confuse operational and analytical concerns
-
-If a table is about queue state, retries, host lifecycle or workflow auditing,
-it belongs in `BPDATA`.
-
-If a table is about sites, equipment, files or spectra, it belongs in
-`RFDATA`.
-
-## Related Documentation
+## Referências Relacionadas
 
 - [/RFFusion/README.md](/RFFusion/README.md)
 - [/RFFusion/install/mariaDB/README.md](/RFFusion/install/mariaDB/README.md)
 - [/RFFusion/src/appCataloga/README.md](/RFFusion/src/appCataloga/README.md)
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/db/README.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/db/README.md)

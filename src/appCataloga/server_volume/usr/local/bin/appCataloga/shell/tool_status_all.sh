@@ -26,7 +26,6 @@ services=(
   appCataloga_host_maintenance
   appCataloga_discovery
   appCataloga_backlog_management
-  appCataloga_file_bin_proces
   appCataloga_file_bin_process_appAnalise
   appCataloga_file_bkp
   # The summary worker is part of the normal runtime, not an external cron.

@@ -1,117 +1,131 @@
-# RF.Fusion Web Container
+# Container Web do RF.Fusion
 
-This directory contains the deployment material for the `rffusion-web`
-container.
+Este diretorio contem o material de deploy do container `rffusion-web`,
+responsavel por publicar a interface `webfusion`.
 
-The goal of this container is to publish `webfusion` from a single container
-without splitting the operation across multiple external services.
+O objetivo desse container e expor a camada web do RF.Fusion em um unico
+runtime, reunindo:
 
-## Internal Architecture
+- `nginx`
+- `webfusion`
+- `sshd`
 
-The container starts three components:
+## Arquivos Principais
 
-1. `nginx`
-   - listens on container port `80`
-   - acts as the reverse proxy for `webfusion`
-   - serves large repository downloads through `X-Accel-Redirect`
+- [Containerfile](./Containerfile)
+- [docker-entrypoint.sh](./docker-entrypoint.sh)
+- [nginx-webfusion.conf](./nginx-webfusion.conf)
+- [deploy-rffusionweb.sh](./deploy-rffusionweb.sh)
 
-2. `waitress`
-   - runs the Flask application for `webfusion`
-   - listens internally on `127.0.0.1:8000`
-   - is not exposed directly outside the container
+## Arquitetura Interna
+
+O container sobe tres componentes:
+
+1. `webfusion`
+   - executado por `python3 /RF.Fusion/src/webfusion/app.py`
+   - escuta internamente em `127.0.0.1:8000`
+
+2. `nginx`
+   - escuta na porta `80` do container
+   - faz proxy para o `webfusion`
+   - entrega downloads do repositorio via `X-Accel-Redirect`
 
 3. `sshd`
-   - kept for operational access to the container
+   - mantido para acesso operacional ao container
 
-HTTP flow:
+Fluxo HTTP:
 
-`client -> nginx:80 -> waitress:127.0.0.1:8000`
+`cliente -> nginx:80 -> webfusion:127.0.0.1:8000`
 
-Download flow:
+Fluxo de download:
 
-`client -> nginx -> X-Accel-Redirect -> /mnt/reposfi`
+`cliente -> nginx -> /mnt/reposfi`
 
-In other words, Python no longer carries the full download payload when the
-file is stored in the CIFS repository mounted at `/mnt/reposfi`.
+## O Que O Container Faz
 
-## Main Files
+Depois do deploy, o ambiente entrega:
 
-- [Containerfile](/RFFusion/install/webserver/Containerfile)
-- [docker-entrypoint.sh](/RFFusion/install/webserver/docker-entrypoint.sh)
-- [nginx-webfusion.conf](/RFFusion/install/webserver/nginx-webfusion.conf)
-- [deploy-rffusionweb.sh](/RFFusion/install/webserver/deploy-rffusionweb.sh)
+- imagem `rffusion-web`
+- container `rffusion-web`
+- IP `10.88.0.34` na rede `podman`
+- interface web publicada na porta `9082` do host
+- SSH publicado na porta `2225` do host
 
-## Host Prerequisites
+## Pre-requisitos No Host
 
-The deployment script assumes these paths already exist on the host:
+O deploy atual assume:
 
-- project repository at `/RFFusion-dev/RF.Fusion`
-- CIFS repository mounted at `/mnt/reposfi`
+- repositorio do projeto em `/RFFusion-dev/RF.Fusion`
+- repositorio `/mnt/reposfi` montado no host
+- `podman` instalado e funcional
+- rede `podman` previamente existente
 
-It also assumes:
+Observacoes importantes:
 
-- `podman` is available
-- the `podman` network already exists
-- IP `10.88.0.34` is available
-- host HTTP port `9082` is available
-- host SSH port `2225` is available
+- o caminho `/RFFusion-dev/RF.Fusion` esta hardcoded em `deploy-rffusionweb.sh`
+- o volume `/mnt/reposfi` e montado em modo somente leitura
 
-## How To Deploy
+## Como Fazer O Deploy
 
-Enter this directory:
+Entre no diretorio de deploy:
 
 ```bash
 cd /RFFusion/install/webserver
 ```
 
-Grant execution permission to the scripts:
+Garanta permissao de execucao:
 
 ```bash
-chmod +x *
+chmod +x *.sh
 ```
 
-Run the deployment:
+Execute o deploy:
 
 ```bash
 ./deploy-rffusionweb.sh
 ```
 
-## What The Deployment Does
+## O Que O Script De Deploy Faz
 
-The script:
+O script:
 
-1. validates the expected host volumes
-2. normalizes `.sh` line endings
-3. builds the `rffusion-web` image
-4. removes the previous container, if it exists
-5. creates the new container
-6. validates that the container reached `running`
-7. tests:
-   - `http://127.0.0.1:9082/health`
-   - SSH port `2225`
+1. valida os caminhos esperados no host
+2. normaliza line endings de arquivos `.sh`
+3. recompila a imagem `rffusion-web`
+4. remove o container anterior, se existir
+5. cria um novo container com rede, portas e volumes
+6. valida se o container entrou em estado `running`
+7. testa o endpoint `/health` e a porta SSH publicada
 
-## Published Service
+## Volumes Montados
 
-After deployment, the expected access points are:
+O deploy monta:
+
+- `/RFFusion-dev/RF.Fusion -> /RF.Fusion:Z`
+- `/mnt/reposfi -> /mnt/reposfi:ro`
+
+Observacao:
+
+- o codigo da aplicacao fica montado em `/RF.Fusion`, sem o segundo `F`
+
+## Acesso Ao Container
+
+Depois do deploy, os acessos esperados sao:
 
 - Web: `http://127.0.0.1:9082`
+- Healthcheck: `http://127.0.0.1:9082/health`
 - SSH: `ssh root@127.0.0.1 -p 2225`
 
-On the host, the relevant mappings are:
+## Observacoes Operacionais
 
-- `/RFFusion-dev/RF.Fusion -> /RF.Fusion`
-- `/mnt/reposfi -> /mnt/reposfi` (read-only)
+- O script de deploy e a fonte de verdade para esse container.
+- O container usa `--restart unless-stopped`.
+- Se `webfusion` ou `nginx` encerrar, o container termina.
+- Alteracoes em `Containerfile`, `docker-entrypoint.sh`,
+  `nginx-webfusion.conf` ou no codigo de `src/webfusion/` exigem recriacao do
+  container via novo deploy.
+- Os logs da aplicacao e do runtime podem ser inspecionados com:
 
-## Operational Notes
-
-- The container uses `--restart unless-stopped`.
-- `webfusion` is considered ready only after `waitress` opens
-  `127.0.0.1:8000`.
-- If `waitress` or `nginx` exits, the container exits.
-- If `Containerfile`, `docker-entrypoint.sh`, `nginx-webfusion.conf`, or the
-  `webfusion` source code changes, the correct procedure is to recreate the
-  container by running the deployment again.
-- Application logs from Flask/Waitress go to the container standard output and
-  standard error because the app does not configure a dedicated file handler.
-- In practice, the fastest way to inspect WebFusion errors is through the
-  container runtime log stream, for example `podman logs -f <container>`.
+```bash
+podman logs -f rffusion-web
+```

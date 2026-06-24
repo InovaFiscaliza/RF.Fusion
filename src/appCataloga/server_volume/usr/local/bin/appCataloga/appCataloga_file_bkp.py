@@ -12,7 +12,7 @@ import time
 import traceback
 from datetime import datetime
 
-from bootstrap_paths import bootstrap_app_paths
+from utils.bootstrap_paths import bootstrap_app_paths
 
 # Keep the entrypoint bootstrap tiny: one helper prepares the app root,
 # config directory, and local DB package for every worker.

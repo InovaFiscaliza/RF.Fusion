@@ -17,7 +17,7 @@ import os
 import time
 from datetime import datetime
 
-from bootstrap_paths import bootstrap_app_paths
+from utils.bootstrap_paths import bootstrap_app_paths
 
 
 PROJECT_ROOT = bootstrap_app_paths(__file__)

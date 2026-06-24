@@ -1108,6 +1108,27 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(len(db.task_deletes), 0)
         self.assertEqual(len(db.statistics_updates), 1)
 
+    def test_finalize_error_routes_empty_spec_data_to_error_writer(self) -> None:
+        task = {
+            "file_task_id": 656,
+            "host_id": 90,
+            "host_file_name": "sample.bin",
+            "host_path": "/host/path",
+            "filename": "sample.bin",
+        }
+        err = FakeErr("[ERROR] empty spec data", triggered=True)
+        err.exc = worker.errors.AppAnaliseServiceResponseError(
+            "APP_ANALISE returned error in Answer: "
+            "handlers:FileReadHandler:EmptySpecData"
+        )
+
+        with patch.object(worker, "_write_task_error") as write_error:
+            with patch.object(worker, "_finalize_freeze") as finalize_freeze:
+                worker._finalize_error(FakeDbBkp(), task, err)
+
+        write_error.assert_called_once()
+        finalize_freeze.assert_not_called()
+
 
 class PathRuleTests(unittest.TestCase):
     """Validate derived repository locations used by the worker helpers."""

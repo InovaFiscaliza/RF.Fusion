@@ -1,124 +1,129 @@
-# RFFusion — Serviço de Inicialização Automática
+# Servico De Inicializacao Do RF.Fusion
 
-Arquivos para configurar o stack de containers como serviço systemd na VM Red Hat host (`172.16.18.11`), de forma que tudo suba automaticamente após um reboot.
+Este diretorio contem os arquivos usados para subir o stack de containers do
+RF.Fusion automaticamente via `systemd`.
 
-## Arquitetura
+O servico nao faz deploy de containers. Ele apenas:
 
+- garante a montagem de `/mnt/reposfi`
+- inicia os containers ja existentes
+- sobe os workers internos do `appCataloga`
+- para o stack em ordem no desligamento
+
+## Arquivos Principais
+
+- [rffusion-start.sh](./rffusion-start.sh)
+- [rffusion-stop.sh](./rffusion-stop.sh)
+- [rffusion-containers.service](./rffusion-containers.service)
+- [install-service.sh](./install-service.sh)
+
+## Ordem De Inicializacao
+
+O fluxo atual e:
+
+1. validar ou montar `/mnt/reposfi`
+2. iniciar `debian12-mariadb`
+3. aguardar o MariaDB responder
+4. iniciar `debian12-python`
+5. executar `tool_start_all.sh` dentro do container do `appCataloga`
+6. iniciar `rffusion-web`
+
+## Pre-requisitos
+
+Antes de instalar o servico no host:
+
+1. os containers do projeto ja devem estar implantados
+2. o arquivo `/root/.reposfi` deve existir com as credenciais CIFS
+3. `cifs-utils` deve estar instalado no host
+4. o repositorio deve estar disponivel no host
+
+Formato esperado de `/root/.reposfi`:
+
+```text
+username=mnt.sfi.sensores.pd
+password=<SENHA>
 ```
-VM Red Hat (172.16.18.11)
-├── /mnt/reposfi          ← CIFS share (//reposfi/sfi$/SENSORES)
-└── Podman (rootful)
-    ├── debian12-mariadb  ← MariaDB  (porta 9081)
-    ├── debian12-python   ← appCataloga (porta 2828)
-    └── rffusion-web      ← webfusion  (porta 9082)
+
+Permissao recomendada:
+
+```bash
+chmod 600 /root/.reposfi
 ```
 
-A ordem de inicialização é: **CIFS mount → MariaDB → appCataloga → workers internos → webfusion**
+## Como Instalar O Servico
 
-## Arquivos
-
-| Arquivo | Descrição |
-|---|---|
-| `rffusion-start.sh` | Inicia o stack em ordem. Chamado pelo systemd no boot. |
-| `rffusion-stop.sh` | Para o stack em ordem inversa. Chamado pelo systemd no shutdown. |
-| `rffusion-containers.service` | Unit systemd (template). Contém o placeholder `__SCRIPTS_DIR__`. |
-| `install-service.sh` | Script de instalação. Substitui o placeholder e registra o serviço. |
-
-## Pré-requisitos
-
-Executar **uma única vez** no host antes de instalar o serviço:
-
-1. **Containers já implantados** — os scripts `install/*/deploy-*.sh` devem ter sido executados. O serviço apenas faz `podman start`; não cria nem reconstrói containers.
-
-2. **Credenciais CIFS presentes** — o arquivo `/root/.reposfi` deve existir no host com o seguinte formato:
-   ```
-   username=mnt.sfi.sensores.pd
-   password=<SENHA>
-   ```
-   Permissão correta: `chmod 600 /root/.reposfi`
-
-   > ⚠️ Nunca recrie este arquivo via script — isso sobrescreve a senha armazenada.
-
-3. **`cifs-utils` instalado** no host:
-   ```bash
-   dnf install -y cifs-utils
-   ```
-
-## Instalação
-
-Executar como **root** diretamente no host VM (não dentro de um container):
+Execute como `root`, diretamente no host:
 
 ```bash
 bash /RFFusion-dev/RF.Fusion/service/install-service.sh
 ```
 
-Se o repositório estiver em outro caminho no host, passe como argumento:
+Se o repositorio estiver em outro caminho:
 
 ```bash
 bash /caminho/para/RF.Fusion/service/install-service.sh /caminho/para/RF.Fusion
 ```
 
-O script realiza:
-- `chmod +x` nos scripts de start/stop
-- Substitui `__SCRIPTS_DIR__` pelo caminho real no `.service`
-- Copia o unit para `/etc/systemd/system/`
-- Executa `systemctl daemon-reload` e `systemctl enable`
+O script:
 
-Para iniciar imediatamente sem precisar reiniciar a VM:
+1. ajusta permissao de execucao dos scripts
+2. substitui o placeholder `__SCRIPTS_DIR__` no arquivo `.service`
+3. instala a unit em `/etc/systemd/system/`
+4. executa `systemctl daemon-reload`
+5. habilita o servico no boot
+
+## Comandos Uteis
 
 ```bash
 systemctl start rffusion-containers
+systemctl stop rffusion-containers
+systemctl status rffusion-containers
+journalctl -u rffusion-containers -f
+journalctl -u rffusion-containers -b
+podman ps
 ```
 
-## Comandos úteis
+## Caminhos Operacionais Importantes
 
-| Ação | Comando |
-|---|---|
-| Iniciar stack | `systemctl start rffusion-containers` |
-| Parar stack | `systemctl stop rffusion-containers` |
-| Status do serviço | `systemctl status rffusion-containers` |
-| Logs em tempo real | `journalctl -u rffusion-containers -f` |
-| Logs completos do boot | `journalctl -u rffusion-containers -b` |
-| Desabilitar autostart | `systemctl disable rffusion-containers` |
-| Verificar containers | `podman ps` |
+O script de inicializacao usa o seguinte caminho dentro do container do
+`appCataloga`:
 
-## Comportamento no boot
+```text
+/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shell/tool_start_all.sh
+```
 
-1. Systemd aguarda `network-online.target` e `remote-fs.target` (rede e mounts remotos prontos)
-2. `rffusion-start.sh` verifica se `/mnt/reposfi` está montado; monta via CIFS se necessário
-3. Se a montagem falhar → serviço para com erro (visível em `systemctl status`)
-4. MariaDB é iniciado; script aguarda até `mysqladmin ping` responder (timeout: 120s)
-5. appCataloga container é iniciado; após estabilizar, `tool_start_all.sh` é executado dentro do container para subir todos os workers internos
-6. webfusion é iniciado por último
+Esse detalhe e importante porque os scripts operacionais do `appCataloga`
+ficam hoje em `shell/`.
 
 ## Troubleshooting
 
-**Serviço falhou no boot:**
+### Servico falhou no boot
+
 ```bash
 systemctl status rffusion-containers
 journalctl -u rffusion-containers -b --no-pager
 ```
 
-**CIFS não monta:**
-```bash
-# Verificar conectividade com o servidor de arquivos
-ping reposfi
+### CIFS nao montou
 
-# Testar montagem manualmente
+```bash
+ping reposfi
 mount -t cifs -o credentials=/root/.reposfi,uid=987,gid=983,file_mode=0666,dir_mode=0777 \
     //reposfi/sfi$/SENSORES /mnt/reposfi
 ```
 
-**Workers do appCataloga não subiram:**
+### Workers do appCataloga nao subiram
+
 ```bash
 podman logs debian12-python
 podman exec -it debian12-python bash
-# dentro do container:
-bash /RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_start_all.sh
+bash /RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shell/tool_start_all.sh
 ```
 
-**MariaDB demorou mais que 120s:**
+### MariaDB demorou para responder
+
 ```bash
 podman logs debian12-mariadb
-# Aumentar MARIADB_READY_TIMEOUT em rffusion-start.sh se necessário
 ```
+
+Se necessario, ajuste `MARIADB_READY_TIMEOUT` em [rffusion-start.sh](./rffusion-start.sh).

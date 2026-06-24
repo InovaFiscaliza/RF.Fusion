@@ -28,7 +28,6 @@ services=(
   # Stop the summary consumer first so no refresh starts during shutdown.
   appCataloga_summary_database
   appCataloga_file_bkp
-  appCataloga_file_bin_proces
   appCataloga_file_bin_process_appAnalise
   appCataloga_backlog_management
   appCataloga_discovery
@@ -54,7 +53,7 @@ done
 echo
 echo ">>> Running safe shutdown cleanup (DB state reset)"
 
-SAFE_STOP_SCRIPT="$SCRIPT_DIR/safe_stop.py"
+SAFE_STOP_SCRIPT="$SCRIPT_DIR/../utils/safe_stop.py"
 
 if [[ -f "$SAFE_STOP_SCRIPT" ]]; then
     /opt/conda/envs/appdata/bin/python "$SAFE_STOP_SCRIPT"

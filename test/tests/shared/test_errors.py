@@ -222,6 +222,37 @@ class ErrorHandlerTests(unittest.TestCase):
             "APP_ANALISE_SERVICE_RESPONSE_ERROR",
         )
 
+    def test_format_persisted_error_promotes_empty_spec_data_service_response(self) -> None:
+        handler = errors.ErrorHandler(FakeLogger())
+        handler.capture(
+            "APP_ANALISE service returned processing error",
+            stage="PROCESS",
+            exc=errors.AppAnaliseServiceResponseError(
+                "APP_ANALISE returned error in Answer: "
+                "handlers:FileReadHandler:EmptySpecData"
+            ),
+        )
+
+        payload = errors.persisted_error_fields_from_handler(handler)
+
+        self.assertEqual(payload["NA_ERROR_CODE"], "APP_ANALISE_EMPTY_SPEC_DATA")
+        self.assertEqual(
+            payload["NA_ERROR_SUMMARY"],
+            "APP_ANALISE returned empty spectrum data",
+        )
+        self.assertEqual(
+            payload["NA_ERROR_DETAIL"],
+            "handlers:FileReadHandler:EmptySpecData",
+        )
+
+    def test_should_freeze_processing_task_returns_false_for_empty_spec_data(self) -> None:
+        exc = errors.AppAnaliseServiceResponseError(
+            "APP_ANALISE returned error in Answer: "
+            "handlers:FileReadHandler:EmptySpecData"
+        )
+
+        self.assertFalse(errors.should_freeze_processing_task(exc))
+
     def test_persisted_error_fields_promote_specific_app_analise_answer_error(self) -> None:
         # The structured DB columns should carry the precise processing code,
         # not only the generic outer BIN validation wrapper.

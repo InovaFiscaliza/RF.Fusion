@@ -35,10 +35,10 @@ CIFS_OPTIONS="credentials=${CIFS_CREDENTIALS},uid=987,gid=983,file_mode=0666,dir
 # appCataloga internal services
 # Path inside the container filesystem. server_volume/ is NOT copied into the
 # image — it is accessed via the /RFFusion volume mount (host repo → /RFFusion).
-# tool_start_all.sh has an interactive confirmation prompt that is bypassed
-# by piping 'y' via stdin (-i flag on podman exec).
+# tool_start_all.sh lives under shell/ and has an interactive confirmation
+# prompt that is bypassed by piping 'y' via stdin (-i flag on podman exec).
 # ---------------------------------------------------------------------------
-APPCATALOGA_START_SCRIPT="/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_start_all.sh"
+APPCATALOGA_START_SCRIPT="/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shell/tool_start_all.sh"
 
 # How long (seconds) to wait for MariaDB to accept connections before aborting
 MARIADB_READY_TIMEOUT=120

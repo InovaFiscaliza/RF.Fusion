@@ -1,137 +1,146 @@
-# appCataloga Container
+# Container do appCataloga
 
-This directory contains the Linux deployment material for the `appCataloga`
-runtime container.
+Este diretorio contem o material de deploy do container Linux usado pelo
+runtime do `appCataloga`.
 
-The container is not a full self-booting application stack by itself. Its role
-is to provide the operating system, Conda environment, SSH access, and mounted
-project volumes required to run the `appCataloga` scripts from the shared
-repository.
+O objetivo desse container e fornecer o ambiente de execucao do modulo
+operacional do RF.Fusion, com:
 
-## Directory Layout
+- sistema base Debian 12
+- ambiente Conda
+- acesso SSH
+- repositorio do projeto montado em `/RFFusion`
+- repositorio compartilhado montado em `/mnt/reposfi`
 
-- [/RFFusion/install/appCataloga/linux/Containerfile](/RFFusion/install/appCataloga/linux/Containerfile)
-- [/RFFusion/install/appCataloga/linux/docker-entrypoint.sh](/RFFusion/install/appCataloga/linux/docker-entrypoint.sh)
-- [/RFFusion/install/appCataloga/linux/environment.yml](/RFFusion/install/appCataloga/linux/environment.yml)
-- [/RFFusion/install/appCataloga/linux/deploy-debian12-python.sh](/RFFusion/install/appCataloga/linux/deploy-debian12-python.sh)
+Importante: esse container prepara o ambiente, mas nao sobe sozinho todo o
+pipeline do `appCataloga` no entrypoint.
 
-## Internal Architecture
+## Arquivos Principais
 
-The container provides:
+- [Containerfile](./linux/Containerfile)
+- [docker-entrypoint.sh](./linux/docker-entrypoint.sh)
+- [environment.yml](./linux/environment.yml)
+- [deploy-debian12-python.sh](./linux/deploy-debian12-python.sh)
 
-1. Debian 12 base image
-2. Miniconda installed under `/opt/conda`
-3. Conda environment created from `environment.yml`
-4. `sshd` for operational access
-5. mounted RF.Fusion repository at `/RFFusion`
-6. mounted repository share at `/mnt/reposfi`
+## O Que O Container Faz
 
-The runtime is therefore:
+Depois do deploy, o container entrega:
 
-`host volumes -> container OS + Conda -> appCataloga scripts from /RFFusion`
+- imagem `debian12-python`
+- container `debian12-python`
+- IP `10.88.0.2` na rede `podman`
+- SSH publicado na porta `2828`
+- porta `5555` publicada para a aplicacao
 
-The actual `appCataloga` workers are started from the mounted repository,
-typically through the operational scripts under:
+O runtime real do `appCataloga` continua vindo do repositorio montado em
+`/RFFusion`, especialmente de:
 
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga)
+- [src/appCataloga/server_volume/usr/local/bin/appCataloga](../../src/appCataloga/server_volume/usr/local/bin/appCataloga)
 
-## What The Container Does Not Do
+## O Que O Container Nao Faz
 
-This container does not automatically start all `appCataloga` workers in the
-entrypoint.
+O entrypoint do container nao inicializa automaticamente todos os workers do
+`appCataloga`.
 
-The entrypoint only:
+Ele apenas:
 
-- prepares SSH
-- generates SSH host keys when needed
-- applies the root password
-- validates `sshd`
-- hands off to the container command
+- prepara o ambiente
+- configura SSH
+- aplica a senha de root
+- valida o `sshd`
+- entrega o processo principal do container
 
-So the container is a prepared runtime environment, not an orchestration layer
-for the full catalog pipeline.
+Para operacao automatica do stack completo, veja:
 
-## Host Prerequisites
+- [service/README.md](../../service/README.md)
 
-The current Linux deployment assumes:
+## Pre-requisitos No Host
 
-- project repository at `/RFFusion-dev/RF.Fusion`
-- repository share mounted at `/mnt/reposfi`
-- `podman` installed and working
-- network `podman` already available
+O script atual de deploy assume:
 
-## How To Deploy
+- repositorio do projeto em `/RFFusion-dev/RF.Fusion`
+- repositorio compartilhado montado em `/mnt/reposfi`
+- `podman` instalado e funcional
+- rede `podman` previamente existente
 
-Enter the Linux deployment directory:
+Observacao importante:
+
+- o caminho `/RFFusion-dev/RF.Fusion` esta hardcoded em `deploy-debian12-python.sh`
+
+## Como Fazer O Deploy
+
+Entre no diretorio de deploy:
 
 ```bash
 cd /RFFusion/install/appCataloga/linux
 ```
 
-Grant execution permission to the scripts:
+Garanta permissao de execucao:
 
 ```bash
-chmod +x *
+chmod +x *.sh
 ```
 
-Run the deployment:
+Execute o deploy:
 
 ```bash
 ./deploy-debian12-python.sh
 ```
 
-## What The Deployment Does
+## O Que O Script De Deploy Faz
 
-The deployment script:
+O script:
 
-1. switches the Podman context
-2. validates the required files
-3. builds the image `debian12-python`
-4. removes the previous container if present
-5. creates a new container with:
-   - static IP `10.88.0.2`
-   - SSH host port `2828`
-   - application port `5555`
-   - mounted repository and CIFS share
-6. confirms that the container is running
+1. seleciona o contexto do Podman
+2. valida os arquivos obrigatorios
+3. gera a imagem `debian12-python`
+4. remove o container anterior, se existir
+5. cria o novo container com volumes e portas
+6. verifica se o container entrou em estado `running`
 
-## Published Services
+## Volumes Montados
 
-After deployment, the expected access points are:
+O deploy monta:
 
-- SSH: `ssh root@localhost -p 2828`
-- Application port: `http://localhost:5555/`
-
-The deployment also prints the direct attach command:
-
-```bash
-podman exec -it debian12-python bash
-```
-
-## Mounted Volumes
-
-The current deployment maps:
-
-- `/RFFusion-dev/RF.Fusion -> /RFFusion`
+- `/RFFusion-dev/RF.Fusion -> /RFFusion:Z`
 - `/mnt/reposfi -> /mnt/reposfi`
 
-Note:
+Observacao:
 
-- the repository volume is mounted with `:Z`
-- `/mnt/reposfi` is intentionally mounted without `:Z`
+- `/mnt/reposfi` nao usa `:Z` porque esse filesystem nao suporta o ajuste esperado pelo script
 
-## Operational Note
+## Acesso Ao Container
 
-Once inside the container, the practical next step is usually to use the
-mounted operational scripts from the repository, such as:
+Depois do deploy, os acessos esperados sao:
 
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_start_all.sh](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_start_all.sh)
-- [/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_stop_all.sh](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/tool_stop_all.sh)
+- SSH: `ssh root@localhost -p 2828`
+- Aplicacao: `http://localhost:5555/`
+- Shell interativo: `podman exec -it debian12-python bash`
 
-## Network Note
+## Operacao Manual Dos Workers
 
-Legacy network helper scripts are no longer part of the supported deployment
-flow for this container.
+Os scripts operacionais versionados ficam em:
 
-The current deployment script is the source of truth and expects the `podman`
-network to already exist.
+- [src/appCataloga/server_volume/usr/local/bin/appCataloga/shell](../../src/appCataloga/server_volume/usr/local/bin/appCataloga/shell)
+
+Os principais sao:
+
+- `tool_start_all.sh`
+- `tool_status_all.sh`
+- `tool_stop_all.sh`
+
+Exemplo:
+
+```bash
+cd /RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shell
+./tool_start_all.sh
+./tool_status_all.sh
+./tool_stop_all.sh
+```
+
+## Observacoes Operacionais
+
+- O script de deploy e a fonte de verdade para esse container.
+- O container e um ambiente de runtime, nao um orquestrador completo do sistema.
+- Se a estrutura de volumes, portas ou caminho do repositorio mudar, o script
+  `deploy-debian12-python.sh` deve ser revisado junto com esta documentacao.

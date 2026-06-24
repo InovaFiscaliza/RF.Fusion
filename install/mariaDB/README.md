@@ -1,125 +1,112 @@
-# MariaDB Container
+# Container MariaDB
 
-This directory contains the Linux deployment material for the RF.Fusion
-MariaDB container.
+Este diretorio contem o material de deploy do container MariaDB usado pelo
+RF.Fusion.
 
-Its purpose is to provide the relational backend used by the project,
-especially:
+Esse container fornece a camada relacional do projeto, incluindo os schemas:
 
-- `BPDATA`, used by `appCataloga`
-- `RFDATA`, used by `webfusion`, spectrum cataloging, and measurement storage
-- `RFFUSION_SUMMARY`, used by `webfusion` and external consumers for
-  materialized summary reads
+- `BPDATA`
+- `RFDATA`
+- `RFFUSION_SUMMARY`
 
-## Directory Layout
+## Arquivos Principais
 
-- [/RFFusion/install/mariaDB/linux/Containerfile](/RFFusion/install/mariaDB/linux/Containerfile)
-- [/RFFusion/install/mariaDB/linux/docker-entrypoint.sh](/RFFusion/install/mariaDB/linux/docker-entrypoint.sh)
-- [/RFFusion/install/mariaDB/linux/deploy-debian12-mariadb.sh](/RFFusion/install/mariaDB/linux/deploy-debian12-mariadb.sh)
+- [Containerfile](./linux/Containerfile)
+- [docker-entrypoint.sh](./linux/docker-entrypoint.sh)
+- [deploy-debian12-mariadb.sh](./linux/deploy-debian12-mariadb.sh)
 
-## Internal Architecture
+## O Que O Container Faz
 
-The container runs:
+Depois do deploy, o ambiente entrega:
 
-1. Debian 12
-2. MariaDB Server
-3. MariaDB Client
-4. `sshd`
+- imagem `debian12-mariadb`
+- container `debian12-mariadb`
+- IP `10.88.0.33` na rede `podman`
+- MariaDB publicado na porta `9081` do host
+- SSH publicado na porta `2224` do host
 
-Startup flow:
+O bootstrap do banco acontece em duas etapas:
 
-1. the entrypoint prepares SSH
-2. it initializes `/var/lib/mysql` if needed
-3. it starts a temporary MariaDB instance on socket mode
-4. it creates the initial users and `appdb`
-5. it shuts down the temporary server
-6. it starts MariaDB bound to `0.0.0.0`
-7. it keeps SSH in the foreground
+1. o `docker-entrypoint.sh` inicializa o runtime MariaDB e o acesso SSH
+2. o script `deploy-debian12-mariadb.sh` carrega os schemas do RF.Fusion
 
-After the container is up, the deployment script applies the project schemas:
+## Inicializacao Do Banco
 
-- [/RFFusion/src/mariadb/scripts/createProcessingDB.sql](/RFFusion/src/mariadb/scripts/createProcessingDB.sql)
-- [/RFFusion/src/mariadb/scripts/createMeasureDB.sql](/RFFusion/src/mariadb/scripts/createMeasureDB.sql)
-- [/RFFusion/src/mariadb/scripts/createFusionSummaryDB.sql](/RFFusion/src/mariadb/scripts/createFusionSummaryDB.sql)
+Depois que o container entra em execucao, o script de deploy aplica:
 
-## Host Prerequisites
+- [createProcessingDB.sql](../../src/mariadb/scripts/createProcessingDB.sql)
+- [createMeasureDB.sql](../../src/mariadb/scripts/createMeasureDB.sql)
+- [createFusionSummaryDB.sql](../../src/mariadb/scripts/createFusionSummaryDB.sql)
 
-The current Linux deployment assumes:
+Esses scripts criam, respectivamente:
 
-- project repository at `/RFFusion-dev/RF.Fusion`
-- `podman` installed and working
-- network `podman` already available
+- `BPDATA`
+- `RFDATA`
+- `RFFUSION_SUMMARY`
 
-## How To Deploy
+## Pre-requisitos No Host
 
-Enter the Linux deployment directory:
+O deploy atual assume:
+
+- repositorio do projeto em `/RFFusion-dev/RF.Fusion`
+- `podman` instalado e funcional
+- rede `podman` previamente existente
+
+Observacao importante:
+
+- o caminho `/RFFusion-dev/RF.Fusion` esta hardcoded em `deploy-debian12-mariadb.sh`
+
+## Como Fazer O Deploy
+
+Entre no diretorio de deploy:
 
 ```bash
 cd /RFFusion/install/mariaDB/linux
 ```
 
-Grant execution permission to the scripts:
+Garanta permissao de execucao:
 
 ```bash
-chmod +x *
+chmod +x *.sh
 ```
 
-Run the deployment:
+Execute o deploy:
 
 ```bash
 ./deploy-debian12-mariadb.sh
 ```
 
-## What The Deployment Does
+## O Que O Script De Deploy Faz
 
-The deployment script:
+O script:
 
-1. switches the Podman context
-2. rebuilds the image `debian12-mariadb`
-3. removes the previous container if present
-4. creates a new container with:
-   - static IP `10.88.0.33`
-   - SSH host port `2224`
-   - MariaDB host port `9081`
-5. checks whether the container reached `running`
-6. executes the RF.Fusion SQL initialization scripts inside the container
+1. seleciona o contexto do Podman
+2. recompila a imagem `debian12-mariadb`
+3. remove o container anterior, se existir
+4. cria um novo container com rede, portas e volume do repositorio
+5. valida se o container entrou em estado `running`
+6. executa os scripts SQL de inicializacao do RF.Fusion
 
-## Published Services
+## Volume Montado
 
-After deployment, the expected access points are:
+O deploy monta:
+
+- `/RFFusion-dev/RF.Fusion -> /RFFusion:Z`
+
+Esse volume e necessario porque os scripts SQL sao executados a partir do
+repositorio montado dentro do container.
+
+## Acesso Ao Container
+
+Depois do deploy, os acessos esperados sao:
 
 - MariaDB: `127.0.0.1:9081`
 - SSH: `ssh root@127.0.0.1 -p 2224`
 
-## Database Initialization
+## Observacoes Operacionais
 
-The entrypoint itself guarantees the MariaDB runtime is bootstrapped.
-
-The deployment script then loads the RF.Fusion schemas:
-
-- `BPDATA` from `createProcessingDB.sql`
-- `RFDATA` from `createMeasureDB.sql`
-- `RFFUSION_SUMMARY` from `createFusionSummaryDB.sql`
-
-This means the deploy script is responsible for turning the generic MariaDB
-container into the RF.Fusion project database.
-
-## Important Operational Note
-
-The current deployment script mounts:
-
-- `/RFFusion-dev/RF.Fusion -> /RFFusion`
-
-but it does not mount an external persistent volume for `/var/lib/mysql`.
-
-So, with the current script, recreating the container is effectively a fresh
-database bootstrap operation. That is acceptable for rebuild-oriented setups,
-but it is not the same as a durable external database volume strategy.
-
-## Network Note
-
-Legacy network helper scripts are no longer part of the supported deployment
-flow for this container.
-
-The current deployment script is the authoritative source and expects the
-`podman` network to already exist.
+- O script de deploy e a fonte de verdade para esse container.
+- O deploy atual nao monta um volume externo persistente para `/var/lib/mysql`.
+- Na pratica, recriar o container equivale a refazer o bootstrap do banco.
+- Isso pode ser aceitavel em ambientes de rebuild, mas nao substitui uma
+  estrategia formal de persistencia externa.

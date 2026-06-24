@@ -1,0 +1,266 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1680" viewBox="0 0 1600 1680" role="img" aria-labelledby="title desc">
+  <title id="title">Arquitetura dos bancos do RF.Fusion</title>
+  <desc id="desc">Visao geral dos bancos BPDATA, RFDATA e RFFUSION_SUMMARY, com seus relacionamentos principais e fluxo de materializacao.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f6f4ef; }
+      .panel { fill: #fffdf8; stroke: #2d2a26; stroke-width: 2; rx: 18; ry: 18; }
+      .title { font: 700 28px "DejaVu Sans", sans-serif; fill: #1e1b18; }
+      .subtitle { font: 600 18px "DejaVu Sans", sans-serif; fill: #4b443d; }
+      .label { font: 600 16px "DejaVu Sans", sans-serif; fill: #1e1b18; }
+      .small { font: 500 14px "DejaVu Sans", sans-serif; fill: #4b443d; }
+      .tiny { font: 500 13px "DejaVu Sans", sans-serif; fill: #4b443d; }
+      .box-text { font: 700 15px "DejaVu Sans Mono", monospace; fill: #1e1b18; }
+      .box-sub { font: 500 12px "DejaVu Sans", sans-serif; fill: #4b443d; }
+      .box { stroke: #2d2a26; stroke-width: 2; rx: 14; ry: 14; }
+      .bp { fill: #f7e6d0; }
+      .rf { fill: #dcefe3; }
+      .rs { fill: #dfeaf8; }
+      .app { fill: #f3dccf; }
+      .repo { fill: #ece7dd; }
+      .aux { fill: #f2efe9; }
+      .arrow-bp { stroke: #9b5f22; }
+      .arrow-rf { stroke: #2f7d4c; }
+      .arrow-rs { stroke: #2a67a3; }
+      .arrow-app { stroke: #7a4c36; }
+      .arrow-neutral { stroke: #6b6257; }
+      .arrow { fill: none; stroke-width: 3.2; marker-end: url(#head); }
+      .arrow-dash { fill: none; stroke-width: 3; stroke-dasharray: 8 7; marker-end: url(#head); }
+      .section-line { stroke: #d7d1c6; stroke-width: 2; }
+    </style>
+    <marker id="head" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2d2a26" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="1680" />
+
+  <text class="title" x="70" y="62">Arquitetura dos Bancos do RF.Fusion</text>
+  <text class="subtitle" x="70" y="96">Resumo visual baseado nos scripts createProcessingDB.sql, createMeasureDB.sql e createFusionSummaryDB.sql</text>
+
+  <rect class="panel" x="50" y="130" width="1500" height="270" />
+  <text class="title" x="80" y="178">1. Visao Geral do Fluxo</text>
+  <text class="small" x="80" y="206">Nao ha FKs entre bancos. A integracao entre BPDATA, RFDATA e RFFUSION_SUMMARY e feita pela aplicacao.</text>
+
+  <rect class="box app" x="90" y="245" width="220" height="84" />
+  <text class="box-text" x="135" y="282">appCataloga</text>
+  <text class="box-sub" x="116" y="304">descoberta, backup e processamento</text>
+
+  <rect class="box repo" x="360" y="245" width="180" height="84" />
+  <text class="box-text" x="420" y="282">/reposfi</text>
+  <text class="box-sub" x="396" y="304">repositorio de artefatos</text>
+
+  <rect class="box bp" x="620" y="230" width="210" height="100" />
+  <text class="box-text" x="685" y="272">BPDATA</text>
+  <text class="box-sub" x="658" y="294">estado operacional e filas</text>
+
+  <rect class="box rf" x="890" y="230" width="210" height="100" />
+  <text class="box-text" x="955" y="272">RFDATA</text>
+  <text class="box-sub" x="923" y="294">catalogo de espectros</text>
+
+  <rect class="box rs" x="1160" y="230" width="290" height="100" />
+  <text class="box-text" x="1202" y="272">RFFUSION_SUMMARY</text>
+  <text class="box-sub" x="1220" y="294">read models e snapshots</text>
+
+  <rect class="box app" x="1210" y="80" width="180" height="84" />
+  <text class="box-text" x="1260" y="117">webfusion</text>
+  <text class="box-sub" x="1240" y="139">consulta e download</text>
+
+  <line class="arrow arrow-app" x1="310" y1="287" x2="360" y2="287" />
+  <text class="tiny" x="318" y="272">le / grava</text>
+
+  <line class="arrow arrow-bp" x1="540" y1="287" x2="620" y2="280" />
+  <text class="tiny" x="548" y="268">hosts, tarefas, historico</text>
+
+  <line class="arrow arrow-rf" x1="310" y1="310" x2="890" y2="310" />
+  <text class="tiny" x="570" y="330">arquivos, sites, equipamentos e espectros</text>
+
+  <line class="arrow arrow-rs" x1="830" y1="260" x2="1160" y2="260" />
+  <line class="arrow arrow-rs" x1="1100" y1="300" x2="1160" y2="300" />
+  <text class="tiny" x="948" y="244">dados operacionais e analiticos</text>
+
+  <line class="arrow arrow-neutral" x1="1300" y1="164" x2="1300" y2="230" />
+  <text class="tiny" x="1320" y="206">mapas e metricas</text>
+  <line class="arrow arrow-neutral" x1="1210" y1="122" x2="1100" y2="230" />
+  <text class="tiny" x="1085" y="150">consultas detalhadas</text>
+
+  <line class="arrow arrow-neutral" x1="1270" y1="164" x2="470" y2="245" />
+  <text class="tiny" x="920" y="186">download de arquivos</text>
+
+  <rect class="panel" x="50" y="440" width="470" height="430" />
+  <text class="title" x="80" y="488">2. BPDATA</text>
+  <text class="small" x="80" y="516">Banco operacional do pipeline. As FKs reais partem de HOST para as filas e para o historico.</text>
+
+  <rect class="box bp" x="190" y="560" width="190" height="82" />
+  <text class="box-text" x="250" y="606">HOST</text>
+  <text class="box-sub" x="206" y="627">estacoes e estado operacional</text>
+
+  <rect class="box bp" x="70" y="705" width="170" height="82" />
+  <text class="box-text" x="111" y="751">HOST_TASK</text>
+  <text class="box-sub" x="93" y="772">fila por host</text>
+
+  <rect class="box bp" x="260" y="705" width="170" height="82" />
+  <text class="box-text" x="301" y="751">FILE_TASK</text>
+  <text class="box-sub" x="291" y="772">fila por arquivo</text>
+
+  <rect class="box bp" x="160" y="815" width="250" height="82" />
+  <text class="box-text" x="188" y="861">FILE_TASK_HISTORY</text>
+  <text class="box-sub" x="180" y="882">auditoria de descoberta, backup e processamento</text>
+
+  <line class="arrow arrow-bp" x1="240" y1="642" x2="155" y2="705" />
+  <line class="arrow arrow-bp" x1="285" y1="642" x2="345" y2="705" />
+  <line class="arrow arrow-bp" x1="285" y1="642" x2="285" y2="815" />
+
+  <text class="tiny" x="95" y="690">FK_HOST</text>
+  <text class="tiny" x="342" y="690">FK_HOST</text>
+  <text class="tiny" x="298" y="733">FK_HOST</text>
+
+  <rect class="box aux" x="70" y="905" width="380" height="105" />
+  <text class="label" x="95" y="935">Leitura correta do schema</text>
+  <text class="small" x="95" y="962">`FILE_TASK` e `FILE_TASK_HISTORY` nao possuem FK entre si.</text>
+  <text class="small" x="95" y="986">O vinculo entre fila atual e historico e logico, mantido pela aplicacao.</text>
+
+  <rect class="panel" x="560" y="440" width="990" height="430" />
+  <text class="title" x="590" y="488">3. RFDATA</text>
+  <text class="small" x="590" y="516">Banco analitico. O centro do modelo e FACT_SPECTRUM, ligado a site, equipamento e tabelas auxiliares.</text>
+
+  <rect class="box aux" x="600" y="570" width="250" height="190" />
+  <text class="box-text" x="660" y="604">Geografia e Site</text>
+  <text class="small" x="625" y="637">DIM_SITE_STATE</text>
+  <text class="small" x="625" y="662">DIM_SITE_COUNTY</text>
+  <text class="small" x="625" y="687">DIM_SITE_DISTRICT</text>
+  <text class="small" x="625" y="712">DIM_SITE_TYPE</text>
+  <text class="small" x="625" y="737">DIM_SPECTRUM_SITE</text>
+  <text class="tiny" x="625" y="765">FKs reais ligam estado, municipio, distrito</text>
+  <text class="tiny" x="625" y="784">e tipo ao site de medicao.</text>
+
+  <rect class="box aux" x="900" y="570" width="220" height="120" />
+  <text class="box-text" x="936" y="604">Equipamento</text>
+  <text class="small" x="930" y="640">DIM_EQUIPMENT_TYPE</text>
+  <text class="small" x="930" y="665">DIM_SPECTRUM_EQUIPMENT</text>
+
+  <rect class="box rf" x="1170" y="610" width="220" height="110" />
+  <text class="box-text" x="1203" y="652">FACT_SPECTRUM</text>
+  <text class="box-sub" x="1206" y="674">fato central da medicao</text>
+
+  <rect class="box aux" x="900" y="730" width="220" height="120" />
+  <text class="box-text" x="926" y="764">Dimensoes Auxiliares</text>
+  <text class="small" x="930" y="795">DIM_SPECTRUM_DETECTOR</text>
+  <text class="small" x="930" y="818">DIM_SPECTRUM_TRACE_TYPE</text>
+  <text class="small" x="930" y="841">DIM_SPECTRUM_UNIT / PROCEDURE</text>
+
+  <rect class="box aux" x="1420" y="555" width="100" height="95" />
+  <text class="box-text" x="1433" y="592">Emitter</text>
+  <text class="small" x="1432" y="617">DIM_SPECTRUM</text>
+  <text class="small" x="1448" y="634">EMITTER</text>
+
+  <rect class="box aux" x="1420" y="675" width="110" height="85" />
+  <text class="box-text" x="1436" y="710">BRIDGE</text>
+  <text class="small" x="1429" y="735">SPECTRUM_EMITTER</text>
+
+  <rect class="box aux" x="1170" y="770" width="220" height="95" />
+  <text class="box-text" x="1192" y="804">BRIDGE_SPECTRUM_FILE</text>
+  <text class="box-sub" x="1212" y="826">liga arquivo e espectro</text>
+
+  <rect class="box aux" x="600" y="785" width="250" height="95" />
+  <text class="box-text" x="646" y="819">Arquivo de Repositorio</text>
+  <text class="small" x="625" y="846">DIM_FILE_TYPE -> DIM_SPECTRUM_FILE</text>
+
+  <line class="arrow arrow-rf" x1="850" y1="665" x2="1170" y2="655" />
+  <line class="arrow arrow-rf" x1="1120" y1="630" x2="1170" y2="630" />
+  <line class="arrow arrow-rf" x1="1120" y1="790" x2="1170" y2="690" />
+  <line class="arrow arrow-rf" x1="850" y1="832" x2="1170" y2="817" />
+  <line class="arrow arrow-rf" x1="1280" y1="720" x2="1280" y2="770" />
+  <line class="arrow arrow-rf" x1="1470" y1="650" x2="1470" y2="675" />
+  <line class="arrow arrow-rf" x1="1420" y1="717" x2="1390" y2="717" />
+  <line class="arrow arrow-rf" x1="1390" y1="717" x2="1390" y2="665" />
+
+  <text class="tiny" x="996" y="612">FK_EQUIPMENT</text>
+  <text class="tiny" x="980" y="777">FK detector / trace / unit / procedure</text>
+  <text class="tiny" x="944" y="651">FK_SITE</text>
+  <text class="tiny" x="924" y="813">FK_FILE + FK_SPECTRUM</text>
+  <text class="tiny" x="1425" y="700">FK_EMITTER + FK_SPECTRUM</text>
+
+  <rect class="panel" x="50" y="910" width="1500" height="700" />
+  <text class="title" x="80" y="958">4. RFFUSION_SUMMARY</text>
+  <text class="small" x="80" y="986">Banco de leitura e materializacao. Aqui o importante e o fluxo de refresh, nao um ER com FKs fisicas entre bancos.</text>
+
+  <rect class="box bp" x="90" y="1045" width="220" height="90" />
+  <text class="box-text" x="154" y="1086">BPDATA</text>
+  <text class="box-sub" x="124" y="1108">fonte operacional</text>
+
+  <rect class="box rf" x="90" y="1180" width="220" height="90" />
+  <text class="box-text" x="155" y="1221">RFDATA</text>
+  <text class="box-sub" x="128" y="1243">fonte analitica</text>
+
+  <rect class="box rs" x="380" y="1045" width="230" height="90" />
+  <text class="box-text" x="423" y="1086">SUMMARY_OUTBOX</text>
+  <text class="box-sub" x="432" y="1108">escopos sujos</text>
+
+  <rect class="box app" x="690" y="1030" width="300" height="120" />
+  <text class="box-text" x="736" y="1076">appCataloga_summary_database.py</text>
+  <text class="box-sub" x="748" y="1100">worker canonico de refresh</text>
+
+  <rect class="box rs" x="1050" y="1030" width="220" height="75" />
+  <text class="box-text" x="1088" y="1072">SUMMARY_WORKER_STATE</text>
+  <rect class="box rs" x="1050" y="1115" width="220" height="75" />
+  <text class="box-text" x="1092" y="1157">SUMMARY_REFRESH_LOG</text>
+
+  <rect class="box rs" x="380" y="1240" width="260" height="85" />
+  <text class="box-text" x="428" y="1282">HOST_EQUIPMENT_LINK</text>
+
+  <rect class="box rs" x="690" y="1240" width="290" height="85" />
+  <text class="box-text" x="726" y="1282">SITE_EQUIPMENT_OBS_SUMMARY</text>
+
+  <rect class="box rs" x="1020" y="1240" width="250" height="85" />
+  <text class="box-text" x="1064" y="1282">HOST_MONTHLY_METRIC</text>
+
+  <rect class="box rs" x="1300" y="1240" width="210" height="85" />
+  <text class="box-text" x="1336" y="1282">HOST_ERROR_SUMMARY</text>
+
+  <rect class="box rs" x="400" y="1390" width="270" height="85" />
+  <text class="box-text" x="438" y="1432">HOST_LOCATION_SUMMARY</text>
+
+  <rect class="box rs" x="740" y="1390" width="295" height="85" />
+  <text class="box-text" x="772" y="1432">MAP_SITE_STATION_SUMMARY</text>
+
+  <rect class="box rs" x="1090" y="1390" width="220" height="85" />
+  <text class="box-text" x="1131" y="1432">MAP_SITE_SUMMARY</text>
+
+  <rect class="box rs" x="460" y="1510" width="270" height="85" />
+  <text class="box-text" x="493" y="1552">HOST_CURRENT_SNAPSHOT</text>
+
+  <rect class="box rs" x="810" y="1510" width="260" height="85" />
+  <text class="box-text" x="835" y="1552">SERVER_CURRENT_SUMMARY</text>
+
+  <rect class="box rs" x="1330" y="1390" width="200" height="85" />
+  <text class="box-text" x="1345" y="1432">SERVER_ERROR_SUMMARY</text>
+
+  <line class="arrow arrow-rs" x1="310" y1="1090" x2="380" y2="1090" />
+  <line class="arrow arrow-rs" x1="310" y1="1225" x2="380" y2="1110" />
+  <line class="arrow arrow-rs" x1="610" y1="1090" x2="690" y2="1090" />
+  <line class="arrow arrow-rs" x1="990" y1="1068" x2="1050" y2="1068" />
+  <line class="arrow arrow-rs" x1="990" y1="1115" x2="1050" y2="1152" />
+
+  <line class="arrow arrow-rs" x1="780" y1="1150" x2="510" y2="1240" />
+  <line class="arrow arrow-rs" x1="840" y1="1150" x2="835" y2="1240" />
+  <line class="arrow arrow-rs" x1="900" y1="1150" x2="1145" y2="1240" />
+  <line class="arrow arrow-rs" x1="950" y1="1150" x2="1405" y2="1240" />
+
+  <line class="arrow arrow-rs" x1="640" y1="1282" x2="400" y2="1432" />
+  <line class="arrow arrow-rs" x1="980" y1="1282" x2="670" y2="1432" />
+  <line class="arrow arrow-rs" x1="980" y1="1282" x2="740" y2="1432" />
+  <line class="arrow arrow-rs" x1="670" y1="1432" x2="460" y2="1552" />
+  <line class="arrow arrow-rs" x1="1145" y1="1282" x2="595" y2="1510" />
+  <line class="arrow arrow-rs" x1="1405" y1="1282" x2="690" y2="1552" />
+  <line class="arrow arrow-rs" x1="1035" y1="1432" x2="1090" y2="1432" />
+  <line class="arrow arrow-rs" x1="730" y1="1552" x2="810" y2="1552" />
+  <line class="arrow arrow-rs" x1="1430" y1="1475" x2="1070" y2="1552" />
+
+  <rect class="box aux" x="80" y="1360" width="250" height="145" />
+  <text class="label" x="105" y="1392">Leitura correta do summary</text>
+  <text class="small" x="105" y="1422">O schema cria tabelas publicas</text>
+  <text class="small" x="105" y="1446">em `RFFUSION_SUMMARY`, mas a</text>
+  <text class="small" x="105" y="1470">dependencia principal e de refresh.</text>
+  <text class="small" x="105" y="1494">Nao ha FKs cross-database.</text>
+</svg>

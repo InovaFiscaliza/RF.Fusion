@@ -1,46 +1,48 @@
 # AGENTS.md
 
-## Mandatory context
+## Contexto obrigatorio
 
-Before answering, planning, editing, or refactoring code in this repository, read:
+Antes de responder, planejar, editar ou refatorar codigo neste repositorio, leia:
 
-1. ARCHITECTURE.md
-2. INSTRUCTIONS.md
+1. [ARCHITECTURE.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/.instructions/ARCHITECTURE.md)
+2. [INSTRUCTIONS.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/.instructions/INSTRUCTIONS.md)
 
-These files are mandatory project context.
+Esses arquivos sao o contexto obrigatorio do projeto.
 
-## Authority order
+## Ordem de autoridade
 
-If there is any conflict, follow this order:
+Se houver conflito, siga esta ordem:
 
-1. ARCHITECTURE.md
-2. INSTRUCTIONS.md
-3. Existing code
+1. `ARCHITECTURE.md`
+2. `INSTRUCTIONS.md`
+3. Codigo existente
 
-## Non-negotiable rules
+## Regras inegociaveis
 
-- Do not change business logic unless explicitly requested.
-- Do not invent architecture.
-- Do not move functions to new modules unless allowed by ARCHITECTURE.md.
-- Follow the worker anatomy and canonical loop from ARCHITECTURE.md.
-- Follow the refactoring rules from INSTRUCTIONS.md.
-- Use `config.py` constants instead of magic literals.
-- Use `err.capture(...)`, never `err.set(...)`.
-- Helpers raise exceptions; they do not return sentinel values for failure.
-- Type DB handlers with concrete classes.
-- Preserve existing database behavior and task lifecycle.
+- Nao altere logica de negocio sem pedido explicito.
+- Nao invente arquitetura.
+- Nao mova funcoes para novos modulos sem permissao do `ARCHITECTURE.md`.
+- Siga a anatomia dos workers e o loop canonico definidos em `ARCHITECTURE.md` quando a mudanca tocar o runtime do `appCataloga`.
+- Siga as regras de refatoracao definidas em `INSTRUCTIONS.md`.
+- Use constantes de `config.py` em vez de literais magicos.
+- Use `err.capture(...)`, nunca `err.set(...)`.
+- Helpers devem levantar excecoes; nao devem retornar valores sentinela para falha.
+- Tipar handlers de banco com classes concretas.
+- Preserve o comportamento atual do banco e o ciclo de vida das tasks.
+- Comentarios de codigo devem ficar em ingles.
+- Documentacoes Markdown (`*.md`) devem ficar em portugues (PT-BR).
 
-## Required response format for code changes
+## Formato obrigatorio de resposta para mudancas de codigo
 
-Before changing code, explain:
+Antes de mudar codigo, explique:
 
-1. Which rule from ARCHITECTURE.md or INSTRUCTIONS.md applies.
-2. Which files will be touched.
-3. Whether the change is architectural, refactoring-only, or behavior-changing.
+1. Qual regra de `ARCHITECTURE.md` ou `INSTRUCTIONS.md` se aplica.
+2. Quais arquivos serao alterados.
+3. Se a mudanca e arquitetural, apenas de refatoracao ou com impacto comportamental.
 
-After changing code, report:
+Depois da mudanca, informe:
 
-1. What changed.
-2. What was not changed.
-3. Validation commands or tests to run.
-4. Any risk or manual review point.
+1. O que mudou.
+2. O que nao mudou.
+3. Comandos de validacao ou testes a executar.
+4. Qualquer risco ou ponto de revisao manual.

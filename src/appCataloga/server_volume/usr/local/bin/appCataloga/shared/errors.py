@@ -99,6 +99,7 @@ ERROR_DOMAIN_BY_CODE = {
     "APP_ANALISE_READ_TIMEOUT": "PROCESSING",
     "APP_ANALISE_TRANSIENT_SERVICE_FAILURE": "PROCESSING",
     "APP_ANALISE_SERVICE_RESPONSE_ERROR": "PROCESSING",
+    "APP_ANALISE_EMPTY_SPEC_DATA": "PROCESSING",
     "APP_ANALISE_FILE_UNAVAILABLE": "PROCESSING",
     "APP_ANALISE_OUTPUT_ARTIFACT_UNAVAILABLE": "PROCESSING",
     "APP_ANALISE_INVALID_SUCCESS_PAYLOAD": "PROCESSING",
@@ -221,6 +222,12 @@ def _canonicalize_error_reason(
         )
 
     if raw_reason == "APP_ANALISE service returned processing error":
+        if exc_text and k.APP_ANALISE_EMPTY_SPEC_DATA_DETAIL in exc_text:
+            return (
+                "APP_ANALISE_EMPTY_SPEC_DATA",
+                "APP_ANALISE returned empty spectrum data",
+                k.APP_ANALISE_EMPTY_SPEC_DATA_DETAIL,
+            )
         return (
             "APP_ANALISE_SERVICE_RESPONSE_ERROR",
             "APP_ANALISE service returned processing error",
@@ -811,9 +818,19 @@ PROCESSING_FREEZE_DETAILS = {
     ExternalServiceTransientError: "Transient appAnalise service failure, task frozen for manual review",
 }
 
+def is_definitive_appanalise_processing_error(exc: BaseException | None) -> bool:
+    """Return whether one appAnalise response should be treated as final error."""
+    return (
+        isinstance(exc, AppAnaliseServiceResponseError)
+        and k.APP_ANALISE_EMPTY_SPEC_DATA_DETAIL in str(exc)
+    )
+
 
 def should_freeze_processing_task(exc: BaseException | None) -> bool:
     """Return whether one processing failure should freeze the task."""
+    if is_definitive_appanalise_processing_error(exc):
+        # EmptySpecData means the artifact has no usable spectrum payload.
+        return False
     return (
         isinstance(exc, tuple(PROCESSING_FREEZE_DETAILS.keys()))
         or file_utils.is_transient_filesystem_error(exc)
