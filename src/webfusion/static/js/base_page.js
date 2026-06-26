@@ -14,6 +14,7 @@
 (function () {
     const overlay = document.getElementById("page-loading-overlay");
     const messageNode = document.getElementById("page-loading-message");
+    const DOWNLOAD_ACTION_ENDPOINT = "/api/server/usage-metrics/download-action";
 
     /* Show the shared overlay with an optional contextual message.
      *
@@ -50,6 +51,29 @@
         overlay.classList.remove("is-visible");
         overlay.setAttribute("aria-hidden", "true");
         document.body.classList.remove("page-loading-open");
+    }
+
+    /* Download actions navigate away quickly, so the metric request must be
+     * fire-and-forget. `sendBeacon` is preferred because the browser keeps it
+     * alive during navigation; `fetch(..., keepalive)` is the fallback.
+     */
+    function recordDownloadAction() {
+        try {
+            if (navigator.sendBeacon) {
+                navigator.sendBeacon(DOWNLOAD_ACTION_ENDPOINT, new Blob([], { type: "application/octet-stream" }));
+                return;
+            }
+
+            fetch(DOWNLOAD_ACTION_ENDPOINT, {
+                method: "POST",
+                keepalive: true,
+                credentials: "same-origin",
+            }).catch(function () {
+                // Metrics must never block the actual download navigation.
+            });
+        } catch (error) {
+            // Ignore telemetry failures and let the download continue.
+        }
     }
 
     /* Expose the overlay helpers globally because page-specific scripts still
@@ -114,6 +138,7 @@
             return;
         }
 
+        recordDownloadAction();
         showPageLoadingOverlay(link.getAttribute("data-download-loading-message"));
         window.setTimeout(hidePageLoadingOverlay, 4500);
     }, true);

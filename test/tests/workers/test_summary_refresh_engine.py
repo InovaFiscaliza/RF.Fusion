@@ -32,6 +32,8 @@ class FakeSummaryDb:
         self.succeeded = []
         self.failed = []
         self.replaced = {}
+        self.upserted = {}
+        self.deleted = []
 
     def summary_refresh_success(self, object_name, *, started_at, row_count, high_watermark):
         self.succeeded.append((object_name, row_count, high_watermark))
@@ -42,6 +44,17 @@ class FakeSummaryDb:
     def replace_table_rows(self, table, rows):
         self.replaced[table] = rows
         return len(rows)
+
+    def upsert_rows(self, *, table, rows, unique_keys):
+        self.upserted[table] = {
+            "rows": rows,
+            "unique_keys": unique_keys,
+        }
+        return len(rows)
+
+    def execute_delete(self, sql, params):
+        self.deleted.append((sql, params))
+        return 0
 
 
 class FakeSummaryLog:
@@ -335,6 +348,88 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         rows = db.replaced["SITE_EQUIPMENT_OBS_SUMMARY"]
         self.assertEqual(rows[0]["FK_COUNTY"], 3205309)
         self.assertEqual(rows[0]["FK_DISTRICT"], 181)
+
+    def test_site_equipment_obs_summary_site_scope_recomputes_full_equipment_history(self) -> None:
+        db = FakeSummaryDb()
+        log = FakeSummaryLog()
+        engine = SummaryRefreshEngine(db=db, logger=log)
+
+        def fake_select(sql, params=()):
+            if "SELECT DISTINCT FK_EQUIPMENT" in sql and "FROM RFDATA.FACT_SPECTRUM" in sql:
+                self.assertEqual(params, (23,))
+                return [{"FK_EQUIPMENT": 25}]
+
+            if "SELECT DISTINCT FK_EQUIPMENT" in sql and "FROM SITE_EQUIPMENT_OBS_SUMMARY" in sql:
+                self.assertEqual(params, (23,))
+                return [{"FK_EQUIPMENT": 25}]
+
+            if "FROM RFDATA.FACT_SPECTRUM f" in sql:
+                self.assertEqual(params, (25,))
+                return [
+                    {
+                        "FK_SITE": 41,
+                        "FK_EQUIPMENT": 25,
+                        "NA_SITE_NAME": "Chapeco",
+                        "NA_SITE_LABEL": "Chapeco",
+                        "FK_COUNTY": 4204202,
+                        "FK_DISTRICT": None,
+                        "NA_COUNTY_NAME": "Chapeco",
+                        "NA_DISTRICT_NAME": None,
+                        "ID_STATE": 42,
+                        "NA_STATE_NAME": "Santa Catarina",
+                        "NA_STATE_CODE": "SC",
+                        "VL_LATITUDE": -27.10,
+                        "VL_LONGITUDE": -52.61,
+                        "VL_ALTITUDE": 670.0,
+                        "NU_GNSS_MEASUREMENTS": 10,
+                        "NA_EQUIPMENT": "rfeye002134",
+                        "DT_FIRST_SEEN_AT": datetime(2023, 5, 11, 17, 9, 0),
+                        "DT_LAST_SEEN_AT": datetime(2026, 6, 24, 3, 51, 0),
+                        "NU_SPECTRUM_COUNT": 12502,
+                        "ID_LAST_SPECTRUM": 9001,
+                    },
+                    {
+                        "FK_SITE": 23,
+                        "FK_EQUIPMENT": 25,
+                        "NA_SITE_NAME": "Sede",
+                        "NA_SITE_LABEL": "Sede",
+                        "FK_COUNTY": 4205407,
+                        "FK_DISTRICT": None,
+                        "NA_COUNTY_NAME": "Florianopolis",
+                        "NA_DISTRICT_NAME": None,
+                        "ID_STATE": 42,
+                        "NA_STATE_NAME": "Santa Catarina",
+                        "NA_STATE_CODE": "SC",
+                        "VL_LATITUDE": -27.59,
+                        "VL_LONGITUDE": -48.55,
+                        "VL_ALTITUDE": 5.0,
+                        "NU_GNSS_MEASUREMENTS": 8,
+                        "NA_EQUIPMENT": "rfeye002134",
+                        "DT_FIRST_SEEN_AT": datetime(2019, 1, 23, 16, 3, 21),
+                        "DT_LAST_SEEN_AT": datetime(2023, 4, 17, 15, 26, 0),
+                        "NU_SPECTRUM_COUNT": 1347,
+                        "ID_LAST_SPECTRUM": 8123,
+                    },
+                ]
+
+            raise AssertionError(f"Unexpected SQL: {sql}")
+
+        engine._select = fake_select
+
+        row_count, watermark = engine._refresh_site_equipment_obs_summary(site_ids={23})
+
+        self.assertEqual(row_count, 2)
+        self.assertEqual(watermark, "rows=2")
+        self.assertEqual(len(db.deleted), 1)
+        delete_sql, delete_params = db.deleted[0]
+        self.assertIn("FK_EQUIPMENT IN (%s)", delete_sql)
+        self.assertNotIn("FK_SITE IN", delete_sql)
+        self.assertEqual(delete_params, [25])
+
+        upsert_payload = db.upserted["SITE_EQUIPMENT_OBS_SUMMARY"]["rows"]
+        by_site = {row["FK_SITE"]: row for row in upsert_payload}
+        self.assertEqual(by_site[41]["IS_CURRENT_LOCATION"], 1)
+        self.assertEqual(by_site[23]["IS_CURRENT_LOCATION"], 0)
 
     def test_host_location_summary_propagates_county_and_district_ids(self) -> None:
         db = FakeSummaryDb()

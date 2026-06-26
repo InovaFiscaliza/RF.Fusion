@@ -14,13 +14,20 @@
 .server-diagnostic-grid {
     display: grid;
     gap: 18px;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
 }
 
 .server-section-card {
     display: flex;
     flex-direction: column;
     gap: 16px;
+}
+
+.server-section-card--usage {
+    border: 1px solid #d7e6fb;
+    background:
+        linear-gradient(135deg, rgba(29, 78, 216, 0.05), rgba(255, 255, 255, 0.92)),
+        #ffffff;
 }
 
 .server-section-head {
@@ -176,12 +183,6 @@
 }
 
 @media (max-width: 900px) {
-    .server-top-grid,
-    .server-operational-grid,
-    .server-diagnostic-grid {
-        grid-template-columns: 1fr;
-    }
-
     .table-panel-actions {
         width: 100%;
         justify-content: flex-start;

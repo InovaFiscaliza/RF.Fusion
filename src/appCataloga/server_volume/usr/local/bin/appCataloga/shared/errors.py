@@ -100,6 +100,7 @@ ERROR_DOMAIN_BY_CODE = {
     "APP_ANALISE_TRANSIENT_SERVICE_FAILURE": "PROCESSING",
     "APP_ANALISE_SERVICE_RESPONSE_ERROR": "PROCESSING",
     "APP_ANALISE_EMPTY_SPEC_DATA": "PROCESSING",
+    "APP_ANALISE_NO_SPECTRAL_DATA": "PROCESSING",
     "APP_ANALISE_FILE_UNAVAILABLE": "PROCESSING",
     "APP_ANALISE_OUTPUT_ARTIFACT_UNAVAILABLE": "PROCESSING",
     "APP_ANALISE_INVALID_SUCCESS_PAYLOAD": "PROCESSING",
@@ -152,6 +153,30 @@ def _canonicalize_error_reason(
     """
     raw_reason = (reason or "").strip()
     exc_text = str(exc).strip() if exc is not None else ""
+
+    def _classify_app_analise_answer_detail(
+        detail: str,
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """Return one canonical error triple for a known appAnalise answer detail."""
+        if detail == k.APP_ANALISE_NO_READABLE_FILES_IN_ZIP_DETAIL:
+            return (
+                "APP_ANALISE_NO_READABLE_FILES_IN_ZIP",
+                "APP_ANALISE reported no readable files in ZIP",
+                detail,
+            )
+        if detail == k.APP_ANALISE_EMPTY_SPEC_DATA_DETAIL:
+            return (
+                "APP_ANALISE_EMPTY_SPEC_DATA",
+                "APP_ANALISE returned empty spectrum data",
+                detail,
+            )
+        if detail == k.APP_ANALISE_NO_SPECTRAL_DATA_DETAIL:
+            return (
+                "APP_ANALISE_NO_SPECTRAL_DATA",
+                "APP_ANALISE reported no spectral data",
+                detail,
+            )
+        return None, None, None
 
     # -------------------------------------------------------------
     # Generic fallbacks used when the caller supplied little or no
@@ -222,12 +247,13 @@ def _canonicalize_error_reason(
         )
 
     if raw_reason == "APP_ANALISE service returned processing error":
-        if exc_text and k.APP_ANALISE_EMPTY_SPEC_DATA_DETAIL in exc_text:
-            return (
-                "APP_ANALISE_EMPTY_SPEC_DATA",
-                "APP_ANALISE returned empty spectrum data",
-                k.APP_ANALISE_EMPTY_SPEC_DATA_DETAIL,
+        if exc_text:
+            detail = exc_text.split("APP_ANALISE returned error in Answer:", 1)[-1].strip()
+            code, canonical_reason, canonical_detail = _classify_app_analise_answer_detail(
+                detail
             )
+            if code:
+                return code, canonical_reason, canonical_detail
         return (
             "APP_ANALISE_SERVICE_RESPONSE_ERROR",
             "APP_ANALISE service returned processing error",
@@ -289,13 +315,11 @@ def _canonicalize_error_reason(
 
     if raw_reason.startswith("APP_ANALISE returned error in Answer:"):
         detail = raw_reason.split("APP_ANALISE returned error in Answer:", 1)[1].strip()
-
-        if detail == "model:SpecDataBase:NoReadableFilesInZip":
-            return (
-                "APP_ANALISE_NO_READABLE_FILES_IN_ZIP",
-                "APP_ANALISE reported no readable files in ZIP",
-                detail,
-            )
+        code, canonical_reason, canonical_detail = _classify_app_analise_answer_detail(
+            detail
+        )
+        if code:
+            return code, canonical_reason, canonical_detail
 
         return (
             "APP_ANALISE_ANSWER_ERROR",
@@ -820,9 +844,14 @@ PROCESSING_FREEZE_DETAILS = {
 
 def is_definitive_appanalise_processing_error(exc: BaseException | None) -> bool:
     """Return whether one appAnalise response should be treated as final error."""
+    definitive_details = (
+        k.APP_ANALISE_NO_READABLE_FILES_IN_ZIP_DETAIL,
+        k.APP_ANALISE_EMPTY_SPEC_DATA_DETAIL,
+        k.APP_ANALISE_NO_SPECTRAL_DATA_DETAIL,
+    )
     return (
         isinstance(exc, AppAnaliseServiceResponseError)
-        and k.APP_ANALISE_EMPTY_SPEC_DATA_DETAIL in str(exc)
+        and any(detail in str(exc) for detail in definitive_details)
     )
 
 

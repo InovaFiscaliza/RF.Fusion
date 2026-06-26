@@ -249,6 +249,44 @@ class DetectProtocolErrorTests(unittest.TestCase):
         self.assertFalse(result["spectrum"][0].site_data["is_mobile"])
         self.assertIsNone(result["spectrum"][0].site_data["geographic_path"])
 
+    def test_normalize_response_accepts_seven_digit_cwsm_receiver(self) -> None:
+        payload = {
+            "Request": {"type": "FileRead"},
+            "Answer": {
+                "General": {},
+                "Spectra": {
+                    "Receiver": "CWSM2110021",
+                    "MetaData": {
+                        "FreqStart": 702882812.5,
+                        "FreqStop": 984425781.25,
+                        "DataPoints": 2884,
+                        "LevelUnit": "dBm",
+                        "TraceMode": "ClearWrite",
+                        "Resolution": 97656.25,
+                    },
+                    "GPS": {
+                        "Latitude": -19.782451,
+                        "Longitude": -43.950737,
+                    },
+                    "RelatedFiles": [
+                        {
+                            "Task": "Undefined",
+                            "Description": "Undefined",
+                            "BeginTime": "30-Sep-2025 02:02:01",
+                            "EndTime": "30-Sep-2025 14:01:21",
+                            "NumSweeps": 720,
+                        }
+                    ],
+                },
+            },
+        }
+
+        result = self.parser.normalize_response(payload)
+
+        self.assertEqual(result["hostname"], "cwsm21100021")
+        self.assertEqual(result["hostnames"], ["cwsm21100021"])
+        self.assertEqual(result["spectrum"][0].equipment_name, "cwsm21100021")
+
     def test_normalize_response_builds_mobile_geographic_path_for_drive_test(self) -> None:
         payload = {
             "Request": {"type": "FileRead"},

@@ -728,6 +728,74 @@ class SummaryRefreshEngine:
         sql = f"DELETE FROM {table} WHERE " + " OR ".join(f"({clause})" for clause in clauses)
         return self.db.execute_delete(sql, params)
 
+    def _resolve_site_equipment_refresh_scope(
+        self,
+        *,
+        site_ids: Optional[Iterable[int]] = None,
+        equipment_ids: Optional[Iterable[int]] = None,
+    ) -> List[int]:
+        """Expand a dirty site/equipment scope into full affected equipment ids.
+
+        Incremental site-scoped refreshes must recompute every row for the
+        affected equipment across all sites. Otherwise an update touching only
+        one historical site can incorrectly re-mark that old site as the
+        equipment's current location because the newer sites were absent from
+        the filtered query.
+
+        The scope is resolved from two sources:
+        - current RFDATA facts for the dirty sites;
+        - existing summary rows for those sites, so stale rows can still be
+          removed even if the source rows disappeared later.
+        """
+        affected_equipment_ids = {
+            int(value)
+            for value in (equipment_ids or [])
+            if value is not None
+        }
+        normalized_site_ids = {
+            int(value)
+            for value in (site_ids or [])
+            if value is not None
+        }
+
+        if not normalized_site_ids:
+            return sorted(affected_equipment_ids)
+
+        params: List[Any] = []
+        site_clause = self._build_in_clause(
+            "FK_SITE",
+            sorted(normalized_site_ids),
+            params,
+        )
+        if site_clause is None:
+            return sorted(affected_equipment_ids)
+
+        source_rows = self._select(
+            f"""
+            SELECT DISTINCT FK_EQUIPMENT
+            FROM RFDATA.FACT_SPECTRUM
+            WHERE {site_clause}
+            """,
+            tuple(params),
+        )
+        for row in source_rows:
+            if row.get("FK_EQUIPMENT") is not None:
+                affected_equipment_ids.add(int(row["FK_EQUIPMENT"]))
+
+        existing_rows = self._select(
+            f"""
+            SELECT DISTINCT FK_EQUIPMENT
+            FROM SITE_EQUIPMENT_OBS_SUMMARY
+            WHERE {site_clause}
+            """,
+            tuple(params),
+        )
+        for row in existing_rows:
+            if row.get("FK_EQUIPMENT") is not None:
+                affected_equipment_ids.add(int(row["FK_EQUIPMENT"]))
+
+        return sorted(affected_equipment_ids)
+
     def _refresh_site_equipment_obs_summary(
         self,
         *,
@@ -742,11 +810,17 @@ class SummaryRefreshEngine:
         pass marks ``IS_CURRENT_LOCATION = 1`` for the site where each
         equipment was most recently observed.
 
+        Incremental refreshes widen any dirty site scope into the full set of
+        affected equipment ids and then recompute every site row for those
+        equipment ids. This keeps ``IS_CURRENT_LOCATION`` globally unique per
+        equipment instead of only unique inside one partial site slice.
+
         Write strategy:
             - Full scope (no site/equipment filter): ``replace_table_rows``
               (truncate + bulk-insert).
-            - Partial scope: ``_delete_with_scope`` then ``upsert_rows`` for
-              the affected (site, equipment) combinations.
+            - Partial scope: delete every row for the affected equipment ids,
+              then upsert the fully recomputed replacements for those
+              equipment ids.
 
         Args:
             site_ids:      Optional FK_SITE filter.  When ``None`` or empty,
@@ -760,12 +834,29 @@ class SummaryRefreshEngine:
         """
         params: List[Any] = []
         clauses: List[str] = []
-        site_clause = self._build_in_clause("f.FK_SITE", site_ids or [], params)
-        equipment_clause = self._build_in_clause("f.FK_EQUIPMENT", equipment_ids or [], params)
-        if site_clause:
-            clauses.append(site_clause)
-        if equipment_clause:
-            clauses.append(equipment_clause)
+        scoped_equipment_ids: List[int] = []
+
+        if site_ids or equipment_ids:
+            scoped_equipment_ids = self._resolve_site_equipment_refresh_scope(
+                site_ids=site_ids,
+                equipment_ids=equipment_ids,
+            )
+            if not scoped_equipment_ids:
+                return 0, "rows=0"
+            equipment_clause = self._build_in_clause(
+                "f.FK_EQUIPMENT",
+                scoped_equipment_ids,
+                params,
+            )
+            if equipment_clause:
+                clauses.append(equipment_clause)
+        else:
+            site_clause = self._build_in_clause("f.FK_SITE", site_ids or [], params)
+            equipment_clause = self._build_in_clause("f.FK_EQUIPMENT", equipment_ids or [], params)
+            if site_clause:
+                clauses.append(site_clause)
+            if equipment_clause:
+                clauses.append(equipment_clause)
 
         where_sql = ""
         if clauses:
@@ -823,7 +914,7 @@ class SummaryRefreshEngine:
                 s.NU_GNSS_MEASUREMENTS,
                 e.NA_EQUIPMENT
             """,
-            params,
+            tuple(params),
         )
 
         # First pass: find the most-recent (site, timestamp) per equipment so we can
@@ -884,8 +975,7 @@ class SummaryRefreshEngine:
         else:
             self._delete_with_scope(
                 "SITE_EQUIPMENT_OBS_SUMMARY",
-                site_ids=site_ids,
-                equipment_ids=equipment_ids,
+                equipment_ids=scoped_equipment_ids,
             )
             if payload_rows:
                 self.db.upsert_rows(

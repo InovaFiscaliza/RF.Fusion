@@ -699,6 +699,36 @@ class SpectrumInsertTests(unittest.TestCase):
             [],
         )
 
+    def test_insert_spectra_batch_accepts_seven_digit_cwsm_receiver(self) -> None:
+        db = FakeDbRfmIngest()
+        spectrum = self._build_spectrum(site_id=10, equipment_name="CWSM2110021")
+        bin_data = {
+            "method": "Fixed logger",
+            "spectrum": [spectrum],
+        }
+
+        processing.insert_spectra_batch(
+            db_rfm=db,
+            bin_data=bin_data,
+            hostname_db="CWSM2110021",
+            host_path="/host/path",
+            host_file_name="source.zip",
+            extension=".zip",
+            vl_file_size_kb=1,
+            dt_created=datetime(2026, 1, 1, 12, 0, 0),
+            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
+        )
+
+        self.assertEqual(
+            db.equipment_calls,
+            [
+                {
+                    "name": "cwsm21100021",
+                    "type_hint": "cwsm21100021",
+                }
+            ],
+        )
+
     def test_insert_spectra_batch_uses_host_identity_and_receiver_type_for_ermx(self) -> None:
         db = FakeDbRfmIngest()
         spectrum = self._build_spectrum(
@@ -1120,6 +1150,27 @@ class RetryTests(unittest.TestCase):
         err.exc = worker.errors.AppAnaliseServiceResponseError(
             "APP_ANALISE returned error in Answer: "
             "handlers:FileReadHandler:EmptySpecData"
+        )
+
+        with patch.object(worker, "_write_task_error") as write_error:
+            with patch.object(worker, "_finalize_freeze") as finalize_freeze:
+                worker._finalize_error(FakeDbBkp(), task, err)
+
+        write_error.assert_called_once()
+        finalize_freeze.assert_not_called()
+
+    def test_finalize_error_routes_no_readable_files_to_error_writer(self) -> None:
+        task = {
+            "file_task_id": 657,
+            "host_id": 91,
+            "host_file_name": "sample.zip",
+            "host_path": "/host/path",
+            "filename": "sample.zip",
+        }
+        err = FakeErr("[ERROR] no readable files", triggered=True)
+        err.exc = worker.errors.AppAnaliseServiceResponseError(
+            "APP_ANALISE returned error in Answer: "
+            "model:SpecDataBase:NoReadableFilesInZip"
         )
 
         with patch.object(worker, "_write_task_error") as write_error:

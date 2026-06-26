@@ -253,6 +253,45 @@ class ErrorHandlerTests(unittest.TestCase):
 
         self.assertFalse(errors.should_freeze_processing_task(exc))
 
+    def test_format_persisted_error_promotes_no_spectral_data_service_response(self) -> None:
+        handler = errors.ErrorHandler(FakeLogger())
+        handler.capture(
+            "APP_ANALISE service returned processing error",
+            stage="PROCESS",
+            exc=errors.AppAnaliseServiceResponseError(
+                "APP_ANALISE returned error in Answer: "
+                "model:fileReader:CRFSBin:NoSpectralData"
+            ),
+        )
+
+        payload = errors.persisted_error_fields_from_handler(handler)
+
+        self.assertEqual(payload["NA_ERROR_CODE"], "APP_ANALISE_NO_SPECTRAL_DATA")
+        self.assertEqual(
+            payload["NA_ERROR_SUMMARY"],
+            "APP_ANALISE reported no spectral data",
+        )
+        self.assertEqual(
+            payload["NA_ERROR_DETAIL"],
+            "model:fileReader:CRFSBin:NoSpectralData",
+        )
+
+    def test_should_freeze_processing_task_returns_false_for_no_spectral_data(self) -> None:
+        exc = errors.AppAnaliseServiceResponseError(
+            "APP_ANALISE returned error in Answer: "
+            "model:fileReader:CRFSBin:NoSpectralData"
+        )
+
+        self.assertFalse(errors.should_freeze_processing_task(exc))
+
+    def test_should_freeze_processing_task_returns_false_for_no_readable_files(self) -> None:
+        exc = errors.AppAnaliseServiceResponseError(
+            "APP_ANALISE returned error in Answer: "
+            "model:SpecDataBase:NoReadableFilesInZip"
+        )
+
+        self.assertFalse(errors.should_freeze_processing_task(exc))
+
     def test_persisted_error_fields_promote_specific_app_analise_answer_error(self) -> None:
         # The structured DB columns should carry the precise processing code,
         # not only the generic outer BIN validation wrapper.

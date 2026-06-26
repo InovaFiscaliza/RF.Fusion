@@ -17,6 +17,7 @@ from modules.host.service import (
     get_host_processing_error_overview,
     get_host_statistics,
 )
+from modules.server.usage_metrics import record_page_view
 
 host_bp = Blueprint("host", __name__)
 
@@ -39,6 +40,7 @@ def host():
     if host_id:
         stats = get_host_statistics(host_id)
 
+    record_page_view()
     return render_template(
         "host/host.html",
         hosts=hosts,

@@ -16,6 +16,11 @@ from modules.host.service import (
     get_server_processing_error_overview,
     get_server_summary_metrics,
 )
+from modules.server.usage_metrics import (
+    get_usage_metrics_snapshot,
+    record_download_action,
+    record_page_view,
+)
 
 
 server_bp = Blueprint("server", __name__)
@@ -56,6 +61,9 @@ def server():
     server_overview = get_server_overview(online_only=online_only, search=search)
     server_summary_metrics_payload = None
 
+    record_page_view()
+    usage_metrics = get_usage_metrics_snapshot()
+
     try:
         server_summary_metrics_payload = get_server_summary_metrics()
     except Exception:
@@ -65,6 +73,7 @@ def server():
         "server/server.html",
         server_overview=server_overview,
         server_summary_metrics=server_summary_metrics_payload,
+        usage_metrics=usage_metrics,
         online_only=online_only,
         search=search,
     )
@@ -124,6 +133,28 @@ def server_summary_metrics():
             ),
             503,
         )
+
+
+@server_bp.route("/api/server/usage-metrics/download-action", methods=["POST"])
+def server_download_action_metric():
+    """Count one UI-triggered repository download action.
+
+    The front-end records the click intent before navigation starts. This is a
+    safer operational signal than touching the NGINX download path and is
+    deliberately defined as "action initiated", not "transfer completed".
+    """
+
+    try:
+        current_value = record_download_action()
+        return jsonify(
+            {
+                "ok": True,
+                "download_action_count": current_value,
+            }
+        ), 202
+    except Exception:
+        current_app.logger.exception("failed_to_record_download_action_metric")
+        return jsonify({"ok": False}), 503
 
 
 @server_bp.route("/api/server/hosts", methods=["GET"])

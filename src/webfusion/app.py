@@ -24,6 +24,7 @@ from modules.map.service import (
     get_station_map_points,
     get_station_map_site_detail,
 )
+from modules.server.usage_metrics import record_page_view
 
 
 app = Flask(__name__)
@@ -44,6 +45,7 @@ def index():
     The station data is loaded asynchronously by the browser so the page can
     appear quickly while the map API resolves in parallel.
     """
+    record_page_view()
     return render_template("index.html")
 
 
@@ -145,6 +147,7 @@ def popup():
 
         filter_json = jsonify(filter_data).get_data(as_text=True)
 
+    record_page_view()
     return render_template(
         "popup/popup.html",
         hostid=hostid,

@@ -22,7 +22,7 @@ from shared import errors
 
 
 RFEYE_CANONICAL_RE = re.compile(r"(rfeye\d{6})", re.IGNORECASE)
-CWSM_SHORT_RE = re.compile(r"^cwsm(\d{6})$", re.IGNORECASE)
+CWSM_SHORT_RE = re.compile(r"^cwsm(\d{6,7})$", re.IGNORECASE)
 CWSM_LONG_RE = re.compile(r"^cwsm(\d{8})$", re.IGNORECASE)
 CWSM_SHORT_TO_LONG_PREFIX = {
     "211": "2110",
@@ -34,6 +34,8 @@ CWSM_SHORT_TO_LONG_OVERRIDES = {
     # processing chain for this fixed station.
     "211007": "22010007",
 }
+CWSM_FAMILY_PREFIX_DIGITS = 3
+CWSM_LONG_STATION_SUFFIX_DIGITS = 4
 
 
 def _normalize_equipment_text(value: Any) -> str:
@@ -52,7 +54,7 @@ def _canonicalize_single_equipment_identifier(value: Any) -> str | None:
 
     RFeye identifiers already expose a stable 1:1 key inside longer receiver
     strings. CelPlan/CWSM identifiers can surface in two operational forms:
-        - short host form: `CWSM211005`
+        - short host form: `CWSM211005` or `CWSM2110021`
         - long receiver form: `cwsm21100005`
 
     The FACT layer should persist the long receiver form whenever the family is
@@ -84,11 +86,19 @@ def _canonicalize_single_equipment_identifier(value: Any) -> str | None:
     if override:
         return f"cwsm{override}"
 
-    family_prefix = CWSM_SHORT_TO_LONG_PREFIX.get(digits[:3])
+    family_prefix = CWSM_SHORT_TO_LONG_PREFIX.get(
+        digits[:CWSM_FAMILY_PREFIX_DIGITS]
+    )
     if not family_prefix:
         return None
 
-    station_suffix = f"{int(digits[-3:]):04d}"
+    station_number = int(digits[CWSM_FAMILY_PREFIX_DIGITS:])
+    if station_number <= 0:
+        return None
+
+    station_suffix = (
+        f"{station_number:0{CWSM_LONG_STATION_SUFFIX_DIGITS}d}"
+    )
     return f"cwsm{family_prefix}{station_suffix}"
 
 

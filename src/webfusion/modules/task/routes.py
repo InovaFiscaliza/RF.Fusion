@@ -19,6 +19,7 @@ from modules.task.service import (
     HOST_TASK_CHECK_TYPE,
     create_task,
 )
+from modules.server.usage_metrics import record_page_view
 from db import get_connection_bpdata as get_connection
 
 
@@ -510,6 +511,7 @@ def task_builder():
     # --------------------------------------------------
     # Render page
     # --------------------------------------------------
+    record_page_view()
     return render_template(
         "task/task_builder.html",
         hosts=hosts,
@@ -568,6 +570,7 @@ def task_list():
     queued_count = _safe_int_arg("queued_count")
     skipped_count = _safe_int_arg("skipped_count")
 
+    record_page_view()
     return render_template(
         "task/task_list.html",
         tasks=tasks,

@@ -18,6 +18,7 @@ from urllib.parse import quote
 from urllib.parse import urlencode
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 from werkzeug.wsgi import wrap_file
+from modules.server.usage_metrics import record_page_view, record_spectrum_query
 from modules.spectrum.service import (
     get_spectrum_file_data,
     get_equipments,
@@ -367,6 +368,8 @@ def spectrum():
     The page is spectrum-aware on the filter side, but file-oriented on the
     result side: one matching file per row, with expandable internal spectra.
     """
+    record_page_view()
+
     equipment_id = _normalize_optional_arg(request.args.get("equipment_id"))
     state_id = _normalize_optional_arg(request.args.get("state_id"))
     district_id = _normalize_optional_arg(request.args.get("district_id"))
@@ -481,6 +484,7 @@ def spectrum():
 
     if query_started and not query_error_message:
         query_started_at = time.perf_counter()
+        record_spectrum_query()
         try:
             rows, total = get_spectrum_file_data(
                 equipment_id=equipment_id,
