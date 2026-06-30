@@ -762,6 +762,39 @@ class SpectrumInsertTests(unittest.TestCase):
             ],
         )
 
+    def test_insert_spectra_batch_uses_host_identity_and_station_type_for_ums(self) -> None:
+        db = FakeDbRfmIngest()
+        spectrum = self._build_spectrum(
+            site_id=10,
+            equipment_name="ROHDE&SCHWARZ,EB500,100.631/012,V04.90-4072.8710.00",
+        )
+        bin_data = {
+            "method": "Fixed logger",
+            "spectrum": [spectrum],
+        }
+
+        processing.insert_spectra_batch(
+            db_rfm=db,
+            bin_data=bin_data,
+            hostname_db="UMSDF01",
+            host_path="/host/path",
+            host_file_name="source.bin",
+            extension=".bin",
+            vl_file_size_kb=1,
+            dt_created=datetime(2026, 1, 1, 12, 0, 0),
+            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
+        )
+
+        self.assertEqual(
+            db.equipment_calls,
+            [
+                {
+                    "name": "umsdf01",
+                    "type_hint": "ums300",
+                }
+            ],
+        )
+
 
 class FileMetadataTests(unittest.TestCase):
     """Validate file metadata helpers in processing module."""

@@ -28,7 +28,7 @@ import os
 import time
 from datetime import datetime
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import config as k
 from appAnalise.payload_parser import canonicalize_equipment_identifier
@@ -43,6 +43,8 @@ if TYPE_CHECKING:
 
 NON_ALNUM_RE = re.compile(r"[^a-z0-9]+", re.IGNORECASE)
 ERMX_FAMILY_PREFIXES = ("ermx", "emrx")
+UMS_FAMILY_PREFIXES = ("ums",)
+UMS_EQUIPMENT_TYPE_HINT = "ums300"
 # Module-level buffer used exclusively within `resolve_spectrum_sites()` call frames.
 # `resolve_spectrum_sites()` sets this to a fresh dict at entry and restores None
 # on exit (via try/finally), so `upsert_site()` can accumulate per-call GNSS
@@ -89,11 +91,11 @@ def resolve_equipment_persistence_identity(
     Resolve the catalog identity and equipment-type hint for one spectrum.
 
     Most station families must persist the equipment identity coming from the
-    payload itself. ERMx/EMRx is the only exception: the operational asset is
-    the Windows measurement station (the hostname), while the payload's
-    equipment string names the analyzer model attached to that station. We
-    persist the station hostname as the equipment name only for that family
-    and use the analyzer string to infer the equipment type.
+    payload itself. ERMx/EMRx and UMS300 are the exceptions: the operational
+    asset is the Windows measurement station (the hostname), while the payload
+    may expose the analyzer model attached to that station. We persist the
+    station hostname as the equipment name for those families and keep a
+    separate type hint only for equipment-type inference.
 
     Returns:
         tuple[str, str]:
@@ -116,6 +118,14 @@ def resolve_equipment_persistence_identity(
 
         type_hint = raw_spectrum_name or hostname_db
         return normalized_host, type_hint
+
+    if normalized_host.startswith(UMS_FAMILY_PREFIXES):
+        # appAnalise surfaces the embedded EB500 receiver string here, but the
+        # cataloged asset is the UMS station itself.
+        if not normalized_host:
+            raise ValueError("hostname_db is required for UMS equipment resolution")
+
+        return normalized_host, UMS_EQUIPMENT_TYPE_HINT
 
     canonical_name = canonicalize_equipment_identifier(raw_spectrum_name)
     return canonical_name, canonical_name
@@ -399,18 +409,18 @@ def resolve_spectrum_sites(db_rfm, bin_data, *, logger=None):
 
 
 def insert_spectra_batch(
-    db_rfm,
-    bin_data,
-    hostname_db,
-    host_path,
-    host_file_name,
-    extension,
-    vl_file_size_kb,
-    dt_created,
-    dt_modified,
+    db_rfm: dbHandlerRFM,
+    bin_data: dict[str, Any],
+    hostname_db: str,
+    host_path: str,
+    host_file_name: str,
+    extension: str,
+    vl_file_size_kb: int,
+    dt_created: datetime,
+    dt_modified: datetime,
     *,
-    logger=None,
-):
+    logger: logger_type | None = None,
+) -> list[int]:
     """
     Persist source-file lineage and all normalized spectra.
 
@@ -435,6 +445,7 @@ def insert_spectra_batch(
           ``BRIDGE_SPECTRUM_FILE`` within the caller's open RFDATA transaction.
         - Does **not** commit; the caller is responsible for the transaction.
     """
+    # These caches keep one batch from repeating the same dimension lookups.
     host_file_id = None
     detector_id = db_rfm.insert_detector_type(k.DEFAULT_DETECTOR)
     trace_type_cache = {}
@@ -458,12 +469,15 @@ def insert_spectra_batch(
     procedure_id = db_rfm.insert_procedure(bin_data["method"])
     spectrum_ids = []
 
+    # Each normalized spectrum already carries a resolved SITE reference here.
     for spectrum in bin_data["spectrum"]:
         site_id = getattr(spectrum, "site_id", None)
 
         if site_id is None:
             raise ValueError("spectrum.site_id must be resolved before insert")
 
+        # Hybrid station families may persist the host identity while still
+        # inferring type from a different payload field.
         equipment_name = (
             getattr(spectrum, "equipment_name", None)
             or hostname_db
@@ -483,6 +497,8 @@ def insert_spectra_batch(
             trace_type_cache[trace_name] = db_rfm.insert_trace_type(trace_name)
 
         if equipment_cache_key not in equipment_cache:
+            # Cache by both persisted name and hint because hybrid families can
+            # reuse one hostname with analyzer metadata that differs from the key.
             equipment_cache[equipment_cache_key] = (
                 db_rfm.get_or_create_spectrum_equipment(
                     persisted_equipment_name,
@@ -521,6 +537,9 @@ def insert_spectra_batch(
             "js_metadata": json.dumps(metadata),
             "allow_time_end_growth_dedup": persisted_equipment_name.startswith("rfeye"),
         }
+
+        # Deduplicate only inside the current payload. Historical idempotency
+        # stays owned by the database layer and bridge table rules.
         spectrum_identity_key = _build_spectrum_identity_key(spectrum_row)
 
         if spectrum_identity_key in spectrum_id_cache:

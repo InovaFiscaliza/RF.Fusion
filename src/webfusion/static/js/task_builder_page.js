@@ -69,8 +69,10 @@
 
     const defaultFilePath = "/mnt/internal/data";
     const cwsmFilePath = "C:/CelPlan/CellWireless RU/Spectrum/Completed";
+    const ums300FilePath = "C:/Users/NUC/Downloads";
     const defaultExtension = ".bin";
     const cwsmExtension = ".zip";
+    const ums300Extension = ".bin";
 
     /* Task types 3 and 4 are utility tasks ("Atualizar estatísticas" and
      * "Verificar conexão"), so they intentionally bypass the detailed filter
@@ -121,8 +123,14 @@
      * - reveal the family-profile editor only when it really matters.
      */
     function extractHostPrefix(hostName) {
-        const match = String(hostName || "").trim().match(/^[A-Za-z]+/);
-        return match ? match[0].toUpperCase() : "";
+        const normalizedName = String(hostName || "").trim().toUpperCase();
+
+        if (normalizedName.startsWith("UMS")) {
+            return "UMS300";
+        }
+
+        const match = normalizedName.match(/^[A-Z]+/);
+        return match ? match[0] : "";
     }
 
     /* The online-only toggle is part of the page state, not a final task
@@ -244,6 +252,10 @@
                     return "cwsm";
                 }
 
+                if (prefixes.size === 1 && prefixes.has("UMS300")) {
+                    return "ums300";
+                }
+
                 if (prefixes.size <= 1) {
                     return "default";
                 }
@@ -253,6 +265,10 @@
 
             if (hostFilterSelect && hostFilterSelect.value === "CWSM") {
                 return "cwsm";
+            }
+
+            if (hostFilterSelect && hostFilterSelect.value === "UMS300") {
+                return "ums300";
             }
 
             if (hostFilterSelect && hostFilterSelect.value !== "ALL") {
@@ -265,7 +281,15 @@
         const selected = hostSelect ? hostSelect.selectedOptions[0] : null;
         const hostName = selected ? (selected.dataset.hostName || selected.textContent || "") : "";
 
-        return hostName.trim().toUpperCase().startsWith("CWSM") ? "cwsm" : "default";
+        if (extractHostPrefix(hostName) === "CWSM") {
+            return "cwsm";
+        }
+
+        if (extractHostPrefix(hostName) === "UMS300") {
+            return "ums300";
+        }
+
+        return "default";
     }
 
     /* Suggested path defaults are intentionally conservative.
@@ -284,7 +308,8 @@
         const currentValue = (filePathInput.value || "").trim();
         const followsDefaultMask = currentValue === ""
             || currentValue === defaultFilePath
-            || currentValue === cwsmFilePath;
+            || currentValue === cwsmFilePath
+            || currentValue === ums300FilePath;
 
         if (!followsDefaultMask) {
             return;
@@ -295,7 +320,17 @@
             return;
         }
 
-        filePathInput.value = selectionProfile === "cwsm" ? cwsmFilePath : defaultFilePath;
+        if (selectionProfile === "cwsm") {
+            filePathInput.value = cwsmFilePath;
+            return;
+        }
+
+        if (selectionProfile === "ums300") {
+            filePathInput.value = ums300FilePath;
+            return;
+        }
+
+        filePathInput.value = defaultFilePath;
     }
 
     /* Extension suggestions follow the same contract as the path: they are a
@@ -312,7 +347,8 @@
         const currentValue = (extensionInput.value || "").trim().toLowerCase();
         const followsDefaultMask = currentValue === ""
             || currentValue === defaultExtension
-            || currentValue === cwsmExtension;
+            || currentValue === cwsmExtension
+            || currentValue === ums300Extension;
 
         if (!followsDefaultMask) {
             return;
@@ -323,7 +359,17 @@
             return;
         }
 
-        extensionInput.value = selectionProfile === "cwsm" ? cwsmExtension : defaultExtension;
+        if (selectionProfile === "cwsm") {
+            extensionInput.value = cwsmExtension;
+            return;
+        }
+
+        if (selectionProfile === "ums300") {
+            extensionInput.value = ums300Extension;
+            return;
+        }
+
+        extensionInput.value = defaultExtension;
     }
 
     function updateSubmitButtonLabel() {

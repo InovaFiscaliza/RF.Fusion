@@ -358,6 +358,93 @@
     }
 
     /**
+     * Collect every searchable station alias attached to one point.
+     *
+     * The map groups colocated stations into one point, but the combobox must
+     * still surface those individual station names when the user searches by
+     * station prefix.
+     */
+    function getPointSearchAliases(point) {
+        const aliases = [];
+
+        if (Array.isArray(point.stations)) {
+            point.stations.forEach((station) => {
+                aliases.push(station.host_name || station.equipment_name || "");
+            });
+        }
+
+        if (Array.isArray(point.station_names)) {
+            point.station_names.forEach((stationName) => {
+                aliases.push(stationName || "");
+            });
+        }
+
+        return [...new Set(
+            aliases
+                .map((alias) => String(alias || "").trim())
+                .filter(Boolean)
+        )].sort(compareDisplayText);
+    }
+
+    /**
+     * Build the station-facing combobox label used during free-text matches.
+     *
+     * When the user searches by station prefix we prefer the matched station
+     * name itself, adding geography only as a compact disambiguator.
+     */
+    function buildStationMatchLabel(point, stationLabel) {
+        const countyState = getPointCountyStateLabel(point);
+
+        if (countyState) {
+            return `${stationLabel} · ${countyState}`;
+        }
+
+        return stationLabel;
+    }
+
+    /**
+     * Expand the point-based option list into station-specific matches.
+     *
+     * This keeps the combobox aligned with the free-text map filter: typing a
+     * station prefix should show matching station names, not the grouped point
+     * title chosen for the marker popup.
+     */
+    function getStationMatchOptions(searchTerm) {
+        if (!searchTerm) {
+            return [];
+        }
+
+        const stationOptions = [];
+
+        siteOptionRecords.forEach((option) => {
+            if (!option.site_id || !option.point) {
+                return;
+            }
+
+            getPointSearchAliases(option.point).forEach((alias) => {
+                if (!normalizeSearchText(alias).includes(searchTerm)) {
+                    return;
+                }
+
+                stationOptions.push({
+                    site_id: option.site_id,
+                    label: buildStationMatchLabel(option.point, alias),
+                });
+            });
+        });
+
+        return stationOptions.sort((optionA, optionB) => {
+            const labelDiff = compareDisplayText(optionA.label, optionB.label);
+
+            if (labelDiff !== 0) {
+                return labelDiff;
+            }
+
+            return Number(optionA.site_id || 0) - Number(optionB.site_id || 0);
+        });
+    }
+
+    /**
      * Format the compact `county/state` label used across the map UI.
      *
      * This is the shortest stable geography label available for tooltips,
@@ -2264,10 +2351,15 @@
             : points;
         const sortedPoints = sortSites(filteredByState);
         const baseLabelCounts = new Map();
+        const aliasCounts = new Map();
 
         sortedPoints.forEach((point) => {
             const baseLabel = getPointOptionBaseLabel(point);
             baseLabelCounts.set(baseLabel, (baseLabelCounts.get(baseLabel) || 0) + 1);
+            getPointSearchAliases(point).forEach((alias) => {
+                const aliasKey = normalizeSearchText(alias);
+                aliasCounts.set(aliasKey, (aliasCounts.get(aliasKey) || 0) + 1);
+            });
         });
 
         siteOptionRecords = [];
@@ -2281,9 +2373,20 @@
                 : baseLabel;
             siteOptionRecords.push({
                 site_id: String(point.site_id),
-                label: optionLabel
+                label: optionLabel,
+                point
             });
             siteOptionIndex.set(normalizeSearchText(optionLabel), String(point.site_id));
+
+            getPointSearchAliases(point).forEach((alias) => {
+                const aliasLabel = buildStationMatchLabel(point, alias);
+                siteOptionIndex.set(normalizeSearchText(aliasLabel), String(point.site_id));
+
+                const aliasKey = normalizeSearchText(alias);
+                if ((aliasCounts.get(aliasKey) || 0) === 1) {
+                    siteOptionIndex.set(aliasKey, String(point.site_id));
+                }
+            });
         });
 
         if (selectedSiteId) {
@@ -2313,17 +2416,22 @@
         // Keep the synthetic "all stations" option always present so the user
         // can get back to the unfiltered state even while typing.
         const searchTerm = normalizeSearchText(siteFilter.value);
-        const visibleOptions = siteOptionRecords.filter((option) => {
-            if (!option.site_id) {
-                return true;
-            }
+        const stationMatchOptions = getStationMatchOptions(searchTerm);
+        const visibleOptions = (
+            stationMatchOptions.length > 0
+                ? [siteOptionRecords[0], ...stationMatchOptions]
+                : siteOptionRecords.filter((option) => {
+                    if (!option.site_id) {
+                        return true;
+                    }
 
-            if (!searchTerm) {
-                return true;
-            }
+                    if (!searchTerm) {
+                        return true;
+                    }
 
-            return normalizeSearchText(option.label).includes(searchTerm);
-        }).slice(0, 120);
+                    return normalizeSearchText(option.label).includes(searchTerm);
+                })
+        ).slice(0, 120);
 
         if (visibleOptions.length === 0) {
             siteMenu.innerHTML = '<div class="station-map-combobox-empty">Nenhuma estação encontrada para esse filtro.</div>';

@@ -32,6 +32,8 @@ DEFAULT_LINUX_FILE_PATH = "/mnt/internal/data"
 DEFAULT_LINUX_EXTENSION = ".bin"
 DEFAULT_CWSM_FILE_PATH = "C:/CelPlan/CellWireless RU/Spectrum/Completed"
 DEFAULT_CWSM_EXTENSION = ".zip"
+DEFAULT_UMS300_FILE_PATH = "C:/Users/NUC/Downloads"
+DEFAULT_UMS300_EXTENSION = ".bin"
 
 # Different station families do not always share the same path/extension
 # conventions. These defaults let the UI suggest sensible values before the
@@ -142,8 +144,13 @@ def _normalize_filter_mode_for_task_type(raw_value, task_type):
 
 def _extract_host_prefix(host_name):
     """Return the leading alphabetical station family marker from a host name."""
-    match = re.match(r"^[A-Za-z]+", str(host_name or "").strip())
-    return match.group(0).upper() if match else ""
+    normalized_name = str(host_name or "").strip().upper()
+
+    if normalized_name.startswith("UMS"):
+        return "UMS300"
+
+    match = re.match(r"^[A-Z]+", normalized_name)
+    return match.group(0) if match else ""
 
 
 def _station_profile_field_key(host_prefix):
@@ -153,10 +160,18 @@ def _station_profile_field_key(host_prefix):
 
 def _resolve_filter_defaults_for_prefix(host_prefix):
     """Return the default path/extension pair for a station family."""
-    if str(host_prefix or "").upper() == "CWSM":
+    normalized_prefix = str(host_prefix or "").upper()
+
+    if normalized_prefix == "CWSM":
         return {
             "file_path": DEFAULT_CWSM_FILE_PATH,
             "extension": DEFAULT_CWSM_EXTENSION,
+        }
+
+    if normalized_prefix == "UMS300" or normalized_prefix.startswith("UMS"):
+        return {
+            "file_path": DEFAULT_UMS300_FILE_PATH,
+            "extension": DEFAULT_UMS300_EXTENSION,
         }
 
     return {
@@ -233,11 +248,13 @@ def _looks_like_auto_filter_defaults(filter_data):
         "",
         DEFAULT_LINUX_FILE_PATH,
         DEFAULT_CWSM_FILE_PATH,
+        DEFAULT_UMS300_FILE_PATH,
     }
     auto_extensions = {
         "",
         DEFAULT_LINUX_EXTENSION,
         DEFAULT_CWSM_EXTENSION,
+        DEFAULT_UMS300_EXTENSION,
     }
 
     return file_path in auto_paths and extension in auto_extensions
@@ -352,7 +369,10 @@ def task_builder():
     # --------------------------------------------------
     cursor.execute("""
         SELECT
-            REGEXP_SUBSTR(NA_HOST_NAME, '^[A-Za-z]+') AS PREFIX,
+            CASE
+                WHEN UPPER(NA_HOST_NAME) LIKE 'UMS%' THEN 'UMS300'
+                ELSE REGEXP_SUBSTR(UPPER(NA_HOST_NAME), '^[A-Z]+')
+            END AS PREFIX,
             COUNT(*) AS HOSTS
         FROM HOST
         GROUP BY PREFIX
@@ -442,8 +462,12 @@ def task_builder():
 
             # Apply prefix filter dynamically
             if host_filter != "ALL":
-                query += " AND NA_HOST_NAME LIKE %s"
-                params.append(f"{host_filter}%")
+                if str(host_filter).upper() == "UMS300":
+                    query += " AND UPPER(NA_HOST_NAME) LIKE %s"
+                    params.append("UMS%")
+                else:
+                    query += " AND NA_HOST_NAME LIKE %s"
+                    params.append(f"{host_filter}%")
 
             query += " ORDER BY NA_HOST_NAME"
 
