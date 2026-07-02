@@ -327,6 +327,43 @@ CREATE TABLE `SERVER_CURRENT_SUMMARY` (
   PRIMARY KEY (`ID_SUMMARY`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+CREATE TABLE `WEBFUSION_USAGE_METRIC_MONTHLY` (
+  `NA_METRIC_NAME` varchar(64) NOT NULL,
+  `DT_REFERENCE_MONTH` date NOT NULL,
+  `NU_VALUE` bigint(20) NOT NULL DEFAULT 0,
+  `DT_UPDATED_AT` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`NA_METRIC_NAME`,`DT_REFERENCE_MONTH`),
+  KEY `IX_WEBFUSION_USAGE_MONTH` (`DT_REFERENCE_MONTH`,`NA_METRIC_NAME`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+SET @wf_old_usage_table_exists := (
+    SELECT COUNT(*)
+    FROM information_schema.tables
+    WHERE table_schema = 'RFFUSION_SUMMARY'
+      AND table_name = 'WEBFUSION_USAGE_METRIC'
+);
+
+SET @wf_usage_migration_sql := IF(
+    @wf_old_usage_table_exists > 0,
+    '
+    INSERT INTO `WEBFUSION_USAGE_METRIC_MONTHLY`
+        (`NA_METRIC_NAME`, `DT_REFERENCE_MONTH`, `NU_VALUE`)
+    SELECT
+        `NA_METRIC_NAME`,
+        DATE_FORMAT(CURDATE(), ''%Y-%m-01''),
+        `NU_VALUE`
+    FROM `WEBFUSION_USAGE_METRIC`
+    WHERE `NU_VALUE` <> 0
+    ON DUPLICATE KEY UPDATE
+        `NU_VALUE` = GREATEST(VALUES(`NU_VALUE`), `NU_VALUE`)
+    ',
+    'DO 0'
+);
+
+PREPARE wf_usage_migration_stmt FROM @wf_usage_migration_sql;
+EXECUTE wf_usage_migration_stmt;
+DEALLOCATE PREPARE wf_usage_migration_stmt;
+
 CREATE ALGORITHM=UNDEFINED SQL SECURITY DEFINER VIEW `RFFUSION_SUMMARY`.`VW_ERROR_EVENT_CANONICAL` AS select 'FILE_TASK_HISTORY' AS `NA_SOURCE_TABLE`,`f`.`ID_HISTORY` AS `ID_SOURCE_ROW`,'BACKUP' AS `NA_ERROR_SCOPE`,`f`.`FK_HOST` AS `FK_HOST`,`h`.`NA_HOST_NAME` AS `NA_HOST_NAME`,coalesce(`f`.`DT_BACKUP`,`f`.`DT_DISCOVERED`,`f`.`DT_FILE_CREATED`,`f`.`DT_FILE_MODIFIED`) AS `DT_EVENT_AT`,`f`.`NU_STATUS_BACKUP` AS `NU_STATUS_VALUE`,nullif(trim(`f`.`NA_ERROR_DOMAIN`),'') AS `NA_ERROR_DOMAIN`,nullif(trim(`f`.`NA_ERROR_STAGE`),'') AS `NA_ERROR_STAGE`,nullif(trim(`f`.`NA_ERROR_CODE`),'') AS `NA_ERROR_CODE`,coalesce(nullif(trim(`f`.`NA_ERROR_SUMMARY`),''),nullif(trim(`f`.`NA_MESSAGE`),''),'(Sem mensagem)') AS `NA_ERROR_SUMMARY`,sha2(coalesce(nullif(trim(`f`.`NA_ERROR_SUMMARY`),''),nullif(trim(`f`.`NA_MESSAGE`),''),'(Sem mensagem)'),256) AS `NA_ERROR_SUMMARY_HASH`,`f`.`NA_ERROR_DETAIL` AS `NA_ERROR_DETAIL`,`f`.`NU_ERROR_CLASSIFIER_VERSION` AS `NU_ERROR_CLASSIFIER_VERSION`,`f`.`NA_MESSAGE` AS `NA_RAW_MESSAGE` from (`BPDATA`.`FILE_TASK_HISTORY` `f` left join `BPDATA`.`HOST` `h` on(`h`.`ID_HOST` = `f`.`FK_HOST`)) where `f`.`NU_STATUS_BACKUP` = -1 union all select 'FILE_TASK_HISTORY' AS `NA_SOURCE_TABLE`,`f`.`ID_HISTORY` AS `ID_SOURCE_ROW`,'PROCESSING' AS `NA_ERROR_SCOPE`,`f`.`FK_HOST` AS `FK_HOST`,`h`.`NA_HOST_NAME` AS `NA_HOST_NAME`,coalesce(`f`.`DT_PROCESSED`,`f`.`DT_BACKUP`,`f`.`DT_DISCOVERED`,`f`.`DT_FILE_CREATED`,`f`.`DT_FILE_MODIFIED`) AS `DT_EVENT_AT`,`f`.`NU_STATUS_PROCESSING` AS `NU_STATUS_VALUE`,nullif(trim(`f`.`NA_ERROR_DOMAIN`),'') AS `NA_ERROR_DOMAIN`,nullif(trim(`f`.`NA_ERROR_STAGE`),'') AS `NA_ERROR_STAGE`,nullif(trim(`f`.`NA_ERROR_CODE`),'') AS `NA_ERROR_CODE`,coalesce(nullif(trim(`f`.`NA_ERROR_SUMMARY`),''),nullif(trim(`f`.`NA_MESSAGE`),''),'(Sem mensagem)') AS `NA_ERROR_SUMMARY`,sha2(coalesce(nullif(trim(`f`.`NA_ERROR_SUMMARY`),''),nullif(trim(`f`.`NA_MESSAGE`),''),'(Sem mensagem)'),256) AS `NA_ERROR_SUMMARY_HASH`,`f`.`NA_ERROR_DETAIL` AS `NA_ERROR_DETAIL`,`f`.`NU_ERROR_CLASSIFIER_VERSION` AS `NU_ERROR_CLASSIFIER_VERSION`,`f`.`NA_MESSAGE` AS `NA_RAW_MESSAGE` from (`BPDATA`.`FILE_TASK_HISTORY` `f` left join `BPDATA`.`HOST` `h` on(`h`.`ID_HOST` = `f`.`FK_HOST`)) where `f`.`NU_STATUS_PROCESSING` = -1 union all select 'FILE_TASK' AS `NA_SOURCE_TABLE`,`t`.`ID_FILE_TASK` AS `ID_SOURCE_ROW`,case when `t`.`NU_TYPE` = 1 then 'BACKUP_QUEUE' when `t`.`NU_TYPE` = 2 then 'PROCESSING_QUEUE' else 'FILE_TASK' end AS `NA_ERROR_SCOPE`,`t`.`FK_HOST` AS `FK_HOST`,`h`.`NA_HOST_NAME` AS `NA_HOST_NAME`,coalesce(`t`.`DT_FILE_TASK`,`t`.`DT_FILE_CREATED`,`t`.`DT_FILE_MODIFIED`) AS `DT_EVENT_AT`,`t`.`NU_STATUS` AS `NU_STATUS_VALUE`,nullif(trim(`t`.`NA_ERROR_DOMAIN`),'') AS `NA_ERROR_DOMAIN`,nullif(trim(`t`.`NA_ERROR_STAGE`),'') AS `NA_ERROR_STAGE`,nullif(trim(`t`.`NA_ERROR_CODE`),'') AS `NA_ERROR_CODE`,coalesce(nullif(trim(`t`.`NA_ERROR_SUMMARY`),''),nullif(trim(`t`.`NA_MESSAGE`),''),'(Sem mensagem)') AS `NA_ERROR_SUMMARY`,sha2(coalesce(nullif(trim(`t`.`NA_ERROR_SUMMARY`),''),nullif(trim(`t`.`NA_MESSAGE`),''),'(Sem mensagem)'),256) AS `NA_ERROR_SUMMARY_HASH`,`t`.`NA_ERROR_DETAIL` AS `NA_ERROR_DETAIL`,`t`.`NU_ERROR_CLASSIFIER_VERSION` AS `NU_ERROR_CLASSIFIER_VERSION`,`t`.`NA_MESSAGE` AS `NA_RAW_MESSAGE` from (`BPDATA`.`FILE_TASK` `t` left join `BPDATA`.`HOST` `h` on(`h`.`ID_HOST` = `t`.`FK_HOST`)) where `t`.`NU_STATUS` = -1 union all select 'HOST_TASK' AS `NA_SOURCE_TABLE`,`ht`.`ID_HOST_TASK` AS `ID_SOURCE_ROW`,'HOST_TASK' AS `NA_ERROR_SCOPE`,`ht`.`FK_HOST` AS `FK_HOST`,`h`.`NA_HOST_NAME` AS `NA_HOST_NAME`,`ht`.`DT_HOST_TASK` AS `DT_EVENT_AT`,`ht`.`NU_STATUS` AS `NU_STATUS_VALUE`,NULL AS `NA_ERROR_DOMAIN`,NULL AS `NA_ERROR_STAGE`,NULL AS `NA_ERROR_CODE`,coalesce(nullif(trim(`ht`.`NA_MESSAGE`),''),'(Sem mensagem)') AS `NA_ERROR_SUMMARY`,sha2(coalesce(nullif(trim(`ht`.`NA_MESSAGE`),''),'(Sem mensagem)'),256) AS `NA_ERROR_SUMMARY_HASH`,NULL AS `NA_ERROR_DETAIL`,NULL AS `NU_ERROR_CLASSIFIER_VERSION`,`ht`.`NA_MESSAGE` AS `NA_RAW_MESSAGE` from (`BPDATA`.`HOST_TASK` `ht` left join `BPDATA`.`HOST` `h` on(`h`.`ID_HOST` = `ht`.`FK_HOST`)) where `ht`.`NU_STATUS` = -1;
 
 

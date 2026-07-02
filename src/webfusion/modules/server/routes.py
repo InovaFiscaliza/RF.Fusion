@@ -135,6 +135,24 @@ def server_summary_metrics():
         )
 
 
+@server_bp.route("/api/server/usage-metrics", methods=["GET"])
+def server_usage_metrics():
+    """Return persisted WebFusion usage counters and breakdowns on demand."""
+
+    try:
+        return jsonify(get_usage_metrics_snapshot())
+    except Exception:
+        current_app.logger.exception("failed_to_build_server_usage_metrics")
+        return (
+            jsonify(
+                {
+                    "error": "failed_to_build_server_usage_metrics",
+                }
+            ),
+            503,
+        )
+
+
 @server_bp.route("/api/server/usage-metrics/download-action", methods=["POST"])
 def server_download_action_metric():
     """Count one UI-triggered repository download action.

@@ -46,6 +46,10 @@
     const backupPanel       = document.getElementById("server-backup-errors-panel");
     const backupMeta        = document.getElementById("server-backup-errors-meta");
     const backupBody        = document.getElementById("server-backup-errors-body");
+    const usageMetricsPanel = document.getElementById("server-usage-metrics-panel");
+    const usageMetricsMeta = document.getElementById("server-usage-metrics-meta");
+    const usageMetricsAnnualBody = document.getElementById("server-usage-metrics-annual-body");
+    const usageMetricsMonthlyBody = document.getElementById("server-usage-metrics-monthly-body");
     const hostTablePanel    = document.getElementById("server-host-table-panel");
     const hostTableMeta     = document.getElementById("server-host-table-meta");
     const hostTableBody     = document.getElementById("server-host-table-body");
@@ -56,6 +60,7 @@
     const hostTableEndpointBase     = root.dataset.hostTableEndpoint || "";
     const processingErrorsEndpoint  = root.dataset.processingErrorsEndpoint || "";
     const backupErrorsEndpoint      = root.dataset.backupErrorsEndpoint || "";
+    const usageMetricsEndpoint      = root.dataset.usageMetricsEndpoint || "";
     const summaryMetricsEndpoint    = root.dataset.summaryMetricsEndpoint || "";
     const currentOnlineOnly         = root.dataset.onlineOnly === "1";
     const hasInitialSummaryMetrics  = root.dataset.summaryMetricsInitialLoaded === "1";
@@ -193,6 +198,38 @@
         });
     }
 
+    function setUsageMetricsMessage(bodyElement, message) {
+        if (!bodyElement) {
+            return;
+        }
+
+        bodyElement.innerHTML = `
+            <tr>
+                <td colspan="4">${escapeHtml(message)}</td>
+            </tr>
+        `;
+    }
+
+    function renderUsageMetricsRows(bodyElement, rows, periodField, emptyMessage) {
+        if (!bodyElement) {
+            return;
+        }
+
+        if (!Array.isArray(rows) || rows.length === 0) {
+            setUsageMetricsMessage(bodyElement, emptyMessage);
+            return;
+        }
+
+        bodyElement.innerHTML = rows.map((row) => `
+            <tr>
+                <td>${escapeHtml(row[periodField] || "-")}</td>
+                <td>${escapeHtml(row.page_view_count || 0)}</td>
+                <td>${escapeHtml(row.spectrum_query_count || 0)}</td>
+                <td>${escapeHtml(row.download_action_count || 0)}</td>
+            </tr>
+        `).join("");
+    }
+
     /* The host table is a navigational surface, not just a report.
      *
      * Each row combines status badges, queue counts and a deep link into the
@@ -312,6 +349,72 @@
         });
 
         if (panelElement.open) {
+            loadPanel();
+        }
+    }
+
+    function bindUsageMetricsPanel() {
+        if (
+            !usageMetricsPanel
+            || !usageMetricsMeta
+            || !usageMetricsAnnualBody
+            || !usageMetricsMonthlyBody
+            || !usageMetricsEndpoint
+        ) {
+            return;
+        }
+
+        let loading = false;
+        let loaded = false;
+
+        async function loadPanel() {
+            if (loading || loaded) {
+                return;
+            }
+
+            loading = true;
+            usageMetricsMeta.textContent = "Carregando...";
+            setUsageMetricsMessage(usageMetricsAnnualBody, "Carregando consolidado anual...");
+            setUsageMetricsMessage(usageMetricsMonthlyBody, "Carregando consolidado mensal...");
+
+            try {
+                const response = await fetch(usageMetricsEndpoint);
+
+                if (!response.ok) {
+                    throw new Error("request_failed");
+                }
+
+                const payload = await response.json();
+                renderUsageMetricsRows(
+                    usageMetricsAnnualBody,
+                    payload.annual_breakdown || [],
+                    "reference_year",
+                    "Nenhum consolidado anual de uso foi registrado até agora."
+                );
+                renderUsageMetricsRows(
+                    usageMetricsMonthlyBody,
+                    payload.monthly_breakdown || [],
+                    "reference_month",
+                    "Nenhum consolidado mensal de uso foi registrado até agora."
+                );
+                usageMetricsMeta.textContent = `${(payload.annual_breakdown || []).length} ano(s) / ${(payload.monthly_breakdown || []).length} mês(es)`;
+                loaded = true;
+            } catch (error) {
+                setUsageMetricsMessage(usageMetricsAnnualBody, "Não foi possível carregar o consolidado anual agora.");
+                setUsageMetricsMessage(usageMetricsMonthlyBody, "Não foi possível carregar o consolidado mensal agora.");
+                usageMetricsMeta.textContent = "Falha ao carregar";
+            } finally {
+                loading = false;
+            }
+        }
+
+        usageMetricsPanel.addEventListener("toggle", function () {
+            if (usageMetricsPanel.open) {
+                loadPanel();
+            }
+        });
+
+        if (usageMetricsPanel.open) {
             loadPanel();
         }
     }
@@ -564,5 +667,6 @@
         failureMessage: "Não foi possível carregar os erros agrupados de backup agora."
     });
 
+    bindUsageMetricsPanel();
     bindHostTablePanel();
 })();

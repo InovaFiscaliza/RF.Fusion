@@ -829,6 +829,107 @@ class BackupQueueReconcileTests(unittest.TestCase):
 
         self.assertEqual(calls, ["begin", "rollback"])
 
+    def test_file_history_list_processing_retry_candidates_by_error_detail_filters_missing_queue(self) -> None:
+        """Retry candidates must target errored history rows without live queue."""
+
+        handler = self.make_handler()
+        captured = {}
+
+        def fake_select(sql, params):
+            captured["sql"] = sql
+            captured["params"] = params
+            return []
+
+        handler._connect = lambda: None
+        handler._disconnect = lambda: None
+        handler._select_raw = fake_select
+
+        handler.file_history_list_processing_retry_candidates_by_error_detail(
+            error_detail=db_bkp_module.k.APP_ANALISE_NO_READABLE_FILES_IN_ZIP_DETAIL,
+            limit=25,
+            host_id=901,
+            after_history_id=40,
+        )
+
+        self.assertIn("LEFT JOIN FILE_TASK t", captured["sql"])
+        self.assertIn("h.NA_ERROR_DETAIL = %s", captured["sql"])
+        self.assertIn("h.NU_STATUS_PROCESSING = %s", captured["sql"])
+        self.assertIn("t.ID_FILE_TASK IS NULL", captured["sql"])
+        self.assertEqual(
+            captured["params"],
+            (
+                db_bkp_module.k.APP_ANALISE_NO_READABLE_FILES_IN_ZIP_DETAIL,
+                db_bkp_module.k.TASK_ERROR,
+                901,
+                40,
+                25,
+            ),
+        )
+
+    def test_file_history_recreate_processing_task_upserts_queue_and_resets_history(self) -> None:
+        """Recreation must restore PROCESS/PENDING atomically."""
+
+        handler = self.make_handler()
+        calls = []
+        upserts = []
+        history_updates = []
+        summaries = []
+
+        handler.begin_transaction = lambda: calls.append("begin")
+        handler.commit = lambda: calls.append("commit")
+        handler.rollback = lambda: calls.append("rollback")
+        handler._upsert_row = lambda **kwargs: upserts.append(kwargs) or 1
+        handler.file_history_update = lambda **kwargs: history_updates.append(kwargs) or {
+            "rows_affected": 1
+        }
+        handler._summary_publish_host_scope = (
+            lambda host_id, reason: summaries.append((host_id, reason))
+        )
+
+        recreated_at = datetime(2026, 7, 2, 12, 0, 0)
+        candidate = {
+            "ID_HISTORY": 700,
+            "FK_HOST": 55,
+            "NA_HOST_FILE_PATH": "/mnt/internal/data",
+            "NA_HOST_FILE_NAME": "sample.zip",
+            "NA_EXTENSION_HOST": ".zip",
+            "VL_FILE_SIZE_KB_HOST": 12,
+            "DT_FILE_CREATED_HOST": datetime(2026, 6, 10, 10, 0, 0),
+            "DT_FILE_MODIFIED_HOST": datetime(2026, 6, 10, 10, 0, 0),
+            "NA_SERVER_FILE_PATH": "/mnt/reposfi/trash",
+            "NA_SERVER_FILE_NAME": "sample.zip",
+            "NA_EXTENSION_SERVER": ".zip",
+            "VL_FILE_SIZE_KB_SERVER": 12,
+            "DT_FILE_CREATED_SERVER": datetime(2026, 6, 10, 10, 0, 0),
+            "DT_FILE_MODIFIED_SERVER": datetime(2026, 6, 10, 10, 0, 0),
+            "DT_BACKUP": None,
+        }
+
+        result = handler.file_history_recreate_processing_task(
+            candidate=candidate,
+            recreated_at=recreated_at,
+        )
+
+        self.assertEqual(calls, ["begin", "commit"])
+        self.assertEqual(result["history_id"], 700)
+        self.assertEqual(result["host_id"], 55)
+        self.assertEqual(upserts[0]["table"], "FILE_TASK")
+        self.assertEqual(upserts[0]["data"]["NU_TYPE"], db_bkp_module.k.FILE_TASK_PROCESS_TYPE)
+        self.assertEqual(upserts[0]["data"]["NU_STATUS"], db_bkp_module.k.TASK_PENDING)
+        self.assertEqual(upserts[0]["data"]["NA_SERVER_FILE_NAME"], "sample.zip")
+        self.assertEqual(history_updates[0]["history_id"], 700)
+        self.assertEqual(history_updates[0]["NU_STATUS_BACKUP"], db_bkp_module.k.TASK_DONE)
+        self.assertEqual(
+            history_updates[0]["NU_STATUS_PROCESSING"],
+            db_bkp_module.k.TASK_PENDING,
+        )
+        self.assertIs(history_updates[0]["DT_PROCESSED"], db_bkp_module.constants.SET_NULL)
+        self.assertEqual(history_updates[0]["DT_BACKUP"], recreated_at)
+        self.assertEqual(
+            summaries,
+            [(55, "file_history_recreate_processing_task")],
+        )
+
     def test_file_history_reconcile_processed_artifact_restores_done_and_deletes_queue(self) -> None:
         """Processed DIM evidence must restore DONE state and clear live queue."""
 

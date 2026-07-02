@@ -2862,6 +2862,195 @@ class dbHandlerBKP(DBHandlerBase):
         finally:
             self._disconnect()
 
+    def file_history_list_processing_retry_candidates_by_error_detail(
+        self,
+        *,
+        error_detail: str,
+        limit: int = 1000,
+        host_id: Optional[int] = None,
+        after_history_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return history rows eligible for PROCESS queue recreation by detail.
+
+        This repair path is intentionally conservative: it only returns rows
+        that currently have no live `FILE_TASK` for the same host artifact.
+        Callers must still validate that the referenced server payload exists.
+        """
+        if not error_detail or not str(error_detail).strip():
+            raise ValueError("error_detail must be a non-empty string")
+
+        self._connect()
+        try:
+            sql = """
+                SELECT
+                    h.ID_HISTORY,
+                    h.FK_HOST,
+                    host.NA_HOST_NAME,
+                    h.NA_HOST_FILE_PATH,
+                    h.NA_HOST_FILE_NAME,
+                    h.NA_SERVER_FILE_PATH,
+                    h.NA_SERVER_FILE_NAME,
+                    h.NA_EXTENSION_HOST,
+                    h.VL_FILE_SIZE_KB_HOST,
+                    h.DT_FILE_CREATED_HOST,
+                    h.DT_FILE_MODIFIED_HOST,
+                    h.NA_EXTENSION_SERVER,
+                    h.VL_FILE_SIZE_KB_SERVER,
+                    h.DT_FILE_CREATED_SERVER,
+                    h.DT_FILE_MODIFIED_SERVER,
+                    h.DT_BACKUP,
+                    h.DT_PROCESSED,
+                    h.NU_STATUS_BACKUP,
+                    h.NU_STATUS_PROCESSING,
+                    h.NA_ERROR_DETAIL
+                FROM FILE_TASK_HISTORY h
+                JOIN HOST host
+                  ON host.ID_HOST = h.FK_HOST
+                LEFT JOIN FILE_TASK t USE INDEX (idx_file_task_identity)
+                  ON t.FK_HOST = h.FK_HOST
+                 AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
+                 AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
+                WHERE h.NA_ERROR_DETAIL = %s
+                  AND h.NU_STATUS_PROCESSING = %s
+                  AND h.NA_SERVER_FILE_PATH IS NOT NULL
+                  AND TRIM(h.NA_SERVER_FILE_PATH) <> ''
+                  AND h.NA_SERVER_FILE_NAME IS NOT NULL
+                  AND TRIM(h.NA_SERVER_FILE_NAME) <> ''
+                  AND t.ID_FILE_TASK IS NULL
+            """
+            params: List[Any] = [
+                error_detail,
+                k.TASK_ERROR,
+            ]
+
+            if host_id is not None:
+                sql += " AND h.FK_HOST = %s"
+                params.append(host_id)
+
+            if after_history_id is not None:
+                sql += " AND h.ID_HISTORY > %s"
+                params.append(after_history_id)
+
+            sql += " ORDER BY h.ID_HISTORY ASC LIMIT %s"
+            params.append(limit)
+
+            return self._select_raw(sql, tuple(params))
+        finally:
+            self._disconnect()
+
+    def file_history_recreate_processing_task(
+        self,
+        *,
+        candidate: Dict[str, Any],
+        recreated_at: datetime,
+    ) -> Dict[str, Any]:
+        """
+        Recreate one missing PROCESS queue row directly from history metadata.
+
+        The queue row is restored as PROCESS/PENDING and the durable history is
+        moved back to PROCESS/PENDING in the same transaction.
+        """
+        history_id = candidate.get("ID_HISTORY")
+        if history_id is None:
+            raise ValueError("candidate must include ID_HISTORY")
+
+        host_id = candidate.get("FK_HOST")
+        host_file_path = candidate.get("NA_HOST_FILE_PATH")
+        host_file_name = candidate.get("NA_HOST_FILE_NAME")
+        server_file_path = candidate.get("NA_SERVER_FILE_PATH")
+        server_file_name = candidate.get("NA_SERVER_FILE_NAME")
+
+        if host_id is None:
+            raise ValueError("candidate must include FK_HOST")
+        if not host_file_path or not host_file_name:
+            raise ValueError("candidate must include host file identity")
+        if not server_file_path or not server_file_name:
+            raise ValueError("candidate must include server file identity")
+
+        detail = "recreated from FILE_TASK_HISTORY retry candidate"
+        message = tools.compose_message(
+            task_type=k.FILE_TASK_PROCESS_TYPE,
+            task_status=k.TASK_PENDING,
+            path=server_file_path,
+            name=server_file_name,
+            detail=detail,
+        )
+        task_payload = self._merge_structured_error_fields({
+            "FK_HOST": int(host_id),
+            "NA_HOST_FILE_PATH": host_file_path,
+            "NA_HOST_FILE_NAME": host_file_name,
+            "NA_EXTENSION_HOST": candidate.get("NA_EXTENSION_HOST"),
+            "VL_FILE_SIZE_KB_HOST": candidate.get("VL_FILE_SIZE_KB_HOST"),
+            "DT_FILE_CREATED_HOST": candidate.get("DT_FILE_CREATED_HOST"),
+            "DT_FILE_MODIFIED_HOST": candidate.get("DT_FILE_MODIFIED_HOST"),
+            "NU_PID": None,
+            "NU_TYPE": k.FILE_TASK_PROCESS_TYPE,
+            "NU_STATUS": k.TASK_PENDING,
+            "DT_FILE_TASK": recreated_at,
+            "NA_SERVER_FILE_PATH": server_file_path,
+            "NA_SERVER_FILE_NAME": server_file_name,
+            "NA_EXTENSION_SERVER": candidate.get("NA_EXTENSION_SERVER"),
+            "VL_FILE_SIZE_KB_SERVER": candidate.get("VL_FILE_SIZE_KB_SERVER"),
+            "DT_FILE_CREATED_SERVER": candidate.get("DT_FILE_CREATED_SERVER"),
+            "DT_FILE_MODIFIED_SERVER": candidate.get("DT_FILE_MODIFIED_SERVER"),
+            "NA_MESSAGE": message,
+        })
+        backup_at = candidate.get("DT_BACKUP") or recreated_at
+
+        self.begin_transaction()
+        try:
+            task_rows = self._upsert_row(
+                table="FILE_TASK",
+                data=task_payload,
+                unique_keys=["FK_HOST", "NA_HOST_FILE_PATH", "NA_HOST_FILE_NAME"],
+                commit=False,
+                touch_field="DT_FILE_TASK",
+                log_each=False,
+            )
+            if task_rows not in (1, 2):
+                raise RuntimeError(
+                    "FILE_TASK recreation affected "
+                    f"{task_rows} rows "
+                    f"(expected 1 or 2 for history_id={history_id})"
+                )
+
+            history_result = self.file_history_update(
+                history_id=int(history_id),
+                DT_BACKUP=backup_at,
+                DT_PROCESSED=constants.SET_NULL,
+                NA_SERVER_FILE_PATH=server_file_path,
+                NA_SERVER_FILE_NAME=server_file_name,
+                NA_EXTENSION_SERVER=candidate.get("NA_EXTENSION_SERVER"),
+                VL_FILE_SIZE_KB_SERVER=candidate.get("VL_FILE_SIZE_KB_SERVER"),
+                DT_FILE_CREATED_SERVER=candidate.get("DT_FILE_CREATED_SERVER"),
+                DT_FILE_MODIFIED_SERVER=candidate.get("DT_FILE_MODIFIED_SERVER"),
+                NU_STATUS_BACKUP=k.TASK_DONE,
+                NU_STATUS_PROCESSING=k.TASK_PENDING,
+                NA_MESSAGE=message,
+            )
+            if history_result.get("rows_affected") != 1:
+                raise RuntimeError(
+                    "FILE_TASK_HISTORY recreation affected "
+                    f"{history_result.get('rows_affected')} rows "
+                    f"(expected 1 for history_id={history_id})"
+                )
+
+            self.commit()
+            self._summary_publish_host_scope(
+                int(host_id),
+                reason="file_history_recreate_processing_task",
+            )
+            return {
+                "history_id": int(history_id),
+                "host_id": int(host_id),
+                "task_rows_affected": task_rows,
+                "history_rows_affected": history_result["rows_affected"],
+            }
+        except Exception:
+            self.rollback()
+            raise
+
     def file_task_promote_server_artifact_to_processing(
         self,
         *,

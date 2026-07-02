@@ -5,14 +5,13 @@ How to run:
     /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_server_routes.py -q
 
 What is covered here:
-    - `/server` injects the in-memory usage metrics banner payload
+    - `/server` injects the aggregated usage metrics payload
     - download-action telemetry increments the lightweight counter
-    - the shared usage-metric helpers keep independent counters
+    - the shared usage-metric helpers keep independent monthly counters
 """
 
-from __future__ import annotations
-
 import importlib
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -20,6 +19,7 @@ from types import ModuleType, SimpleNamespace
 
 
 WEBFUSION_ROOT = Path("/RFFusion/src/webfusion")
+os.environ["WEBFUSION_USAGE_METRICS_BACKEND"] = "memory"
 
 
 def load_server_routes():
@@ -112,11 +112,14 @@ class TestServerUsageMetrics(unittest.TestCase):
 
     def test_server_route_includes_banner_metrics_snapshot(self):
         payload = self.routes.server()
+        usage_metrics = payload["context"]["usage_metrics"]
 
         self.assertEqual(payload["template"], "server/server.html")
-        self.assertEqual(payload["context"]["usage_metrics"]["page_view_count"], 1)
-        self.assertEqual(payload["context"]["usage_metrics"]["spectrum_query_count"], 0)
-        self.assertEqual(payload["context"]["usage_metrics"]["download_action_count"], 0)
+        self.assertEqual(usage_metrics["totals"]["page_view_count"], 1)
+        self.assertEqual(usage_metrics["totals"]["spectrum_query_count"], 0)
+        self.assertEqual(usage_metrics["totals"]["download_action_count"], 0)
+        self.assertTrue(usage_metrics["current_year_label"])
+        self.assertTrue(usage_metrics["current_month_label"])
 
     def test_download_action_endpoint_counts_ui_clicks(self):
         payload, status_code = self.routes.server_download_action_metric()
@@ -134,13 +137,15 @@ class TestServerUsageMetrics(unittest.TestCase):
         snapshot = self.usage_metrics.get_usage_metrics_snapshot()
 
         self.assertEqual(
-            snapshot,
+            snapshot["totals"],
             {
                 "page_view_count": 2,
                 "spectrum_query_count": 1,
                 "download_action_count": 1,
             },
         )
+        self.assertEqual(len(snapshot["annual_breakdown"]), 1)
+        self.assertEqual(len(snapshot["monthly_breakdown"]), 1)
 
 
 if __name__ == "__main__":

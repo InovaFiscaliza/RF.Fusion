@@ -127,7 +127,10 @@ def resolve_equipment_persistence_identity(
 
         return normalized_host, UMS_EQUIPMENT_TYPE_HINT
 
-    canonical_name = canonicalize_equipment_identifier(raw_spectrum_name)
+    canonical_name = canonicalize_equipment_identifier(
+        raw_spectrum_name,
+        fallback_hostname=hostname_db,
+    )
     return canonical_name, canonical_name
 
 

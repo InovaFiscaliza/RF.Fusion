@@ -673,7 +673,7 @@ class SpectrumInsertTests(unittest.TestCase):
         self.assertEqual(spectrum_ids, [801, 802])
         self.assertEqual(len(db.insert_spectrum_calls), 2)
 
-    def test_insert_spectra_batch_rejects_malformed_cwsm_receiver(self) -> None:
+    def test_insert_spectra_batch_falls_back_to_hostname_for_malformed_cwsm_receiver(self) -> None:
         db = FakeDbRfmIngest()
         spectrum = self._build_spectrum(site_id=10, equipment_name="cwsm2110000")
         bin_data = {
@@ -681,22 +681,59 @@ class SpectrumInsertTests(unittest.TestCase):
             "spectrum": [spectrum],
         }
 
-        with self.assertRaises(worker.errors.BinValidationError):
-            processing.insert_spectra_batch(
-                db_rfm=db,
-                bin_data=bin_data,
-                hostname_db="CWSM211005",
-                host_path="/host/path",
-                host_file_name="source.zip",
-                extension=".zip",
-                vl_file_size_kb=1,
-                dt_created=datetime(2026, 1, 1, 12, 0, 0),
-                dt_modified=datetime(2026, 1, 1, 12, 0, 0),
-            )
+        processing.insert_spectra_batch(
+            db_rfm=db,
+            bin_data=bin_data,
+            hostname_db="CWSM211005",
+            host_path="/host/path",
+            host_file_name="source.zip",
+            extension=".zip",
+            vl_file_size_kb=1,
+            dt_created=datetime(2026, 1, 1, 12, 0, 0),
+            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
+        )
 
         self.assertEqual(
             db.equipment_calls,
-            [],
+            [
+                {
+                    "name": "cwsm21100005",
+                    "type_hint": "cwsm21100005",
+                }
+            ],
+        )
+
+    def test_insert_spectra_batch_maps_cwsm211006_to_canonical_receiver_on_fallback(self) -> None:
+        db = FakeDbRfmIngest()
+        spectrum = self._build_spectrum(site_id=10, equipment_name="cwsm2110000")
+        bin_data = {
+            "method": "Fixed logger",
+            "spectrum": [spectrum],
+        }
+
+        processing.insert_spectra_batch(
+            db_rfm=db,
+            bin_data=bin_data,
+            hostname_db="CWSM211006",
+            host_path="/host/path",
+            host_file_name=(
+                "CWSM21100006_E28_A1_Spec Frq=2350.000 Span=100.000 "
+                "RBW=100.00000_[2024-09-26-11-08-06]_[2024-09-29-11-08-18]_3_DONE.zip"
+            ),
+            extension=".zip",
+            vl_file_size_kb=1,
+            dt_created=datetime(2026, 1, 1, 12, 0, 0),
+            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
+        )
+
+        self.assertEqual(
+            db.equipment_calls,
+            [
+                {
+                    "name": "cwsm21100006",
+                    "type_hint": "cwsm21100006",
+                }
+            ],
         )
 
     def test_insert_spectra_batch_accepts_seven_digit_cwsm_receiver(self) -> None:

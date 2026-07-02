@@ -22,6 +22,7 @@
     data-host-table-endpoint="{{ url_for('server.server_hosts') }}"
     data-processing-errors-endpoint="{{ url_for('server.server_processing_errors') }}"
     data-backup-errors-endpoint="{{ url_for('server.server_backup_errors') }}"
+    data-usage-metrics-endpoint="{{ url_for('server.server_usage_metrics') }}"
     data-summary-metrics-endpoint="{{ url_for('server.server_summary_metrics') }}"
     data-summary-metrics-initial-loaded="{{ '1' if server_summary_metrics else '0' }}"
 >
@@ -71,26 +72,138 @@
                 <div class="server-section-kicker">Uso do WebFusion</div>
                 <h2 class="server-section-title">Sinais de Uso da Interface</h2>
                 <p class="server-section-copy">
-                    Contadores leves do uso do WebFusion desde o último restart do serviço, sem depender de auditoria detalhada.
+                    Contadores consolidados do uso do WebFusion com visão total, recorte do ano atual e recorte do mês atual.
                 </p>
             </div>
-            <div class="summary-grid server-summary-grid server-summary-grid--compact">
-                <div class="summary-card">
-                    <div class="summary-card-label">Acessos de Página</div>
-                    <div class="summary-card-value">{{ usage_metrics.page_view_count }}</div>
-                    <div class="summary-card-note">Páginas HTML servidas pela interface.</div>
-                </div>
-                <div class="summary-card">
-                    <div class="summary-card-label">Consultas de Espectro</div>
-                    <div class="summary-card-value">{{ usage_metrics.spectrum_query_count }}</div>
-                    <div class="summary-card-note">Buscas iniciadas com filtros na tela de espectro.</div>
-                </div>
-                <div class="summary-card">
-                    <div class="summary-card-label">Ações de Download</div>
-                    <div class="summary-card-value">{{ usage_metrics.download_action_count }}</div>
-                    <div class="summary-card-note">Clique de download na interface, não a conclusão da transferência.</div>
-                </div>
+            <div class="server-metric-clusters">
+                <section class="server-metric-cluster">
+                    <div class="server-metric-cluster-head">
+                        <div>
+                            <h3 class="server-metric-cluster-title">Acumulado Global</h3>
+                            <p class="server-metric-cluster-copy">Leitura total desde o início da coleta persistida dessas métricas.</p>
+                        </div>
+                    </div>
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster">
+                        <div class="summary-card">
+                            <div class="summary-card-label">Total de Acessos à Página</div>
+                            <div class="summary-card-value">{{ usage_metrics.totals.page_view_count }}</div>
+                            <div class="summary-card-note">Páginas HTML servidas pela interface.</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Total de Consultas ao Espectro</div>
+                            <div class="summary-card-value">{{ usage_metrics.totals.spectrum_query_count }}</div>
+                            <div class="summary-card-note">Buscas iniciadas com filtros na tela de espectro.</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Total de Ações de Download</div>
+                            <div class="summary-card-value">{{ usage_metrics.totals.download_action_count }}</div>
+                            <div class="summary-card-note">Clique de download na interface, não a conclusão da transferência.</div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="server-metric-cluster">
+                    <div class="server-metric-cluster-head">
+                        <div>
+                            <h3 class="server-metric-cluster-title">Ano Atual</h3>
+                            <p class="server-metric-cluster-copy">Consolidado apenas do ano corrente.</p>
+                        </div>
+                        <span class="server-section-meta-badge">
+                            Ano de referência
+                            <strong>{{ usage_metrics.current_year_label }}</strong>
+                        </span>
+                    </div>
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster">
+                        <div class="summary-card">
+                            <div class="summary-card-label">Total de Acessos à Página em "{{ usage_metrics.current_year_label }}"</div>
+                            <div class="summary-card-value">{{ usage_metrics.current_year_totals.page_view_count }}</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Total de Consultas ao Espectro em "{{ usage_metrics.current_year_label }}"</div>
+                            <div class="summary-card-value">{{ usage_metrics.current_year_totals.spectrum_query_count }}</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Total de Ações de Download em "{{ usage_metrics.current_year_label }}"</div>
+                            <div class="summary-card-value">{{ usage_metrics.current_year_totals.download_action_count }}</div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="server-metric-cluster">
+                    <div class="server-metric-cluster-head">
+                        <div>
+                            <h3 class="server-metric-cluster-title">Mês Atual</h3>
+                            <p class="server-metric-cluster-copy">Consolidado apenas do mês corrente.</p>
+                        </div>
+                        <span class="server-section-meta-badge">
+                            Mês de referência
+                            <strong>{{ usage_metrics.current_month_label }}</strong>
+                        </span>
+                    </div>
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster">
+                        <div class="summary-card">
+                            <div class="summary-card-label">Total de Acessos à Página no mês atual "{{ usage_metrics.current_month_label }}"</div>
+                            <div class="summary-card-value">{{ usage_metrics.current_month_totals.page_view_count }}</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Total de Consultas ao Espectro no mês atual "{{ usage_metrics.current_month_label }}"</div>
+                            <div class="summary-card-value">{{ usage_metrics.current_month_totals.spectrum_query_count }}</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Total de Ações de Download no mês atual "{{ usage_metrics.current_month_label }}"</div>
+                            <div class="summary-card-value">{{ usage_metrics.current_month_totals.download_action_count }}</div>
+                        </div>
+                    </div>
+                </section>
             </div>
+            <details class="details-panel" id="server-usage-metrics-panel">
+                <summary>
+                    Abrir consolidado de uso
+                    <span class="details-summary-meta" id="server-usage-metrics-meta">Consulta sob demanda</span>
+                </summary>
+                <div class="details-panel-body">
+                    <div class="summary-subsection">
+                        <h3 class="summary-subsection-title">Consolidado por Ano</h3>
+                        <div class="annual-breakdown">
+                            <table class="stats-table">
+                                <thead>
+                                    <tr>
+                                        <th>Ano</th>
+                                        <th>Acessos à Página</th>
+                                        <th>Consultas ao Espectro</th>
+                                        <th>Ações de Download</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="server-usage-metrics-annual-body">
+                                    <tr>
+                                        <td colspan="4">Abra este painel para carregar o consolidado anual de uso do WebFusion.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="summary-subsection">
+                        <h3 class="summary-subsection-title">Consolidado por Mês</h3>
+                        <div class="annual-breakdown">
+                            <table class="stats-table">
+                                <thead>
+                                    <tr>
+                                        <th>Mês</th>
+                                        <th>Acessos à Página</th>
+                                        <th>Consultas ao Espectro</th>
+                                        <th>Ações de Download</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="server-usage-metrics-monthly-body">
+                                    <tr>
+                                        <td colspan="4">Abra este painel para carregar o consolidado mensal de uso do WebFusion.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </details>
         </section>
 
         <section class="card background-neutral-0 padding-l border-radius-m server-section-card">
@@ -510,5 +623,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/server_page.js', v='20260625-server-usage-banner') }}"></script>
+<script src="{{ url_for('static', filename='js/server_page.js', v='20260701-server-usage-history') }}"></script>
 {% endblock %}
