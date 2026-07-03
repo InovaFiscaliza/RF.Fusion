@@ -1383,7 +1383,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             any("event=file_task_claim_lost" in warning for warning in fake_log.warnings)
         )
 
-    def test_main_uses_export_as_error_artifact_when_validation_fails_after_export(self) -> None:
+    def test_main_keeps_zip_history_when_validation_fails_after_export(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir) / "reposfi"
             source_dir = repo_root / "incoming"
@@ -1404,10 +1404,10 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 "FILE_TASK__NA_HOST_FILE_PATH": "/host/path",
                 "FILE_TASK__NA_HOST_FILE_NAME": "host_sample.zip",
                 "HOST__NA_HOST_NAME": "CWSM21100001",
-                "FILE_TASK__NA_EXTENSION": ".zip",
-                "FILE_TASK__DT_FILE_CREATED": exported_meta["dt_created"],
-                "FILE_TASK__DT_FILE_MODIFIED": exported_meta["dt_modified"],
-                "FILE_TASK__VL_FILE_SIZE_KB": 1,
+                "FILE_TASK__NA_EXTENSION_SERVER": ".zip",
+                "FILE_TASK__DT_FILE_CREATED_SERVER": exported_meta["dt_created"],
+                "FILE_TASK__DT_FILE_MODIFIED_SERVER": exported_meta["dt_modified"],
+                "FILE_TASK__VL_FILE_SIZE_KB_SERVER": 1,
             }
 
             class FakeDbBkpMain(FakeDbBkp):
@@ -1434,9 +1434,11 @@ class WorkerFlowScenarioTests(unittest.TestCase):
 
                 def process(self, **kwargs):
                     self.last_output_meta = dict(exported_meta)
-                    raise worker.errors.BinValidationError(
+                    exc = worker.errors.BinValidationError(
                         "Invalid GPS reading: GNSS unavailable sentinel"
                     )
+                    exc.file_meta = dict(exported_meta)
+                    raise exc
 
             sleep_calls = []
 
@@ -1458,19 +1460,15 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                                         worker.process_status["running"] = True
                                         worker.main()
 
-            resolved_source = (
-                repo_root / "trash" / "resolved_files" / source_file.name
-            )
+            trashed_source = repo_root / "trash" / source_file.name
             trashed_export = repo_root / "trash" / exported_file.name
 
-            # Once appAnalise has already produced the `.mat`, the RF.Fusion
-            # validation failure should treat that export as the canonical
-            # error artifact and retire the original `.zip`.
+            # Validation failure after export must discard the transient
+            # `.mat` and keep the `.zip` as the history-owned error payload.
             self.assertEqual(sleep_calls, ["slept"])
-            self.assertTrue(resolved_source.exists())
-            self.assertTrue(trashed_export.exists())
+            self.assertTrue(trashed_source.exists())
+            self.assertFalse(trashed_export.exists())
             self.assertFalse(source_file.exists())
-            self.assertFalse(exported_file.exists())
 
     def test_main_requeues_when_final_filesystem_promotion_is_transient(self) -> None:
         fake_log = FakeWorkerLog()
@@ -1869,7 +1867,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             self.assertIn("emrx001", new_path)
             self.assertTrue(Path(final_meta["full_path"]).exists())
 
-    def test_definitive_failure_uses_export_as_error_artifact_and_resolves_original(self) -> None:
+    def test_definitive_failure_discards_export_and_keeps_zip_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir) / "reposfi"
             source_dir = repo_root / "incoming"
@@ -1908,19 +1906,14 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                     with patch.object(worker, "log", fake_log):
                         worker._write_task_error(db_bp, task, err)
 
-            resolved_source = repo_root / "trash" / "resolved_files" / source_file.name
-            trashed_artifact = repo_root / "trash" / partial_artifact.name
+            trashed_source = repo_root / "trash" / source_file.name
 
-            self.assertTrue(resolved_source.exists())
+            self.assertTrue(trashed_source.exists())
             self.assertEqual(
-                resolved_source.read_text(encoding="utf-8"),
+                trashed_source.read_text(encoding="utf-8"),
                 "zip payload",
             )
-            self.assertTrue(trashed_artifact.exists())
-            self.assertEqual(
-                trashed_artifact.read_text(encoding="utf-8"),
-                "partial mat",
-            )
+            self.assertFalse((repo_root / "trash" / partial_artifact.name).exists())
             self.assertFalse(source_file.exists())
             self.assertFalse(partial_artifact.exists())
 
@@ -1929,15 +1922,15 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             self.assertEqual(db_bp.transaction_events, ["begin", "commit"])
             self.assertEqual(
                 db_bp.history_updates[0]["NA_SERVER_FILE_NAME"],
-                "sample_DONE.mat",
+                "sample_DONE.zip",
             )
             self.assertEqual(
                 db_bp.history_updates[0]["NA_SERVER_FILE_PATH"],
                 str(repo_root / "trash"),
             )
             self.assertEqual(
-                db_bp.history_updates[0]["NA_EXTENSION"],
-                ".mat",
+                db_bp.history_updates[0]["NA_EXTENSION_SERVER"],
+                ".zip",
             )
             self.assertEqual(
                 db_bp.history_updates[0]["NU_STATUS_PROCESSING"],

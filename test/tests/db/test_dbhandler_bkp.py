@@ -745,7 +745,7 @@ class BackupQueueReconcileTests(unittest.TestCase):
             history_updates[0]["NU_STATUS_PROCESSING"],
             db_bkp_module.k.TASK_PENDING,
         )
-        self.assertIs(history_updates[0]["DT_PROCESSED"], db_bkp_module.constants.SET_NULL)
+        self.assertNotIn("DT_PROCESSED", history_updates[0])
         self.assertEqual(history_updates[0]["DT_BACKUP"], reconciled_at)
 
     def test_file_task_promote_server_artifact_to_processing_accepts_discovery_row(self) -> None:
@@ -923,7 +923,7 @@ class BackupQueueReconcileTests(unittest.TestCase):
             history_updates[0]["NU_STATUS_PROCESSING"],
             db_bkp_module.k.TASK_PENDING,
         )
-        self.assertIs(history_updates[0]["DT_PROCESSED"], db_bkp_module.constants.SET_NULL)
+        self.assertNotIn("DT_PROCESSED", history_updates[0])
         self.assertEqual(history_updates[0]["DT_BACKUP"], recreated_at)
         self.assertEqual(
             summaries,
@@ -1040,6 +1040,79 @@ class GarbageCollectorQueryTests(unittest.TestCase):
         self.assertEqual(
             captured["cols"],
             ["ID_HISTORY", "NA_SERVER_FILE_PATH", "NA_SERVER_FILE_NAME"],
+        )
+
+    def test_file_history_list_zip_error_server_restore_candidates_filters_zip_processing_errors(self) -> None:
+        """Restoration query must target `.zip` history rows in processing error."""
+
+        handler = self.make_handler()
+        captured = {}
+
+        def fake_select(sql, params):
+            captured["sql"] = sql
+            captured["params"] = params
+            return []
+
+        handler._disconnect = lambda: None
+        handler._select_raw = fake_select
+
+        rows = handler.file_history_list_zip_error_server_restore_candidates(
+            limit=40,
+            host_id=901,
+            after_history_id=300,
+        )
+
+        self.assertEqual(rows, [])
+        self.assertIn("LOWER(COALESCE(h.NA_EXTENSION_HOST, '')) = '.zip'", captured["sql"])
+        self.assertIn("h.NU_STATUS_PROCESSING = %s", captured["sql"])
+        self.assertEqual(
+            captured["params"],
+            (
+                db_bkp_module.k.TASK_ERROR,
+                901,
+                300,
+                40,
+            ),
+        )
+
+    def test_file_history_restore_server_artifact_metadata_updates_server_columns(self) -> None:
+        """Restoration helper must forward only the recovered server metadata."""
+
+        handler = self.make_handler()
+        updates = []
+
+        handler.file_history_update = lambda **kwargs: updates.append(kwargs) or {
+            "rows_affected": 1
+        }
+
+        artifact = {
+            "file_path": "/mnt/reposfi/trash/resolved_files",
+            "file_name": "sample.zip",
+            "extension": ".zip",
+            "size_kb": 44,
+            "dt_created": datetime(2026, 7, 3, 10, 0, 0),
+            "dt_modified": datetime(2026, 7, 3, 10, 1, 0),
+        }
+
+        result = handler.file_history_restore_server_artifact_metadata(
+            history_id=777,
+            repository_artifact=artifact,
+        )
+
+        self.assertEqual(result["rows_affected"], 1)
+        self.assertEqual(
+            updates,
+            [
+                {
+                    "history_id": 777,
+                    "NA_SERVER_FILE_PATH": "/mnt/reposfi/trash/resolved_files",
+                    "NA_SERVER_FILE_NAME": "sample.zip",
+                    "NA_EXTENSION_SERVER": ".zip",
+                    "VL_FILE_SIZE_KB_SERVER": 44,
+                    "DT_FILE_CREATED_SERVER": datetime(2026, 7, 3, 10, 0, 0),
+                    "DT_FILE_MODIFIED_SERVER": datetime(2026, 7, 3, 10, 1, 0),
+                }
+            ],
         )
 
 

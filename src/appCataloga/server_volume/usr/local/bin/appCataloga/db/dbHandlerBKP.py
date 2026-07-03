@@ -622,6 +622,104 @@ class dbHandlerBKP(DBHandlerBase):
         finally:
             self._disconnect()
 
+    def file_history_list_zip_error_server_restore_candidates(
+        self,
+        *,
+        limit: int = 1000,
+        host_id: Optional[int] = None,
+        after_history_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return errored `.zip` history rows eligible for server-artifact repair.
+
+        This one-shot operational helper targets rows whose original source was
+        a `.zip` and whose processing ended in `ERROR`. Callers must still
+        verify that a trustworthy repository artifact exists before updating
+        the server-side metadata columns.
+        """
+        self._connect()
+        try:
+            sql = """
+                SELECT
+                    h.ID_HISTORY,
+                    h.FK_HOST,
+                    host.NA_HOST_NAME,
+                    h.NA_HOST_FILE_PATH,
+                    h.NA_HOST_FILE_NAME,
+                    h.NA_SERVER_FILE_PATH,
+                    h.NA_SERVER_FILE_NAME,
+                    h.NA_EXTENSION_HOST,
+                    h.VL_FILE_SIZE_KB_HOST,
+                    h.DT_FILE_CREATED_HOST,
+                    h.DT_FILE_MODIFIED_HOST,
+                    h.NA_EXTENSION_SERVER,
+                    h.VL_FILE_SIZE_KB_SERVER,
+                    h.DT_FILE_CREATED_SERVER,
+                    h.DT_FILE_MODIFIED_SERVER,
+                    h.NU_STATUS_PROCESSING
+                FROM FILE_TASK_HISTORY h
+                JOIN HOST host
+                  ON host.ID_HOST = h.FK_HOST
+                WHERE LOWER(COALESCE(h.NA_EXTENSION_HOST, '')) = '.zip'
+                  AND h.NU_STATUS_PROCESSING = %s
+            """
+            params: List[Any] = [k.TASK_ERROR]
+
+            if host_id is not None:
+                sql += " AND h.FK_HOST = %s"
+                params.append(host_id)
+
+            if after_history_id is not None:
+                sql += " AND h.ID_HISTORY > %s"
+                params.append(after_history_id)
+
+            sql += " ORDER BY h.ID_HISTORY ASC LIMIT %s"
+            params.append(limit)
+
+            return self._select_raw(sql, tuple(params))
+        finally:
+            self._disconnect()
+
+    def file_history_restore_server_artifact_metadata(
+        self,
+        *,
+        history_id: int,
+        repository_artifact: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Restore server-side artifact metadata for one `FILE_TASK_HISTORY` row.
+
+        Callers must provide a repository artifact already validated on the
+        filesystem. This helper only persists the recovered metadata.
+        """
+        if history_id <= 0:
+            raise ValueError("history_id must be a positive int")
+
+        required_keys = {
+            "file_path",
+            "file_name",
+            "extension",
+            "size_kb",
+            "dt_created",
+            "dt_modified",
+        }
+        missing = sorted(required_keys.difference(repository_artifact))
+        if missing:
+            raise ValueError(
+                "repository_artifact missing required keys: "
+                + ", ".join(missing)
+            )
+
+        return self.file_history_update(
+            history_id=history_id,
+            NA_SERVER_FILE_PATH=repository_artifact["file_path"],
+            NA_SERVER_FILE_NAME=repository_artifact["file_name"],
+            NA_EXTENSION_SERVER=repository_artifact["extension"],
+            VL_FILE_SIZE_KB_SERVER=repository_artifact["size_kb"],
+            DT_FILE_CREATED_SERVER=repository_artifact["dt_created"],
+            DT_FILE_MODIFIED_SERVER=repository_artifact["dt_modified"],
+        )
+
     
     def host_release_by_pid(self, pid: int) -> None:
         """
@@ -3018,7 +3116,6 @@ class dbHandlerBKP(DBHandlerBase):
             history_result = self.file_history_update(
                 history_id=int(history_id),
                 DT_BACKUP=backup_at,
-                DT_PROCESSED=constants.SET_NULL,
                 NA_SERVER_FILE_PATH=server_file_path,
                 NA_SERVER_FILE_NAME=server_file_name,
                 NA_EXTENSION_SERVER=candidate.get("NA_EXTENSION_SERVER"),
@@ -3111,7 +3208,6 @@ class dbHandlerBKP(DBHandlerBase):
                 host_file_path=candidate["NA_HOST_FILE_PATH"],
                 host_file_name=candidate["NA_HOST_FILE_NAME"],
                 DT_BACKUP=backup_at,
-                DT_PROCESSED=constants.SET_NULL,
                 NA_SERVER_FILE_PATH=candidate["NA_SERVER_FILE_PATH"],
                 NA_SERVER_FILE_NAME=candidate["NA_SERVER_FILE_NAME"],
                 NA_EXTENSION_SERVER=candidate.get("NA_EXTENSION_SERVER"),

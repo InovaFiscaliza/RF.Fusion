@@ -213,6 +213,54 @@ def move_file_if_present(
     return moved_meta
 
 
+def delete_file_if_present(
+    file_meta: dict | None,
+    *,
+    delete_kind: str | None = None,
+    logger: "FileEventLogger" | None = None,
+) -> dict | None:
+    """Delete one file when it still exists and return its original metadata."""
+    if not file_meta or not os.path.exists(file_meta["full_path"]):
+        return None
+
+    target_path = file_meta["full_path"]
+    event_fields = {
+        "operation": "delete_file_if_present",
+        "file": file_meta["file_name"],
+        "source_dir": file_meta["file_path"],
+        "success": False,
+    }
+    if delete_kind:
+        event_fields["kind"] = delete_kind
+
+    for attempt in range(3):
+        try:
+            os.remove(target_path)
+            break
+        except OSError as exc:
+            if not is_transient_filesystem_error(exc) or attempt == 2:
+                _emit_file_event(
+                    logger,
+                    "error_event",
+                    "file_delete",
+                    **event_fields,
+                    source=target_path,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                raise
+            time.sleep(0.5)
+
+    event_fields["success"] = True
+    _emit_file_event(
+        logger,
+        "event",
+        "file_delete",
+        **event_fields,
+    )
+    return dict(file_meta)
+
+
 def build_resolved_files_trash_path() -> str:
     """Return the dedicated quarantine for export-resolved leftovers."""
     return os.path.join(
@@ -285,35 +333,19 @@ def quarantine_error_artifact(
     )
 
     if distinct_export:
-        resolved_source_meta = move_file_if_present(
-            source_file_meta,
-            resolved_trash_path,
-            refresh_mtime=True,
-            move_kind="quarantine_source",
-            logger=logger,
-        )
-        trashed_export_meta = move_file_if_present(
+        delete_file_if_present(
             file_meta,
-            trash_path,
-            move_kind="quarantine_error_export",
+            delete_kind="quarantine_error_export",
             logger=logger,
         )
-
-        if trashed_export_meta:
-            server_path = trashed_export_meta["file_path"]
-            history_meta_override = build_history_metadata_from_file_meta(
-                trashed_export_meta
-            )
-        else:
-            fallback = resolved_source_meta or source_file_meta
-            trashed_source_meta = move_file_if_present(
-                fallback,
-                trash_path,
-                move_kind="quarantine_error_source",
-                logger=logger,
-            )
-            if trashed_source_meta:
-                server_path = trashed_source_meta["file_path"]
+        trashed_source_meta = move_file_if_present(
+            source_file_meta,
+            trash_path,
+            move_kind="quarantine_error_source",
+            logger=logger,
+        )
+        if trashed_source_meta:
+            server_path = trashed_source_meta["file_path"]
     else:
         trashed_source_meta = move_file_if_present(
             source_file_meta,
