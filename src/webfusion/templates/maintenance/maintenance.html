@@ -1,0 +1,549 @@
+{% extends "base.html" %}
+{% block title %}Manutenção Operacional{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/maintenance_page.css', v='20260709-maintenance-module') }}">
+{% endblock %}
+
+{% block breadcrumb %}
+<div class="breadcrumb">
+    <a href="{{ url_for('index') }}">Início</a>
+    <span class="breadcrumb-separator">›</span>
+    <span>Manutenção</span>
+</div>
+{% endblock %}
+
+{% block content %}
+<div
+    id="maintenance-page-root"
+    class="maintenance-page-root"
+    data-host-task-types='{{ host_task_type_labels|tojson }}'
+    data-file-task-types='{{ file_task_type_labels|tojson }}'
+>
+
+<div class="maintenance-hero card background-neutral-0 padding-l border-radius-m">
+    <div>
+        <h1 class="wf-screen-title margin-bottom-s">Manutenção Operacional</h1>
+        <p class="maintenance-hero-copy">
+            Consulte filas operacionais e aplique ações seguras em lote sem alterar o ciclo de vida canônico do appCataloga.
+        </p>
+    </div>
+    <div class="maintenance-hero-note">
+        Ações host-dependent continuam bloqueadas quando o host estiver offline.
+    </div>
+</div>
+
+{% if action_summary %}
+<div class="maintenance-summary card background-neutral-0 padding-l border-radius-m">
+    <div class="maintenance-summary-title">Resumo da ação</div>
+    <div class="maintenance-summary-grid">
+        <div>
+            <div class="maintenance-summary-label">Fila</div>
+            <div class="maintenance-summary-value">{{ action_summary.queue_label }}</div>
+        </div>
+        <div>
+            <div class="maintenance-summary-label">Ação</div>
+            <div class="maintenance-summary-value">{{ action_summary.action_label }}</div>
+        </div>
+        <div>
+            <div class="maintenance-summary-label">Selecionadas</div>
+            <div class="maintenance-summary-value">{{ action_summary.selected_count }}</div>
+        </div>
+        <div>
+            <div class="maintenance-summary-label">Atualizadas</div>
+            <div class="maintenance-summary-value">{{ action_summary.updated_count }}</div>
+        </div>
+        <div>
+            <div class="maintenance-summary-label">Bloqueadas</div>
+            <div class="maintenance-summary-value">{{ action_summary.blocked_count }}</div>
+        </div>
+        <div>
+            <div class="maintenance-summary-label">Não encontradas</div>
+            <div class="maintenance-summary-value">{{ action_summary.missing_count }}</div>
+        </div>
+    </div>
+
+    {% if blocked_rows %}
+    <div class="maintenance-summary-detail">
+        <div class="maintenance-summary-subtitle">Linhas bloqueadas</div>
+        <ul class="maintenance-summary-list">
+            {% for row in blocked_rows %}
+            <li>#{{ row.task_id }} | {{ row.host_name }} | {{ row.task_type }} | {{ row.reason_label }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {% if action_summary.missing_ids %}
+    <div class="maintenance-summary-detail">
+        <div class="maintenance-summary-subtitle">IDs não encontrados</div>
+        <div class="maintenance-summary-inline">{{ action_summary.missing_ids|join(', ') }}</div>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+<div class="card background-neutral-0 padding-l border-radius-m">
+    <form method="get" class="maintenance-filter-form" data-loading-message="Consultando candidatos de recriação no histórico...">
+        <div class="maintenance-filter-grid">
+            <div class="maintenance-filter-field">
+                <label class="form-label" for="queue_kind">Fila</label>
+                <div class="select-shell">
+                    <select id="queue_kind" name="queue_kind" class="form-control">
+                        <option value="{{ queue_host_task }}" {% if filters.queue_kind == queue_host_task %}selected{% endif %}>HOST_TASK</option>
+                        <option value="{{ queue_file_task }}" {% if filters.queue_kind == queue_file_task %}selected{% endif %}>FILE_TASK</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="maintenance-filter-field">
+                <label class="form-label" for="task_type">Tipo</label>
+                <div class="select-shell">
+                    <select id="task_type" name="task_type" class="form-control">
+                        <option value="all">Todos</option>
+                        {% if filters.queue_kind == queue_host_task %}
+                            {% for task_type, label in host_task_type_labels.items() %}
+                            <option value="{{ task_type }}" {% if filters.task_type == task_type %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        {% else %}
+                            {% for task_type, label in file_task_type_labels.items() %}
+                            <option value="{{ task_type }}" {% if filters.task_type == task_type %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        {% endif %}
+                    </select>
+                </div>
+            </div>
+
+            <div class="maintenance-filter-field">
+                <label class="form-label" for="status">Status</label>
+                <div class="select-shell">
+                    <select id="status" name="status" class="form-control">
+                        <option value="all">Todos</option>
+                        {% for status_code, status_label in task_status_labels.items() %}
+                        <option value="{{ status_code }}" {% if filters.status == status_code %}selected{% endif %}>{{ status_label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            <div class="maintenance-filter-field">
+                <label class="form-label" for="limit">Limite</label>
+                <div class="select-shell">
+                    <select id="limit" name="limit" class="form-control">
+                        {% for option in [20, 50, 100] %}
+                        <option value="{{ option }}" {% if filters.limit == option %}selected{% endif %}>{{ option }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="maintenance-filter-search">
+            <div class="maintenance-filter-field maintenance-filter-search-field">
+                <label class="form-label" for="search">Busca</label>
+                <input
+                    id="search"
+                    type="text"
+                    name="search"
+                    class="form-control"
+                    value="{{ filters.search }}"
+                    placeholder="Host, arquivo ou mensagem"
+                >
+            </div>
+            <div class="maintenance-filter-actions">
+                <a class="btn-secondary-action maintenance-action-button" href="{{ url_for('maintenance.maintenance_dashboard') }}">Limpar</a>
+                <button type="submit" class="btn-primary-action maintenance-action-button">Aplicar filtros</button>
+            </div>
+        </div>
+    </form>
+</div>
+
+<div class="card background-neutral-0 padding-l border-radius-m">
+    <form method="post" id="maintenance-action-form">
+        <input type="hidden" name="queue_kind" value="{{ filters.queue_kind }}">
+        <input type="hidden" name="task_type" value="{{ filters.task_type if filters.task_type is not none else 'all' }}">
+        <input type="hidden" name="status" value="{{ filters.status if filters.status is not none else 'all' }}">
+        <input type="hidden" name="search" value="{{ filters.search }}">
+        <input type="hidden" name="limit" value="{{ filters.limit }}">
+
+        <div class="maintenance-toolbar">
+            <div>
+                <div class="maintenance-toolbar-title">
+                    {{ 'HOST_TASK' if filters.queue_kind == queue_host_task else 'FILE_TASK' }}
+                </div>
+                <div class="maintenance-toolbar-copy">
+                    {{ rows|length }} linha(s) carregadas nesta página.
+                </div>
+            </div>
+            <div class="maintenance-bulk-actions">
+                <button type="submit" name="action" value="restart" class="btn-primary-action">Reiniciar selecionadas</button>
+                <button type="submit" name="action" value="suspend" class="btn-secondary-action">Suspender selecionadas</button>
+            </div>
+        </div>
+
+        <div class="maintenance-table-filter-bar">
+            <div class="maintenance-filter-field maintenance-table-filter-field">
+                <label class="form-label" for="maintenance-table-filter">Filtrar linhas carregadas</label>
+                <input
+                    id="maintenance-table-filter"
+                    type="search"
+                    class="form-control"
+                    placeholder="Refinar a tabela abaixo por host, tipo, arquivo, status ou mensagem"
+                >
+            </div>
+            <div id="maintenance-table-filter-count" class="maintenance-table-filter-count">
+                {{ rows|length }} linha(s) visíveis
+            </div>
+        </div>
+
+        <div class="maintenance-table-wrap">
+            <table class="maintenance-table">
+                <thead>
+                    <tr>
+                        <th class="maintenance-check-col">
+                            <input id="maintenance-select-all" type="checkbox" aria-label="Selecionar todas as tasks visíveis">
+                        </th>
+                        <th>ID</th>
+                        <th>Host</th>
+                        <th>Tipo</th>
+                        <th>Status</th>
+                        <th>Offline</th>
+                        {% if filters.queue_kind == queue_file_task %}
+                        <th>Arquivo Host</th>
+                        <th>Arquivo Server</th>
+                        {% endif %}
+                        <th>Data</th>
+                        <th>Mensagem</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr>
+                        <td class="maintenance-check-col">
+                            <input
+                                type="checkbox"
+                                name="selected_ids"
+                                value="{{ row.ID_HOST_TASK if filters.queue_kind == queue_host_task else row.ID_FILE_TASK }}"
+                                class="maintenance-row-checkbox"
+                                aria-label="Selecionar task {{ row.ID_HOST_TASK if filters.queue_kind == queue_host_task else row.ID_FILE_TASK }}"
+                            >
+                        </td>
+                        <td>{{ row.ID_HOST_TASK if filters.queue_kind == queue_host_task else row.ID_FILE_TASK }}</td>
+                        <td>{{ row.NA_HOST_NAME }}</td>
+                        <td>{{ row.TYPE_LABEL }}</td>
+                        <td>
+                            <span class="maintenance-status-pill is-status-{{ row.NU_STATUS }}">
+                                {{ row.STATUS_LABEL }}
+                            </span>
+                        </td>
+                        <td>{{ 'Sim' if row.IS_OFFLINE else 'Não' }}</td>
+                        {% if filters.queue_kind == queue_file_task %}
+                        <td class="maintenance-file-cell">{{ row.NA_HOST_FILE_NAME }}</td>
+                        <td class="maintenance-file-cell">{{ row.NA_SERVER_FILE_NAME }}</td>
+                        {% endif %}
+                        <td>{{ row.DT_HOST_TASK if filters.queue_kind == queue_host_task else row.DT_FILE_TASK }}</td>
+                        <td class="maintenance-message-cell">{{ row.NA_MESSAGE or '-' }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="{{ 10 if filters.queue_kind == queue_file_task else 8 }}" class="maintenance-empty-cell">
+                            Nenhuma task encontrada com os filtros atuais.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </form>
+</div>
+
+<div class="card background-neutral-0 padding-l border-radius-m">
+    <div class="maintenance-toolbar">
+        <div>
+            <div class="maintenance-toolbar-title">Recriar FILE_TASK via FILE_TASK_HISTORY</div>
+            <div class="maintenance-toolbar-copy">
+                Painel conservador para restaurar filas de backup ou processamento a partir do histórico durável.
+            </div>
+        </div>
+    </div>
+
+    {% if history_action_summary %}
+    <div class="maintenance-history-summary">
+        <div class="maintenance-summary-title">Resumo da recriação</div>
+        <div class="maintenance-summary-grid">
+            <div>
+                <div class="maintenance-summary-label">Ação</div>
+                <div class="maintenance-summary-value">{{ history_action_summary.action_label }}</div>
+            </div>
+            <div>
+                <div class="maintenance-summary-label">Selecionadas</div>
+                <div class="maintenance-summary-value">{{ history_action_summary.selected_count }}</div>
+            </div>
+            <div>
+                <div class="maintenance-summary-label">Recriadas</div>
+                <div class="maintenance-summary-value">{{ history_action_summary.updated_count }}</div>
+            </div>
+            <div>
+                <div class="maintenance-summary-label">Bloqueadas</div>
+                <div class="maintenance-summary-value">{{ history_action_summary.blocked_count }}</div>
+            </div>
+        </div>
+
+        {% if history_blocked_rows %}
+        <div class="maintenance-summary-detail">
+            <div class="maintenance-summary-subtitle">Linhas bloqueadas</div>
+            <ul class="maintenance-summary-list">
+                {% for row in history_blocked_rows %}
+                <li>#{{ row.task_id }} | {{ row.host_name }} | {{ row.task_type }} | {{ row.reason_label }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <form
+        method="get"
+        class="maintenance-filter-form"
+        id="maintenance-history-filter-form"
+        data-loading-message="Consultando candidatos de recriação no histórico..."
+    >
+        <input type="hidden" name="history_load" value="1">
+        <input type="hidden" name="queue_kind" value="{{ filters.queue_kind }}">
+        <input type="hidden" name="task_type" value="{{ filters.task_type if filters.task_type is not none else 'all' }}">
+        <input type="hidden" name="status" value="{{ filters.status if filters.status is not none else 'all' }}">
+        <input type="hidden" name="search" value="{{ filters.search }}">
+        <input type="hidden" name="limit" value="{{ filters.limit }}">
+
+        <div class="maintenance-filter-grid maintenance-history-filter-grid">
+            <div class="maintenance-filter-field">
+                <label class="form-label" for="history_phase">Fluxo</label>
+                <div class="select-shell">
+                    <select id="history_phase" name="history_phase" class="form-control">
+                        {% for phase_key, phase_label in history_phase_options.items() %}
+                        <option value="{{ phase_key }}" {% if history_filters.phase == phase_key %}selected{% endif %}>{{ phase_label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            <div class="maintenance-filter-field">
+                <label class="form-label" for="history_limit">Limite</label>
+                <div class="select-shell">
+                    <select id="history_limit" name="history_limit" class="form-control">
+                        {% for option in [50, 100, 200, 500] %}
+                        <option value="{{ option }}" {% if history_filters.limit == option %}selected{% endif %}>{{ option }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+
+            <div class="maintenance-filter-field maintenance-history-search-field">
+                <label class="form-label" for="history_host_name">Host</label>
+                <input
+                    id="history_host_name"
+                    type="text"
+                    name="history_host_name"
+                    class="form-control"
+                    value="{{ history_filters.host_name }}"
+                    placeholder="Ex.: RFEye002264"
+                >
+            </div>
+
+            <div class="maintenance-filter-field">
+                <label class="form-label" for="history_host_file_name">Arquivo Host</label>
+                <input
+                    id="history_host_file_name"
+                    type="text"
+                    name="history_host_file_name"
+                    class="form-control"
+                    value="{{ history_filters.host_file_name }}"
+                    placeholder="Ex.: sample.zip"
+                >
+            </div>
+
+            <div class="maintenance-filter-field">
+                <label class="form-label" for="history_server_file_name">Arquivo Server</label>
+                <input
+                    id="history_server_file_name"
+                    type="text"
+                    name="history_server_file_name"
+                    class="form-control"
+                    value="{{ history_filters.server_file_name }}"
+                    placeholder="Ex.: p-1200--sample.zip"
+                >
+            </div>
+
+            <div class="maintenance-filter-field">
+                <label class="form-label" for="history_date_field">Campo de Data</label>
+                <div class="select-shell">
+                    <select id="history_date_field" name="history_date_field" class="form-control">
+                        <option value="">Sem filtro de data</option>
+                        <option value="DT_DISCOVERED" {% if history_filters.date_field == 'DT_DISCOVERED' %}selected{% endif %}>DT_DISCOVERED</option>
+                        <option value="DT_BACKUP" {% if history_filters.date_field == 'DT_BACKUP' %}selected{% endif %}>DT_BACKUP</option>
+                        <option value="DT_PROCESSED" {% if history_filters.date_field == 'DT_PROCESSED' %}selected{% endif %}>DT_PROCESSED</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="maintenance-filter-field">
+                <label class="form-label" for="history_date_from">Data Inicial</label>
+                <input
+                    id="history_date_from"
+                    type="date"
+                    name="history_date_from"
+                    class="form-control"
+                    value="{{ history_filters.date_from }}"
+                >
+            </div>
+
+            <div class="maintenance-filter-field">
+                <label class="form-label" for="history_date_to">Data Final Exclusiva</label>
+                <input
+                    id="history_date_to"
+                    type="date"
+                    name="history_date_to"
+                    class="form-control"
+                    value="{{ history_filters.date_to }}"
+                >
+            </div>
+
+            <div class="maintenance-filter-field maintenance-history-message-field">
+                <label class="form-label" for="history_message">Mensagem</label>
+                <input
+                    id="history_message"
+                    type="text"
+                    name="history_message"
+                    class="form-control"
+                    value="{{ history_filters.message }}"
+                    placeholder="Trecho da mensagem"
+                >
+            </div>
+
+            <div class="maintenance-filter-actions maintenance-history-filter-actions">
+                <button type="submit" class="btn-primary-action maintenance-action-button">Aplicar filtro do histórico</button>
+            </div>
+        </div>
+    </form>
+
+    {% if not history_loaded %}
+    <div class="maintenance-history-idle">
+        <div class="maintenance-toolbar-copy">
+            O histórico não é consultado automaticamente ao abrir o módulo. Use o filtro acima para carregar candidatos sob demanda.
+        </div>
+    </div>
+    {% endif %}
+
+    {% if history_query_message %}
+    <div class="maintenance-history-idle">
+        <div class="maintenance-toolbar-copy">
+            {{ history_query_message }}
+        </div>
+    </div>
+    {% endif %}
+
+    <form method="post" id="maintenance-history-action-form" data-loading-message="Recriando FILE_TASKs a partir do histórico...">
+        <input type="hidden" name="maintenance_form" value="history_recreate">
+        <input type="hidden" name="queue_kind" value="{{ filters.queue_kind }}">
+        <input type="hidden" name="task_type" value="{{ filters.task_type if filters.task_type is not none else 'all' }}">
+        <input type="hidden" name="status" value="{{ filters.status if filters.status is not none else 'all' }}">
+        <input type="hidden" name="search" value="{{ filters.search }}">
+        <input type="hidden" name="limit" value="{{ filters.limit }}">
+        <input type="hidden" name="history_phase" value="{{ history_filters.phase }}">
+        <input type="hidden" name="history_host_name" value="{{ history_filters.host_name }}">
+        <input type="hidden" name="history_host_file_name" value="{{ history_filters.host_file_name }}">
+        <input type="hidden" name="history_server_file_name" value="{{ history_filters.server_file_name }}">
+        <input type="hidden" name="history_message" value="{{ history_filters.message }}">
+        <input type="hidden" name="history_date_field" value="{{ history_filters.date_field }}">
+        <input type="hidden" name="history_date_from" value="{{ history_filters.date_from }}">
+        <input type="hidden" name="history_date_to" value="{{ history_filters.date_to }}">
+        <input type="hidden" name="history_limit" value="{{ history_filters.limit }}">
+
+        <div class="maintenance-toolbar maintenance-history-toolbar">
+            <div class="maintenance-toolbar-copy">
+                {% if history_loaded %}
+                {{ history_rows|length }} linha(s) de histórico carregadas.
+                {% else %}
+                Nenhuma consulta ao FILE_TASK_HISTORY foi executada ainda.
+                {% endif %}
+            </div>
+            <div class="maintenance-bulk-actions">
+                {% if history_filters.phase == 'backup' %}
+                <button type="submit" name="action" value="{{ action_recreate_backup }}" class="btn-primary-action" {% if not history_loaded %}disabled{% endif %}>Recriar backups selecionados</button>
+                {% else %}
+                <button type="submit" name="action" value="{{ action_recreate_process }}" class="btn-primary-action" {% if not history_loaded %}disabled{% endif %}>Recriar processamentos selecionados</button>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="maintenance-table-wrap">
+            <table class="maintenance-table">
+                <thead>
+                    <tr>
+                        <th class="maintenance-check-col">
+                            <input id="maintenance-history-select-all" type="checkbox" aria-label="Selecionar todos os históricos visíveis">
+                        </th>
+                        <th>ID History</th>
+                        <th>Host</th>
+                        <th>Status Backup</th>
+                        <th>Status Process</th>
+                        <th>Offline</th>
+                        <th>Arquivo Host</th>
+                        <th>Arquivo Server</th>
+                        <th>Mensagem</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if not history_loaded %}
+                    <tr>
+                        <td colspan="9" class="maintenance-empty-cell">
+                            Carregamento sob demanda desativado por padrão para evitar leitura pesada em FILE_TASK_HISTORY.
+                        </td>
+                    </tr>
+                    {% elif history_query_message %}
+                    <tr>
+                        <td colspan="9" class="maintenance-empty-cell">
+                            {{ history_query_message }}
+                        </td>
+                    </tr>
+                    {% else %}
+                    {% for row in history_rows %}
+                    <tr>
+                        <td class="maintenance-check-col">
+                            <input
+                                type="checkbox"
+                                name="selected_history_ids"
+                                value="{{ row.ID_HISTORY }}"
+                                class="maintenance-history-row-checkbox"
+                                aria-label="Selecionar histórico {{ row.ID_HISTORY }}"
+                            >
+                        </td>
+                        <td>{{ row.ID_HISTORY }}</td>
+                        <td>{{ row.NA_HOST_NAME }}</td>
+                        <td><span class="maintenance-status-pill is-status-{{ row.NU_STATUS_BACKUP }}">{{ row.BACKUP_STATUS_LABEL }}</span></td>
+                        <td><span class="maintenance-status-pill is-status-{{ row.NU_STATUS_PROCESSING }}">{{ row.PROCESS_STATUS_LABEL }}</span></td>
+                        <td>{{ 'Sim' if row.IS_OFFLINE else 'Não' }}</td>
+                        <td class="maintenance-file-cell">{{ row.NA_HOST_FILE_NAME }}</td>
+                        <td class="maintenance-file-cell">{{ row.NA_SERVER_FILE_NAME or '-' }}</td>
+                        <td class="maintenance-message-cell">{{ row.NA_MESSAGE or '-' }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="9" class="maintenance-empty-cell">
+                            Nenhum candidato elegível encontrado no FILE_TASK_HISTORY com os filtros atuais.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </form>
+</div>
+
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/maintenance_page.js', v='20260709-maintenance-module') }}"></script>
+{% endblock %}

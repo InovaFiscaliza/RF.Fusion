@@ -168,6 +168,10 @@ class FakeDbRfmIngest:
 
     def __init__(self, *, site_id=501) -> None:
         self.site_id = site_id
+        self.in_transaction = False
+        self.begin_calls = 0
+        self.commit_calls = 0
+        self.rollback_calls = 0
         self.site_geography = {"FK_DISTRICT": 1}
         self.get_site_id_calls = []
         self.get_site_geography_calls = []
@@ -177,11 +181,28 @@ class FakeDbRfmIngest:
         self.insert_file_calls = []
         self.bridge_calls = []
         self.insert_spectrum_calls = []
+        self.reconcile_calls = []
+        self.reset_lineage_calls = []
         self.equipment_calls = []
         self.procedure_calls = []
         self.detector_calls = []
         self.trace_type_calls = []
         self.measure_unit_calls = []
+
+    def begin_transaction(self) -> None:
+        self.in_transaction = True
+        self.begin_calls += 1
+
+    def commit(self) -> None:
+        self.in_transaction = False
+        self.commit_calls += 1
+
+    def rollback(self) -> None:
+        self.in_transaction = False
+        self.rollback_calls += 1
+
+    def build_path(self, site_id: int) -> str:
+        return f"site_{site_id}/catalog"
 
     def get_site_id(self, data):
         self.get_site_id_calls.append(dict(data))
@@ -226,6 +247,24 @@ class FakeDbRfmIngest:
 
     def insert_bridge_spectrum_file(self, spectrum_ids, file_ids):
         self.bridge_calls.append((list(spectrum_ids), list(file_ids)))
+
+    def reconcile_reprocessed_file_lineage(self, **kwargs):
+        self.reconcile_calls.append(dict(kwargs))
+        return {
+            "file_ids": 0,
+            "removed_file_links": 0,
+            "removed_emitter_links": 0,
+            "removed_spectra": 0,
+        }
+
+    def reset_reprocessed_file_lineage(self, **kwargs):
+        self.reset_lineage_calls.append(dict(kwargs))
+        return {
+            "file_ids": 0,
+            "removed_file_links": 0,
+            "removed_emitter_links": 0,
+            "removed_spectra": 0,
+        }
 
     def insert_procedure(self, procedure_name):
         self.procedure_calls.append(procedure_name)
@@ -378,6 +417,53 @@ class SiteResolutionTests(unittest.TestCase):
             "Campo Belo",
         )
 
+    def test_upsert_site_rechecks_identity_after_coordinate_correction(self) -> None:
+        db = FakeDbRfmIngest(site_id=812)
+        fixed_site = {
+            "longitude": -49.280111,
+            "latitude": 16.506472,
+            "altitude": -1.0,
+            "longitude_raw": [-49.280111],
+            "latitude_raw": [16.506472],
+            "altitude_raw": [-1.0],
+            "nu_gnss_measurements": 1,
+            "geographic_path": None,
+        }
+        corrected_site = {
+            **fixed_site,
+            "latitude": -16.506472,
+            "latitude_raw": [-16.506472],
+            "state": "Goiás",
+            "county": "Goiânia",
+            "district": "Setor Central",
+            "district_candidates": ["Setor Central"],
+        }
+        seen_latitudes = []
+
+        def fake_get_site_id(data):
+            seen_latitudes.append(data["latitude"])
+            if data["latitude"] < 0:
+                return 812
+            return False
+
+        db.get_site_id = fake_get_site_id
+
+        with patch.object(
+            processing.geolocation_utils,
+            "reverse_geocode_site_data",
+            return_value=corrected_site,
+        ):
+            site_id = processing.upsert_site(db, dict(fixed_site))
+
+        self.assertEqual(site_id, 812)
+        self.assertEqual(seen_latitudes, [16.506472, -16.506472])
+        self.assertEqual(len(db.insert_site_calls), 0)
+        self.assertEqual(len(db.update_site_calls), 1)
+        self.assertEqual(
+            db.update_site_calls[0]["latitude_raw"],
+            [-16.506472],
+        )
+
     def test_resolve_spectrum_sites_reuses_fixed_site_once(self) -> None:
         db = FakeDbRfmIngest(site_id=77)
         fixed_site = {
@@ -524,7 +610,32 @@ class SpectrumInsertTests(unittest.TestCase):
             metadata={},
         )
 
-    def test_insert_spectra_batch_always_registers_host_file_lineage(self) -> None:
+    def _resolve_dimensions(self, db, bin_data, *, hostname_db) -> None:
+        processing.resolve_spectrum_procedure(db, bin_data)
+        processing.resolve_spectrum_detector(db, bin_data)
+        processing.resolve_spectrum_equipment(
+            db,
+            bin_data,
+            hostname_db=hostname_db,
+        )
+        processing.resolve_spectrum_trace_types(db, bin_data)
+        processing.resolve_spectrum_measure_units(db, bin_data)
+
+    def _register_host_file(self, db, spectrum_ids, *, hostname_db="keysight_mobile") -> None:
+        processing._register_spectrum_file_lineage(
+            db,
+            spectrum_ids=spectrum_ids,
+            hostname=hostname_db,
+            volume=hostname_db,
+            path="/host/path",
+            file_name="source.bin",
+            extension=".bin",
+            size_kb=1,
+            dt_created=datetime(2026, 1, 1, 12, 0, 0),
+            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
+        )
+
+    def test_register_host_file_lineage_bridges_existing_spectra(self) -> None:
         db = FakeDbRfmIngest()
         bin_data = {
             "method": "Drive test",
@@ -533,18 +644,13 @@ class SpectrumInsertTests(unittest.TestCase):
                 self._build_spectrum(site_id=11, equipment_name="keysight b"),
             ],
         }
+        self._resolve_dimensions(db, bin_data, hostname_db="keysight_mobile")
 
         spectrum_ids = processing.insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
-            hostname_db="keysight_mobile",
-            host_path="/host/path",
-            host_file_name="source.bin",
-            extension=".bin",
-            vl_file_size_kb=1,
-            dt_created=datetime(2026, 1, 1, 12, 0, 0),
-            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
         )
+        self._register_host_file(db, spectrum_ids)
 
         self.assertEqual(len(db.insert_file_calls), 1)
         self.assertEqual(len(db.bridge_calls), 1)
@@ -553,24 +659,19 @@ class SpectrumInsertTests(unittest.TestCase):
         self.assertEqual(db.insert_spectrum_calls[0]["id_site"], 10)
         self.assertEqual(db.insert_spectrum_calls[1]["id_site"], 11)
 
-    def test_insert_spectra_batch_keeps_host_file_for_allowlisted_family(self) -> None:
+    def test_register_host_file_lineage_keeps_host_file_for_allowlisted_family(self) -> None:
         db = FakeDbRfmIngest()
         bin_data = {
             "method": "Fixed logger",
             "spectrum": [self._build_spectrum(site_id=10)],
         }
+        self._resolve_dimensions(db, bin_data, hostname_db="rfeye002106")
 
-        processing.insert_spectra_batch(
+        spectrum_ids = processing.insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
-            hostname_db="rfeye002106",
-            host_path="/host/path",
-            host_file_name="source.bin",
-            extension=".bin",
-            vl_file_size_kb=1,
-            dt_created=datetime(2026, 1, 1, 12, 0, 0),
-            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
         )
+        self._register_host_file(db, spectrum_ids, hostname_db="rfeye002106")
 
         self.assertEqual(len(db.insert_file_calls), 1)
         self.assertEqual(len(db.bridge_calls), 1)
@@ -587,17 +688,11 @@ class SpectrumInsertTests(unittest.TestCase):
             "method": "Drive test",
             "spectrum": [spectrum],
         }
+        self._resolve_dimensions(db, bin_data, hostname_db="keysight_mobile")
 
         processing.insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
-            hostname_db="keysight_mobile",
-            host_path="/host/path",
-            host_file_name="source.bin",
-            extension=".bin",
-            vl_file_size_kb=1,
-            dt_created=datetime(2026, 1, 1, 12, 0, 0),
-            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
         )
 
         js_metadata = json.loads(db.insert_spectrum_calls[0]["js_metadata"])
@@ -623,17 +718,11 @@ class SpectrumInsertTests(unittest.TestCase):
             "method": "Fixed logger",
             "spectrum": [spectrum_a, spectrum_b],
         }
+        self._resolve_dimensions(db, bin_data, hostname_db="rfeye002083")
 
         spectrum_ids = processing.insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
-            hostname_db="rfeye002083",
-            host_path="/host/path",
-            host_file_name="source.bin",
-            extension=".bin",
-            vl_file_size_kb=1,
-            dt_created=datetime(2026, 1, 1, 12, 0, 0),
-            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
         )
 
         self.assertEqual(spectrum_ids, [801, 801])
@@ -657,17 +746,11 @@ class SpectrumInsertTests(unittest.TestCase):
             "method": "Drive test",
             "spectrum": [spectrum_a, spectrum_b],
         }
+        self._resolve_dimensions(db, bin_data, hostname_db="keysight_mobile")
 
         spectrum_ids = processing.insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
-            hostname_db="keysight_mobile",
-            host_path="/host/path",
-            host_file_name="source.bin",
-            extension=".bin",
-            vl_file_size_kb=1,
-            dt_created=datetime(2026, 1, 1, 12, 0, 0),
-            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
         )
 
         self.assertEqual(spectrum_ids, [801, 802])
@@ -680,17 +763,11 @@ class SpectrumInsertTests(unittest.TestCase):
             "method": "Fixed logger",
             "spectrum": [spectrum],
         }
+        self._resolve_dimensions(db, bin_data, hostname_db="CWSM211005")
 
         processing.insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
-            hostname_db="CWSM211005",
-            host_path="/host/path",
-            host_file_name="source.zip",
-            extension=".zip",
-            vl_file_size_kb=1,
-            dt_created=datetime(2026, 1, 1, 12, 0, 0),
-            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
         )
 
         self.assertEqual(
@@ -710,20 +787,11 @@ class SpectrumInsertTests(unittest.TestCase):
             "method": "Fixed logger",
             "spectrum": [spectrum],
         }
+        self._resolve_dimensions(db, bin_data, hostname_db="CWSM211006")
 
         processing.insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
-            hostname_db="CWSM211006",
-            host_path="/host/path",
-            host_file_name=(
-                "CWSM21100006_E28_A1_Spec Frq=2350.000 Span=100.000 "
-                "RBW=100.00000_[2024-09-26-11-08-06]_[2024-09-29-11-08-18]_3_DONE.zip"
-            ),
-            extension=".zip",
-            vl_file_size_kb=1,
-            dt_created=datetime(2026, 1, 1, 12, 0, 0),
-            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
         )
 
         self.assertEqual(
@@ -743,17 +811,11 @@ class SpectrumInsertTests(unittest.TestCase):
             "method": "Fixed logger",
             "spectrum": [spectrum],
         }
+        self._resolve_dimensions(db, bin_data, hostname_db="CWSM2110021")
 
         processing.insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
-            hostname_db="CWSM2110021",
-            host_path="/host/path",
-            host_file_name="source.zip",
-            extension=".zip",
-            vl_file_size_kb=1,
-            dt_created=datetime(2026, 1, 1, 12, 0, 0),
-            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
         )
 
         self.assertEqual(
@@ -766,7 +828,7 @@ class SpectrumInsertTests(unittest.TestCase):
             ],
         )
 
-    def test_insert_spectra_batch_uses_host_identity_and_receiver_type_for_ermx(self) -> None:
+    def test_insert_spectra_batch_uses_station_type_for_ermx(self) -> None:
         db = FakeDbRfmIngest()
         spectrum = self._build_spectrum(
             site_id=10,
@@ -776,17 +838,11 @@ class SpectrumInsertTests(unittest.TestCase):
             "method": "Fixed logger",
             "spectrum": [spectrum],
         }
+        self._resolve_dimensions(db, bin_data, hostname_db="ERMxES03")
 
         processing.insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
-            hostname_db="ERMxES03",
-            host_path="/host/path",
-            host_file_name="source.bin",
-            extension=".bin",
-            vl_file_size_kb=1,
-            dt_created=datetime(2026, 1, 1, 12, 0, 0),
-            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
         )
 
         self.assertEqual(
@@ -794,7 +850,34 @@ class SpectrumInsertTests(unittest.TestCase):
             [
                 {
                     "name": "ermxes03",
-                    "type_hint": "TEKTRONIX,SA2500,B040241,7.041",
+                    "type_hint": "ermx",
+                }
+            ],
+        )
+
+    def test_insert_spectra_batch_keeps_ermx_station_type_after_analyzer_change(self) -> None:
+        db = FakeDbRfmIngest()
+        spectrum = self._build_spectrum(
+            site_id=10,
+            equipment_name="Rohde&Schwarz,FSL-6,100404/006,2.30",
+        )
+        bin_data = {
+            "method": "Fixed logger",
+            "spectrum": [spectrum],
+        }
+        self._resolve_dimensions(db, bin_data, hostname_db="ERMXGO01")
+
+        processing.insert_spectra_batch(
+            db_rfm=db,
+            bin_data=bin_data,
+        )
+
+        self.assertEqual(
+            db.equipment_calls,
+            [
+                {
+                    "name": "ermxgo01",
+                    "type_hint": "ermx",
                 }
             ],
         )
@@ -809,17 +892,11 @@ class SpectrumInsertTests(unittest.TestCase):
             "method": "Fixed logger",
             "spectrum": [spectrum],
         }
+        self._resolve_dimensions(db, bin_data, hostname_db="UMSDF01")
 
         processing.insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
-            hostname_db="UMSDF01",
-            host_path="/host/path",
-            host_file_name="source.bin",
-            extension=".bin",
-            vl_file_size_kb=1,
-            dt_created=datetime(2026, 1, 1, 12, 0, 0),
-            dt_modified=datetime(2026, 1, 1, 12, 0, 0),
         )
 
         self.assertEqual(
@@ -831,6 +908,160 @@ class SpectrumInsertTests(unittest.TestCase):
                 }
             ],
         )
+
+
+class RunProcessingFlowTests(unittest.TestCase):
+    """Validate orchestration order for full file processing runs."""
+
+    def test_run_processing_flow_reconciles_existing_lineage_before_fact_inserts(self) -> None:
+        db = FakeDbRfmIngest(site_id=219)
+        fake_log = FakeWorkerLog()
+        call_order = []
+        source_created = datetime(2026, 4, 2, 13, 8, 56)
+        source_modified = datetime(2026, 4, 2, 13, 8, 56)
+        task = {
+            "file_task_id": 321,
+            "host_id": 10804,
+            "hostname_db": "CWSM21100011",
+            "server_path": "/mnt/reposfi/trash",
+            "server_name": "source.zip",
+            "host_path": "C:/CelPlan/CellWireless RU/Spectrum/Completed/2025_11/Compressed",
+            "host_file_name": "source.zip",
+            "extension": ".zip",
+            "dt_created": source_created,
+            "dt_modified": source_modified,
+            "vl_file_size_kb": 12345,
+            "filename": "/mnt/reposfi/trash/source.zip",
+            "export": True,
+            "source_file_meta": {
+                "file_path": "/mnt/reposfi/trash",
+                "file_name": "source.zip",
+                "extension": ".zip",
+                "size_kb": 12345,
+                "dt_created": source_created,
+                "dt_modified": source_modified,
+                "full_path": "/mnt/reposfi/trash/source.zip",
+            },
+        }
+        spectrum = SimpleNamespace(
+            site_id=219,
+            site_data={
+                "longitude": -43.196388,
+                "latitude": -22.908333,
+                "altitude": 5.0,
+                "longitude_raw": [-43.196388],
+                "latitude_raw": [-22.908333],
+                "altitude_raw": [5.0],
+                "nu_gnss_measurements": 1,
+                "geographic_path": None,
+            },
+            start_dateidx=datetime(2025, 10, 31, 15, 50, 27),
+            stop_dateidx=datetime(2025, 11, 1, 3, 48, 51),
+        )
+        bin_data = {"method": "Fixed logger", "spectrum": [spectrum]}
+        process_file_meta = {
+            "file_path": "/mnt/reposfi/tmp/CWSM21100011",
+            "file_name": "sample_DONE.mat",
+            "extension": ".mat",
+            "size_kb": 27352,
+            "dt_created": source_created,
+            "dt_modified": source_modified,
+            "full_path": "/mnt/reposfi/tmp/CWSM21100011/sample_DONE.mat",
+        }
+        promoted_file_meta = dict(process_file_meta)
+
+        class FakeApp:
+            def process(self, **kwargs):
+                return (
+                    dict(bin_data),
+                    dict(process_file_meta),
+                    {"General": {"status": "ok"}},
+                    {"payload": "ok"},
+                )
+
+        original_reset = db.reset_reprocessed_file_lineage
+
+        def fake_reset(**kwargs):
+            call_order.append(("reset_lineage", kwargs))
+            return original_reset(**kwargs)
+
+        def fake_insert_spectra_batch(*, db_rfm, bin_data):
+            call_order.append(("insert_spectra_batch", len(bin_data["spectrum"])))
+            return [9001]
+
+        with patch.object(
+            processing,
+            "resolve_spectrum_sites",
+            return_value=[219],
+        ):
+            with patch.object(
+                processing,
+                "resolve_spectrum_procedure",
+                side_effect=lambda *args, **kwargs: None,
+            ):
+                with patch.object(
+                    processing,
+                    "resolve_spectrum_detector",
+                    side_effect=lambda *args, **kwargs: None,
+                ):
+                    with patch.object(
+                        processing,
+                        "resolve_spectrum_equipment",
+                        side_effect=lambda *args, **kwargs: None,
+                    ):
+                        with patch.object(
+                            processing,
+                            "resolve_spectrum_trace_types",
+                            side_effect=lambda *args, **kwargs: None,
+                        ):
+                            with patch.object(
+                                processing,
+                                "resolve_spectrum_measure_units",
+                                side_effect=lambda *args, **kwargs: None,
+                            ):
+                                with patch.object(
+                                    db,
+                                    "reset_reprocessed_file_lineage",
+                                    side_effect=fake_reset,
+                                ):
+                                    with patch.object(
+                                        processing,
+                                        "insert_spectra_batch",
+                                        side_effect=fake_insert_spectra_batch,
+                                    ):
+                                        with patch.object(
+                                            processing.file_utils,
+                                            "promote_final_artifact",
+                                            return_value=promoted_file_meta,
+                                        ):
+                                            result = processing.run_processing_flow(
+                                                db,
+                                                task,
+                                                FakeApp(),
+                                                logger=fake_log,
+                                                service_name="svc",
+                                            )
+
+        self.assertEqual(result["spectrum_ids"], [9001])
+        self.assertEqual(call_order[0][0], "reset_lineage")
+        self.assertEqual(call_order[1][0], "insert_spectra_batch")
+        self.assertEqual(len(db.reset_lineage_calls), 1)
+        self.assertEqual(
+            db.reset_lineage_calls[0],
+            {
+                "host_volume": "CWSM21100011",
+                "host_path": "C:/CelPlan/CellWireless RU/Spectrum/Completed/2025_11/Compressed",
+                "host_file": "source.zip",
+                "repository_volume": processing.k.REPO_VOLUME_NAME,
+                "repository_path": "/mnt/reposfi/2025/site_219/catalog",
+                "repository_file": "sample_DONE.mat",
+            },
+        )
+        self.assertEqual(len(db.insert_file_calls), 2)
+        self.assertEqual(len(db.bridge_calls), 2)
+        self.assertEqual(db.begin_calls, 1)
+        self.assertEqual(db.commit_calls, 1)
+        self.assertEqual(db.rollback_calls, 0)
 
 
 class FileMetadataTests(unittest.TestCase):
@@ -1939,6 +2170,62 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             self.assertIn("[ERROR] validation failed", db_bp.history_updates[0]["NA_MESSAGE"])
             self.assertEqual(len(db_bp.statistics_updates), 1)
 
+    def test_write_task_error_keeps_resolution_when_statistics_refresh_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir) / "reposfi"
+            source_dir = repo_root / "incoming"
+            source_dir.mkdir(parents=True)
+
+            source_file = source_dir / "sample_DONE.zip"
+            source_file.write_text("zip payload", encoding="utf-8")
+            partial_artifact = source_dir / "sample_DONE.mat"
+            partial_artifact.write_text("partial mat", encoding="utf-8")
+
+            source_meta = build_test_file_meta(source_file)
+            partial_meta = build_test_file_meta(partial_artifact)
+            db_bp = FakeDbBkp()
+            fake_log = FakeWorkerLog()
+            err = FakeErr("[ERROR] validation failed", triggered=True)
+            err.exc = SimpleNamespace(file_meta=partial_meta)
+
+            def raise_statistics_refresh(**_kwargs) -> None:
+                raise RuntimeError("summary locked")
+
+            db_bp.host_task_statistics_create = raise_statistics_refresh
+
+            task = {
+                "file_task_id": 102,
+                "host_id": 9,
+                "host_file_name": "host_sample.zip",
+                "host_path": "/host/path",
+                "filename": str(source_file),
+                "source_file_meta": source_meta,
+                "export": True,
+                "server_name": source_file.name,
+                "extension": ".zip",
+                "vl_file_size_kb": source_meta["size_kb"],
+                "dt_created": source_meta["dt_created"],
+                "dt_modified": source_meta["dt_modified"],
+                "server_path": str(source_dir),
+            }
+
+            with patch.object(worker.k, "REPO_FOLDER", str(repo_root)):
+                with patch.object(worker.k, "TRASH_FOLDER", "trash"):
+                    with patch.object(worker, "log", fake_log):
+                        worker._write_task_error(db_bp, task, err)
+
+            self.assertEqual(db_bp.transaction_events, ["begin", "commit"])
+            self.assertEqual(len(db_bp.task_deletes), 1)
+            self.assertTrue(
+                any(
+                    isinstance(item, tuple) and item[0] == "task_error"
+                    for item in fake_log.errors
+                )
+            )
+            self.assertTrue(
+                any("host_statistics_refresh_failed" in warning for warning in fake_log.warnings)
+            )
+
     def test_finalize_success_rolls_back_when_history_update_affects_zero_rows(self) -> None:
         fake_log = FakeWorkerLog()
         db_bp = FakeDbBkp()
@@ -1975,6 +2262,53 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         self.assertEqual(len(db_bp.statistics_updates), 0)
         self.assertEqual(db_bp.transaction_events, ["begin", "rollback"])
         self.assertTrue(any("task_finalization_failed" in str(e) for e in fake_log.errors))
+
+    def test_finalize_success_keeps_done_when_statistics_refresh_fails(self) -> None:
+        fake_log = FakeWorkerLog()
+        db_bp = FakeDbBkp()
+        task = {
+            "file_task_id": 103,
+            "host_id": 10,
+            "host_file_name": "host_sample.zip",
+            "host_path": "/host/path",
+            "filename": "sample.zip",
+        }
+        result = {
+            "file_meta": {
+                "file_path": "/mnt/reposfi/2026/DF/1/2",
+                "file_name": "sample_DONE.mat",
+                "extension": ".mat",
+                "size_kb": 123,
+                "dt_created": datetime(2026, 1, 1, 0, 0, 0),
+                "dt_modified": datetime(2026, 1, 1, 0, 0, 0),
+                "full_path": "/mnt/reposfi/2026/DF/1/2/sample_DONE.mat",
+            },
+            "new_path": "/mnt/reposfi/2026/DF/1/2",
+            "bin_data": None,
+            "resolved_site_ids": None,
+            "spectrum_ids": None,
+        }
+
+        def raise_statistics_refresh(**_kwargs) -> None:
+            raise RuntimeError("summary locked")
+
+        db_bp.host_task_statistics_create = raise_statistics_refresh
+
+        with patch.object(worker, "log", fake_log):
+            worker._finalize_success(db_bp, task, result, elapsed_sec=1.234)
+
+        self.assertEqual(db_bp.transaction_events, ["begin", "commit"])
+        self.assertEqual(len(db_bp.task_deletes), 1)
+        self.assertTrue(
+            any(
+                isinstance(item, tuple) and item[0] == "task_done"
+                for item in fake_log.entries
+            )
+        )
+        self.assertTrue(
+            any("host_statistics_refresh_failed" in warning for warning in fake_log.warnings)
+        )
+        self.assertFalse(any("task_finalization_failed" in str(e) for e in fake_log.errors))
 
 
 if __name__ == "__main__":

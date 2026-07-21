@@ -284,5 +284,70 @@ class SummaryOutboxShapeTests(unittest.TestCase):
             handler._assert_summary_outbox_schema()
 
 
+class BaseCustomExecutionTransactionTests(unittest.TestCase):
+    """Validate rollback ownership in shared custom SQL helpers."""
+
+    def make_base_handler(self, *, in_transaction: bool):
+        handler = object.__new__(db_base_module.DBHandlerBase)
+        handler.log = FakeLog()
+        handler.database = "BPDATA"
+        handler.reuse_connection = True
+        handler.in_transaction = in_transaction
+        handler._connect = lambda: None
+        handler._disconnect = lambda *args, **kwargs: None
+
+        class FakeConnection:
+            def __init__(self) -> None:
+                self.rollback_calls = 0
+                self.commit_calls = 0
+
+            def rollback(self) -> None:
+                self.rollback_calls += 1
+
+            def commit(self) -> None:
+                self.commit_calls += 1
+
+        class FailingCursor:
+            def execute(self, *_args, **_kwargs) -> None:
+                raise RuntimeError("statement failed")
+
+            def executemany(self, *_args, **_kwargs) -> None:
+                raise RuntimeError("statement failed")
+
+        handler.db_connection = FakeConnection()
+        handler.cursor = FailingCursor()
+        return handler
+
+    def test_execute_custom_skips_rollback_inside_managed_transaction(self) -> None:
+        """Statement failure must not roll back an outer managed transaction."""
+
+        handler = self.make_base_handler(in_transaction=True)
+
+        with self.assertRaises(RuntimeError):
+            handler._execute_custom(
+                "UPDATE SUMMARY_OUTBOX SET NA_REASON = %s",
+                ("host_update",),
+                commit=False,
+            )
+
+        self.assertEqual(handler.db_connection.rollback_calls, 0)
+        self.assertEqual(handler.log.errors[0][0], "db_execute_failed")
+
+    def test_execute_many_custom_skips_rollback_inside_managed_transaction(self) -> None:
+        """Batch failure must not roll back an outer managed transaction."""
+
+        handler = self.make_base_handler(in_transaction=True)
+
+        with self.assertRaises(RuntimeError):
+            handler._execute_many_custom(
+                "REPLACE INTO SUMMARY_OUTBOX VALUES (%s, %s, %s, %s)",
+                [("host", "7", "dbHandlerBKP", "file_task_delete")],
+                commit=False,
+            )
+
+        self.assertEqual(handler.db_connection.rollback_calls, 0)
+        self.assertEqual(handler.log.errors[0][0], "db_executemany_failed")
+
+
 if __name__ == "__main__":
     unittest.main()

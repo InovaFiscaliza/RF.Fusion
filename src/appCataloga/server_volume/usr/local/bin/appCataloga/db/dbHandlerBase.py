@@ -646,7 +646,7 @@ class DBHandlerBase:
             ``__like``    → ``col LIKE %s``
             ``__between`` → ``col BETWEEN %s AND %s``  (value: ``[low, high]``)
             ``__in``      → ``col IN (%s, …)``         (value: list/tuple)
-            no suffix     → ``col = %s``
+            no suffix     → ``col = %s`` or ``col IS NULL`` when value is ``None``
 
         Args:
             where: Filter dict following the operator DSL above.
@@ -704,6 +704,11 @@ class DBHandlerBase:
                 else:
                     raise ValueError(f"Unsupported operator '__{op}'")
             else:
+                # `= NULL` never matches in SQL. Use `IS NULL` so handlers can
+                # build idempotent lookups with nullable identity columns.
+                if value is None:
+                    parts.append(f"{key} IS NULL")
+                    continue
                 parts.append(f"{key}=%s")
                 params.append(value)
 
@@ -1365,6 +1370,8 @@ class DBHandlerBase:
         Raises:
             mysql.connector.Error: On execution or commit failure.
         """
+        manage_own_transaction = commit or not getattr(self, "in_transaction", False)
+
         try:
             self.cursor.execute(sql, params)
             affected = int(self.cursor.rowcount or 0)
@@ -1372,7 +1379,11 @@ class DBHandlerBase:
                 self.db_connection.commit()
             return affected
         except Exception as e:
-            self.db_connection.rollback()
+            if manage_own_transaction:
+                try:
+                    self.db_connection.rollback()
+                except Exception:
+                    pass
             self._log_db_error(
                 "db_execute_failed",
                 operation="execute_custom",
@@ -1396,6 +1407,8 @@ class DBHandlerBase:
         Raises:
             mysql.connector.Error: On execution or commit failure.
         """
+        manage_own_transaction = commit or not getattr(self, "in_transaction", False)
+
         try:
             self.cursor.executemany(sql, values)
             affected = int(self.cursor.rowcount or 0)
@@ -1403,7 +1416,11 @@ class DBHandlerBase:
                 self.db_connection.commit()
             return affected
         except Exception as e:
-            self.db_connection.rollback()
+            if manage_own_transaction:
+                try:
+                    self.db_connection.rollback()
+                except Exception:
+                    pass
             self._log_db_error(
                 "db_executemany_failed",
                 operation="execute_many_custom",

@@ -84,7 +84,7 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
         err = appcataloga.errors.ErrorHandler(fake_log)
 
         with patch.object(appcataloga, "log", fake_log):
-            _, response = appcataloga.handle_host_request(
+            _, response = appcataloga._process_host_request(
                 self._build_host_payload("backup"),
                 err,
                 fake_db,
@@ -100,7 +100,7 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
         err = appcataloga.errors.ErrorHandler(fake_log)
 
         with patch.object(appcataloga, "log", fake_log):
-            _, response = appcataloga.handle_host_request(
+            _, response = appcataloga._process_host_request(
                 self._build_host_payload("STOP"),
                 err,
                 fake_db,
@@ -120,13 +120,23 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
 
         with patch.object(appcataloga, "log", fake_log):
             with self.assertRaises(ValueError):
-                appcataloga.handle_host_request(
+                appcataloga._process_host_request(
                     self._build_host_payload("backup"),
                     err,
                     fake_db,
                 )
 
-        self.assertEqual(fake_db.host_upserts, [])
+        self.assertEqual(
+            fake_db.host_upserts[0],
+            {
+                "ID_HOST": 77,
+                "NA_HOST_NAME": "CWSM211004",
+                "NA_HOST_ADDRESS": "10.0.0.10",
+                "NA_HOST_PORT": 22,
+                "NA_HOST_USER": "celplan",
+                "NA_HOST_PASSWORD": "secret",
+            },
+        )
         self.assertEqual(fake_db.queued_tasks, [])
 
     def test_stop_query_allows_known_offline_host(self) -> None:
@@ -136,7 +146,7 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
         err = appcataloga.errors.ErrorHandler(fake_log)
 
         with patch.object(appcataloga, "log", fake_log):
-            _, response = appcataloga.handle_host_request(
+            _, response = appcataloga._process_host_request(
                 self._build_host_payload("stop"),
                 err,
                 fake_db,

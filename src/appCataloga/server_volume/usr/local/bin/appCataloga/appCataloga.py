@@ -226,17 +226,17 @@ def _process_host_request(
     task_type = _resolve_task_type(command, err)
     host_id, host_filter = _validate_host_request(host, err)
     host_status = _read_host_status(db, host_id, err)
-    # Offline hosts reject new backup requests early. This keeps the gateway
-    # cheap and leaves real recovery to the connectivity worker.
-    _guard_offline_backup_request(
-        command=command,
+    _ensure_host(
+        db,
+        host,
         host_id=host_id,
         host_status=host_status,
         err=err,
     )
-    _ensure_host(
-        db,
-        host,
+    # Keep access data current even for offline hosts. A later backup request
+    # may be the first one that carries the fixed IP, port, or credentials.
+    _guard_offline_backup_request(
+        command=command,
         host_id=host_id,
         host_status=host_status,
         err=err,

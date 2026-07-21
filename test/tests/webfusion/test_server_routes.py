@@ -13,6 +13,7 @@ What is covered here:
 import importlib
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -118,6 +119,7 @@ class TestServerUsageMetrics(unittest.TestCase):
         self.assertEqual(usage_metrics["totals"]["page_view_count"], 1)
         self.assertEqual(usage_metrics["totals"]["spectrum_query_count"], 0)
         self.assertEqual(usage_metrics["totals"]["download_action_count"], 0)
+        self.assertEqual(usage_metrics["totals"]["nginx_download_count"], 0)
         self.assertTrue(usage_metrics["current_year_label"])
         self.assertTrue(usage_metrics["current_month_label"])
 
@@ -142,10 +144,67 @@ class TestServerUsageMetrics(unittest.TestCase):
                 "page_view_count": 2,
                 "spectrum_query_count": 1,
                 "download_action_count": 1,
+                "nginx_download_count": 0,
             },
         )
         self.assertEqual(len(snapshot["annual_breakdown"]), 1)
         self.assertEqual(len(snapshot["monthly_breakdown"]), 1)
+
+    def test_usage_metrics_ingest_nginx_downloads_from_log_once(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "access.log"
+            log_path.write_text(
+                (
+                    '10.88.0.34 - - [06/Jul/2026:18:06:19 +0000] '
+                    '"GET /downloads/sample-a.mat HTTP/1.1" 200 100 "-" "ua"\n'
+                    '10.88.0.34 - - [06/Jul/2026:18:06:20 +0000] '
+                    '"GET /downloads/sample-b.mat HTTP/1.1" 206 100 "-" "ua"\n'
+                    '10.88.0.34 - - [06/Jul/2026:18:06:21 +0000] '
+                    '"GET /static/js/base_page.js HTTP/1.1" 200 100 "-" "ua"\n'
+                ),
+                encoding="utf-8",
+            )
+            previous_path = os.environ.get("WEBFUSION_NGINX_DOWNLOAD_LOG_PATH")
+            os.environ["WEBFUSION_NGINX_DOWNLOAD_LOG_PATH"] = str(log_path)
+            try:
+                first_snapshot = self.usage_metrics.get_usage_metrics_snapshot()
+                second_snapshot = self.usage_metrics.get_usage_metrics_snapshot()
+            finally:
+                if previous_path is None:
+                    os.environ.pop("WEBFUSION_NGINX_DOWNLOAD_LOG_PATH", None)
+                else:
+                    os.environ["WEBFUSION_NGINX_DOWNLOAD_LOG_PATH"] = previous_path
+
+        self.assertEqual(first_snapshot["totals"]["nginx_download_count"], 2)
+        self.assertEqual(second_snapshot["totals"]["nginx_download_count"], 2)
+
+    def test_usage_metrics_keep_monthly_nginx_total_after_log_truncation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "access.log"
+            previous_path = os.environ.get("WEBFUSION_NGINX_DOWNLOAD_LOG_PATH")
+            os.environ["WEBFUSION_NGINX_DOWNLOAD_LOG_PATH"] = str(log_path)
+            try:
+                log_path.write_text(
+                    '10.88.0.34 - - [06/Jul/2026:18:06:19 +0000] '
+                    '"GET /downloads/sample-a.mat HTTP/1.1" 200 100 "-" "ua"\n',
+                    encoding="utf-8",
+                )
+                first_snapshot = self.usage_metrics.get_usage_metrics_snapshot()
+
+                log_path.write_text(
+                    '10.88.0.34 - - [06/Jul/2026:18:16:19 +0000] '
+                    '"GET /downloads/sample-b.mat HTTP/1.1" 200 100 "-" "ua"\n',
+                    encoding="utf-8",
+                )
+                second_snapshot = self.usage_metrics.get_usage_metrics_snapshot()
+            finally:
+                if previous_path is None:
+                    os.environ.pop("WEBFUSION_NGINX_DOWNLOAD_LOG_PATH", None)
+                else:
+                    os.environ["WEBFUSION_NGINX_DOWNLOAD_LOG_PATH"] = previous_path
+
+        self.assertEqual(first_snapshot["totals"]["nginx_download_count"], 1)
+        self.assertEqual(second_snapshot["totals"]["nginx_download_count"], 2)
 
 
 if __name__ == "__main__":

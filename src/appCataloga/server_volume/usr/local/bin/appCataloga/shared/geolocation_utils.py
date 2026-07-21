@@ -54,6 +54,18 @@ DISTRICT_FALLBACK_ADDRESS_KEYS = (
 )
 
 
+def _flip_site_latitude(data: dict) -> dict:
+    """Mirror latitude fields when the source payload likely inverted the sign."""
+    mirrored = dict(data)
+    mirrored["latitude"] = -float(data["latitude"])
+
+    latitude_raw = data.get("latitude_raw")
+    if isinstance(latitude_raw, list):
+        mirrored["latitude_raw"] = [-float(value) for value in latitude_raw]
+
+    return mirrored
+
+
 def _normalize_admin_value(value: str | None) -> str | None:
     """Normalize one administrative label for stable comparisons."""
     if not value:
@@ -194,6 +206,22 @@ def reverse_geocode_site_data(
         site_data,
         user_agent=user_agent,
     )
+
+    # Some fixed appColeta payloads were observed with latitude sign inverted.
+    # Only try the mirrored latitude after the original point returned no
+    # location, so valid Northern-Brazil coordinates keep their real sign.
+    if (
+        location is None
+        and not site_data.get("geographic_path")
+        and float(site_data["latitude"]) > 0
+        and float(site_data["longitude"]) < 0
+    ):
+        site_data = _flip_site_latitude(site_data)
+        location = reverse_geocode_with_retry(
+            site_data,
+            user_agent=user_agent,
+        )
+
     return map_location_to_site_data(
         location,
         site_data,
@@ -205,7 +233,14 @@ def map_location_to_site_data(location, data, required_address_field: dict) -> d
     """
     Map a Nominatim location payload into the internal SITE structure.
     """
-    address = location.raw.get("address", {})
+    if location is None:
+        raise ValueError("Reverse geocoder returned no location")
+
+    raw_payload = getattr(location, "raw", None)
+    if not isinstance(raw_payload, dict):
+        raise ValueError("Reverse geocoder returned a location without raw payload")
+
+    address = raw_payload.get("address", {})
 
     for field, candidates in required_address_field.items():
         _assign_address_field(

@@ -16,6 +16,8 @@ import re
 import config as k
 from .dbHandlerBase import DBHandlerBase
 
+NON_ALNUM_RE = re.compile(r"[^a-z0-9]+", re.IGNORECASE)
+
 
 class dbHandlerRFM(DBHandlerBase):
     """Handler for sites, files, dimensions, spectra and Parquet export."""
@@ -1034,6 +1036,7 @@ class dbHandlerRFM(DBHandlerBase):
 
         self._connect()
         try:
+            self._ensure_transaction()
             # Resolve the type before checking file identity so a newly-seen
             # artifact always lands with a complete dimension reference.
             ID_TYPE_FILE = self.get_file_type_id_by_hostname(
@@ -1054,7 +1057,25 @@ class dbHandlerRFM(DBHandlerBase):
             )
 
             if rows:
-                return int(rows[0]["ID_FILE"])
+                file_id = int(rows[0]["ID_FILE"])
+                refresh_data = {"ID_TYPE_FILE": ID_TYPE_FILE}
+
+                if NA_EXTENSION is not None:
+                    refresh_data["NA_EXTENSION"] = NA_EXTENSION
+                if VL_FILE_SIZE_KB is not None:
+                    refresh_data["VL_FILE_SIZE_KB"] = VL_FILE_SIZE_KB
+                if DT_FILE_CREATED is not None:
+                    refresh_data["DT_FILE_CREATED"] = DT_FILE_CREATED
+                if DT_FILE_MODIFIED is not None:
+                    refresh_data["DT_FILE_MODIFIED"] = DT_FILE_MODIFIED
+
+                self._update_row(
+                    table="DIM_SPECTRUM_FILE",
+                    data=refresh_data,
+                    where={"ID_FILE": file_id},
+                    commit=not self.in_transaction,
+                )
+                return file_id
 
             # Insert only when this exact repository artifact is still unknown.
             insert_kwargs = {
@@ -1088,6 +1109,428 @@ class dbHandlerRFM(DBHandlerBase):
                     pass
             raise Exception(
                 f"insert_file failed for file '{NA_FILE}' in '{NA_PATH}': {e}"
+            )
+
+        finally:
+            if not self.in_transaction:
+                self._disconnect()
+
+    def _select_file_ids_by_artifacts(
+        self,
+        *,
+        artifacts: list[tuple[str, str, str]],
+    ) -> list[int]:
+        """Return existing analytical file ids for the provided artifact keys."""
+        if not artifacts:
+            return []
+
+        where_clauses = []
+        params: list[str] = []
+        for volume, path, name in artifacts:
+            where_clauses.append("(NA_VOLUME = %s AND NA_PATH = %s AND NA_FILE = %s)")
+            params.extend([volume.lower(), path, name])
+
+        rows = self._select_raw(
+            f"""
+            SELECT ID_FILE
+            FROM DIM_SPECTRUM_FILE
+            WHERE {" OR ".join(where_clauses)}
+            """,
+            tuple(params),
+        )
+        return [int(row["ID_FILE"]) for row in rows]
+
+    def _select_spectrum_merge_rows_by_file_ids(
+        self,
+        *,
+        file_ids: list[int],
+    ) -> list[dict[str, Any]]:
+        """Return file-linked spectra with the fields used for merge pruning."""
+        if not file_ids:
+            return []
+
+        placeholders = ", ".join(["%s"] * len(file_ids))
+        rows = self._select_raw(
+            f"""
+            SELECT DISTINCT
+                f.ID_SPECTRUM,
+                f.FK_SITE,
+                f.FK_DETECTOR,
+                f.FK_TRACE_TYPE,
+                f.FK_MEASURE_UNIT,
+                f.FK_PROCEDURE,
+                f.FK_EQUIPMENT,
+                f.NA_DESCRIPTION,
+                f.NU_FREQ_START,
+                f.NU_FREQ_END,
+                f.DT_TIME_START,
+                f.DT_TIME_END,
+                f.NU_TRACE_COUNT,
+                f.NU_TRACE_LENGTH,
+                f.NU_RBW,
+                f.NU_VBW,
+                f.NU_ATT_GAIN
+            FROM FACT_SPECTRUM f
+            JOIN BRIDGE_SPECTRUM_FILE b
+              ON b.FK_SPECTRUM = f.ID_SPECTRUM
+            WHERE b.FK_FILE IN ({placeholders})
+            """,
+            tuple(file_ids),
+        )
+        return [dict(row) for row in rows]
+
+    def _build_spectrum_merge_key(
+        self,
+        row: dict[str, Any],
+    ) -> tuple[Any, ...]:
+        """Build the logical identity used to compare reprocessed spectra."""
+        return (
+            row["FK_SITE"],
+            row["FK_EQUIPMENT"],
+            row["FK_PROCEDURE"],
+            row["FK_DETECTOR"],
+            row["FK_TRACE_TYPE"],
+            row["FK_MEASURE_UNIT"],
+            row.get("NA_DESCRIPTION"),
+            row["NU_FREQ_START"],
+            row["NU_FREQ_END"],
+            row["DT_TIME_START"],
+            row["NU_TRACE_LENGTH"],
+            row.get("NU_RBW"),
+            row.get("NU_VBW"),
+            row.get("NU_ATT_GAIN"),
+        )
+
+    def _select_redundant_spectrum_ids(
+        self,
+        *,
+        spectra: list[dict[str, Any]],
+    ) -> list[int]:
+        """Return shorter contained spectra that should be pruned."""
+        grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+        redundant_ids: list[int] = []
+
+        for row in spectra:
+            grouped.setdefault(self._build_spectrum_merge_key(row), []).append(row)
+
+        for rows in grouped.values():
+            if len(rows) < 2:
+                continue
+
+            sorted_rows = sorted(
+                rows,
+                key=lambda row: (
+                    -int((row["DT_TIME_END"] - row["DT_TIME_START"]).total_seconds()),
+                    -(int(row["NU_TRACE_COUNT"]) if row.get("NU_TRACE_COUNT") is not None else -1),
+                    int(row["ID_SPECTRUM"]),
+                ),
+            )
+            survivor = sorted_rows[0]
+
+            for candidate in sorted_rows[1:]:
+                if (
+                    survivor["DT_TIME_START"] <= candidate["DT_TIME_START"]
+                    and survivor["DT_TIME_END"] >= candidate["DT_TIME_END"]
+                ):
+                    redundant_ids.append(int(candidate["ID_SPECTRUM"]))
+
+        return redundant_ids
+
+    def _select_orphan_spectrum_context(
+        self,
+        *,
+        spectrum_ids: list[int],
+    ) -> list[dict[str, int]]:
+        """Return spectra that no longer have any file lineage after cleanup."""
+        if not spectrum_ids:
+            return []
+
+        placeholders = ", ".join(["%s"] * len(spectrum_ids))
+        rows = self._select_raw(
+            f"""
+            SELECT
+                f.ID_SPECTRUM,
+                f.FK_SITE,
+                f.FK_EQUIPMENT
+            FROM FACT_SPECTRUM f
+            LEFT JOIN BRIDGE_SPECTRUM_FILE b
+              ON b.FK_SPECTRUM = f.ID_SPECTRUM
+            WHERE f.ID_SPECTRUM IN ({placeholders})
+            GROUP BY
+                f.ID_SPECTRUM,
+                f.FK_SITE,
+                f.FK_EQUIPMENT
+            HAVING COUNT(b.FK_FILE) = 0
+            """,
+            tuple(spectrum_ids),
+        )
+        return [dict(row) for row in rows]
+
+    def _delete_rows_by_int_ids(
+        self,
+        *,
+        table: str,
+        column: str,
+        ids: list[int],
+    ) -> int:
+        """Delete rows by integer ids using one parameterized IN clause."""
+        if not ids:
+            return 0
+
+        placeholders = ", ".join(["%s"] * len(ids))
+        self.cursor.execute(
+            f"DELETE FROM {table} WHERE {column} IN ({placeholders})",
+            tuple(ids),
+        )
+        return int(self.cursor.rowcount or 0)
+
+    def _delete_bridge_file_links(
+        self,
+        *,
+        file_ids: list[int],
+        spectrum_ids: list[int],
+    ) -> int:
+        """Delete lineage links only for the targeted file/spectrum pairs."""
+        if not file_ids or not spectrum_ids:
+            return 0
+
+        file_placeholders = ", ".join(["%s"] * len(file_ids))
+        spectrum_placeholders = ", ".join(["%s"] * len(spectrum_ids))
+        self.cursor.execute(
+            f"""
+            DELETE FROM BRIDGE_SPECTRUM_FILE
+            WHERE FK_FILE IN ({file_placeholders})
+              AND FK_SPECTRUM IN ({spectrum_placeholders})
+            """,
+            tuple(file_ids) + tuple(spectrum_ids),
+        )
+        return int(self.cursor.rowcount or 0)
+
+    def _delete_bridge_file_links_by_file_ids(
+        self,
+        *,
+        file_ids: list[int],
+    ) -> int:
+        """Delete every lineage link attached to the provided file ids."""
+        if not file_ids:
+            return 0
+
+        file_placeholders = ", ".join(["%s"] * len(file_ids))
+        self.cursor.execute(
+            f"""
+            DELETE FROM BRIDGE_SPECTRUM_FILE
+            WHERE FK_FILE IN ({file_placeholders})
+            """,
+            tuple(file_ids),
+        )
+        return int(self.cursor.rowcount or 0)
+
+    def reset_reprocessed_file_lineage(
+        self,
+        *,
+        host_volume: str,
+        host_path: str,
+        host_file: str,
+        repository_volume: str,
+        repository_path: str,
+        repository_file: str,
+    ) -> dict[str, int]:
+        """Remove the previous analytical lineage for one reprocessed artifact pair.
+
+        The current appAnalise payload is treated as the full authoritative
+        representation of the source file. Reprocessing may therefore change
+        not only time coverage but also the spectrum partitioning itself
+        (for example one wide trace becoming several narrower sub-bands).
+
+        This helper clears all existing bridge rows for the host/repository
+        artifact pair before the caller inserts the fresh spectra inside the
+        same transaction. Orphaned FACT and emitter rows are deleted only when
+        no other file still references them.
+        """
+        self._connect()
+        try:
+            self._ensure_transaction()
+            file_ids = self._select_file_ids_by_artifacts(
+                artifacts=[
+                    (host_volume, host_path, host_file),
+                    (repository_volume, repository_path, repository_file),
+                ]
+            )
+            if not file_ids:
+                return {
+                    "file_ids": 0,
+                    "removed_file_links": 0,
+                    "removed_emitter_links": 0,
+                    "removed_spectra": 0,
+                }
+
+            linked_spectra = self._select_spectrum_merge_rows_by_file_ids(
+                file_ids=file_ids
+            )
+            linked_spectrum_ids = sorted(
+                {int(row["ID_SPECTRUM"]) for row in linked_spectra}
+            )
+            if not linked_spectrum_ids:
+                return {
+                    "file_ids": len(file_ids),
+                    "removed_file_links": 0,
+                    "removed_emitter_links": 0,
+                    "removed_spectra": 0,
+                }
+
+            removed_file_links = self._delete_bridge_file_links_by_file_ids(
+                file_ids=file_ids,
+            )
+            orphan_spectra = self._select_orphan_spectrum_context(
+                spectrum_ids=linked_spectrum_ids
+            )
+            orphan_spectrum_ids = [int(row["ID_SPECTRUM"]) for row in orphan_spectra]
+
+            removed_emitter_links = self._delete_rows_by_int_ids(
+                table="BRIDGE_SPECTRUM_EMITTER",
+                column="FK_SPECTRUM",
+                ids=orphan_spectrum_ids,
+            )
+            removed_spectra = self._delete_rows_by_int_ids(
+                table="FACT_SPECTRUM",
+                column="ID_SPECTRUM",
+                ids=orphan_spectrum_ids,
+            )
+
+            if not self.in_transaction:
+                self.db_connection.commit()
+
+            self._summary_publish_scope(
+                site_ids=[
+                    int(row["FK_SITE"])
+                    for row in orphan_spectra
+                    if row.get("FK_SITE") is not None
+                ],
+                equipment_ids=[
+                    int(row["FK_EQUIPMENT"])
+                    for row in orphan_spectra
+                    if row.get("FK_EQUIPMENT") is not None
+                ],
+                reason="reset_reprocessed_file_lineage",
+            )
+            return {
+                "file_ids": len(file_ids),
+                "removed_file_links": removed_file_links,
+                "removed_emitter_links": removed_emitter_links,
+                "removed_spectra": removed_spectra,
+            }
+
+        except Exception as e:
+            if not self.in_transaction:
+                try:
+                    self.db_connection.rollback()
+                except Exception:
+                    pass
+            raise Exception(
+                "reset_reprocessed_file_lineage failed: "
+                f"{e}"
+            )
+
+        finally:
+            if not self.in_transaction:
+                self._disconnect()
+
+    def reconcile_reprocessed_file_lineage(
+        self,
+        *,
+        host_volume: str,
+        host_path: str,
+        host_file: str,
+        repository_volume: str,
+        repository_path: str,
+        repository_file: str,
+    ) -> dict[str, int]:
+        """Prune shorter duplicates already linked to the same file artifacts.
+
+        The widest spectrum interval should survive a reprocessing cycle. This
+        helper removes only file-linked spectra fully contained by a broader
+        sibling that shares the same logical spectrum identity.
+        """
+        self._connect()
+        try:
+            self._ensure_transaction()
+            file_ids = self._select_file_ids_by_artifacts(
+                artifacts=[
+                    (host_volume, host_path, host_file),
+                    (repository_volume, repository_path, repository_file),
+                ]
+            )
+            if not file_ids:
+                return {
+                    "file_ids": 0,
+                    "removed_file_links": 0,
+                    "removed_emitter_links": 0,
+                    "removed_spectra": 0,
+                }
+
+            linked_spectra = self._select_spectrum_merge_rows_by_file_ids(
+                file_ids=file_ids
+            )
+            redundant_spectrum_ids = self._select_redundant_spectrum_ids(
+                spectra=linked_spectra
+            )
+            if not redundant_spectrum_ids:
+                return {
+                    "file_ids": len(file_ids),
+                    "removed_file_links": 0,
+                    "removed_emitter_links": 0,
+                    "removed_spectra": 0,
+                }
+
+            removed_file_links = self._delete_bridge_file_links(
+                file_ids=file_ids,
+                spectrum_ids=redundant_spectrum_ids,
+            )
+
+            orphan_spectra = self._select_orphan_spectrum_context(
+                spectrum_ids=redundant_spectrum_ids
+            )
+            orphan_spectrum_ids = [int(row["ID_SPECTRUM"]) for row in orphan_spectra]
+
+            removed_emitter_links = self._delete_rows_by_int_ids(
+                table="BRIDGE_SPECTRUM_EMITTER",
+                column="FK_SPECTRUM",
+                ids=orphan_spectrum_ids,
+            )
+            removed_spectra = self._delete_rows_by_int_ids(
+                table="FACT_SPECTRUM",
+                column="ID_SPECTRUM",
+                ids=orphan_spectrum_ids,
+            )
+
+            if not self.in_transaction:
+                self.db_connection.commit()
+
+            self._summary_publish_scope(
+                site_ids=[int(row["FK_SITE"]) for row in orphan_spectra if row.get("FK_SITE") is not None],
+                equipment_ids=[
+                    int(row["FK_EQUIPMENT"])
+                    for row in orphan_spectra
+                    if row.get("FK_EQUIPMENT") is not None
+                ],
+                reason="reconcile_reprocessed_file_lineage",
+            )
+            return {
+                "file_ids": len(file_ids),
+                "removed_file_links": removed_file_links,
+                "removed_emitter_links": removed_emitter_links,
+                "removed_spectra": removed_spectra,
+            }
+
+        except Exception as e:
+            if not self.in_transaction:
+                try:
+                    self.db_connection.rollback()
+                except Exception:
+                    pass
+            raise Exception(
+                "reconcile_reprocessed_file_lineage failed: "
+                f"{e}"
             )
 
         finally:
@@ -1187,6 +1630,12 @@ class dbHandlerRFM(DBHandlerBase):
             if not self.in_transaction:
                 self._disconnect()
 
+    def _normalize_equipment_type_token(self, value: str | None) -> str:
+        """Collapse noisy analyzer labels into one UID-friendly token."""
+        if not isinstance(value, str):
+            return ""
+        return NON_ALNUM_RE.sub("", value.strip().lower())
+
     
     def get_or_create_spectrum_equipment(
         self,
@@ -1219,9 +1668,13 @@ class dbHandlerRFM(DBHandlerBase):
             # analyzer hint that differs from the persisted equipment name.
             equipment_types = self._get_equipment_types()
             eq_type = None
+            normalized_type_source = self._normalize_equipment_type_token(type_source)
 
             for uid, meta in equipment_types.items():
-                if uid in type_source:
+                normalized_uid = self._normalize_equipment_type_token(uid)
+                if uid in type_source or (
+                    normalized_uid and normalized_uid in normalized_type_source
+                ):
                     eq_type = meta
                     break
 
@@ -1402,12 +1855,10 @@ class dbHandlerRFM(DBHandlerBase):
         The lookup keys are chosen to make worker retries idempotent without
         requiring a separate deduplication pass.
 
-        RFeye fixed stations can re-export the same logical spectrum from a
-        growing partial file on later backups. In that case the spectrum keeps
-        the same site/equipment/procedure/frequency/start identity while only
-        `DT_TIME_END` expands. For that family only, we try an exact match
-        first and then a relaxed canonical match that ignores `DT_TIME_END`,
-        reusing the oldest persisted row for that logical spectrum.
+        When the same logical spectrum is reprocessed, the widest persisted
+        interval should win. A narrower replay reuses the existing row. A
+        broader replay updates the persisted row in place instead of creating
+        a second `FACT_SPECTRUM` entry for the same logical identity.
         """
 
         required_keys = (
@@ -1430,77 +1881,112 @@ class dbHandlerRFM(DBHandlerBase):
 
         self._connect()
         try:
-            allow_time_end_growth_dedup = bool(
-                data.get("allow_time_end_growth_dedup")
-            )
             stable_identity_where = {
                 "FK_SITE": data["id_site"],
                 "FK_EQUIPMENT": data["id_equipment"],
                 "FK_PROCEDURE": data["id_procedure"],
+                "FK_DETECTOR": data["id_detector_type"],
                 "FK_TRACE_TYPE": data["id_trace_type"],
+                "FK_MEASURE_UNIT": data["id_measure_unit"],
+                "NA_DESCRIPTION": data.get("na_description"),
                 "NU_FREQ_START": data["nu_freq_start"],
                 "NU_FREQ_END": data["nu_freq_end"],
                 "DT_TIME_START": data["dt_time_start"],
                 "NU_TRACE_LENGTH": data["nu_trace_length"],
+                "NU_RBW": data.get("nu_rbw"),
+                "NU_VBW": data.get("nu_vbw"),
+                "NU_ATT_GAIN": data.get("nu_att_gain"),
             }
-
-            # Exact replay of the same payload row.
-            rows = self._select_rows(
-                table="FACT_SPECTRUM",
-                where={
-                    **stable_identity_where,
-                    "DT_TIME_END": data["dt_time_end"],
-                },
-                cols=["ID_SPECTRUM"],
-                limit=1,
-            )
-
-            if rows:
-                return int(rows[0]["ID_SPECTRUM"])
-
-            if allow_time_end_growth_dedup:
-                # Canonical fallback for growing RFeye partial files: keep the
-                # earliest persisted spectrum row for this logical identity.
-                rows = self._select_rows(
-                    table="FACT_SPECTRUM",
-                    where=stable_identity_where,
-                    cols=["ID_SPECTRUM"],
-                    order_by="DT_TIME_END ASC, ID_SPECTRUM ASC",
-                    limit=1,
-                )
-
-                if rows:
-                    return int(rows[0]["ID_SPECTRUM"])
 
             # Accept either serialized JSON or a dict.
             js_metadata = data.get("js_metadata")
             if isinstance(js_metadata, dict):
                 js_metadata = json.dumps(js_metadata)
 
+            spectrum_payload = {
+                "FK_SITE": data["id_site"],
+                "FK_EQUIPMENT": data["id_equipment"],
+                "FK_PROCEDURE": data["id_procedure"],
+                "FK_DETECTOR": data["id_detector_type"],
+                "FK_TRACE_TYPE": data["id_trace_type"],
+                "FK_MEASURE_UNIT": data["id_measure_unit"],
+                "NA_DESCRIPTION": data.get("na_description"),
+                "NU_FREQ_START": data["nu_freq_start"],
+                "NU_FREQ_END": data["nu_freq_end"],
+                "DT_TIME_START": data["dt_time_start"],
+                "DT_TIME_END": data["dt_time_end"],
+                "NU_SAMPLE_DURATION": data.get("nu_sample_duration"),
+                "NU_TRACE_COUNT": data.get("nu_trace_count"),
+                "NU_TRACE_LENGTH": data["nu_trace_length"],
+                "NU_RBW": data.get("nu_rbw"),
+                "NU_VBW": data.get("nu_vbw"),
+                "NU_ATT_GAIN": data.get("nu_att_gain"),
+                "JS_METADATA": js_metadata,
+            }
+
+            rows = self._select_rows(
+                table="FACT_SPECTRUM",
+                where=stable_identity_where,
+                cols=[
+                    "ID_SPECTRUM",
+                    "DT_TIME_START",
+                    "DT_TIME_END",
+                    "NU_TRACE_COUNT",
+                ],
+                order_by="DT_TIME_END DESC, NU_TRACE_COUNT DESC, ID_SPECTRUM ASC",
+            )
+
+            incoming_start = data["dt_time_start"]
+            incoming_end = data["dt_time_end"]
+            incoming_trace_count = data.get("nu_trace_count")
+            update_candidate_id = None
+
+            for row in rows:
+                candidate_id = int(row["ID_SPECTRUM"])
+                candidate_start = row["DT_TIME_START"]
+                candidate_end = row["DT_TIME_END"]
+                candidate_trace_count = row.get("NU_TRACE_COUNT")
+
+                if candidate_start != incoming_start:
+                    continue
+
+                if candidate_end == incoming_end:
+                    if (
+                        candidate_trace_count is None
+                        or incoming_trace_count is None
+                        or int(candidate_trace_count) >= int(incoming_trace_count)
+                    ):
+                        return candidate_id
+                    update_candidate_id = candidate_id
+                    break
+
+                if candidate_start <= incoming_start and candidate_end >= incoming_end:
+                    return candidate_id
+
+                if incoming_start <= candidate_start and incoming_end >= candidate_end:
+                    update_candidate_id = candidate_id
+                    break
+
+            if update_candidate_id is not None:
+                self._update_row(
+                    table="FACT_SPECTRUM",
+                    data=spectrum_payload,
+                    where={"ID_SPECTRUM": update_candidate_id},
+                    commit=not self.in_transaction,
+                )
+
+                self._summary_publish_scope(
+                    site_ids=[int(data["id_site"])],
+                    equipment_ids=[int(data["id_equipment"])],
+                    reason="insert_spectrum",
+                )
+                return int(update_candidate_id)
+
             # At this point all foreign keys were already resolved by the
             # caller, so this insert stays purely relational.
             insert_kwargs = {
                 "table": "FACT_SPECTRUM",
-                "data": {
-                    "FK_SITE": data["id_site"],
-                    "FK_EQUIPMENT": data["id_equipment"],
-                    "FK_PROCEDURE": data["id_procedure"],
-                    "FK_DETECTOR": data["id_detector_type"],
-                    "FK_TRACE_TYPE": data["id_trace_type"],
-                    "FK_MEASURE_UNIT": data["id_measure_unit"],
-                    "NA_DESCRIPTION": data.get("na_description"),
-                    "NU_FREQ_START": data["nu_freq_start"],
-                    "NU_FREQ_END": data["nu_freq_end"],
-                    "DT_TIME_START": data["dt_time_start"],
-                    "DT_TIME_END": data["dt_time_end"],
-                    "NU_SAMPLE_DURATION": data.get("nu_sample_duration"),
-                    "NU_TRACE_COUNT": data.get("nu_trace_count"),
-                    "NU_TRACE_LENGTH": data["nu_trace_length"],
-                    "NU_RBW": data.get("nu_rbw"),
-                    "NU_VBW": data.get("nu_vbw"),
-                    "NU_ATT_GAIN": data.get("nu_att_gain"),
-                    "JS_METADATA": js_metadata,
-                },
+                "data": spectrum_payload,
             }
             if self.in_transaction:
                 insert_kwargs["commit"] = False

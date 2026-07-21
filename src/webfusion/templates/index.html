@@ -278,6 +278,32 @@
         </a>
     </div>
 
+    <!-- ======================= MAINTENANCE ======================= -->
+    <div>
+        <a href="{{ url_for('maintenance.maintenance_dashboard') }}" class="module-link" data-loading-message="Abrindo manutenção operacional...">
+            <div class="card background-neutral-0 padding-l border-radius-m module-card">
+
+                <div class="display-flex align-items-center gap-m">
+
+                    <div class="module-icon text-primary">
+                        <i class="fa fa-wrench"></i>
+                    </div>
+
+                    <div>
+                        <div class="font-semi-bold">
+                            Manutenção Operacional
+                        </div>
+                        <div class="font-size-s text-neutral-6 margin-top-xs module-description">
+                            Consulta e intervenção manual em HOST_TASK e FILE_TASK com validações operacionais.
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+        </a>
+    </div>
+
 </div>
 
 {% endblock %}

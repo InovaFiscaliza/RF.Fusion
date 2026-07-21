@@ -225,7 +225,7 @@
                 <td>${escapeHtml(row[periodField] || "-")}</td>
                 <td>${escapeHtml(row.page_view_count || 0)}</td>
                 <td>${escapeHtml(row.spectrum_query_count || 0)}</td>
-                <td>${escapeHtml(row.download_action_count || 0)}</td>
+                <td>${escapeHtml(row.nginx_download_count || 0)}</td>
             </tr>
         `).join("");
     }

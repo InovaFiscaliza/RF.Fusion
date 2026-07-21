@@ -259,6 +259,27 @@
     overflow-x: auto;
 }
 
+.server-usage-metrics-table {
+    table-layout: fixed;
+}
+
+.server-usage-metrics-table th,
+.server-usage-metrics-table td {
+    vertical-align: middle;
+}
+
+.server-usage-metrics-table th:first-child,
+.server-usage-metrics-table td:first-child {
+    width: 120px;
+    text-align: left;
+}
+
+.server-usage-metrics-table th:not(:first-child),
+.server-usage-metrics-table td:not(:first-child) {
+    width: calc((100% - 120px) / 3);
+    text-align: right;
+}
+
 .diagnostic-breakdown {
     margin-top: 16px;
     border: 1px solid #e2e8f0;

@@ -101,6 +101,25 @@ class DbHandlerRfmBaseTests(unittest.TestCase):
         return handler
 
 
+class SqlBuilderTests(DbHandlerRfmBaseTests):
+    """Validate shared WHERE-clause behavior inherited from `DBHandlerBase`."""
+
+    def test_build_where_clause_uses_is_null_for_none_equality(self) -> None:
+        handler = self.make_handler()
+        params: list[object] = []
+
+        clause = handler._build_where_clause(
+            {"FK_SITE": 77, "NU_VBW": None, "NA_DESCRIPTION": "PMEC"},
+            params,
+        )
+
+        self.assertEqual(
+            clause,
+            " WHERE FK_SITE=%s AND NU_VBW IS NULL AND NA_DESCRIPTION=%s",
+        )
+        self.assertEqual(params, [77, "PMEC"])
+
+
 class SiteLookupTests(DbHandlerRfmBaseTests):
     """Validate site matching rules before inserts or updates happen."""
 
@@ -506,6 +525,57 @@ class FileDimensionTests(DbHandlerRfmBaseTests):
 
         self.assertEqual(file_id, 700)
 
+    def test_insert_file_refreshes_existing_artifact_metadata(self) -> None:
+        handler = self.make_handler()
+        updated = {}
+        created = datetime(2026, 4, 2, 13, 8, 56)
+        modified = datetime(2026, 7, 8, 10, 15, 0)
+        handler.get_file_type_id_by_hostname = lambda HOSTNAME: 41
+
+        def fake_select_rows(*, table, where=None, cols=None, limit=None):
+            if table == "DIM_SPECTRUM_FILE":
+                return [{"ID_FILE": 700}]
+            raise AssertionError(f"Unexpected select_rows call: {table=} {where=}")
+
+        def fake_update_row(*, table, data, where, commit=True, **kwargs):
+            updated["table"] = table
+            updated["data"] = data
+            updated["where"] = where
+            updated["commit"] = commit
+            return 1
+
+        handler._select_rows = fake_select_rows
+        handler._update_row = fake_update_row
+        handler._insert_row = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("insert should not be called for existing file")
+        )
+
+        file_id = handler.insert_file(
+            hostname="CWSM21100001",
+            NA_VOLUME="REPOSFI",
+            NA_PATH="/sp/3550308/77",
+            NA_FILE="sample_DONE.mat",
+            NA_EXTENSION=".mat",
+            VL_FILE_SIZE_KB=27352,
+            DT_FILE_CREATED=created,
+            DT_FILE_MODIFIED=modified,
+        )
+
+        self.assertEqual(file_id, 700)
+        self.assertEqual(updated["table"], "DIM_SPECTRUM_FILE")
+        self.assertEqual(updated["where"], {"ID_FILE": 700})
+        self.assertEqual(
+            updated["data"],
+            {
+                "ID_TYPE_FILE": 41,
+                "NA_EXTENSION": ".mat",
+                "VL_FILE_SIZE_KB": 27352,
+                "DT_FILE_CREATED": created,
+                "DT_FILE_MODIFIED": modified,
+            },
+        )
+        self.assertTrue(updated["commit"])
+
     def test_insert_file_inserts_new_artifact_with_lowercase_volume(self) -> None:
         handler = self.make_handler()
         inserted = {}
@@ -594,7 +664,7 @@ class ProcedureAndEquipmentTests(DbHandlerRfmBaseTests):
     def test_get_or_create_spectrum_equipment_uses_explicit_type_hint(self) -> None:
         handler = self.make_handler()
         inserted = {}
-        handler._get_equipment_types = lambda: {"sa2500": {"id": 8}}
+        handler._get_equipment_types = lambda: {"ermx": {"id": 12}}
         handler._select_rows = lambda **kwargs: []
 
         def fake_insert_row(*, table, data):
@@ -606,13 +676,36 @@ class ProcedureAndEquipmentTests(DbHandlerRfmBaseTests):
 
         equipment_id = handler.get_or_create_spectrum_equipment(
             "ERMxES03",
-            equipment_type_hint="TEKTRONIX,SA2500,B040241,7.041",
+            equipment_type_hint="ermx",
         )
 
         self.assertEqual(equipment_id, 777)
         self.assertEqual(inserted["table"], "DIM_SPECTRUM_EQUIPMENT")
-        self.assertEqual(inserted["data"]["FK_EQUIPMENT_TYPE"], 8)
+        self.assertEqual(inserted["data"]["FK_EQUIPMENT_TYPE"], 12)
         self.assertEqual(inserted["data"]["NA_EQUIPMENT"], "ermxes03")
+
+    def test_get_or_create_spectrum_equipment_matches_ermx_station_type(self) -> None:
+        handler = self.make_handler()
+        inserted = {}
+        handler._get_equipment_types = lambda: {"ermx": {"id": 12}}
+        handler._select_rows = lambda **kwargs: []
+
+        def fake_insert_row(*, table, data):
+            inserted["table"] = table
+            inserted["data"] = data
+            return 778
+
+        handler._insert_row = fake_insert_row
+
+        equipment_id = handler.get_or_create_spectrum_equipment(
+            "ermxgo01",
+            equipment_type_hint="ermx",
+        )
+
+        self.assertEqual(equipment_id, 778)
+        self.assertEqual(inserted["table"], "DIM_SPECTRUM_EQUIPMENT")
+        self.assertEqual(inserted["data"]["FK_EQUIPMENT_TYPE"], 12)
+        self.assertEqual(inserted["data"]["NA_EQUIPMENT"], "ermxgo01")
 
 
 class SmallDimensionInsertTests(DbHandlerRfmBaseTests):
@@ -666,19 +759,29 @@ class SmallDimensionInsertTests(DbHandlerRfmBaseTests):
 class SpectrumAndBridgeTests(DbHandlerRfmBaseTests):
     """Validate the final relational inserts that tie the ingestion together."""
 
-    def test_insert_spectrum_reuses_existing_row_when_only_dt_time_end_grows(self) -> None:
+    def test_insert_spectrum_updates_existing_row_when_incoming_interval_is_broader(self) -> None:
         handler = self.make_handler()
-        select_calls = []
+        updated = {}
+        handler._select_rows = lambda **kwargs: [
+            {
+                "ID_SPECTRUM": 4223243,
+                "DT_TIME_START": datetime(2026, 5, 18, 7, 55, 0),
+                "DT_TIME_END": datetime(2026, 5, 18, 21, 50, 0),
+                "NU_TRACE_COUNT": 168,
+            }
+        ]
+        handler._insert_row = lambda **kwargs: self.fail(
+            "should not insert a new spectrum"
+        )
 
-        def fake_select_rows(**kwargs):
-            select_calls.append(kwargs)
-            where = kwargs["where"]
-            if "DT_TIME_END" in where:
-                return []
-            return [{"ID_SPECTRUM": 4223243}]
+        def fake_update_row(*, table, data, where, commit=True, **kwargs):
+            updated["table"] = table
+            updated["data"] = data
+            updated["where"] = where
+            updated["commit"] = commit
+            return 1
 
-        handler._select_rows = fake_select_rows
-        handler._insert_row = lambda **kwargs: self.fail("should not insert a new spectrum")
+        handler._update_row = fake_update_row
 
         spectrum_id = handler.insert_spectrum(
             {
@@ -692,33 +795,34 @@ class SpectrumAndBridgeTests(DbHandlerRfmBaseTests):
                 "nu_freq_end": 700.0,
                 "dt_time_start": datetime(2026, 5, 18, 7, 55, 0),
                 "dt_time_end": datetime(2026, 5, 19, 12, 0, 0),
+                "nu_trace_count": 338,
                 "nu_trace_length": 5888,
-                "allow_time_end_growth_dedup": True,
             }
         )
 
         self.assertEqual(spectrum_id, 4223243)
-        self.assertEqual(len(select_calls), 2)
-        self.assertIn("DT_TIME_END", select_calls[0]["where"])
-        self.assertNotIn("DT_TIME_END", select_calls[1]["where"])
-        self.assertEqual(select_calls[1]["order_by"], "DT_TIME_END ASC, ID_SPECTRUM ASC")
+        self.assertEqual(updated["table"], "FACT_SPECTRUM")
+        self.assertEqual(updated["where"], {"ID_SPECTRUM": 4223243})
+        self.assertEqual(updated["data"]["DT_TIME_END"], datetime(2026, 5, 19, 12, 0, 0))
+        self.assertEqual(updated["data"]["NU_TRACE_COUNT"], 338)
+        self.assertTrue(updated["commit"])
 
-    def test_insert_spectrum_does_not_use_relaxed_match_for_non_rfeye(self) -> None:
+    def test_insert_spectrum_reuses_existing_row_when_incoming_interval_is_contained(self) -> None:
         handler = self.make_handler()
-        select_calls = []
-        captured = {}
-
-        def fake_select_rows(**kwargs):
-            select_calls.append(kwargs)
-            return []
-
-        def fake_insert_row(*, table, data):
-            captured["table"] = table
-            captured["data"] = data
-            return 900
-
-        handler._select_rows = fake_select_rows
-        handler._insert_row = fake_insert_row
+        handler._select_rows = lambda **kwargs: [
+            {
+                "ID_SPECTRUM": 900,
+                "DT_TIME_START": datetime(2026, 5, 18, 7, 55, 0),
+                "DT_TIME_END": datetime(2026, 5, 19, 12, 0, 0),
+                "NU_TRACE_COUNT": 338,
+            }
+        ]
+        handler._insert_row = lambda **kwargs: self.fail(
+            "should not insert a new spectrum"
+        )
+        handler._update_row = lambda **kwargs: self.fail(
+            "should not update a broader existing spectrum"
+        )
 
         spectrum_id = handler.insert_spectrum(
             {
@@ -731,16 +835,64 @@ class SpectrumAndBridgeTests(DbHandlerRfmBaseTests):
                 "nu_freq_start": 470.0,
                 "nu_freq_end": 700.0,
                 "dt_time_start": datetime(2026, 5, 18, 7, 55, 0),
-                "dt_time_end": datetime(2026, 5, 19, 12, 0, 0),
+                "dt_time_end": datetime(2026, 5, 18, 21, 50, 0),
+                "nu_trace_count": 168,
                 "nu_trace_length": 5888,
-                "allow_time_end_growth_dedup": False,
             }
         )
 
         self.assertEqual(spectrum_id, 900)
+
+    def test_insert_spectrum_keeps_nullable_identity_fields_in_lookup(self) -> None:
+        handler = self.make_handler()
+        select_calls = []
+
+        def fake_select_rows(**kwargs):
+            select_calls.append(kwargs)
+            return [
+                {
+                    "ID_SPECTRUM": 901,
+                    "DT_TIME_START": datetime(2026, 6, 17, 17, 43, 5),
+                    "DT_TIME_END": datetime(2026, 7, 1, 22, 30, 55),
+                    "NU_TRACE_COUNT": 4090,
+                }
+            ]
+
+        handler._select_rows = fake_select_rows
+        handler._insert_row = lambda **kwargs: self.fail(
+            "should not insert a new spectrum"
+        )
+        handler._update_row = lambda **kwargs: self.fail(
+            "should not update an already matching spectrum"
+        )
+
+        spectrum_id = handler.insert_spectrum(
+            {
+                "id_site": 396,
+                "id_equipment": 150,
+                "id_procedure": 53,
+                "id_detector_type": 1,
+                "id_trace_type": 6,
+                "id_measure_unit": 9,
+                "na_description": "PMEC (Faixa 7 de 16) (SMP)",
+                "nu_freq_start": 703.0,
+                "nu_freq_end": 960.0,
+                "dt_time_start": datetime(2026, 6, 17, 17, 43, 5),
+                "dt_time_end": datetime(2026, 7, 1, 22, 30, 55),
+                "nu_trace_count": 4090,
+                "nu_trace_length": 5141,
+                "nu_rbw": 120000.0,
+                "nu_vbw": None,
+                "nu_att_gain": 0.0,
+            }
+        )
+
+        self.assertEqual(spectrum_id, 901)
         self.assertEqual(len(select_calls), 1)
-        self.assertIn("DT_TIME_END", select_calls[0]["where"])
-        self.assertEqual(captured["table"], "FACT_SPECTRUM")
+        self.assertEqual(
+            select_calls[0]["where"]["NU_VBW"],
+            None,
+        )
 
     def test_insert_spectrum_serializes_js_metadata_dict(self) -> None:
         handler = self.make_handler()
@@ -776,6 +928,165 @@ class SpectrumAndBridgeTests(DbHandlerRfmBaseTests):
         self.assertEqual(
             captured["data"]["JS_METADATA"],
             '{"antenna": {"Name": "ANT-01"}}',
+        )
+
+    def test_reconcile_reprocessed_file_lineage_prunes_shorter_duplicate(self) -> None:
+        handler = self.make_handler()
+        summary_calls = []
+        handler._summary_publish_scope = lambda **kwargs: summary_calls.append(kwargs)
+        handler._select_file_ids_by_artifacts = lambda **kwargs: [501, 502]
+        handler._select_spectrum_merge_rows_by_file_ids = lambda **kwargs: [
+            {
+                "ID_SPECTRUM": 1001,
+                "FK_SITE": 7,
+                "FK_DETECTOR": 4,
+                "FK_TRACE_TYPE": 5,
+                "FK_MEASURE_UNIT": 6,
+                "FK_PROCEDURE": 3,
+                "FK_EQUIPMENT": 8,
+                "NA_DESCRIPTION": "Undefined",
+                "NU_FREQ_START": 53.910156,
+                "NU_FREQ_END": 87.992188,
+                "DT_TIME_START": datetime(2025, 10, 31, 15, 50, 27),
+                "DT_TIME_END": datetime(2025, 11, 1, 3, 49, 51),
+                "NU_TRACE_COUNT": 720,
+                "NU_TRACE_LENGTH": 350,
+                "NU_RBW": 97656.3,
+                "NU_VBW": None,
+                "NU_ATT_GAIN": -10.0,
+            },
+            {
+                "ID_SPECTRUM": 1002,
+                "FK_SITE": 7,
+                "FK_DETECTOR": 4,
+                "FK_TRACE_TYPE": 5,
+                "FK_MEASURE_UNIT": 6,
+                "FK_PROCEDURE": 3,
+                "FK_EQUIPMENT": 8,
+                "NA_DESCRIPTION": "Undefined",
+                "NU_FREQ_START": 53.910156,
+                "NU_FREQ_END": 87.992188,
+                "DT_TIME_START": datetime(2025, 10, 31, 15, 50, 27),
+                "DT_TIME_END": datetime(2025, 11, 1, 3, 48, 51),
+                "NU_TRACE_COUNT": 719,
+                "NU_TRACE_LENGTH": 350,
+                "NU_RBW": 97656.3,
+                "NU_VBW": None,
+                "NU_ATT_GAIN": -10.0,
+            },
+        ]
+        deleted_pairs = {}
+
+        def fake_delete_bridge_file_links(*, file_ids, spectrum_ids):
+            deleted_pairs["file_ids"] = file_ids
+            deleted_pairs["spectrum_ids"] = spectrum_ids
+            return 2
+
+        handler._delete_bridge_file_links = fake_delete_bridge_file_links
+        handler._select_orphan_spectrum_context = lambda **kwargs: [
+            {"ID_SPECTRUM": 1002, "FK_SITE": 7, "FK_EQUIPMENT": 8}
+        ]
+
+        deleted_rows = []
+
+        def fake_delete_rows_by_int_ids(*, table, column, ids):
+            deleted_rows.append((table, column, ids))
+            return 1
+
+        handler._delete_rows_by_int_ids = fake_delete_rows_by_int_ids
+
+        result = handler.reconcile_reprocessed_file_lineage(
+            host_volume="cwsm21100011",
+            host_path="C:/host",
+            host_file="source.zip",
+            repository_volume="reposfi",
+            repository_path="/mnt/reposfi/2025/site_219/catalog",
+            repository_file="sample_DONE.mat",
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "file_ids": 2,
+                "removed_file_links": 2,
+                "removed_emitter_links": 1,
+                "removed_spectra": 1,
+            },
+        )
+        self.assertEqual(deleted_pairs["file_ids"], [501, 502])
+        self.assertEqual(deleted_pairs["spectrum_ids"], [1002])
+        self.assertEqual(
+            deleted_rows,
+            [
+                ("BRIDGE_SPECTRUM_EMITTER", "FK_SPECTRUM", [1002]),
+                ("FACT_SPECTRUM", "ID_SPECTRUM", [1002]),
+            ],
+        )
+        self.assertEqual(
+            summary_calls[0]["reason"],
+            "reconcile_reprocessed_file_lineage",
+        )
+
+    def test_reset_reprocessed_file_lineage_replaces_previous_file_pair(self) -> None:
+        handler = self.make_handler()
+        summary_calls = []
+        handler._summary_publish_scope = lambda **kwargs: summary_calls.append(kwargs)
+        handler._select_file_ids_by_artifacts = lambda **kwargs: [601, 602]
+        handler._select_spectrum_merge_rows_by_file_ids = lambda **kwargs: [
+            {"ID_SPECTRUM": 2001, "FK_SITE": 7, "FK_EQUIPMENT": 8},
+            {"ID_SPECTRUM": 2002, "FK_SITE": 7, "FK_EQUIPMENT": 8},
+        ]
+        deleted_file_ids = {}
+
+        def fake_delete_bridge_file_links_by_file_ids(*, file_ids):
+            deleted_file_ids["file_ids"] = file_ids
+            return 4
+
+        handler._delete_bridge_file_links_by_file_ids = (
+            fake_delete_bridge_file_links_by_file_ids
+        )
+        handler._select_orphan_spectrum_context = lambda **kwargs: [
+            {"ID_SPECTRUM": 2001, "FK_SITE": 7, "FK_EQUIPMENT": 8},
+            {"ID_SPECTRUM": 2002, "FK_SITE": 7, "FK_EQUIPMENT": 8},
+        ]
+
+        deleted_rows = []
+
+        def fake_delete_rows_by_int_ids(*, table, column, ids):
+            deleted_rows.append((table, column, ids))
+            return len(ids)
+
+        handler._delete_rows_by_int_ids = fake_delete_rows_by_int_ids
+
+        result = handler.reset_reprocessed_file_lineage(
+            host_volume="cwsm212031",
+            host_path="C:/host",
+            host_file="source.zip",
+            repository_volume="reposfi",
+            repository_path="/mnt/reposfi/2025/site_80/catalog",
+            repository_file="sample_DONE.mat",
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "file_ids": 2,
+                "removed_file_links": 4,
+                "removed_emitter_links": 2,
+                "removed_spectra": 2,
+            },
+        )
+        self.assertEqual(deleted_file_ids["file_ids"], [601, 602])
+        self.assertEqual(
+            deleted_rows,
+            [
+                ("BRIDGE_SPECTRUM_EMITTER", "FK_SPECTRUM", [2001, 2002]),
+                ("FACT_SPECTRUM", "ID_SPECTRUM", [2001, 2002]),
+            ],
+        )
+        self.assertEqual(
+            summary_calls[0]["reason"],
+            "reset_reprocessed_file_lineage",
         )
 
     def test_insert_bridge_spectrum_file_emits_all_pairs(self) -> None:

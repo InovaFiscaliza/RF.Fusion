@@ -95,9 +95,9 @@
                             <div class="summary-card-note">Buscas iniciadas com filtros na tela de espectro.</div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Total de Ações de Download</div>
-                            <div class="summary-card-value">{{ usage_metrics.totals.download_action_count }}</div>
-                            <div class="summary-card-note">Clique de download na interface, não a conclusão da transferência.</div>
+                            <div class="summary-card-label">Total de Downloads Efetivos</div>
+                            <div class="summary-card-value">{{ usage_metrics.totals.nginx_download_count }}</div>
+                            <div class="summary-card-note">Transferências servidas pelo NGINX a partir do access.log.</div>
                         </div>
                     </div>
                 </section>
@@ -123,8 +123,8 @@
                             <div class="summary-card-value">{{ usage_metrics.current_year_totals.spectrum_query_count }}</div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Total de Ações de Download em "{{ usage_metrics.current_year_label }}"</div>
-                            <div class="summary-card-value">{{ usage_metrics.current_year_totals.download_action_count }}</div>
+                            <div class="summary-card-label">Total de Downloads Efetivos em "{{ usage_metrics.current_year_label }}"</div>
+                            <div class="summary-card-value">{{ usage_metrics.current_year_totals.nginx_download_count }}</div>
                         </div>
                     </div>
                 </section>
@@ -150,8 +150,8 @@
                             <div class="summary-card-value">{{ usage_metrics.current_month_totals.spectrum_query_count }}</div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Total de Ações de Download no mês atual "{{ usage_metrics.current_month_label }}"</div>
-                            <div class="summary-card-value">{{ usage_metrics.current_month_totals.download_action_count }}</div>
+                            <div class="summary-card-label">Total de Downloads Efetivos no mês atual "{{ usage_metrics.current_month_label }}"</div>
+                            <div class="summary-card-value">{{ usage_metrics.current_month_totals.nginx_download_count }}</div>
                         </div>
                     </div>
                 </section>
@@ -165,13 +165,13 @@
                     <div class="summary-subsection">
                         <h3 class="summary-subsection-title">Consolidado por Ano</h3>
                         <div class="annual-breakdown">
-                            <table class="stats-table">
+                            <table class="stats-table server-usage-metrics-table">
                                 <thead>
                                     <tr>
                                         <th>Ano</th>
                                         <th>Acessos à Página</th>
                                         <th>Consultas ao Espectro</th>
-                                        <th>Ações de Download</th>
+                                        <th>Downloads Efetivos</th>
                                     </tr>
                                 </thead>
                                 <tbody id="server-usage-metrics-annual-body">
@@ -185,13 +185,13 @@
                     <div class="summary-subsection">
                         <h3 class="summary-subsection-title">Consolidado por Mês</h3>
                         <div class="annual-breakdown">
-                            <table class="stats-table">
+                            <table class="stats-table server-usage-metrics-table">
                                 <thead>
                                     <tr>
                                         <th>Mês</th>
                                         <th>Acessos à Página</th>
                                         <th>Consultas ao Espectro</th>
-                                        <th>Ações de Download</th>
+                                        <th>Downloads Efetivos</th>
                                     </tr>
                                 </thead>
                                 <tbody id="server-usage-metrics-monthly-body">

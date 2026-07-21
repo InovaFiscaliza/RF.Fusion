@@ -20,6 +20,7 @@ from modules.spectrum.routes import spectrum_bp
 from modules.host.routes import host_bp
 from modules.server.routes import server_bp
 from modules.task.routes import task_bp
+from modules.maintenance.routes import maintenance_bp
 from modules.map.service import (
     get_station_map_points,
     get_station_map_site_detail,
@@ -37,6 +38,7 @@ app.register_blueprint(spectrum_bp)
 app.register_blueprint(host_bp)
 app.register_blueprint(server_bp)
 app.register_blueprint(task_bp)
+app.register_blueprint(maintenance_bp)
 
 @app.route("/")
 def index():

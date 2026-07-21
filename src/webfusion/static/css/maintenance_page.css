@@ -1,0 +1,367 @@
+.maintenance-page-root {
+    display: grid;
+    gap: 20px;
+}
+
+.maintenance-hero {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 18px;
+    flex-wrap: wrap;
+}
+
+.maintenance-hero-copy {
+    max-width: 760px;
+    margin: 0;
+    color: #475569;
+    line-height: 1.6;
+}
+
+.maintenance-hero-note {
+    min-width: 240px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: #eff6ff;
+    color: #1d4ed8;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.maintenance-summary-title,
+.maintenance-toolbar-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+.maintenance-summary-grid {
+    margin-top: 14px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 14px;
+}
+
+.maintenance-summary-label {
+    font-size: 12px;
+    color: #64748b;
+}
+
+.maintenance-summary-value {
+    margin-top: 4px;
+    font-size: 18px;
+    font-weight: 700;
+    color: #0f172a;
+}
+
+.maintenance-summary-detail {
+    margin-top: 16px;
+}
+
+.maintenance-history-summary {
+    margin-bottom: 18px;
+}
+
+.maintenance-history-idle {
+    margin-top: 16px;
+    padding: 14px 16px;
+    border: 1px dashed #cbd5e1;
+    border-radius: 10px;
+    background: #f8fafc;
+}
+
+.maintenance-summary-subtitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f172a;
+    margin-bottom: 8px;
+}
+
+.maintenance-summary-list {
+    margin: 0;
+    padding-left: 18px;
+    color: #475569;
+    line-height: 1.6;
+}
+
+.maintenance-summary-inline {
+    color: #475569;
+    line-height: 1.6;
+}
+
+.maintenance-filter-form,
+.maintenance-toolbar,
+.maintenance-bulk-actions {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+
+.maintenance-filter-form {
+    display: grid;
+    gap: 16px;
+}
+
+.maintenance-filter-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.maintenance-filter-field {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+}
+
+.maintenance-filter-field label {
+    margin: 0;
+}
+
+.maintenance-filter-search {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin-top: 16px;
+    align-items: flex-end;
+    gap: 14px;
+}
+
+.maintenance-filter-search-field {
+    min-width: 0;
+}
+
+.maintenance-filter-actions,
+.maintenance-bulk-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.maintenance-action-button {
+    min-width: 140px;
+    text-decoration: none;
+}
+
+.btn-primary-action,
+.btn-secondary-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 42px;
+    padding: 0 18px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.btn-primary-action {
+    border: 1px solid #1f4f8b;
+    background: #1f4f8b;
+    color: #ffffff;
+}
+
+.btn-primary-action:hover {
+    background: #163a66;
+    border-color: #163a66;
+    color: #ffffff;
+}
+
+.btn-secondary-action {
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #0f172a;
+}
+
+.btn-secondary-action:hover {
+    background: #f8fafc;
+    border-color: #94a3b8;
+    color: #0f172a;
+}
+
+.maintenance-toolbar {
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.maintenance-history-toolbar {
+    margin-top: 18px;
+}
+
+.maintenance-toolbar-copy {
+    color: #64748b;
+    font-size: 13px;
+    margin-top: 4px;
+}
+
+.maintenance-table-filter-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 14px;
+    align-items: end;
+    margin-bottom: 16px;
+}
+
+.maintenance-table-filter-field {
+    min-width: 0;
+}
+
+.maintenance-table-filter-count {
+    color: #64748b;
+    font-size: 13px;
+    white-space: nowrap;
+    min-height: 38px;
+    display: inline-flex;
+    align-items: center;
+}
+
+.maintenance-history-filter-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-items: end;
+}
+
+.maintenance-history-search-field {
+    min-width: 0;
+}
+
+.maintenance-history-message-field {
+    grid-column: span 2;
+}
+
+.maintenance-history-filter-actions {
+    align-self: end;
+}
+
+.maintenance-table-wrap {
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    overflow: auto;
+    max-height: 620px;
+}
+
+.maintenance-table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 980px;
+}
+
+.maintenance-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #f8fafc;
+}
+
+.maintenance-table th,
+.maintenance-table td {
+    padding: 10px 12px;
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid #e2e8f0;
+    font-size: 13px;
+}
+
+.maintenance-table tbody tr:hover {
+    background: #f8fafc;
+}
+
+.maintenance-check-col {
+    width: 48px;
+    text-align: center;
+}
+
+.maintenance-check-col input[type="checkbox"],
+.maintenance-row-checkbox,
+.maintenance-history-row-checkbox {
+    appearance: auto !important;
+    -webkit-appearance: checkbox !important;
+    display: inline-block !important;
+    position: static !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    width: 16px !important;
+    height: 16px !important;
+    margin: 0 !important;
+    accent-color: #1f4f8b;
+    cursor: pointer;
+}
+
+.maintenance-status-pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    background: #e2e8f0;
+    color: #334155;
+}
+
+.maintenance-status-pill.is-status--2 {
+    background: #f1f5f9;
+    color: #475569;
+}
+
+.maintenance-status-pill.is-status--1 {
+    background: #fee2e2;
+    color: #b91c1c;
+}
+
+.maintenance-status-pill.is-status-0 {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.maintenance-status-pill.is-status-1 {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.maintenance-status-pill.is-status-2 {
+    background: #fef3c7;
+    color: #b45309;
+}
+
+.maintenance-status-pill.is-status--3 {
+    background: #ede9fe;
+    color: #6d28d9;
+}
+
+.maintenance-file-cell,
+.maintenance-message-cell,
+.maintenance-empty-cell {
+    max-width: 320px;
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+
+.maintenance-empty-cell {
+    text-align: center;
+    color: #64748b;
+    padding: 28px 12px;
+}
+
+@media (max-width: 900px) {
+    .maintenance-hero-note,
+    .maintenance-filter-search-field {
+        min-width: 100%;
+    }
+
+    .maintenance-filter-grid,
+    .maintenance-filter-search,
+    .maintenance-table-filter-bar {
+        grid-template-columns: 1fr;
+    }
+
+    .maintenance-filter-actions,
+    .maintenance-bulk-actions {
+        width: 100%;
+    }
+
+    .maintenance-filter-actions > *,
+    .maintenance-bulk-actions > * {
+        flex: 1 1 180px;
+    }
+}

@@ -47,6 +47,18 @@ def _error_fields(err, message: str) -> dict:
     )
 
 
+def _log_statistics_refresh_failure(task: dict, exc: Exception) -> None:
+    """Keep queue resolution definitive even when summary refresh is blocked."""
+    log.warning_event(
+        "host_statistics_refresh_failed",
+        service=SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        error_type=type(exc).__name__,
+        exception=repr(exc),
+    )
+
+
 # --- signal handling ---
 
 def _shutdown_cleanup(signal_name: str) -> None:
@@ -228,16 +240,16 @@ def _finalize_success(
     elapsed_sec: float,
 ) -> None:
     """Persist DONE state, delete the live queue row, and log completion."""
+    file_meta = result["file_meta"]
+    new_path = result["new_path"]
+    message = tools.compose_message(
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        task_status=k.TASK_DONE,
+        path=new_path,
+        name=file_meta["file_name"],
+    )
+    processed_at = datetime.now()
     try:
-        file_meta = result["file_meta"]
-        new_path = result["new_path"]
-        message = tools.compose_message(
-            task_type=k.FILE_TASK_PROCESS_TYPE,
-            task_status=k.TASK_DONE,
-            path=new_path,
-            name=file_meta["file_name"],
-        )
-        processed_at = datetime.now()
         db_bp.begin_transaction()
         try:
             history_result = db_bp.file_history_update(
@@ -273,16 +285,6 @@ def _finalize_success(
         except Exception:
             db_bp.rollback()
             raise
-        db_bp.host_task_statistics_create(host_id=task["host_id"], log_if_active=False)
-        log.task_done(
-            SERVICE_NAME,
-            host_id=task["host_id"],
-            task_id=task["file_task_id"],
-            task_type=k.FILE_TASK_PROCESS_TYPE,
-            file=task["filename"],
-            elapsed_sec=round(elapsed_sec, 3),
-            final_file=os.path.join(new_path, file_meta["file_name"]),
-        )
     except Exception as e:
         log.error_event(
             "task_finalization_failed",
@@ -291,6 +293,22 @@ def _finalize_success(
             error_type=type(e).__name__,
             exception=repr(e),
         )
+        return
+
+    try:
+        db_bp.host_task_statistics_create(host_id=task["host_id"], log_if_active=False)
+    except Exception as exc:
+        _log_statistics_refresh_failure(task, exc)
+
+    log.task_done(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=k.FILE_TASK_PROCESS_TYPE,
+        file=task["filename"],
+        elapsed_sec=round(elapsed_sec, 3),
+        final_file=os.path.join(new_path, file_meta["file_name"]),
+    )
 
 
 def _finalize_freeze(
@@ -323,6 +341,7 @@ def _finalize_freeze(
             host_id=task["host_id"],
             host_file_path=task["host_path"],
             host_file_name=task["host_file_name"],
+            DT_PROCESSED=datetime.now(),
             NU_STATUS_PROCESSING=k.TASK_FROZEN,
             NA_MESSAGE=message,
             **structured,
@@ -331,7 +350,12 @@ def _finalize_freeze(
     except Exception:
         db_bp.rollback()
         raise
-    db_bp.host_task_statistics_create(host_id=task["host_id"], log_if_active=False)
+
+    try:
+        db_bp.host_task_statistics_create(host_id=task["host_id"], log_if_active=False)
+    except Exception as exc:
+        _log_statistics_refresh_failure(task, exc)
+
     log.task_frozen(
         SERVICE_NAME,
         host_id=task["host_id"],
@@ -410,7 +434,12 @@ def _write_task_error(
     except Exception:
         db_bp.rollback()
         raise
-    db_bp.host_task_statistics_create(host_id=task["host_id"], log_if_active=False)
+
+    try:
+        db_bp.host_task_statistics_create(host_id=task["host_id"], log_if_active=False)
+    except Exception as exc:
+        _log_statistics_refresh_failure(task, exc)
+
     final_file = (
         os.path.join(server_path, history_name) if server_path else None
     )
@@ -530,6 +559,11 @@ def main() -> None:
             _finalize_error(db_bp, task, err)
 
         finally:
+            try:
+                if db_bp.in_transaction:
+                    db_bp.rollback()
+            except Exception:
+                pass
             _cleanup(db_rfm, task)
 
         runtime_sleep.random_jitter_sleep()
