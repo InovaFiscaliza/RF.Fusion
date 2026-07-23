@@ -1328,6 +1328,37 @@ can query pre-aggregated data instantly, without running expensive JOINs against
 the transactional databases or waiting for stored procedures that previously
 caused deadlocks.
 
+### 15.1.1 Public contract tables that must remain stable
+
+Some `RFFUSION_SUMMARY` tables are not just internal WebFusion read models.
+They are also consumed by the Matlab-side `appAnalise` client through
+`src/webfusion/DBHandler.m`. Because of that, they must be treated as a
+public compatibility contract.
+
+The following tables are **contract-stable**:
+
+- `HOST_LOCATION_SUMMARY`
+- `MAP_SITE_SUMMARY`
+- `MAP_SITE_STATION_SUMMARY`
+- `SITE_EQUIPMENT_OBS_SUMMARY`
+
+For these tables, the default rule is:
+
+- do not rename the table
+- do not remove columns consumed by external clients
+- do not change the row granularity
+- do not silently change the semantic meaning of existing columns
+
+Allowed changes require explicit compatibility review:
+
+- adding new nullable columns
+- adding new indexes
+- backfilling data for consistency without changing meaning
+- creating new parallel read models for new consumers
+
+If a future redesign needs different semantics, create a new table or versioned
+read model instead of mutating these contract-stable tables in place.
+
 ### 15.2 Known problems with current implementation
 
 | Problem | Location | Impact |

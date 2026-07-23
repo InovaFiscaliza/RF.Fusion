@@ -91,6 +91,30 @@ The most important rule in this codebase is **coherence of abstraction level
 within a single function**. A function should do one kind of thing at one level
 of detail throughout its body.
 
+## 0.1 External read-model compatibility
+
+Some `RFFUSION_SUMMARY` tables are consumed outside the Python/WebFusion codebase
+by the Matlab-side `appAnalise` client through `src/webfusion/DBHandler.m`.
+These tables are not ordinary internal implementation details. They are part of
+an external compatibility contract.
+
+Treat the following tables as contract-stable:
+
+- `HOST_LOCATION_SUMMARY`
+- `MAP_SITE_SUMMARY`
+- `MAP_SITE_STATION_SUMMARY`
+- `SITE_EQUIPMENT_OBS_SUMMARY`
+
+When refactoring or evolving summary code:
+
+1. Do not rename these tables.
+2. Do not remove externally consumed columns.
+3. Do not change row granularity.
+4. Do not silently change the meaning of existing columns.
+
+If a new consumer needs different semantics, create a new table or a parallel
+read model instead of mutating these contract-stable tables in place.
+
 The current code violates this in two opposite directions simultaneously:
 
 **Over-abstraction of trivial operations** — wrapper functions that do nothing
