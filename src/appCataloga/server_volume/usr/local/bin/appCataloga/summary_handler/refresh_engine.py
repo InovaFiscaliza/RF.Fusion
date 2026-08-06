@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timedelta
+from functools import wraps
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 
 import config as k
@@ -60,6 +61,23 @@ class SummaryLogger(Protocol):
 
     def warning_event(self, event: str, **fields: Any) -> None:
         ...
+
+
+def _with_host_snapshot_lock(
+    refresh_fn: Callable[..., Tuple[int, str]],
+) -> Callable[..., Tuple[int, str]]:
+    """Serialize signal writes with the atomic host-snapshot replacement."""
+
+    @wraps(refresh_fn)
+    def _wrapped(engine: Any, *args: Any, **kwargs: Any) -> Tuple[int, str]:
+        if not engine.db.acquire_host_snapshot_lock():
+            raise RuntimeError("Timed out waiting for HOST_CURRENT_SNAPSHOT refresh lock.")
+        try:
+            return refresh_fn(engine, *args, **kwargs)
+        finally:
+            engine.db.release_host_snapshot_lock()
+
+    return _wrapped
 
 
 def _safe_int(value: Any) -> Optional[int]:
@@ -89,21 +107,6 @@ def _coalesce_text(*values: Any) -> Optional[str]:
         if text:
             return text
     return None
-
-
-def _kb_to_gb(value_kb: Any) -> float:
-    """Convert a kilobyte counter to gigabytes rounded to two decimal places.
-
-    Used when projecting BPDATA's KB-denominated size columns into the GB
-    columns expected by summary tables and dashboards.
-
-    Args:
-        value_kb: Raw KB value from the database (``None`` treated as zero).
-
-    Returns:
-        Float rounded to 2 decimal places (e.g., 1 048 576 KB → 1.0 GB).
-    """
-    return round(float(value_kb or 0) / 1024 / 1024, 2)
 
 
 def _month_start(value: Any) -> Optional[str]:
@@ -475,6 +478,50 @@ class SummaryRefreshEngine:
             "summary_full_reconcile_completed",
             component="summary_engine",
             operation="refresh_all",
+            reason=reason,
+            objects=refreshed,
+        )
+        return refreshed
+
+    def refresh_server_current_summary(self, *, reason: str) -> str:
+        """Refresh only the global aggregate from the current host snapshot.
+
+        This bounded maintenance path is useful after an additive schema
+        migration. It does not rebuild host metrics or read operational queue
+        tables; it only materializes the one-row server aggregate.
+        """
+        refreshed = self._run_refresh(
+            "SERVER_CURRENT_SUMMARY",
+            self._refresh_server_current_summary,
+        )
+        self.log.event(
+            "summary_server_current_refreshed",
+            component="summary_engine",
+            operation="refresh_server_current_summary",
+            reason=reason,
+        )
+        return refreshed
+
+    def refresh_operational_snapshots(self, *, reason: str) -> List[str]:
+        """Refresh host and server operational metrics without a full reconcile.
+
+        This path rebuilds the two snapshots that depend on queue and history
+        status. It leaves analytical, map, monthly, and error summaries intact.
+        """
+        refreshed = [
+            self._run_refresh(
+                "HOST_CURRENT_SNAPSHOT",
+                self._refresh_host_current_snapshot,
+            ),
+            self._run_refresh(
+                "SERVER_CURRENT_SUMMARY",
+                self._refresh_server_current_summary,
+            ),
+        ]
+        self.log.event(
+            "summary_operational_snapshots_refreshed",
+            component="summary_engine",
+            operation="refresh_operational_snapshots",
             reason=reason,
             objects=refreshed,
         )
@@ -1697,38 +1744,13 @@ class SummaryRefreshEngine:
         return len(payload_rows), watermark
 
     def _read_error_events(self, host_ids: Optional[Iterable[int]] = None) -> List[Dict[str, Any]]:
-        """Read canonical error events from four BPDATA sources with optional host scoping.
+        """Read actionable error, suspended, and frozen task states.
 
-        The result set is a plain list of dicts with a uniform schema across all four
-        source tables so callers can group/aggregate without table-specific branching.
-
-        The UNION ALL has four legs:
-            1. FILE_TASK_HISTORY rows where NU_STATUS_BACKUP = -1     (BACKUP errors)
-            2. FILE_TASK_HISTORY rows where NU_STATUS_PROCESSING = -1 (PROCESSING errors)
-            3. FILE_TASK rows where NU_STATUS = -1                    (queue-level errors)
-            4. HOST_TASK rows where NU_STATUS = -1                    (host-task errors)
-
-        PARAM ORDER — IMPORTANT:
-            Legs 1 and 2 both reference the same ``{history_filter}`` f-string fragment,
-            so the history host-id params must appear **twice** in the final params tuple —
-            once for each leg that uses that filter.  Legs 3 and 4 use their own distinct
-            filter fragments, each contributing one copy of the host-id params.
-
-            Correct order: [hist, hist, task, host_task]  →  4 × N values for N host ids.
-
-        Args:
-            host_ids: Optional collection of FK_HOST values to restrict the query.
-                      When ``None`` or empty, all hosts are included (no WHERE clause
-                      fragment is injected).
-
-        Returns:
-            List of row dicts with keys: NA_SOURCE_TABLE, ID_SOURCE_ROW,
-            NA_ERROR_SCOPE, FK_HOST, NA_HOST_NAME, DT_EVENT_AT,
-            NA_ERROR_DOMAIN, NA_ERROR_STAGE, NA_ERROR_CODE,
-            NA_ERROR_SUMMARY, NA_ERROR_DETAIL, NA_RAW_MESSAGE.
+        ``HOST_ERROR_SUMMARY`` is an operational diagnostic read model, not a
+        historical error log. A task held in ``SUSPENDED`` or ``FROZEN`` still
+        requires attention and must not be silently omitted. ``NA_TASK_STATE``
+        prevents those states from being merged into a literal ``ERROR`` bucket.
         """
-        # Build filter fragments and parameter lists independently so the same
-        # host-id list can be replicated correctly for each UNION ALL leg.
         host_ids_list = list(host_ids or [])
         p_hist: List[Any] = []
         p_task: List[Any] = []
@@ -1742,24 +1764,68 @@ class SummaryRefreshEngine:
         task_filter = f" AND {host_clause_task}" if host_clause_task else ""
         host_task_filter = f" AND {host_clause_host_task}" if host_clause_host_task else ""
 
-        # Leg 1 (BACKUP) and leg 2 (PROCESSING) both use {history_filter},
-        # so p_hist must be included twice: once per leg.
-        params: List[Any] = p_hist + p_hist + p_task + p_host_task
+        params: List[Any] = [
+            # FILE_TASK_HISTORY discovery states.
+            k.TASK_ERROR,
+            k.SUMMARY_TASK_STATE_ERROR,
+            k.TASK_SUSPENDED,
+            k.SUMMARY_TASK_STATE_SUSPENDED,
+            k.TASK_ERROR,
+            k.TASK_SUSPENDED,
+            *p_hist,
+            # FILE_TASK_HISTORY backup states.
+            k.TASK_ERROR,
+            k.SUMMARY_TASK_STATE_ERROR,
+            k.TASK_SUSPENDED,
+            k.SUMMARY_TASK_STATE_SUSPENDED,
+            k.TASK_ERROR,
+            k.TASK_SUSPENDED,
+            *p_hist,
+            # FILE_TASK_HISTORY processing states.
+            k.TASK_ERROR,
+            k.SUMMARY_TASK_STATE_ERROR,
+            k.TASK_FROZEN,
+            k.SUMMARY_TASK_STATE_FROZEN,
+            k.TASK_ERROR,
+            k.TASK_FROZEN,
+            *p_hist,
+            # Live FILE_TASK states.
+            k.TASK_ERROR,
+            k.SUMMARY_TASK_STATE_ERROR,
+            k.TASK_SUSPENDED,
+            k.SUMMARY_TASK_STATE_SUSPENDED,
+            k.TASK_FROZEN,
+            k.SUMMARY_TASK_STATE_FROZEN,
+            k.TASK_ERROR,
+            k.TASK_SUSPENDED,
+            k.TASK_FROZEN,
+            *p_task,
+            # HOST_TASK states.
+            k.TASK_ERROR,
+            k.SUMMARY_TASK_STATE_ERROR,
+            k.TASK_SUSPENDED,
+            k.SUMMARY_TASK_STATE_SUSPENDED,
+            k.TASK_FROZEN,
+            k.SUMMARY_TASK_STATE_FROZEN,
+            k.TASK_ERROR,
+            k.TASK_SUSPENDED,
+            k.TASK_FROZEN,
+            *p_host_task,
+        ]
 
         return self._select(
             f"""
             SELECT
                 'FILE_TASK_HISTORY' AS NA_SOURCE_TABLE,
                 f.ID_HISTORY AS ID_SOURCE_ROW,
-                'BACKUP' AS NA_ERROR_SCOPE,
+                'DISCOVERY' AS NA_ERROR_SCOPE,
+                CASE f.NU_STATUS_DISCOVERY
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                END AS NA_TASK_STATE,
                 f.FK_HOST,
                 h.NA_HOST_NAME,
-                COALESCE(
-                    f.DT_BACKUP,
-                    f.DT_DISCOVERED,
-                    f.DT_FILE_CREATED_HOST,
-                    f.DT_FILE_MODIFIED_HOST
-                ) AS DT_EVENT_AT,
+                COALESCE(f.DT_DISCOVERED, f.DT_FILE_CREATED_HOST, f.DT_FILE_MODIFIED_HOST) AS DT_EVENT_AT,
                 NULLIF(TRIM(f.NA_ERROR_DOMAIN), '') AS NA_ERROR_DOMAIN,
                 NULLIF(TRIM(f.NA_ERROR_STAGE), '') AS NA_ERROR_STAGE,
                 NULLIF(TRIM(f.NA_ERROR_CODE), '') AS NA_ERROR_CODE,
@@ -1768,7 +1834,31 @@ class SummaryRefreshEngine:
                 f.NA_MESSAGE AS NA_RAW_MESSAGE
             FROM BPDATA.FILE_TASK_HISTORY f
             LEFT JOIN BPDATA.HOST h ON h.ID_HOST = f.FK_HOST
-            WHERE f.NU_STATUS_BACKUP = -1
+            WHERE f.NU_STATUS_DISCOVERY IN (%s, %s)
+            {history_filter}
+
+            UNION ALL
+
+            SELECT
+                'FILE_TASK_HISTORY' AS NA_SOURCE_TABLE,
+                f.ID_HISTORY AS ID_SOURCE_ROW,
+                'BACKUP' AS NA_ERROR_SCOPE,
+                CASE f.NU_STATUS_BACKUP
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                END AS NA_TASK_STATE,
+                f.FK_HOST,
+                h.NA_HOST_NAME,
+                COALESCE(f.DT_BACKUP, f.DT_DISCOVERED, f.DT_FILE_CREATED_HOST, f.DT_FILE_MODIFIED_HOST) AS DT_EVENT_AT,
+                NULLIF(TRIM(f.NA_ERROR_DOMAIN), '') AS NA_ERROR_DOMAIN,
+                NULLIF(TRIM(f.NA_ERROR_STAGE), '') AS NA_ERROR_STAGE,
+                NULLIF(TRIM(f.NA_ERROR_CODE), '') AS NA_ERROR_CODE,
+                COALESCE(NULLIF(TRIM(f.NA_ERROR_SUMMARY), ''), NULLIF(TRIM(f.NA_MESSAGE), ''), '(Sem mensagem)') AS NA_ERROR_SUMMARY,
+                f.NA_ERROR_DETAIL,
+                f.NA_MESSAGE AS NA_RAW_MESSAGE
+            FROM BPDATA.FILE_TASK_HISTORY f
+            LEFT JOIN BPDATA.HOST h ON h.ID_HOST = f.FK_HOST
+            WHERE f.NU_STATUS_BACKUP IN (%s, %s)
             {history_filter}
 
             UNION ALL
@@ -1777,15 +1867,13 @@ class SummaryRefreshEngine:
                 'FILE_TASK_HISTORY' AS NA_SOURCE_TABLE,
                 f.ID_HISTORY AS ID_SOURCE_ROW,
                 'PROCESSING' AS NA_ERROR_SCOPE,
+                CASE f.NU_STATUS_PROCESSING
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                END AS NA_TASK_STATE,
                 f.FK_HOST,
                 h.NA_HOST_NAME,
-                COALESCE(
-                    f.DT_PROCESSED,
-                    f.DT_BACKUP,
-                    f.DT_DISCOVERED,
-                    f.DT_FILE_CREATED_HOST,
-                    f.DT_FILE_MODIFIED_HOST
-                ) AS DT_EVENT_AT,
+                COALESCE(f.DT_PROCESSED, f.DT_BACKUP, f.DT_DISCOVERED, f.DT_FILE_CREATED_HOST, f.DT_FILE_MODIFIED_HOST) AS DT_EVENT_AT,
                 NULLIF(TRIM(f.NA_ERROR_DOMAIN), '') AS NA_ERROR_DOMAIN,
                 NULLIF(TRIM(f.NA_ERROR_STAGE), '') AS NA_ERROR_STAGE,
                 NULLIF(TRIM(f.NA_ERROR_CODE), '') AS NA_ERROR_CODE,
@@ -1794,7 +1882,7 @@ class SummaryRefreshEngine:
                 f.NA_MESSAGE AS NA_RAW_MESSAGE
             FROM BPDATA.FILE_TASK_HISTORY f
             LEFT JOIN BPDATA.HOST h ON h.ID_HOST = f.FK_HOST
-            WHERE f.NU_STATUS_PROCESSING = -1
+            WHERE f.NU_STATUS_PROCESSING IN (%s, %s)
             {history_filter}
 
             UNION ALL
@@ -1803,17 +1891,18 @@ class SummaryRefreshEngine:
                 'FILE_TASK' AS NA_SOURCE_TABLE,
                 t.ID_FILE_TASK AS ID_SOURCE_ROW,
                 CASE
-                    WHEN t.NU_TYPE = 1 THEN 'BACKUP_QUEUE'
-                    WHEN t.NU_TYPE = 2 THEN 'PROCESSING_QUEUE'
+                    WHEN t.NU_TYPE = {k.FILE_TASK_BACKUP_TYPE} THEN 'BACKUP_QUEUE'
+                    WHEN t.NU_TYPE = {k.FILE_TASK_PROCESS_TYPE} THEN 'PROCESSING_QUEUE'
                     ELSE 'FILE_TASK'
                 END AS NA_ERROR_SCOPE,
+                CASE t.NU_STATUS
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                END AS NA_TASK_STATE,
                 t.FK_HOST,
                 h.NA_HOST_NAME,
-                COALESCE(
-                    t.DT_FILE_TASK,
-                    t.DT_FILE_CREATED_HOST,
-                    t.DT_FILE_MODIFIED_HOST
-                ) AS DT_EVENT_AT,
+                COALESCE(t.DT_FILE_TASK, t.DT_FILE_CREATED_HOST, t.DT_FILE_MODIFIED_HOST) AS DT_EVENT_AT,
                 NULLIF(TRIM(t.NA_ERROR_DOMAIN), '') AS NA_ERROR_DOMAIN,
                 NULLIF(TRIM(t.NA_ERROR_STAGE), '') AS NA_ERROR_STAGE,
                 NULLIF(TRIM(t.NA_ERROR_CODE), '') AS NA_ERROR_CODE,
@@ -1822,7 +1911,7 @@ class SummaryRefreshEngine:
                 t.NA_MESSAGE AS NA_RAW_MESSAGE
             FROM BPDATA.FILE_TASK t
             LEFT JOIN BPDATA.HOST h ON h.ID_HOST = t.FK_HOST
-            WHERE t.NU_STATUS = -1
+            WHERE t.NU_STATUS IN (%s, %s, %s)
             {task_filter}
 
             UNION ALL
@@ -1831,6 +1920,11 @@ class SummaryRefreshEngine:
                 'HOST_TASK' AS NA_SOURCE_TABLE,
                 ht.ID_HOST_TASK AS ID_SOURCE_ROW,
                 'HOST_TASK' AS NA_ERROR_SCOPE,
+                CASE ht.NU_STATUS
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                    WHEN %s THEN %s
+                END AS NA_TASK_STATE,
                 ht.FK_HOST,
                 h.NA_HOST_NAME,
                 ht.DT_HOST_TASK AS DT_EVENT_AT,
@@ -1842,7 +1936,7 @@ class SummaryRefreshEngine:
                 ht.NA_MESSAGE AS NA_RAW_MESSAGE
             FROM BPDATA.HOST_TASK ht
             LEFT JOIN BPDATA.HOST h ON h.ID_HOST = ht.FK_HOST
-            WHERE ht.NU_STATUS = -1
+            WHERE ht.NU_STATUS IN (%s, %s, %s)
             {host_task_filter}
             """,
             params,
@@ -1857,8 +1951,9 @@ class SummaryRefreshEngine:
 
         Calls :meth:`_read_error_events` to union all four BPDATA error sources,
         then groups the result by
-        (FK_HOST, NA_ERROR_SCOPE, NA_ERROR_DOMAIN, NA_ERROR_STAGE, NA_ERROR_CODE,
-        NA_ERROR_SUMMARY_HASH). Each group tracks error count plus the
+        (FK_HOST, NA_ERROR_SCOPE, NA_TASK_STATE, NA_ERROR_DOMAIN,
+        NA_ERROR_STAGE, NA_ERROR_CODE, NA_ERROR_SUMMARY_HASH). Each group tracks
+        occurrence count plus the
         timestamp and source-row id of the latest event. Older audit-heavy
         fields are not persisted in the public read model anymore.
 
@@ -1895,6 +1990,7 @@ class SummaryRefreshEngine:
             key = (
                 host_id,
                 row.get("NA_ERROR_SCOPE"),
+                row.get("NA_TASK_STATE"),
                 row.get("NA_ERROR_DOMAIN"),
                 row.get("NA_ERROR_STAGE"),
                 row.get("NA_ERROR_CODE"),
@@ -1906,11 +2002,12 @@ class SummaryRefreshEngine:
                 current = {
                     "FK_HOST": host_id,
                     "NA_ERROR_SCOPE": key[1],
-                    "NA_ERROR_DOMAIN": key[2],
-                    "NA_ERROR_STAGE": key[3],
-                    "NA_ERROR_CODE": key[4],
-                    "NA_ERROR_SUMMARY_HASH": key[5],
-                    "NA_ERROR_SUMMARY": key[6],
+                    "NA_TASK_STATE": key[2],
+                    "NA_ERROR_DOMAIN": key[3],
+                    "NA_ERROR_STAGE": key[4],
+                    "NA_ERROR_CODE": key[5],
+                    "NA_ERROR_SUMMARY_HASH": key[6],
+                    "NA_ERROR_SUMMARY": key[7],
                     "NU_ERROR_COUNT": 0,
                     "DT_LAST_SEEN_AT": row.get("DT_EVENT_AT"),
                     "ID_LAST_SOURCE_ROW": row.get("ID_SOURCE_ROW"),
@@ -1933,6 +2030,7 @@ class SummaryRefreshEngine:
             {
                 "FK_HOST": row["FK_HOST"],
                 "NA_ERROR_SCOPE": row["NA_ERROR_SCOPE"],
+                "NA_TASK_STATE": row["NA_TASK_STATE"],
                 "NA_ERROR_DOMAIN": row["NA_ERROR_DOMAIN"],
                 "NA_ERROR_STAGE": row["NA_ERROR_STAGE"],
                 "NA_ERROR_CODE": row["NA_ERROR_CODE"],
@@ -1956,6 +2054,7 @@ class SummaryRefreshEngine:
                     unique_keys=[
                         "FK_HOST",
                         "NA_ERROR_SCOPE",
+                        "NA_TASK_STATE",
                         "NA_ERROR_DOMAIN",
                         "NA_ERROR_STAGE",
                         "NA_ERROR_CODE",
@@ -1971,8 +2070,9 @@ class SummaryRefreshEngine:
 
         All per-host error group rows from ``HOST_ERROR_SUMMARY`` are merged
         into cross-host buckets keyed on
-        (NA_ERROR_SCOPE, NA_ERROR_DOMAIN, NA_ERROR_STAGE, NA_ERROR_CODE,
-        NA_ERROR_SUMMARY_HASH). Error counts are summed into the exact UI
+        (NA_ERROR_SCOPE, NA_TASK_STATE, NA_ERROR_DOMAIN, NA_ERROR_STAGE,
+        NA_ERROR_CODE, NA_ERROR_SUMMARY_HASH). Occurrence counts are summed
+        into the exact UI
         payload consumed by the global diagnostics page.
 
         Note: all four BPDATA error sources (FILE_TASK_HISTORY, FILE_TASK,
@@ -1993,6 +2093,7 @@ class SummaryRefreshEngine:
         for row in host_rows:
             key = (
                 row.get("NA_ERROR_SCOPE"),
+                row.get("NA_TASK_STATE"),
                 row.get("NA_ERROR_DOMAIN"),
                 row.get("NA_ERROR_STAGE"),
                 row.get("NA_ERROR_CODE"),
@@ -2003,11 +2104,12 @@ class SummaryRefreshEngine:
             if current is None:
                 current = {
                     "NA_ERROR_SCOPE": key[0],
-                    "NA_ERROR_DOMAIN": key[1],
-                    "NA_ERROR_STAGE": key[2],
-                    "NA_ERROR_CODE": key[3],
-                    "NA_ERROR_SUMMARY_HASH": key[4],
-                    "NA_ERROR_SUMMARY": key[5],
+                    "NA_TASK_STATE": key[1],
+                    "NA_ERROR_DOMAIN": key[2],
+                    "NA_ERROR_STAGE": key[3],
+                    "NA_ERROR_CODE": key[4],
+                    "NA_ERROR_SUMMARY_HASH": key[5],
+                    "NA_ERROR_SUMMARY": key[6],
                     "NU_ERROR_COUNT": 0,
                 }
                 grouped[key] = current
@@ -2017,6 +2119,7 @@ class SummaryRefreshEngine:
         payload_rows = [
             {
                 "NA_ERROR_SCOPE": row["NA_ERROR_SCOPE"],
+                "NA_TASK_STATE": row["NA_TASK_STATE"],
                 "NA_ERROR_DOMAIN": row["NA_ERROR_DOMAIN"],
                 "NA_ERROR_STAGE": row["NA_ERROR_STAGE"],
                 "NA_ERROR_CODE": row["NA_ERROR_CODE"],
@@ -2032,46 +2135,7 @@ class SummaryRefreshEngine:
         return len(payload_rows), watermark
 
     def _refresh_host_current_snapshot(self) -> Tuple[int, str]:
-        """Rebuild the per-host dashboard snapshot from multiple summary sources.
-
-        For each host in ``BPDATA.HOST``, assembles a single denormalized row
-        from:
-
-        - ``BPDATA.HOST`` — connectivity flags, task counters, KB sizes.
-        - ``BPDATA.FILE_TASK`` — real-time queue depth (pending only).
-        - ``BPDATA.FILE_TASK_HISTORY`` — current-month backup throughput
-          grouped by ``DT_BACKUP``.
-        - ``HOST_MONTHLY_METRIC`` — total discovered-file count (preferred over
-          the raw ``NU_HOST_FILES`` counter which may lag).
-        - ``HOST_EQUIPMENT_LINK`` — matched equipment count.
-        - ``SITE_EQUIPMENT_OBS_SUMMARY`` — total spectrum fact count.
-        - ``HOST_LOCATION_SUMMARY`` — current site label and UF
-          (most recent ``IS_CURRENT_LOCATION = 1`` row).
-        - ``HOST_ERROR_SUMMARY`` — most recent error code/summary.
-
-        BPDATA KB columns are converted to GB by :func:`_kb_to_gb` before
-        storage (summary tables use GB throughout).
-
-        Write strategy: always ``replace_table_rows`` (always full rebuild;
-        this table is cheap to rebuild because it is one row per host).
-
-        Returns:
-            ``(row_count, watermark)`` where ``watermark`` is
-            ``'hosts=<n>'``.
-        """
-        hosts = self._select("SELECT * FROM BPDATA.HOST")
-        queue_rows = self._select(
-            """
-            SELECT
-                FK_HOST,
-                SUM(CASE WHEN NU_TYPE = 1 AND NU_STATUS = 1 THEN 1 ELSE 0 END) AS NU_BACKUP_QUEUE_FILES_TOTAL,
-                ROUND(COALESCE(SUM(CASE WHEN NU_TYPE = 1 AND NU_STATUS = 1 THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_QUEUE_GB_TOTAL,
-                SUM(CASE WHEN NU_TYPE = 2 AND NU_STATUS = 1 THEN 1 ELSE 0 END) AS NU_PROCESSING_QUEUE_FILES_TOTAL,
-                ROUND(COALESCE(SUM(CASE WHEN NU_TYPE = 2 AND NU_STATUS = 1 THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_QUEUE_GB_TOTAL
-            FROM BPDATA.FILE_TASK
-            GROUP BY FK_HOST
-            """
-        )
+        """Read source aggregates before serializing the snapshot publication."""
         current_month_start = datetime.utcnow().replace(
             day=1,
             hour=0,
@@ -2088,151 +2152,136 @@ class SummaryRefreshEngine:
             next_month_start = current_month_start.replace(
                 month=current_month_start.month + 1,
             )
-        backup_month_rows = self._select(
-            """
-            SELECT
-                FK_HOST,
-                COUNT(*) AS NU_BACKUP_DONE_THIS_MONTH,
-                ROUND(COALESCE(SUM(VL_FILE_SIZE_KB_HOST), 0) / 1024 / 1024, 2) AS VL_BACKUP_DONE_GB_THIS_MONTH
-            FROM BPDATA.FILE_TASK_HISTORY
-            WHERE NU_STATUS_BACKUP = 0
-              AND DT_BACKUP >= %s
-              AND DT_BACKUP < %s
-            GROUP BY FK_HOST
-            """,
-            (current_month_start, next_month_start),
+        sources = self.db.read_host_current_snapshot_sources(
+            current_month_start=current_month_start,
+            next_month_start=next_month_start,
         )
-        monthly_rows = self._select(
-            """
-            SELECT
-                FK_HOST,
-                SUM(NU_DISCOVERED_FILES) AS NU_DISCOVERED_FILES_TOTAL
-            FROM HOST_MONTHLY_METRIC
-            GROUP BY FK_HOST
-            """
-        )
-        link_rows = self._select(
-            """
-            SELECT FK_HOST, COUNT(*) AS NU_MATCHED_EQUIPMENT_TOTAL
-            FROM HOST_EQUIPMENT_LINK
-            WHERE IS_ACTIVE = 1
-              AND IS_PRIMARY_LINK = 1
-            GROUP BY FK_HOST
-            """
-        )
-        spectrum_rows = self._select(
-            """
-            SELECT
-                l.FK_HOST,
-                SUM(obs.NU_SPECTRUM_COUNT) AS NU_FACT_SPECTRUM_TOTAL
-            FROM HOST_EQUIPMENT_LINK l
-            JOIN SITE_EQUIPMENT_OBS_SUMMARY obs
-              ON obs.FK_EQUIPMENT = l.FK_EQUIPMENT
-            WHERE l.IS_ACTIVE = 1
-              AND l.IS_PRIMARY_LINK = 1
-            GROUP BY l.FK_HOST
-            """
-        )
-        current_location_rows = self._select(
-            """
-            SELECT
-                FK_HOST,
-                NA_SITE_LABEL,
-                NA_STATE_CODE,
-                DT_LAST_SEEN_AT,
-                DT_FIRST_SEEN_AT
-            FROM HOST_LOCATION_SUMMARY
-            WHERE IS_CURRENT_LOCATION = 1
-            ORDER BY
-                FK_HOST ASC,
-                COALESCE(DT_LAST_SEEN_AT, DT_FIRST_SEEN_AT) DESC,
-                COALESCE(DT_FIRST_SEEN_AT, DT_LAST_SEEN_AT) DESC,
-                FK_SITE DESC
-            """
-        )
-        last_error_rows = self._select(
-            """
-            SELECT
-                FK_HOST,
-                NA_ERROR_CODE,
-                NA_ERROR_SUMMARY,
-                DT_LAST_SEEN_AT,
-                ID_LAST_SOURCE_ROW
-            FROM HOST_ERROR_SUMMARY
-            ORDER BY
-                FK_HOST ASC,
-                COALESCE(DT_LAST_SEEN_AT, '1970-01-01 00:00:00') DESC,
-                COALESCE(ID_LAST_SOURCE_ROW, 0) DESC
-            """
-        )
+        return self._materialize_host_current_snapshot(sources)
+
+    @_with_host_snapshot_lock
+    def _materialize_host_current_snapshot(
+        self,
+        sources: Dict[str, List[Dict[str, Any]]],
+    ) -> Tuple[int, str]:
+        """Rebuild the per-host dashboard snapshot from multiple summary sources.
+
+        For each host in ``BPDATA.HOST``, assembles a single denormalized row
+        from:
+
+        - ``BPDATA.HOST`` — identity, connectivity, and runtime-control state.
+        - ``BPDATA.FILE_TASK`` — real-time queue depth (pending only).
+        - ``BPDATA.FILE_TASK_HISTORY`` — lifecycle counters, current state,
+          and month-throughput grouped by operational timestamps.
+        - ``HOST_EQUIPMENT_LINK`` — matched equipment count.
+        - ``SITE_EQUIPMENT_OBS_SUMMARY`` — total spectrum fact count.
+        - ``HOST_LOCATION_SUMMARY`` — current site label and UF
+          (most recent ``IS_CURRENT_LOCATION = 1`` row).
+        - ``HOST_ERROR_SUMMARY`` — most recent error code/summary.
+
+        Write strategy: always ``replace_table_rows`` (always full rebuild;
+        this table is cheap to rebuild because it is one row per host).
+
+        Returns:
+            ``(row_count, watermark)`` where ``watermark`` is
+            ``'hosts=<n>'``.
+        """
+        hosts = sources["hosts"]
+        signal_rows = self.db.read_host_current_snapshot_signals()
+        queue_rows = sources["queue_rows"]
+        history_rows = sources["history_rows"]
+        spectrum_rows = sources["spectrum_rows"]
+        current_location_rows = sources["current_location_rows"]
 
         queue_map = {int(row["FK_HOST"]): row for row in queue_rows}
-        backup_month_map = {int(row["FK_HOST"]): row for row in backup_month_rows}
-        monthly_map = {int(row["FK_HOST"]): row for row in monthly_rows}
-        link_map = {int(row["FK_HOST"]): row for row in link_rows}
+        history_map = {int(row["FK_HOST"]): row for row in history_rows}
         spectrum_map = {int(row["FK_HOST"]): row for row in spectrum_rows}
+        signal_map = {int(row["ID_HOST"]): row for row in signal_rows}
         location_map: Dict[int, Dict[str, Any]] = {}
         for row in current_location_rows:
             host_id = int(row["FK_HOST"])
             location_map.setdefault(host_id, row)
-        last_error_map: Dict[int, Dict[str, Any]] = {}
-        for row in last_error_rows:
-            host_id = int(row["FK_HOST"])
-            last_error_map.setdefault(host_id, row)
-
         payload_rows = []
         for host in hosts:
             host_id = int(host["ID_HOST"])
             queue = queue_map.get(host_id, {})
-            backup_month = backup_month_map.get(host_id, {})
-            monthly = monthly_map.get(host_id, {})
-            link_stats = link_map.get(host_id, {})
+            history = history_map.get(host_id, {})
             spectrum_stats = spectrum_map.get(host_id, {})
+            signal = signal_map.get(host_id, {})
             current_location = location_map.get(host_id, {})
-            last_error = last_error_map.get(host_id, {})
+            ssh_failure_code = signal.get("NA_LAST_SSH_FAILURE_CODE")
+            is_ssh_failure = int(signal.get("IS_SSH_FAILURE") or 0)
 
-            payload_rows.append(
-                {
+            payload_row = {
                     "ID_HOST": host_id,
                     "NA_HOST_NAME": host.get("NA_HOST_NAME"),
                     "NA_HOST_ADDRESS": host.get("NA_HOST_ADDRESS"),
                     "NA_HOST_PORT": host.get("NA_HOST_PORT"),
                     "IS_OFFLINE": int(host.get("IS_OFFLINE") or 0),
                     "IS_BUSY": int(host.get("IS_BUSY") or 0),
-                    "NU_PID": host.get("NU_PID"),
-                    "DT_BUSY": host.get("DT_BUSY"),
-                    "DT_LAST_FAIL": host.get("DT_LAST_FAIL"),
+                    "DT_LAST_OFFLINE_AT": host.get("DT_LAST_OFFLINE_AT"),
+                    "NA_LAST_OFFLINE_DESCRIPTION": host.get("NA_LAST_OFFLINE_DESCRIPTION"),
                     "DT_LAST_CHECK": host.get("DT_LAST_CHECK"),
-                    "NU_HOST_CHECK_ERROR": host.get("NU_HOST_CHECK_ERROR"),
                     "DT_LAST_DISCOVERY": host.get("DT_LAST_DISCOVERY"),
-                    "DT_LAST_BACKUP": host.get("DT_LAST_BACKUP"),
-                    "NU_PENDING_FILE_BACKUP_TASKS": host.get("NU_PENDING_FILE_BACKUP_TASKS"),
-                    "NU_ERROR_FILE_BACKUP_TASKS": host.get("NU_ERROR_FILE_BACKUP_TASKS"),
-                    "NU_BACKUP_DONE_THIS_MONTH": int(backup_month.get("NU_BACKUP_DONE_THIS_MONTH") or 0),
-                    "VL_PENDING_BACKUP_GB": _kb_to_gb(host.get("VL_PENDING_BACKUP_KB")),
-                    "VL_BACKUP_DONE_GB_THIS_MONTH": backup_month.get("VL_BACKUP_DONE_GB_THIS_MONTH") or 0,
-                    "VL_DONE_BACKUP_GB": _kb_to_gb(host.get("VL_DONE_BACKUP_KB")),
-                    "DT_LAST_PROCESSING": host.get("DT_LAST_PROCESSING"),
-                    "NU_PENDING_FILE_PROCESS_TASKS": host.get("NU_PENDING_FILE_PROCESS_TASKS"),
-                    "NU_ERROR_FILE_PROCESS_TASKS": host.get("NU_ERROR_FILE_PROCESS_TASKS"),
-                    "NU_HOST_FILES": int(
-                        monthly.get("NU_DISCOVERED_FILES_TOTAL")
-                        or host.get("NU_HOST_FILES")
-                        or 0
-                    ),
+                    "DT_LAST_DISCOVERY_COMPLETED_AT": signal.get("DT_LAST_DISCOVERY_COMPLETED_AT"),
+                    "NU_LAST_DISCOVERY_FILE_COUNT": int(signal.get("NU_LAST_DISCOVERY_FILE_COUNT") or 0),
+                    "VL_LAST_DISCOVERY_KB": signal.get("VL_LAST_DISCOVERY_KB") or 0,
+                    "DT_LAST_DISCOVERY_WITH_FILES": signal.get("DT_LAST_DISCOVERY_WITH_FILES"),
+                    "DT_LAST_BACKUP": history.get("DT_LAST_BACKUP") or host.get("DT_LAST_BACKUP"),
+                    "NU_BACKUP_DONE_THIS_MONTH": int(history.get("NU_BACKUP_DONE_THIS_MONTH") or 0),
+                    "VL_BACKUP_DONE_GB_THIS_MONTH": history.get("VL_BACKUP_DONE_GB_THIS_MONTH") or 0,
+                    "DT_LAST_PROCESSING": history.get("DT_LAST_PROCESSING") or host.get("DT_LAST_PROCESSING"),
+                    "NU_PROCESSING_DONE_THIS_MONTH": int(history.get("NU_PROCESSING_DONE_THIS_MONTH") or 0),
+                    "VL_PROCESSING_DONE_GB_THIS_MONTH": history.get("VL_PROCESSING_DONE_GB_THIS_MONTH") or 0,
                     "NU_BACKUP_QUEUE_FILES_TOTAL": int(queue.get("NU_BACKUP_QUEUE_FILES_TOTAL") or 0),
                     "VL_BACKUP_QUEUE_GB_TOTAL": queue.get("VL_BACKUP_QUEUE_GB_TOTAL") or 0,
+                    "NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL": int(queue.get("NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL") or 0),
+                    "VL_BACKUP_QUEUE_RUNNING_GB_TOTAL": queue.get("VL_BACKUP_QUEUE_RUNNING_GB_TOTAL") or 0,
+                    "NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL": int(queue.get("NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL") or 0),
+                    "VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL": queue.get("VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL") or 0,
                     "NU_PROCESSING_QUEUE_FILES_TOTAL": int(queue.get("NU_PROCESSING_QUEUE_FILES_TOTAL") or 0),
                     "VL_PROCESSING_QUEUE_GB_TOTAL": queue.get("VL_PROCESSING_QUEUE_GB_TOTAL") or 0,
-                    "NU_MATCHED_EQUIPMENT_TOTAL": int(link_stats.get("NU_MATCHED_EQUIPMENT_TOTAL") or 0),
+                    "NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL": int(queue.get("NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL") or 0),
+                    "VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL": queue.get("VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL") or 0,
+                    "NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL": int(queue.get("NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL") or 0),
+                    "VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL": queue.get("VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL") or 0,
                     "NU_FACT_SPECTRUM_TOTAL": int(spectrum_stats.get("NU_FACT_SPECTRUM_TOTAL") or 0),
+                    "NU_PAYLOAD_DELETED_FILES_TOTAL": int(history.get("NU_PAYLOAD_DELETED_FILES_TOTAL") or 0),
+                    "VL_PAYLOAD_DELETED_GB_TOTAL": history.get("VL_PAYLOAD_DELETED_GB_TOTAL") or 0,
+                    "NU_DISCOVERED_FILES_TOTAL": int(history.get("NU_DISCOVERED_FILES_TOTAL") or 0),
+                    "VL_DISCOVERED_GB_TOTAL": history.get("VL_DISCOVERED_GB_TOTAL") or 0,
+                    "NU_BACKUP_DONE_FILES_TOTAL": int(history.get("NU_BACKUP_DONE_FILES_TOTAL") or 0),
+                    "VL_BACKUP_DONE_GB_TOTAL": history.get("VL_BACKUP_DONE_GB_TOTAL") or 0,
+                    "NU_PROCESSING_DONE_FILES_TOTAL": int(history.get("NU_PROCESSING_DONE_FILES_TOTAL") or 0),
+                    "VL_PROCESSING_DONE_GB_TOTAL": history.get("VL_PROCESSING_DONE_GB_TOTAL") or 0,
+                    "NU_BACKUP_PENDING_FILES_CURRENT": int(history.get("NU_BACKUP_PENDING_FILES_CURRENT") or 0),
+                    "VL_BACKUP_PENDING_GB_CURRENT": history.get("VL_BACKUP_PENDING_GB_CURRENT") or 0,
+                    "NU_BACKUP_ERROR_FILES_CURRENT": int(history.get("NU_BACKUP_ERROR_FILES_CURRENT") or 0),
+                    "VL_BACKUP_ERROR_GB_CURRENT": history.get("VL_BACKUP_ERROR_GB_CURRENT") or 0,
+                    "NU_BACKUP_SUSPENDED_FILES_CURRENT": int(history.get("NU_BACKUP_SUSPENDED_FILES_CURRENT") or 0),
+                    "VL_BACKUP_SUSPENDED_GB_CURRENT": history.get("VL_BACKUP_SUSPENDED_GB_CURRENT") or 0,
+                    "NU_PROCESSING_PENDING_FILES_CURRENT": int(history.get("NU_PROCESSING_PENDING_FILES_CURRENT") or 0),
+                    "VL_PROCESSING_PENDING_GB_CURRENT": history.get("VL_PROCESSING_PENDING_GB_CURRENT") or 0,
+                    "NU_PROCESSING_ERROR_FILES_CURRENT": int(history.get("NU_PROCESSING_ERROR_FILES_CURRENT") or 0),
+                    "VL_PROCESSING_ERROR_GB_CURRENT": history.get("VL_PROCESSING_ERROR_GB_CURRENT") or 0,
+                    "NU_PROCESSING_FROZEN_FILES_CURRENT": int(history.get("NU_PROCESSING_FROZEN_FILES_CURRENT") or 0),
+                    "VL_PROCESSING_FROZEN_GB_CURRENT": history.get("VL_PROCESSING_FROZEN_GB_CURRENT") or 0,
+                    "NA_CURRENT_LOCALITY_LABEL": current_location.get("NA_LOCALITY_LABEL"),
                     "NA_CURRENT_SITE_LABEL": current_location.get("NA_SITE_LABEL"),
                     "NA_CURRENT_STATE_CODE": current_location.get("NA_STATE_CODE"),
-                    "NA_LAST_ERROR_CODE": last_error.get("NA_ERROR_CODE"),
-                    "NA_LAST_ERROR_SUMMARY": last_error.get("NA_ERROR_SUMMARY"),
-                    "DT_LAST_ERROR_AT": last_error.get("DT_LAST_SEEN_AT"),
-                }
-            )
+                    "VL_CURRENT_LATITUDE": current_location.get("VL_LATITUDE"),
+                    "VL_CURRENT_LONGITUDE": current_location.get("VL_LONGITUDE"),
+                    "IS_SSH_FAILURE": is_ssh_failure,
+                    "DT_LAST_SSH_EVALUATED_AT": signal.get("DT_LAST_SSH_EVALUATED_AT"),
+                    "DT_LAST_SSH_FAILURE_AT": signal.get("DT_LAST_SSH_FAILURE_AT"),
+                    "NA_LAST_SSH_FAILURE_CODE": ssh_failure_code,
+                    "NA_LAST_SSH_FAILURE_DESCRIPTION": signal.get("NA_LAST_SSH_FAILURE_DESCRIPTION"),
+                    "IS_GPS_GNSS_UNAVAILABLE": int(signal.get("IS_GPS_GNSS_UNAVAILABLE") or 0),
+                    "DT_LAST_GPS_GNSS_EVALUATED_AT": signal.get("DT_LAST_GPS_GNSS_EVALUATED_AT"),
+                    "DT_LAST_GPS_GNSS_UNAVAILABLE_AT": signal.get("DT_LAST_GPS_GNSS_UNAVAILABLE_AT"),
+                    "NA_LAST_GPS_GNSS_UNAVAILABLE_DESCRIPTION": signal.get("NA_LAST_GPS_GNSS_UNAVAILABLE_DESCRIPTION"),
+                    "NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME": signal.get("NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME"),
+            }
+            payload_rows.append(payload_row)
 
         self.db.replace_table_rows("HOST_CURRENT_SNAPSHOT", payload_rows)
         watermark = f"hosts={len(payload_rows)}"
@@ -2245,10 +2294,6 @@ class SummaryRefreshEngine:
         server-wide totals (host counts, file counts, queue depths, GB volumes,
         spectrum count). Current-month backup throughput is summed from the
         per-host snapshot fields already materialized from ``DT_BACKUP``.
-        Historical processing-done totals come from ``HOST_MONTHLY_METRIC``
-        because the host snapshot no longer persists the redundant lifetime
-        counter copied from ``BPDATA.HOST``.
-
         The table always contains exactly one row with
         ``ID_SUMMARY = 1``.  The month label (``NA_CURRENT_MONTH_LABEL``) uses
         UTC time so it is consistent with the worker's timezone.
@@ -2264,35 +2309,45 @@ class SummaryRefreshEngine:
             SELECT
                 IS_OFFLINE,
                 IS_BUSY,
-                NU_HOST_FILES,
-                NU_PENDING_FILE_BACKUP_TASKS,
-                VL_PENDING_BACKUP_GB,
-                NU_ERROR_FILE_BACKUP_TASKS,
-                NU_PENDING_FILE_PROCESS_TASKS,
-                NU_ERROR_FILE_PROCESS_TASKS,
+                NU_DISCOVERED_FILES_TOTAL,
+                VL_DISCOVERED_GB_TOTAL,
+                NU_BACKUP_DONE_FILES_TOTAL,
+                VL_BACKUP_DONE_GB_TOTAL,
+                NU_BACKUP_PENDING_FILES_CURRENT,
+                VL_BACKUP_PENDING_GB_CURRENT,
+                NU_BACKUP_ERROR_FILES_CURRENT,
+                VL_BACKUP_ERROR_GB_CURRENT,
+                NU_BACKUP_SUSPENDED_FILES_CURRENT,
+                VL_BACKUP_SUSPENDED_GB_CURRENT,
+                NU_PROCESSING_DONE_FILES_TOTAL,
+                VL_PROCESSING_DONE_GB_TOTAL,
+                NU_PROCESSING_PENDING_FILES_CURRENT,
+                VL_PROCESSING_PENDING_GB_CURRENT,
+                NU_PROCESSING_ERROR_FILES_CURRENT,
+                VL_PROCESSING_ERROR_GB_CURRENT,
+                NU_PROCESSING_FROZEN_FILES_CURRENT,
+                VL_PROCESSING_FROZEN_GB_CURRENT,
                 NU_PROCESSING_QUEUE_FILES_TOTAL,
                 VL_PROCESSING_QUEUE_GB_TOTAL,
+                NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL,
+                VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL,
+                NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL,
+                VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL,
                 NU_BACKUP_QUEUE_FILES_TOTAL,
                 VL_BACKUP_QUEUE_GB_TOTAL,
+                NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL,
+                VL_BACKUP_QUEUE_RUNNING_GB_TOTAL,
+                NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL,
+                VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL,
                 NU_FACT_SPECTRUM_TOTAL,
+                NU_PAYLOAD_DELETED_FILES_TOTAL,
+                VL_PAYLOAD_DELETED_GB_TOTAL,
                 NU_BACKUP_DONE_THIS_MONTH,
                 VL_BACKUP_DONE_GB_THIS_MONTH
             FROM HOST_CURRENT_SNAPSHOT
             """
         )
-        processing_totals = self._select(
-            """
-            SELECT
-                COALESCE(SUM(NU_PROCESSING_DONE_FILES), 0) AS NU_PROCESSING_DONE_FILES_TOTAL
-            FROM HOST_MONTHLY_METRIC
-            """
-        )
         current_month = datetime.utcnow().strftime("%Y-%m-01")
-        processing_done_files_total = 0
-        if processing_totals:
-            processing_done_files_total = int(
-                processing_totals[0].get("NU_PROCESSING_DONE_FILES_TOTAL") or 0
-            )
         payload_row = {
             "ID_SUMMARY": 1,
             "NA_CURRENT_MONTH_LABEL": current_month[:7],
@@ -2300,18 +2355,39 @@ class SummaryRefreshEngine:
             "NU_ONLINE_HOSTS": sum(1 for row in snapshot_rows if int(row.get("IS_OFFLINE") or 0) == 0),
             "NU_OFFLINE_HOSTS": sum(1 for row in snapshot_rows if int(row.get("IS_OFFLINE") or 0) == 1),
             "NU_BUSY_HOSTS": sum(1 for row in snapshot_rows if int(row.get("IS_BUSY") or 0) == 1),
-            "NU_DISCOVERED_FILES_TOTAL": sum(int(row.get("NU_HOST_FILES") or 0) for row in snapshot_rows),
-            "NU_BACKUP_PENDING_FILES_TOTAL": sum(int(row.get("NU_PENDING_FILE_BACKUP_TASKS") or 0) for row in snapshot_rows),
-            "VL_BACKUP_PENDING_GB_TOTAL": round(sum(float(row.get("VL_PENDING_BACKUP_GB") or 0) for row in snapshot_rows), 2),
-            "NU_BACKUP_ERROR_FILES_TOTAL": sum(int(row.get("NU_ERROR_FILE_BACKUP_TASKS") or 0) for row in snapshot_rows),
+            "NU_DISCOVERED_FILES_TOTAL": sum(int(row.get("NU_DISCOVERED_FILES_TOTAL") or 0) for row in snapshot_rows),
+            "VL_DISCOVERED_GB_TOTAL": round(sum(float(row.get("VL_DISCOVERED_GB_TOTAL") or 0) for row in snapshot_rows), 2),
+            "NU_BACKUP_DONE_FILES_TOTAL": sum(int(row.get("NU_BACKUP_DONE_FILES_TOTAL") or 0) for row in snapshot_rows),
+            "VL_BACKUP_DONE_GB_TOTAL": round(sum(float(row.get("VL_BACKUP_DONE_GB_TOTAL") or 0) for row in snapshot_rows), 2),
+            "NU_BACKUP_PENDING_FILES_TOTAL": sum(int(row.get("NU_BACKUP_PENDING_FILES_CURRENT") or 0) for row in snapshot_rows),
+            "VL_BACKUP_PENDING_GB_TOTAL": round(sum(float(row.get("VL_BACKUP_PENDING_GB_CURRENT") or 0) for row in snapshot_rows), 2),
+            "NU_BACKUP_ERROR_FILES_TOTAL": sum(int(row.get("NU_BACKUP_ERROR_FILES_CURRENT") or 0) for row in snapshot_rows),
+            "VL_BACKUP_ERROR_GB_TOTAL": round(sum(float(row.get("VL_BACKUP_ERROR_GB_CURRENT") or 0) for row in snapshot_rows), 2),
+            "NU_BACKUP_SUSPENDED_FILES_TOTAL": sum(int(row.get("NU_BACKUP_SUSPENDED_FILES_CURRENT") or 0) for row in snapshot_rows),
+            "VL_BACKUP_SUSPENDED_GB_TOTAL": round(sum(float(row.get("VL_BACKUP_SUSPENDED_GB_CURRENT") or 0) for row in snapshot_rows), 2),
             "NU_BACKUP_QUEUE_FILES_TOTAL": sum(int(row.get("NU_BACKUP_QUEUE_FILES_TOTAL") or 0) for row in snapshot_rows),
             "VL_BACKUP_QUEUE_GB_TOTAL": round(sum(float(row.get("VL_BACKUP_QUEUE_GB_TOTAL") or 0) for row in snapshot_rows), 2),
-            "NU_PROCESSING_PENDING_FILES_TOTAL": sum(int(row.get("NU_PENDING_FILE_PROCESS_TASKS") or 0) for row in snapshot_rows),
-            "NU_PROCESSING_DONE_FILES_TOTAL": processing_done_files_total,
-            "NU_PROCESSING_ERROR_FILES_TOTAL": sum(int(row.get("NU_ERROR_FILE_PROCESS_TASKS") or 0) for row in snapshot_rows),
+            "NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL": sum(int(row.get("NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL") or 0) for row in snapshot_rows),
+            "VL_BACKUP_QUEUE_RUNNING_GB_TOTAL": round(sum(float(row.get("VL_BACKUP_QUEUE_RUNNING_GB_TOTAL") or 0) for row in snapshot_rows), 2),
+            "NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL": sum(int(row.get("NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL") or 0) for row in snapshot_rows),
+            "VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL": round(sum(float(row.get("VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL") or 0) for row in snapshot_rows), 2),
+            "NU_PROCESSING_DONE_FILES_TOTAL": sum(int(row.get("NU_PROCESSING_DONE_FILES_TOTAL") or 0) for row in snapshot_rows),
+            "VL_PROCESSING_DONE_GB_TOTAL": round(sum(float(row.get("VL_PROCESSING_DONE_GB_TOTAL") or 0) for row in snapshot_rows), 2),
+            "NU_PROCESSING_PENDING_FILES_TOTAL": sum(int(row.get("NU_PROCESSING_PENDING_FILES_CURRENT") or 0) for row in snapshot_rows),
+            "VL_PROCESSING_PENDING_GB_TOTAL": round(sum(float(row.get("VL_PROCESSING_PENDING_GB_CURRENT") or 0) for row in snapshot_rows), 2),
+            "NU_PROCESSING_ERROR_FILES_TOTAL": sum(int(row.get("NU_PROCESSING_ERROR_FILES_CURRENT") or 0) for row in snapshot_rows),
+            "VL_PROCESSING_ERROR_GB_TOTAL": round(sum(float(row.get("VL_PROCESSING_ERROR_GB_CURRENT") or 0) for row in snapshot_rows), 2),
+            "NU_PROCESSING_FROZEN_FILES_TOTAL": sum(int(row.get("NU_PROCESSING_FROZEN_FILES_CURRENT") or 0) for row in snapshot_rows),
+            "VL_PROCESSING_FROZEN_GB_TOTAL": round(sum(float(row.get("VL_PROCESSING_FROZEN_GB_CURRENT") or 0) for row in snapshot_rows), 2),
             "NU_PROCESSING_QUEUE_FILES_TOTAL": sum(int(row.get("NU_PROCESSING_QUEUE_FILES_TOTAL") or 0) for row in snapshot_rows),
             "VL_PROCESSING_QUEUE_GB_TOTAL": round(sum(float(row.get("VL_PROCESSING_QUEUE_GB_TOTAL") or 0) for row in snapshot_rows), 2),
+            "NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL": sum(int(row.get("NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL") or 0) for row in snapshot_rows),
+            "VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL": round(sum(float(row.get("VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL") or 0) for row in snapshot_rows), 2),
+            "NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL": sum(int(row.get("NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL") or 0) for row in snapshot_rows),
+            "VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL": round(sum(float(row.get("VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL") or 0) for row in snapshot_rows), 2),
             "NU_FACT_SPECTRUM_TOTAL": sum(int(row.get("NU_FACT_SPECTRUM_TOTAL") or 0) for row in snapshot_rows),
+            "NU_PAYLOAD_DELETED_FILES_TOTAL": sum(int(row.get("NU_PAYLOAD_DELETED_FILES_TOTAL") or 0) for row in snapshot_rows),
+            "VL_PAYLOAD_DELETED_GB_TOTAL": round(sum(float(row.get("VL_PAYLOAD_DELETED_GB_TOTAL") or 0) for row in snapshot_rows), 2),
             "NU_BACKUP_DONE_THIS_MONTH": sum(int(row.get("NU_BACKUP_DONE_THIS_MONTH") or 0) for row in snapshot_rows),
             "VL_BACKUP_DONE_GB_THIS_MONTH": round(sum(float(row.get("VL_BACKUP_DONE_GB_THIS_MONTH") or 0) for row in snapshot_rows), 2),
         }

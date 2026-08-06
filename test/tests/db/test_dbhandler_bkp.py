@@ -275,8 +275,8 @@ class HostConnectivityListTests(unittest.TestCase):
         )
 
 
-class HostStatisticsRefreshTests(unittest.TestCase):
-    """Validate durable HOST aggregates derived from FILE_TASK_HISTORY."""
+class HostSummaryRefreshRequestTests(unittest.TestCase):
+    """Validate summary invalidation after one host state transition."""
 
     def make_handler(self):
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
@@ -292,57 +292,21 @@ class HostStatisticsRefreshTests(unittest.TestCase):
         )()
         return handler
 
-    def test_host_update_statistics_refreshes_nu_host_files_from_history(self) -> None:
-        """HOST.NU_HOST_FILES must track the durable discovered-file total."""
+    def test_request_host_summary_refresh_publishes_host_scope(self) -> None:
+        """The operational handler must invalidate only the affected host."""
 
         handler = self.make_handler()
-        host_updates = []
         summary_scopes = []
-
-        def fake_select_raw(sql, params):
-            if "SUM(NU_STATUS_DISCOVERY  = 0)" in sql:
-                return [
-                    {
-                        "total_discovered": 17,
-                        "total_backup": 11,
-                        "total_processed": 9,
-                        "pending_backup": 3,
-                        "pending_process": 2,
-                        "error_discovery": 1,
-                        "error_backup": 4,
-                        "error_process": 5,
-                        "last_discovered": datetime(2026, 5, 18, 10, 0, 0),
-                        "last_backup": datetime(2026, 5, 19, 11, 0, 0),
-                        "last_processed": datetime(2026, 5, 20, 12, 0, 0),
-                    }
-                ]
-
-            if "AS pending_kb" in sql and "AS done_kb" in sql:
-                return [
-                    {
-                        "pending_kb": 2048,
-                        "done_kb": 4096,
-                    }
-                ]
-
-            raise AssertionError(f"Unexpected SQL: {sql}")
-
-        handler._select_raw = fake_select_raw
-        handler.host_update = lambda **kwargs: host_updates.append(kwargs)
         handler._summary_publish_host_scope = lambda host_id, **kwargs: summary_scopes.append(
             {"host_id": host_id, **kwargs}
         )
 
-        handler.host_update_statistics(88)
+        handler.request_host_summary_refresh(88, reason="processing_completed")
 
-        self.assertEqual(len(host_updates), 1)
-        self.assertEqual(host_updates[0]["host_id"], 88)
-        self.assertEqual(host_updates[0]["NU_HOST_FILES"], 17)
-        self.assertEqual(host_updates[0]["NU_DONE_FILE_DISCOVERY_TASKS"], 17)
-        self.assertEqual(host_updates[0]["NU_DONE_FILE_BACKUP_TASKS"], 11)
-        self.assertEqual(host_updates[0]["VL_PENDING_BACKUP_KB"], 2048)
-        self.assertEqual(host_updates[0]["VL_DONE_BACKUP_KB"], 4096)
-        self.assertEqual(summary_scopes, [])
+        self.assertEqual(
+            summary_scopes,
+            [{"host_id": 88, "reason": "processing_completed"}],
+        )
 
 
 class FileTimestampOwnershipTests(unittest.TestCase):
@@ -1276,7 +1240,7 @@ class HostTaskQueueTests(unittest.TestCase):
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
         handler.database = "BPDATA_TEST"
-        handler.host_update_statistics = lambda host_id: None
+        handler.request_host_summary_refresh = lambda host_id, **kwargs: None
         handler.host_read_status = lambda host_id: {"ID_HOST": host_id}
         return handler
 

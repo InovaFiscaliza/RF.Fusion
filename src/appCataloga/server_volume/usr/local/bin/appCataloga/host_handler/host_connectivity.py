@@ -26,6 +26,8 @@ from ping3 import ping
 from .host_ssh_utils import (
     ConnectivityProbePayload,
     persist_auth_error,
+    record_ssh_failure,
+    record_ssh_success,
     ssh_probe,
 )
 
@@ -241,6 +243,8 @@ def persist_host_connectivity_state(
     update_fields = {
         "IS_OFFLINE": True,
         "DT_LAST_CHECK": now,
+        "DT_LAST_OFFLINE_AT": now,
+        "NA_LAST_OFFLINE_DESCRIPTION": k.HOST_OFFLINE_DESCRIPTION,
     }
 
     if not was_offline:
@@ -332,6 +336,43 @@ def probe_host_connectivity(
     return best_failure
 
 
+def persist_ssh_probe_signal(
+    host_id: int,
+    connectivity: ConnectivityProbePayload,
+    *,
+    observed_at: datetime,
+    logger: logger_type,
+) -> None:
+    """Persist only the SSH state proven by one completed probe."""
+    match connectivity["state"]:
+        case k.HOST_CONN_ONLINE:
+            record_ssh_success(
+                host_id,
+                observed_at=observed_at,
+                logger=logger,
+            )
+        case k.HOST_CONN_AUTH_ERROR:
+            record_ssh_failure(
+                host_id,
+                observed_at=observed_at,
+                failure_code=k.SSH_FAILURE_CODE_AUTHENTICATION,
+                description=connectivity["error"] or connectivity["reason"],
+                logger=logger,
+            )
+        case k.HOST_CONN_DEGRADED:
+            record_ssh_failure(
+                host_id,
+                observed_at=observed_at,
+                failure_code=k.SSH_FAILURE_CODE_CONNECTIVITY,
+                description=connectivity["error"] or connectivity["reason"],
+                logger=logger,
+            )
+        case k.HOST_CONN_OFFLINE:
+            return
+        case _:
+            raise ValueError(f"Unsupported connectivity state: {connectivity['state']}")
+
+
 # --- connectivity task handlers (called from appCataloga_host_check.py) ---
 
 
@@ -365,6 +406,17 @@ def _persist_connectivity_outcome(
                 DT_LAST_CHECK=task["now"],
                 DT_LAST_FAIL=task["now"],
                 NU_HOST_CHECK_ERROR=next_count,
+            )
+            record_ssh_failure(
+                task["host_id"],
+                observed_at=task["now"],
+                failure_code=k.SSH_FAILURE_CODE_CONNECTIVITY,
+                description=(
+                    connectivity["error"]
+                    or connectivity["reason"]
+                    or k.SSH_FAILURE_DESCRIPTION
+                ),
+                logger=logger,
             )
 
             if next_count >= threshold:
@@ -408,6 +460,11 @@ def _persist_connectivity_outcome(
         case k.HOST_CONN_ONLINE:
             # A successful supervisory probe reconciles the persisted host state
             # and may queue discovery only for the full CHECK task variant.
+            record_ssh_success(
+                task["host_id"],
+                observed_at=task["now"],
+                logger=logger,
+            )
             persist_host_connectivity_state(
                 db=db,
                 log=logger,

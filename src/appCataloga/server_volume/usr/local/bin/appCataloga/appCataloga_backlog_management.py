@@ -223,10 +223,12 @@ def _do_work(db: dbHandlerBKP, task: dict) -> dict:
         case _:
             raise ValueError(f"Unsupported backlog task type: {task['task_type']}")
 
-    # Statistics stay deferred and coarse-grained.
-    # Only real row movement triggers a refresh.
+    # Only real row movement invalidates the derived host snapshot.
     if result.get("rows_updated", 0) > 0:
-        db.host_task_statistics_create(host_id=task["host_id"])
+        db.request_host_summary_refresh(
+            host_id=task["host_id"],
+            reason="backlog_transition",
+        )
 
     outcome = {
         "action": action,

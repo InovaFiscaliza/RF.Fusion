@@ -84,6 +84,9 @@ class FakeTaskDB:
     def queue_host_task(self, **kwargs):
         self.queued_tasks.append(kwargs)
 
+    def request_host_summary_refresh(self, **_kwargs):
+        return None
+
     def file_task_delete(self, *_args, **_kwargs):
         return True
 

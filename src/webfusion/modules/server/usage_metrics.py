@@ -591,14 +591,15 @@ def _read_nginx_download_counts(
             counts_by_month[reference_month] += 1
 
         last_offset = handle.tell()
+        final_stat_result = os.fstat(handle.fileno())
 
     return dict(counts_by_month), {
         "source_name": _NGINX_DOWNLOAD_LOG_SOURCE,
         "log_path": log_path,
         "file_signature": file_signature,
         "last_offset": int(last_offset),
-        "last_size": int(last_offset),
-        "last_mtime_ns": int(stat_result.st_mtime_ns),
+        "last_size": int(final_stat_result.st_size),
+        "last_mtime_ns": int(final_stat_result.st_mtime_ns),
     }
 
 

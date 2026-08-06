@@ -246,7 +246,7 @@ def _classify_validation_error(
             else:
                 detail = raw_reason
 
-        return "GPS_GNSS_UNAVAILABLE", canonical, detail
+        return k.ERROR_CODE_GPS_GNSS_UNAVAILABLE, canonical, detail
 
     if raw_reason == "BIN discarded: no valid spectra after validation":
         return "NO_VALID_SPECTRA", raw_reason, None

@@ -44,6 +44,9 @@ if TYPE_CHECKING:
     from shared.logging_utils import log as logger_type
 
 
+_snapshot_signal_db: dbHandlerSummary | None = None
+
+
 
 # =====================================================================
 # Connectivity probe types and SSH probe helpers
@@ -139,6 +142,60 @@ def ssh_probe(addr: str, port: int, user: str, password: str) -> ConnectivityPro
         )
 
 
+def _get_snapshot_signal_db(logger: logger_type) -> dbHandlerSummary:
+    """Return the process-local summary connection used for SSH signals."""
+    global _snapshot_signal_db
+
+    if _snapshot_signal_db is None:
+        from db.dbHandlerSummary import dbHandlerSummary
+
+        _snapshot_signal_db = dbHandlerSummary(
+            database=k.SUMMARY_DATABASE_NAME,
+            log=logger,
+            reuse_connection=True,
+        )
+    return _snapshot_signal_db
+
+
+def record_ssh_success(
+    host_id: int,
+    *,
+    observed_at: datetime,
+    logger: logger_type,
+) -> None:
+    """Clear the current SSH failure state after one valid connection."""
+    _get_snapshot_signal_db(logger).update_host_current_snapshot_signals(
+        host_id=host_id,
+        values={
+            "IS_SSH_FAILURE": False,
+            "DT_LAST_SSH_EVALUATED_AT": observed_at,
+        },
+    )
+
+
+def record_ssh_failure(
+    host_id: int,
+    *,
+    observed_at: datetime,
+    failure_code: str,
+    description: str | None,
+    logger: logger_type,
+) -> None:
+    """Persist one classified SSH failure with its latest evidence."""
+    _get_snapshot_signal_db(logger).update_host_current_snapshot_signals(
+        host_id=host_id,
+        values={
+            "IS_SSH_FAILURE": True,
+            "DT_LAST_SSH_EVALUATED_AT": observed_at,
+            "DT_LAST_SSH_FAILURE_AT": observed_at,
+            "NA_LAST_SSH_FAILURE_CODE": failure_code,
+            "NA_LAST_SSH_FAILURE_DESCRIPTION": (
+                description or k.SSH_FAILURE_DESCRIPTION
+            ),
+        },
+    )
+
+
 def persist_auth_error(
     db: dbHandlerBKP,
     task: dict,
@@ -161,6 +218,13 @@ def persist_auth_error(
         DT_LAST_CHECK=task["now"],
         DT_LAST_FAIL=task["now"],
         NU_HOST_CHECK_ERROR=next_count,
+    )
+    record_ssh_failure(
+        task["host_id"],
+        observed_at=task["now"],
+        failure_code=k.SSH_FAILURE_CODE_AUTHENTICATION,
+        description=detail,
+        logger=logger,
     )
 
     db.host_task_suspend_by_host(task["host_id"])

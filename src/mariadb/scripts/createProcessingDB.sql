@@ -1,6 +1,10 @@
 /* =====================================================================
    createProcessingDB.sql
-   - Canonical BPDATA schema without legacy file metadata columns
+   - Canonical BPDATA schema after folding the retired alterProcessingDB
+     migration chain into one creation script.
+   - Host operational metrics introduced by v2/v3 and later removed by
+     v4/v5 are intentionally absent here.
+   - Legacy file metadata columns remain removed.
    ===================================================================== */
 
 CREATE DATABASE IF NOT EXISTS BPDATA
@@ -25,17 +29,8 @@ CREATE TABLE `HOST` (
   `DT_LAST_FAIL` datetime DEFAULT NULL COMMENT 'Timestamp of the last failed connection attempt',
   `DT_LAST_CHECK` datetime DEFAULT NULL COMMENT 'Timestamp of the last connectivity check attempt',
   `DT_BUSY` datetime DEFAULT NULL COMMENT 'Timestamp of when the host was last marked busy',
-  `NU_DONE_FILE_DISCOVERY_TASKS` int(11) DEFAULT 0 COMMENT 'Number of completed file discovery tasks',
-  `NU_ERROR_FILE_DISCOVERY_TASKS` int(11) DEFAULT 0 COMMENT 'Number of discovery tasks that ended in error',
-  `NU_PENDING_FILE_BACKUP_TASKS` int(11) DEFAULT 0 COMMENT 'Number of pending file backup tasks',
-  `NU_DONE_FILE_BACKUP_TASKS` int(11) DEFAULT 0 COMMENT 'Number of completed file backup tasks',
-  `NU_ERROR_FILE_BACKUP_TASKS` int(11) DEFAULT 0 COMMENT 'Number of file backup tasks that ended in error',
-  `NU_PENDING_FILE_PROCESS_TASKS` int(11) DEFAULT 0 COMMENT 'Number of pending file processing tasks',
-  `NU_DONE_FILE_PROCESS_TASKS` int(11) DEFAULT 0 COMMENT 'Number of completed file processing tasks',
-  `NU_ERROR_FILE_PROCESS_TASKS` int(11) DEFAULT 0 COMMENT 'Number of file processing tasks that ended in error',
-  `VL_PENDING_BACKUP_KB` int(11) DEFAULT 0 COMMENT 'Total size in KB of pending backup files',
-  `VL_DONE_BACKUP_KB` int(11) DEFAULT 0 COMMENT 'Total size in KB of completed backup files',
-  `NU_HOST_FILES` int(11) DEFAULT 0 COMMENT 'Total number of discovered files for this host',
+  `DT_LAST_OFFLINE_AT` datetime DEFAULT NULL COMMENT 'Timestamp of the most recent offline confirmation',
+  `NA_LAST_OFFLINE_DESCRIPTION` text DEFAULT NULL COMMENT 'Context of the most recent offline confirmation',
   `NU_HOST_CHECK_ERROR` int(11) DEFAULT 0 COMMENT 'Total number of host check failures',
   PRIMARY KEY (`ID_HOST`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

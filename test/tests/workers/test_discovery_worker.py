@@ -77,7 +77,7 @@ class FakeDB:
         self.queued_tasks.append(kwargs)
         return {"HOST_TASK__ID_HOST_TASK": 99}
 
-    def host_task_statistics_create(self, **kwargs):
+    def request_host_summary_refresh(self, **kwargs):
         pass
 
 
@@ -128,13 +128,18 @@ class DiscoveryWorkerTests(unittest.TestCase):
         }
 
         with patch.object(discovery_worker, "log", fake_log):
-            discovery_worker._finalize_success(
-                fake_db,
-                task,
-                processed=12,
-                queued_backlog_tasks=1,
-                elapsed_sec=1.5,
-            )
+            with patch.object(
+                discovery_worker.host_runtime,
+                "record_discovery_outcome",
+            ) as record_discovery_outcome:
+                discovery_worker._finalize_success(
+                    fake_db,
+                    task,
+                    processed=12,
+                    discovered_volume_kb=3072.0,
+                    queued_backlog_tasks=1,
+                    elapsed_sec=1.5,
+                )
 
         self.assertEqual(len(fake_db.host_task_updates), 1)
         self.assertEqual(
@@ -144,6 +149,10 @@ class DiscoveryWorkerTests(unittest.TestCase):
         self.assertEqual(
             fake_db.host_task_updates[0]["NU_PID"],
             discovery_worker.k.HOST_UNLOCKED_PID,
+        )
+        self.assertEqual(
+            record_discovery_outcome.call_args.kwargs["discovered_volume_kb"],
+            3072.0,
         )
 
     def test_do_work_queues_backlog_control(self) -> None:
@@ -158,11 +167,14 @@ class DiscoveryWorkerTests(unittest.TestCase):
 
         with patch.object(discovery_worker, "log", fake_log):
             with patch.object(
-                discovery_worker, "_stream_discovery_batches", return_value=5
+                discovery_worker,
+                "_stream_discovery_batches",
+                return_value=(5, 4096.0),
             ):
                 result = discovery_worker._do_work(fake_db, object(), task)
 
         self.assertEqual(result["processed"], 5)
+        self.assertEqual(result["discovered_volume_kb"], 4096.0)
         self.assertEqual(result["queued_backlog_tasks"], 1)
         self.assertEqual(len(fake_db.queued_tasks), 1)
         self.assertEqual(

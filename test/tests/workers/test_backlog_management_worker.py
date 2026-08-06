@@ -69,7 +69,7 @@ class FakeDB:
         self.host_task_updates.append(kwargs)
         return {"success": True, "rows_affected": 1, "updated_fields": kwargs}
 
-    def host_task_statistics_create(self, host_id):
+    def request_host_summary_refresh(self, host_id, *, reason):
         self.statistics_calls.append(host_id)
 
 

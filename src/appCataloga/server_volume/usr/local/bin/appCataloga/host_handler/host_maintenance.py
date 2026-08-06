@@ -227,6 +227,12 @@ def _persist_recovery_probe_result(
             probe=connectivity,
         ),
     )
+    host_connectivity.persist_ssh_probe_signal(
+        host["ID_HOST"],
+        connectivity,
+        observed_at=checked_at,
+        logger=log,
+    )
 
     if connectivity["state"] == "online":
         # Only a fully operational result may resume suspended work.
@@ -286,6 +292,12 @@ def _persist_offline_confirmation_result(
     )
 
     if connectivity["icmp_online"]:
+        host_connectivity.persist_ssh_probe_signal(
+            host["ID_HOST"],
+            connectivity,
+            observed_at=checked_at,
+            logger=log,
+        )
         # The host still answers ICMP with the canonical timeout. Keep the
         # current operational state and only refresh the observation timestamp.
         db.host_update(

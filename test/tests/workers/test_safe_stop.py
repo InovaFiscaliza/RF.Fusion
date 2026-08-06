@@ -29,13 +29,14 @@ from _support import (
 )
 
 
+sys.path.insert(0, str(APP_ROOT / "utils"))
 ensure_app_paths()
 
 with bind_real_shared_package():
     with bind_real_package("db", DB_ROOT):
         safe_stop = load_module_from_path(
             "test_safe_stop_module",
-            str(APP_ROOT / "safe_stop.py"),
+            str(APP_ROOT / "utils" / "safe_stop.py"),
         )
 
 
@@ -113,6 +114,21 @@ class FakeDB:
         self.suspended_hosts.append(("file_history", host_id))
 
 
+class FakeSummaryDB:
+    """Capture summary busy-state cleanup calls."""
+
+    def __init__(self) -> None:
+        self.host_ids = []
+        self.closed = False
+
+    def clear_host_current_snapshot_busy_state(self, *, host_ids: list[int]) -> int:
+        self.host_ids.append(host_ids)
+        return 2
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class SafeStopTmpCleanupTests(unittest.TestCase):
     """Validate shutdown cleanup of repository backup leftovers."""
 
@@ -176,20 +192,26 @@ class SafeStopStateCleanupTests(unittest.TestCase):
     def test_cleanup_hosts_and_tasks_reasserts_offline_suspension_after_reset(self) -> None:
         fake_log = FakeLog()
         fake_db = FakeDB()
+        fake_summary_db = FakeSummaryDB()
 
         with patch.object(safe_stop, "log", fake_log):
             with patch.object(safe_stop, "dbHandlerBKP", return_value=fake_db):
                 with patch.object(
                     safe_stop,
-                    "cleanup_repository_tmp_files",
-                    return_value=0,
+                    "dbHandlerSummary",
+                    return_value=fake_summary_db,
                 ):
                     with patch.object(
                         safe_stop,
-                        "prune_empty_repository_tmp_dirs",
+                        "cleanup_repository_tmp_files",
                         return_value=0,
                     ):
-                        safe_stop.cleanup_hosts_and_tasks()
+                        with patch.object(
+                            safe_stop,
+                            "prune_empty_repository_tmp_dirs",
+                            return_value=0,
+                        ):
+                            safe_stop.cleanup_hosts_and_tasks()
 
         self.assertTrue(fake_db.connected)
         self.assertTrue(fake_db.disconnected)
@@ -220,6 +242,8 @@ class SafeStopStateCleanupTests(unittest.TestCase):
                 ("file_history", 700),
             ],
         )
+        self.assertEqual(fake_summary_db.host_ids, [[700]])
+        self.assertTrue(fake_summary_db.closed)
         self.assertFalse(fake_log.errors)
 
 

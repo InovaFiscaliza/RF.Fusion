@@ -118,6 +118,18 @@ class FakeDB:
 class HostConnectivityTests(unittest.TestCase):
     """Validate the tri-state connectivity contract used by supervision."""
 
+    def setUp(self) -> None:
+        self.signal_patches = [
+            patch.object(host_check_worker.host_connectivity, "record_ssh_success"),
+            patch.object(host_check_worker.host_connectivity, "record_ssh_failure"),
+        ]
+        for signal_patch in self.signal_patches:
+            signal_patch.start()
+
+    def tearDown(self) -> None:
+        for signal_patch in reversed(self.signal_patches):
+            signal_patch.stop()
+
     def test_check_host_connectivity_returns_online_when_icmp_and_ssh_succeed(self) -> None:
         fake_log = FakeLog()
         ssh_client = FakeSSHClient()
@@ -472,6 +484,18 @@ class HostConnectivityTests(unittest.TestCase):
 class HostMaintenanceTests(unittest.TestCase):
     """Protect the background sweep that resumes or keeps hosts suspended."""
 
+    def setUp(self) -> None:
+        self.signal_patches = [
+            patch.object(host_maintenance_worker.host_connectivity, "record_ssh_success"),
+            patch.object(host_maintenance_worker.host_connectivity, "record_ssh_failure"),
+        ]
+        for signal_patch in self.signal_patches:
+            signal_patch.start()
+
+    def tearDown(self) -> None:
+        for signal_patch in reversed(self.signal_patches):
+            signal_patch.stop()
+
     def test_select_due_hosts_keeps_scanning_after_fresh_row(self) -> None:
         now = datetime(2026, 3, 23, 12, 0, 0)
 
@@ -556,14 +580,16 @@ class HostMaintenanceTests(unittest.TestCase):
         self.assertEqual(checked, 1)
         self.assertEqual(
             db.host_updates,
-            [{
-                "host_id": 77,
-                "reset": True,
-                "IS_OFFLINE": False,
-                "check_busy_timeout": True,
-                "DT_LAST_CHECK": now,
-                "NU_HOST_CHECK_ERROR": 0,
-            }],
+            [
+                {
+                    "host_id": 77,
+                    "reset": True,
+                    "IS_OFFLINE": False,
+                    "check_busy_timeout": True,
+                    "DT_LAST_CHECK": now,
+                    "NU_HOST_CHECK_ERROR": 0,
+                },
+            ],
         )
         self.assertEqual(db.queued_tasks, [])
         self.assertEqual(
@@ -631,12 +657,16 @@ class HostMaintenanceTests(unittest.TestCase):
         self.assertEqual(checked, 1)
         self.assertEqual(
             db.host_updates,
-            [{
-                "host_id": 78,
-                "reset": True,
-                "IS_OFFLINE": True,
-                "DT_LAST_CHECK": now,
-            }],
+            [
+                {
+                    "host_id": 78,
+                    "reset": True,
+                    "IS_OFFLINE": True,
+                    "DT_LAST_CHECK": now,
+                    "DT_LAST_OFFLINE_AT": now,
+                    "NA_LAST_OFFLINE_DESCRIPTION": host_check_worker.k.HOST_OFFLINE_DESCRIPTION,
+                },
+            ],
         )
         self.assertEqual(db.resumed_hosts, [])
         self.assertEqual(
@@ -694,6 +724,8 @@ class HostMaintenanceTests(unittest.TestCase):
                 "reset": True,
                 "IS_OFFLINE": True,
                 "DT_LAST_CHECK": now,
+                "DT_LAST_OFFLINE_AT": now,
+                "NA_LAST_OFFLINE_DESCRIPTION": host_check_worker.k.HOST_OFFLINE_DESCRIPTION,
             }],
         )
         self.assertEqual(
@@ -747,14 +779,16 @@ class HostMaintenanceTests(unittest.TestCase):
         self.assertEqual(checked, 1)
         self.assertEqual(
             db.host_updates,
-            [{
-                "host_id": 80,
-                "reset": True,
-                "IS_OFFLINE": False,
-                "check_busy_timeout": True,
-                "DT_LAST_CHECK": now,
-                "NU_HOST_CHECK_ERROR": 0,
-            }],
+            [
+                {
+                    "host_id": 80,
+                    "reset": True,
+                    "IS_OFFLINE": False,
+                    "check_busy_timeout": True,
+                    "DT_LAST_CHECK": now,
+                    "NU_HOST_CHECK_ERROR": 0,
+                },
+            ],
         )
         self.assertEqual(
             db.resumed_hosts,
@@ -838,7 +872,9 @@ class HostMaintenanceTests(unittest.TestCase):
         self.assertEqual(checked, 1)
         self.assertEqual(
             db.host_updates,
-            [{"host_id": 89, "DT_LAST_CHECK": now}],
+            [
+                {"host_id": 89, "DT_LAST_CHECK": now},
+            ],
         )
         self.assertEqual(db.suspended_hosts, [])
         self.assertEqual(db.resumed_hosts, [])

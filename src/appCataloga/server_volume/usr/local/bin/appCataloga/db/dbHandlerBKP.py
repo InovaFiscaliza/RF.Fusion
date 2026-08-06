@@ -71,19 +71,9 @@ class dbHandlerBKP(DBHandlerBase):
         "DT_LAST_FAIL",
         "DT_LAST_CHECK",
         "DT_BUSY",
-        # FILE TASK STATISTICS
-        "VL_PENDING_BACKUP_KB",
-        "VL_DONE_BACKUP_KB",
-        "NU_PENDING_FILE_BACKUP_TASKS",
-        "NU_DONE_FILE_BACKUP_TASKS",
-        "NU_ERROR_FILE_BACKUP_TASKS",
-        "NU_PENDING_FILE_PROCESS_TASKS",
-        "NU_DONE_FILE_PROCESS_TASKS",
-        "NU_ERROR_FILE_PROCESS_TASKS",
-        "NU_DONE_FILE_DISCOVERY_TASKS",
-        "NU_ERROR_FILE_DISCOVERY_TASKS",
-        # HOST STATISTICS
-        "NU_HOST_FILES",
+        "DT_LAST_OFFLINE_AT",
+        "NA_LAST_OFFLINE_DESCRIPTION",
+        # Operational diagnostics
         "NU_HOST_CHECK_ERROR",
     }
 
@@ -869,7 +859,8 @@ class dbHandlerBKP(DBHandlerBase):
 
                 self.cursor.execute(sql, tuple(params))
 
-            self.db_connection.commit()
+            if not self.in_transaction:
+                self.db_connection.commit()
             self._summary_publish_host_scope(
                 host_id,
                 reason="host_update",
@@ -889,124 +880,67 @@ class dbHandlerBKP(DBHandlerBase):
 
     
     
-    def host_update_statistics(self, host_id: int) -> None:
+    def request_host_summary_refresh(self, host_id: int, *, reason: str) -> None:
+        """Publish one host scope after an operational state transition.
+
+        ``HOST_CURRENT_SNAPSHOT`` owns derived counters and volumes. This
+        method replaces the former ``BPDATA.HOST`` statistics recalculation,
+        keeping the transactional host table limited to runtime controls.
         """
-        Recalculate host statistics from `FILE_TASK_HISTORY` only.
+        self._summary_publish_host_scope(host_id, reason=reason)
 
-        This method deliberately treats history as the authoritative source for
-        counters and phase timestamps. Live task tables remain transient
-        orchestration state; the durable aggregate belongs to history.
+    def _update_host_phase_markers_from_history(
+        self,
+        *,
+        host_id: Optional[int],
+        history_update: Dict[str, Any],
+    ) -> None:
+        """Advance operational host timestamps after a durable phase success.
+
+        ``DT_LAST_BACKUP`` remains the fairness key for backup scheduling and
+        ``DT_LAST_PROCESSING`` remains operational context. Both markers must
+        advance monotonically, even when a reconciliation updates an older
+        history row after newer work already completed.
         """
+        if host_id is None:
+            return
 
-        self._connect()
-        try:
-            # Counters and phase timestamps come directly from history.
-            sql_hist = """
-                SELECT
-                    -- DONE
-                    SUM(NU_STATUS_DISCOVERY  = 0) AS total_discovered,
-                    SUM(NU_STATUS_BACKUP     = 0) AS total_backup,
-                    SUM(NU_STATUS_PROCESSING = 0) AS total_processed,
+        assignments: List[str] = []
+        params: List[Any] = []
 
-                    -- PENDING
-                    SUM(NU_STATUS_BACKUP     = 1) AS pending_backup,
-                    SUM(NU_STATUS_PROCESSING = 1) AS pending_process,
-
-                    -- ERROR
-                    SUM(NU_STATUS_DISCOVERY  = -1) AS error_discovery,
-                    SUM(NU_STATUS_BACKUP     = -1) AS error_backup,
-                    SUM(NU_STATUS_PROCESSING = -1) AS error_process,
-
-                    -- TIMESTAMPS
-                    MAX(DT_DISCOVERED) AS last_discovered,
-                    MAX(DT_BACKUP)     AS last_backup,
-                    MAX(DT_PROCESSED)  AS last_processed
-                FROM FILE_TASK_HISTORY
-                WHERE FK_HOST = %s;
-            """
-
-            row = self._select_raw(sql_hist, (host_id,))
-            hist = row[0] if row else {}
-
-            # Aggregate queries return NULL when no history exists yet.
-            total_discovered = hist.get("total_discovered") or 0
-            total_backup     = hist.get("total_backup")     or 0
-            total_processed  = hist.get("total_processed")  or 0
-
-            pending_backup   = hist.get("pending_backup")   or 0
-            pending_process  = hist.get("pending_process")  or 0
-
-            error_discovery  = hist.get("error_discovery")  or 0
-            error_backup     = hist.get("error_backup")     or 0
-            error_process    = hist.get("error_process")    or 0
-
-            last_discovered  = hist.get("last_discovered")
-            last_backup      = hist.get("last_backup")
-            last_processed   = hist.get("last_processed")
-
-            # Volume counters are derived separately because pending and done
-            # sizes follow different status predicates.
-            sql_volume = """
-                SELECT
-                    SUM(
-                        CASE
-                            WHEN NU_STATUS_DISCOVERY = 0
-                            AND NU_STATUS_BACKUP = 1
-                            THEN VL_FILE_SIZE_KB_HOST
-                            ELSE 0
-                        END
-                    ) AS pending_kb,
-
-                    SUM(
-                        CASE
-                            WHEN NU_STATUS_BACKUP = 0
-                            THEN VL_FILE_SIZE_KB_HOST
-                            ELSE 0
-                        END
-                    ) AS done_kb
-                FROM FILE_TASK_HISTORY
-                WHERE FK_HOST = %s;
-            """
-
-            row2 = self._select_raw(sql_volume, (host_id,))
-            vol = row2[0] if row2 else {}
-
-            pending_kb = vol.get("pending_kb") or 0
-            done_kb    = vol.get("done_kb")    or 0
-
-            self.host_update(
-                host_id=host_id,
-                reset=False,
-
-                # DONE
-                NU_DONE_FILE_DISCOVERY_TASKS=total_discovered,
-                NU_DONE_FILE_BACKUP_TASKS=total_backup,
-                NU_DONE_FILE_PROCESS_TASKS=total_processed,
-                # Keep HOST's discovered-file counter aligned with the same
-                # durable history aggregate consumed by RFFUSION_SUMMARY.
-                NU_HOST_FILES=total_discovered,
-
-                # PENDING
-                NU_PENDING_FILE_BACKUP_TASKS=pending_backup,
-                NU_PENDING_FILE_PROCESS_TASKS=pending_process,
-
-                # ERROR
-                NU_ERROR_FILE_DISCOVERY_TASKS=error_discovery,
-                NU_ERROR_FILE_BACKUP_TASKS=error_backup,
-                NU_ERROR_FILE_PROCESS_TASKS=error_process,
-
-                # TIMESTAMPS
-                DT_LAST_DISCOVERY=last_discovered,
-                DT_LAST_BACKUP=last_backup,
-                DT_LAST_PROCESSING=last_processed,
-
-                # VOLUME
-                VL_PENDING_BACKUP_KB=pending_kb,
-                VL_DONE_BACKUP_KB=done_kb,
+        if (
+            history_update.get("NU_STATUS_BACKUP") == k.TASK_DONE
+            and history_update.get("DT_BACKUP") is not None
+        ):
+            assignments.append(
+                "DT_LAST_BACKUP = CASE "
+                "WHEN DT_LAST_BACKUP IS NULL OR DT_LAST_BACKUP < %s THEN %s "
+                "ELSE DT_LAST_BACKUP END"
             )
+            params.extend([history_update["DT_BACKUP"], history_update["DT_BACKUP"]])
 
-        finally:
-            self._disconnect()
+        if (
+            history_update.get("NU_STATUS_PROCESSING") == k.TASK_DONE
+            and history_update.get("DT_PROCESSED") is not None
+        ):
+            assignments.append(
+                "DT_LAST_PROCESSING = CASE "
+                "WHEN DT_LAST_PROCESSING IS NULL OR DT_LAST_PROCESSING < %s THEN %s "
+                "ELSE DT_LAST_PROCESSING END"
+            )
+            params.extend([
+                history_update["DT_PROCESSED"],
+                history_update["DT_PROCESSED"],
+            ])
+
+        if not assignments:
+            return
+
+        params.append(host_id)
+        self.cursor.execute(
+            f"UPDATE HOST SET {', '.join(assignments)} WHERE ID_HOST = %s",
+            tuple(params),
+        )
             
             
     def host_release_safe(self, host_id: int, current_pid: int):
@@ -1596,8 +1530,8 @@ class dbHandlerBKP(DBHandlerBase):
             - PENDING or terminal rows are refreshed in place
             - a new row is created only when none exists for that type
 
-        The method updates host statistics after the queue mutation and returns
-        the refreshed host snapshot for callers that want immediate state.
+        The summary outbox is invalidated after the queue mutation. Derived
+        counters are never recalculated into ``BPDATA.HOST``.
         """
         tasks = self.check_host_task(
             FK_HOST=host_id,
@@ -1655,7 +1589,10 @@ class dbHandlerBKP(DBHandlerBase):
                 FILTER=filter_dict,
             )
 
-        self.host_update_statistics(host_id)
+        self.request_host_summary_refresh(
+            host_id,
+            reason="queue_host_task",
+        )
         return self.host_read_status(host_id)
 
     
@@ -1725,75 +1662,18 @@ class dbHandlerBKP(DBHandlerBase):
         *,
         log_if_active: bool = True,
     ) -> int:
+        """Publish a compatibility refresh request without creating a task.
+
+        The former statistics task recalculated legacy counters in
+        ``BPDATA.HOST``. The summary worker now owns those calculations. This
+        temporary public shim keeps external callers safe while producers are
+        migrated to :meth:`request_host_summary_refresh`.
         """
-        Create or reactivate the singleton statistics task for a host.
-
-        Behavior:
-            - If no statistics task exists → INSERT (PENDING)
-            - If a PENDING task already exists → return its ID
-            - If an existing task is ERROR/SUSPENDED/etc → reactivate it to PENDING
-        This keeps statistics work on one durable row instead of churning
-        `HOST_TASK` with repeated inserts.
-        """
-
-        try:
-            self._connect()
-
-            dt_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            payload = {
-                "FK_HOST": host_id,
-                "NU_TYPE": k.HOST_TASK_UPDATE_STATISTICS_TYPE,
-                "FILTER": k.NONE_FILTER,
-                "NU_STATUS": k.TASK_PENDING,
-                "DT_HOST_TASK": dt_now,
-                "NA_MESSAGE": f"Update host statistics for host {host_id}",
-            }
-
-            # Keep FILTER canonical even when callers pass the shared dict.
-            if isinstance(payload["FILTER"], dict):
-                payload["FILTER"] = json.dumps(payload["FILTER"], ensure_ascii=False)
-
-            rows = self.check_host_task(
-                FK_HOST=host_id,
-                NU_TYPE=k.HOST_TASK_UPDATE_STATISTICS_TYPE,
-            )
-
-            if rows:
-                existing = rows[0]
-                tid = int(existing["HOST_TASK__ID_HOST_TASK"])
-                status = existing.get("HOST_TASK__NU_STATUS", k.TASK_PENDING)
-
-                if status in (k.TASK_PENDING, k.TASK_RUNNING):
-                    return tid
-
-                # Reactivate the existing singleton row instead of creating
-                # unbounded INSERT churn in HOST_TASK.
-                self.host_task_update(
-                    task_id=tid,
-                    NU_STATUS=k.TASK_PENDING,
-                    DT_HOST_TASK=dt_now,
-                    NA_MESSAGE=payload["NA_MESSAGE"],
-                )
-
-                return tid
-
-            task_id = self.host_task_create(**payload)
-
-            return int(task_id)
-
-        except Exception as e:
-            self._log_db_error(
-                "db_insert_failed",
-                operation="host_task_statistics_create",
-                table="HOST_TASK",
-                host_id=host_id,
-                error=repr(e),
-            )
-            return -1
-
-
-        finally:
-            self._disconnect()
+        self.request_host_summary_refresh(
+            host_id,
+            reason="legacy_host_task_statistics_create",
+        )
+        return 0
 
 
     def host_task_read(
@@ -4166,12 +4046,27 @@ class dbHandlerBKP(DBHandlerBase):
                     table="FILE_TASK_HISTORY",
                     rows_affected=affected_rows,
                 )
-            elif not getattr(self, "in_transaction", False):
-                self._summary_publish_host_scope(
-                    host_scope_id,
-                    reference_months=reference_months,
-                    reason="file_history_update",
-                )
+            else:
+                try:
+                    self._update_host_phase_markers_from_history(
+                        host_id=host_scope_id,
+                        history_update=update_data,
+                    )
+                except Exception as marker_error:
+                    self._log_db_warning(
+                        "host_phase_marker_update_failed",
+                        operation="file_history_update",
+                        table="HOST",
+                        host_id=host_scope_id,
+                        error=repr(marker_error),
+                    )
+
+                if not getattr(self, "in_transaction", False):
+                    self._summary_publish_host_scope(
+                        host_scope_id,
+                        reference_months=reference_months,
+                        reason="file_history_update",
+                    )
 
             return {
                 "success": True,

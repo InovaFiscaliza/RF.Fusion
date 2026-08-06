@@ -86,6 +86,12 @@ def _format_bytes_human(num_bytes):
         value /= 1024
 
 
+def _format_kilobytes_human(num_kilobytes):
+    """Convert a kilobyte count into a compact human-readable label."""
+
+    return _format_bytes_human(float(num_kilobytes or 0) * 1024)
+
+
 def _canonicalize_processing_error_message(message):
     """Collapse volatile processing-error variants into a stable display key.
 
@@ -248,9 +254,11 @@ def _merge_grouped_processing_errors(rows):
             else _canonicalize_processing_error_message(raw_message)
         )
 
+        task_state = str(row.get("TASK_STATE") or "ERROR").strip() or "ERROR"
         bucket = merged.setdefault(
-            canonical_message,
+            (task_state, canonical_message),
             {
+                "TASK_STATE": task_state,
                 "ERROR_MESSAGE": canonical_message,
                 "ERROR_COUNT": 0,
             },
@@ -285,7 +293,8 @@ def _format_structured_error_bucket(row, *, default_label):
     if not summary or not (stage or code):
         return None
 
-    parts = [f"{default_label} |", "[ERROR]"]
+    task_state = str(row.get("TASK_STATE") or "ERROR").strip() or "ERROR"
+    parts = [f"{default_label} |", f"[{task_state}]"]
 
     if stage:
         parts.append(f"[stage={stage}]")
@@ -467,9 +476,11 @@ def _merge_grouped_backup_errors(rows):
             else _canonicalize_backup_error_message(raw_message)
         )
 
+        task_state = str(row.get("TASK_STATE") or "ERROR").strip() or "ERROR"
         bucket = merged.setdefault(
-            canonical_message,
+            (task_state, canonical_message),
             {
+                "TASK_STATE": task_state,
                 "ERROR_MESSAGE": canonical_message,
                 "ERROR_COUNT": 0,
             },
@@ -707,6 +718,7 @@ def _get_server_error_summary_rows(error_scope):
     cur.execute(
         """
         SELECT
+            'ERROR' AS TASK_STATE,
             NULLIF(TRIM(NA_ERROR_DOMAIN), '') AS ERROR_DOMAIN,
             NULLIF(TRIM(NA_ERROR_STAGE), '') AS ERROR_STAGE,
             NULLIF(TRIM(NA_ERROR_CODE), '') AS ERROR_CODE,
@@ -738,66 +750,42 @@ def _get_server_current_summary_row():
             NU_OFFLINE_HOSTS,
             NU_BUSY_HOSTS,
             NU_DISCOVERED_FILES_TOTAL,
+            VL_DISCOVERED_GB_TOTAL,
             NU_BACKUP_PENDING_FILES_TOTAL,
             VL_BACKUP_PENDING_GB_TOTAL,
             NU_BACKUP_ERROR_FILES_TOTAL,
+            VL_BACKUP_ERROR_GB_TOTAL,
+            NU_BACKUP_SUSPENDED_FILES_TOTAL,
+            VL_BACKUP_SUSPENDED_GB_TOTAL,
+            NU_BACKUP_DONE_FILES_TOTAL,
+            VL_BACKUP_DONE_GB_TOTAL,
             NU_BACKUP_QUEUE_FILES_TOTAL,
             VL_BACKUP_QUEUE_GB_TOTAL,
+            NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL,
+            VL_BACKUP_QUEUE_RUNNING_GB_TOTAL,
+            NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL,
+            VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL,
             NU_PROCESSING_PENDING_FILES_TOTAL,
+            VL_PROCESSING_PENDING_GB_TOTAL,
             NU_PROCESSING_DONE_FILES_TOTAL,
+            VL_PROCESSING_DONE_GB_TOTAL,
             NU_PROCESSING_ERROR_FILES_TOTAL,
+            VL_PROCESSING_ERROR_GB_TOTAL,
+            NU_PROCESSING_FROZEN_FILES_TOTAL,
+            VL_PROCESSING_FROZEN_GB_TOTAL,
             NU_PROCESSING_QUEUE_FILES_TOTAL,
             VL_PROCESSING_QUEUE_GB_TOTAL,
+            NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL,
+            VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL,
+            NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL,
+            VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL,
             NU_FACT_SPECTRUM_TOTAL,
+            NU_PAYLOAD_DELETED_FILES_TOTAL,
+            VL_PAYLOAD_DELETED_GB_TOTAL,
             NU_BACKUP_DONE_THIS_MONTH,
             VL_BACKUP_DONE_GB_THIS_MONTH
         FROM SERVER_CURRENT_SUMMARY
         WHERE ID_SUMMARY = 1
-        """
-    )
-    row = cur.fetchone() or {}
-    conn.close()
-    return row
-
-
-def _get_server_discovered_files_total_fallback():
-    """Derive discovered-file totals from monthly metrics when snapshots lag."""
-
-    conn = get_connection_summary()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT COALESCE(SUM(metric.NU_DISCOVERED_FILES), 0) AS NU_DISCOVERED_FILES_TOTAL
-        FROM HOST_MONTHLY_METRIC metric
-        """
-    )
-    row = cur.fetchone() or {}
-    conn.close()
-    return int(row.get("NU_DISCOVERED_FILES_TOTAL") or 0)
-
-
-def _get_server_monthly_metric_rollups():
-    """Aggregate global acervo totals from ``HOST_MONTHLY_METRIC``.
-
-    These rollups keep server-wide global counters visually separate from the
-    operational "current queue" snapshot. They reflect the accumulated state
-    of files grouped by their creation-month cohorts.
-    """
-
-    conn = get_connection_summary()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT
-            COALESCE(SUM(NU_DISCOVERED_FILES), 0) AS NU_DISCOVERED_FILES_TOTAL,
-            ROUND(COALESCE(SUM(VL_DISCOVERED_GB), 0), 2) AS VL_DISCOVERED_GB_TOTAL,
-            COALESCE(SUM(NU_BACKUP_DONE_FILES), 0) AS NU_BACKUP_DONE_FILES_TOTAL,
-            ROUND(COALESCE(SUM(VL_BACKUP_DONE_GB), 0), 2) AS VL_BACKUP_DONE_GB_TOTAL,
-            ROUND(COALESCE(SUM(VL_BACKUP_ERROR_GB), 0), 2) AS VL_BACKUP_ERROR_GB_TOTAL,
-            ROUND(COALESCE(SUM(VL_PROCESSING_PENDING_GB), 0), 2) AS VL_PROCESSING_PENDING_GB_TOTAL,
-            ROUND(COALESCE(SUM(VL_PROCESSING_DONE_GB), 0), 2) AS VL_PROCESSING_DONE_GB_TOTAL,
-            ROUND(COALESCE(SUM(VL_PROCESSING_ERROR_GB), 0), 2) AS VL_PROCESSING_ERROR_GB_TOTAL
-        FROM HOST_MONTHLY_METRIC
         """
     )
     row = cur.fetchone() or {}
@@ -827,11 +815,11 @@ def _get_summary_host_rows(search=None, online_only=False):
             DT_LAST_DISCOVERY,
             DT_LAST_BACKUP,
             DT_LAST_PROCESSING,
-            NU_PENDING_FILE_BACKUP_TASKS,
-            NU_ERROR_FILE_BACKUP_TASKS,
-            NU_PENDING_FILE_PROCESS_TASKS,
-            NU_ERROR_FILE_PROCESS_TASKS,
-            VL_PENDING_BACKUP_GB AS PENDING_BACKUP_GB
+            NU_BACKUP_PENDING_FILES_CURRENT,
+            NU_BACKUP_ERROR_FILES_CURRENT,
+            NU_PROCESSING_PENDING_FILES_CURRENT,
+            NU_PROCESSING_ERROR_FILES_CURRENT,
+            VL_BACKUP_PENDING_GB_CURRENT AS PENDING_BACKUP_GB
         FROM HOST_CURRENT_SNAPSHOT
     """
 
@@ -874,33 +862,68 @@ def _get_host_current_snapshot_row(host_id):
             NA_HOST_PORT,
             IS_OFFLINE,
             IS_BUSY,
-            NU_PID,
-            DT_BUSY,
-            DT_LAST_FAIL,
             DT_LAST_CHECK,
-            NU_HOST_CHECK_ERROR,
+            DT_LAST_OFFLINE_AT,
+            NA_LAST_OFFLINE_DESCRIPTION,
             DT_LAST_DISCOVERY,
+            DT_LAST_DISCOVERY_COMPLETED_AT,
+            NU_LAST_DISCOVERY_FILE_COUNT,
+            VL_LAST_DISCOVERY_KB,
+            DT_LAST_DISCOVERY_WITH_FILES,
             DT_LAST_BACKUP,
-            NU_PENDING_FILE_BACKUP_TASKS,
-            NU_ERROR_FILE_BACKUP_TASKS,
             NU_BACKUP_DONE_THIS_MONTH,
-            VL_PENDING_BACKUP_GB,
             VL_BACKUP_DONE_GB_THIS_MONTH,
-            VL_DONE_BACKUP_GB,
             DT_LAST_PROCESSING,
-            NU_PENDING_FILE_PROCESS_TASKS,
-            NU_ERROR_FILE_PROCESS_TASKS,
-            NU_HOST_FILES,
+            NU_PROCESSING_DONE_THIS_MONTH,
+            VL_PROCESSING_DONE_GB_THIS_MONTH,
             NU_BACKUP_QUEUE_FILES_TOTAL,
             VL_BACKUP_QUEUE_GB_TOTAL,
+            NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL,
+            VL_BACKUP_QUEUE_RUNNING_GB_TOTAL,
+            NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL,
+            VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL,
             NU_PROCESSING_QUEUE_FILES_TOTAL,
             VL_PROCESSING_QUEUE_GB_TOTAL,
-            NU_MATCHED_EQUIPMENT_TOTAL,
+            NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL,
+            VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL,
+            NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL,
+            VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL,
+            NU_DISCOVERED_FILES_TOTAL,
+            VL_DISCOVERED_GB_TOTAL,
+            NU_BACKUP_DONE_FILES_TOTAL,
+            VL_BACKUP_DONE_GB_TOTAL,
+            NU_PROCESSING_DONE_FILES_TOTAL,
+            VL_PROCESSING_DONE_GB_TOTAL,
+            NU_BACKUP_PENDING_FILES_CURRENT,
+            VL_BACKUP_PENDING_GB_CURRENT,
+            NU_BACKUP_ERROR_FILES_CURRENT,
+            VL_BACKUP_ERROR_GB_CURRENT,
+            NU_BACKUP_SUSPENDED_FILES_CURRENT,
+            VL_BACKUP_SUSPENDED_GB_CURRENT,
+            NU_PROCESSING_PENDING_FILES_CURRENT,
+            VL_PROCESSING_PENDING_GB_CURRENT,
+            NU_PROCESSING_ERROR_FILES_CURRENT,
+            VL_PROCESSING_ERROR_GB_CURRENT,
+            NU_PROCESSING_FROZEN_FILES_CURRENT,
+            VL_PROCESSING_FROZEN_GB_CURRENT,
             NU_FACT_SPECTRUM_TOTAL,
+            NU_PAYLOAD_DELETED_FILES_TOTAL,
+            VL_PAYLOAD_DELETED_GB_TOTAL,
             NA_CURRENT_SITE_LABEL,
             NA_CURRENT_STATE_CODE,
-            NA_LAST_ERROR_SUMMARY,
-            DT_LAST_ERROR_AT
+            NA_CURRENT_LOCALITY_LABEL,
+            VL_CURRENT_LATITUDE,
+            VL_CURRENT_LONGITUDE,
+            IS_SSH_FAILURE,
+            DT_LAST_SSH_EVALUATED_AT,
+            DT_LAST_SSH_FAILURE_AT,
+            NA_LAST_SSH_FAILURE_CODE,
+            NA_LAST_SSH_FAILURE_DESCRIPTION,
+            IS_GPS_GNSS_UNAVAILABLE,
+            DT_LAST_GPS_GNSS_EVALUATED_AT,
+            DT_LAST_GPS_GNSS_UNAVAILABLE_AT,
+            NA_LAST_GPS_GNSS_UNAVAILABLE_DESCRIPTION,
+            NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME
         FROM HOST_CURRENT_SNAPSHOT
         WHERE ID_HOST = %s
         LIMIT 1
@@ -954,6 +977,7 @@ def _get_host_error_summary_rows(host_id, error_scope):
     cur.execute(
         """
         SELECT
+            'ERROR' AS TASK_STATE,
             NULLIF(TRIM(NA_ERROR_STAGE), '') AS ERROR_STAGE,
             NULLIF(TRIM(NA_ERROR_CODE), '') AS ERROR_CODE,
             COALESCE(NULLIF(TRIM(NA_ERROR_SUMMARY), ''), '(Sem mensagem)') AS ERROR_SUMMARY,
@@ -1203,40 +1227,47 @@ def get_server_summary_metrics():
         return _SERVER_SUMMARY_CACHE["payload"]
 
     summary_row = _get_server_current_summary_row()
-    monthly_rollups = _get_server_monthly_metric_rollups()
 
     if not summary_row or not summary_row.get("ID_SUMMARY"):
         raise RuntimeError("server_current_summary_missing")
-
-    discovered_files_total = int(summary_row.get("NU_DISCOVERED_FILES_TOTAL") or 0)
-    if discovered_files_total <= 0:
-        fallback_discovered_total = _get_server_discovered_files_total_fallback()
-        if fallback_discovered_total > 0:
-            discovered_files_total = fallback_discovered_total
 
     payload = {
         "CURRENT_MONTH_LABEL": summary_row.get("NA_CURRENT_MONTH_LABEL") or datetime.utcnow().strftime("%Y-%m"),
         "BACKUP_DONE_THIS_MONTH": int(summary_row.get("NU_BACKUP_DONE_THIS_MONTH") or 0),
         "BACKUP_DONE_GB_THIS_MONTH": float(summary_row.get("VL_BACKUP_DONE_GB_THIS_MONTH") or 0),
-        "DISCOVERED_FILES_TOTAL": discovered_files_total,
-        "DISCOVERED_GB_TOTAL": float(monthly_rollups.get("VL_DISCOVERED_GB_TOTAL") or 0),
-        "BACKUP_DONE_FILES_TOTAL": int(monthly_rollups.get("NU_BACKUP_DONE_FILES_TOTAL") or 0),
-        "BACKUP_DONE_GB_TOTAL": float(monthly_rollups.get("VL_BACKUP_DONE_GB_TOTAL") or 0),
+        "DISCOVERED_FILES_TOTAL": int(summary_row.get("NU_DISCOVERED_FILES_TOTAL") or 0),
+        "DISCOVERED_GB_TOTAL": float(summary_row.get("VL_DISCOVERED_GB_TOTAL") or 0),
+        "BACKUP_DONE_FILES_TOTAL": int(summary_row.get("NU_BACKUP_DONE_FILES_TOTAL") or 0),
+        "BACKUP_DONE_GB_TOTAL": float(summary_row.get("VL_BACKUP_DONE_GB_TOTAL") or 0),
         "BACKUP_PENDING_FILES_TOTAL": int(summary_row.get("NU_BACKUP_PENDING_FILES_TOTAL") or 0),
         "BACKUP_PENDING_GB_TOTAL": float(summary_row.get("VL_BACKUP_PENDING_GB_TOTAL") or 0),
         "BACKUP_ERROR_FILES_TOTAL": int(summary_row.get("NU_BACKUP_ERROR_FILES_TOTAL") or 0),
-        "BACKUP_ERROR_GB_TOTAL": float(monthly_rollups.get("VL_BACKUP_ERROR_GB_TOTAL") or 0),
+        "BACKUP_ERROR_GB_TOTAL": float(summary_row.get("VL_BACKUP_ERROR_GB_TOTAL") or 0),
+        "BACKUP_SUSPENDED_FILES_TOTAL": int(summary_row.get("NU_BACKUP_SUSPENDED_FILES_TOTAL") or 0),
+        "BACKUP_SUSPENDED_GB_TOTAL": float(summary_row.get("VL_BACKUP_SUSPENDED_GB_TOTAL") or 0),
         "BACKUP_QUEUE_FILES_TOTAL": int(summary_row.get("NU_BACKUP_QUEUE_FILES_TOTAL") or 0),
         "BACKUP_QUEUE_GB_TOTAL": float(summary_row.get("VL_BACKUP_QUEUE_GB_TOTAL") or 0),
+        "BACKUP_QUEUE_RUNNING_FILES_TOTAL": int(summary_row.get("NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL") or 0),
+        "BACKUP_QUEUE_RUNNING_GB_TOTAL": float(summary_row.get("VL_BACKUP_QUEUE_RUNNING_GB_TOTAL") or 0),
+        "BACKUP_QUEUE_SUSPENDED_FILES_TOTAL": int(summary_row.get("NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL") or 0),
+        "BACKUP_QUEUE_SUSPENDED_GB_TOTAL": float(summary_row.get("VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL") or 0),
         "PROCESSING_PENDING_FILES_TOTAL": int(summary_row.get("NU_PROCESSING_PENDING_FILES_TOTAL") or 0),
-        "PROCESSING_PENDING_GB_TOTAL": float(monthly_rollups.get("VL_PROCESSING_PENDING_GB_TOTAL") or 0),
+        "PROCESSING_PENDING_GB_TOTAL": float(summary_row.get("VL_PROCESSING_PENDING_GB_TOTAL") or 0),
         "PROCESSING_DONE_FILES_TOTAL": int(summary_row.get("NU_PROCESSING_DONE_FILES_TOTAL") or 0),
-        "PROCESSING_DONE_GB_TOTAL": float(monthly_rollups.get("VL_PROCESSING_DONE_GB_TOTAL") or 0),
+        "PROCESSING_DONE_GB_TOTAL": float(summary_row.get("VL_PROCESSING_DONE_GB_TOTAL") or 0),
         "FACT_SPECTRUM_TOTAL": int(summary_row.get("NU_FACT_SPECTRUM_TOTAL") or 0),
         "PROCESSING_QUEUE_FILES_TOTAL": int(summary_row.get("NU_PROCESSING_QUEUE_FILES_TOTAL") or 0),
         "PROCESSING_QUEUE_GB_TOTAL": float(summary_row.get("VL_PROCESSING_QUEUE_GB_TOTAL") or 0),
+        "PROCESSING_QUEUE_RUNNING_FILES_TOTAL": int(summary_row.get("NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL") or 0),
+        "PROCESSING_QUEUE_RUNNING_GB_TOTAL": float(summary_row.get("VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL") or 0),
+        "PROCESSING_QUEUE_FROZEN_FILES_TOTAL": int(summary_row.get("NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL") or 0),
+        "PROCESSING_QUEUE_FROZEN_GB_TOTAL": float(summary_row.get("VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL") or 0),
         "PROCESSING_ERROR_FILES_TOTAL": int(summary_row.get("NU_PROCESSING_ERROR_FILES_TOTAL") or 0),
-        "PROCESSING_ERROR_GB_TOTAL": float(monthly_rollups.get("VL_PROCESSING_ERROR_GB_TOTAL") or 0),
+        "PROCESSING_ERROR_GB_TOTAL": float(summary_row.get("VL_PROCESSING_ERROR_GB_TOTAL") or 0),
+        "PROCESSING_FROZEN_FILES_TOTAL": int(summary_row.get("NU_PROCESSING_FROZEN_FILES_TOTAL") or 0),
+        "PROCESSING_FROZEN_GB_TOTAL": float(summary_row.get("VL_PROCESSING_FROZEN_GB_TOTAL") or 0),
+        "PAYLOAD_DELETED_FILES_TOTAL": int(summary_row.get("NU_PAYLOAD_DELETED_FILES_TOTAL") or 0),
+        "PAYLOAD_DELETED_GB_TOTAL": float(summary_row.get("VL_PAYLOAD_DELETED_GB_TOTAL") or 0),
     }
 
     _SERVER_SUMMARY_CACHE["payload"] = payload
@@ -1412,10 +1443,8 @@ def get_host_statistics(host_id):
     """Return the detailed operational picture for one station.
 
     The result mixes:
-        - current operational counters from ``HOST_CURRENT_SNAPSHOT``
-        - historical totals and annual breakdowns from ``HOST_MONTHLY_METRIC``
-        - current-month backup throughput already materialized in the snapshot
-          from ``DT_BACKUP``
+        - current state and operational totals from ``HOST_CURRENT_SNAPSHOT``
+        - annual creation-cohort breakdowns from ``HOST_MONTHLY_METRIC``
     """
 
     normalized_host_id = int(host_id)
@@ -1430,8 +1459,8 @@ def get_host_statistics(host_id):
     if not row:
         return None
 
-    row["PENDING_GB"] = round(float(row.get("VL_PENDING_BACKUP_GB") or 0), 2)
-    row["DONE_GB"] = round(float(row.get("VL_DONE_BACKUP_GB") or 0), 2)
+    row["PENDING_GB"] = round(float(row.get("VL_BACKUP_PENDING_GB_CURRENT") or 0), 2)
+    row["DONE_GB"] = round(float(row.get("VL_BACKUP_DONE_GB_TOTAL") or 0), 2)
 
     current_month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     monthly_rows = _get_host_monthly_metric_rows(normalized_host_id)
@@ -1439,66 +1468,47 @@ def get_host_statistics(host_id):
     row["BACKUP_DONE_THIS_MONTH"] = int(row.get("NU_BACKUP_DONE_THIS_MONTH") or 0)
     row["BACKUP_DONE_GB_THIS_MONTH"] = float(row.get("VL_BACKUP_DONE_GB_THIS_MONTH") or 0)
 
-    totals = {
-        "DISCOVERED_FILES_TOTAL": 0,
-        "DISCOVERED_GB_TOTAL": 0.0,
-        "BACKUP_DONE_FILES_TOTAL": 0,
-        "BACKUP_DONE_GB_TOTAL": 0.0,
-        "BACKUP_PENDING_FILES_TOTAL": 0,
-        "BACKUP_PENDING_GB_TOTAL": 0.0,
-        "BACKUP_ERROR_FILES_TOTAL": 0,
-        "BACKUP_ERROR_GB_TOTAL": 0.0,
-        "PROCESSING_DONE_FILES_TOTAL": 0,
-        "PROCESSING_DONE_GB_TOTAL": 0.0,
-        "PROCESSING_PENDING_FILES_TOTAL": 0,
-        "PROCESSING_PENDING_GB_TOTAL": 0.0,
-        "PROCESSING_ERROR_FILES_TOTAL": 0,
-        "PROCESSING_ERROR_GB_TOTAL": 0.0,
-    }
-
-    for monthly_row in monthly_rows:
-        totals["DISCOVERED_FILES_TOTAL"] += int(monthly_row.get("NU_DISCOVERED_FILES") or 0)
-        totals["DISCOVERED_GB_TOTAL"] += float(monthly_row.get("VL_DISCOVERED_GB") or 0)
-        totals["BACKUP_DONE_FILES_TOTAL"] += int(monthly_row.get("NU_BACKUP_DONE_FILES") or 0)
-        totals["BACKUP_DONE_GB_TOTAL"] += float(monthly_row.get("VL_BACKUP_DONE_GB") or 0)
-        totals["BACKUP_PENDING_FILES_TOTAL"] += int(monthly_row.get("NU_BACKUP_PENDING_FILES") or 0)
-        totals["BACKUP_PENDING_GB_TOTAL"] += float(monthly_row.get("VL_BACKUP_PENDING_GB") or 0)
-        totals["BACKUP_ERROR_FILES_TOTAL"] += int(monthly_row.get("NU_BACKUP_ERROR_FILES") or 0)
-        totals["BACKUP_ERROR_GB_TOTAL"] += float(monthly_row.get("VL_BACKUP_ERROR_GB") or 0)
-        totals["PROCESSING_DONE_FILES_TOTAL"] += int(monthly_row.get("NU_PROCESSING_DONE_FILES") or 0)
-        totals["PROCESSING_DONE_GB_TOTAL"] += float(monthly_row.get("VL_PROCESSING_DONE_GB") or 0)
-        totals["PROCESSING_PENDING_FILES_TOTAL"] += int(monthly_row.get("NU_PROCESSING_PENDING_FILES") or 0)
-        totals["PROCESSING_PENDING_GB_TOTAL"] += float(monthly_row.get("VL_PROCESSING_PENDING_GB") or 0)
-        totals["PROCESSING_ERROR_FILES_TOTAL"] += int(monthly_row.get("NU_PROCESSING_ERROR_FILES") or 0)
-        totals["PROCESSING_ERROR_GB_TOTAL"] += float(monthly_row.get("VL_PROCESSING_ERROR_GB") or 0)
-
-    row["DISCOVERED_FILES_TOTAL"] = totals["DISCOVERED_FILES_TOTAL"]
-    row["DISCOVERED_GB_TOTAL"] = round(totals["DISCOVERED_GB_TOTAL"], 2)
-    row["BACKUP_DONE_FILES_TOTAL"] = totals["BACKUP_DONE_FILES_TOTAL"]
-    row["BACKUP_DONE_GB_TOTAL"] = round(totals["BACKUP_DONE_GB_TOTAL"], 2)
-    row["BACKUP_PENDING_FILES_TOTAL"] = totals["BACKUP_PENDING_FILES_TOTAL"]
-    row["BACKUP_PENDING_GB_TOTAL"] = round(totals["BACKUP_PENDING_GB_TOTAL"], 2)
+    row["DISCOVERED_FILES_TOTAL"] = int(row.get("NU_DISCOVERED_FILES_TOTAL") or 0)
+    row["DISCOVERED_GB_TOTAL"] = round(float(row.get("VL_DISCOVERED_GB_TOTAL") or 0), 2)
+    row["LAST_DISCOVERY_VOLUME_LABEL"] = _format_kilobytes_human(
+        row.get("VL_LAST_DISCOVERY_KB"),
+    )
+    row["BACKUP_DONE_FILES_TOTAL"] = int(row.get("NU_BACKUP_DONE_FILES_TOTAL") or 0)
+    row["BACKUP_DONE_GB_TOTAL"] = round(float(row.get("VL_BACKUP_DONE_GB_TOTAL") or 0), 2)
+    row["BACKUP_PENDING_FILES_TOTAL"] = int(row.get("NU_BACKUP_PENDING_FILES_CURRENT") or 0)
+    row["BACKUP_PENDING_GB_TOTAL"] = round(float(row.get("VL_BACKUP_PENDING_GB_CURRENT") or 0), 2)
     row["BACKUP_QUEUE_FILES_TOTAL"] = int(row.get("NU_BACKUP_QUEUE_FILES_TOTAL") or 0)
     row["BACKUP_QUEUE_GB_TOTAL"] = float(row.get("VL_BACKUP_QUEUE_GB_TOTAL") or 0)
-    row["BACKUP_ERROR_FILES_TOTAL"] = totals["BACKUP_ERROR_FILES_TOTAL"]
-    row["BACKUP_ERROR_GB_TOTAL"] = round(totals["BACKUP_ERROR_GB_TOTAL"], 2)
-    row["PROCESSING_DONE_FILES_TOTAL"] = totals["PROCESSING_DONE_FILES_TOTAL"]
-    row["PROCESSING_DONE_GB_TOTAL"] = round(totals["PROCESSING_DONE_GB_TOTAL"], 2)
-    row["PROCESSING_PENDING_FILES_TOTAL"] = totals["PROCESSING_PENDING_FILES_TOTAL"]
-    row["PROCESSING_PENDING_GB_TOTAL"] = round(totals["PROCESSING_PENDING_GB_TOTAL"], 2)
+    row["BACKUP_QUEUE_RUNNING_FILES_TOTAL"] = int(row.get("NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL") or 0)
+    row["BACKUP_QUEUE_RUNNING_GB_TOTAL"] = float(row.get("VL_BACKUP_QUEUE_RUNNING_GB_TOTAL") or 0)
+    row["BACKUP_QUEUE_SUSPENDED_FILES_TOTAL"] = int(row.get("NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL") or 0)
+    row["BACKUP_QUEUE_SUSPENDED_GB_TOTAL"] = float(row.get("VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL") or 0)
+    row["BACKUP_ERROR_FILES_TOTAL"] = int(row.get("NU_BACKUP_ERROR_FILES_CURRENT") or 0)
+    row["BACKUP_ERROR_GB_TOTAL"] = round(float(row.get("VL_BACKUP_ERROR_GB_CURRENT") or 0), 2)
+    row["BACKUP_SUSPENDED_FILES_TOTAL"] = int(row.get("NU_BACKUP_SUSPENDED_FILES_CURRENT") or 0)
+    row["BACKUP_SUSPENDED_GB_TOTAL"] = round(float(row.get("VL_BACKUP_SUSPENDED_GB_CURRENT") or 0), 2)
+    row["PROCESSING_DONE_FILES_TOTAL"] = int(row.get("NU_PROCESSING_DONE_FILES_TOTAL") or 0)
+    row["PROCESSING_DONE_GB_TOTAL"] = round(float(row.get("VL_PROCESSING_DONE_GB_TOTAL") or 0), 2)
+    row["PROCESSING_PENDING_FILES_TOTAL"] = int(row.get("NU_PROCESSING_PENDING_FILES_CURRENT") or 0)
+    row["PROCESSING_PENDING_GB_TOTAL"] = round(float(row.get("VL_PROCESSING_PENDING_GB_CURRENT") or 0), 2)
     row["PROCESSING_QUEUE_FILES_TOTAL"] = int(row.get("NU_PROCESSING_QUEUE_FILES_TOTAL") or 0)
     row["PROCESSING_QUEUE_GB_TOTAL"] = float(row.get("VL_PROCESSING_QUEUE_GB_TOTAL") or 0)
-    row["PROCESSING_ERROR_FILES_TOTAL"] = totals["PROCESSING_ERROR_FILES_TOTAL"]
-    row["PROCESSING_ERROR_GB_TOTAL"] = round(totals["PROCESSING_ERROR_GB_TOTAL"], 2)
+    row["PROCESSING_QUEUE_RUNNING_FILES_TOTAL"] = int(row.get("NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL") or 0)
+    row["PROCESSING_QUEUE_RUNNING_GB_TOTAL"] = float(row.get("VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL") or 0)
+    row["PROCESSING_QUEUE_FROZEN_FILES_TOTAL"] = int(row.get("NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL") or 0)
+    row["PROCESSING_QUEUE_FROZEN_GB_TOTAL"] = float(row.get("VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL") or 0)
+    row["PROCESSING_ERROR_FILES_TOTAL"] = int(row.get("NU_PROCESSING_ERROR_FILES_CURRENT") or 0)
+    row["PROCESSING_ERROR_GB_TOTAL"] = round(float(row.get("VL_PROCESSING_ERROR_GB_CURRENT") or 0), 2)
+    row["PROCESSING_FROZEN_FILES_TOTAL"] = int(row.get("NU_PROCESSING_FROZEN_FILES_CURRENT") or 0)
+    row["PROCESSING_FROZEN_GB_TOTAL"] = round(float(row.get("VL_PROCESSING_FROZEN_GB_CURRENT") or 0), 2)
     row["FACT_SPECTRUM_TOTAL"] = int(row.get("NU_FACT_SPECTRUM_TOTAL") or 0)
+    row["PAYLOAD_DELETED_FILES_TOTAL"] = int(row.get("NU_PAYLOAD_DELETED_FILES_TOTAL") or 0)
+    row["PAYLOAD_DELETED_GB_TOTAL"] = round(float(row.get("VL_PAYLOAD_DELETED_GB_TOTAL") or 0), 2)
 
     backup_yearly_breakdown, processing_yearly_breakdown = _build_host_yearly_breakdowns(monthly_rows)
     row["BACKUP_YEARLY_BREAKDOWN"] = backup_yearly_breakdown
     row["PROCESSING_YEARLY_BREAKDOWN"] = processing_yearly_breakdown
 
-    row["LAST_FAILURE_AT"] = row.get("DT_LAST_ERROR_AT")
-    row["LAST_FAILURE_REASON"] = row.get("NA_LAST_ERROR_SUMMARY")
-    row["DISPLAY_LAST_FAILURE_AT"] = row.get("DT_LAST_FAIL") or row["LAST_FAILURE_AT"]
     row["GROUPED_PROCESSING_ERRORS"] = None
 
     row["MATCHED_RFDATA_EQUIPMENTS"] = None
@@ -1539,17 +1549,13 @@ def get_hosts(search=None, online_only=False):
         pending_backup_gb = r.get("PENDING_BACKUP_GB")
 
         if pending_backup_gb is None:
-            pending_backup_kb = r.get("VL_PENDING_BACKUP_KB") or 0
-            pending_backup_gb = round(pending_backup_kb / 1024 / 1024, 2)
+            pending_backup_gb = 0.0
             r["PENDING_BACKUP_GB"] = pending_backup_gb
         else:
             pending_backup_gb = float(pending_backup_gb or 0)
             r["PENDING_BACKUP_GB"] = pending_backup_gb
 
-        if r.get("VL_PENDING_BACKUP_KB"):
-            r["PENDING_BACKUP_MB"] = round(r["VL_PENDING_BACKUP_KB"] / 1024, 2)
-        else:
-            r["PENDING_BACKUP_MB"] = round(pending_backup_gb * 1024, 2)
+        r["PENDING_BACKUP_MB"] = round(pending_backup_gb * 1024, 2)
 
     _SERVER_HOST_ROWS_CACHE[cache_key] = {
         "expires_at": now + SERVER_HOST_ROWS_CACHE_TTL_SECONDS,

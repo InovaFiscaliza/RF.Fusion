@@ -20,7 +20,11 @@ PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 from db.dbHandlerBKP import dbHandlerBKP
 from host_handler import host_context, host_runtime
-from host_handler.host_ssh_utils import sftpConnection
+from host_handler.host_ssh_utils import (
+    record_ssh_failure,
+    record_ssh_success,
+    sftpConnection,
+)
 from server_handler import signal_runtime, sleep as runtime_sleep
 from shared import errors, logging_utils, tools
 from shared.filter import Filter
@@ -115,9 +119,9 @@ def _stream_discovery_batches(
     db: dbHandlerBKP,
     sftp: sftpConnection,
     task: dict,
-) -> int:
+) -> tuple[int, float]:
     """
-    Persist discovered metadata in bounded batches and return rows written.
+    Persist discovered metadata in bounded batches and return rows and volume written.
 
     Discovery writes each batch twice on purpose:
         - FILE_TASK stores the mutable pipeline queue
@@ -128,6 +132,7 @@ def _stream_discovery_batches(
     """
     host_filter = Filter(task["host_filter"], log=log)
     processed = 0
+    discovered_volume_kb = 0.0
 
     for batch in host_context.iter_metadata_files(
         sftp,
@@ -152,8 +157,12 @@ def _stream_discovery_batches(
             task_status=k.TASK_DONE,
         )
         processed += len(batch)
+        discovered_volume_kb += sum(
+            float(file.VL_FILE_SIZE_KB or 0)
+            for file in batch
+        )
 
-    return processed
+    return processed, discovered_volume_kb
 
 
 def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
@@ -164,7 +173,7 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
     This function measures only completed internal phases.
     """
     scan_started_at = time.monotonic()
-    processed = _stream_discovery_batches(db, sftp, task)
+    processed, discovered_volume_kb = _stream_discovery_batches(db, sftp, task)
     scan_elapsed_sec = round(time.monotonic() - scan_started_at, 3)
     log.task_phase(
         SERVICE_NAME,
@@ -176,6 +185,7 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
         since_start_sec=scan_elapsed_sec,
         host=task["hostname"],
         discovered_files=processed,
+        discovered_volume_kb=round(discovered_volume_kb, 2),
     )
 
     queue_started_at = time.monotonic()
@@ -201,6 +211,7 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
 
     return {
         "processed": processed,
+        "discovered_volume_kb": discovered_volume_kb,
         "queued_backlog_tasks": 1,
     }
 
@@ -231,15 +242,17 @@ def _finalize_success(
     task: dict,
     *,
     processed: int,
+    discovered_volume_kb: float,
     queued_backlog_tasks: int,
     elapsed_sec: float,
 ) -> None:
-    """Persist TASK_DONE, log completion, and request deferred statistics."""
+    """Persist TASK_DONE, log completion, and invalidate host metrics."""
+    completed_at = datetime.now()
     db.host_task_update(
         task_id=task["task_id"],
         NU_STATUS=k.TASK_DONE,
         NU_PID=k.HOST_UNLOCKED_PID,
-        DT_HOST_TASK=datetime.now(),
+        DT_HOST_TASK=completed_at,
         NA_MESSAGE=tools.compose_message(
             task_type=k.FILE_TASK_DISCOVERY,
             task_status=k.TASK_DONE,
@@ -254,14 +267,33 @@ def _finalize_success(
         elapsed_sec=round(elapsed_sec, 3),
         host=task["hostname"],
         discovered_files=processed,
+        discovered_volume_kb=round(discovered_volume_kb, 2),
         queued_backlog_tasks=queued_backlog_tasks,
     )
+    try:
+        host_runtime.record_discovery_outcome(
+            task["host_id"],
+            completed_at=completed_at,
+            discovered_file_count=processed,
+            discovered_volume_kb=discovered_volume_kb,
+            logger=log,
+        )
+    except Exception as exc:
+        log.warning_event(
+            "discovery_metric_update_failed",
+            service=SERVICE_NAME,
+            host_id=task["host_id"],
+            error=exc,
+        )
     if processed > 0:
         try:
-            db.host_task_statistics_create(host_id=task["host_id"])
+            db.request_host_summary_refresh(
+                host_id=task["host_id"],
+                reason="discovery_completed",
+            )
         except Exception as e:
             log.warning_event(
-                "statistics_update_failed",
+                "summary_refresh_request_failed",
                 service=SERVICE_NAME,
                 host_id=task["host_id"],
                 error=e,
@@ -279,6 +311,31 @@ def _finalize_error(
         return
 
     err.log_error(host_id=task["host_id"], task_id=task["task_id"])
+
+    try:
+        if err.stage == k.STAGE_AUTH:
+            record_ssh_failure(
+                task["host_id"],
+                observed_at=datetime.now(),
+                failure_code=k.SSH_FAILURE_CODE_AUTHENTICATION,
+                description=err.format_persisted_error(),
+                logger=log,
+            )
+        elif err.stage in {k.STAGE_CONNECT, k.STAGE_SSH}:
+            record_ssh_failure(
+                task["host_id"],
+                observed_at=datetime.now(),
+                failure_code=k.SSH_FAILURE_CODE_CONNECTIVITY,
+                description=err.format_persisted_error(),
+                logger=log,
+            )
+    except Exception as exc:
+        log.warning_event(
+            "ssh_metric_update_failed",
+            service=SERVICE_NAME,
+            host_id=task["host_id"],
+            error=exc,
+        )
 
     try:
         db.host_task_update(
@@ -391,6 +448,19 @@ def main() -> None:
             # --- work ---
             # Open one remote session after the queue claim succeeds.
             sftp = host_context.init_host_context(task, log)
+            try:
+                record_ssh_success(
+                    task["host_id"],
+                    observed_at=datetime.now(),
+                    logger=log,
+                )
+            except Exception as exc:
+                log.warning_event(
+                    "ssh_metric_update_failed",
+                    service=SERVICE_NAME,
+                    host_id=task["host_id"],
+                    error=exc,
+                )
 
             # The entrypoint measures total work time.
             # `_do_work()` measures only completed internal phases.
@@ -403,6 +473,7 @@ def main() -> None:
                 db,
                 task,
                 processed=result["processed"],
+                discovered_volume_kb=result["discovered_volume_kb"],
                 queued_backlog_tasks=result["queued_backlog_tasks"],
                 elapsed_sec=elapsed_sec,
             )

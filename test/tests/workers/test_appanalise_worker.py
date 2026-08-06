@@ -104,10 +104,12 @@ class FakeDbBkp:
         self.task_updates = []
         self.task_deletes = []
         self.history_updates = []
+        self.host_updates = []
         self.statistics_updates = []
         self.transaction_events = []
         self.history_rows_affected = 1
         self.delete_rows_affected = 1
+        self.host_update_error = None
 
     def begin_transaction(self) -> None:
         self.in_transaction = True
@@ -141,7 +143,12 @@ class FakeDbBkp:
             "updated_fields": kwargs,
         }
 
-    def host_task_statistics_create(self, **kwargs) -> None:
+    def host_update(self, **kwargs) -> None:
+        if self.host_update_error is not None:
+            raise self.host_update_error
+        self.host_updates.append(kwargs)
+
+    def request_host_summary_refresh(self, **kwargs) -> None:
         self.statistics_updates.append(kwargs)
 
 
@@ -2039,7 +2046,10 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             self.assertEqual(len(db_bp.task_deletes), 1)
             self.assertEqual(len(db_bp.history_updates), 1)
             self.assertEqual(db_bp.transaction_events, ["begin", "commit"])
-            self.assertFalse(db_bp.statistics_updates[0]["log_if_active"])
+            self.assertEqual(
+                db_bp.statistics_updates[0]["reason"],
+                "processing_completed",
+            )
             self.assertEqual(
                 db_bp.history_updates[0]["NA_SERVER_FILE_NAME"],
                 "sample_DONE.mat",
@@ -2191,7 +2201,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             def raise_statistics_refresh(**_kwargs) -> None:
                 raise RuntimeError("summary locked")
 
-            db_bp.host_task_statistics_create = raise_statistics_refresh
+            db_bp.request_host_summary_refresh = raise_statistics_refresh
 
             task = {
                 "file_task_id": 102,
@@ -2292,7 +2302,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         def raise_statistics_refresh(**_kwargs) -> None:
             raise RuntimeError("summary locked")
 
-        db_bp.host_task_statistics_create = raise_statistics_refresh
+        db_bp.request_host_summary_refresh = raise_statistics_refresh
 
         with patch.object(worker, "log", fake_log):
             worker._finalize_success(db_bp, task, result, elapsed_sec=1.234)
@@ -2309,6 +2319,48 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             any("host_statistics_refresh_failed" in warning for warning in fake_log.warnings)
         )
         self.assertFalse(any("task_finalization_failed" in str(e) for e in fake_log.errors))
+
+    def test_finalize_success_keeps_done_when_gps_metric_update_fails(self) -> None:
+        fake_log = FakeWorkerLog()
+        db_bp = FakeDbBkp()
+        db_bp.host_update_error = RuntimeError("HOST metric unavailable")
+        task = {
+            "file_task_id": 104,
+            "host_id": 11,
+            "host_file_name": "host_sample.zip",
+            "host_path": "/host/path",
+            "filename": "sample.zip",
+        }
+        result = {
+            "file_meta": {
+                "file_path": "/mnt/reposfi/2026/DF/1/2",
+                "file_name": "sample_DONE.mat",
+                "extension": ".mat",
+                "size_kb": 123,
+                "dt_created": datetime(2026, 1, 1, 0, 0, 0),
+                "dt_modified": datetime(2026, 1, 1, 0, 0, 0),
+                "full_path": "/mnt/reposfi/2026/DF/1/2/sample_DONE.mat",
+            },
+            "new_path": "/mnt/reposfi/2026/DF/1/2",
+            "bin_data": None,
+            "resolved_site_ids": None,
+            "spectrum_ids": None,
+        }
+
+        with patch.object(worker, "log", fake_log):
+            worker._finalize_success(db_bp, task, result, elapsed_sec=1.234)
+
+        self.assertEqual(db_bp.transaction_events, ["begin", "commit"])
+        self.assertEqual(len(db_bp.task_deletes), 1)
+        self.assertTrue(
+            any("gps_metric_update_failed" in warning for warning in fake_log.warnings)
+        )
+        self.assertTrue(
+            any(
+                isinstance(item, tuple) and item[0] == "task_done"
+                for item in fake_log.entries
+            )
+        )
 
 
 if __name__ == "__main__":

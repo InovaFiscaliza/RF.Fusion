@@ -17,6 +17,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 
 
 WEBFUSION_ROOT = Path("/RFFusion/src/webfusion")
@@ -177,6 +178,43 @@ class TestServerUsageMetrics(unittest.TestCase):
 
         self.assertEqual(first_snapshot["totals"]["nginx_download_count"], 2)
         self.assertEqual(second_snapshot["totals"]["nginx_download_count"], 2)
+
+    def test_nginx_checkpoint_uses_final_log_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "access.log"
+            log_path.write_text(
+                '10.88.0.34 - - [06/Jul/2026:18:06:19 +0000] '
+                '"GET /downloads/sample-a.mat HTTP/1.1" 200 100 "-" "ua"\n',
+                encoding="utf-8",
+            )
+            initial_stat = log_path.stat()
+            final_stat = SimpleNamespace(
+                st_dev=initial_stat.st_dev,
+                st_ino=initial_stat.st_ino,
+                st_size=initial_stat.st_size,
+                st_mtime_ns=initial_stat.st_mtime_ns + 1,
+            )
+
+            with patch.object(
+                self.usage_metrics.os,
+                "stat",
+                side_effect=(initial_stat, final_stat),
+            ), patch.object(
+                self.usage_metrics.os,
+                "fstat",
+                return_value=final_stat,
+            ):
+                first_counts, checkpoint = self.usage_metrics._read_nginx_download_counts(
+                    str(log_path),
+                    None,
+                )
+                second_counts, _ = self.usage_metrics._read_nginx_download_counts(
+                    str(log_path),
+                    checkpoint,
+                )
+
+        self.assertEqual(sum(first_counts.values()), 1)
+        self.assertFalse(second_counts)
 
     def test_usage_metrics_keep_monthly_nginx_total_after_log_truncation(self):
         with tempfile.TemporaryDirectory() as tmpdir:

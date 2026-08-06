@@ -192,7 +192,7 @@
             if (!Array.isArray(rows) || rows.length === 0) {
                 rowsContainer.innerHTML = `
                     <tr>
-                        <td colspan="2">${options.emptyMessage}</td>
+                        <td colspan="3">${options.emptyMessage}</td>
                     </tr>
                 `;
                 return;
@@ -200,6 +200,7 @@
 
             rowsContainer.innerHTML = rows.map((row) => `
                 <tr>
+                    <td>${escapeHtml(row.TASK_STATE || "ERROR")}</td>
                     <td class="diagnostic-message-cell">${escapeHtml(row.ERROR_MESSAGE || "(Sem mensagem)")}</td>
                     <td class="diagnostic-count-col">${escapeHtml(row.ERROR_COUNT || 0)}</td>
                 </tr>
@@ -220,7 +221,7 @@
             setMeta("Carregando...");
             rowsContainer.innerHTML = `
                 <tr>
-                    <td colspan="2">${options.loadingMessage}</td>
+                        <td colspan="3">${options.loadingMessage}</td>
                 </tr>
             `;
 
@@ -233,7 +234,7 @@
             } catch (error) {
                 rowsContainer.innerHTML = `
                     <tr>
-                        <td colspan="2">${options.failureMessage}</td>
+                        <td colspan="3">${options.failureMessage}</td>
                     </tr>
                 `;
                 setMeta("Falha ao carregar");

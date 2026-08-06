@@ -34,6 +34,17 @@ class FakeSummaryDb:
         self.replaced = {}
         self.upserted = {}
         self.deleted = []
+        self.host_current_snapshot_sources = {
+            "hosts": [],
+            "signal_rows": [],
+            "queue_rows": [],
+            "history_rows": [],
+            "monthly_rows": [],
+            "link_rows": [],
+            "spectrum_rows": [],
+            "current_location_rows": [],
+            "last_error_rows": [],
+        }
 
     def summary_refresh_success(self, object_name, *, started_at, row_count, high_watermark):
         self.succeeded.append((object_name, row_count, high_watermark))
@@ -55,6 +66,23 @@ class FakeSummaryDb:
     def execute_delete(self, sql, params):
         self.deleted.append((sql, params))
         return 0
+
+    def acquire_host_snapshot_lock(self):
+        return True
+
+    def release_host_snapshot_lock(self):
+        pass
+
+    def read_host_current_snapshot_sources(
+        self,
+        *,
+        current_month_start,
+        next_month_start,
+    ):
+        return self.host_current_snapshot_sources
+
+    def read_host_current_snapshot_signals(self):
+        return self.host_current_snapshot_sources.get("signal_rows", [])
 
 
 class FakeSummaryLog:
@@ -234,6 +262,124 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertEqual(len(call_order), 10)
         self.assertEqual(call_order[0], "SITE_EQUIPMENT_OBS_SUMMARY")
         self.assertEqual(call_order[-1], "SERVER_CURRENT_SUMMARY")
+
+    def test_host_current_snapshot_materializes_durable_processing_states(self) -> None:
+        db = FakeSummaryDb()
+        log = FakeSummaryLog()
+        engine = SummaryRefreshEngine(db=db, logger=log)
+        backup_at = datetime(2026, 7, 20, 10, 0, 0)
+        processed_at = datetime(2026, 7, 21, 11, 30, 0)
+        discovery_completed_at = datetime(2026, 7, 22, 9, 45, 0)
+
+        db.host_current_snapshot_sources = {
+            "hosts": [
+                {
+                    "ID_HOST": 7,
+                    "NA_HOST_NAME": "RFeye002007",
+                    "NA_HOST_ADDRESS": "192.0.2.7",
+                    "NA_HOST_PORT": 22,
+                    "IS_OFFLINE": 0,
+                    "IS_BUSY": 0,
+                    "DT_LAST_OFFLINE_AT": datetime(2026, 7, 19, 8, 0, 0),
+                    "NA_LAST_OFFLINE_DESCRIPTION": "ICMP unreachable",
+                }
+            ],
+            "signal_rows": [
+                {
+                    "ID_HOST": 7,
+                    "DT_LAST_DISCOVERY_COMPLETED_AT": discovery_completed_at,
+                    "NU_LAST_DISCOVERY_FILE_COUNT": 7,
+                    "VL_LAST_DISCOVERY_KB": 1280,
+                    "DT_LAST_DISCOVERY_WITH_FILES": discovery_completed_at,
+                    "IS_SSH_FAILURE": 1,
+                    "DT_LAST_SSH_EVALUATED_AT": datetime(2026, 7, 22, 8, 0, 0),
+                    "DT_LAST_SSH_FAILURE_AT": datetime(2026, 7, 22, 8, 0, 0),
+                    "NA_LAST_SSH_FAILURE_CODE": "AUTHENTICATION",
+                    "NA_LAST_SSH_FAILURE_DESCRIPTION": "Authentication failed",
+                    "IS_GPS_GNSS_UNAVAILABLE": 1,
+                    "DT_LAST_GPS_GNSS_EVALUATED_AT": datetime(2026, 7, 21, 11, 0, 0),
+                    "DT_LAST_GPS_GNSS_UNAVAILABLE_AT": datetime(2026, 7, 21, 11, 0, 0),
+                    "NA_LAST_GPS_GNSS_UNAVAILABLE_DESCRIPTION": "GNSS unavailable",
+                    "NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME": "sample.bin",
+                }
+            ],
+            "queue_rows": [
+                {
+                    "FK_HOST": 7,
+                    "NU_BACKUP_QUEUE_FILES_TOTAL": 2,
+                    "VL_BACKUP_QUEUE_GB_TOTAL": 1.5,
+                    "NU_PROCESSING_QUEUE_FILES_TOTAL": 3,
+                    "VL_PROCESSING_QUEUE_GB_TOTAL": 2.25,
+                }
+            ],
+            "history_rows": [
+                {
+                    "FK_HOST": 7,
+                    "DT_LAST_BACKUP": backup_at,
+                    "DT_LAST_PROCESSING": processed_at,
+                    "NU_BACKUP_DONE_THIS_MONTH": 4,
+                    "VL_BACKUP_DONE_GB_THIS_MONTH": 3.75,
+                    "NU_PROCESSING_DONE_THIS_MONTH": 3,
+                    "VL_PROCESSING_DONE_GB_THIS_MONTH": 2.8,
+                    "NU_DISCOVERED_FILES_TOTAL": 10,
+                    "VL_DISCOVERED_GB_TOTAL": 9.5,
+                    "NU_BACKUP_DONE_FILES_TOTAL": 8,
+                    "VL_BACKUP_DONE_GB_TOTAL": 7.25,
+                    "NU_PROCESSING_DONE_FILES_TOTAL": 6,
+                    "VL_PROCESSING_DONE_GB_TOTAL": 5.75,
+                    "NU_BACKUP_PENDING_FILES_CURRENT": 2,
+                    "VL_BACKUP_PENDING_GB_CURRENT": 1.5,
+                    "NU_BACKUP_ERROR_FILES_CURRENT": 1,
+                    "VL_BACKUP_ERROR_GB_CURRENT": 0.75,
+                    "NU_BACKUP_SUSPENDED_FILES_CURRENT": 0,
+                    "VL_BACKUP_SUSPENDED_GB_CURRENT": 0,
+                    "NU_PROCESSING_PENDING_FILES_CURRENT": 3,
+                    "VL_PROCESSING_PENDING_GB_CURRENT": 2.25,
+                    "NU_PROCESSING_ERROR_FILES_CURRENT": 2,
+                    "VL_PROCESSING_ERROR_GB_CURRENT": 1.2,
+                    "NU_PROCESSING_FROZEN_FILES_CURRENT": 1,
+                    "VL_PROCESSING_FROZEN_GB_CURRENT": 0.9,
+                }
+            ],
+            "monthly_rows": [{"FK_HOST": 7, "NU_DISCOVERED_FILES_TOTAL": 10}],
+            "link_rows": [{"FK_HOST": 7, "NU_MATCHED_EQUIPMENT_TOTAL": 1}],
+            "spectrum_rows": [{"FK_HOST": 7, "NU_FACT_SPECTRUM_TOTAL": 2048}],
+            "current_location_rows": [
+                {
+                    "FK_HOST": 7,
+                    "NA_LOCALITY_LABEL": "Sabara/MG",
+                    "NA_SITE_LABEL": "Ravena",
+                    "NA_STATE_CODE": "MG",
+                    "VL_LATITUDE": -19.796391,
+                    "VL_LONGITUDE": -43.718441,
+                }
+            ],
+            "last_error_rows": [],
+        }
+
+        row_count, watermark = engine._refresh_host_current_snapshot()
+
+        self.assertEqual(row_count, 1)
+        self.assertEqual(watermark, "hosts=1")
+        row = db.replaced["HOST_CURRENT_SNAPSHOT"][0]
+        self.assertEqual(row["DT_LAST_BACKUP"], backup_at)
+        self.assertEqual(row["DT_LAST_PROCESSING"], processed_at)
+        self.assertEqual(row["DT_LAST_DISCOVERY_COMPLETED_AT"], discovery_completed_at)
+        self.assertEqual(row["NU_LAST_DISCOVERY_FILE_COUNT"], 7)
+        self.assertEqual(row["VL_LAST_DISCOVERY_KB"], 1280)
+        self.assertEqual(row["IS_SSH_FAILURE"], 1)
+        self.assertEqual(row["NA_LAST_SSH_FAILURE_CODE"], "AUTHENTICATION")
+        self.assertEqual(row["IS_GPS_GNSS_UNAVAILABLE"], 1)
+        self.assertEqual(row["NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME"], "sample.bin")
+        self.assertEqual(row["NU_PROCESSING_DONE_THIS_MONTH"], 3)
+        self.assertEqual(row["VL_PROCESSING_DONE_GB_THIS_MONTH"], 2.8)
+        self.assertEqual(row["NU_PROCESSING_ERROR_FILES_CURRENT"], 2)
+        self.assertEqual(row["NU_PROCESSING_FROZEN_FILES_CURRENT"], 1)
+        self.assertEqual(row["NU_PROCESSING_QUEUE_FILES_TOTAL"], 3)
+        self.assertEqual(row["NU_BACKUP_QUEUE_FILES_TOTAL"], 2)
+        self.assertEqual(row["NA_CURRENT_LOCALITY_LABEL"], "Sabara/MG")
+        self.assertEqual(row["VL_CURRENT_LATITUDE"], -19.796391)
+        self.assertEqual(row["VL_CURRENT_LONGITUDE"], -43.718441)
 
     def test_host_equipment_link_prefers_manual_override_and_exact_matches(self) -> None:
         db = FakeSummaryDb()
@@ -598,6 +744,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
             {
                 "FK_HOST": 10,
                 "NA_ERROR_SCOPE": "PROCESSING",
+                "NA_TASK_STATE": "ERROR",
                 "NA_ERROR_DOMAIN": "parser",
                 "NA_ERROR_STAGE": "decode",
                 "NA_ERROR_CODE": "bad_header",
@@ -609,6 +756,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
             {
                 "FK_HOST": 10,
                 "NA_ERROR_SCOPE": "PROCESSING",
+                "NA_TASK_STATE": "ERROR",
                 "NA_ERROR_DOMAIN": "parser",
                 "NA_ERROR_STAGE": "decode",
                 "NA_ERROR_CODE": "bad_header",
@@ -625,6 +773,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertEqual(watermark, "rows=1")
         row = db.replaced["HOST_ERROR_SUMMARY"][0]
         self.assertEqual(row["NU_ERROR_COUNT"], 2)
+        self.assertEqual(row["NA_TASK_STATE"], "ERROR")
         self.assertEqual(row["DT_LAST_SEEN_AT"], datetime(2026, 5, 20, 12, 30, 0))
         self.assertEqual(row["ID_LAST_SOURCE_ROW"], 202)
         self.assertNotIn("NA_HOST_NAME", row)
@@ -639,6 +788,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         engine._select = lambda sql, params=(): [
             {
                 "NA_ERROR_SCOPE": "BACKUP",
+                "NA_TASK_STATE": "ERROR",
                 "NA_ERROR_DOMAIN": "ssh",
                 "NA_ERROR_STAGE": "connect",
                 "NA_ERROR_CODE": "timeout",
@@ -648,6 +798,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
             },
             {
                 "NA_ERROR_SCOPE": "BACKUP",
+                "NA_TASK_STATE": "ERROR",
                 "NA_ERROR_DOMAIN": "ssh",
                 "NA_ERROR_STAGE": "connect",
                 "NA_ERROR_CODE": "timeout",
@@ -663,6 +814,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertEqual(watermark, "rows=1")
         row = db.replaced["SERVER_ERROR_SUMMARY"][0]
         self.assertEqual(row["NU_ERROR_COUNT"], 5)
+        self.assertEqual(row["NA_TASK_STATE"], "ERROR")
         self.assertNotIn("DT_LAST_SEEN_AT", row)
         self.assertNotIn("NA_LAST_SOURCE_TABLE", row)
         self.assertNotIn("DT_REFRESHED_AT", row)
@@ -672,149 +824,87 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         log = FakeSummaryLog()
         engine = SummaryRefreshEngine(db=db, logger=log)
 
-        captured = {}
+        db.host_current_snapshot_sources = {
+            "hosts": [
+                {
+                    "ID_HOST": 10,
+                    "IS_OFFLINE": 0,
+                    "IS_BUSY": 1,
+                    "NA_HOST_NAME": "rfeye010",
+                    "NA_HOST_ADDRESS": "10.0.0.10",
+                    "NA_HOST_PORT": 22,
+                    "NU_PENDING_FILE_BACKUP_TASKS": 2,
+                    "NU_ERROR_FILE_BACKUP_TASKS": 1,
+                    "VL_PENDING_BACKUP_KB": 512000,
+                    "VL_DONE_BACKUP_KB": 1024000,
+                    "NU_PENDING_FILE_PROCESS_TASKS": 4,
+                    "NU_ERROR_FILE_PROCESS_TASKS": 1,
+                    "NU_HOST_FILES": 12,
+                },
+                {
+                    "ID_HOST": 11,
+                    "IS_OFFLINE": 1,
+                    "IS_BUSY": 0,
+                    "NA_HOST_NAME": "rfeye011",
+                    "NA_HOST_ADDRESS": "10.0.0.11",
+                    "NA_HOST_PORT": 22,
+                    "NU_PENDING_FILE_BACKUP_TASKS": 1,
+                    "NU_ERROR_FILE_BACKUP_TASKS": 0,
+                    "VL_PENDING_BACKUP_KB": 256000,
+                    "VL_DONE_BACKUP_KB": 512000,
+                    "NU_PENDING_FILE_PROCESS_TASKS": 2,
+                    "NU_ERROR_FILE_PROCESS_TASKS": 0,
+                    "NU_HOST_FILES": 8,
+                },
+            ],
+            "queue_rows": [
+                {
+                    "FK_HOST": 10,
+                    "NU_BACKUP_QUEUE_FILES_TOTAL": 3,
+                    "VL_BACKUP_QUEUE_GB_TOTAL": 4.25,
+                    "NU_PROCESSING_QUEUE_FILES_TOTAL": 6,
+                    "VL_PROCESSING_QUEUE_GB_TOTAL": 7.75,
+                },
+                {
+                    "FK_HOST": 11,
+                    "NU_BACKUP_QUEUE_FILES_TOTAL": 0,
+                    "VL_BACKUP_QUEUE_GB_TOTAL": 0.0,
+                    "NU_PROCESSING_QUEUE_FILES_TOTAL": 1,
+                    "VL_PROCESSING_QUEUE_GB_TOTAL": 0.25,
+                },
+            ],
+            "history_rows": [
+                {
+                    "FK_HOST": 10,
+                    "NU_BACKUP_DONE_THIS_MONTH": 14,
+                    "VL_BACKUP_DONE_GB_THIS_MONTH": 18.58,
+                },
+                {
+                    "FK_HOST": 11,
+                    "NU_BACKUP_DONE_THIS_MONTH": 4,
+                    "VL_BACKUP_DONE_GB_THIS_MONTH": 1.25,
+                },
+            ],
+            "monthly_rows": [
+                {"FK_HOST": 10, "NU_DISCOVERED_FILES_TOTAL": 12},
+                {"FK_HOST": 11, "NU_DISCOVERED_FILES_TOTAL": 8},
+            ],
+            "link_rows": [
+                {"FK_HOST": 10, "NU_MATCHED_EQUIPMENT_TOTAL": 2},
+                {"FK_HOST": 11, "NU_MATCHED_EQUIPMENT_TOTAL": 1},
+            ],
+            "spectrum_rows": [
+                {"FK_HOST": 10, "NU_FACT_SPECTRUM_TOTAL": 99},
+                {"FK_HOST": 11, "NU_FACT_SPECTRUM_TOTAL": 11},
+            ],
+            "current_location_rows": [],
+            "last_error_rows": [],
+        }
 
-        def fake_select(sql, params=()):
-            if "FROM HOST_CURRENT_SNAPSHOT" in sql:
-                raise AssertionError("HOST_CURRENT_SNAPSHOT should not be read here")
-
-            if sql.strip() == "SELECT * FROM BPDATA.HOST":
-                return [
-                    {
-                        "ID_HOST": 10,
-                        "IS_OFFLINE": 0,
-                        "IS_BUSY": 1,
-                        "NA_HOST_NAME": "rfeye010",
-                        "NA_HOST_ADDRESS": "10.0.0.10",
-                        "NA_HOST_PORT": 22,
-                        "NU_PID": None,
-                        "DT_BUSY": None,
-                        "DT_LAST_FAIL": None,
-                        "DT_LAST_CHECK": None,
-                        "NU_HOST_CHECK_ERROR": 0,
-                        "DT_LAST_DISCOVERY": None,
-                        "NU_DONE_FILE_DISCOVERY_TASKS": 12,
-                        "NU_ERROR_FILE_DISCOVERY_TASKS": 0,
-                        "DT_LAST_BACKUP": None,
-                        "NU_PENDING_FILE_BACKUP_TASKS": 2,
-                        "NU_DONE_FILE_BACKUP_TASKS": 9,
-                        "NU_ERROR_FILE_BACKUP_TASKS": 1,
-                        "VL_PENDING_BACKUP_KB": 512000,
-                        "VL_DONE_BACKUP_KB": 1024000,
-                        "DT_LAST_PROCESSING": None,
-                        "NU_PENDING_FILE_PROCESS_TASKS": 4,
-                        "NU_DONE_FILE_PROCESS_TASKS": 5,
-                        "NU_ERROR_FILE_PROCESS_TASKS": 1,
-                        "NU_HOST_FILES": 12,
-                    },
-                    {
-                        "ID_HOST": 11,
-                        "IS_OFFLINE": 1,
-                        "IS_BUSY": 0,
-                        "NA_HOST_NAME": "rfeye011",
-                        "NA_HOST_ADDRESS": "10.0.0.11",
-                        "NA_HOST_PORT": 22,
-                        "NU_PID": None,
-                        "DT_BUSY": None,
-                        "DT_LAST_FAIL": None,
-                        "DT_LAST_CHECK": None,
-                        "NU_HOST_CHECK_ERROR": 0,
-                        "DT_LAST_DISCOVERY": None,
-                        "NU_DONE_FILE_DISCOVERY_TASKS": 8,
-                        "NU_ERROR_FILE_DISCOVERY_TASKS": 0,
-                        "DT_LAST_BACKUP": None,
-                        "NU_PENDING_FILE_BACKUP_TASKS": 1,
-                        "NU_DONE_FILE_BACKUP_TASKS": 4,
-                        "NU_ERROR_FILE_BACKUP_TASKS": 0,
-                        "VL_PENDING_BACKUP_KB": 256000,
-                        "VL_DONE_BACKUP_KB": 512000,
-                        "DT_LAST_PROCESSING": None,
-                        "NU_PENDING_FILE_PROCESS_TASKS": 2,
-                        "NU_DONE_FILE_PROCESS_TASKS": 3,
-                        "NU_ERROR_FILE_PROCESS_TASKS": 0,
-                        "NU_HOST_FILES": 8,
-                    },
-                ]
-
-            if "FROM BPDATA.FILE_TASK_HISTORY" in sql:
-                captured["history_params"] = params
-                return [
-                    {
-                        "FK_HOST": 10,
-                        "NU_BACKUP_DONE_THIS_MONTH": 14,
-                        "VL_BACKUP_DONE_GB_THIS_MONTH": 18.58,
-                    },
-                    {
-                        "FK_HOST": 11,
-                        "NU_BACKUP_DONE_THIS_MONTH": 4,
-                        "VL_BACKUP_DONE_GB_THIS_MONTH": 1.25,
-                    },
-                ]
-
-            if "FROM BPDATA.FILE_TASK" in sql:
-                return [
-                    {
-                        "FK_HOST": 10,
-                        "NU_BACKUP_QUEUE_FILES_TOTAL": 3,
-                        "VL_BACKUP_QUEUE_GB_TOTAL": 4.25,
-                        "NU_PROCESSING_QUEUE_FILES_TOTAL": 6,
-                        "VL_PROCESSING_QUEUE_GB_TOTAL": 7.75,
-                    },
-                    {
-                        "FK_HOST": 11,
-                        "NU_BACKUP_QUEUE_FILES_TOTAL": 0,
-                        "VL_BACKUP_QUEUE_GB_TOTAL": 0.0,
-                        "NU_PROCESSING_QUEUE_FILES_TOTAL": 1,
-                        "VL_PROCESSING_QUEUE_GB_TOTAL": 0.25,
-                    },
-                ]
-
-            if "FROM HOST_MONTHLY_METRIC" in sql:
-                return [
-                    {"FK_HOST": 10, "NU_DISCOVERED_FILES_TOTAL": 12},
-                    {"FK_HOST": 11, "NU_DISCOVERED_FILES_TOTAL": 8},
-                ]
-
-            if "FROM HOST_EQUIPMENT_LINK" in sql and "NU_MATCHED_EQUIPMENT_TOTAL" in sql:
-                return [
-                    {"FK_HOST": 10, "NU_MATCHED_EQUIPMENT_TOTAL": 2},
-                    {"FK_HOST": 11, "NU_MATCHED_EQUIPMENT_TOTAL": 1},
-                ]
-
-            if "FROM HOST_EQUIPMENT_LINK l" in sql and "NU_FACT_SPECTRUM_TOTAL" in sql:
-                return [
-                    {"FK_HOST": 10, "NU_FACT_SPECTRUM_TOTAL": 99},
-                    {"FK_HOST": 11, "NU_FACT_SPECTRUM_TOTAL": 11},
-                ]
-
-            if "FROM HOST_LOCATION_SUMMARY" in sql:
-                return []
-
-            if "FROM HOST_ERROR_SUMMARY" in sql:
-                return []
-
-            raise AssertionError(f"Unexpected SQL: {sql}")
-
-        class FrozenDateTime(datetime):
-            @classmethod
-            def utcnow(cls):
-                return cls(2026, 5, 20, 17, 8, 30)
-
-        original_datetime = refresh_engine_module.datetime
-        refresh_engine_module.datetime = FrozenDateTime
-        try:
-            engine._select = fake_select
-            row_count, watermark = engine._refresh_host_current_snapshot()
-        finally:
-            refresh_engine_module.datetime = original_datetime
+        row_count, watermark = engine._refresh_host_current_snapshot()
 
         self.assertEqual(row_count, 2)
         self.assertEqual(watermark, "hosts=2")
-        self.assertEqual(
-            captured["history_params"],
-            (datetime(2026, 5, 1, 0, 0, 0), datetime(2026, 6, 1, 0, 0, 0)),
-        )
-
         rows = db.replaced["HOST_CURRENT_SNAPSHOT"]
         by_host = {row["ID_HOST"]: row for row in rows}
         self.assertEqual(by_host[10]["NU_BACKUP_DONE_THIS_MONTH"], 14)
@@ -836,14 +926,26 @@ class SummaryWorkerEngineTests(unittest.TestCase):
                     {
                         "IS_OFFLINE": 0,
                         "IS_BUSY": 1,
-                        "NU_HOST_FILES": 12,
-                        "NU_PENDING_FILE_BACKUP_TASKS": 2,
-                        "VL_PENDING_BACKUP_GB": 1.5,
-                        "NU_ERROR_FILE_BACKUP_TASKS": 1,
+                        "NU_DISCOVERED_FILES_TOTAL": 12,
+                        "VL_DISCOVERED_GB_TOTAL": 10.5,
+                        "NU_BACKUP_DONE_FILES_TOTAL": 9,
+                        "VL_BACKUP_DONE_GB_TOTAL": 7.25,
+                        "NU_BACKUP_PENDING_FILES_CURRENT": 2,
+                        "VL_BACKUP_PENDING_GB_CURRENT": 1.5,
+                        "NU_BACKUP_ERROR_FILES_CURRENT": 1,
+                        "VL_BACKUP_ERROR_GB_CURRENT": 0.25,
+                        "NU_BACKUP_SUSPENDED_FILES_CURRENT": 1,
+                        "VL_BACKUP_SUSPENDED_GB_CURRENT": 0.75,
                         "NU_BACKUP_QUEUE_FILES_TOTAL": 3,
                         "VL_BACKUP_QUEUE_GB_TOTAL": 4.25,
-                        "NU_PENDING_FILE_PROCESS_TASKS": 4,
-                        "NU_ERROR_FILE_PROCESS_TASKS": 1,
+                        "NU_PROCESSING_DONE_FILES_TOTAL": 7,
+                        "VL_PROCESSING_DONE_GB_TOTAL": 5.5,
+                        "NU_PROCESSING_PENDING_FILES_CURRENT": 4,
+                        "VL_PROCESSING_PENDING_GB_CURRENT": 2.0,
+                        "NU_PROCESSING_ERROR_FILES_CURRENT": 1,
+                        "VL_PROCESSING_ERROR_GB_CURRENT": 0.5,
+                        "NU_PROCESSING_FROZEN_FILES_CURRENT": 1,
+                        "VL_PROCESSING_FROZEN_GB_CURRENT": 0.25,
                         "NU_PROCESSING_QUEUE_FILES_TOTAL": 6,
                         "VL_PROCESSING_QUEUE_GB_TOTAL": 7.75,
                         "NU_FACT_SPECTRUM_TOTAL": 99,
@@ -853,25 +955,32 @@ class SummaryWorkerEngineTests(unittest.TestCase):
                     {
                         "IS_OFFLINE": 1,
                         "IS_BUSY": 0,
-                        "NU_HOST_FILES": 8,
-                        "NU_PENDING_FILE_BACKUP_TASKS": 1,
-                        "VL_PENDING_BACKUP_GB": 0.5,
-                        "NU_ERROR_FILE_BACKUP_TASKS": 0,
+                        "NU_DISCOVERED_FILES_TOTAL": 8,
+                        "VL_DISCOVERED_GB_TOTAL": 6.5,
+                        "NU_BACKUP_DONE_FILES_TOTAL": 5,
+                        "VL_BACKUP_DONE_GB_TOTAL": 4.0,
+                        "NU_BACKUP_PENDING_FILES_CURRENT": 1,
+                        "VL_BACKUP_PENDING_GB_CURRENT": 0.5,
+                        "NU_BACKUP_ERROR_FILES_CURRENT": 0,
+                        "VL_BACKUP_ERROR_GB_CURRENT": 0.0,
+                        "NU_BACKUP_SUSPENDED_FILES_CURRENT": 0,
+                        "VL_BACKUP_SUSPENDED_GB_CURRENT": 0.0,
                         "NU_BACKUP_QUEUE_FILES_TOTAL": 0,
                         "VL_BACKUP_QUEUE_GB_TOTAL": 0.0,
-                        "NU_PENDING_FILE_PROCESS_TASKS": 2,
-                        "NU_ERROR_FILE_PROCESS_TASKS": 0,
+                        "NU_PROCESSING_DONE_FILES_TOTAL": 4,
+                        "VL_PROCESSING_DONE_GB_TOTAL": 3.0,
+                        "NU_PROCESSING_PENDING_FILES_CURRENT": 2,
+                        "VL_PROCESSING_PENDING_GB_CURRENT": 1.0,
+                        "NU_PROCESSING_ERROR_FILES_CURRENT": 0,
+                        "VL_PROCESSING_ERROR_GB_CURRENT": 0.0,
+                        "NU_PROCESSING_FROZEN_FILES_CURRENT": 0,
+                        "VL_PROCESSING_FROZEN_GB_CURRENT": 0.0,
                         "NU_PROCESSING_QUEUE_FILES_TOTAL": 1,
                         "VL_PROCESSING_QUEUE_GB_TOTAL": 0.25,
                         "NU_FACT_SPECTRUM_TOTAL": 11,
                         "NU_BACKUP_DONE_THIS_MONTH": 4,
                         "VL_BACKUP_DONE_GB_THIS_MONTH": 1.25,
                     },
-                ]
-
-            if "FROM HOST_MONTHLY_METRIC" in sql:
-                return [
-                    {"NU_PROCESSING_DONE_FILES_TOTAL": 8},
                 ]
 
             raise AssertionError(f"Unexpected SQL: {sql}")
@@ -899,7 +1008,10 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertEqual(payload["NU_OFFLINE_HOSTS"], 1)
         self.assertEqual(payload["NU_BUSY_HOSTS"], 1)
         self.assertEqual(payload["NU_DISCOVERED_FILES_TOTAL"], 20)
-        self.assertEqual(payload["NU_PROCESSING_DONE_FILES_TOTAL"], 8)
+        self.assertEqual(payload["NU_PROCESSING_DONE_FILES_TOTAL"], 11)
+        self.assertEqual(payload["VL_PROCESSING_DONE_GB_TOTAL"], 8.5)
+        self.assertEqual(payload["NU_BACKUP_SUSPENDED_FILES_TOTAL"], 1)
+        self.assertEqual(payload["NU_PROCESSING_FROZEN_FILES_TOTAL"], 1)
         self.assertEqual(payload["NU_BACKUP_DONE_THIS_MONTH"], 18)
         self.assertEqual(payload["VL_BACKUP_DONE_GB_THIS_MONTH"], 19.83)
         self.assertNotIn("NU_BACKUP_ERROR_GROUPS", payload)

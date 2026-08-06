@@ -37,6 +37,10 @@ TOTAL_CONNECTIONS       = 50
 GATEWAY_SELECT_TIMEOUT_SEC = 1
 BACKUP_QUERY_TAG        = "backup"
 STOP_QUERY_TAG          = "stop"
+METRICS_QUERY_TAG       = "metrics"
+GATEWAY_BACKUP_SUCCESS_MESSAGE = "Host backup request queued successfully"
+GATEWAY_STOP_SUCCESS_MESSAGE = "Host stop request queued successfully"
+GATEWAY_METRICS_SUCCESS_MESSAGE = "Host operational metrics read successfully"
 START_TAG               = "<json>"
 END_TAG                 = "</json>"
 #------------------------------------------
@@ -50,11 +54,13 @@ SUMMARY_DATABASE_NAME   = "RFFUSION_SUMMARY"
 DB_USER_NAME            = secret["DB_USER_NAME"]
 DB_PASSWORD             = secret["DB_PASSWORD"]
 DB_LOG_CONNECTION_LIFECYCLE = False   # Log connect/close/reconnect lifecycle only when explicitly debugging DB sessions
+SUMMARY_HOST_SNAPSHOT_LOCK_NAME = "RFFUSION_SUMMARY_HOST_CURRENT_SNAPSHOT"
+SUMMARY_HOST_SNAPSHOT_LOCK_TIMEOUT_SEC = 5
 # =================================================
 # APP_ANALISE remote processing service
 # =================================================
 APP_ANALISE_HOST_ADD        = "WIMATLABPDIN01"
-#APP_ANALISE_HOST_ADD        = "192.168.104.96"
+#APP_ANALISE_HOST_ADD        = "192.168.104.210"
 APP_ANALISE_HOST_PORT       = 8910
 APP_ANALISE_SOCKET_TIMEOUT  = 10
 APP_ANALISE_BUFFER_SIZE     = 4096
@@ -122,6 +128,7 @@ BKP_TASK_IDLE_EXIT_CYCLES       = 3         # extra workers exit after this many
 MIN_FILE_SIZE_KB                = 1         # minimum file size to be backed up in KB
 MIN_FILE_AGE_MINUTES            = 30        # minimum file age to be backed up in minutes
 FILE_THRESHOLD_SIZE_KB          = 100       # file size threshold for update file
+KILOBYTES_PER_GB                = 1024 * 1024
 BACKUP_TRANSFER_MAX_SECONDS     = HOST_BUSY_TIMEOUT   # Absolute upper bound for one SFTP transfer
 BACKUP_TRANSFER_STALL_TIMEOUT_SECONDS = 900           # Abort when a transfer makes no progress for too long
 BACKUP_TRANSFER_PROGRESS_POLL_SECONDS = 30           # How often to inspect callback/local file growth
@@ -215,6 +222,11 @@ TASK_DONE               = 0         # Task completed successfully
 TASK_PENDING            = 1         # Task pending execution
 TASK_RUNNING            = 2         # Task running
 
+# Summary-state labels used to distinguish actionable task holds from errors.
+SUMMARY_TASK_STATE_ERROR = "ERROR"
+SUMMARY_TASK_STATE_SUSPENDED = "SUSPENDED"
+SUMMARY_TASK_STATE_FROZEN = "FROZEN"
+
 #------------------------------------------
 # Error Stage Constants
 # Used in err.capture(stage=k.STAGE_*) and err.stage comparisons.
@@ -251,6 +263,14 @@ HOST_CONN_ONLINE     = "online"
 HOST_CONN_OFFLINE    = "offline"
 HOST_CONN_DEGRADED   = "degraded"
 HOST_CONN_AUTH_ERROR = "auth_error"
+
+# Stable operational error codes consumed by host-state persistence and
+# dashboard projections.
+ERROR_CODE_GPS_GNSS_UNAVAILABLE = "GPS_GNSS_UNAVAILABLE"
+HOST_OFFLINE_DESCRIPTION = "ICMP unreachable"
+SSH_FAILURE_CODE_AUTHENTICATION = "AUTHENTICATION"
+SSH_FAILURE_CODE_CONNECTIVITY = "CONNECTIVITY"
+SSH_FAILURE_DESCRIPTION = "SSH failure"
 
 # Log event names for host connectivity checks
 EVENT_HOST_CHECK       = "host_check"

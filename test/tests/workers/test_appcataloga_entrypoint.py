@@ -8,6 +8,8 @@ How to run:
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 import sys
@@ -63,6 +65,21 @@ class FakeDB:
         self.host_updates.append(kwargs)
 
 
+class FakeSummaryDB:
+    """Minimal summary DB double for metrics gateway tests."""
+
+    def __init__(self) -> None:
+        self.read_host_ids = []
+
+    def read_host_operational_snapshot(self, host_id: int) -> dict:
+        self.read_host_ids.append(host_id)
+        return {
+            "ID_HOST": host_id,
+            "DT_LAST_CHECK": datetime(2026, 7, 31, 12, 0, 0),
+            "VL_BACKUP_DONE_GB_CURRENT_MONTH": Decimal("1.5"),
+        }
+
+
 class AppCatalogaEntrypointTests(unittest.TestCase):
     """Protect query-tag routing without changing the external FILTER contract."""
 
@@ -80,6 +97,7 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
 
     def test_backup_query_queues_host_check_task(self) -> None:
         fake_db = FakeDB()
+        fake_summary_db = FakeSummaryDB()
         fake_log = FakeLog()
         err = appcataloga.errors.ErrorHandler(fake_log)
 
@@ -88,14 +106,17 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
                 self._build_host_payload("backup"),
                 err,
                 fake_db,
+                fake_summary_db,
             )
 
         self.assertEqual(fake_db.queued_tasks[0]["task_type"], appcataloga.k.HOST_TASK_CHECK_TYPE)
         self.assertEqual(response["status"], 1)
+        self.assertEqual(response["metrics"]["ID_HOST"], 77)
         self.assertFalse(fake_db.host_upserts[0]["IS_OFFLINE"])
 
     def test_stop_query_queues_backlog_rollback_task(self) -> None:
         fake_db = FakeDB()
+        fake_summary_db = FakeSummaryDB()
         fake_log = FakeLog()
         err = appcataloga.errors.ErrorHandler(fake_log)
 
@@ -104,6 +125,7 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
                 self._build_host_payload("STOP"),
                 err,
                 fake_db,
+                fake_summary_db,
             )
 
         self.assertEqual(
@@ -111,6 +133,28 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
             appcataloga.k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
         )
         self.assertEqual(response["status"], 1)
+        self.assertEqual(response["metrics"]["ID_HOST"], 77)
+
+    def test_metrics_query_reads_snapshot_without_queuing_task(self) -> None:
+        fake_db = FakeDB()
+        fake_summary_db = FakeSummaryDB()
+        fake_log = FakeLog()
+        err = appcataloga.errors.ErrorHandler(fake_log)
+
+        with patch.object(appcataloga, "log", fake_log):
+            host_id, response = appcataloga._process_host_request(
+                self._build_host_payload("metrics"),
+                err,
+                fake_db,
+                fake_summary_db,
+            )
+
+        self.assertEqual(host_id, 77)
+        self.assertEqual(fake_summary_db.read_host_ids, [77])
+        self.assertEqual(fake_db.host_upserts, [])
+        self.assertEqual(fake_db.queued_tasks, [])
+        self.assertEqual(response["metrics"]["DT_LAST_CHECK"], 1785499200)
+        self.assertEqual(response["metrics"]["VL_BACKUP_DONE_GB_CURRENT_MONTH"], 1.5)
 
     def test_backup_query_rejects_known_offline_host(self) -> None:
         fake_db = FakeDB()
@@ -141,6 +185,7 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
 
     def test_stop_query_allows_known_offline_host(self) -> None:
         fake_db = FakeDB()
+        fake_summary_db = FakeSummaryDB()
         fake_db.host_status = {"status": 1, "IS_OFFLINE": True}
         fake_log = FakeLog()
         err = appcataloga.errors.ErrorHandler(fake_log)
@@ -150,6 +195,7 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
                 self._build_host_payload("stop"),
                 err,
                 fake_db,
+                fake_summary_db,
             )
 
         self.assertEqual(
@@ -158,6 +204,7 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
         )
         self.assertNotIn("IS_OFFLINE", fake_db.host_upserts[0])
         self.assertEqual(response["status"], 1)
+        self.assertEqual(response["metrics"]["ID_HOST"], 77)
 
 
 if __name__ == "__main__":

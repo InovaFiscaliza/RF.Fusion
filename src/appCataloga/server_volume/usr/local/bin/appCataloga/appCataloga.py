@@ -13,7 +13,8 @@ This entrypoint is a gateway, not a queue worker:
 
 import socket
 import sys
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 from utils.bootstrap_paths import bootstrap_app_paths
@@ -25,6 +26,7 @@ PROJECT_ROOT = bootstrap_app_paths(__file__)
 # =================================================
 import config as k
 from db.dbHandlerBKP import dbHandlerBKP
+from db.dbHandlerSummary import dbHandlerSummary
 from server_handler import process_control, signal_runtime, socket_handler
 from shared import errors, logging_utils
 
@@ -38,6 +40,7 @@ SHUTDOWN_PAYLOAD = {"status": 0, "message": "Server shutting down"}
 COMMAND_TASK_MAP = {
     k.BACKUP_QUERY_TAG: k.HOST_TASK_CHECK_TYPE,
     k.STOP_QUERY_TAG: k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+    k.METRICS_QUERY_TAG: None,
 }
 
 
@@ -56,19 +59,6 @@ signal_runtime.install_shutdown_handlers(
 )
 
 
-def _build_success_response(task_result: dict, host_filter: dict[str, Any]) -> dict:
-    """Build the payload returned after one HOST_TASK is queued."""
-    response = dict(task_result)
-    response.update(
-        {
-            "status": 1,
-            "message": f"Host task created successfully at {datetime.now()}",
-            "filter": f"{host_filter}",
-        }
-    )
-    return response
-
-
 def _stop_service_siblings() -> None:
     """Ask sibling `appCataloga.py` processes to terminate."""
     process_control.stop_self_service(
@@ -82,6 +72,11 @@ def _init_db() -> dbHandlerBKP:
     return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
 
 
+def _init_summary_db() -> dbHandlerSummary:
+    """Create the summary handler used by the metrics gateway command."""
+    return dbHandlerSummary(database=k.SUMMARY_DATABASE_NAME, log=log)
+
+
 def _init_server_socket() -> socket.socket:
     """Open the listening socket owned by this daemon instance."""
     server_socket = socket_handler.open_listening_socket(
@@ -93,13 +88,12 @@ def _init_server_socket() -> socket.socket:
     return server_socket
 
 
-def _resolve_task_type(command: str, err: errors.ErrorHandler) -> int:
-    """Translate one request command into the queued HOST_TASK type."""
-    task_type = COMMAND_TASK_MAP.get(command)
-    if task_type is None:
-        err.capture("Unsupported command", stage="COMMAND")
+def _resolve_task_type(command: str, err: errors.ErrorHandler) -> int | None:
+    """Translate one request command into its optional HOST_TASK type."""
+    if command not in COMMAND_TASK_MAP:
+        err.capture("Unsupported command", stage=k.STAGE_COMMAND)
         raise ValueError("Unsupported command")
-    return task_type
+    return COMMAND_TASK_MAP[command]
 
 
 def _validate_host_request(
@@ -109,7 +103,7 @@ def _validate_host_request(
     """Validate the minimal request fields needed by the gateway."""
     host_id = host.get("host_id")
     if host_id is None or host_id <= 0:
-        err.capture("Invalid host_id", stage="PARSE")
+        err.capture("Invalid host_id", stage=k.STAGE_PARSE)
         raise ValueError("Invalid host_id")
 
     return int(host_id), host["filter"]
@@ -126,7 +120,7 @@ def _read_host_status(
     except Exception as exc:
         err.capture(
             "Failed to read HOST status",
-            stage="HOST_READ",
+            stage=k.STAGE_HOST_READ,
             exc=exc,
             host_id=host_id,
         )
@@ -148,7 +142,7 @@ def _guard_offline_backup_request(
     ):
         err.capture(
             "Backup request skipped because HOST is offline",
-            stage="HOST_STATUS",
+            stage=k.STAGE_HOST_STATUS,
             host_id=host_id,
         )
         raise ValueError("HOST is offline")
@@ -181,7 +175,7 @@ def _ensure_host(
     except Exception as exc:
         err.capture(
             "Failed to create/ensure HOST",
-            stage="HOST_CREATE",
+            stage=k.STAGE_HOST_CREATE,
             exc=exc,
             host_id=host_id,
         )
@@ -209,22 +203,102 @@ def _queue_host_task(
         db.host_update(host_id=host_id, NU_HOST_CHECK_ERROR=1)
         err.capture(
             "Failed to queue HOST_TASK",
-            stage="QUEUE",
+            stage=k.STAGE_QUEUE,
             exc=exc,
             host_id=host_id,
         )
         raise
 
 
+def _serialize_metric_value(value: Any) -> Any:
+    """Convert database scalar values into JSON-compatible primitives."""
+    if isinstance(value, datetime):
+        return int(value.timestamp())
+    if isinstance(value, date):
+        return int(datetime.combine(value, datetime.min.time()).timestamp())
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def _resolve_success_message(command: str) -> str:
+    """Return the success message that matches one gateway command."""
+    match command:
+        case k.BACKUP_QUERY_TAG:
+            return k.GATEWAY_BACKUP_SUCCESS_MESSAGE
+        case k.STOP_QUERY_TAG:
+            return k.GATEWAY_STOP_SUCCESS_MESSAGE
+        case k.METRICS_QUERY_TAG:
+            return k.GATEWAY_METRICS_SUCCESS_MESSAGE
+        case _:
+            raise ValueError("Unsupported command")
+
+
+def _build_metrics_response(snapshot: dict[str, Any], *, command: str) -> dict[str, Any]:
+    """Build the stable metrics payload returned to the Zabbix trapper."""
+    return {
+        "status": 1,
+        "message": _resolve_success_message(command),
+        "metrics": {
+            field: _serialize_metric_value(value)
+            for field, value in snapshot.items()
+        },
+    }
+
+
+def _read_host_metrics(
+    db_summary: dbHandlerSummary | None,
+    *,
+    command: str,
+    host_id: int,
+    err: errors.ErrorHandler,
+) -> dict[str, Any]:
+    """Read one materialized host snapshot without creating a HOST_TASK."""
+    if db_summary is None:
+        err.capture("Summary handler is unavailable", stage=k.STAGE_DB, host_id=host_id)
+        raise RuntimeError("Summary handler is unavailable")
+
+    try:
+        snapshot = db_summary.read_host_operational_snapshot(host_id=host_id)
+    except Exception as exc:
+        err.capture(
+            "Failed to read host operational metrics",
+            stage=k.STAGE_DB,
+            exc=exc,
+            host_id=host_id,
+        )
+        raise
+
+    if not snapshot:
+        err.capture(
+            "Host operational metrics are not available",
+            stage=k.STAGE_HOST_READ,
+            host_id=host_id,
+        )
+        raise LookupError("Host operational metrics are not available")
+
+    return _build_metrics_response(snapshot, command=command)
+
+
 def _process_host_request(
     host: dict[str, Any],
     err: errors.ErrorHandler,
     db: dbHandlerBKP,
+    db_summary: dbHandlerSummary | None = None,
 ) -> tuple[int | None, dict]:
     """Process one parsed gateway request from start to finish."""
     command = str(host.get("command") or "").strip().lower()
-    task_type = _resolve_task_type(command, err)
     host_id, host_filter = _validate_host_request(host, err)
+    task_type = _resolve_task_type(command, err)
+
+    if task_type is None:
+        return host_id, _read_host_metrics(
+            db_summary,
+            command=command,
+            host_id=host_id,
+            err=err,
+        )
+
     host_status = _read_host_status(db, host_id, err)
     _ensure_host(
         db,
@@ -241,14 +315,19 @@ def _process_host_request(
         host_status=host_status,
         err=err,
     )
-    task_result = _queue_host_task(
+    _queue_host_task(
         db,
         host_id=host_id,
         task_type=task_type,
         host_filter=host_filter,
         err=err,
     )
-    return host_id, _build_success_response(task_result, host_filter)
+    return host_id, _read_host_metrics(
+        db_summary,
+        command=command,
+        host_id=host_id,
+        err=err,
+    )
 
 
 def _send_shutdown_response(*, client_socket: socket.socket, client_address) -> None:
@@ -268,6 +347,7 @@ def _serve_client_connection(
     *,
     client_socket: socket.socket,
     db_bp: dbHandlerBKP,
+    db_summary: dbHandlerSummary,
 ) -> None:
     """Handle one accepted client connection from start to finish."""
     peer_ip = socket_handler.get_client_peer_ip(client_socket)
@@ -284,7 +364,12 @@ def _serve_client_connection(
             err=err,
             none_filter=k.NONE_FILTER,
         )
-        host_id, response_payload = _process_host_request(host, err, db_bp)
+        host_id, response_payload = _process_host_request(
+            host,
+            err,
+            db_bp,
+            db_summary,
+        )
     except Exception:
         # Request failures are already normalized through ErrorHandler.
         pass
@@ -309,12 +394,14 @@ def main() -> None:
     log.service_start(SERVICE_NAME)
     server_socket = None
     db_bp = None
+    db_summary = None
 
     try:
         server_socket = _init_server_socket()
         # DB initialization happens only after the socket is listening, so
         # startup failures stay easy to classify.
         db_bp = _init_db()
+        db_summary = _init_summary_db()
 
         while process_status["running"]:
             try:
@@ -344,6 +431,7 @@ def main() -> None:
             _serve_client_connection(
                 client_socket=client_socket,
                 db_bp=db_bp,
+                db_summary=db_summary,
             )
 
     except Exception as exc:
@@ -362,6 +450,11 @@ def main() -> None:
         try:
             if server_socket is not None:
                 server_socket.close()
+        except Exception:
+            pass
+        try:
+            if db_summary is not None:
+                db_summary.close()
         except Exception:
             pass
         _stop_service_siblings()

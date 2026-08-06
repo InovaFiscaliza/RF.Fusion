@@ -43,6 +43,26 @@ from .dbHandlerBase import DBHandlerBase
 
 SUMMARY_OUTBOX_TABLE = f"{k.SUMMARY_DATABASE_NAME}.SUMMARY_OUTBOX"
 SUMMARY_WORKER_STATE_TABLE = f"{k.SUMMARY_DATABASE_NAME}.SUMMARY_WORKER_STATE"
+HOST_CURRENT_SNAPSHOT_TABLE = "HOST_CURRENT_SNAPSHOT"
+HOST_CURRENT_SNAPSHOT_SHADOW_TABLE = "HOST_CURRENT_SNAPSHOT_shadow"
+HOST_CURRENT_SNAPSHOT_DIRECT_FIELDS = frozenset(
+    {
+        "DT_LAST_DISCOVERY_COMPLETED_AT",
+        "NU_LAST_DISCOVERY_FILE_COUNT",
+        "VL_LAST_DISCOVERY_KB",
+        "DT_LAST_DISCOVERY_WITH_FILES",
+        "IS_SSH_FAILURE",
+        "DT_LAST_SSH_EVALUATED_AT",
+        "DT_LAST_SSH_FAILURE_AT",
+        "NA_LAST_SSH_FAILURE_CODE",
+        "NA_LAST_SSH_FAILURE_DESCRIPTION",
+        "IS_GPS_GNSS_UNAVAILABLE",
+        "DT_LAST_GPS_GNSS_EVALUATED_AT",
+        "DT_LAST_GPS_GNSS_UNAVAILABLE_AT",
+        "NA_LAST_GPS_GNSS_UNAVAILABLE_DESCRIPTION",
+        "NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME",
+    }
+)
 
 
 class dbHandlerSummary(DBHandlerBase):
@@ -130,6 +150,231 @@ class dbHandlerSummary(DBHandlerBase):
             self._select_raw("SELECT RELEASE_LOCK(%s) AS LOCK_RELEASED", (lock_name,))
         finally:
             self._disconnect(force=True)
+
+    def acquire_host_snapshot_lock(self) -> bool:
+        """Acquire the short lock shared by signal writers and snapshot refresh."""
+        self._connect()
+        try:
+            rows = self._select_raw(
+                "SELECT GET_LOCK(%s, %s) AS LOCK_ACQUIRED",
+                (
+                    k.SUMMARY_HOST_SNAPSHOT_LOCK_NAME,
+                    k.SUMMARY_HOST_SNAPSHOT_LOCK_TIMEOUT_SEC,
+                ),
+            )
+            return bool(rows and rows[0].get("LOCK_ACQUIRED"))
+        except Exception:
+            self._disconnect(force=True)
+            raise
+
+    def release_host_snapshot_lock(self) -> None:
+        """Release the short lock without closing a reusable worker session."""
+        self._connect()
+        self._select_raw(
+            "SELECT RELEASE_LOCK(%s) AS LOCK_RELEASED",
+            (k.SUMMARY_HOST_SNAPSHOT_LOCK_NAME,),
+        )
+
+    def read_host_current_snapshot_signals(self) -> List[Dict[str, Any]]:
+        """Read direct fields that must survive snapshot materialization."""
+        self._connect()
+        try:
+            return self._select_raw(
+                f"""
+                SELECT
+                    ID_HOST,
+                    DT_LAST_DISCOVERY_COMPLETED_AT,
+                    NU_LAST_DISCOVERY_FILE_COUNT,
+                    VL_LAST_DISCOVERY_KB,
+                    DT_LAST_DISCOVERY_WITH_FILES,
+                    IS_SSH_FAILURE,
+                    DT_LAST_SSH_EVALUATED_AT,
+                    DT_LAST_SSH_FAILURE_AT,
+                    NA_LAST_SSH_FAILURE_CODE,
+                    NA_LAST_SSH_FAILURE_DESCRIPTION,
+                    IS_GPS_GNSS_UNAVAILABLE,
+                    DT_LAST_GPS_GNSS_EVALUATED_AT,
+                    DT_LAST_GPS_GNSS_UNAVAILABLE_AT,
+                    NA_LAST_GPS_GNSS_UNAVAILABLE_DESCRIPTION,
+                    NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME
+                FROM {HOST_CURRENT_SNAPSHOT_TABLE}
+                """
+            )
+        finally:
+            self._disconnect()
+
+    def read_host_operational_snapshot(
+        self,
+        *,
+        host_id: int,
+    ) -> Dict[str, Any]:
+        """Read the canonical operational metrics for one host.
+
+        This is the read contract published by the appCataloga gateway to
+        Zabbix. It reads one materialized row only and never recalculates
+        queue, history, or analytical aggregates during a monitoring request.
+        """
+        self._connect()
+        try:
+            rows = self._select_raw(
+                f"""
+                SELECT
+                    ID_HOST,
+                    NA_HOST_NAME,
+                    IS_OFFLINE,
+                    IS_BUSY,
+                    DT_LAST_CHECK,
+                    DT_LAST_OFFLINE_AT,
+                    NA_LAST_OFFLINE_DESCRIPTION,
+                    DT_LAST_DISCOVERY_COMPLETED_AT,
+                    NU_LAST_DISCOVERY_FILE_COUNT,
+                    VL_LAST_DISCOVERY_KB,
+                    DT_LAST_DISCOVERY_WITH_FILES,
+                    DT_LAST_BACKUP,
+                    NU_BACKUP_DONE_THIS_MONTH,
+                    VL_BACKUP_DONE_GB_THIS_MONTH,
+                    DT_LAST_PROCESSING,
+                    NU_PROCESSING_DONE_THIS_MONTH,
+                    VL_PROCESSING_DONE_GB_THIS_MONTH,
+                    NU_BACKUP_QUEUE_FILES_TOTAL,
+                    VL_BACKUP_QUEUE_GB_TOTAL,
+                    NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL,
+                    VL_BACKUP_QUEUE_RUNNING_GB_TOTAL,
+                    NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL,
+                    VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL,
+                    NU_PROCESSING_QUEUE_FILES_TOTAL,
+                    VL_PROCESSING_QUEUE_GB_TOTAL,
+                    NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL,
+                    VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL,
+                    NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL,
+                    VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL,
+                    NU_PAYLOAD_DELETED_FILES_TOTAL,
+                    VL_PAYLOAD_DELETED_GB_TOTAL,
+                    NU_DISCOVERED_FILES_TOTAL,
+                    VL_DISCOVERED_GB_TOTAL,
+                    NU_BACKUP_DONE_FILES_TOTAL,
+                    VL_BACKUP_DONE_GB_TOTAL,
+                    NU_PROCESSING_DONE_FILES_TOTAL,
+                    VL_PROCESSING_DONE_GB_TOTAL,
+                    NU_BACKUP_PENDING_FILES_CURRENT,
+                    VL_BACKUP_PENDING_GB_CURRENT,
+                    NU_BACKUP_ERROR_FILES_CURRENT,
+                    VL_BACKUP_ERROR_GB_CURRENT,
+                    NU_BACKUP_SUSPENDED_FILES_CURRENT,
+                    VL_BACKUP_SUSPENDED_GB_CURRENT,
+                    NU_PROCESSING_PENDING_FILES_CURRENT,
+                    VL_PROCESSING_PENDING_GB_CURRENT,
+                    NU_PROCESSING_ERROR_FILES_CURRENT,
+                    VL_PROCESSING_ERROR_GB_CURRENT,
+                    NU_PROCESSING_FROZEN_FILES_CURRENT,
+                    VL_PROCESSING_FROZEN_GB_CURRENT,
+                    NU_FACT_SPECTRUM_TOTAL,
+                    NA_CURRENT_LOCALITY_LABEL,
+                    NA_CURRENT_SITE_LABEL,
+                    NA_CURRENT_STATE_CODE,
+                    VL_CURRENT_LATITUDE,
+                    VL_CURRENT_LONGITUDE,
+                    IS_SSH_FAILURE,
+                    DT_LAST_SSH_EVALUATED_AT,
+                    DT_LAST_SSH_FAILURE_AT,
+                    NA_LAST_SSH_FAILURE_CODE,
+                    NA_LAST_SSH_FAILURE_DESCRIPTION,
+                    IS_GPS_GNSS_UNAVAILABLE,
+                    DT_LAST_GPS_GNSS_EVALUATED_AT,
+                    DT_LAST_GPS_GNSS_UNAVAILABLE_AT,
+                    NA_LAST_GPS_GNSS_UNAVAILABLE_DESCRIPTION,
+                    NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME
+                FROM {HOST_CURRENT_SNAPSHOT_TABLE}
+                WHERE ID_HOST = %s
+                LIMIT 1
+                """,
+                (host_id,),
+            )
+            return rows[0] if rows else {}
+        finally:
+            self._disconnect()
+
+    def update_host_current_snapshot_signals(
+        self,
+        *,
+        host_id: int,
+        values: Dict[str, Any],
+    ) -> None:
+        """Persist direct operational fields in the canonical host snapshot.
+
+        The caller updates only fields it evaluated. Existing evidence remains
+        intact when a valid recovery only clears ``IS_*``. The shared user-lock
+        prevents a concurrent table swap from discarding this update.
+        """
+        invalid_fields = set(values) - HOST_CURRENT_SNAPSHOT_DIRECT_FIELDS
+        if invalid_fields:
+            raise ValueError(
+                "Invalid HOST_CURRENT_SNAPSHOT direct fields: "
+                f"{sorted(invalid_fields)}"
+            )
+        if not values:
+            raise ValueError("At least one HOST_CURRENT_SNAPSHOT signal field is required.")
+
+        if not self.acquire_host_snapshot_lock():
+            raise RuntimeError("Timed out waiting for HOST_CURRENT_SNAPSHOT signal lock.")
+
+        try:
+            self._connect()
+            self._execute_custom(
+                f"""
+                INSERT INTO {HOST_CURRENT_SNAPSHOT_TABLE} (ID_HOST, NA_HOST_NAME)
+                SELECT ID_HOST, NA_HOST_NAME
+                FROM BPDATA.HOST
+                WHERE ID_HOST = %s
+                ON DUPLICATE KEY UPDATE ID_HOST = VALUES(ID_HOST)
+                """,
+                (host_id,),
+                commit=True,
+            )
+
+            assignments = ", ".join(f"{field} = %s" for field in values)
+            params = tuple(values[field] for field in values) + (host_id,)
+            self._execute_custom(
+                f"UPDATE {HOST_CURRENT_SNAPSHOT_TABLE} "
+                f"SET {assignments} WHERE ID_HOST = %s",
+                params,
+                commit=True,
+            )
+        finally:
+            try:
+                self.release_host_snapshot_lock()
+            finally:
+                self._disconnect()
+
+    def clear_host_current_snapshot_busy_state(self, *, host_ids: List[int]) -> int:
+        """Clear the runtime busy state in both host snapshot tables."""
+        normalized_host_ids = tuple(sorted({int(host_id) for host_id in host_ids}))
+        if not normalized_host_ids:
+            return 0
+
+        if not self.acquire_host_snapshot_lock():
+            raise RuntimeError("Timed out waiting for HOST_CURRENT_SNAPSHOT signal lock.")
+
+        placeholders = ", ".join(["%s"] * len(normalized_host_ids))
+        try:
+            self._connect()
+            return self._execute_custom(
+                f"""
+                UPDATE {HOST_CURRENT_SNAPSHOT_TABLE} AS snapshot
+                LEFT JOIN {HOST_CURRENT_SNAPSHOT_SHADOW_TABLE} AS shadow
+                  ON shadow.ID_HOST = snapshot.ID_HOST
+                SET snapshot.IS_BUSY = FALSE,
+                    shadow.IS_BUSY = FALSE
+                WHERE snapshot.ID_HOST IN ({placeholders})
+                """,
+                normalized_host_ids,
+                commit=True,
+            )
+        finally:
+            try:
+                self.release_host_snapshot_lock()
+            finally:
+                self._disconnect()
 
     def close(self) -> None:
         """Close the current connection, if any."""
@@ -540,6 +785,177 @@ class dbHandlerSummary(DBHandlerBase):
                     max_rows=k.SUMMARY_REFRESH_LOG_MAX_ROWS,
                     error=repr(exc),
                 )
+        finally:
+            self._disconnect()
+
+    def read_host_current_snapshot_sources(
+        self,
+        *,
+        current_month_start: datetime,
+        next_month_start: datetime,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Read the durable sources needed by ``HOST_CURRENT_SNAPSHOT``.
+
+        The summary engine owns the projection, while this handler owns the
+        source SQL. Queue data comes from ``FILE_TASK`` and all lifecycle
+        aggregates come from ``FILE_TASK_HISTORY``. This is important for
+        processing: completed and errored tasks leave the execution queue,
+        but remain represented by their durable history row.
+        """
+        self._connect()
+        try:
+            queue_rows = self._select_raw(
+                """
+                SELECT
+                    FK_HOST,
+                    SUM(CASE WHEN NU_TYPE = %s AND NU_STATUS = %s THEN 1 ELSE 0 END) AS NU_BACKUP_QUEUE_FILES_TOTAL,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_TYPE = %s AND NU_STATUS = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_QUEUE_GB_TOTAL,
+                    SUM(CASE WHEN NU_TYPE = %s AND NU_STATUS = %s THEN 1 ELSE 0 END) AS NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_TYPE = %s AND NU_STATUS = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_QUEUE_RUNNING_GB_TOTAL,
+                    SUM(CASE WHEN NU_TYPE = %s AND NU_STATUS = %s THEN 1 ELSE 0 END) AS NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_TYPE = %s AND NU_STATUS = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL,
+                    SUM(CASE WHEN NU_TYPE = %s AND NU_STATUS = %s THEN 1 ELSE 0 END) AS NU_PROCESSING_QUEUE_FILES_TOTAL,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_TYPE = %s AND NU_STATUS = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_QUEUE_GB_TOTAL,
+                    SUM(CASE WHEN NU_TYPE = %s AND NU_STATUS = %s THEN 1 ELSE 0 END) AS NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_TYPE = %s AND NU_STATUS = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL,
+                    SUM(CASE WHEN NU_TYPE = %s AND NU_STATUS = %s THEN 1 ELSE 0 END) AS NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_TYPE = %s AND NU_STATUS = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL
+                FROM BPDATA.FILE_TASK
+                GROUP BY FK_HOST
+                """,
+                (
+                    k.FILE_TASK_BACKUP_TYPE,
+                    k.TASK_PENDING,
+                    k.FILE_TASK_BACKUP_TYPE,
+                    k.TASK_PENDING,
+                    k.FILE_TASK_BACKUP_TYPE,
+                    k.TASK_RUNNING,
+                    k.FILE_TASK_BACKUP_TYPE,
+                    k.TASK_RUNNING,
+                    k.FILE_TASK_BACKUP_TYPE,
+                    k.TASK_SUSPENDED,
+                    k.FILE_TASK_BACKUP_TYPE,
+                    k.TASK_SUSPENDED,
+                    k.FILE_TASK_PROCESS_TYPE,
+                    k.TASK_PENDING,
+                    k.FILE_TASK_PROCESS_TYPE,
+                    k.TASK_PENDING,
+                    k.FILE_TASK_PROCESS_TYPE,
+                    k.TASK_RUNNING,
+                    k.FILE_TASK_PROCESS_TYPE,
+                    k.TASK_RUNNING,
+                    k.FILE_TASK_PROCESS_TYPE,
+                    k.TASK_FROZEN,
+                    k.FILE_TASK_PROCESS_TYPE,
+                    k.TASK_FROZEN,
+                ),
+            )
+            history_rows = self._select_raw(
+                """
+                SELECT
+                    FK_HOST,
+                    MAX(CASE WHEN NU_STATUS_BACKUP = %s THEN DT_BACKUP END) AS DT_LAST_BACKUP,
+                    MAX(CASE WHEN NU_STATUS_PROCESSING = %s THEN DT_PROCESSED END) AS DT_LAST_PROCESSING,
+                    SUM(CASE WHEN NU_STATUS_BACKUP = %s AND DT_BACKUP >= %s AND DT_BACKUP < %s THEN 1 ELSE 0 END) AS NU_BACKUP_DONE_THIS_MONTH,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = %s AND DT_BACKUP >= %s AND DT_BACKUP < %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_DONE_GB_THIS_MONTH,
+                    SUM(CASE WHEN NU_STATUS_PROCESSING = %s AND DT_PROCESSED >= %s AND DT_PROCESSED < %s THEN 1 ELSE 0 END) AS NU_PROCESSING_DONE_THIS_MONTH,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = %s AND DT_PROCESSED >= %s AND DT_PROCESSED < %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_DONE_GB_THIS_MONTH,
+                    SUM(CASE WHEN NU_STATUS_DISCOVERY = %s THEN 1 ELSE 0 END) AS NU_DISCOVERED_FILES_TOTAL,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_DISCOVERY = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_DISCOVERED_GB_TOTAL,
+                    SUM(CASE WHEN NU_STATUS_BACKUP = %s THEN 1 ELSE 0 END) AS NU_BACKUP_DONE_FILES_TOTAL,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_DONE_GB_TOTAL,
+                    SUM(CASE WHEN NU_STATUS_PROCESSING = %s THEN 1 ELSE 0 END) AS NU_PROCESSING_DONE_FILES_TOTAL,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_DONE_GB_TOTAL,
+                    SUM(CASE WHEN IS_PAYLOAD_DELETED = 1 THEN 1 ELSE 0 END) AS NU_PAYLOAD_DELETED_FILES_TOTAL,
+                    ROUND(COALESCE(SUM(CASE WHEN IS_PAYLOAD_DELETED = 1 THEN COALESCE(VL_FILE_SIZE_KB_SERVER, VL_FILE_SIZE_KB_HOST) ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PAYLOAD_DELETED_GB_TOTAL,
+                    SUM(CASE WHEN NU_STATUS_BACKUP = %s THEN 1 ELSE 0 END) AS NU_BACKUP_PENDING_FILES_CURRENT,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_PENDING_GB_CURRENT,
+                    SUM(CASE WHEN NU_STATUS_BACKUP = %s THEN 1 ELSE 0 END) AS NU_BACKUP_ERROR_FILES_CURRENT,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_ERROR_GB_CURRENT,
+                    SUM(CASE WHEN NU_STATUS_BACKUP = %s THEN 1 ELSE 0 END) AS NU_BACKUP_SUSPENDED_FILES_CURRENT,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_BACKUP = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_BACKUP_SUSPENDED_GB_CURRENT,
+                    SUM(CASE WHEN NU_STATUS_PROCESSING = %s THEN 1 ELSE 0 END) AS NU_PROCESSING_PENDING_FILES_CURRENT,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_PENDING_GB_CURRENT,
+                    SUM(CASE WHEN NU_STATUS_PROCESSING = %s THEN 1 ELSE 0 END) AS NU_PROCESSING_ERROR_FILES_CURRENT,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_ERROR_GB_CURRENT,
+                    SUM(CASE WHEN NU_STATUS_PROCESSING = %s THEN 1 ELSE 0 END) AS NU_PROCESSING_FROZEN_FILES_CURRENT,
+                    ROUND(COALESCE(SUM(CASE WHEN NU_STATUS_PROCESSING = %s THEN VL_FILE_SIZE_KB_HOST ELSE 0 END), 0) / 1024 / 1024, 2) AS VL_PROCESSING_FROZEN_GB_CURRENT
+                FROM BPDATA.FILE_TASK_HISTORY
+                GROUP BY FK_HOST
+                """,
+                (
+                    k.TASK_DONE,
+                    k.TASK_DONE,
+                    k.TASK_DONE,
+                    current_month_start,
+                    next_month_start,
+                    k.TASK_DONE,
+                    current_month_start,
+                    next_month_start,
+                    k.TASK_DONE,
+                    current_month_start,
+                    next_month_start,
+                    k.TASK_DONE,
+                    current_month_start,
+                    next_month_start,
+                    k.TASK_DONE,
+                    k.TASK_DONE,
+                    k.TASK_DONE,
+                    k.TASK_DONE,
+                    k.TASK_DONE,
+                    k.TASK_DONE,
+                    k.TASK_PENDING,
+                    k.TASK_PENDING,
+                    k.TASK_ERROR,
+                    k.TASK_ERROR,
+                    k.TASK_SUSPENDED,
+                    k.TASK_SUSPENDED,
+                    k.TASK_PENDING,
+                    k.TASK_PENDING,
+                    k.TASK_ERROR,
+                    k.TASK_ERROR,
+                    k.TASK_FROZEN,
+                    k.TASK_FROZEN,
+                ),
+            )
+            return {
+                "hosts": self._select_raw("SELECT * FROM BPDATA.HOST"),
+                "queue_rows": queue_rows,
+                "history_rows": history_rows,
+                "spectrum_rows": self._select_raw(
+                    """
+                    SELECT
+                        l.FK_HOST,
+                        SUM(obs.NU_SPECTRUM_COUNT) AS NU_FACT_SPECTRUM_TOTAL
+                    FROM HOST_EQUIPMENT_LINK l
+                    JOIN SITE_EQUIPMENT_OBS_SUMMARY obs
+                      ON obs.FK_EQUIPMENT = l.FK_EQUIPMENT
+                    WHERE l.IS_ACTIVE = 1
+                      AND l.IS_PRIMARY_LINK = 1
+                    GROUP BY l.FK_HOST
+                    """
+                ),
+                "current_location_rows": self._select_raw(
+                    """
+                    SELECT
+                        FK_HOST,
+                        NA_LOCALITY_LABEL,
+                        NA_SITE_LABEL,
+                        NA_STATE_CODE,
+                        VL_LATITUDE,
+                        VL_LONGITUDE,
+                        DT_LAST_SEEN_AT,
+                        DT_FIRST_SEEN_AT
+                    FROM HOST_LOCATION_SUMMARY
+                    WHERE IS_CURRENT_LOCATION = 1
+                    ORDER BY
+                        FK_HOST ASC,
+                        COALESCE(DT_LAST_SEEN_AT, DT_FIRST_SEEN_AT) DESC,
+                        COALESCE(DT_FIRST_SEEN_AT, DT_LAST_SEEN_AT) DESC,
+                        FK_SITE DESC
+                    """
+                ),
+            }
         finally:
             self._disconnect()
 

@@ -20,7 +20,11 @@ PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 from db.dbHandlerBKP import dbHandlerBKP
 from host_handler import host_context, host_runtime
-from host_handler.host_ssh_utils import sftpConnection
+from host_handler.host_ssh_utils import (
+    record_ssh_failure,
+    record_ssh_success,
+    sftpConnection,
+)
 from server_handler import signal_runtime, sleep as runtime_sleep, worker_pool
 from shared import (
     errors,
@@ -314,6 +318,32 @@ def _finalize_error(
     )
 
     try:
+        if err.stage == k.STAGE_AUTH:
+            record_ssh_failure(
+                host_id,
+                observed_at=error_at,
+                failure_code=k.SSH_FAILURE_CODE_AUTHENTICATION,
+                description=err.format_persisted_error(),
+                logger=log,
+            )
+        elif err.stage in {k.STAGE_CONNECT, k.STAGE_SSH}:
+            record_ssh_failure(
+                host_id,
+                observed_at=error_at,
+                failure_code=k.SSH_FAILURE_CODE_CONNECTIVITY,
+                description=err.format_persisted_error(),
+                logger=log,
+            )
+    except Exception as exc:
+        log.warning_event(
+            "ssh_metric_update_failed",
+            service=SERVICE_NAME,
+            worker_id=worker_id,
+            host_id=host_id,
+            error=exc,
+        )
+
+    try:
         # The live FILE_TASK returns to BACKUP/ERROR because this worker owns
         # the failed transfer attempt. It should no longer advertise a worker
         # PID once it leaves RUNNING.
@@ -404,11 +434,13 @@ def _cleanup(
         logger=log,
         service_name=SERVICE_NAME,
     )
-    # Stats are deferred so repository I/O finishes before
-    # any host-level aggregation work begins.
+    # The summary invalidation is deferred until repository I/O is complete.
     if not err.triggered and file_was_transferred:
         try:
-            db.host_task_statistics_create(host_id=host_id)
+            db.request_host_summary_refresh(
+                host_id=host_id,
+                reason="backup_completed",
+            )
         except Exception:
             pass
 
@@ -630,6 +662,20 @@ def main() -> None:
             # --- SSH bootstrap ---
             # Open the remote session only after queue ownership is stable.
             sftp_conn = host_context.init_host_context(task, log)
+            try:
+                record_ssh_success(
+                    task["host_id"],
+                    observed_at=datetime.now(),
+                    logger=log,
+                )
+            except Exception as exc:
+                log.warning_event(
+                    "ssh_metric_update_failed",
+                    service=SERVICE_NAME,
+                    worker_id=worker_id,
+                    host_id=task["host_id"],
+                    error=exc,
+                )
 
             # --- transfer ---
             # The entrypoint measures total work time.

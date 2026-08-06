@@ -10,84 +10,61 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260522-host-ssh-value-tune-v3') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260730-host-operational-layout-v1') }}">
 {% endblock %}
 
 {% block content %}
-
 <div id="host-page-root" {% if stats %}data-host-id="{{ stats.ID_HOST }}"{% endif %}>
+    <h1 class="wf-screen-title margin-bottom-l">Panorama da Estação</h1>
 
-<h1 class="wf-screen-title margin-bottom-l">
-    Panorama da Estação
-</h1>
-
-<div class="host-page-stack">
-    <section class="card background-neutral-0 padding-l border-radius-m host-section-card">
-        <div class="host-section-head">
-            <div class="host-section-kicker">Filtro</div>
-            <h2 class="host-section-title">Selecionar Estação</h2>
-            <p class="host-section-copy">
-                Consulte uma estação específica sem sair do contexto operacional do catálogo.
-            </p>
-        </div>
-
-        <form method="get" data-loading-message="Carregando panorama da estação...">
-            <div class="host-query-grid">
-                <div class="host-query-field">
-                    <label>Estação</label>
-                    <div class="select-shell">
-                        <select name="host_id" class="form-control" required>
-                            <option value="">-- selecione --</option>
-                            {% for h in hosts %}
-                            <option value="{{ h.ID_HOST }}" {% if h.ID_HOST|string==selected_host %}selected{% endif %}>
-                                {{ h.NA_HOST_NAME }}
-                            </option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                </div>
-
-                <div class="host-query-field">
-                    <label>&nbsp;</label>
-                    <div class="host-query-actions">
-                        <button type="submit" class="btn-search width-full">
-                            Pesquisar
-                        </button>
-                        <a class="btn-secondary" href="{{ url_for('host.host') }}">
-                            Limpar filtros
-                        </a>
-                    </div>
-                </div>
-
-                <div class="host-query-field">
-                    <label>&nbsp;</label>
-                    <div class="online-filter">
-                        <label>
-                            <input
-                                type="checkbox"
-                                id="online_only"
-                                name="online_only"
-                                value="1"
-                                {% if online_only %}checked{% endif %}
-                            >
-                            Apenas Online
-                        </label>
-                    </div>
-                </div>
+    <div class="host-page-stack">
+        <section class="card background-neutral-0 padding-l border-radius-m host-section-card">
+            <div class="host-section-head">
+                <div class="host-section-kicker">Filtro</div>
+                <h2 class="host-section-title">Selecionar Estação</h2>
+                <p class="host-section-copy">Consulte uma estação específica sem sair do contexto operacional do catálogo.</p>
             </div>
-        </form>
-    </section>
+            <form method="get" data-loading-message="Carregando panorama da estação...">
+                <div class="host-query-grid">
+                    <div class="host-query-field">
+                        <label>Estação</label>
+                        <div class="select-shell">
+                            <select name="host_id" class="form-control" required>
+                                <option value="">-- selecione --</option>
+                                {% for h in hosts %}
+                                <option value="{{ h.ID_HOST }}" {% if h.ID_HOST|string == selected_host %}selected{% endif %}>
+                                    {{ h.NA_HOST_NAME }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                    <div class="host-query-field">
+                        <label>&nbsp;</label>
+                        <div class="host-query-actions">
+                            <button type="submit" class="btn-search width-full">Pesquisar</button>
+                            <a class="btn-secondary" href="{{ url_for('host.host') }}">Limpar filtros</a>
+                        </div>
+                    </div>
+                    <div class="host-query-field">
+                        <label>&nbsp;</label>
+                        <div class="online-filter">
+                            <label>
+                                <input type="checkbox" id="online_only" name="online_only" value="1" {% if online_only %}checked{% endif %}>
+                                Apenas Online
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </form>
+        </section>
 
-{% if stats %}
-
-    <div class="host-top-grid">
+        {% if stats %}
         <section class="card background-neutral-0 padding-l border-radius-m host-section-card">
             <div class="host-section-head">
                 <div class="host-section-kicker">Visão Geral</div>
                 <h2 class="host-section-title">Identificação da Estação</h2>
-                <p class="host-section-copy">
-                    Dados cadastrais, site atual e contexto resumido da estação no catálogo.
-                </p>
+                <p class="host-section-copy">Dados cadastrais, localização atual e contexto resumido da estação no catálogo.</p>
             </div>
             <div class="summary-grid host-summary-grid--facts">
                 <div class="summary-card">
@@ -99,20 +76,24 @@
                     <div class="summary-card-value host-summary-value-ssh">{{ stats.NA_HOST_ADDRESS }}:{{ stats.NA_HOST_PORT }}</div>
                 </div>
                 <div class="summary-card">
+                    <div class="summary-card-label">Localidade atual</div>
+                    <div class="summary-card-value">{{ stats.NA_CURRENT_LOCALITY_LABEL or '-' }}</div>
+                </div>
+                <div class="summary-card">
                     <div class="summary-card-label">Site atual</div>
-                    <div class="summary-card-value">{{ stats.NA_CURRENT_SITE_LABEL or "-" }}</div>
+                    <div class="summary-card-value">{{ stats.NA_CURRENT_SITE_LABEL or '-' }}</div>
                 </div>
                 <div class="summary-card">
                     <div class="summary-card-label">UF atual</div>
-                    <div class="summary-card-value">{{ stats.NA_CURRENT_STATE_CODE or "-" }}</div>
+                    <div class="summary-card-value">{{ stats.NA_CURRENT_STATE_CODE or '-' }}</div>
                 </div>
                 <div class="summary-card">
-                    <div class="summary-card-label">Equipamentos associados</div>
-                    <div class="summary-card-value">{{ stats.NU_MATCHED_EQUIPMENT_TOTAL or 0 }}</div>
-                </div>
-                <div class="summary-card">
-                    <div class="summary-card-label">Espectros gerados</div>
-                    <div class="summary-card-value">{{ stats.FACT_SPECTRUM_TOTAL }}</div>
+                    <div class="summary-card-label">Coordenadas atuais</div>
+                    <div class="summary-card-value host-summary-value-ssh">
+                        {% if stats.VL_CURRENT_LATITUDE is not none and stats.VL_CURRENT_LONGITUDE is not none %}
+                        {{ stats.VL_CURRENT_LATITUDE }}, {{ stats.VL_CURRENT_LONGITUDE }}
+                        {% else %}-{% endif %}
+                    </div>
                 </div>
             </div>
         </section>
@@ -121,293 +102,185 @@
             <div class="host-section-head">
                 <div class="host-section-kicker">Operação</div>
                 <h2 class="host-section-title">Estado Operacional</h2>
-                <p class="host-section-copy">
-                    Situação atual de conectividade, ocupação e últimas falhas registradas da estação.
-                </p>
+                <p class="host-section-copy">Situação atual de conectividade, execução e sinais operacionais da estação.</p>
             </div>
             <div class="host-status-row">
-                {% if stats.IS_OFFLINE %}
-                <span class="status-badge status-offline">Offline</span>
-                {% else %}
-                <span class="status-badge status-online">Online</span>
-                {% endif %}
-
-                {% if stats.IS_BUSY %}
-                <span class="status-badge status-busy">Ocupada</span>
-                {% else %}
-                <span class="status-badge status-idle">Disponível</span>
-                {% endif %}
+                {% if stats.IS_OFFLINE %}<span class="status-badge status-offline">Offline</span>{% else %}<span class="status-badge status-online">Online</span>{% endif %}
+                {% if stats.IS_BUSY %}<span class="status-badge status-busy">Ocupada</span>{% else %}<span class="status-badge status-idle">Disponível</span>{% endif %}
+                {% if stats.IS_SSH_FAILURE %}<span class="status-badge status-warning">Falha SSH ativa</span>{% else %}<span class="status-badge status-online">SSH disponível</span>{% endif %}
+                {% if stats.IS_GPS_GNSS_UNAVAILABLE %}<span class="status-badge status-warning">GPS/GNSS indisponível</span>{% else %}<span class="status-badge status-online">GPS/GNSS disponível</span>{% endif %}
             </div>
-            <table class="stats-table host-fact-table">
-                <tr>
-                    <th>Processo que ocupa a estação</th>
-                    <td>{{ stats.NU_PID if stats.NU_PID else "-" }}</td>
-                </tr>
-                <tr>
-                    <th>Último registro de ocupação</th>
-                    <td>{{ stats.DT_BUSY or "-" }}</td>
-                </tr>
-                <tr>
-                    <th>Última falha de conectividade</th>
-                    <td>{{ stats.DISPLAY_LAST_FAILURE_AT or "-" }}</td>
-                </tr>
-                <tr>
-                    <th>Motivo da última falha</th>
-                    <td>{{ stats.LAST_FAILURE_REASON or "-" }}</td>
-                </tr>
-                <tr>
-                    <th>Falhas acumuladas de conectividade</th>
-                    <td>{{ stats.NU_HOST_CHECK_ERROR }}</td>
-                </tr>
-            </table>
+            <div class="summary-grid host-summary-grid--activity">
+                <div class="summary-card">
+                    <div class="summary-card-label">Última checagem operacional</div>
+                    <div class="summary-card-value">{{ stats.DT_LAST_CHECK or '-' }}</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-card-label">Última indisponibilidade</div>
+                    <div class="summary-card-value">{{ stats.DT_LAST_OFFLINE_AT or '-' }}</div>
+                    <div class="summary-card-note">{{ stats.NA_LAST_OFFLINE_DESCRIPTION or 'Sem indisponibilidade registrada.' }}</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-card-label">Última avaliação SSH</div>
+                    <div class="summary-card-value">{{ stats.DT_LAST_SSH_EVALUATED_AT or '-' }}</div>
+                    <div class="summary-card-note">{{ stats.NA_LAST_SSH_FAILURE_CODE or 'Sem falha ativa.' }}</div>
+                </div>
+                <div class="summary-card">
+                    <div class="summary-card-label">Última avaliação GPS/GNSS</div>
+                    <div class="summary-card-value">{{ stats.DT_LAST_GPS_GNSS_EVALUATED_AT or '-' }}</div>
+                    <div class="summary-card-note">{{ stats.NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME or 'Sem indisponibilidade ativa.' }}</div>
+                </div>
+            </div>
         </section>
-    </div>
 
-    <div class="host-secondary-grid">
         <section class="card background-neutral-0 padding-l border-radius-m host-section-card">
             <div class="host-section-head">
                 <div class="host-section-kicker">Atividade</div>
                 <h2 class="host-section-title">Últimas Atividades</h2>
-                <p class="host-section-copy">
-                    Últimos marcos operacionais da estação dentro do fluxo de catalogação.
-                </p>
+                <p class="host-section-copy">Marcos efetivamente concluídos da discovery, do backup e do processamento.</p>
             </div>
             <div class="summary-grid host-summary-grid--activity">
                 <div class="summary-card">
-                    <div class="summary-card-label">Última verificação</div>
-                    <div class="summary-card-value">{{ stats.DT_LAST_CHECK or "-" }}</div>
+                    <div class="summary-card-label">Última discovery concluída</div>
+                    <div class="summary-card-value">{{ stats.DT_LAST_DISCOVERY_COMPLETED_AT or '-' }}</div>
+                    <div class="summary-card-note">{{ stats.NU_LAST_DISCOVERY_FILE_COUNT }} arquivos e {{ stats.LAST_DISCOVERY_VOLUME_LABEL }} persistidos nessa varredura.</div>
                 </div>
                 <div class="summary-card">
-                    <div class="summary-card-label">Última descoberta</div>
-                    <div class="summary-card-value">{{ stats.DT_LAST_DISCOVERY or "-" }}</div>
+                    <div class="summary-card-label">Última discovery com arquivos</div>
+                    <div class="summary-card-value">{{ stats.DT_LAST_DISCOVERY_WITH_FILES or '-' }}</div>
                 </div>
                 <div class="summary-card">
-                    <div class="summary-card-label">Último backup</div>
-                    <div class="summary-card-value">{{ stats.DT_LAST_BACKUP or "-" }}</div>
+                    <div class="summary-card-label">Último backup concluído</div>
+                    <div class="summary-card-value">{{ stats.DT_LAST_BACKUP or '-' }}</div>
                 </div>
                 <div class="summary-card">
-                    <div class="summary-card-label">Último processamento</div>
-                    <div class="summary-card-value">{{ stats.DT_LAST_PROCESSING or "-" }}</div>
+                    <div class="summary-card-label">Último processamento concluído</div>
+                    <div class="summary-card-value">{{ stats.DT_LAST_PROCESSING or '-' }}</div>
                 </div>
             </div>
         </section>
 
         <section class="card background-neutral-0 padding-l border-radius-m host-section-card">
             <div class="host-section-head">
-                <div class="host-section-kicker">Mensal</div>
-                <h2 class="host-section-title">Backup do Mês</h2>
-                <p class="host-section-copy">
-                    Execução operacional do mês corrente, baseada no momento em que o backup aconteceu.
-                </p>
+                <div class="host-section-kicker">Acervo</div>
+                <h2 class="host-section-title">Descoberta e Repositório</h2>
+                <p class="host-section-copy">Visão do acervo identificado, da limpeza de payloads e dos estados atuais da discovery.</p>
             </div>
-            <div class="host-month-banner">
-                <span class="host-month-banner-label">Mês de referência</span>
-                <strong>{{ stats.CURRENT_MONTH_LABEL }}</strong>
-            </div>
-            <div class="summary-grid host-summary-grid--month">
-                <div class="summary-card">
-                    <div class="summary-card-label">Arquivos baixados no mês</div>
-                    <div class="summary-card-value">{{ stats.BACKUP_DONE_THIS_MONTH }}</div>
-                </div>
-                <div class="summary-card">
-                    <div class="summary-card-label">Volume baixado no mês</div>
-                    <div class="summary-card-value">{{ stats.BACKUP_DONE_GB_THIS_MONTH }} GB</div>
-                </div>
+            <div class="host-metric-clusters">
+                <section class="host-metric-cluster">
+                    <div class="host-metric-cluster-head">
+                        <div>
+                            <h3 class="host-metric-cluster-title">Última Discovery</h3>
+                            <p class="host-metric-cluster-copy">Resultado persistido após a deduplicação da última varredura concluída.</p>
+                        </div>
+                        {% if not stats.DT_LAST_DISCOVERY_COMPLETED_AT %}
+                        <span class="status-badge status-idle">Sem discovery registrada</span>
+                        {% elif stats.NU_LAST_DISCOVERY_FILE_COUNT > 0 %}
+                        <span class="status-badge status-online">Encontrou arquivos novos</span>
+                        {% else %}
+                        <span class="status-badge status-idle">Sem arquivos novos na última discovery</span>
+                        {% endif %}
+                    </div>
+                    <div class="summary-grid host-summary-grid--cluster host-summary-grid--paired">
+                        <div class="summary-card"><div class="summary-card-label">Arquivos descobertos</div><div class="summary-card-value">{{ stats.NU_LAST_DISCOVERY_FILE_COUNT }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume descoberto</div><div class="summary-card-value">{{ stats.LAST_DISCOVERY_VOLUME_LABEL }}</div></div>
+                    </div>
+                </section>
+                <section class="host-metric-cluster">
+                    <div class="host-metric-cluster-head">
+                        <div>
+                            <h3 class="host-metric-cluster-title">Acervo Global</h3>
+                            <p class="host-metric-cluster-copy">Arquivos registrados após a deduplicação da discovery.</p>
+                        </div>
+                    </div>
+                    <div class="summary-grid host-summary-grid--cluster host-summary-grid--paired">
+                        <div class="summary-card"><div class="summary-card-label">Arquivos descobertos</div><div class="summary-card-value">{{ stats.DISCOVERED_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume descoberto</div><div class="summary-card-value">{{ stats.DISCOVERED_GB_TOTAL }} GB</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Arquivos removidos</div><div class="summary-card-value">{{ stats.PAYLOAD_DELETED_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume removido</div><div class="summary-card-value">{{ stats.PAYLOAD_DELETED_GB_TOTAL }} GB</div></div>
+                    </div>
+                </section>
             </div>
         </section>
-    </div>
 
-    <section class="card background-neutral-0 padding-l border-radius-m host-section-card">
-        <div class="host-section-head">
-            <div class="host-section-kicker">Localização</div>
-            <h2 class="host-section-title">Histórico de Localidades</h2>
-            <p class="host-section-copy">
-                Trilhas de site e localidade observadas para a estação dentro do catálogo espectral.
-            </p>
-        </div>
-        <div class="annual-breakdown">
-            <table class="stats-table">
-                <thead>
-                    <tr>
-                        <th>Site</th>
-                        <th>Localidade</th>
-                        <th>Cidade / UF</th>
-                        <th>Primeira medição</th>
-                        <th>Última medição</th>
-                        <th>Espectros</th>
-                    </tr>
-                </thead>
-                <tbody id="host-location-history-rows">
-                    <tr>
-                        <td colspan="6" class="summary-card-value-loading">CARREGANDO</td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-    </section>
-
-    <div class="host-pipeline-grid">
         <section class="card background-neutral-0 padding-l border-radius-m host-section-card">
             <div class="host-section-head">
                 <div class="host-section-kicker">Pipeline</div>
-                <h2 class="host-section-title">Backup e Acervo</h2>
-                <p class="host-section-copy">
-                    Visão separada entre execução mensal, acervo acumulado e fila operacional atual do backup.
-                </p>
+                <h2 class="host-section-title">Backup</h2>
+                <p class="host-section-copy">Execução mensal, acervo acumulado e fila operacional atual do backup.</p>
             </div>
             <div class="host-metric-clusters">
                 <section class="host-metric-cluster">
                     <div class="host-metric-cluster-head">
                         <div>
                             <h3 class="host-metric-cluster-title">Execução do Mês</h3>
-                            <p class="host-metric-cluster-copy">Backups executados no mês de referência, baseados em DT_BACKUP.</p>
+                            <p class="host-metric-cluster-copy">Backups concluídos no mês de referência, baseados em DT_BACKUP.</p>
                         </div>
-                        <span class="host-month-badge">
-                            {{ stats.CURRENT_MONTH_LABEL }}
-                        </span>
+                        <span class="host-month-badge">{{ stats.CURRENT_MONTH_LABEL }}</span>
                     </div>
-                    <div class="summary-grid host-summary-grid--cluster">
-                        <div class="summary-card">
-                            <div class="summary-card-label">Arquivos baixados</div>
-                            <div class="summary-card-value">{{ stats.BACKUP_DONE_THIS_MONTH }}</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Volume baixado</div>
-                            <div class="summary-card-value">{{ stats.BACKUP_DONE_GB_THIS_MONTH }} GB</div>
-                        </div>
+                    <div class="summary-grid host-summary-grid--cluster host-summary-grid--paired">
+                        <div class="summary-card"><div class="summary-card-label">Arquivos com backup no mês</div><div class="summary-card-value">{{ stats.BACKUP_DONE_THIS_MONTH }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume com backup no mês</div><div class="summary-card-value">{{ stats.BACKUP_DONE_GB_THIS_MONTH }} GB</div></div>
                     </div>
                 </section>
-
                 <section class="host-metric-cluster">
                     <div class="host-metric-cluster-head">
                         <div>
                             <h3 class="host-metric-cluster-title">Acervo Global</h3>
-                            <p class="host-metric-cluster-copy">Estado acumulado do acervo descoberto, concluído, pendente e com erro.</p>
+                            <p class="host-metric-cluster-copy">Estado acumulado de backup para o acervo desta estação.</p>
                         </div>
                     </div>
-                    <div class="summary-grid host-summary-grid--cluster">
-                        <div class="summary-card">
-                            <div class="summary-card-label">Arquivos mapeados</div>
-                            <div class="summary-card-value">{{ stats.DISCOVERED_FILES_TOTAL }}</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Volume mapeado</div>
-                            <div class="summary-card-value">{{ stats.DISCOVERED_GB_TOTAL }} GB</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Backups concluídos</div>
-                            <div class="summary-card-value">{{ stats.BACKUP_DONE_FILES_TOTAL }}</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Volume já baixado</div>
-                            <div class="summary-card-value">{{ stats.BACKUP_DONE_GB_TOTAL }} GB</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Aguardando backup</div>
-                            <div class="summary-card-value">{{ stats.BACKUP_PENDING_FILES_TOTAL }}</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Volume aguardando</div>
-                            <div class="summary-card-value">{{ stats.BACKUP_PENDING_GB_TOTAL }} GB</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Erros de backup</div>
-                            <div class="summary-card-value">{{ stats.BACKUP_ERROR_FILES_TOTAL }}</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Volume com erro</div>
-                            <div class="summary-card-value">{{ stats.BACKUP_ERROR_GB_TOTAL }} GB</div>
-                        </div>
+                    <div class="summary-grid host-summary-grid--cluster host-summary-grid--paired">
+                        <div class="summary-card"><div class="summary-card-label">Arquivos com backup concluído</div><div class="summary-card-value">{{ stats.BACKUP_DONE_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume com backup concluído</div><div class="summary-card-value">{{ stats.BACKUP_DONE_GB_TOTAL }} GB</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Arquivos aguardando backup</div><div class="summary-card-value">{{ stats.BACKUP_PENDING_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume aguardando backup</div><div class="summary-card-value">{{ stats.BACKUP_PENDING_GB_TOTAL }} GB</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Arquivos com erro de backup</div><div class="summary-card-value">{{ stats.BACKUP_ERROR_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume com erro de backup</div><div class="summary-card-value">{{ stats.BACKUP_ERROR_GB_TOTAL }} GB</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Arquivos suspensos</div><div class="summary-card-value">{{ stats.BACKUP_SUSPENDED_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume suspenso</div><div class="summary-card-value">{{ stats.BACKUP_SUSPENDED_GB_TOTAL }} GB</div></div>
                     </div>
                 </section>
-
                 <section class="host-metric-cluster">
                     <div class="host-metric-cluster-head">
                         <div>
                             <h3 class="host-metric-cluster-title">Fila Atual</h3>
-                            <p class="host-metric-cluster-copy">Somente tarefas de backup efetivamente enfileiradas ou em execução neste instante.</p>
+                            <p class="host-metric-cluster-copy">Tarefas de backup pendentes, em transferência ou suspensas neste instante.</p>
                         </div>
                     </div>
-                    <div class="summary-grid host-summary-grid--cluster">
-                        <div class="summary-card">
-                            <div class="summary-card-label">Arquivos na fila</div>
-                            <div class="summary-card-value">{{ stats.BACKUP_QUEUE_FILES_TOTAL }}</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Volume na fila</div>
-                            <div class="summary-card-value">{{ stats.BACKUP_QUEUE_GB_TOTAL }} GB</div>
-                        </div>
+                    <div class="summary-grid host-summary-grid--cluster host-summary-grid--paired">
+                        <div class="summary-card"><div class="summary-card-label">Arquivos pendentes na fila</div><div class="summary-card-value">{{ stats.BACKUP_QUEUE_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume pendente na fila</div><div class="summary-card-value">{{ stats.BACKUP_QUEUE_GB_TOTAL }} GB</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Arquivos em transferência</div><div class="summary-card-value">{{ stats.BACKUP_QUEUE_RUNNING_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume em transferência</div><div class="summary-card-value">{{ stats.BACKUP_QUEUE_RUNNING_GB_TOTAL }} GB</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Arquivos suspensos na fila</div><div class="summary-card-value">{{ stats.BACKUP_QUEUE_SUSPENDED_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume suspenso na fila</div><div class="summary-card-value">{{ stats.BACKUP_QUEUE_SUSPENDED_GB_TOTAL }} GB</div></div>
                     </div>
                 </section>
             </div>
-
             <details class="details-panel" data-host-backup-error-panel="{{ stats.ID_HOST }}">
-                <summary>
-                    Diagnóstico de Backup
-                    <span class="details-summary-meta" data-host-backup-error-meta>Carregamento sob demanda</span>
-                </summary>
-                <div class="details-panel-body">
-                    <div class="diagnostic-breakdown">
-                        <table class="diagnostic-table">
-                            <thead>
-                                <tr>
-                                    <th>Mensagem de erro</th>
-                                    <th class="diagnostic-count-col">Ocorrências</th>
-                                </tr>
-                            </thead>
-                            <tbody data-host-backup-error-rows>
-                                <tr>
-                                    <td colspan="2">Nenhum erro de backup agrupado para esta estação.</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+                <summary>Diagnóstico de Backup <span class="details-summary-meta" data-host-backup-error-meta>Carregamento sob demanda</span></summary>
+                <div class="details-panel-body"><div class="diagnostic-breakdown">
+                    <table class="diagnostic-table">
+                        <thead><tr><th>Estado</th><th>Mensagem de erro</th><th class="diagnostic-count-col">Ocorrências</th></tr></thead>
+                        <tbody data-host-backup-error-rows><tr><td colspan="3">Nenhum diagnóstico de backup agrupado para esta estação.</td></tr></tbody>
+                    </table>
+                </div></div>
             </details>
-
             <details class="details-panel">
-                <summary>
-                    Histórico Anual de Descoberta e Backup
-                    <span class="details-summary-meta">Acervo por ano</span>
-                </summary>
-                <div class="details-panel-body">
-                    <div class="annual-breakdown">
-                        <table class="stats-table">
-                            <thead>
-                                <tr>
-                                    <th>Ano</th>
-                                    <th>Arquivos mapeados</th>
-                                    <th>Volume mapeado (GB)</th>
-                                    <th>Backups concluídos</th>
-                                    <th>Volume concluído (GB)</th>
-                                    <th>Pendentes</th>
-                                    <th>Volume pendente (GB)</th>
-                                    <th>Erros</th>
-                                    <th>Volume com erro (GB)</th>
-                                </tr>
-                            </thead>
-                            <tbody>
+                <summary>Histórico Anual de Descoberta e Backup <span class="details-summary-meta">Acervo por ano</span></summary>
+                <div class="details-panel-body"><div class="annual-breakdown">
+                    <table class="stats-table">
+                        <thead><tr><th>Ano</th><th>Arquivos descobertos</th><th>Volume descoberto (GB)</th><th>Backups concluídos</th><th>Volume concluído (GB)</th><th>Pendentes</th><th>Volume pendente (GB)</th><th>Erros</th><th>Volume com erro (GB)</th></tr></thead>
+                        <tbody>
                             {% for row in stats.BACKUP_YEARLY_BREAKDOWN %}
-                                <tr>
-                                    <td>{{ row.REFERENCE_YEAR }}</td>
-                                    <td>{{ row.DISCOVERED_FILES }}</td>
-                                    <td>{{ row.DISCOVERED_GB }}</td>
-                                    <td>{{ row.BACKUP_DONE_FILES }}</td>
-                                    <td>{{ row.BACKUP_DONE_GB }}</td>
-                                    <td>{{ row.BACKUP_PENDING_FILES }}</td>
-                                    <td>{{ row.BACKUP_PENDING_GB }}</td>
-                                    <td>{{ row.BACKUP_ERROR_FILES }}</td>
-                                    <td>{{ row.BACKUP_ERROR_GB }}</td>
-                                </tr>
+                            <tr><td>{{ row.REFERENCE_YEAR }}</td><td>{{ row.DISCOVERED_FILES }}</td><td>{{ row.DISCOVERED_GB }}</td><td>{{ row.BACKUP_DONE_FILES }}</td><td>{{ row.BACKUP_DONE_GB }}</td><td>{{ row.BACKUP_PENDING_FILES }}</td><td>{{ row.BACKUP_PENDING_GB }}</td><td>{{ row.BACKUP_ERROR_FILES }}</td><td>{{ row.BACKUP_ERROR_GB }}</td></tr>
                             {% else %}
-                                <tr>
-                                    <td colspan="9">Sem histórico anual disponível para esta estação.</td>
-                                </tr>
+                            <tr><td colspan="9">Sem histórico anual disponível para esta estação.</td></tr>
                             {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+                        </tbody>
+                    </table>
+                </div></div>
             </details>
         </section>
 
@@ -415,141 +288,87 @@
             <div class="host-section-head">
                 <div class="host-section-kicker">Pipeline</div>
                 <h2 class="host-section-title">Processamento e Base Analítica</h2>
-                <p class="host-section-copy">
-                    Visão separada entre acervo processado acumulado e fila operacional atual do processamento.
-                </p>
+                <p class="host-section-copy">Acervo processado acumulado e fila operacional atual do processamento.</p>
             </div>
             <div class="host-metric-clusters">
                 <section class="host-metric-cluster">
                     <div class="host-metric-cluster-head">
                         <div>
                             <h3 class="host-metric-cluster-title">Acervo Global</h3>
-                            <p class="host-metric-cluster-copy">Estado acumulado do acervo entre sucesso analítico, pendências, erros e base gerada.</p>
+                            <p class="host-metric-cluster-copy">Estado acumulado entre sucesso analítico, pendências, erros e espectros gerados.</p>
                         </div>
                     </div>
-                    <div class="summary-grid host-summary-grid--cluster">
-                        <div class="summary-card">
-                            <div class="summary-card-label">Processados com sucesso</div>
-                            <div class="summary-card-value">{{ stats.PROCESSING_DONE_FILES_TOTAL }}</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Volume processado</div>
-                            <div class="summary-card-value">{{ stats.PROCESSING_DONE_GB_TOTAL }} GB</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Aguardando processamento</div>
-                            <div class="summary-card-value">{{ stats.PROCESSING_PENDING_FILES_TOTAL }}</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Volume aguardando</div>
-                            <div class="summary-card-value">{{ stats.PROCESSING_PENDING_GB_TOTAL }} GB</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Erros de processamento</div>
-                            <div class="summary-card-value">{{ stats.PROCESSING_ERROR_FILES_TOTAL }}</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Volume com erro</div>
-                            <div class="summary-card-value">{{ stats.PROCESSING_ERROR_GB_TOTAL }} GB</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Espectros gerados</div>
-                            <div class="summary-card-value">{{ stats.FACT_SPECTRUM_TOTAL }}</div>
-                        </div>
+                    <div class="summary-grid host-summary-grid--cluster host-summary-grid--paired">
+                        <div class="summary-card"><div class="summary-card-label">Arquivos processados com sucesso</div><div class="summary-card-value">{{ stats.PROCESSING_DONE_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume processado com sucesso</div><div class="summary-card-value">{{ stats.PROCESSING_DONE_GB_TOTAL }} GB</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Arquivos aguardando processamento</div><div class="summary-card-value">{{ stats.PROCESSING_PENDING_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume aguardando processamento</div><div class="summary-card-value">{{ stats.PROCESSING_PENDING_GB_TOTAL }} GB</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Arquivos com erro de processamento</div><div class="summary-card-value">{{ stats.PROCESSING_ERROR_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume com erro de processamento</div><div class="summary-card-value">{{ stats.PROCESSING_ERROR_GB_TOTAL }} GB</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Arquivos congelados</div><div class="summary-card-value">{{ stats.PROCESSING_FROZEN_FILES_TOTAL }}</div><div class="summary-card-note">Pendente de avaliação humana ou ação manual.</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume congelado</div><div class="summary-card-value">{{ stats.PROCESSING_FROZEN_GB_TOTAL }} GB</div></div>
+                        <div class="summary-card host-summary-card--wide"><div class="summary-card-label">Espectros gerados</div><div class="summary-card-value">{{ stats.FACT_SPECTRUM_TOTAL }}</div></div>
                     </div>
                 </section>
-
                 <section class="host-metric-cluster">
                     <div class="host-metric-cluster-head">
                         <div>
                             <h3 class="host-metric-cluster-title">Fila Atual</h3>
-                            <p class="host-metric-cluster-copy">Somente tarefas de processamento efetivamente enfileiradas ou em execução neste instante.</p>
+                            <p class="host-metric-cluster-copy">Tarefas pendentes, em processamento ou congeladas neste instante.</p>
                         </div>
                     </div>
-                    <div class="summary-grid host-summary-grid--cluster">
-                        <div class="summary-card">
-                            <div class="summary-card-label">Arquivos na fila</div>
-                            <div class="summary-card-value">{{ stats.PROCESSING_QUEUE_FILES_TOTAL }}</div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Volume na fila</div>
-                            <div class="summary-card-value">{{ stats.PROCESSING_QUEUE_GB_TOTAL }} GB</div>
-                        </div>
+                    <div class="summary-grid host-summary-grid--cluster host-summary-grid--paired">
+                        <div class="summary-card"><div class="summary-card-label">Arquivos pendentes na fila</div><div class="summary-card-value">{{ stats.PROCESSING_QUEUE_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume pendente na fila</div><div class="summary-card-value">{{ stats.PROCESSING_QUEUE_GB_TOTAL }} GB</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Arquivos em processamento</div><div class="summary-card-value">{{ stats.PROCESSING_QUEUE_RUNNING_FILES_TOTAL }}</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume em processamento</div><div class="summary-card-value">{{ stats.PROCESSING_QUEUE_RUNNING_GB_TOTAL }} GB</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Arquivos congelados na fila</div><div class="summary-card-value">{{ stats.PROCESSING_QUEUE_FROZEN_FILES_TOTAL }}</div><div class="summary-card-note">Pendente de avaliação humana ou ação manual.</div></div>
+                        <div class="summary-card"><div class="summary-card-label">Volume congelado na fila</div><div class="summary-card-value">{{ stats.PROCESSING_QUEUE_FROZEN_GB_TOTAL }} GB</div></div>
                     </div>
                 </section>
             </div>
-
             <details class="details-panel" data-host-error-panel="{{ stats.ID_HOST }}">
-                <summary>
-                    Diagnóstico de Processamento
-                    <span class="details-summary-meta" data-host-error-meta>Carregamento sob demanda</span>
-                </summary>
-                <div class="details-panel-body">
-                    <div class="diagnostic-breakdown">
-                        <table class="diagnostic-table">
-                            <thead>
-                                <tr>
-                                    <th>Mensagem de erro</th>
-                                    <th class="diagnostic-count-col">Ocorrências</th>
-                                </tr>
-                            </thead>
-                            <tbody data-host-error-rows>
-                                <tr>
-                                    <td colspan="2">Nenhum erro de processamento agrupado para esta estação.</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+                <summary>Diagnóstico de Processamento <span class="details-summary-meta" data-host-error-meta>Carregamento sob demanda</span></summary>
+                <div class="details-panel-body"><div class="diagnostic-breakdown">
+                    <table class="diagnostic-table">
+                        <thead><tr><th>Estado</th><th>Mensagem de erro</th><th class="diagnostic-count-col">Ocorrências</th></tr></thead>
+                        <tbody data-host-error-rows><tr><td colspan="3">Nenhum diagnóstico de processamento agrupado para esta estação.</td></tr></tbody>
+                    </table>
+                </div></div>
             </details>
-
             <details class="details-panel">
-                <summary>
-                    Histórico Anual de Processamento
-                    <span class="details-summary-meta">Acervo por ano</span>
-                </summary>
-                <div class="details-panel-body">
-                    <div class="annual-breakdown">
-                        <table class="stats-table">
-                            <thead>
-                                <tr>
-                                    <th>Ano</th>
-                                    <th>Processado</th>
-                                    <th>Volume processado (GB)</th>
-                                    <th>Pendente</th>
-                                    <th>Volume pendente (GB)</th>
-                                    <th>Erros</th>
-                                    <th>Volume com erro (GB)</th>
-                                </tr>
-                            </thead>
-                            <tbody>
+                <summary>Histórico Anual de Processamento <span class="details-summary-meta">Acervo por ano</span></summary>
+                <div class="details-panel-body"><div class="annual-breakdown">
+                    <table class="stats-table">
+                        <thead><tr><th>Ano</th><th>Processado</th><th>Volume processado (GB)</th><th>Pendente</th><th>Volume pendente (GB)</th><th>Erros</th><th>Volume com erro (GB)</th></tr></thead>
+                        <tbody>
                             {% for row in stats.PROCESSING_YEARLY_BREAKDOWN %}
-                                <tr>
-                                    <td>{{ row.REFERENCE_YEAR }}</td>
-                                    <td>{{ row.PROCESSING_DONE_FILES }}</td>
-                                    <td>{{ row.PROCESSING_DONE_GB }}</td>
-                                    <td>{{ row.PROCESSING_PENDING_FILES }}</td>
-                                    <td>{{ row.PROCESSING_PENDING_GB }}</td>
-                                    <td>{{ row.PROCESSING_ERROR_FILES }}</td>
-                                    <td>{{ row.PROCESSING_ERROR_GB }}</td>
-                                </tr>
+                            <tr><td>{{ row.REFERENCE_YEAR }}</td><td>{{ row.PROCESSING_DONE_FILES }}</td><td>{{ row.PROCESSING_DONE_GB }}</td><td>{{ row.PROCESSING_PENDING_FILES }}</td><td>{{ row.PROCESSING_PENDING_GB }}</td><td>{{ row.PROCESSING_ERROR_FILES }}</td><td>{{ row.PROCESSING_ERROR_GB }}</td></tr>
                             {% else %}
-                                <tr>
-                                    <td colspan="7">Sem histórico anual de processamento para esta estação.</td>
-                                </tr>
+                            <tr><td colspan="7">Sem histórico anual de processamento para esta estação.</td></tr>
                             {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+                        </tbody>
+                    </table>
+                </div></div>
             </details>
         </section>
+
+        <section class="card background-neutral-0 padding-l border-radius-m host-section-card">
+            <div class="host-section-head">
+                <div class="host-section-kicker">Localização</div>
+                <h2 class="host-section-title">Histórico de Localidades</h2>
+                <p class="host-section-copy">Trilhas de site e localidade observadas para a estação dentro do catálogo espectral.</p>
+            </div>
+            <div class="annual-breakdown">
+                <table class="stats-table">
+                    <thead><tr><th>Site</th><th>Localidade</th><th>Cidade / UF</th><th>Primeira medição</th><th>Última medição</th><th>Espectros</th></tr></thead>
+                    <tbody id="host-location-history-rows"><tr><td colspan="6" class="summary-card-value-loading">CARREGANDO</td></tr></tbody>
+                </table>
+            </div>
+        </section>
+        {% endif %}
     </div>
-
-{% endif %}
 </div>
-</div>
-
 {% endblock %}
 
 {% block extra_js %}

@@ -266,8 +266,64 @@
     <div class="server-operational-grid">
         <section class="card background-neutral-0 padding-l border-radius-m server-section-card">
             <div class="server-section-head">
+                <div class="server-section-kicker">Acervo</div>
+                <h2 class="server-section-title">Descoberta e Repositório</h2>
+                <p class="server-section-copy">
+                    Dimensão global do acervo identificado e espaço já liberado pelo coletor de artefatos.
+                </p>
+            </div>
+            <div class="server-metric-clusters">
+                <section class="server-metric-cluster">
+                    <div class="server-metric-cluster-head">
+                        <div>
+                            <h3 class="server-metric-cluster-title">Acervo Global</h3>
+                            <p class="server-metric-cluster-copy">Arquivos efetivamente registrados após a deduplicação de discovery.</p>
+                        </div>
+                    </div>
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster server-summary-grid--paired">
+                        <div class="summary-card">
+                            <div class="summary-card-label">Arquivos descobertos</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-discovered-total">
+                                {{ server_summary_metrics.DISCOVERED_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume descoberto</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-discovered-gb-total">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.DISCOVERED_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                <section class="server-metric-cluster">
+                    <div class="server-metric-cluster-head">
+                        <div>
+                            <h3 class="server-metric-cluster-title">Limpeza do Repositório</h3>
+                            <p class="server-metric-cluster-copy">Artefatos referenciados no histórico e removidos pelo garbage collector.</p>
+                        </div>
+                    </div>
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster server-summary-grid--paired">
+                        <div class="summary-card">
+                            <div class="summary-card-label">Arquivos removidos</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-payload-deleted-total">
+                                {{ server_summary_metrics.PAYLOAD_DELETED_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume removido</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-payload-deleted-gb-total">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.PAYLOAD_DELETED_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </section>
+
+        <section class="card background-neutral-0 padding-l border-radius-m server-section-card">
+            <div class="server-section-head">
                 <div class="server-section-kicker">Pipeline</div>
-                <h2 class="server-section-title">Backup e Armazenamento</h2>
+                <h2 class="server-section-title">Backup</h2>
                 <p class="server-section-copy">
                     Indicadores separados entre execução mensal do backup, acervo histórico e fila operacional atual.
                 </p>
@@ -286,15 +342,15 @@
                             </strong>
                         </span>
                     </div>
-                    <div class="summary-grid server-summary-grid server-summary-grid--cluster">
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster server-summary-grid--paired">
                         <div class="summary-card">
-                            <div class="summary-card-label">Backups no mês</div>
+                            <div class="summary-card-label">Arquivos com backup no mês</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-done-month">
                                 {{ server_summary_metrics.BACKUP_DONE_THIS_MONTH if server_summary_metrics else 'CARREGANDO' }}
                             </div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Volume no mês</div>
+                            <div class="summary-card-label">Volume com backup no mês</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-done-gb-month">
                                 {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_DONE_GB_THIS_MONTH }} GB{% else %}CARREGANDO{% endif %}
                             </div>
@@ -309,54 +365,54 @@
                             <p class="server-metric-cluster-copy">Estado acumulado dos arquivos do acervo, independente do mês em que o backup aconteceu.</p>
                         </div>
                     </div>
-                    <div class="summary-grid server-summary-grid server-summary-grid--cluster">
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster server-summary-grid--paired">
                         <div class="summary-card">
-                            <div class="summary-card-label">Arquivos mapeados</div>
-                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-discovered-total">
-                                {{ server_summary_metrics.DISCOVERED_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
-                            </div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Volume mapeado</div>
-                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-discovered-gb-total">
-                                {% if server_summary_metrics %}{{ server_summary_metrics.DISCOVERED_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
-                            </div>
-                        </div>
-                        <div class="summary-card">
-                            <div class="summary-card-label">Backups concluídos</div>
+                            <div class="summary-card-label">Arquivos com backup concluído</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-done-total">
                                 {{ server_summary_metrics.BACKUP_DONE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
                             </div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Volume já baixado</div>
+                            <div class="summary-card-label">Volume com backup concluído</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-done-gb-total">
                                 {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_DONE_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
                             </div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Aguardando backup</div>
+                            <div class="summary-card-label">Arquivos aguardando backup</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-pending-total">
                                 {{ server_summary_metrics.BACKUP_PENDING_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
                             </div>
                             <div class="summary-card-note">Arquivos ainda sem backup concluído.</div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Erros de backup</div>
+                            <div class="summary-card-label">Volume aguardando backup</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-pending-gb">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_PENDING_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Arquivos com erro de backup</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-error-total">
                                 {{ server_summary_metrics.BACKUP_ERROR_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
                             </div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Volume com erro</div>
+                            <div class="summary-card-label">Volume com erro de backup</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-error-gb-total">
                                 {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_ERROR_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
                             </div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Volume aguardando</div>
-                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-pending-gb">
-                                {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_PENDING_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            <div class="summary-card-label">Arquivos suspensos</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-suspended-total">
+                                {{ server_summary_metrics.BACKUP_SUSPENDED_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume suspenso</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-suspended-gb-total">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_SUSPENDED_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
                             </div>
                         </div>
                     </div>
@@ -369,18 +425,42 @@
                             <p class="server-metric-cluster-copy">Somente tarefas efetivamente enfileiradas ou em execução neste instante, não o passivo total.</p>
                         </div>
                     </div>
-                    <div class="summary-grid server-summary-grid server-summary-grid--cluster">
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster server-summary-grid--paired">
                         <div class="summary-card">
-                            <div class="summary-card-label">Em fila agora</div>
+                            <div class="summary-card-label">Arquivos pendentes na fila</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-queue-total">
                                 {{ server_summary_metrics.BACKUP_QUEUE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
                             </div>
-                            <div class="summary-card-note">Tarefas em execução ou aguardando worker neste momento.</div>
+                            <div class="summary-card-note">Aguardando um worker de backup.</div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Volume na fila</div>
+                            <div class="summary-card-label">Volume pendente na fila</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-queue-gb">
                                 {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_QUEUE_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Arquivos em transferência</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-queue-running-total">
+                                {{ server_summary_metrics.BACKUP_QUEUE_RUNNING_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume em transferência</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-queue-running-gb">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_QUEUE_RUNNING_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Arquivos suspensos na fila</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-queue-suspended-total">
+                                {{ server_summary_metrics.BACKUP_QUEUE_SUSPENDED_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume suspenso na fila</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-backup-queue-suspended-gb">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.BACKUP_QUEUE_SUSPENDED_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
                             </div>
                         </div>
                     </div>
@@ -404,9 +484,9 @@
                             <p class="server-metric-cluster-copy">Estado acumulado do acervo entre pendências, sucesso analítico, erros e base gerada.</p>
                         </div>
                     </div>
-                    <div class="summary-grid server-summary-grid server-summary-grid--cluster">
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster server-summary-grid--paired">
                         <div class="summary-card">
-                            <div class="summary-card-label">Aguardando processamento</div>
+                            <div class="summary-card-label">Arquivos aguardando processamento</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-pending-total">
                                 {{ server_summary_metrics.PROCESSING_PENDING_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
                             </div>
@@ -419,27 +499,40 @@
                             </div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Processados com sucesso</div>
+                            <div class="summary-card-label">Arquivos processados com sucesso</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-done-total">
                                 {{ server_summary_metrics.PROCESSING_DONE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
                             </div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Volume processado</div>
+                            <div class="summary-card-label">Volume processado com sucesso</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-done-gb-total">
                                 {% if server_summary_metrics %}{{ server_summary_metrics.PROCESSING_DONE_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
                             </div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Erros de processamento</div>
+                            <div class="summary-card-label">Arquivos com erro de processamento</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-error-total">
                                 {{ server_summary_metrics.PROCESSING_ERROR_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
                             </div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Volume com erro</div>
+                            <div class="summary-card-label">Volume com erro de processamento</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-error-gb-total">
                                 {% if server_summary_metrics %}{{ server_summary_metrics.PROCESSING_ERROR_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Arquivos congelados</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-frozen-total">
+                                {{ server_summary_metrics.PROCESSING_FROZEN_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                            <div class="summary-card-note">Pendente de avaliação humana ou ação manual.</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume congelado</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-frozen-gb-total">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.PROCESSING_FROZEN_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
                             </div>
                         </div>
                         <div class="summary-card">
@@ -458,18 +551,43 @@
                             <p class="server-metric-cluster-copy">Somente tarefas de processamento efetivamente enfileiradas ou em execução neste instante.</p>
                         </div>
                     </div>
-                    <div class="summary-grid server-summary-grid server-summary-grid--cluster">
+                    <div class="summary-grid server-summary-grid server-summary-grid--cluster server-summary-grid--paired">
                         <div class="summary-card">
-                            <div class="summary-card-label">Em fila agora</div>
+                            <div class="summary-card-label">Arquivos pendentes na fila</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-queue-total">
                                 {{ server_summary_metrics.PROCESSING_QUEUE_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
                             </div>
-                            <div class="summary-card-note">Tarefas em execução ou aguardando worker neste momento.</div>
+                            <div class="summary-card-note">Aguardando um worker de processamento.</div>
                         </div>
                         <div class="summary-card">
-                            <div class="summary-card-label">Volume na fila</div>
+                            <div class="summary-card-label">Volume pendente na fila</div>
                             <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-queue-gb">
                                 {% if server_summary_metrics %}{{ server_summary_metrics.PROCESSING_QUEUE_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Arquivos em processamento</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-queue-running-total">
+                                {{ server_summary_metrics.PROCESSING_QUEUE_RUNNING_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume em processamento</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-queue-running-gb">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.PROCESSING_QUEUE_RUNNING_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
+                            </div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Arquivos congelados na fila</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-queue-frozen-total">
+                                {{ server_summary_metrics.PROCESSING_QUEUE_FROZEN_FILES_TOTAL if server_summary_metrics else 'CARREGANDO' }}
+                            </div>
+                            <div class="summary-card-note">Pendente de avaliação humana ou ação manual.</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-card-label">Volume congelado na fila</div>
+                            <div class="summary-card-value{% if not server_summary_metrics %} summary-card-value-loading{% endif %}" id="server-summary-processing-queue-frozen-gb">
+                                {% if server_summary_metrics %}{{ server_summary_metrics.PROCESSING_QUEUE_FROZEN_GB_TOTAL }} GB{% else %}CARREGANDO{% endif %}
                             </div>
                         </div>
                     </div>
@@ -497,13 +615,14 @@
                         <table class="diagnostic-table">
                             <thead>
                                 <tr>
+                                    <th>Estado</th>
                                     <th>Mensagem de erro</th>
                                     <th class="diagnostic-count-col">Ocorrências</th>
                                 </tr>
                             </thead>
                             <tbody id="server-processing-errors-body">
                                 <tr>
-                                    <td colspan="2">Abra este painel para exibir os erros agrupados consultados no banco de resumo.</td>
+                                    <td colspan="3">Abra este painel para exibir os diagnósticos agrupados consultados no banco de resumo.</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -530,13 +649,14 @@
                         <table class="diagnostic-table">
                             <thead>
                                 <tr>
+                                    <th>Estado</th>
                                     <th>Mensagem de erro</th>
                                     <th class="diagnostic-count-col">Ocorrências</th>
                                 </tr>
                             </thead>
                             <tbody id="server-backup-errors-body">
                                 <tr>
-                                    <td colspan="2">Abra este painel para exibir os erros agrupados de backup consultados no banco de resumo.</td>
+                                    <td colspan="3">Abra este painel para exibir os diagnósticos agrupados de backup consultados no banco de resumo.</td>
                                 </tr>
                             </tbody>
                         </table>

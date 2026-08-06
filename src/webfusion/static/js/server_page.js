@@ -27,18 +27,32 @@
         BACKUP_PENDING_FILES_TOTAL      : document.getElementById("server-summary-backup-pending-total"),
         BACKUP_ERROR_FILES_TOTAL        : document.getElementById("server-summary-backup-error-total"),
         BACKUP_ERROR_GB_TOTAL           : document.getElementById("server-summary-backup-error-gb-total"),
+        BACKUP_SUSPENDED_FILES_TOTAL    : document.getElementById("server-summary-backup-suspended-total"),
+        BACKUP_SUSPENDED_GB_TOTAL       : document.getElementById("server-summary-backup-suspended-gb-total"),
         BACKUP_QUEUE_FILES_TOTAL        : document.getElementById("server-summary-backup-queue-total"),
         BACKUP_QUEUE_GB_TOTAL           : document.getElementById("server-summary-backup-queue-gb"),
+        BACKUP_QUEUE_RUNNING_FILES_TOTAL: document.getElementById("server-summary-backup-queue-running-total"),
+        BACKUP_QUEUE_RUNNING_GB_TOTAL   : document.getElementById("server-summary-backup-queue-running-gb"),
+        BACKUP_QUEUE_SUSPENDED_FILES_TOTAL: document.getElementById("server-summary-backup-queue-suspended-total"),
+        BACKUP_QUEUE_SUSPENDED_GB_TOTAL : document.getElementById("server-summary-backup-queue-suspended-gb"),
         PROCESSING_PENDING_FILES_TOTAL  : document.getElementById("server-summary-processing-pending-total"),
         PROCESSING_PENDING_GB_TOTAL     : document.getElementById("server-summary-processing-pending-gb-total"),
         PROCESSING_QUEUE_FILES_TOTAL    : document.getElementById("server-summary-processing-queue-total"),
         PROCESSING_QUEUE_GB_TOTAL       : document.getElementById("server-summary-processing-queue-gb"),
+        PROCESSING_QUEUE_RUNNING_FILES_TOTAL: document.getElementById("server-summary-processing-queue-running-total"),
+        PROCESSING_QUEUE_RUNNING_GB_TOTAL: document.getElementById("server-summary-processing-queue-running-gb"),
+        PROCESSING_QUEUE_FROZEN_FILES_TOTAL: document.getElementById("server-summary-processing-queue-frozen-total"),
+        PROCESSING_QUEUE_FROZEN_GB_TOTAL: document.getElementById("server-summary-processing-queue-frozen-gb"),
         PROCESSING_DONE_FILES_TOTAL     : document.getElementById("server-summary-processing-done-total"),
         PROCESSING_DONE_GB_TOTAL        : document.getElementById("server-summary-processing-done-gb-total"),
         FACT_SPECTRUM_TOTAL             : document.getElementById("server-summary-fact-spectrum-total"),
         PROCESSING_ERROR_FILES_TOTAL    : document.getElementById("server-summary-processing-error-total"),
         PROCESSING_ERROR_GB_TOTAL       : document.getElementById("server-summary-processing-error-gb-total"),
+        PROCESSING_FROZEN_FILES_TOTAL   : document.getElementById("server-summary-processing-frozen-total"),
+        PROCESSING_FROZEN_GB_TOTAL      : document.getElementById("server-summary-processing-frozen-gb-total"),
         BACKUP_PENDING_GB_TOTAL         : document.getElementById("server-summary-backup-pending-gb"),
+        PAYLOAD_DELETED_FILES_TOTAL     : document.getElementById("server-summary-payload-deleted-total"),
+        PAYLOAD_DELETED_GB_TOTAL        : document.getElementById("server-summary-payload-deleted-gb-total"),
     };
     const processingPanel   = document.getElementById("server-processing-errors-panel");
     const processingMeta    = document.getElementById("server-processing-errors-meta");
@@ -151,7 +165,7 @@
 
         const tr = document.createElement("tr");
         const td = document.createElement("td");
-        td.colSpan = 2;
+        td.colSpan = 3;
         td.textContent = message;
         tr.appendChild(td);
         targetBody.appendChild(tr);
@@ -183,15 +197,18 @@
 
         rows.forEach((row) => {
             const tr = document.createElement("tr");
+            const stateTd = document.createElement("td");
             const messageTd = document.createElement("td");
             const countTd = document.createElement("td");
 
+            stateTd.textContent = row.TASK_STATE || "ERROR";
             messageTd.className = "diagnostic-message-cell";
             messageTd.textContent = row.ERROR_MESSAGE || "(Sem mensagem)";
 
             countTd.className = "diagnostic-count-col";
             countTd.textContent = String(row.ERROR_COUNT || 0);
 
+            tr.appendChild(stateTd);
             tr.appendChild(messageTd);
             tr.appendChild(countTd);
             targetBody.appendChild(tr);
@@ -269,10 +286,10 @@
                     <td>${connectionBadge}</td>
                     <td>${busyBadge}</td>
                     <td>${escapeHtml(row.DT_LAST_CHECK || "-")}</td>
-                    <td>${escapeHtml(row.NU_PENDING_FILE_BACKUP_TASKS || 0)}</td>
-                    <td>${escapeHtml(row.NU_ERROR_FILE_BACKUP_TASKS || 0)}</td>
-                    <td>${escapeHtml(row.NU_PENDING_FILE_PROCESS_TASKS || 0)}</td>
-                    <td>${escapeHtml(row.NU_ERROR_FILE_PROCESS_TASKS || 0)}</td>
+                    <td>${escapeHtml(row.NU_BACKUP_PENDING_FILES_CURRENT || 0)}</td>
+                    <td>${escapeHtml(row.NU_BACKUP_ERROR_FILES_CURRENT || 0)}</td>
+                    <td>${escapeHtml(row.NU_PROCESSING_PENDING_FILES_CURRENT || 0)}</td>
+                    <td>${escapeHtml(row.NU_PROCESSING_ERROR_FILES_CURRENT || 0)}</td>
                     <td>${escapeHtml(row.PENDING_BACKUP_GB || 0)}</td>
                     <td>
                         <a
@@ -552,12 +569,36 @@
             `${payload.BACKUP_ERROR_GB_TOTAL ?? 0} GB`
         );
         setSummaryValue(
+            summaryBindings.BACKUP_SUSPENDED_FILES_TOTAL,
+            String(payload.BACKUP_SUSPENDED_FILES_TOTAL ?? 0)
+        );
+        setSummaryValue(
+            summaryBindings.BACKUP_SUSPENDED_GB_TOTAL,
+            `${payload.BACKUP_SUSPENDED_GB_TOTAL ?? 0} GB`
+        );
+        setSummaryValue(
             summaryBindings.BACKUP_QUEUE_FILES_TOTAL,
             String(payload.BACKUP_QUEUE_FILES_TOTAL ?? 0)
         );
         setSummaryValue(
             summaryBindings.BACKUP_QUEUE_GB_TOTAL,
             `${payload.BACKUP_QUEUE_GB_TOTAL ?? 0} GB`
+        );
+        setSummaryValue(
+            summaryBindings.BACKUP_QUEUE_RUNNING_FILES_TOTAL,
+            String(payload.BACKUP_QUEUE_RUNNING_FILES_TOTAL ?? 0)
+        );
+        setSummaryValue(
+            summaryBindings.BACKUP_QUEUE_RUNNING_GB_TOTAL,
+            `${payload.BACKUP_QUEUE_RUNNING_GB_TOTAL ?? 0} GB`
+        );
+        setSummaryValue(
+            summaryBindings.BACKUP_QUEUE_SUSPENDED_FILES_TOTAL,
+            String(payload.BACKUP_QUEUE_SUSPENDED_FILES_TOTAL ?? 0)
+        );
+        setSummaryValue(
+            summaryBindings.BACKUP_QUEUE_SUSPENDED_GB_TOTAL,
+            `${payload.BACKUP_QUEUE_SUSPENDED_GB_TOTAL ?? 0} GB`
         );
         setSummaryValue(
             summaryBindings.PROCESSING_PENDING_FILES_TOTAL,
@@ -574,6 +615,22 @@
         setSummaryValue(
             summaryBindings.PROCESSING_QUEUE_GB_TOTAL,
             `${payload.PROCESSING_QUEUE_GB_TOTAL ?? 0} GB`
+        );
+        setSummaryValue(
+            summaryBindings.PROCESSING_QUEUE_RUNNING_FILES_TOTAL,
+            String(payload.PROCESSING_QUEUE_RUNNING_FILES_TOTAL ?? 0)
+        );
+        setSummaryValue(
+            summaryBindings.PROCESSING_QUEUE_RUNNING_GB_TOTAL,
+            `${payload.PROCESSING_QUEUE_RUNNING_GB_TOTAL ?? 0} GB`
+        );
+        setSummaryValue(
+            summaryBindings.PROCESSING_QUEUE_FROZEN_FILES_TOTAL,
+            String(payload.PROCESSING_QUEUE_FROZEN_FILES_TOTAL ?? 0)
+        );
+        setSummaryValue(
+            summaryBindings.PROCESSING_QUEUE_FROZEN_GB_TOTAL,
+            `${payload.PROCESSING_QUEUE_FROZEN_GB_TOTAL ?? 0} GB`
         );
         setSummaryValue(
             summaryBindings.PROCESSING_DONE_FILES_TOTAL,
@@ -596,8 +653,24 @@
             `${payload.PROCESSING_ERROR_GB_TOTAL ?? 0} GB`
         );
         setSummaryValue(
+            summaryBindings.PROCESSING_FROZEN_FILES_TOTAL,
+            String(payload.PROCESSING_FROZEN_FILES_TOTAL ?? 0)
+        );
+        setSummaryValue(
+            summaryBindings.PROCESSING_FROZEN_GB_TOTAL,
+            `${payload.PROCESSING_FROZEN_GB_TOTAL ?? 0} GB`
+        );
+        setSummaryValue(
             summaryBindings.BACKUP_PENDING_GB_TOTAL,
             `${payload.BACKUP_PENDING_GB_TOTAL ?? 0} GB`
+        );
+        setSummaryValue(
+            summaryBindings.PAYLOAD_DELETED_FILES_TOTAL,
+            String(payload.PAYLOAD_DELETED_FILES_TOTAL ?? 0)
+        );
+        setSummaryValue(
+            summaryBindings.PAYLOAD_DELETED_GB_TOTAL,
+            `${payload.PAYLOAD_DELETED_GB_TOTAL ?? 0} GB`
         );
     }
 

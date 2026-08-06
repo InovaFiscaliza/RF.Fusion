@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -26,6 +27,24 @@ if CONFIG_PATH not in sys.path:
     sys.path.insert(0, CONFIG_PATH)
 
 import config as k  # noqa: E402
+
+
+_snapshot_signal_db: dbHandlerSummary | None = None
+
+
+def _get_snapshot_signal_db(logger: logger_type) -> dbHandlerSummary:
+    """Return the process-local summary connection used for GPS signals."""
+    global _snapshot_signal_db
+
+    if _snapshot_signal_db is None:
+        from db.dbHandlerSummary import dbHandlerSummary
+
+        _snapshot_signal_db = dbHandlerSummary(
+            database=k.SUMMARY_DATABASE_NAME,
+            log=logger,
+            reuse_connection=True,
+        )
+    return _snapshot_signal_db
 
 
 def release_busy_hosts_for_current_pid(
@@ -91,6 +110,70 @@ def release_locked_host(
         )
 
 
+def record_discovery_outcome(
+    host_id: int,
+    *,
+    completed_at: datetime,
+    discovered_file_count: int,
+    discovered_volume_kb: float,
+    logger: logger_type,
+) -> None:
+    """Persist the result of one completed discovery run.
+
+    ``DT_LAST_DISCOVERY`` remains the discovery filter watermark. The run
+    result uses separate fields so an empty scan never changes that cutoff.
+    """
+    updates = {
+        "DT_LAST_DISCOVERY_COMPLETED_AT": completed_at,
+        "NU_LAST_DISCOVERY_FILE_COUNT": discovered_file_count,
+        "VL_LAST_DISCOVERY_KB": float(discovered_volume_kb or 0),
+    }
+    if discovered_file_count > 0:
+        updates["DT_LAST_DISCOVERY_WITH_FILES"] = completed_at
+
+    _get_snapshot_signal_db(logger).update_host_current_snapshot_signals(
+        host_id=host_id,
+        values=updates,
+    )
+
+
+def record_gps_gnss_available(
+    host_id: int,
+    *,
+    evaluated_at: datetime,
+    logger: logger_type,
+) -> None:
+    """Clear the current GPS/GNSS signal after a valid processed file."""
+    _get_snapshot_signal_db(logger).update_host_current_snapshot_signals(
+        host_id=host_id,
+        values={
+            "IS_GPS_GNSS_UNAVAILABLE": False,
+            "DT_LAST_GPS_GNSS_EVALUATED_AT": evaluated_at,
+        },
+    )
+
+
+def record_gps_gnss_unavailable(
+    host_id: int,
+    *,
+    evaluated_at: datetime,
+    description: str,
+    host_file_name: str,
+    logger: logger_type,
+) -> None:
+    """Persist GPS/GNSS unavailability and retain its latest file evidence."""
+    _get_snapshot_signal_db(logger).update_host_current_snapshot_signals(
+        host_id=host_id,
+        values={
+            "IS_GPS_GNSS_UNAVAILABLE": True,
+            "DT_LAST_GPS_GNSS_EVALUATED_AT": evaluated_at,
+            "DT_LAST_GPS_GNSS_UNAVAILABLE_AT": evaluated_at,
+            "NA_LAST_GPS_GNSS_UNAVAILABLE_DESCRIPTION": description,
+            "NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME": host_file_name,
+        },
+    )
+
+
 def run_update_statistics(
     db: dbHandlerBKP,
     task: dict,
@@ -98,9 +181,12 @@ def run_update_statistics(
     service_name: str,
     logger: logger_type,
 ) -> tuple[int, str]:
-    """Refresh host statistics and return the final task result tuple."""
+    """Refresh the host summary scope and return the final task result tuple."""
     started_at = time.monotonic()
-    db.host_update_statistics(host_id=task["host_id"])
+    db.request_host_summary_refresh(
+        host_id=task["host_id"],
+        reason="legacy_host_statistics_task",
+    )
     elapsed_sec = round(time.monotonic() - started_at, 3)
     logger.task_phase(
         service_name,
@@ -111,4 +197,4 @@ def run_update_statistics(
         elapsed_sec=elapsed_sec,
         since_start_sec=elapsed_sec,
     )
-    return (k.TASK_DONE, f"Host statistics refreshed for host {task['host_id']}")
+    return (k.TASK_DONE, f"Host summary refresh requested for host {task['host_id']}")

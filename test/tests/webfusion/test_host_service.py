@@ -201,6 +201,7 @@ class TestHostService(unittest.TestCase):
             merged,
             [
                 {
+                    "TASK_STATE": "ERROR",
                     "ERROR_MESSAGE": (
                         "Processing Error | [ERROR] [stage=PROCESS] "
                         "[code=BIN_PAYLOAD_VALIDATION_FAILED] "
@@ -209,6 +210,7 @@ class TestHostService(unittest.TestCase):
                     "ERROR_COUNT": 12,
                 },
                 {
+                    "TASK_STATE": "ERROR",
                     "ERROR_MESSAGE": (
                         "Processing Error | [ERROR] [stage=PROCESS] "
                         "[code=APP_ANALISE_INVALID_SPECTRA_TYPE] "
@@ -217,6 +219,7 @@ class TestHostService(unittest.TestCase):
                     "ERROR_COUNT": 5,
                 },
                 {
+                    "TASK_STATE": "ERROR",
                     "ERROR_MESSAGE": (
                         "Processing Error | [ERROR] [stage=PROCESS] "
                         "[code=UNCLASSIFIED] Processing failed without structured detail"
@@ -259,27 +262,24 @@ class TestHostService(unittest.TestCase):
                     "NU_BACKUP_DONE_THIS_MONTH": 12,
                     "VL_BACKUP_DONE_GB_THIS_MONTH": 3.75,
                     "NU_DISCOVERED_FILES_TOTAL": 120,
-                    "NU_BACKUP_PENDING_FILES_TOTAL": 19,
-                    "VL_BACKUP_PENDING_GB_TOTAL": 22.5,
-                    "NU_BACKUP_ERROR_FILES_TOTAL": 3,
-                    "NU_BACKUP_QUEUE_FILES_TOTAL": 7,
-                    "VL_BACKUP_QUEUE_GB_TOTAL": 15.5,
-                    "NU_PROCESSING_PENDING_FILES_TOTAL": 11,
-                    "NU_PROCESSING_DONE_FILES_TOTAL": 44,
-                    "NU_PROCESSING_ERROR_FILES_TOTAL": 2,
-                    "NU_PROCESSING_QUEUE_FILES_TOTAL": 4,
-                    "VL_PROCESSING_QUEUE_GB_TOTAL": 8.25,
-                    "NU_FACT_SPECTRUM_TOTAL": 987,
-                },
-                {
-                    "NU_DISCOVERED_FILES_TOTAL": 120,
                     "VL_DISCOVERED_GB_TOTAL": 55.5,
                     "NU_BACKUP_DONE_FILES_TOTAL": 88,
                     "VL_BACKUP_DONE_GB_TOTAL": 44.25,
+                    "NU_BACKUP_PENDING_FILES_TOTAL": 19,
+                    "VL_BACKUP_PENDING_GB_TOTAL": 22.5,
+                    "NU_BACKUP_ERROR_FILES_TOTAL": 3,
                     "VL_BACKUP_ERROR_GB_TOTAL": 1.75,
+                    "NU_BACKUP_QUEUE_FILES_TOTAL": 7,
+                    "VL_BACKUP_QUEUE_GB_TOTAL": 15.5,
+                    "NU_PROCESSING_PENDING_FILES_TOTAL": 11,
                     "VL_PROCESSING_PENDING_GB_TOTAL": 9.5,
+                    "NU_PROCESSING_DONE_FILES_TOTAL": 44,
                     "VL_PROCESSING_DONE_GB_TOTAL": 28.0,
+                    "NU_PROCESSING_ERROR_FILES_TOTAL": 2,
                     "VL_PROCESSING_ERROR_GB_TOTAL": 0.5,
+                    "NU_PROCESSING_QUEUE_FILES_TOTAL": 4,
+                    "VL_PROCESSING_QUEUE_GB_TOTAL": 8.25,
+                    "NU_FACT_SPECTRUM_TOTAL": 987,
                 }
             ]
         )
@@ -311,9 +311,8 @@ class TestHostService(unittest.TestCase):
         self.assertEqual(summary["PROCESSING_QUEUE_GB_TOTAL"], 8.25)
         self.assertEqual(summary["FACT_SPECTRUM_TOTAL"], 987)
         self.assertTrue(summary_connection.closed)
-        self.assertEqual(len(summary_cursor.executed), 2)
+        self.assertEqual(len(summary_cursor.executed), 1)
         self.assertIn("FROM SERVER_CURRENT_SUMMARY", summary_cursor.executed[0][0])
-        self.assertIn("FROM HOST_MONTHLY_METRIC", summary_cursor.executed[1][0])
 
     def test_get_server_processing_error_overview_reads_summary_only(self):
         class FakeCursor:
@@ -479,26 +478,59 @@ class TestHostService(unittest.TestCase):
                     "DT_LAST_CHECK": "2026-04-08 12:00:00",
                     "NU_HOST_CHECK_ERROR": 0,
                     "DT_LAST_DISCOVERY": "2026-04-08 11:00:00",
-                    "NU_DONE_FILE_DISCOVERY_TASKS": 100,
-                    "NU_ERROR_FILE_DISCOVERY_TASKS": 2,
+                    "DT_LAST_DISCOVERY_COMPLETED_AT": "2026-04-08 11:05:00",
+                    "NU_LAST_DISCOVERY_FILE_COUNT": 6,
+                    "VL_LAST_DISCOVERY_KB": 1280,
+                    "DT_LAST_DISCOVERY_WITH_FILES": "2026-04-08 11:05:00",
                     "DT_LAST_BACKUP": "2026-04-08 10:00:00",
-                    "NU_PENDING_FILE_BACKUP_TASKS": 5,
-                    "NU_DONE_FILE_BACKUP_TASKS": 80,
-                    "NU_ERROR_FILE_BACKUP_TASKS": 1,
                     "NU_BACKUP_DONE_THIS_MONTH": 8,
-                    "VL_PENDING_BACKUP_GB": 2.0,
                     "VL_BACKUP_DONE_GB_THIS_MONTH": 2.25,
-                    "VL_DONE_BACKUP_GB": 8.0,
                     "DT_LAST_PROCESSING": "2026-04-08 09:00:00",
-                    "NU_PENDING_FILE_PROCESS_TASKS": 4,
-                    "NU_DONE_FILE_PROCESS_TASKS": 70,
-                    "NU_ERROR_FILE_PROCESS_TASKS": 3,
-                    "NU_HOST_FILES": 123,
+                    "NU_PROCESSING_DONE_THIS_MONTH": 7,
+                    "VL_PROCESSING_DONE_GB_THIS_MONTH": 1.75,
+                    "NU_DISCOVERED_FILES_TOTAL": 123,
+                    "VL_DISCOVERED_GB_TOTAL": 10.5,
+                    "NU_BACKUP_DONE_FILES_TOTAL": 80,
+                    "VL_BACKUP_DONE_GB_TOTAL": 8.0,
+                    "NU_PROCESSING_DONE_FILES_TOTAL": 70,
+                    "VL_PROCESSING_DONE_GB_TOTAL": 6.5,
+                    "NU_BACKUP_PENDING_FILES_CURRENT": 5,
+                    "VL_BACKUP_PENDING_GB_CURRENT": 2.0,
+                    "NU_BACKUP_ERROR_FILES_CURRENT": 1,
+                    "VL_BACKUP_ERROR_GB_CURRENT": 0.25,
+                    "NU_BACKUP_SUSPENDED_FILES_CURRENT": 2,
+                    "VL_BACKUP_SUSPENDED_GB_CURRENT": 0.5,
+                    "NU_PROCESSING_PENDING_FILES_CURRENT": 4,
+                    "VL_PROCESSING_PENDING_GB_CURRENT": 1.75,
+                    "NU_PROCESSING_ERROR_FILES_CURRENT": 3,
+                    "VL_PROCESSING_ERROR_GB_CURRENT": 0.5,
+                    "NU_PROCESSING_FROZEN_FILES_CURRENT": 1,
+                    "VL_PROCESSING_FROZEN_GB_CURRENT": 0.25,
                     "NU_BACKUP_QUEUE_FILES_TOTAL": 3,
                     "VL_BACKUP_QUEUE_GB_TOTAL": 1.5,
+                    "NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL": 1,
+                    "VL_BACKUP_QUEUE_RUNNING_GB_TOTAL": 0.75,
+                    "NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL": 2,
+                    "VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL": 0.5,
                     "NU_PROCESSING_QUEUE_FILES_TOTAL": 2,
                     "VL_PROCESSING_QUEUE_GB_TOTAL": 0.75,
+                    "NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL": 1,
+                    "VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL": 0.5,
+                    "NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL": 1,
+                    "VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL": 0.25,
                     "NU_FACT_SPECTRUM_TOTAL": 321,
+                    "NU_PAYLOAD_DELETED_FILES_TOTAL": 9,
+                    "VL_PAYLOAD_DELETED_GB_TOTAL": 1.25,
+                    "IS_SSH_FAILURE": 1,
+                    "DT_LAST_SSH_EVALUATED_AT": "2026-04-08 12:00:00",
+                    "DT_LAST_SSH_FAILURE_AT": "2026-04-08 11:58:00",
+                    "NA_LAST_SSH_FAILURE_CODE": "AUTHENTICATION",
+                    "NA_LAST_SSH_FAILURE_DESCRIPTION": "Authentication failed",
+                    "IS_GPS_GNSS_UNAVAILABLE": 1,
+                    "DT_LAST_GPS_GNSS_EVALUATED_AT": "2026-04-08 11:30:00",
+                    "DT_LAST_GPS_GNSS_UNAVAILABLE_AT": "2026-04-08 11:30:00",
+                    "NA_LAST_GPS_GNSS_UNAVAILABLE_DESCRIPTION": "GPS unavailable",
+                    "NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME": "sample.bin",
                     "DT_LAST_ERROR_AT": "2026-04-08 08:00:00",
                     "NA_LAST_ERROR_SUMMARY": "Processing Error",
                 },
@@ -543,17 +575,29 @@ class TestHostService(unittest.TestCase):
 
         self.assertEqual(stats["BACKUP_DONE_THIS_MONTH"], 8)
         self.assertEqual(stats["BACKUP_DONE_GB_THIS_MONTH"], 2.25)
+        self.assertEqual(stats["LAST_DISCOVERY_VOLUME_LABEL"], "1.2 MB")
         self.assertEqual(stats["BACKUP_QUEUE_FILES_TOTAL"], 3)
         self.assertEqual(stats["BACKUP_QUEUE_GB_TOTAL"], 1.5)
+        self.assertEqual(stats["BACKUP_QUEUE_RUNNING_FILES_TOTAL"], 1)
+        self.assertEqual(stats["BACKUP_QUEUE_SUSPENDED_FILES_TOTAL"], 2)
         self.assertEqual(stats["PROCESSING_QUEUE_FILES_TOTAL"], 2)
         self.assertEqual(stats["PROCESSING_QUEUE_GB_TOTAL"], 0.75)
+        self.assertEqual(stats["PROCESSING_QUEUE_RUNNING_FILES_TOTAL"], 1)
+        self.assertEqual(stats["PROCESSING_QUEUE_FROZEN_FILES_TOTAL"], 1)
         self.assertEqual(stats["BACKUP_PENDING_FILES_TOTAL"], 5)
+        self.assertEqual(stats["BACKUP_SUSPENDED_FILES_TOTAL"], 2)
         self.assertEqual(stats["PROCESSING_PENDING_FILES_TOTAL"], 4)
+        self.assertEqual(stats["PROCESSING_FROZEN_FILES_TOTAL"], 1)
+        self.assertEqual(stats["PAYLOAD_DELETED_FILES_TOTAL"], 9)
+        self.assertEqual(stats["PAYLOAD_DELETED_GB_TOTAL"], 1.25)
         self.assertEqual(stats["FACT_SPECTRUM_TOTAL"], 321)
         self.assertTrue(snapshot_connection.closed)
         self.assertTrue(monthly_connection.closed)
         self.assertEqual(len(snapshot_cursor.executed), 1)
         self.assertIn("FROM HOST_CURRENT_SNAPSHOT", snapshot_cursor.executed[0][0])
+        self.assertIn("IS_SSH_FAILURE", snapshot_cursor.executed[0][0])
+        self.assertIn("VL_LAST_DISCOVERY_KB", snapshot_cursor.executed[0][0])
+        self.assertIn("NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL", snapshot_cursor.executed[0][0])
         self.assertEqual(snapshot_cursor.executed[0][1], (42,))
         self.assertEqual(len(monthly_cursor.executed), 1)
         self.assertIn("FROM HOST_MONTHLY_METRIC", monthly_cursor.executed[0][0])

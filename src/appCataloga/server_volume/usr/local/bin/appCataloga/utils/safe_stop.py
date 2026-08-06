@@ -14,6 +14,7 @@ PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 # Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
+from db.dbHandlerSummary import dbHandlerSummary
 from shared import  logging_utils
 import config as k
 
@@ -95,7 +96,16 @@ def prune_empty_repository_tmp_dirs(*, repo_tmp_root: str) -> int:
     return removed
 
 
-def cleanup_hosts_and_tasks():
+def _clear_snapshot_busy_hosts(host_ids: list[int]) -> int:
+    """Clear busy state mirrors after BPDATA host locks are released."""
+    db_summary = dbHandlerSummary(database=k.SUMMARY_DATABASE_NAME, log=log)
+    try:
+        return db_summary.clear_host_current_snapshot_busy_state(host_ids=host_ids)
+    finally:
+        db_summary.close()
+
+
+def cleanup_hosts_and_tasks() -> None:
     log.entry("[CLEANUP] Starting forced cleanup (HOST + HOST_TASK + FILE_TASK)")
 
     db = None
@@ -167,6 +177,7 @@ def cleanup_hosts_and_tasks():
             where={"IS_BUSY": True},
             cols=["ID_HOST", "NU_PID"],
         )
+        released_host_ids = []
 
         for row in hosts:
             host_id = row["ID_HOST"]
@@ -183,8 +194,22 @@ def cleanup_hosts_and_tasks():
                 NU_PID=k.HOST_UNLOCKED_PID,
                 DT_BUSY=None,
             )
+            released_host_ids.append(host_id)
 
         log.entry(f"[CLEANUP] Released {len(hosts)} BUSY hosts")
+
+        if released_host_ids:
+            try:
+                updated_rows = _clear_snapshot_busy_hosts(released_host_ids)
+                log.entry(
+                    "[CLEANUP] Cleared IS_BUSY in host snapshot tables "
+                    f"for {len(released_host_ids)} host(s), rows={updated_rows}"
+                )
+            except Exception as exc:
+                log.error(
+                    "[CLEANUP] Failed to clear IS_BUSY in host snapshot tables: "
+                    f"{exc}"
+                )
 
         # ---------------------------------------------------------
         # 4) Reassert OFFLINE suspension invariants after the reset

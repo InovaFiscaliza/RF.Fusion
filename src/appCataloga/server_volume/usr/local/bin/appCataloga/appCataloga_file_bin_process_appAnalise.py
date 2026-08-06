@@ -59,6 +59,28 @@ def _log_statistics_refresh_failure(task: dict, exc: Exception) -> None:
     )
 
 
+def _record_gps_failure_if_needed(
+    task: dict,
+    *,
+    observed_at: datetime,
+    structured: dict,
+) -> None:
+    """Persist GPS state only when processing classified the GPS condition."""
+    if structured.get("NA_ERROR_CODE") != k.ERROR_CODE_GPS_GNSS_UNAVAILABLE:
+        return
+
+    host_runtime.record_gps_gnss_unavailable(
+        task["host_id"],
+        evaluated_at=observed_at,
+        description=(
+            structured.get("NA_ERROR_SUMMARY")
+            or k.ERROR_CODE_GPS_GNSS_UNAVAILABLE
+        ),
+        host_file_name=task["host_file_name"],
+        logger=log,
+    )
+
+
 # --- signal handling ---
 
 def _shutdown_cleanup(signal_name: str) -> None:
@@ -296,7 +318,25 @@ def _finalize_success(
         return
 
     try:
-        db_bp.host_task_statistics_create(host_id=task["host_id"], log_if_active=False)
+        host_runtime.record_gps_gnss_available(
+            task["host_id"],
+            evaluated_at=processed_at,
+            logger=log,
+        )
+    except Exception as exc:
+        log.warning_event(
+            "gps_metric_update_failed",
+            service=SERVICE_NAME,
+            host_id=task["host_id"],
+            task_id=task["file_task_id"],
+            error=exc,
+        )
+
+    try:
+        db_bp.request_host_summary_refresh(
+            host_id=task["host_id"],
+            reason="processing_completed",
+        )
     except Exception as exc:
         _log_statistics_refresh_failure(task, exc)
 
@@ -325,6 +365,7 @@ def _finalize_freeze(
         error=err.format_persisted_error(),
     )
     structured = _error_fields(err, message)
+    frozen_at = datetime.now()
     db_bp.begin_transaction()
     try:
         db_bp.file_task_update(
@@ -332,7 +373,7 @@ def _finalize_freeze(
             NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
             NU_STATUS=k.TASK_FROZEN,
             NU_PID=None,
-            DT_FILE_TASK=datetime.now(),
+            DT_FILE_TASK=frozen_at,
             NA_MESSAGE=message,
             **structured,
         )
@@ -341,7 +382,7 @@ def _finalize_freeze(
             host_id=task["host_id"],
             host_file_path=task["host_path"],
             host_file_name=task["host_file_name"],
-            DT_PROCESSED=datetime.now(),
+            DT_PROCESSED=frozen_at,
             NU_STATUS_PROCESSING=k.TASK_FROZEN,
             NA_MESSAGE=message,
             **structured,
@@ -352,7 +393,25 @@ def _finalize_freeze(
         raise
 
     try:
-        db_bp.host_task_statistics_create(host_id=task["host_id"], log_if_active=False)
+        _record_gps_failure_if_needed(
+            task,
+            observed_at=frozen_at,
+            structured=structured,
+        )
+    except Exception as exc:
+        log.warning_event(
+            "gps_metric_update_failed",
+            service=SERVICE_NAME,
+            host_id=task["host_id"],
+            task_id=task["file_task_id"],
+            error=exc,
+        )
+
+    try:
+        db_bp.request_host_summary_refresh(
+            host_id=task["host_id"],
+            reason="processing_frozen",
+        )
     except Exception as exc:
         _log_statistics_refresh_failure(task, exc)
 
@@ -436,7 +495,25 @@ def _write_task_error(
         raise
 
     try:
-        db_bp.host_task_statistics_create(host_id=task["host_id"], log_if_active=False)
+        _record_gps_failure_if_needed(
+            task,
+            observed_at=error_at,
+            structured=structured,
+        )
+    except Exception as exc:
+        log.warning_event(
+            "gps_metric_update_failed",
+            service=SERVICE_NAME,
+            host_id=task["host_id"],
+            task_id=task["file_task_id"],
+            error=exc,
+        )
+
+    try:
+        db_bp.request_host_summary_refresh(
+            host_id=task["host_id"],
+            reason="processing_error",
+        )
     except Exception as exc:
         _log_statistics_refresh_failure(task, exc)
 

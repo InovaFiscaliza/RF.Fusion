@@ -83,6 +83,27 @@ top-to-bottom by a new engineer in under five minutes — and to make the same
 change pattern obvious across all workers so future bugs are fixed once, not nine
 times.
 
+## Segurança Operacional da VM
+
+Durante qualquer trabalho neste ambiente, a estabilidade da VM é prioridade.
+Antes, durante e após comandos que possam elevar a carga, monitore CPU, memória
+RAM e swap. Isso inclui principalmente suítes de testes, reconciliações de
+summary, migrações, consultas agregadas em bancos de produção e qualquer ação
+que percorra grande volume de arquivos ou dados.
+
+Regras obrigatórias:
+
+1. Verificar a carga antes de iniciar uma operação potencialmente pesada com
+   ferramentas como `uptime`, `free -h`, `ps` ou `top`.
+2. Não executar operações pesadas em paralelo sem confirmar que a VM possui
+   capacidade disponível. Preferir uma operação controlada por vez.
+3. Acompanhar consumo de CPU, RAM e swap enquanto o comando estiver em execução,
+   usando execução com espera limitada e novas verificações entre etapas longas.
+4. Interromper ou não iniciar novas operações quando CPU, memória ou swap
+   atingirem níveis que possam comprometer os serviços da VM.
+5. Em caso de degradação, parar o trabalho de maior custo, preservar o estado
+   consistente já obtido e informar imediatamente o risco antes de continuar.
+
 ---
 
 ## 0. Guiding Principle — Coherent Abstraction Levels
