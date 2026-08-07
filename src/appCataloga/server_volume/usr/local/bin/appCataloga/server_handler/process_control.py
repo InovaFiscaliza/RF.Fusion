@@ -5,8 +5,7 @@ These helpers keep per-service entrypoints focused on orchestration instead of
 embedding repeated shutdown and sibling-process control code inline.
 
 Reading guide:
-    - `wake_selector(...)` is the tiny primitive used by signal handlers
-    - `stop_self_service(...)` is the heavier best-effort sibling teardown
+    - `stop_self_service(...)` is the best-effort sibling teardown helper
 """
 
 from __future__ import annotations
@@ -19,20 +18,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from shared.logging_utils import log as logger_type
-
-
-def wake_selector(write_fd: int) -> None:
-    """
-    Wake a selector loop by writing a byte to its control pipe.
-
-    This helper is intentionally tiny because it is often called from signal
-    handling paths, where the safest behavior is "best effort, never raise".
-    """
-    try:
-        os.write(write_fd, b"\0")
-    except Exception:
-        pass
-
 
 def stop_self_service(
     *,

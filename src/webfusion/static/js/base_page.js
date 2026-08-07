@@ -148,13 +148,17 @@
      * round-trip. Pages opt in with `data-loading-message`, which keeps the
      * behavior declarative from the template side and avoids inline JS. */
     document.addEventListener("submit", function (event) {
+        if (event.defaultPrevented) {
+            return;
+        }
+
         const form = event.target.closest("form[data-loading-message]");
         if (!form) {
             return;
         }
 
         showPageLoadingOverlay(form.getAttribute("data-loading-message"));
-    }, true);
+    });
 
     /* Browser back/forward cache may revive a previous DOM snapshot with the
      * overlay still visible. `pageshow` is the safest global cleanup point to

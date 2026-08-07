@@ -263,6 +263,30 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertEqual(call_order[0], "SITE_EQUIPMENT_OBS_SUMMARY")
         self.assertEqual(call_order[-1], "SERVER_CURRENT_SUMMARY")
 
+    def test_refresh_error_summaries_refreshes_only_error_read_models(self) -> None:
+        db = FakeSummaryDb()
+        log = FakeSummaryLog()
+        engine = SummaryRefreshEngine(db=db, logger=log)
+
+        call_order = []
+        engine._refresh_host_error_summary = (
+            lambda **kwargs: call_order.append("HOST_ERROR_SUMMARY") or (1, "ok")
+        )
+        engine._refresh_server_error_summary = (
+            lambda: call_order.append("SERVER_ERROR_SUMMARY") or (1, "ok")
+        )
+
+        refreshed = engine.refresh_error_summaries(reason="test")
+
+        self.assertEqual(
+            refreshed,
+            ["HOST_ERROR_SUMMARY", "SERVER_ERROR_SUMMARY"],
+        )
+        self.assertEqual(
+            call_order,
+            ["HOST_ERROR_SUMMARY", "SERVER_ERROR_SUMMARY"],
+        )
+
     def test_host_current_snapshot_materializes_durable_processing_states(self) -> None:
         db = FakeSummaryDb()
         log = FakeSummaryLog()
@@ -745,8 +769,6 @@ class SummaryWorkerEngineTests(unittest.TestCase):
                 "FK_HOST": 10,
                 "NA_ERROR_SCOPE": "PROCESSING",
                 "NA_TASK_STATE": "ERROR",
-                "NA_ERROR_DOMAIN": "parser",
-                "NA_ERROR_STAGE": "decode",
                 "NA_ERROR_CODE": "bad_header",
                 "NA_ERROR_SUMMARY": "Header error",
                 "NA_RAW_MESSAGE": "Header error",
@@ -757,8 +779,6 @@ class SummaryWorkerEngineTests(unittest.TestCase):
                 "FK_HOST": 10,
                 "NA_ERROR_SCOPE": "PROCESSING",
                 "NA_TASK_STATE": "ERROR",
-                "NA_ERROR_DOMAIN": "parser",
-                "NA_ERROR_STAGE": "decode",
                 "NA_ERROR_CODE": "bad_header",
                 "NA_ERROR_SUMMARY": "Header error",
                 "NA_RAW_MESSAGE": "Header error",
@@ -780,6 +800,71 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertNotIn("NA_LAST_SOURCE_TABLE", row)
         self.assertNotIn("DT_REFRESHED_AT", row)
 
+    def test_host_error_summary_collapses_known_code_detail_variants(self) -> None:
+        db = FakeSummaryDb()
+        log = FakeSummaryLog()
+        engine = SummaryRefreshEngine(db=db, logger=log)
+
+        engine._read_error_events = lambda host_ids=None: [
+            {
+                "FK_HOST": 10,
+                "NA_ERROR_SCOPE": "PROCESSING",
+                "NA_TASK_STATE": "ERROR",
+                "NA_ERROR_CODE": "APP_ANALISE_FILE_UNAVAILABLE",
+                "NA_ERROR_SUMMARY": (
+                    "APP_ANALISE source file unavailable before request _ _4_DONE.zip]"
+                ),
+                "NA_RAW_MESSAGE": "APP_ANALISE source file unavailable before request _ _4_DONE.zip]",
+                "DT_EVENT_AT": datetime(2026, 5, 20, 10, 0, 0),
+                "ID_SOURCE_ROW": 101,
+            },
+            {
+                "FK_HOST": 10,
+                "NA_ERROR_SCOPE": "PROCESSING",
+                "NA_TASK_STATE": "ERROR",
+                "NA_ERROR_CODE": "APP_ANALISE_FILE_UNAVAILABLE",
+                "NA_ERROR_SUMMARY": "APP_ANALISE file unavailable during processing",
+                "NA_RAW_MESSAGE": "APP_ANALISE file unavailable during processing",
+                "DT_EVENT_AT": datetime(2026, 5, 20, 12, 30, 0),
+                "ID_SOURCE_ROW": 202,
+            },
+        ]
+
+        row_count, _watermark = engine._refresh_host_error_summary()
+
+        self.assertEqual(row_count, 1)
+        row = db.replaced["HOST_ERROR_SUMMARY"][0]
+        self.assertEqual(row["NA_ERROR_SUMMARY"], "APP_ANALISE file unavailable")
+        self.assertEqual(row["NU_ERROR_COUNT"], 2)
+
+    def test_read_error_events_restores_display_fields_from_raw_message(self) -> None:
+        """Summary rows remain readable after operational payload compaction."""
+
+        db = FakeSummaryDb()
+        log = FakeSummaryLog()
+        engine = SummaryRefreshEngine(db=db, logger=log)
+        engine._select = lambda sql, params=(): [
+            {
+                "NA_ERROR_CODE": "UNCLASSIFIED",
+                "NA_ERROR_SUMMARY": None,
+                "NA_ERROR_DETAIL": "database transport timeout",
+                "NA_RAW_MESSAGE": (
+                    "Processing Error | [ERROR] [stage=DB] "
+                    "[code=UNCLASSIFIED] "
+                    "Failed to persist processed spectra batch"
+                ),
+            }
+        ]
+
+        row = engine._read_error_events()[0]
+
+        self.assertEqual(row["NA_ERROR_CODE"], "UNCLASSIFIED")
+        self.assertEqual(
+            row["NA_ERROR_SUMMARY"],
+            "Failed to persist processed spectra batch",
+        )
+        self.assertEqual(row["NA_ERROR_DETAIL"], "database transport timeout")
+
     def test_server_error_summary_rolls_up_minimal_ui_payload(self) -> None:
         db = FakeSummaryDb()
         log = FakeSummaryLog()
@@ -789,8 +874,6 @@ class SummaryWorkerEngineTests(unittest.TestCase):
             {
                 "NA_ERROR_SCOPE": "BACKUP",
                 "NA_TASK_STATE": "ERROR",
-                "NA_ERROR_DOMAIN": "ssh",
-                "NA_ERROR_STAGE": "connect",
                 "NA_ERROR_CODE": "timeout",
                 "NA_ERROR_SUMMARY_HASH": "abc",
                 "NA_ERROR_SUMMARY": "Connection timeout",
@@ -799,8 +882,6 @@ class SummaryWorkerEngineTests(unittest.TestCase):
             {
                 "NA_ERROR_SCOPE": "BACKUP",
                 "NA_TASK_STATE": "ERROR",
-                "NA_ERROR_DOMAIN": "ssh",
-                "NA_ERROR_STAGE": "connect",
                 "NA_ERROR_CODE": "timeout",
                 "NA_ERROR_SUMMARY_HASH": "abc",
                 "NA_ERROR_SUMMARY": "Connection timeout",

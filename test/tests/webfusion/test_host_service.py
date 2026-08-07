@@ -62,24 +62,23 @@ class TestHostService(unittest.TestCase):
             (False, ""),
         )
 
-    def test_format_structured_error_bucket_renders_stage_and_code(self):
+    def test_format_structured_error_bucket_renders_code_and_summary(self):
         self.assertEqual(
             self.module._format_structured_error_bucket(
                 {
-                    "ERROR_STAGE": "PROCESS",
                     "ERROR_CODE": "NO_VALID_SPECTRA",
                     "ERROR_SUMMARY": "BIN discarded: no valid spectra after validation",
                 },
                 default_label="Processing Error",
             ),
             (
-                "Processing Error | [ERROR] [stage=PROCESS] "
-                "[code=NO_VALID_SPECTRA] BIN discarded: no valid spectra after validation"
+                "Processing Error | [ERROR] [code=NO_VALID_SPECTRA] "
+                "BIN discarded: no valid spectra after validation"
             ),
         )
         self.assertIsNone(
             self.module._format_structured_error_bucket(
-                {"ERROR_STAGE": "", "ERROR_CODE": "", "ERROR_SUMMARY": ""},
+                {"ERROR_CODE": "", "ERROR_SUMMARY": ""},
                 default_label="Processing Error",
             )
         )
@@ -132,10 +131,7 @@ class TestHostService(unittest.TestCase):
     def test_canonicalize_processing_error_message_groups_unclassified_and_bin_validation_noise(self):
         self.assertEqual(
             self.module._canonicalize_processing_error_message("Processing Error"),
-            (
-                "Processing Error | [ERROR] [stage=PROCESS] "
-                "[code=UNCLASSIFIED] Processing failed without structured detail"
-            ),
+            "[code=UNCLASSIFIED] Processing failed without structured detail",
         )
 
         self.assertEqual(
@@ -144,7 +140,6 @@ class TestHostService(unittest.TestCase):
                 "APP_ANALISE returned invalid Answer.Spectra type: {'Receiver': 'CWSM21100001'}"
             ),
             (
-                "Processing Error | [ERROR] [stage=PROCESS] "
                 "[code=APP_ANALISE_INVALID_SPECTRA_TYPE] "
                 "APP_ANALISE returned invalid Answer.Spectra type"
             ),
@@ -156,7 +151,6 @@ class TestHostService(unittest.TestCase):
                 "Payload validation failed during processing [host_id=10364] [task_id=12]"
             ),
             (
-                "Processing Error | [ERROR] [stage=PROCESS] "
                 "[code=BIN_PAYLOAD_VALIDATION_FAILED] "
                 "Payload validation failed during processing"
             ),
@@ -203,7 +197,6 @@ class TestHostService(unittest.TestCase):
                 {
                     "TASK_STATE": "ERROR",
                     "ERROR_MESSAGE": (
-                        "Processing Error | [ERROR] [stage=PROCESS] "
                         "[code=BIN_PAYLOAD_VALIDATION_FAILED] "
                         "Payload validation failed during processing"
                     ),
@@ -212,7 +205,6 @@ class TestHostService(unittest.TestCase):
                 {
                     "TASK_STATE": "ERROR",
                     "ERROR_MESSAGE": (
-                        "Processing Error | [ERROR] [stage=PROCESS] "
                         "[code=APP_ANALISE_INVALID_SPECTRA_TYPE] "
                         "APP_ANALISE returned invalid Answer.Spectra type"
                     ),
@@ -221,10 +213,76 @@ class TestHostService(unittest.TestCase):
                 {
                     "TASK_STATE": "ERROR",
                     "ERROR_MESSAGE": (
-                        "Processing Error | [ERROR] [stage=PROCESS] "
                         "[code=UNCLASSIFIED] Processing failed without structured detail"
                     ),
                     "ERROR_COUNT": 4,
+                },
+            ],
+        )
+
+    def test_merge_grouped_processing_errors_collapses_code_variants_with_volatile_detail(self):
+        rows = [
+            {
+                "ERROR_CODE": "APP_ANALISE_FILE_UNAVAILABLE",
+                "ERROR_SUMMARY": (
+                    "APP_ANALISE source file unavailable before request _ _4_DONE.zip]"
+                ),
+                "ERROR_COUNT": 4,
+            },
+            {
+                "ERROR_CODE": "APP_ANALISE_FILE_UNAVAILABLE",
+                "ERROR_SUMMARY": "APP_ANALISE file unavailable during processing",
+                "ERROR_COUNT": 3,
+            },
+            {
+                "ERROR_CODE": "APP_ANALISE_TRANSIENT_SERVICE_FAILURE",
+                "ERROR_SUMMARY": "Transient appAnalise processing failure Connection refused]",
+                "ERROR_COUNT": 5,
+            },
+            {
+                "ERROR_CODE": "APP_ANALISE_TRANSIENT_SERVICE_FAILURE",
+                "ERROR_SUMMARY": "Transient appAnalise processing failure",
+                "ERROR_COUNT": 13,
+            },
+            {
+                "ERROR_CODE": "UNCLASSIFIED",
+                "ERROR_SUMMARY": "Unexpected processing loop failure",
+                "ERROR_COUNT": 19,
+            },
+            {
+                "ERROR_CODE": "UNCLASSIFIED",
+                "ERROR_SUMMARY": "Failed to persist processed spectra batch",
+                "ERROR_COUNT": 1,
+            },
+        ]
+
+        merged = self.module._merge_grouped_processing_errors(rows)
+
+        self.assertEqual(
+            merged,
+            [
+                {
+                    "TASK_STATE": "ERROR",
+                    "ERROR_MESSAGE": "[code=UNCLASSIFIED] Unexpected processing loop failure",
+                    "ERROR_COUNT": 19,
+                },
+                {
+                    "TASK_STATE": "ERROR",
+                    "ERROR_MESSAGE": (
+                        "[code=APP_ANALISE_TRANSIENT_SERVICE_FAILURE] "
+                        "Transient appAnalise processing failure"
+                    ),
+                    "ERROR_COUNT": 18,
+                },
+                {
+                    "TASK_STATE": "ERROR",
+                    "ERROR_MESSAGE": "[code=APP_ANALISE_FILE_UNAVAILABLE] APP_ANALISE file unavailable",
+                    "ERROR_COUNT": 7,
+                },
+                {
+                    "TASK_STATE": "ERROR",
+                    "ERROR_MESSAGE": "[code=UNCLASSIFIED] Failed to persist processed spectra batch",
+                    "ERROR_COUNT": 1,
                 },
             ],
         )
@@ -343,7 +401,7 @@ class TestHostService(unittest.TestCase):
             [[
                 {
                     "ERROR_DOMAIN": "PROCESSING",
-                    "ERROR_STAGE": "PROCESS",
+                    "TASK_STATE": "FROZEN",
                     "ERROR_CODE": "NO_VALID_SPECTRA",
                     "ERROR_SUMMARY": "BIN discarded: no valid spectra after validation",
                     "ERROR_COUNT": 5,
@@ -366,7 +424,9 @@ class TestHostService(unittest.TestCase):
         self.assertEqual(payload["error_group_count"], 1)
         self.assertEqual(payload["error_total_occurrences"], 5)
         self.assertEqual(payload["rows"][0]["ERROR_COUNT"], 5)
+        self.assertEqual(payload["rows"][0]["TASK_STATE"], "FROZEN")
         self.assertIn("NO_VALID_SPECTRA", payload["rows"][0]["ERROR_MESSAGE"])
+        self.assertIn("NA_TASK_STATE AS TASK_STATE", summary_cursor.executed[0][0])
         self.assertTrue(summary_connection.closed)
 
     def test_get_server_overview_reads_materialized_host_totals(self):

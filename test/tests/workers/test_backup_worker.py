@@ -29,6 +29,8 @@ from _support import APP_ROOT, DB_ROOT, bind_real_package, bind_real_shared_pack
 ensure_app_paths()
 
 with bind_real_shared_package():
+    from shared.file_metadata import FileMetadata
+
     with bind_real_package("db", DB_ROOT):
         backup_worker = load_module_from_path(
             "test_backup_worker_module",
@@ -64,6 +66,18 @@ class FakeLog:
         if kwargs:
             message = f"{message} {kwargs}".strip()
         self.errors.append(message)
+
+    def task_claimed(self, *_args, **kwargs) -> None:
+        self.entries.append(f"task_claimed {kwargs}")
+
+    def task_done(self, *_args, **kwargs) -> None:
+        self.entries.append(f"task_done {kwargs}")
+
+    def task_error(self, *_args, **kwargs) -> None:
+        self.errors.append(f"task_error {kwargs}")
+
+    def task_phase(self, *_args, **kwargs) -> None:
+        self.entries.append(f"task_phase {kwargs}")
 
 
 class FakeTaskDB:
@@ -235,8 +249,8 @@ class WorkerDetectionTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                "event=worker_pool_shutdown_broadcast" in message
-                for message in fake_log.warnings
+                "worker_pool_shutdown_broadcast" in message
+                for message in fake_log.entries
             )
         )
 
@@ -245,7 +259,7 @@ class BackupFlowTests(unittest.TestCase):
     """Validate the backup worker contracts around transfer and finalization."""
 
     def test_transfer_file_task_refreshes_remote_metadata_before_backup(self) -> None:
-        refreshed_metadata = backup_worker.file_metadata.FileMetadata(
+        refreshed_metadata = FileMetadata(
             NA_FULL_PATH="/remote/sample.bin",
             NA_PATH="/remote",
             NA_FILE="sample.bin",
@@ -274,31 +288,48 @@ class BackupFlowTests(unittest.TestCase):
                 self.transfer_kwargs = kwargs
                 Path(local_file).write_bytes(b"x" * (5 * 1024))
 
-        task = {
-            "FILE_TASK__NA_EXTENSION": ".bin",
-            "FILE_TASK__VL_FILE_SIZE_KB": 10,
-            "FILE_TASK__DT_FILE_CREATED": datetime(2025, 1, 1, 1, 1, 1),
-            "FILE_TASK__DT_FILE_MODIFIED": datetime(2025, 1, 1, 1, 1, 1),
+            def _base_log_fields(self) -> dict:
+                return {}
+
+            def _has_discovery_metadata_drift(
+                self,
+                snapshot: dict,
+                metadata: FileMetadata,
+            ) -> bool:
+                return backup_worker.sftpConnection._has_discovery_metadata_drift(
+                    self,
+                    snapshot,
+                    metadata,
+                )
+
+        discovery_snapshot = {
+            "extension": ".bin",
+            "size_kb": 5,
+            "dt_created": datetime(2026, 1, 2, 3, 4, 5),
+            "dt_modified": datetime(2026, 1, 2, 3, 5, 6),
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Start from stale local metadata so the test proves that the
             # worker trusts the freshly read remote file details instead.
             final_file = Path(tmpdir) / "server.bin"
-            final_file.write_bytes(b"y" * (10 * 1024))
+            final_file.write_bytes(b"y" * (110 * 1024))
             fake_sftp = FakeSFTP()
 
-            local_size_kb, remote_metadata = backup_worker.transfer_file_task(
-                sftp=fake_sftp,
+            transfer_result = backup_worker.sftpConnection.transfer_file_task(
+                fake_sftp,
                 remote_dir="/remote",
                 remote_filename="sample.bin",
                 local_path=tmpdir,
                 server_filename="server.bin",
-                task=task,
+                discovery_snapshot=discovery_snapshot,
             )
 
-            self.assertAlmostEqual(local_size_kb, 5.0)
-            self.assertEqual(remote_metadata, refreshed_metadata)
+            self.assertAlmostEqual(transfer_result["updated_size_kb"], 5.0)
+            self.assertEqual(
+                transfer_result["refreshed_metadata"],
+                refreshed_metadata,
+            )
             self.assertEqual(final_file.stat().st_size, 5 * 1024)
             self.assertEqual(
                 fake_sftp.transfer_kwargs["max_seconds"],
@@ -315,7 +346,7 @@ class BackupFlowTests(unittest.TestCase):
 
     def test_finalize_success_persists_refreshed_metadata(self) -> None:
         fake_db = FakeTaskDB()
-        refreshed_metadata = backup_worker.file_metadata.FileMetadata(
+        refreshed_metadata = FileMetadata(
             NA_FULL_PATH="/remote/sample.bin",
             NA_PATH="/remote",
             NA_FILE="sample.bin",
@@ -341,27 +372,32 @@ class BackupFlowTests(unittest.TestCase):
         backup_worker._finalize_success(
             fake_db,
             task,
-            {"refreshed_metadata": refreshed_metadata, "updated_size_kb": 7.0, "elapsed_sec": 1.23},
+            {
+                "refreshed_metadata": refreshed_metadata,
+                "updated_size_kb": 7.0,
+                "elapsed_sec": 1.23,
+            },
+            elapsed_sec=1.23,
         )
 
-        self.assertEqual(fake_db.file_history_updates[0]["NA_EXTENSION"], ".zip")
-        self.assertEqual(fake_db.file_history_updates[0]["VL_FILE_SIZE_KB"], 7.0)
+        self.assertEqual(fake_db.file_history_updates[0]["NA_EXTENSION_HOST"], ".zip")
+        self.assertEqual(fake_db.file_history_updates[0]["VL_FILE_SIZE_KB_HOST"], 7.0)
         self.assertEqual(
-            fake_db.file_history_updates[0]["DT_FILE_CREATED"],
+            fake_db.file_history_updates[0]["DT_FILE_CREATED_HOST"],
             refreshed_metadata.DT_FILE_CREATED,
         )
         self.assertEqual(
-            fake_db.file_history_updates[0]["DT_FILE_MODIFIED"],
+            fake_db.file_history_updates[0]["DT_FILE_MODIFIED_HOST"],
             refreshed_metadata.DT_FILE_MODIFIED,
         )
-        self.assertEqual(fake_db.file_task_updates[0]["NA_EXTENSION"], ".zip")
-        self.assertEqual(fake_db.file_task_updates[0]["VL_FILE_SIZE_KB"], 7.0)
+        self.assertEqual(fake_db.file_task_updates[0]["NA_EXTENSION_HOST"], ".zip")
+        self.assertEqual(fake_db.file_task_updates[0]["VL_FILE_SIZE_KB_HOST"], 7.0)
         self.assertEqual(
-            fake_db.file_task_updates[0]["DT_FILE_CREATED"],
+            fake_db.file_task_updates[0]["DT_FILE_CREATED_HOST"],
             refreshed_metadata.DT_FILE_CREATED,
         )
         self.assertEqual(
-            fake_db.file_task_updates[0]["DT_FILE_MODIFIED"],
+            fake_db.file_task_updates[0]["DT_FILE_MODIFIED_HOST"],
             refreshed_metadata.DT_FILE_MODIFIED,
         )
 

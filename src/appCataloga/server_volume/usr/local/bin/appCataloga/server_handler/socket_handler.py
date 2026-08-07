@@ -2,61 +2,28 @@
 Socket-level helpers for the appCataloga TCP control service.
 
 Reading guide:
-    This module is split into two halves.
-
-    1. Request lifecycle helpers
-       Parse one TCP payload, delegate business work to a callback, then
-       normalize the response back to the client.
-
-    2. Selector/accept helpers
-       Accept sockets, dispatch ready events and drain the wake-up pipe used
-       during shutdown.
+    This module owns the request lifecycle at the transport layer:
+        - parse one TCP payload
+        - normalize transport-facing failures
+        - frame and send one response
 
 The business meaning of a request stays outside this module. `socket_handler`
-owns only transport/protocol flow; the caller injects the concrete
-`request_handler`.
+owns only transport/protocol flow.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import socket
-from typing import Any, Protocol, TYPE_CHECKING, TypeAlias
+from typing import Any, TYPE_CHECKING, TypeAlias
 
 if TYPE_CHECKING:
-    from db.dbHandlerBKP import dbHandlerBKP
     from shared.errors import ErrorHandler
     from shared.logging_utils import log as logger_type
 
 
 SocketPayload: TypeAlias = dict[str, Any]
 HostRequest: TypeAlias = dict[str, Any]
-RequestResult: TypeAlias = tuple[int | None, SocketPayload]
-
-
-class HostRequestHandler(Protocol):
-    """
-    Callable contract expected by the socket transport layer.
-
-    The transport code does not care what the service does internally, but it
-    does require one stable shape: normalized host payload in, structured
-    `(host_id, response_payload)` out.
-    """
-
-    def __call__(
-        self,
-        host: HostRequest,
-        err: ErrorHandler,
-        db: dbHandlerBKP,
-    ) -> RequestResult:
-        ...
-
-
-class ErrorsModule(Protocol):
-    """Minimal module contract required by the socket transport layer."""
-
-    ErrorHandler: type[ErrorHandler]
 
 
 def open_listening_socket(*, port: int, backlog: int) -> socket.socket:
@@ -280,140 +247,3 @@ def finalize_client_request(
         end_tag=end_tag,
     )
     close_client_socket(client_socket)
-
-
-def serve_client_request(
-    *,
-    client_socket: socket.socket,
-    handle_host_request: HostRequestHandler,
-    db: dbHandlerBKP,
-    logger: logger_type,
-    errors_module: ErrorsModule,
-    none_filter: dict,
-    start_tag: str,
-    end_tag: str,
-) -> None:
-    """
-    Handle one accepted client socket from start to finish.
-
-    The flow is intentionally linear:
-        1. resolve peer identity for logs
-        2. read and parse the raw socket payload
-        3. delegate business work to `handle_host_request`
-           the database handle is passed explicitly because this service has
-           one concrete request workflow and pretending otherwise made the
-           wiring harder to read than it needed to be
-        4. send exactly one normalized response
-        5. close the socket
-    """
-    peer_ip = get_client_peer_ip(client_socket)
-    err = errors_module.ErrorHandler(logger)
-    response_payload: SocketPayload = {"status": 0, "message": "Unexpected error"}
-    host_id = None
-
-    try:
-        # Transport/protocol concerns stop at `host`. From here on, the
-        # injected callback owns the business meaning of the request.
-        host = read_host_request(
-            client_socket=client_socket,
-            logger=logger,
-            err=err,
-            none_filter=none_filter,
-        )
-        host_id, response_payload = handle_host_request(host, err, db)
-
-    except Exception:
-        # The callback reports structured failure through `err`. This wrapper
-        # intentionally avoids a second error policy and funnels everything to
-        # the single response path in `finally`.
-        pass
-
-    finally:
-        # Every request, successful or not, converges here. This keeps socket
-        # finalization deterministic: one response is framed, one socket is
-        # closed, and the caller never needs to reason about many exit paths.
-        finalize_client_request(
-            client_socket=client_socket,
-            peer_ip=peer_ip,
-            response_payload=response_payload,
-            err=err,
-            host_id=host_id,
-            logger=logger,
-            start_tag=start_tag,
-            end_tag=end_tag,
-        )
-
-
-def handle_ready_server_socket(
-    *,
-    server_socket: socket.socket,
-    process_status: dict,
-    handle_host_request: HostRequestHandler,
-    db: dbHandlerBKP,
-    logger: logger_type,
-    errors_module: ErrorsModule,
-    none_filter: dict,
-    shutdown_payload: SocketPayload,
-    start_tag: str,
-    end_tag: str,
-) -> None:
-    """
-    Accept and process one ready server-socket event.
-
-    This is the one selector-side helper the entrypoint should need to call
-    for incoming client connections. It owns the accept branch, but the
-    selector loop and shutdown decisions stay in `appCataloga.py`.
-    """
-    try:
-        client_socket, client_address = server_socket.accept()
-        client_socket.setblocking(True)
-
-        if process_status["running"]:
-            # Normal service path: accept one client and execute the full
-            # request lifecycle synchronously.
-            logger.event(
-                "client_connected",
-                component="socket_handler",
-                operation="accept_client",
-                client_address=client_address,
-            )
-            serve_client_request(
-                client_socket=client_socket,
-                handle_host_request=handle_host_request,
-                db=db,
-                logger=logger,
-                errors_module=errors_module,
-                none_filter=none_filter,
-                start_tag=start_tag,
-                end_tag=end_tag,
-            )
-        else:
-            # If shutdown began after `accept()` but before the request was
-            # processed, reply explicitly instead of dropping the socket.
-            send_response(
-                client_socket=client_socket,
-                payload=shutdown_payload,
-                peer_ip=str(client_address),
-                logger=logger,
-                start_tag=start_tag,
-                end_tag=end_tag,
-            )
-            close_client_socket(client_socket)
-    except Exception as exc:
-        err = errors_module.ErrorHandler(logger)
-        err.capture(
-            reason="Accept loop failure",
-            stage="ACCEPT",
-            exc=exc,
-        )
-        err.log_error()
-
-
-def drain_wakeup_pipe(wake_read_fd: int) -> None:
-    """
-    Consume one byte from the wake-up pipe used by the selector loop.
-    """
-    try:
-        os.read(wake_read_fd, 1)
-    except Exception:
-        pass

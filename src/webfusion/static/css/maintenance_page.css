@@ -28,6 +28,87 @@
     line-height: 1.5;
 }
 
+.maintenance-module {
+    overflow: hidden;
+    border: 1px solid #dbe4ef;
+    border-radius: 12px;
+    background: #ffffff;
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+}
+
+.maintenance-module-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px 20px;
+    color: #0f172a;
+    cursor: pointer;
+    list-style: none;
+}
+
+.maintenance-module-summary::-webkit-details-marker {
+    display: none;
+}
+
+.maintenance-module-summary::after {
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: #e8f0fa;
+    color: #1f4f8b;
+    content: "+";
+    font-size: 19px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.maintenance-module[open] .maintenance-module-summary {
+    border-bottom: 1px solid #e2e8f0;
+    background: linear-gradient(90deg, #f8fbff, #ffffff);
+}
+
+.maintenance-module[open] .maintenance-module-summary::after {
+    content: "-";
+}
+
+.maintenance-module-title,
+.maintenance-module-copy {
+    display: block;
+}
+
+.maintenance-module-title {
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.maintenance-module-copy {
+    margin-top: 4px;
+    color: #64748b;
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.maintenance-module-body {
+    border: 0;
+    border-radius: 0;
+}
+
+.maintenance-module-note {
+    margin: 18px 0;
+    padding: 12px 14px;
+    border-left: 3px solid #1f4f8b;
+    border-radius: 0 8px 8px 0;
+    background: #f8fafc;
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
 .maintenance-summary-title,
 .maintenance-toolbar-title {
     font-size: 16px;
@@ -137,6 +218,41 @@
     flex-wrap: wrap;
 }
 
+.maintenance-field-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.maintenance-host-filter-toggle {
+    border: 0;
+    border-radius: 999px;
+    background: #e8f0fa;
+    color: #1f4f8b;
+    padding: 4px 9px;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.maintenance-host-filter-toggle:hover {
+    background: #d6e5f7;
+    color: #163a66;
+}
+
+.maintenance-host-filter-toggle:focus-visible {
+    outline: 2px solid #1f4f8b;
+    outline-offset: 2px;
+}
+
+.maintenance-host-filter-toggle[aria-pressed="true"] {
+    background: #1f4f8b;
+    color: #ffffff;
+}
+
 .maintenance-action-button {
     min-width: 140px;
     text-decoration: none;
@@ -233,6 +349,33 @@
     align-self: end;
 }
 
+.maintenance-target-action-grid {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+    gap: 14px;
+    align-items: end;
+    margin: 18px 0;
+    padding: 16px;
+    border: 1px solid #dbe4ef;
+    border-radius: 10px;
+    background: #f8fbff;
+}
+
+.maintenance-host-action-grid {
+    grid-template-columns: minmax(180px, 1fr) auto;
+}
+
+.maintenance-target-action-submit {
+    min-width: 220px;
+}
+
+.maintenance-target-action-guidance {
+    grid-column: 1 / -1;
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
 .maintenance-table-wrap {
     border: 1px solid #e2e8f0;
     border-radius: 10px;
@@ -272,7 +415,8 @@
 }
 
 .maintenance-check-col input[type="checkbox"],
-.maintenance-row-checkbox,
+.maintenance-host-task-row-checkbox,
+.maintenance-file-task-row-checkbox,
 .maintenance-history-row-checkbox {
     appearance: auto !important;
     -webkit-appearance: checkbox !important;
@@ -351,8 +495,13 @@
 
     .maintenance-filter-grid,
     .maintenance-filter-search,
-    .maintenance-table-filter-bar {
+    .maintenance-table-filter-bar,
+    .maintenance-target-action-grid {
         grid-template-columns: 1fr;
+    }
+
+    .maintenance-target-action-submit {
+        min-width: 0;
     }
 
     .maintenance-filter-actions,
@@ -363,5 +512,9 @@
     .maintenance-filter-actions > *,
     .maintenance-bulk-actions > * {
         flex: 1 1 180px;
+    }
+
+    .maintenance-module-summary {
+        padding: 16px;
     }
 }

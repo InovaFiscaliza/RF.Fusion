@@ -5,7 +5,7 @@ How to run:
     /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_spectrum_service.py -q
 
 What is covered here:
-    - frequency filters use overlap semantics for unified file search
+    - frequency filters keep spectra contained within the requested interval
     - paginated file search ranks file ids before expanding page details
     - locality options follow the live filtered catalog
     - expanded file details expose `IS_MATCH` for highlighted rows
@@ -57,7 +57,7 @@ class TestSpectrumService(unittest.TestCase):
     def setUpClass(cls):
         cls.module = load_spectrum_service()
 
-    def test_build_fact_filters_uses_overlap_for_full_frequency_interval(self):
+    def test_build_fact_filters_uses_containment_for_full_frequency_interval(self):
         where_clauses, params = self.module._build_fact_filters(
             freq_start=100.0,
             freq_end=200.0,
@@ -67,13 +67,13 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(
             where_clauses,
             [
-                "f.NU_FREQ_END >= %s",
-                "f.NU_FREQ_START <= %s",
+                "f.NU_FREQ_START >= %s",
+                "f.NU_FREQ_END <= %s",
             ],
         )
         self.assertEqual(params, [100.0, 200.0])
 
-    def test_build_fact_filters_uses_overlap_with_single_frequency_limit(self):
+    def test_build_fact_filters_uses_containment_with_single_frequency_limit(self):
         lower_where, lower_params = self.module._build_fact_filters(
             freq_start=100.0,
             fact_alias="f",
@@ -83,9 +83,9 @@ class TestSpectrumService(unittest.TestCase):
             fact_alias="f",
         )
 
-        self.assertEqual(lower_where, ["f.NU_FREQ_END >= %s"])
+        self.assertEqual(lower_where, ["f.NU_FREQ_START >= %s"])
         self.assertEqual(lower_params, [100.0])
-        self.assertEqual(upper_where, ["f.NU_FREQ_START <= %s"])
+        self.assertEqual(upper_where, ["f.NU_FREQ_END <= %s"])
         self.assertEqual(upper_params, [200.0])
 
     def test_append_summary_geo_filters_uses_materialized_district_id(self):

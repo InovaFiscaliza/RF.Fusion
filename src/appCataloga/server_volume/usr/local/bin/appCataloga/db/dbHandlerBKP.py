@@ -98,10 +98,7 @@ class dbHandlerBKP(DBHandlerBase):
         "DT_FILE_CREATED_SERVER",
         "DT_FILE_MODIFIED_SERVER",
         "NA_MESSAGE",
-        "NA_ERROR_DOMAIN",
-        "NA_ERROR_STAGE",
         "NA_ERROR_CODE",
-        "NA_ERROR_SUMMARY",
         "NA_ERROR_DETAIL",
         "NU_ERROR_CLASSIFIER_VERSION",
     }
@@ -139,10 +136,7 @@ class dbHandlerBKP(DBHandlerBase):
         "DT_FILE_CREATED_SERVER",
         "DT_FILE_MODIFIED_SERVER",
         "NA_MESSAGE",
-        "NA_ERROR_DOMAIN",
-        "NA_ERROR_STAGE",
         "NA_ERROR_CODE",
-        "NA_ERROR_SUMMARY",
         "NA_ERROR_DETAIL",
         "NU_ERROR_CLASSIFIER_VERSION",
         "IS_PAYLOAD_DELETED",
@@ -206,25 +200,36 @@ class dbHandlerBKP(DBHandlerBase):
 
     def _merge_structured_error_fields(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Keep explicit error columns synchronized with `NA_MESSAGE`.
+        Keep compact error keys synchronized with `NA_MESSAGE`.
 
-        FILE_TASK and FILE_TASK_HISTORY still persist the human-readable audit
-        message, but downstream consumers should read the structured columns
-        whenever possible instead of reparsing text repeatedly.
+        Operational rows keep a concise message, one stable error code and the
+        useful diagnostic detail. Domain, stage and duplicate summary fields
+        are derived by read models when they are still needed.
         """
         normalized = dict(payload)
+        legacy_fields = (
+            "NA_ERROR_DOMAIN",
+            "NA_ERROR_STAGE",
+            "NA_ERROR_SUMMARY",
+        )
+
+        for field in legacy_fields:
+            normalized.pop(field, None)
 
         if "NA_MESSAGE" in normalized:
-            normalized["NA_MESSAGE"] = errors.canonicalize_persisted_error_message(
+            explicit_detail = normalized.get("NA_ERROR_DETAIL")
+            compact_payload = errors.build_operational_error_payload(
                 normalized.get("NA_MESSAGE")
             )
-            normalized.update(
-                errors.classify_persisted_error_message(normalized.get("NA_MESSAGE"))
-            )
+            if compact_payload.get("NA_ERROR_DETAIL") is None and explicit_detail:
+                compact_payload["NA_ERROR_DETAIL"] = explicit_detail
+            normalized.update(compact_payload)
             return normalized
 
         if "NA_MESSAGE__expr" in normalized:
-            normalized.update(errors.empty_persisted_error_fields(classified=True))
+            normalized.update(
+                errors.persisted_error_fields_from_handler(clear_when_empty=True)
+            )
             return normalized
 
         return normalized

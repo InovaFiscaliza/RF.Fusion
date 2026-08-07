@@ -181,7 +181,10 @@ class ErrorHandlerTests(unittest.TestCase):
             payload["NA_ERROR_CODE"],
             "APP_ANALISE_OUTPUT_ARTIFACT_UNAVAILABLE",
         )
-        self.assertIn("/repo/out/file.mat", payload["NA_ERROR_DETAIL"])
+        self.assertNotIn("NA_ERROR_DOMAIN", payload)
+        self.assertNotIn("NA_ERROR_STAGE", payload)
+        self.assertNotIn("NA_ERROR_SUMMARY", payload)
+        self.assertIn("NA_ERROR_DETAIL", payload)
 
     def test_format_persisted_error_keeps_transient_appanalise_detail(self) -> None:
         handler = errors.ErrorHandler(FakeLogger())
@@ -236,14 +239,10 @@ class ErrorHandlerTests(unittest.TestCase):
         payload = errors.persisted_error_fields_from_handler(handler)
 
         self.assertEqual(payload["NA_ERROR_CODE"], "APP_ANALISE_EMPTY_SPEC_DATA")
-        self.assertEqual(
-            payload["NA_ERROR_SUMMARY"],
-            "APP_ANALISE returned empty spectrum data",
-        )
-        self.assertEqual(
-            payload["NA_ERROR_DETAIL"],
-            "handlers:FileReadHandler:EmptySpecData",
-        )
+        self.assertNotIn("NA_ERROR_STAGE", payload)
+        self.assertNotIn("NA_ERROR_DOMAIN", payload)
+        self.assertNotIn("NA_ERROR_SUMMARY", payload)
+        self.assertIn("NA_ERROR_DETAIL", payload)
 
     def test_should_freeze_processing_task_returns_false_for_empty_spec_data(self) -> None:
         exc = errors.AppAnaliseServiceResponseError(
@@ -267,14 +266,10 @@ class ErrorHandlerTests(unittest.TestCase):
         payload = errors.persisted_error_fields_from_handler(handler)
 
         self.assertEqual(payload["NA_ERROR_CODE"], "APP_ANALISE_NO_SPECTRAL_DATA")
-        self.assertEqual(
-            payload["NA_ERROR_SUMMARY"],
-            "APP_ANALISE reported no spectral data",
-        )
-        self.assertEqual(
-            payload["NA_ERROR_DETAIL"],
-            "model:fileReader:CRFSBin:NoSpectralData",
-        )
+        self.assertNotIn("NA_ERROR_STAGE", payload)
+        self.assertNotIn("NA_ERROR_DOMAIN", payload)
+        self.assertNotIn("NA_ERROR_SUMMARY", payload)
+        self.assertIn("NA_ERROR_DETAIL", payload)
 
     def test_should_freeze_processing_task_returns_false_for_no_spectral_data(self) -> None:
         exc = errors.AppAnaliseServiceResponseError(
@@ -307,20 +302,51 @@ class ErrorHandlerTests(unittest.TestCase):
 
         payload = errors.persisted_error_fields_from_handler(handler)
 
-        self.assertEqual(payload["NA_ERROR_DOMAIN"], "PROCESSING")
         self.assertEqual(
             payload["NA_ERROR_CODE"],
             "APP_ANALISE_NO_READABLE_FILES_IN_ZIP",
         )
-        self.assertEqual(
-            payload["NA_ERROR_SUMMARY"],
-            "APP_ANALISE reported no readable files in ZIP",
+        self.assertNotIn("NA_ERROR_DOMAIN", payload)
+        self.assertNotIn("NA_ERROR_STAGE", payload)
+        self.assertNotIn("NA_ERROR_SUMMARY", payload)
+        self.assertIn("NA_ERROR_DETAIL", payload)
+        self.assertEqual(payload["NU_ERROR_CLASSIFIER_VERSION"], 1)
+
+    def test_build_operational_error_payload_avoids_repeating_error_tags(self) -> None:
+        payload = errors.build_operational_error_payload(
+            "Processing Error | [ERROR] [stage=DB] [code=UNCLASSIFIED] "
+            "Failed to persist processed spectra batch "
+            "[detail=duplicate key on FACT_SPECTRUM]"
         )
+
+        self.assertEqual(
+            payload["NA_MESSAGE"],
+            "Failed to persist processed spectra batch",
+        )
+        self.assertEqual(payload["NA_ERROR_CODE"], "UNCLASSIFIED")
         self.assertEqual(
             payload["NA_ERROR_DETAIL"],
-            "model:SpecDataBase:NoReadableFilesInZip",
+            "duplicate key on FACT_SPECTRUM",
         )
-        self.assertEqual(payload["NU_ERROR_CLASSIFIER_VERSION"], 1)
+        self.assertNotIn("NA_ERROR_DOMAIN", payload)
+        self.assertNotIn("NA_ERROR_STAGE", payload)
+        self.assertNotIn("NA_ERROR_SUMMARY", payload)
+
+    def test_canonical_error_summary_ignores_volatile_text_for_known_code(self) -> None:
+        self.assertEqual(
+            errors.canonical_error_summary(
+                "APP_ANALISE_FILE_UNAVAILABLE",
+                "APP_ANALISE source file unavailable before request _ _4_DONE.zip]",
+            ),
+            "APP_ANALISE file unavailable",
+        )
+        self.assertEqual(
+            errors.canonical_error_summary(
+                "UNCLASSIFIED",
+                "Failed to persist processed spectra batch",
+            ),
+            "Failed to persist processed spectra batch",
+        )
 
     def test_canonicalize_persisted_error_message_strips_type_and_context(self) -> None:
         # Historical DB rows may contain the verbose log-flavored formatter.

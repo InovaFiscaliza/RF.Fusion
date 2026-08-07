@@ -48,6 +48,7 @@ from functools import wraps
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 
 import config as k
+from shared import errors
 
 if TYPE_CHECKING:
     from db.dbHandlerSummary import dbHandlerSummary
@@ -107,6 +108,40 @@ def _coalesce_text(*values: Any) -> Optional[str]:
         if text:
             return text
     return None
+
+
+def _restore_error_event_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize legacy structured messages for the compact read model."""
+    raw_message = row.get("NA_RAW_MESSAGE")
+    classified = errors.classify_persisted_error_message(raw_message)
+    normalized = dict(row)
+    normalized["NA_ERROR_CODE"] = _coalesce_text(
+        row.get("NA_ERROR_CODE"),
+        classified.get("NA_ERROR_CODE"),
+    )
+    is_legacy_structured_message = any(
+        token in str(raw_message or "")
+        for token in ("[ERROR]", "[stage=", "[code=")
+    )
+    error_summary = _coalesce_text(
+        (
+            classified.get("NA_ERROR_SUMMARY")
+            if is_legacy_structured_message
+            else None
+        ),
+        raw_message,
+        row.get("NA_ERROR_SUMMARY"),
+        "(Sem mensagem)",
+    )
+    normalized["NA_ERROR_SUMMARY"] = errors.canonical_error_summary(
+        normalized["NA_ERROR_CODE"],
+        error_summary,
+    ) or "(Sem mensagem)"
+    normalized["NA_ERROR_DETAIL"] = _coalesce_text(
+        row.get("NA_ERROR_DETAIL"),
+        classified.get("NA_ERROR_DETAIL"),
+    )
+    return normalized
 
 
 def _month_start(value: Any) -> Optional[str]:
@@ -478,6 +513,26 @@ class SummaryRefreshEngine:
             "summary_full_reconcile_completed",
             component="summary_engine",
             operation="refresh_all",
+            reason=reason,
+            objects=refreshed,
+        )
+        return refreshed
+
+    def refresh_error_summaries(self, *, reason: str) -> List[str]:
+        """Rebuild only the host and server error read models.
+
+        This targeted reconcile is appropriate after an error-classification
+        change. It preserves all operational source rows and leaves unrelated
+        summary objects untouched.
+        """
+        refreshed = [
+            self._run_refresh("HOST_ERROR_SUMMARY", self._refresh_host_error_summary),
+            self._run_refresh("SERVER_ERROR_SUMMARY", self._refresh_server_error_summary),
+        ]
+        self.log.event(
+            "summary_error_summaries_reconciled",
+            component="summary_engine",
+            operation="refresh_error_summaries",
             reason=reason,
             objects=refreshed,
         )
@@ -1813,7 +1868,7 @@ class SummaryRefreshEngine:
             *p_host_task,
         ]
 
-        return self._select(
+        rows = self._select(
             f"""
             SELECT
                 'FILE_TASK_HISTORY' AS NA_SOURCE_TABLE,
@@ -1826,10 +1881,8 @@ class SummaryRefreshEngine:
                 f.FK_HOST,
                 h.NA_HOST_NAME,
                 COALESCE(f.DT_DISCOVERED, f.DT_FILE_CREATED_HOST, f.DT_FILE_MODIFIED_HOST) AS DT_EVENT_AT,
-                NULLIF(TRIM(f.NA_ERROR_DOMAIN), '') AS NA_ERROR_DOMAIN,
-                NULLIF(TRIM(f.NA_ERROR_STAGE), '') AS NA_ERROR_STAGE,
                 NULLIF(TRIM(f.NA_ERROR_CODE), '') AS NA_ERROR_CODE,
-                COALESCE(NULLIF(TRIM(f.NA_ERROR_SUMMARY), ''), NULLIF(TRIM(f.NA_MESSAGE), ''), '(Sem mensagem)') AS NA_ERROR_SUMMARY,
+                NULLIF(TRIM(f.NA_MESSAGE), '') AS NA_ERROR_SUMMARY,
                 f.NA_ERROR_DETAIL,
                 f.NA_MESSAGE AS NA_RAW_MESSAGE
             FROM BPDATA.FILE_TASK_HISTORY f
@@ -1850,10 +1903,8 @@ class SummaryRefreshEngine:
                 f.FK_HOST,
                 h.NA_HOST_NAME,
                 COALESCE(f.DT_BACKUP, f.DT_DISCOVERED, f.DT_FILE_CREATED_HOST, f.DT_FILE_MODIFIED_HOST) AS DT_EVENT_AT,
-                NULLIF(TRIM(f.NA_ERROR_DOMAIN), '') AS NA_ERROR_DOMAIN,
-                NULLIF(TRIM(f.NA_ERROR_STAGE), '') AS NA_ERROR_STAGE,
                 NULLIF(TRIM(f.NA_ERROR_CODE), '') AS NA_ERROR_CODE,
-                COALESCE(NULLIF(TRIM(f.NA_ERROR_SUMMARY), ''), NULLIF(TRIM(f.NA_MESSAGE), ''), '(Sem mensagem)') AS NA_ERROR_SUMMARY,
+                NULLIF(TRIM(f.NA_MESSAGE), '') AS NA_ERROR_SUMMARY,
                 f.NA_ERROR_DETAIL,
                 f.NA_MESSAGE AS NA_RAW_MESSAGE
             FROM BPDATA.FILE_TASK_HISTORY f
@@ -1874,10 +1925,8 @@ class SummaryRefreshEngine:
                 f.FK_HOST,
                 h.NA_HOST_NAME,
                 COALESCE(f.DT_PROCESSED, f.DT_BACKUP, f.DT_DISCOVERED, f.DT_FILE_CREATED_HOST, f.DT_FILE_MODIFIED_HOST) AS DT_EVENT_AT,
-                NULLIF(TRIM(f.NA_ERROR_DOMAIN), '') AS NA_ERROR_DOMAIN,
-                NULLIF(TRIM(f.NA_ERROR_STAGE), '') AS NA_ERROR_STAGE,
                 NULLIF(TRIM(f.NA_ERROR_CODE), '') AS NA_ERROR_CODE,
-                COALESCE(NULLIF(TRIM(f.NA_ERROR_SUMMARY), ''), NULLIF(TRIM(f.NA_MESSAGE), ''), '(Sem mensagem)') AS NA_ERROR_SUMMARY,
+                NULLIF(TRIM(f.NA_MESSAGE), '') AS NA_ERROR_SUMMARY,
                 f.NA_ERROR_DETAIL,
                 f.NA_MESSAGE AS NA_RAW_MESSAGE
             FROM BPDATA.FILE_TASK_HISTORY f
@@ -1903,10 +1952,8 @@ class SummaryRefreshEngine:
                 t.FK_HOST,
                 h.NA_HOST_NAME,
                 COALESCE(t.DT_FILE_TASK, t.DT_FILE_CREATED_HOST, t.DT_FILE_MODIFIED_HOST) AS DT_EVENT_AT,
-                NULLIF(TRIM(t.NA_ERROR_DOMAIN), '') AS NA_ERROR_DOMAIN,
-                NULLIF(TRIM(t.NA_ERROR_STAGE), '') AS NA_ERROR_STAGE,
                 NULLIF(TRIM(t.NA_ERROR_CODE), '') AS NA_ERROR_CODE,
-                COALESCE(NULLIF(TRIM(t.NA_ERROR_SUMMARY), ''), NULLIF(TRIM(t.NA_MESSAGE), ''), '(Sem mensagem)') AS NA_ERROR_SUMMARY,
+                NULLIF(TRIM(t.NA_MESSAGE), '') AS NA_ERROR_SUMMARY,
                 t.NA_ERROR_DETAIL,
                 t.NA_MESSAGE AS NA_RAW_MESSAGE
             FROM BPDATA.FILE_TASK t
@@ -1928,8 +1975,6 @@ class SummaryRefreshEngine:
                 ht.FK_HOST,
                 h.NA_HOST_NAME,
                 ht.DT_HOST_TASK AS DT_EVENT_AT,
-                NULL AS NA_ERROR_DOMAIN,
-                NULL AS NA_ERROR_STAGE,
                 NULL AS NA_ERROR_CODE,
                 COALESCE(NULLIF(TRIM(ht.NA_MESSAGE), ''), '(Sem mensagem)') AS NA_ERROR_SUMMARY,
                 NULL AS NA_ERROR_DETAIL,
@@ -1941,6 +1986,7 @@ class SummaryRefreshEngine:
             """,
             params,
         )
+        return [_restore_error_event_fields(row) for row in rows]
 
     def _refresh_host_error_summary(
         self,
@@ -1951,8 +1997,8 @@ class SummaryRefreshEngine:
 
         Calls :meth:`_read_error_events` to union all four BPDATA error sources,
         then groups the result by
-        (FK_HOST, NA_ERROR_SCOPE, NA_TASK_STATE, NA_ERROR_DOMAIN,
-        NA_ERROR_STAGE, NA_ERROR_CODE, NA_ERROR_SUMMARY_HASH). Each group tracks
+        (FK_HOST, NA_ERROR_SCOPE, NA_TASK_STATE, NA_ERROR_CODE,
+        NA_ERROR_SUMMARY_HASH). Each group tracks
         occurrence count plus the
         timestamp and source-row id of the latest event. Older audit-heavy
         fields are not persisted in the public read model anymore.
@@ -1979,10 +2025,14 @@ class SummaryRefreshEngine:
             host_id = _safe_int(row.get("FK_HOST"))
             if host_id is None:
                 continue
-            error_summary = _coalesce_text(
+            raw_error_summary = _coalesce_text(
                 row.get("NA_ERROR_SUMMARY"),
                 row.get("NA_RAW_MESSAGE"),
                 "(Sem mensagem)",
+            ) or "(Sem mensagem)"
+            error_summary = errors.canonical_error_summary(
+                row.get("NA_ERROR_CODE"),
+                raw_error_summary,
             ) or "(Sem mensagem)"
             error_summary_hash = hashlib.sha256(
                 error_summary.encode("utf-8")
@@ -1991,8 +2041,6 @@ class SummaryRefreshEngine:
                 host_id,
                 row.get("NA_ERROR_SCOPE"),
                 row.get("NA_TASK_STATE"),
-                row.get("NA_ERROR_DOMAIN"),
-                row.get("NA_ERROR_STAGE"),
                 row.get("NA_ERROR_CODE"),
                 error_summary_hash,
                 error_summary,
@@ -2003,11 +2051,9 @@ class SummaryRefreshEngine:
                     "FK_HOST": host_id,
                     "NA_ERROR_SCOPE": key[1],
                     "NA_TASK_STATE": key[2],
-                    "NA_ERROR_DOMAIN": key[3],
-                    "NA_ERROR_STAGE": key[4],
-                    "NA_ERROR_CODE": key[5],
-                    "NA_ERROR_SUMMARY_HASH": key[6],
-                    "NA_ERROR_SUMMARY": key[7],
+                    "NA_ERROR_CODE": key[3],
+                    "NA_ERROR_SUMMARY_HASH": key[4],
+                    "NA_ERROR_SUMMARY": key[5],
                     "NU_ERROR_COUNT": 0,
                     "DT_LAST_SEEN_AT": row.get("DT_EVENT_AT"),
                     "ID_LAST_SOURCE_ROW": row.get("ID_SOURCE_ROW"),
@@ -2031,8 +2077,6 @@ class SummaryRefreshEngine:
                 "FK_HOST": row["FK_HOST"],
                 "NA_ERROR_SCOPE": row["NA_ERROR_SCOPE"],
                 "NA_TASK_STATE": row["NA_TASK_STATE"],
-                "NA_ERROR_DOMAIN": row["NA_ERROR_DOMAIN"],
-                "NA_ERROR_STAGE": row["NA_ERROR_STAGE"],
                 "NA_ERROR_CODE": row["NA_ERROR_CODE"],
                 "NA_ERROR_SUMMARY_HASH": row["NA_ERROR_SUMMARY_HASH"],
                 "NA_ERROR_SUMMARY": row["NA_ERROR_SUMMARY"],
@@ -2055,8 +2099,6 @@ class SummaryRefreshEngine:
                         "FK_HOST",
                         "NA_ERROR_SCOPE",
                         "NA_TASK_STATE",
-                        "NA_ERROR_DOMAIN",
-                        "NA_ERROR_STAGE",
                         "NA_ERROR_CODE",
                         "NA_ERROR_SUMMARY_HASH",
                     ],
@@ -2070,8 +2112,8 @@ class SummaryRefreshEngine:
 
         All per-host error group rows from ``HOST_ERROR_SUMMARY`` are merged
         into cross-host buckets keyed on
-        (NA_ERROR_SCOPE, NA_TASK_STATE, NA_ERROR_DOMAIN, NA_ERROR_STAGE,
-        NA_ERROR_CODE, NA_ERROR_SUMMARY_HASH). Occurrence counts are summed
+        (NA_ERROR_SCOPE, NA_TASK_STATE, NA_ERROR_CODE,
+        NA_ERROR_SUMMARY_HASH). Occurrence counts are summed
         into the exact UI
         payload consumed by the global diagnostics page.
 
@@ -2094,8 +2136,6 @@ class SummaryRefreshEngine:
             key = (
                 row.get("NA_ERROR_SCOPE"),
                 row.get("NA_TASK_STATE"),
-                row.get("NA_ERROR_DOMAIN"),
-                row.get("NA_ERROR_STAGE"),
                 row.get("NA_ERROR_CODE"),
                 row.get("NA_ERROR_SUMMARY_HASH"),
                 row.get("NA_ERROR_SUMMARY"),
@@ -2105,11 +2145,9 @@ class SummaryRefreshEngine:
                 current = {
                     "NA_ERROR_SCOPE": key[0],
                     "NA_TASK_STATE": key[1],
-                    "NA_ERROR_DOMAIN": key[2],
-                    "NA_ERROR_STAGE": key[3],
-                    "NA_ERROR_CODE": key[4],
-                    "NA_ERROR_SUMMARY_HASH": key[5],
-                    "NA_ERROR_SUMMARY": key[6],
+                    "NA_ERROR_CODE": key[2],
+                    "NA_ERROR_SUMMARY_HASH": key[3],
+                    "NA_ERROR_SUMMARY": key[4],
                     "NU_ERROR_COUNT": 0,
                 }
                 grouped[key] = current
@@ -2120,8 +2158,6 @@ class SummaryRefreshEngine:
             {
                 "NA_ERROR_SCOPE": row["NA_ERROR_SCOPE"],
                 "NA_TASK_STATE": row["NA_TASK_STATE"],
-                "NA_ERROR_DOMAIN": row["NA_ERROR_DOMAIN"],
-                "NA_ERROR_STAGE": row["NA_ERROR_STAGE"],
                 "NA_ERROR_CODE": row["NA_ERROR_CODE"],
                 "NA_ERROR_SUMMARY_HASH": row["NA_ERROR_SUMMARY_HASH"],
                 "NA_ERROR_SUMMARY": row["NA_ERROR_SUMMARY"],

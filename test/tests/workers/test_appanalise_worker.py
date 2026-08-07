@@ -47,6 +47,7 @@ with bind_real_shared_package():
                 str(APP_ROOT / "appCataloga_file_bin_process_appAnalise.py"),
             )
             processing = worker.processing_bin
+            file_utils = worker.file_utils
 
 
 class FakeWorkerLog:
@@ -85,6 +86,9 @@ class FakeWorkerLog:
 
     def task_phase(self, service: str, **fields) -> None:
         self.entries.append(("task_phase", {"service": service, **fields}))
+
+    def task_claimed(self, service: str, **fields) -> None:
+        self.entries.append(("task_claimed", {"service": service, **fields}))
 
     def task_done(self, service: str, **fields) -> None:
         self.entries.append(("task_done", {"service": service, **fields}))
@@ -1074,46 +1078,14 @@ class RunProcessingFlowTests(unittest.TestCase):
 class FileMetadataTests(unittest.TestCase):
     """Validate file metadata helpers in processing module."""
 
-    def test_build_history_metadata_from_file_meta_returns_canonical_fields(self) -> None:
-        created = datetime(2026, 3, 16, 12, 0, 0)
-        file_meta = {
-            "file_name": "sample_DONE.mat",
-            "extension": ".mat",
-            "size_kb": 42,
-            "dt_created": created,
-            "dt_modified": created,
-        }
-
-        history = processing.build_history_metadata_from_file_meta(file_meta)
-
-        self.assertEqual(history["name"], "sample_DONE.mat")
-        self.assertEqual(history["extension"], ".mat")
-        self.assertEqual(history["size_kb"], 42)
-
-    def test_build_history_metadata_from_file_meta_preserves_timestamps(self) -> None:
-        created = datetime(2026, 3, 16, 12, 0, 0)
-        modified = datetime(2026, 3, 17, 8, 0, 0)
-        file_meta = {
-            "file_name": "out.mat",
-            "extension": ".mat",
-            "size_kb": 10,
-            "dt_created": created,
-            "dt_modified": modified,
-        }
-
-        history = processing.build_history_metadata_from_file_meta(file_meta)
-
-        self.assertEqual(history["dt_created"], created)
-        self.assertEqual(history["dt_modified"], modified)
-
     def test_is_same_file_normalizes_equivalent_paths(self) -> None:
         file_a = {"full_path": "/mnt/reposfi/tmp/../tmp/file.zip"}
         file_b = {"full_path": "/mnt/reposfi/tmp/file.zip"}
 
-        self.assertTrue(processing.is_same_file(file_a, file_b))
+        self.assertTrue(file_utils.is_same_file(file_a, file_b))
 
     def test_is_same_file_rejects_missing_metadata(self) -> None:
-        self.assertFalse(processing.is_same_file(None, {"full_path": "/tmp/file.zip"}))
+        self.assertFalse(file_utils.is_same_file(None, {"full_path": "/tmp/file.zip"}))
 
 
 class FileMoveTests(unittest.TestCase):
@@ -1137,7 +1109,7 @@ class FileMoveTests(unittest.TestCase):
                 "full_path": str(source_file),
             }
 
-            moved = processing.move_file_if_present(file_meta, str(target_dir))
+            moved = file_utils.move_file_if_present(file_meta, str(target_dir))
 
             self.assertIsNotNone(moved)
             self.assertEqual(moved["file_path"], str(target_dir))
@@ -1163,7 +1135,7 @@ class FileMoveTests(unittest.TestCase):
                 "full_path": str(source_file),
             }
 
-            moved = processing.move_file_if_present(
+            moved = file_utils.move_file_if_present(
                 file_meta,
                 str(target_dir),
                 logger=fake_log,
@@ -1190,7 +1162,7 @@ class FileMoveTests(unittest.TestCase):
             "full_path": "/tmp/missing.mat",
         }
 
-        self.assertIsNone(processing.move_file_if_present(file_meta, "/tmp/target"))
+        self.assertIsNone(file_utils.move_file_if_present(file_meta, "/tmp/target"))
 
     def test_move_file_if_present_can_refresh_mtime_for_quarantine(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1213,7 +1185,7 @@ class FileMoveTests(unittest.TestCase):
                 "full_path": str(source_file),
             }
 
-            moved = processing.move_file_if_present(
+            moved = file_utils.move_file_if_present(
                 file_meta,
                 str(target_dir),
                 refresh_mtime=True,
@@ -1236,14 +1208,14 @@ class FileMoveTests(unittest.TestCase):
             "full_path": "/tmp/broken.mat",
         }
 
-        with patch.object(processing.os.path, "exists", return_value=True):
+        with patch.object(file_utils.os.path, "exists", return_value=True):
             with patch.object(
-                processing,
+                file_utils,
                 "file_move",
                 side_effect=OSError(errno.EIO, "simulated failure"),
             ):
                 with self.assertRaises(OSError):
-                    processing.move_file_if_present(
+                    file_utils.move_file_if_present(
                         file_meta,
                         "/tmp/target",
                         logger=fake_log,
@@ -1278,9 +1250,9 @@ class FileMoveTests(unittest.TestCase):
                     raise OSError(errno.EBUSY, "Device or resource busy")
                 return real_rename(source, target)
 
-            with patch.object(processing.os, "rename", side_effect=flaky_rename):
-                with patch.object(processing.time, "sleep", side_effect=sleep_calls.append):
-                    result = processing.file_move(
+            with patch.object(file_utils.os, "rename", side_effect=flaky_rename):
+                with patch.object(file_utils.time, "sleep", side_effect=sleep_calls.append):
+                    result = file_utils.file_move(
                         filename=source_file.name,
                         path=str(source_dir),
                         new_path=str(target_dir),
@@ -1386,7 +1358,8 @@ class RetryTests(unittest.TestCase):
             db.history_updates[0]["NU_STATUS_PROCESSING"],
             worker.k.TASK_FROZEN,
         )
-        self.assertNotIn("DT_PROCESSED", db.history_updates[0])
+        self.assertIn("DT_PROCESSED", db.history_updates[0])
+        self.assertIsNotNone(db.history_updates[0]["DT_PROCESSED"])
 
         self.assertEqual(len(db.task_deletes), 0)
         self.assertEqual(len(db.statistics_updates), 1)
@@ -1493,7 +1466,7 @@ class PathRuleTests(unittest.TestCase):
     """Validate derived repository locations used by the worker helpers."""
 
     def test_build_resolved_files_trash_path_uses_dedicated_subdir(self) -> None:
-        resolved_trash = processing.build_resolved_files_trash_path()
+        resolved_trash = file_utils.build_resolved_files_trash_path()
 
         self.assertTrue(resolved_trash.endswith("/trash/resolved_files"))
         self.assertIn(worker.k.REPO_FOLDER, resolved_trash)
@@ -1502,18 +1475,38 @@ class PathRuleTests(unittest.TestCase):
 class WorkerFlowScenarioTests(unittest.TestCase):
     """Exercise larger worker scenarios around appAnalise finalization rules."""
 
-    def test_main_does_not_read_file_task_when_appanalise_is_unavailable(self) -> None:
+    def test_main_skips_claim_and_processing_when_appanalise_is_unavailable(self) -> None:
         fake_log = FakeWorkerLog()
-        read_calls = []
         sleep_calls = []
 
-        class FakeDbBkpMain:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
+        class FakeDbBkpMain(FakeDbBkp):
+            last_instance = None
 
             def read_file_task(self, **kwargs):
-                read_calls.append(kwargs)
-                return None
+                if getattr(self, "_read_once", False):
+                    return None
+                self._read_once = True
+                return (
+                    {
+                        "FILE_TASK__ID_FILE_TASK": 321,
+                        "FILE_TASK__NA_SERVER_FILE_PATH": "/mnt/reposfi/tmp/RFEye002211",
+                        "FILE_TASK__NA_SERVER_FILE_NAME": "sample.bin",
+                        "FILE_TASK__NA_HOST_FILE_PATH": "/mnt/internal/data/2026/PECAN",
+                        "FILE_TASK__NA_HOST_FILE_NAME": "sample.bin",
+                        "HOST__NA_HOST_NAME": "RFEye002211",
+                        "FILE_TASK__NA_EXTENSION_SERVER": ".bin",
+                        "FILE_TASK__DT_FILE_CREATED_SERVER": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__DT_FILE_MODIFIED_SERVER": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__VL_FILE_SIZE_KB_SERVER": 123,
+                    },
+                    10699,
+                    None,
+                )
+
+            def __init__(self, *args, **kwargs) -> None:
+                super().__init__()
+                self._read_once = False
+                FakeDbBkpMain.last_instance = self
 
         class FakeDbRfmMain:
             def __init__(self, *args, **kwargs) -> None:
@@ -1536,7 +1529,11 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                             worker.process_status["running"] = True
                             worker.main()
 
-        self.assertEqual(read_calls, [])
+        db_bp = FakeDbBkpMain.last_instance
+        self.assertEqual(len(db_bp.task_updates), 0)
+        self.assertEqual(len(db_bp.task_deletes), 0)
+        self.assertEqual(len(db_bp.history_updates), 0)
+        self.assertEqual(len(db_bp.statistics_updates), 0)
         self.assertEqual(sleep_calls, ["slept"])
         self.assertEqual(len(fake_log.warnings), 1)
         self.assertIn("appanalise_unavailable_retry", fake_log.warnings[0])
@@ -1565,10 +1562,10 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                         "FILE_TASK__NA_HOST_FILE_PATH": "/mnt/internal/data/2026/PECAN",
                         "FILE_TASK__NA_HOST_FILE_NAME": "sample.bin",
                         "HOST__NA_HOST_NAME": "RFEye002211",
-                        "FILE_TASK__NA_EXTENSION": ".bin",
-                        "FILE_TASK__DT_FILE_CREATED": datetime(2026, 2, 4, 7, 24, 15),
-                        "FILE_TASK__DT_FILE_MODIFIED": datetime(2026, 2, 4, 7, 24, 15),
-                        "FILE_TASK__VL_FILE_SIZE_KB": 123,
+                        "FILE_TASK__NA_EXTENSION_SERVER": ".bin",
+                        "FILE_TASK__DT_FILE_CREATED_SERVER": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__DT_FILE_MODIFIED_SERVER": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__VL_FILE_SIZE_KB_SERVER": 123,
                     },
                     10699,
                     None,
@@ -1618,7 +1615,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         self.assertEqual(len(db_bp.statistics_updates), 0)
         self.assertEqual(sleep_calls, ["slept", "slept"])
         self.assertTrue(
-            any("event=file_task_claim_lost" in warning for warning in fake_log.warnings)
+            any("event=task_claim_race" in warning for warning in fake_log.warnings)
         )
 
     def test_main_keeps_zip_history_when_validation_fails_after_export(self) -> None:
@@ -1732,10 +1729,10 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                         "FILE_TASK__NA_HOST_FILE_PATH": "/mnt/internal/data/2026/PECAN",
                         "FILE_TASK__NA_HOST_FILE_NAME": "sample.bin",
                         "HOST__NA_HOST_NAME": "RFEye002211",
-                        "FILE_TASK__NA_EXTENSION": ".bin",
-                        "FILE_TASK__DT_FILE_CREATED": datetime(2026, 2, 4, 7, 24, 15),
-                        "FILE_TASK__DT_FILE_MODIFIED": datetime(2026, 2, 4, 7, 24, 15),
-                        "FILE_TASK__VL_FILE_SIZE_KB": 123,
+                        "FILE_TASK__NA_EXTENSION_SERVER": ".bin",
+                        "FILE_TASK__DT_FILE_CREATED_SERVER": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__DT_FILE_MODIFIED_SERVER": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__VL_FILE_SIZE_KB_SERVER": 123,
                     },
                     10699,
                     None,
@@ -1768,33 +1765,10 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             def check_connection(self) -> None:
                 return None
 
-            def process(self, **kwargs):
-                spectrum = SimpleNamespace(
-                    site_data={
-                        "longitude": -51.23,
-                        "latitude": -30.01,
-                        "altitude": 10.0,
-                        "longitude_raw": [-51.23],
-                        "latitude_raw": [-30.01],
-                        "altitude_raw": [10.0],
-                        "nu_gnss_measurements": 1,
-                        "geographic_path": None,
-                    },
-                    start_dateidx=datetime(2026, 2, 4, 7, 24, 15),
-                    site_id=219,
-                )
-                return (
-                    {"method": "Fixed logger", "spectrum": [spectrum]},
-                    {
-                        "file_path": "/mnt/reposfi/tmp/RFEye002211",
-                        "file_name": "sample.bin",
-                        "extension": ".bin",
-                        "size_kb": 123,
-                        "dt_created": datetime(2026, 2, 4, 7, 24, 15),
-                        "dt_modified": datetime(2026, 2, 4, 7, 24, 15),
-                        "full_path": "/mnt/reposfi/tmp/RFEye002211/sample.bin",
-                    },
-                )
+        def fail_during_finalization(db_rfm, task, app_analise):
+            del task, app_analise
+            db_rfm.begin_transaction()
+            raise OSError(errno.EBUSY, "Device or resource busy")
 
         def stop_after_iteration():
             sleep_calls.append("slept")
@@ -1805,35 +1779,23 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 with patch.object(worker, "dbHandlerRFM", FakeDbRfmMain):
                     with patch.object(worker, "AppAnaliseConnection", FakeApp):
                         with patch.object(
-                            worker.processing,
-                            "resolve_spectrum_sites",
-                            return_value=[219],
+                            worker,
+                            "_do_work",
+                            side_effect=fail_during_finalization,
                         ):
                             with patch.object(
-                                worker.processing,
-                                "insert_spectra_batch",
-                                return_value=[9001],
+                                worker.runtime_sleep,
+                                "random_jitter_sleep",
+                                side_effect=stop_after_iteration,
                             ):
-                                with patch.object(
-                                    worker.processing,
-                                    "promote_final_artifact",
-                                    side_effect=OSError(
-                                        errno.EBUSY,
-                                        "Device or resource busy",
-                                    ),
-                                ):
-                                    with patch.object(
-                                        worker.runtime_sleep,
-                                        "random_jitter_sleep",
-                                        side_effect=stop_after_iteration,
-                                    ):
-                                        worker.process_status["running"] = True
-                                        worker.main()
+                                worker.process_status["running"] = True
+                                worker.main()
 
         db_bp = FakeDbBkpMain.last_instance
         db_rfm = FakeDbRfmMain.last_instance
 
-        self.assertEqual(db_rfm.commit_calls, 1)
+        self.assertEqual(db_rfm.commit_calls, 0)
+        self.assertEqual(db_rfm.rollback_calls, 1)
         self.assertEqual(len(db_bp.task_updates), 2)
         self.assertEqual(db_bp.task_updates[0]["NU_STATUS"], worker.k.TASK_RUNNING)
         self.assertEqual(db_bp.task_updates[1]["NU_STATUS"], worker.k.TASK_FROZEN)
@@ -1852,8 +1814,8 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         self.assertEqual(sleep_calls, ["slept"])
         self.assertTrue(
             any(
-                isinstance(item, tuple) and item[0] == "processing_frozen"
-                for item in fake_log.errors
+                isinstance(item, tuple) and item[0] == "task_frozen"
+                for item in fake_log.entries
             )
         )
 
@@ -1881,10 +1843,10 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                         "FILE_TASK__NA_HOST_FILE_PATH": "/mnt/internal/data/2026/PECAN",
                         "FILE_TASK__NA_HOST_FILE_NAME": "sample.bin",
                         "HOST__NA_HOST_NAME": "RFEye002211",
-                        "FILE_TASK__NA_EXTENSION": ".bin",
-                        "FILE_TASK__DT_FILE_CREATED": datetime(2026, 2, 4, 7, 24, 15),
-                        "FILE_TASK__DT_FILE_MODIFIED": datetime(2026, 2, 4, 7, 24, 15),
-                        "FILE_TASK__VL_FILE_SIZE_KB": 123,
+                        "FILE_TASK__NA_EXTENSION_SERVER": ".bin",
+                        "FILE_TASK__DT_FILE_CREATED_SERVER": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__DT_FILE_MODIFIED_SERVER": datetime(2026, 2, 4, 7, 24, 15),
+                        "FILE_TASK__VL_FILE_SIZE_KB_SERVER": 123,
                     },
                     10699,
                     None,
@@ -1937,8 +1899,8 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         self.assertEqual(sleep_calls, ["slept"])
         self.assertTrue(
             any(
-                isinstance(item, tuple) and item[0] == "processing_frozen"
-                for item in fake_log.errors
+                isinstance(item, tuple) and item[0] == "task_frozen"
+                for item in fake_log.entries
             )
         )
 
@@ -1980,7 +1942,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                             hostname_db=hostname_db,
                         )
                         # Step 2: pure filesystem — move artifact, retire source
-                        final_meta = processing.promote_final_artifact(
+                        final_meta = file_utils.promote_final_artifact(
                             new_path=new_path,
                             file_meta=exported_meta,
                             source_file_meta=source_meta,
@@ -2096,7 +2058,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                     bin_data=bin_data,
                     hostname_db="EMRx001",
                 )
-                final_meta = processing.promote_final_artifact(
+                final_meta = file_utils.promote_final_artifact(
                     new_path=new_path,
                     file_meta=exported_meta,
                     source_file_meta=exported_meta,
@@ -2323,7 +2285,6 @@ class WorkerFlowScenarioTests(unittest.TestCase):
     def test_finalize_success_keeps_done_when_gps_metric_update_fails(self) -> None:
         fake_log = FakeWorkerLog()
         db_bp = FakeDbBkp()
-        db_bp.host_update_error = RuntimeError("HOST metric unavailable")
         task = {
             "file_task_id": 104,
             "host_id": 11,
@@ -2348,7 +2309,12 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         }
 
         with patch.object(worker, "log", fake_log):
-            worker._finalize_success(db_bp, task, result, elapsed_sec=1.234)
+            with patch.object(
+                worker.host_runtime,
+                "record_gps_gnss_available",
+                side_effect=RuntimeError("HOST metric unavailable"),
+            ):
+                worker._finalize_success(db_bp, task, result, elapsed_sec=1.234)
 
         self.assertEqual(db_bp.transaction_events, ["begin", "commit"])
         self.assertEqual(len(db_bp.task_deletes), 1)

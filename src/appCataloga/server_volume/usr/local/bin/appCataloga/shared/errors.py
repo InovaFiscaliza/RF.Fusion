@@ -139,6 +139,61 @@ ERROR_DOMAIN_BY_CODE = {
     "INVALID_HOST_ID": "API",
 }
 
+CANONICAL_ERROR_SUMMARY_BY_CODE = {
+    "GPS_GNSS_UNAVAILABLE": "Invalid GPS reading: GNSS unavailable sentinel",
+    "NO_VALID_SPECTRA": "BIN discarded: no valid spectra after validation",
+    "SPECTRUM_LIST_EMPTY": "Spectrum list is empty",
+    "HOSTNAME_MISSING": "Hostname missing or invalid",
+    "FILE_NOT_FOUND": "File not found",
+    "INVALID_DATETIME_MONTH": "Invalid datetime string: month out of range",
+    "INVALID_BUFFER_SIZE": "Invalid binary buffer size",
+    "SITE_GEOGRAPHIC_CODES_NOT_FOUND": (
+        "Error inserting site in DIM_SPECTRUM_SITE: geographic codes not found"
+    ),
+    "BIN_PAYLOAD_VALIDATION_FAILED": "Payload validation failed during processing",
+    "APP_ANALISE_INVALID_SPECTRA_TYPE": (
+        "APP_ANALISE returned invalid Answer.Spectra type"
+    ),
+    "APP_ANALISE_ANSWER_ERROR": "APP_ANALISE returned error in Answer",
+    "APP_ANALISE_EMPTY_SPEC_DATA": "APP_ANALISE returned empty spectrum data",
+    "APP_ANALISE_NO_SPECTRAL_DATA": "APP_ANALISE reported no spectral data",
+    "APP_ANALISE_FILE_UNAVAILABLE": "APP_ANALISE file unavailable",
+    "APP_ANALISE_OUTPUT_ARTIFACT_UNAVAILABLE": "APP_ANALISE output artifact unavailable",
+    "APP_ANALISE_TRANSIENT_SERVICE_FAILURE": (
+        "Transient appAnalise processing failure"
+    ),
+    "APP_ANALISE_SERVICE_RESPONSE_ERROR": (
+        "APP_ANALISE service returned processing error"
+    ),
+    "APP_ANALISE_READ_TIMEOUT": "APP_ANALISE read timeout during processing",
+    "APP_ANALISE_NO_READABLE_FILES_IN_ZIP": (
+        "APP_ANALISE reported no readable files in ZIP"
+    ),
+    "TRANSIENT_FILESYSTEM_FINALIZATION_FAILURE": (
+        "Transient filesystem finalization failure"
+    ),
+}
+
+
+def canonical_error_summary(
+    code: Optional[str],
+    summary: Optional[str],
+) -> Optional[str]:
+    """Return the stable summary for a classified error code.
+
+    Known codes use a fixed operator-facing summary. The raw text remains
+    available to callers for unclassified errors and non-error messages.
+    """
+
+    normalized_code = str(code or "").strip().upper()
+    canonical_summary = CANONICAL_ERROR_SUMMARY_BY_CODE.get(normalized_code)
+
+    if canonical_summary:
+        return canonical_summary
+
+    normalized_summary = str(summary or "").strip()
+    return normalized_summary or None
+
 APP_ANALISE_ANSWER_CLASSIFICATIONS = {
     k.APP_ANALISE_NO_READABLE_FILES_IN_ZIP_DETAIL: (
         "APP_ANALISE_NO_READABLE_FILES_IN_ZIP",
@@ -858,6 +913,39 @@ def classify_persisted_error_message(message: Optional[str]) -> Dict[str, Any]:
     return payload
 
 
+def _storage_error_fields(classified: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep only the stable classification and useful diagnostic detail."""
+    return {
+        "NA_ERROR_CODE": classified.get("NA_ERROR_CODE"),
+        "NA_ERROR_DETAIL": classified.get("NA_ERROR_DETAIL"),
+        "NU_ERROR_CLASSIFIER_VERSION": classified.get(
+            "NU_ERROR_CLASSIFIER_VERSION"
+        ),
+    }
+
+
+def build_operational_error_payload(message: Optional[str]) -> Dict[str, Any]:
+    """Build the compact error payload stored by operational task tables.
+
+    `NA_MESSAGE` remains the generic task-message column. For structured
+    errors it stores only the concise human summary, while the stable code and
+    the non-redundant technical context live in their dedicated columns.
+    Non-error task messages pass through unchanged.
+    """
+    canonical_message = canonicalize_persisted_error_message(message)
+    classified = classify_persisted_error_message(canonical_message)
+    error_code = classified.get("NA_ERROR_CODE")
+
+    return {
+        "NA_MESSAGE": (
+            classified.get("NA_ERROR_SUMMARY")
+            if error_code
+            else canonical_message
+        ),
+        **_storage_error_fields(classified),
+    }
+
+
 def persisted_error_fields_from_handler(
     handler: Optional["ErrorHandler"] = None,
     *,
@@ -865,10 +953,12 @@ def persisted_error_fields_from_handler(
     clear_when_empty: bool = True,
 ) -> Dict[str, Any]:
     """
-    Build the structured FILE_TASK / FILE_TASK_HISTORY error columns.
+    Build compact error fields for FILE_TASK / FILE_TASK_HISTORY.
 
-    Workers should persist these fields explicitly so the row already carries
-    the canonical error payload before any downstream aggregation reads it.
+    The operational tables store the stable error code and useful diagnostic
+    detail. `NA_MESSAGE` is normalized separately by
+    :func:`build_operational_error_payload` because it also stores non-error
+    task messages.
     """
     if handler is not None:
         triggered = getattr(handler, "triggered", None)
@@ -877,20 +967,28 @@ def persisted_error_fields_from_handler(
 
         if triggered:
             if callable(format_persisted_error):
-                return classify_persisted_error_message(
-                    handler.format_persisted_error()
+                return _storage_error_fields(
+                    classify_persisted_error_message(
+                        handler.format_persisted_error()
+                    )
                 )
-            return classify_persisted_error_message(handler.format_error())
+            return _storage_error_fields(
+                classify_persisted_error_message(handler.format_error())
+            )
 
         if triggered is None and callable(format_error):
             formatted = format_error()
             if formatted:
-                return classify_persisted_error_message(formatted)
+                return _storage_error_fields(
+                    classify_persisted_error_message(formatted)
+                )
 
     if message is not None:
-        return classify_persisted_error_message(message)
+        return _storage_error_fields(classify_persisted_error_message(message))
 
-    return empty_persisted_error_fields(classified=clear_when_empty)
+    return _storage_error_fields(
+        empty_persisted_error_fields(classified=clear_when_empty)
+    )
 
 class BinValidationError(ValueError):
     """

@@ -105,6 +105,10 @@ class TestServerUsageMetrics(unittest.TestCase):
         if root not in sys.path:
             sys.path.insert(0, root)
 
+        # Other route tests install a lightweight telemetry stub in sys.modules.
+        # This suite exercises the real counters, so it must start with a clean
+        # module entry regardless of the order selected by pytest.
+        sys.modules.pop("modules.server.usage_metrics", None)
         cls.usage_metrics = importlib.import_module("modules.server.usage_metrics")
         cls.routes = load_server_routes()
 

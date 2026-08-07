@@ -830,6 +830,33 @@ class BackupQueueReconcileTests(unittest.TestCase):
             ),
         )
 
+    def test_merge_structured_error_fields_keeps_compact_error_payload(self) -> None:
+        """Operational rows retain only the concise message, code and detail."""
+
+        handler = self.make_handler()
+        payload = handler._merge_structured_error_fields(
+            {
+                "NA_MESSAGE": (
+                    "Processing Error | [ERROR] [stage=DB] "
+                    "[code=UNCLASSIFIED] Failed to persist processed spectra batch"
+                ),
+                "NA_ERROR_DOMAIN": "PROCESSING",
+                "NA_ERROR_SUMMARY": "Failed to persist processed spectra batch",
+                "NA_ERROR_DETAIL": "Unexpected processing loop failure",
+            }
+        )
+
+        self.assertEqual(
+            payload["NA_MESSAGE"],
+            "Failed to persist processed spectra batch",
+        )
+        self.assertEqual(payload["NA_ERROR_CODE"], "UNCLASSIFIED")
+        self.assertEqual(payload["NU_ERROR_CLASSIFIER_VERSION"], 1)
+        self.assertEqual(payload["NA_ERROR_DETAIL"], "Unexpected processing loop failure")
+        self.assertNotIn("NA_ERROR_DOMAIN", payload)
+        self.assertNotIn("NA_ERROR_STAGE", payload)
+        self.assertNotIn("NA_ERROR_SUMMARY", payload)
+
     def test_file_history_recreate_processing_task_upserts_queue_and_resets_history(self) -> None:
         """Recreation must restore PROCESS/PENDING atomically."""
 

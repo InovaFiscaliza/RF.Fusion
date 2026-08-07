@@ -92,144 +92,118 @@ def _format_kilobytes_human(num_kilobytes):
     return _format_bytes_human(float(num_kilobytes or 0) * 1024)
 
 
-def _canonicalize_processing_error_message(message):
-    """Collapse volatile processing-error variants into a stable display key.
+_PROCESSING_ERROR_SUMMARIES_BY_CODE = {
+    "GPS_GNSS_UNAVAILABLE": "Invalid GPS reading: GNSS unavailable sentinel",
+    "NO_VALID_SPECTRA": "BIN discarded: no valid spectra after validation",
+    "SPECTRUM_LIST_EMPTY": "Spectrum list is empty",
+    "HOSTNAME_MISSING": "Hostname missing or invalid",
+    "FILE_NOT_FOUND": "File not found",
+    "INVALID_DATETIME_MONTH": "Invalid datetime string: month out of range",
+    "INVALID_BUFFER_SIZE": "Invalid binary buffer size",
+    "SITE_GEOGRAPHIC_CODES_NOT_FOUND": (
+        "Error inserting site in DIM_SPECTRUM_SITE: geographic codes not found"
+    ),
+    "BIN_PAYLOAD_VALIDATION_FAILED": "Payload validation failed during processing",
+    "APP_ANALISE_INVALID_SPECTRA_TYPE": (
+        "APP_ANALISE returned invalid Answer.Spectra type"
+    ),
+    "APP_ANALISE_ANSWER_ERROR": "APP_ANALISE returned error in Answer",
+    "APP_ANALISE_EMPTY_SPEC_DATA": "APP_ANALISE returned empty spectrum data",
+    "APP_ANALISE_NO_SPECTRAL_DATA": "APP_ANALISE reported no spectral data",
+    "APP_ANALISE_FILE_UNAVAILABLE": "APP_ANALISE file unavailable",
+    "APP_ANALISE_OUTPUT_ARTIFACT_UNAVAILABLE": "APP_ANALISE output artifact unavailable",
+    "APP_ANALISE_TRANSIENT_SERVICE_FAILURE": (
+        "Transient appAnalise processing failure"
+    ),
+    "APP_ANALISE_SERVICE_RESPONSE_ERROR": (
+        "APP_ANALISE service returned processing error"
+    ),
+    "APP_ANALISE_READ_TIMEOUT": "APP_ANALISE read timeout during processing",
+}
 
-    Operators usually care about the failure class, not about file-specific
-    details embedded in the raw message. Canonicalizing here prevents the UI
-    from showing dozens of nearly identical buckets for one logical issue.
-    """
+
+def _render_processing_error_message(code, summary):
+    """Render a concise processing bucket without duplicating table columns."""
+
+    normalized_code = str(code or "UNCLASSIFIED").strip().upper() or "UNCLASSIFIED"
+    normalized_summary = _PROCESSING_ERROR_SUMMARIES_BY_CODE.get(normalized_code)
+    normalized_summary = normalized_summary or str(summary or "").strip()
+
+    if not normalized_summary:
+        normalized_summary = "Processing failed without structured detail"
+
+    return f"[code={normalized_code}] {normalized_summary}"
+
+
+def _canonicalize_processing_error_message(message):
+    """Collapse volatile processing-error variants into stable display keys."""
 
     normalized = (message or "(Sem mensagem)").strip() or "(Sem mensagem)"
 
     if normalized == "(Sem mensagem)":
-        return normalized
+        return _render_processing_error_message("UNCLASSIFIED", normalized)
 
     if normalized.lower() == "processing error":
-        return (
-            "Processing Error | [ERROR] [stage=PROCESS] "
-            "[code=UNCLASSIFIED] Processing failed without structured detail"
-        )
+        return _render_processing_error_message("UNCLASSIFIED", "")
 
     if " | [detail=" in normalized:
         normalized = normalized.split(" | [detail=", 1)[0]
 
-    lowered = normalized.lower()
-
-    code_match = re.search(r"\[code=([A-Z0-9_]+)\]", normalized)
+    code_match = re.search(r"\[code=([A-Z0-9_]+)\]", normalized, re.IGNORECASE)
     if code_match:
-        code = code_match.group(1)
-        coded_labels = {
-            "GPS_GNSS_UNAVAILABLE": (
-                "Processing Error | [ERROR] [stage=PROCESS] "
-                "[code=GPS_GNSS_UNAVAILABLE] Invalid GPS reading: GNSS unavailable sentinel"
-            ),
-            "NO_VALID_SPECTRA": (
-                "Processing Error | [ERROR] [stage=PROCESS] "
-                "[code=NO_VALID_SPECTRA] BIN discarded: no valid spectra after validation"
-            ),
-            "SPECTRUM_LIST_EMPTY": (
-                "Processing Error | [ERROR] [stage=PROCESS] "
-                "[code=SPECTRUM_LIST_EMPTY] Spectrum list is empty"
-            ),
-            "HOSTNAME_MISSING": (
-                "Processing Error | [ERROR] [stage=PROCESS] "
-                "[code=HOSTNAME_MISSING] Hostname missing or invalid"
-            ),
-            "FILE_NOT_FOUND": (
-                "Processing Error | [ERROR] [stage=PROCESS] "
-                "[code=FILE_NOT_FOUND] File not found"
-            ),
-            "INVALID_DATETIME_MONTH": (
-                "Processing Error | [ERROR] [stage=PROCESS] "
-                "[code=INVALID_DATETIME_MONTH] Invalid datetime string: month out of range"
-            ),
-            "INVALID_BUFFER_SIZE": (
-                "Processing Error | [ERROR] [stage=PROCESS] "
-                "[code=INVALID_BUFFER_SIZE] Invalid binary buffer size"
-            ),
-            "SITE_GEOGRAPHIC_CODES_NOT_FOUND": (
-                "Processing Error | [ERROR] [stage=SITE] "
-                "[code=SITE_GEOGRAPHIC_CODES_NOT_FOUND] "
-                "Error inserting site in DIM_SPECTRUM_SITE: geographic codes not found"
-            ),
-        }
-        return coded_labels.get(code, normalized)
-
-    if "gnss unavailable sentinel" in lowered and "[stage=process]" in lowered:
-        return (
-            "Processing Error | [ERROR] [stage=PROCESS] "
-            "[code=GPS_GNSS_UNAVAILABLE] Invalid GPS reading: GNSS unavailable sentinel"
+        return _render_processing_error_message(
+            code_match.group(1),
+            normalized[code_match.end():].strip(" |"),
         )
 
-    if "bin discarded: no valid spectra after validation" in lowered:
-        return (
-            "Processing Error | [ERROR] [stage=PROCESS] "
-            "[code=NO_VALID_SPECTRA] BIN discarded: no valid spectra after validation"
-        )
+    lowered = normalized.lower()
+    inferred_code = None
 
-    if "spectrum list is empty" in lowered:
-        return (
-            "Processing Error | [ERROR] [stage=PROCESS] "
-            "[code=SPECTRUM_LIST_EMPTY] Spectrum list is empty"
-        )
-
-    if (
+    if "gnss unavailable sentinel" in lowered:
+        inferred_code = "GPS_GNSS_UNAVAILABLE"
+    elif "bin discarded: no valid spectra after validation" in lowered:
+        inferred_code = "NO_VALID_SPECTRA"
+    elif "spectrum list is empty" in lowered:
+        inferred_code = "SPECTRUM_LIST_EMPTY"
+    elif (
         "'hostname'" in normalized
         or "hostname resolution failed:" in lowered
         or "hostname missing or invalid" in lowered
     ):
-        return (
-            "Processing Error | [ERROR] [stage=PROCESS] "
-            "[code=HOSTNAME_MISSING] Hostname missing or invalid"
-        )
+        inferred_code = "HOSTNAME_MISSING"
+    elif "no such file or directory:" in lowered:
+        inferred_code = "FILE_NOT_FOUND"
+    elif 'month out of range in datetime string "' in lowered:
+        inferred_code = "INVALID_DATETIME_MONTH"
+    elif "buffer size must be a multiple of element size" in lowered:
+        inferred_code = "INVALID_BUFFER_SIZE"
+    elif "error retrieving geographic codes:" in lowered:
+        inferred_code = "SITE_GEOGRAPHIC_CODES_NOT_FOUND"
+    elif "app_analise returned invalid answer.spectra type:" in lowered:
+        inferred_code = "APP_ANALISE_INVALID_SPECTRA_TYPE"
+    elif "payload validation failed during processing" in lowered:
+        inferred_code = "BIN_PAYLOAD_VALIDATION_FAILED"
+    elif "app_analise source file unavailable before request:" in lowered:
+        inferred_code = "APP_ANALISE_FILE_UNAVAILABLE"
+    elif "transient appanalise processing failure" in lowered:
+        inferred_code = "APP_ANALISE_TRANSIENT_SERVICE_FAILURE"
 
-    if "[type=filenotfounderror]" in lowered and "no such file or directory:" in lowered:
-        return (
-            "Processing Error | [ERROR] [stage=PROCESS] "
-            "[code=FILE_NOT_FOUND] File not found"
-        )
+    if inferred_code:
+        return _render_processing_error_message(inferred_code, normalized)
 
-    if 'month out of range in datetime string "' in lowered:
-        return (
-            "Processing Error | [ERROR] [stage=PROCESS] "
-            "[code=INVALID_DATETIME_MONTH] Invalid datetime string: month out of range"
-        )
-
-    if "buffer size must be a multiple of element size" in lowered:
-        return (
-            "Processing Error | [ERROR] [stage=PROCESS] "
-            "[code=INVALID_BUFFER_SIZE] Invalid binary buffer size"
-        )
-
-    if "[stage=site]" in lowered and "error retrieving geographic codes:" in lowered:
-        return (
-            "Processing Error | [ERROR] [stage=SITE] "
-            "[code=SITE_GEOGRAPHIC_CODES_NOT_FOUND] "
-            "Error inserting site in DIM_SPECTRUM_SITE: geographic codes not found"
-        )
-
-    if (
-        "[type=binvalidationerror]" in lowered
-        and "app_analise returned invalid answer.spectra type:" in lowered
-    ):
-        return (
-            "Processing Error | [ERROR] [stage=PROCESS] "
-            "[code=APP_ANALISE_INVALID_SPECTRA_TYPE] "
-            "APP_ANALISE returned invalid Answer.Spectra type"
-        )
-
-    if (
-        "[type=binvalidationerror]" in lowered
-        and "payload validation failed during processing" in lowered
-    ):
-        return (
-            "Processing Error | [ERROR] [stage=PROCESS] "
-            "[code=BIN_PAYLOAD_VALIDATION_FAILED] "
-            "Payload validation failed during processing"
-        )
-
-    return normalized
+    clean_summary = re.sub(
+        r"^Processing Error\s*\|\s*",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    clean_summary = re.sub(
+        r"\[(?:ERROR|stage=[^\]]+|type=[^\]]+)\]\s*",
+        "",
+        clean_summary,
+        flags=re.IGNORECASE,
+    ).strip(" |")
+    return _render_processing_error_message("UNCLASSIFIED", clean_summary)
 
 
 def _merge_grouped_processing_errors(rows):
@@ -248,10 +222,8 @@ def _merge_grouped_processing_errors(rows):
         )
         raw_message = row.get("ERROR_SUMMARY") or row.get("ERROR_MESSAGE") or "(Sem mensagem)"
         error_count = int(row.get("ERROR_COUNT") or 0)
-        canonical_message = (
-            structured_message
-            if structured_message
-            else _canonicalize_processing_error_message(raw_message)
+        canonical_message = _canonicalize_processing_error_message(
+            structured_message or raw_message
         )
 
         task_state = str(row.get("TASK_STATE") or "ERROR").strip() or "ERROR"
@@ -285,22 +257,17 @@ def _build_host_list_cache_key(*, online_only=False, search=None):
 
 
 def _format_structured_error_bucket(row, *, default_label):
-    """Render one grouped structured-error row into the legacy dashboard label."""
+    """Render one grouped code-and-summary row for the dashboard."""
     summary = str(row.get("ERROR_SUMMARY") or "").strip()
-    stage = str(row.get("ERROR_STAGE") or "").strip()
     code = str(row.get("ERROR_CODE") or "").strip()
 
-    if not summary or not (stage or code):
+    if not summary or not code:
         return None
 
     task_state = str(row.get("TASK_STATE") or "ERROR").strip() or "ERROR"
     parts = [f"{default_label} |", f"[{task_state}]"]
 
-    if stage:
-        parts.append(f"[stage={stage}]")
-
-    if code:
-        parts.append(f"[code={code}]")
+    parts.append(f"[code={code}]")
 
     parts.append(summary)
     return " ".join(parts)
@@ -718,15 +685,13 @@ def _get_server_error_summary_rows(error_scope):
     cur.execute(
         """
         SELECT
-            'ERROR' AS TASK_STATE,
-            NULLIF(TRIM(NA_ERROR_DOMAIN), '') AS ERROR_DOMAIN,
-            NULLIF(TRIM(NA_ERROR_STAGE), '') AS ERROR_STAGE,
+            NA_TASK_STATE AS TASK_STATE,
             NULLIF(TRIM(NA_ERROR_CODE), '') AS ERROR_CODE,
             COALESCE(NULLIF(TRIM(NA_ERROR_SUMMARY), ''), '(Sem mensagem)') AS ERROR_SUMMARY,
             NU_ERROR_COUNT AS ERROR_COUNT
         FROM SERVER_ERROR_SUMMARY
         WHERE NA_ERROR_SCOPE = %s
-        ORDER BY NU_ERROR_COUNT DESC, NA_ERROR_SUMMARY ASC
+        ORDER BY NU_ERROR_COUNT DESC, NA_TASK_STATE ASC, NA_ERROR_SUMMARY ASC
         """,
         (error_scope,),
     )
@@ -978,7 +943,6 @@ def _get_host_error_summary_rows(host_id, error_scope):
         """
         SELECT
             'ERROR' AS TASK_STATE,
-            NULLIF(TRIM(NA_ERROR_STAGE), '') AS ERROR_STAGE,
             NULLIF(TRIM(NA_ERROR_CODE), '') AS ERROR_CODE,
             COALESCE(NULLIF(TRIM(NA_ERROR_SUMMARY), ''), '(Sem mensagem)') AS ERROR_SUMMARY,
             NU_ERROR_COUNT AS ERROR_COUNT

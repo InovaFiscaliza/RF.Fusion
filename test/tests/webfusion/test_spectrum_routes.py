@@ -55,6 +55,7 @@ def load_spectrum_routes():
     fake_service = ModuleType("modules.spectrum.service")
     fake_service.get_spectrum_file_data = lambda *args, **kwargs: ([], 0)
     fake_service.get_equipments = lambda: []
+    fake_service.get_spectrum_filter_options = lambda *args, **kwargs: {}
     fake_service.get_spectrum_locality_options = lambda *args, **kwargs: []
     fake_service.get_spectrum_site_option = lambda *args, **kwargs: None
     fake_service.get_spectrum_site_availability_range = lambda *args, **kwargs: None
@@ -164,6 +165,8 @@ class TestSpectrumRoutes(unittest.TestCase):
             captured["kwargs"],
             {
                 "equipment_id": "338",
+                "state_id": None,
+                "district_id": None,
                 "site_id": "12",
                 "start_date": "2026-05-01",
                 "end_date": "2026-05-07",

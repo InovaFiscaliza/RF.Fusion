@@ -132,18 +132,6 @@ def file_move(
 
     return {"filename": filename, "path": new_path}
 
-
-def build_history_metadata_from_file_meta(file_meta: dict) -> dict:
-    """Project worker file metadata into FILE_TASK_HISTORY-style fields."""
-    return {
-        "name": file_meta["file_name"],
-        "extension": file_meta["extension"],
-        "size_kb": file_meta["size_kb"],
-        "dt_created": file_meta["dt_created"],
-        "dt_modified": file_meta["dt_modified"],
-    }
-
-
 def is_same_file(file_a: dict | None, file_b: dict | None) -> bool:
     """Check whether two metadata dictionaries point to the same path."""
     if not file_a or not file_b:
