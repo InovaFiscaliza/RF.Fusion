@@ -4,14 +4,14 @@
 {% block breadcrumb %}
 
 <div class="breadcrumb">
-    <a href="{{ url_for('index') }}">Consulta</a>
+    <a href="{{ url_for('index') }}">Início</a>
     <span class="breadcrumb-separator">›</span>
-    <span>Tarefas</span>
+    <span>Criar Tarefa</span>
 </div>
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/task_builder_page.css', v='20260415-page-css-extraction') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/task_builder_page.css', v='20260810-zabbix-backup-defaults') }}">
 
 {% endblock %}
 
@@ -24,9 +24,20 @@
     id="task-builder-root"
     data-stop-task-type="{{ stop_task_type }}"
     data-selected-collective-host-ids='{{ selected_collective_host_ids|tojson }}'
+    data-zabbix-backup-defaults-url="{{ url_for('task.task_zabbix_backup_defaults', host_id=0) }}"
 >
 
-<h1 class="wf-screen-title margin-bottom-l">Criar Nova Tarefa</h1>
+<div class="wf-page-hero card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+    <div>
+        <h1 class="wf-screen-title margin-bottom-s">Criar Nova Tarefa</h1>
+        <p class="wf-page-hero-copy">
+            Crie solicitações individuais ou coletivas de backup e retirada da fila com filtros operacionais.
+        </p>
+    </div>
+    <div class="wf-page-hero-note">
+        Na execução individual, caminho e extensão podem ser sugeridos pela configuração da estação.
+    </div>
+</div>
 
 <div class="card background-neutral-0 padding-l border-radius-m">
 
@@ -274,6 +285,9 @@
                 <div class="task-builder-field">
                     <label>Caminho</label>
                     <input type="text" name="file_path" value="{{ selected_file_path }}" class="form-control">
+                    <div class="field-help filter-zabbix-defaults-note" id="zabbix-backup-defaults-note" aria-live="polite">
+                        Na execução individual, o caminho e a extensão são carregados da configuração da estação no Zabbix.
+                    </div>
                 </div>
 
             </div>
@@ -439,5 +453,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/task_builder_page.js', v='20260415-task-builder-extraction') }}"></script>
+<script src="{{ url_for('static', filename='js/task_builder_page.js', v='20260810-zabbix-backup-defaults') }}"></script>
 {% endblock %}

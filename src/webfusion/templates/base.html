@@ -12,12 +12,12 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/AnatelReactiveTheme.AnatelReactiveTheme.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/AnatelReactiveTheme.AnatelReactiveTheme.extra.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/Desempenho_CW.Desempenho.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/webfusion_base.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/webfusion_base.css', v='20260811-page-hero') }}">
 
     {% block extra_css %}{% endblock %}
 </head>
 
-<body class="desktop">
+<body class="desktop" data-webfusion-root="{{ url_for('index') }}">
 
 <div id="page-loading-overlay" class="page-loading-overlay" aria-hidden="true">
     <div class="page-loading-dialog" role="status" aria-live="polite">
@@ -67,7 +67,7 @@
 
 </div>
 
-<script src="{{ url_for('static', filename='js/base_page.js', v='20260807-submit-guard') }}"></script>
+<script src="{{ url_for('static', filename='js/base_page.js', v='20260811-public-prefix') }}"></script>
 
 {% block extra_js %}{% endblock %}
 

@@ -3,19 +3,29 @@
 
 {% block breadcrumb %}
 <div class="breadcrumb">
-    <a href="{{ url_for('index') }}">Consulta</a>
+    <a href="{{ url_for('index') }}">Início</a>
     <span class="breadcrumb-separator">›</span>
-    <span>Host</span>
+    <span>Panorama da Estação</span>
 </div>
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260730-host-operational-layout-v1') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260811-public-prefix') }}">
 {% endblock %}
 
 {% block content %}
 <div id="host-page-root" {% if stats %}data-host-id="{{ stats.ID_HOST }}"{% endif %}>
-    <h1 class="wf-screen-title margin-bottom-l">Panorama da Estação</h1>
+    <div class="wf-page-hero card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+        <div>
+            <h1 class="wf-screen-title margin-bottom-s">Panorama da Estação</h1>
+            <p class="wf-page-hero-copy">
+                Consulte o estado operacional, a localização e o histórico relevante de uma estação do catálogo.
+            </p>
+        </div>
+        <div class="wf-page-hero-note">
+            Histórico de localidades e diagnósticos são consultados somente para a estação selecionada.
+        </div>
+    </div>
 
     <div class="host-page-stack">
         <section class="card background-neutral-0 padding-l border-radius-m host-section-card">
@@ -372,5 +382,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/host_page.js', v='20260522-host-ssh-value-tune') }}"></script>
+<script src="{{ url_for('static', filename='js/host_page.js', v='20260811-public-prefix') }}"></script>
 {% endblock %}

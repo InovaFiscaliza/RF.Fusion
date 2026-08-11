@@ -14,7 +14,20 @@
 (function () {
     const overlay = document.getElementById("page-loading-overlay");
     const messageNode = document.getElementById("page-loading-message");
-    const DOWNLOAD_ACTION_ENDPOINT = "/api/server/usage-metrics/download-action";
+    const webfusionRoot = String(document.body?.dataset.webfusionRoot || "/");
+
+    /* Browser-generated routes must preserve the reverse-proxy prefix. */
+    function buildWebFusionUrl(pathname) {
+        const normalizedRoot = webfusionRoot === "/"
+            ? ""
+            : webfusionRoot.replace(/\/+$/, "");
+        const normalizedPath = String(pathname || "").replace(/^\/+/, "");
+        return `${normalizedRoot}/${normalizedPath}`;
+    }
+
+    const DOWNLOAD_ACTION_ENDPOINT = buildWebFusionUrl(
+        "api/server/usage-metrics/download-action"
+    );
 
     /* Show the shared overlay with an optional contextual message.
      *
@@ -81,6 +94,7 @@
      * listeners alone, such as lazy transitions and custom navigation flows. */
     window.showPageLoadingOverlay = showPageLoadingOverlay;
     window.hidePageLoadingOverlay = hidePageLoadingOverlay;
+    window.webfusionUrl = buildWebFusionUrl;
 
     /* Global link interception for regular page navigation.
      *

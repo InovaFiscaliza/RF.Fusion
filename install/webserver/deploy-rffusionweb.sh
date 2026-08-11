@@ -15,6 +15,7 @@ IPAddress="10.88.0.34"
 
 HostHTTPPort="9082"
 ContainerHTTPPort="80"
+PublicBasePath="/rffusion"
 
 HostSSHPort="2225"
 ContainerSSHPort="22"
@@ -122,7 +123,7 @@ echo "✅ Container is running."
 # ======================================================================
 echo "=== [7/7] Testing exposed services ==="
 
-if curl -fsS "http://127.0.0.1:${HostHTTPPort}/health" >/dev/null; then
+if curl -fsS "http://127.0.0.1:${HostHTTPPort}${PublicBasePath}/health" >/dev/null; then
     echo "✅ HTTP ${HostHTTPPort} OK"
 else
     echo "⚠️ HTTP healthcheck failed"
@@ -132,7 +133,7 @@ nc -z localhost "${HostSSHPort}" && echo "✅ SSH ${HostSSHPort} OK" || echo "�
 
 echo
 echo "=== Deployment completed successfully ==="
-echo "Web URL : http://127.0.0.1:${HostHTTPPort}"
+echo "Web URL : http://127.0.0.1:${HostHTTPPort}${PublicBasePath}/"
 echo "SSH     : ssh root@127.0.0.1 -p ${HostSSHPort}"
 echo "IP      : ${IPAddress}"
 echo "Volume  : ${projectVolume} -> /RF.Fusion"

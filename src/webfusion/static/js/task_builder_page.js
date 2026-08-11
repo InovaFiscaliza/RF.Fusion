@@ -24,6 +24,7 @@
     const modeSelect = document.querySelector("[name='mode']");
     const filePathInput = document.querySelector("[name='file_path']");
     const extensionInput = document.querySelector("[name='extension']");
+    const zabbixDefaultsNote = document.getElementById("zabbix-backup-defaults-note");
     const onlineOnlyCheckbox = document.querySelector("[name='online_only']");
     const collectiveHostsSelect = document.getElementById("collective-hosts-select");
     const collectiveHostsWrapper = document.getElementById("collective-hosts-wrapper");
@@ -73,6 +74,8 @@
     const defaultExtension = ".bin";
     const cwsmExtension = ".zip";
     const ums300Extension = ".bin";
+    const zabbixDefaultsUrlTemplate = String(root.dataset.zabbixBackupDefaultsUrl || "");
+    const zabbixDefaultsDebounceMs = 200;
 
     /* Task types 3 and 4 are utility tasks ("Atualizar estatísticas" and
      * "Verificar conexão"), so they intentionally bypass the detailed filter
@@ -115,6 +118,10 @@
             name: option.dataset.hostName || option.textContent || "",
         }));
     let submitConfirmed = false;
+    let lastZabbixFilePath = "";
+    let lastZabbixExtension = "";
+    let zabbixDefaultsRequestSequence = 0;
+    let zabbixDefaultsTimer = null;
 
     /* Host families are inferred from the alphabetical prefix because the
      * builder uses that lightweight classification to:
@@ -370,6 +377,126 @@
         }
 
         extensionInput.value = defaultExtension;
+    }
+
+    function setZabbixDefaultsNote(message) {
+        if (zabbixDefaultsNote) {
+            zabbixDefaultsNote.textContent = message;
+        }
+    }
+
+    function buildZabbixDefaultsUrl(hostId) {
+        return zabbixDefaultsUrlTemplate.replace("/0/", "/" + encodeURIComponent(hostId) + "/");
+    }
+
+    function isSuggestedFilePath(value) {
+        return value === ""
+            || value === defaultFilePath
+            || value === cwsmFilePath
+            || value === ums300FilePath
+            || value === lastZabbixFilePath;
+    }
+
+    function isSuggestedExtension(value) {
+        return value === ""
+            || value === defaultExtension
+            || value === cwsmExtension
+            || value === ums300Extension
+            || value === lastZabbixExtension;
+    }
+
+    /* Individual execution has one concrete host, so its backup defaults can
+     * safely come from the Zabbix configuration. Collective requests retain
+     * the local family profiles to avoid one remote request per station.
+     */
+    async function syncZabbixBackupDefaults() {
+        const requestSequence = ++zabbixDefaultsRequestSequence;
+        const hostId = hostSelect ? String(hostSelect.value || "").trim() : "";
+
+        if (
+            executionType.value !== "individual"
+            || !hostId
+            || !zabbixDefaultsUrlTemplate
+        ) {
+            setZabbixDefaultsNote(
+                "Na execução coletiva, caminho e extensão seguem os perfis por família de estação."
+            );
+            return;
+        }
+
+        setZabbixDefaultsNote("Consultando caminho e extensão configurados no Zabbix...");
+
+        try {
+            const response = await fetch(buildZabbixDefaultsUrl(hostId), {
+                headers: { Accept: "application/json" },
+                credentials: "same-origin",
+            });
+            if (!response.ok) {
+                throw new Error("Zabbix defaults request failed");
+            }
+
+            const defaults = await response.json();
+            if (requestSequence !== zabbixDefaultsRequestSequence) {
+                return;
+            }
+
+            let preservedManualValue = false;
+            const zabbixFilePath = String(defaults.file_path || "").trim();
+            const zabbixExtension = String(defaults.extension || "").trim();
+
+            if (zabbixFilePath && filePathInput) {
+                if (isSuggestedFilePath(String(filePathInput.value || "").trim())) {
+                    filePathInput.value = zabbixFilePath;
+                    lastZabbixFilePath = zabbixFilePath;
+                } else {
+                    preservedManualValue = true;
+                }
+            }
+
+            if (zabbixExtension && extensionInput) {
+                if (isSuggestedExtension(String(extensionInput.value || "").trim().toLowerCase())) {
+                    extensionInput.value = zabbixExtension;
+                    lastZabbixExtension = zabbixExtension.toLowerCase();
+                } else {
+                    preservedManualValue = true;
+                }
+            }
+
+            if (defaults.source === "zabbix") {
+                setZabbixDefaultsNote(
+                    preservedManualValue
+                        ? "Configuração consultada no Zabbix; valores preenchidos manualmente foram preservados."
+                        : "Caminho e extensão carregados da configuração da estação no Zabbix."
+                );
+                return;
+            }
+
+            setZabbixDefaultsNote(
+                "A estação não possui caminho ou extensão no Zabbix; usando sugestões do perfil local."
+            );
+        } catch (error) {
+            if (requestSequence !== zabbixDefaultsRequestSequence) {
+                return;
+            }
+            setZabbixDefaultsNote(
+                "Não foi possível consultar o Zabbix; usando sugestões do perfil local."
+            );
+        }
+    }
+
+    /* A host selector can emit several changes while the operator navigates
+     * with the keyboard. Debouncing keeps those intermediate selections from
+     * producing unnecessary Zabbix requests or occupying WebFusion workers.
+     */
+    function scheduleZabbixBackupDefaultsSync() {
+        if (zabbixDefaultsTimer) {
+            window.clearTimeout(zabbixDefaultsTimer);
+        }
+
+        zabbixDefaultsTimer = window.setTimeout(function () {
+            zabbixDefaultsTimer = null;
+            void syncZabbixBackupDefaults();
+        }, zabbixDefaultsDebounceMs);
     }
 
     function updateSubmitButtonLabel() {
@@ -741,6 +868,7 @@
         toggleStationProfilesPanel();
         syncSuggestedFilePath();
         syncSuggestedExtension();
+        scheduleZabbixBackupDefaultsSync();
         syncLastDiscoveryContext();
     }
 
@@ -810,6 +938,7 @@
         hostSelect.addEventListener("change", function () {
             syncSuggestedFilePath();
             syncSuggestedExtension();
+            scheduleZabbixBackupDefaultsSync();
             syncLastDiscoveryContext();
         });
     }

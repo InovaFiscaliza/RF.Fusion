@@ -12,7 +12,16 @@ The route layer keeps three concerns local:
 """
 
 import re
-from flask import Blueprint, Response, redirect, render_template, request, url_for
+from flask import (
+    Blueprint,
+    Response,
+    current_app,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 from modules.task.service import (
     EXPOSED_TASK_TYPES,
     HOST_TASK_BACKLOG_ROLLBACK_TYPE,
@@ -20,6 +29,12 @@ from modules.task.service import (
     create_task,
 )
 from modules.server.usage_metrics import record_page_view
+from modules.zabbix_configuration.service import (
+    TARGET_KIND_HOST,
+    ZabbixApiError,
+    ZabbixConfigurationError,
+    get_configuration,
+)
 from db import get_connection_bpdata as get_connection
 
 
@@ -34,6 +49,8 @@ DEFAULT_CWSM_FILE_PATH = "C:/CelPlan/CellWireless RU/Spectrum/Completed"
 DEFAULT_CWSM_EXTENSION = ".zip"
 DEFAULT_UMS300_FILE_PATH = "C:/Users/NUC/Downloads"
 DEFAULT_UMS300_EXTENSION = ".bin"
+ZABBIX_BACKUP_PATH_MACRO = "{$BACKUP_PATH}"
+ZABBIX_BACKUP_EXTENSION_MACRO = "{$BACKUP_EXTENSION}"
 
 # Different station families do not always share the same path/extension
 # conventions. These defaults let the UI suggest sensible values before the
@@ -216,6 +233,31 @@ def _build_station_profile_rows(host_prefix_rows, selected_values=None):
         )
 
     return rows
+
+
+def _extract_zabbix_backup_defaults(configuration):
+    """Return plain-text backup defaults from one resolved Zabbix host."""
+    macro_fields = {
+        ZABBIX_BACKUP_PATH_MACRO: "file_path",
+        ZABBIX_BACKUP_EXTENSION_MACRO: "extension",
+    }
+    defaults = {field_name: None for field_name in macro_fields.values()}
+
+    for macro in configuration.get("macros", []):
+        field_name = macro_fields.get(str(macro.get("name") or ""))
+        if not field_name:
+            continue
+
+        # Never use a display value here: the endpoint only accepts macros
+        # whose text value is explicitly available to the configuration module.
+        if str(macro.get("type")) != "0" or not macro.get("accepts_value"):
+            continue
+
+        value = str(macro.get("editable_value") or "").strip()
+        if value:
+            defaults[field_name] = value
+
+    return defaults
 
 
 def _extract_station_profile_overrides(form_data, station_profile_rows):
@@ -559,6 +601,27 @@ def task_builder():
         station_profile_rows=station_profile_rows,
         exposed_task_types=EXPOSED_TASK_TYPES,
         stop_task_type=HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+    )
+
+
+@task_bp.route("/api/host/<int:host_id>/backup-defaults", methods=["GET"])
+def task_zabbix_backup_defaults(host_id):
+    """Provide one station's effective backup path and extension on demand."""
+    defaults = {"file_path": None, "extension": None}
+
+    try:
+        configuration = get_configuration(TARGET_KIND_HOST, str(host_id))
+        defaults = _extract_zabbix_backup_defaults(configuration)
+    except (ZabbixApiError, ZabbixConfigurationError) as error:
+        # Task creation must remain usable when the configuration service is
+        # unavailable, so the browser falls back to its existing family hints.
+        current_app.logger.warning("task_zabbix_defaults_unavailable: %s", error)
+
+    return jsonify(
+        {
+            **defaults,
+            "source": "zabbix" if any(defaults.values()) else "fallback",
+        }
     )
 
 

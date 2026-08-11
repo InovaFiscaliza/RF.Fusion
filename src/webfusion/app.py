@@ -13,14 +13,25 @@ All feature-specific pages live in blueprints under ``modules/``.
 
 import os
 import logging
+import sys
+from pathlib import Path
+
+# The running container mounts the repository but older images may not yet
+# export PYTHONPATH. Keep the source-level Zabbix client importable in both
+# old and rebuilt WebFusion containers.
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 from flask import Flask, request, render_template, jsonify
 from waitress import serve
+from werkzeug.middleware.proxy_fix import ProxyFix
 from modules.spectrum.routes import spectrum_bp
 from modules.host.routes import host_bp
 from modules.server.routes import server_bp
 from modules.task.routes import task_bp
 from modules.maintenance.routes import maintenance_bp
+from modules.zabbix_configuration.routes import zabbix_configuration_bp
 from modules.map.service import (
     get_station_map_points,
     get_station_map_site_detail,
@@ -29,6 +40,8 @@ from modules.server.usage_metrics import record_page_view
 
 
 app = Flask(__name__)
+# Nginx is the only upstream proxy and supplies the public `/rffusion` prefix.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_prefix=1)
 app.logger.setLevel(logging.INFO)
 
 # Register feature blueprints first; the app-level routes below are kept only
@@ -39,6 +52,7 @@ app.register_blueprint(host_bp)
 app.register_blueprint(server_bp)
 app.register_blueprint(task_bp)
 app.register_blueprint(maintenance_bp)
+app.register_blueprint(zabbix_configuration_bp)
 
 @app.route("/")
 def index():

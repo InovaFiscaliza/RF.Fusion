@@ -34,6 +34,9 @@
     const defaultCenter = [-14.2350, -51.9253];
     const brazilBounds = [[-35.5, -74.5], [7.5, -29.0]];
     const pointCount = document.getElementById("station-map-count");
+    const webfusionUrl = typeof window.webfusionUrl === "function"
+        ? window.webfusionUrl
+        : (pathname) => pathname;
     const clearFiltersButton = document.getElementById("station-map-clear-filters");
     const stateFilter = document.getElementById("station-map-state-filter");
     const siteFilter = document.getElementById("station-map-site-filter");
@@ -1040,7 +1043,8 @@
     function buildMapApiUrl(pathname) {
         const params = getTemporalFilterQueryParams();
         const queryString = params.toString();
-        return queryString ? `${pathname}?${queryString}` : pathname;
+        const apiUrl = webfusionUrl(pathname);
+        return queryString ? `${apiUrl}?${queryString}` : apiUrl;
     }
 
     /**
@@ -1062,7 +1066,7 @@
         params.set("site_id", String(point.site_id));
         params.set("sort_by", "recent");
 
-        return `/spectrum?${params.toString()}`;
+        return `${webfusionUrl("/spectrum")}?${params.toString()}`;
     }
 
     /**
@@ -1662,11 +1666,15 @@
         return orderedStations.map((station) => {
             const equipmentName = escapeHtml(station.equipment_name || "Equipamento");
             const roleLabel = isSingleStationPoint ? "" : getStationLocationRoleLabel(station);
-            const hostHref = station.host_id ? `/host?host_id=${station.host_id}&online_only=0` : null;
-            const hostSearchHref = !station.host_id && station.equipment_name
-                ? `/host?search=${encodeURIComponent(station.equipment_name)}&online_only=0`
+            const hostHref = station.host_id
+                ? `${webfusionUrl("/host")}?host_id=${station.host_id}&online_only=0`
                 : null;
-            const taskHref = station.host_id ? `/task/?host_id=${station.host_id}&online_only=0` : null;
+            const hostSearchHref = !station.host_id && station.equipment_name
+                ? `${webfusionUrl("/host")}?search=${encodeURIComponent(station.equipment_name)}&online_only=0`
+                : null;
+            const taskHref = station.host_id
+                ? `${webfusionUrl("/task/")}?host_id=${station.host_id}&online_only=0`
+                : null;
             const spectrumHref = buildSpectrumHref(point, station);
 
             return `

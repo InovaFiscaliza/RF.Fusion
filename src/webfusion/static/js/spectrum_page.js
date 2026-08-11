@@ -25,8 +25,11 @@
         return;
     }
 
-    const filtersEndpoint = root.dataset.filtersEndpoint || "/api/spectrum/filters";
-    const fileSpectraEndpointBase = root.dataset.fileSpectraEndpointBase || "/api/spectrum/file";
+    const webfusionUrl = typeof window.webfusionUrl === "function"
+        ? window.webfusionUrl
+        : (pathname) => pathname;
+    const filtersEndpoint = root.dataset.filtersEndpoint || webfusionUrl("/api/spectrum/filters");
+    const fileSpectraEndpointBase = root.dataset.fileSpectraEndpointBase || webfusionUrl("/api/spectrum/file");
     const usesLightweightBootstrap = root.dataset.lightweightBootstrap === "1";
     const initialAvailabilityStart = root.dataset.initialAvailabilityStart || "";
     const initialAvailabilityEnd = root.dataset.initialAvailabilityEnd || "";

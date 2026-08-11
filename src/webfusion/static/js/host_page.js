@@ -14,6 +14,9 @@
     const onlineOnlyCheckbox = document.getElementById("online_only");
     const locationRows = document.getElementById("host-location-history-rows");
     const hostId = root?.dataset.hostId || "";
+    const webfusionUrl = typeof window.webfusionUrl === "function"
+        ? window.webfusionUrl
+        : (pathname) => pathname;
 
     if (!root) {
         return;
@@ -130,7 +133,9 @@
             `;
 
             try {
-                const response = await fetch(`/api/host/${hostId}/locations`);
+                const response = await fetch(
+                    webfusionUrl(`/api/host/${hostId}/locations`)
+                );
                 const payload = await response.json();
                 renderLocationHistory(payload);
                 locationLoaded = true;
@@ -264,7 +269,9 @@
     bindDiagnosticPanel(document.querySelector("[data-host-error-panel]"), {
         metaSelector: "[data-host-error-meta]",
         rowsSelector: "[data-host-error-rows]",
-        url: (currentHostId) => `/api/host/${currentHostId}/processing-errors`,
+        url: (currentHostId) => webfusionUrl(
+            `/api/host/${currentHostId}/processing-errors`
+        ),
         emptyMessage: "Nenhum erro de processamento agrupado para esta estação.",
         loadingMessage: "Carregando erros agrupados desta estação...",
         failureMessage: "Nao foi possivel carregar os erros agrupados agora."
@@ -273,7 +280,9 @@
     bindDiagnosticPanel(document.querySelector("[data-host-backup-error-panel]"), {
         metaSelector: "[data-host-backup-error-meta]",
         rowsSelector: "[data-host-backup-error-rows]",
-        url: (currentHostId) => `/api/host/${currentHostId}/backup-errors`,
+        url: (currentHostId) => webfusionUrl(
+            `/api/host/${currentHostId}/backup-errors`
+        ),
         emptyMessage: "Nenhum erro de backup agrupado para esta estação.",
         loadingMessage: "Carregando erros agrupados de backup desta estação...",
         failureMessage: "Nao foi possivel carregar os erros agrupados de backup agora."

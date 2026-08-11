@@ -22,9 +22,11 @@ import sys
 import unittest
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 
 
 WEBFUSION_ROOT = Path("/RFFusion/src/webfusion")
+SOURCE_ROOT = Path("/RFFusion/src")
 
 
 def load_task_routes():
@@ -32,6 +34,9 @@ def load_task_routes():
     root = str(WEBFUSION_ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
+    source_root = str(SOURCE_ROOT)
+    if source_root not in sys.path:
+        sys.path.insert(0, source_root)
 
     fake_flask = ModuleType("flask")
 
@@ -49,6 +54,8 @@ def load_task_routes():
 
     fake_flask.Blueprint = FakeBlueprint
     fake_flask.Response = lambda *args, **kwargs: None
+    fake_flask.current_app = SimpleNamespace(logger=SimpleNamespace(warning=lambda *args: None))
+    fake_flask.jsonify = lambda payload: payload
     fake_flask.redirect = lambda *args, **kwargs: None
     fake_flask.render_template = lambda *args, **kwargs: None
     fake_flask.request = SimpleNamespace(
@@ -264,6 +271,91 @@ class TestTaskRoutes(unittest.TestCase):
             ),
             "RANGE",
         )
+
+    def test_extract_zabbix_backup_defaults_uses_only_plain_text_macros(self):
+        defaults = self.module._extract_zabbix_backup_defaults(
+            {
+                "macros": [
+                    {
+                        "name": "{$BACKUP_PATH}",
+                        "type": "0",
+                        "accepts_value": True,
+                        "editable_value": "/mnt/rfeye/backup",
+                    },
+                    {
+                        "name": "{$BACKUP_EXTENSION}",
+                        "type": "0",
+                        "accepts_value": True,
+                        "editable_value": ".raw",
+                    },
+                    {
+                        "name": "{$SSH_PASSWD}",
+                        "type": "1",
+                        "accepts_value": True,
+                        "editable_value": "",
+                    },
+                ]
+            }
+        )
+
+        self.assertEqual(defaults["file_path"], "/mnt/rfeye/backup")
+        self.assertEqual(defaults["extension"], ".raw")
+
+    def test_extract_zabbix_backup_defaults_ignores_secret_macro_values(self):
+        defaults = self.module._extract_zabbix_backup_defaults(
+            {
+                "macros": [
+                    {
+                        "name": "{$BACKUP_PATH}",
+                        "type": "1",
+                        "accepts_value": True,
+                        "editable_value": "",
+                        "display_value": "/should-not-be-read",
+                    },
+                    {
+                        "name": "{$BACKUP_EXTENSION}",
+                        "type": "2",
+                        "accepts_value": False,
+                        "editable_value": ".should-not-be-read",
+                    },
+                ]
+            }
+        )
+
+        self.assertEqual(defaults, {"file_path": None, "extension": None})
+
+    def test_task_zabbix_backup_defaults_returns_effective_plain_text_values(self):
+        with patch.object(
+            self.module,
+            "get_configuration",
+            return_value={
+                "macros": [
+                    {
+                        "name": "{$BACKUP_PATH}",
+                        "type": "0",
+                        "accepts_value": True,
+                        "editable_value": "/mnt/rfeye/backup",
+                    },
+                    {
+                        "name": "{$BACKUP_EXTENSION}",
+                        "type": "0",
+                        "accepts_value": True,
+                        "editable_value": ".raw",
+                    },
+                ]
+            },
+        ) as get_configuration:
+            response = self.module.task_zabbix_backup_defaults(10482)
+
+        self.assertEqual(
+            response,
+            {
+                "file_path": "/mnt/rfeye/backup",
+                "extension": ".raw",
+                "source": "zabbix",
+            },
+        )
+        get_configuration.assert_called_once_with("host", "10482")
 
 
 if __name__ == "__main__":

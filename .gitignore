@@ -97,6 +97,7 @@ _build/
 
 # credential files
 .reposfi
+src/zabbix/.secret/
 f2073b.csv
 list.csv
 src/appCataloga/server_volume/usr/local/bin/appCataloga/ARCHITECTURE.md

@@ -35,7 +35,7 @@ O container sobe tres componentes:
 
 Fluxo HTTP:
 
-`cliente -> nginx:80 -> webfusion:127.0.0.1:8000`
+`cliente -> nginx:80/rffusion/ -> webfusion:127.0.0.1:8000`
 
 Fluxo de download:
 
@@ -112,8 +112,8 @@ Observacao:
 
 Depois do deploy, os acessos esperados sao:
 
-- Web: `http://127.0.0.1:9082`
-- Healthcheck: `http://127.0.0.1:9082/health`
+- Web: `http://127.0.0.1:9082/rffusion/`
+- Healthcheck: `http://127.0.0.1:9082/rffusion/health`
 - SSH: `ssh root@127.0.0.1 -p 2225`
 
 ## Observacoes Operacionais

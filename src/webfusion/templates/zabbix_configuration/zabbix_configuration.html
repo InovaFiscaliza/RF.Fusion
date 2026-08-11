@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+
+{% block title %}RF.Fusion - Configuração das Estações{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/zabbix_configuration_page.css', v='20260810-macro-confirmation-dialog') }}">
+{% endblock %}
+
+{% block breadcrumb %}
+<div class="breadcrumb">
+    <a href="{{ url_for('index') }}">Início</a>
+    <span class="breadcrumb-separator">›</span>
+    <span>Configuração das Estações</span>
+</div>
+{% endblock %}
+
+{% block content %}
+<section class="zabbix-config-page-root">
+    <div class="zabbix-config-hero card background-neutral-0 padding-l border-radius-m">
+        <div>
+            <h1 class="wf-screen-title margin-bottom-s">Configuração das Estações</h1>
+            <p class="zabbix-config-hero-copy">
+                Consulte e ajuste as macros do Zabbix usadas pelas estações RF.Fusion.
+                A origem de cada valor deixa explícito quando a estação sobrescreve o template.
+            </p>
+        </div>
+        <div class="zabbix-config-hero-note">
+            <i class="fa fa-shield"></i>
+            <span>Valores secretos permanecem protegidos e nunca são exibidos.</span>
+        </div>
+    </div>
+
+    {% if error_message %}
+    <div class="zabbix-config-alert zabbix-config-alert-error" role="alert">
+        <i class="fa fa-exclamation-triangle"></i>
+        <span>{{ error_message }}</span>
+    </div>
+    {% endif %}
+
+    {% if success_message %}
+    <div class="zabbix-config-alert zabbix-config-alert-success" role="status">
+        <i class="fa fa-check-circle"></i>
+        <span>{{ success_message }}</span>
+    </div>
+    {% endif %}
+
+    <form method="get" class="card background-neutral-0 padding-l border-radius-m zabbix-config-selector" data-loading-message="Consultando configuração no Zabbix...">
+        <div class="zabbix-config-selector-heading">
+            <div class="font-semi-bold">Selecionar configuração</div>
+            <div class="font-size-s text-neutral-6">A consulta é feita apenas para o item selecionado.</div>
+        </div>
+        <div class="zabbix-config-filter-grid">
+            <div class="zabbix-config-field">
+                <label class="form-label" for="target-kind">Tipo</label>
+                <div class="select-shell">
+                    <select id="target-kind" name="target_kind" class="form-control">
+                        <option value="">Selecione</option>
+                        <option value="{{ target_kind_host }}" {% if selected_target_kind == target_kind_host %}selected{% endif %}>Estação</option>
+                        <option value="{{ target_kind_template }}" {% if selected_target_kind == target_kind_template %}selected{% endif %}>Template</option>
+                    </select>
+                </div>
+            </div>
+            <div class="zabbix-config-field zabbix-config-target-field">
+                <label class="form-label" for="target-id">Estação ou template</label>
+                <div class="select-shell">
+                    <select id="target-id" name="target_id" class="form-control" required>
+                        <option value="">Selecione primeiro o tipo</option>
+                        {% for host in catalog.hosts %}
+                        <option data-target-kind="{{ target_kind_host }}" value="{{ host.hostid }}" {% if selected_target_kind == target_kind_host and selected_target_id == host.hostid %}selected{% endif %}>
+                            {{ host.name }}{% if host.host != host.name %} ({{ host.host }}){% endif %}
+                        </option>
+                        {% endfor %}
+                        {% for template in catalog.templates %}
+                        <option data-target-kind="{{ target_kind_template }}" value="{{ template.templateid }}" {% if selected_target_kind == target_kind_template and selected_target_id == template.templateid %}selected{% endif %}>
+                            {{ template.name }}{% if template.host != template.name %} ({{ template.host }}){% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="zabbix-config-selector-action">
+                <label class="form-label">Consulta</label>
+                <button type="submit" class="btn-primary-action">Consultar configuração</button>
+            </div>
+        </div>
+        <p class="zabbix-config-selector-help">
+            Escolha <strong>Estação</strong> ou <strong>Template</strong>; a lista correspondente é atualizada automaticamente antes da consulta.
+        </p>
+    </form>
+
+    {% macro render_macro_table(macros, empty_message) %}
+    <div class="zabbix-config-table-wrap">
+        <table class="zabbix-config-table">
+            <colgroup>
+                <col class="zabbix-config-column-parameter">
+                <col class="zabbix-config-column-value">
+                <col class="zabbix-config-column-type">
+                <col class="zabbix-config-column-origin">
+                <col class="zabbix-config-column-action">
+            </colgroup>
+            <thead>
+                <tr>
+                    <th>Parâmetro</th>
+                    <th>Valor</th>
+                    <th>Tipo</th>
+                    <th>Origem</th>
+                    <th>Ação</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for macro in macros %}
+                <tr>
+                    <td>
+                        <div class="zabbix-config-macro-name">{{ macro.name }}</div>
+                        {% if macro.description %}
+                        <div class="zabbix-config-macro-description">{{ macro.description }}</div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if macro.type == '1' %}
+                        <span class="zabbix-config-secret-value"><i class="fa fa-lock"></i> {{ macro.display_value }}</span>
+                        {% else %}
+                        <code>{{ macro.display_value }}</code>
+                        {% endif %}
+                    </td>
+                    <td><span class="zabbix-config-type-badge">{{ macro.type_label }}</span></td>
+                    <td>
+                        <span class="zabbix-config-origin {% if macro.is_direct_on_target %}is-direct{% endif %}">
+                            {{ macro.source_label }}
+                        </span>
+                    </td>
+                    <td>
+                        {% if macro.accepts_value and not macro.is_protected %}
+                        <form method="post" action="{{ url_for('zabbix_configuration.update_macro') }}" class="zabbix-config-macro-form" data-zabbix-confirm="{{ action_save }}" data-target-label="{{ configuration.title }}">
+                            <input type="hidden" name="target_kind" value="{{ configuration.kind }}">
+                            <input type="hidden" name="target_id" value="{{ configuration.target_id }}">
+                            <input type="hidden" name="macro_name" value="{{ macro.name }}">
+                            <input type="hidden" name="action" value="{{ action_save }}">
+                            {% if macro.type == '1' %}
+                            <label class="sr-only" for="value-{{ macro.source_macro_id }}">Novo valor de {{ macro.name }}</label>
+                            <input id="value-{{ macro.source_macro_id }}" class="form-control" type="password" name="value" placeholder="Novo valor protegido" autocomplete="new-password">
+                            {% else %}
+                            <label class="sr-only" for="value-{{ macro.source_macro_id }}">Valor de {{ macro.name }}</label>
+                            <input id="value-{{ macro.source_macro_id }}" class="form-control" type="text" name="value" value="{{ macro.editable_value }}" autocomplete="off">
+                            {% endif %}
+                            <button type="submit" class="btn-primary-action">
+                                {% if macro.is_direct_on_target %}Salvar{% else %}Sobrescrever{% endif %}
+                            </button>
+                        </form>
+                        {% if macro.is_direct_on_target %}
+                        <form method="post" action="{{ url_for('zabbix_configuration.update_macro') }}" class="zabbix-config-restore-form" data-zabbix-confirm="{{ action_restore }}" data-target-label="{{ configuration.title }}">
+                            <input type="hidden" name="target_kind" value="{{ configuration.kind }}">
+                            <input type="hidden" name="target_id" value="{{ configuration.target_id }}">
+                            <input type="hidden" name="macro_name" value="{{ macro.name }}">
+                            <input type="hidden" name="action" value="{{ action_restore }}">
+                            <button type="submit" class="btn-secondary-action zabbix-config-restore-button">Restaurar herança</button>
+                        </form>
+                        {% else %}
+                        <div class="zabbix-config-action-hint">A estação passará a usar este valor em vez do template.</div>
+                        {% endif %}
+                        {% elif macro.is_protected %}
+                        <div class="zabbix-config-macro-form zabbix-config-locked-form">
+                            <input class="form-control" type="text" value="{{ macro.display_value }}" disabled>
+                            <button type="button" class="btn-secondary-action" disabled>Identificador protegido</button>
+                        </div>
+                        <div class="zabbix-config-action-hint">A chave primária do host é mantida pelo Zabbix.</div>
+                        {% else %}
+                        <div class="zabbix-config-action-hint">Alteração controlada pelo cofre do Zabbix.</div>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="5" class="zabbix-config-empty">{{ empty_message }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endmacro %}
+
+    {% if configuration %}
+    <section class="zabbix-config-detail card background-neutral-0 border-radius-m">
+        <div class="zabbix-config-detail-head">
+            <div>
+                <div class="zabbix-config-eyebrow">
+                    {% if configuration.kind == target_kind_host %}Estação{% else %}Template{% endif %}
+                </div>
+                <h2>{{ configuration.title }}</h2>
+                {% if configuration.technical_name and configuration.technical_name != configuration.title %}
+                <div class="zabbix-config-technical-name">{{ configuration.technical_name }}</div>
+                {% endif %}
+            </div>
+            <div class="zabbix-config-profile-list">
+                <span>Perfis vinculados</span>
+                {% if configuration.profiles %}
+                    {% for profile in configuration.profiles %}
+                    <span class="zabbix-config-profile-tag">{{ profile }}</span>
+                    {% endfor %}
+                {% else %}
+                    <span class="zabbix-config-profile-tag">Sem template pai</span>
+                {% endif %}
+            </div>
+        </div>
+        {% if configuration.kind == target_kind_host %}
+        <div class="zabbix-config-section">
+            <div class="zabbix-config-section-head">
+                <div>
+                    <h3>Configurações próprias da estação</h3>
+                    <p>Somente parâmetros definidos diretamente nesta estação.</p>
+                </div>
+            </div>
+            {{ render_macro_table(configuration.direct_macros, 'Esta estação ainda não possui parâmetros próprios além dos definidos pelo Zabbix.') }}
+        </div>
+
+        <div class="zabbix-config-section zabbix-config-inheritance-section">
+            <div class="zabbix-config-section-head">
+                <div>
+                    <h3>Parâmetros herdados dos templates</h3>
+                    <p>Abra um template para consultar seus parâmetros e, se necessário, criar uma sobrescrita apenas nesta estação.</p>
+                </div>
+            </div>
+            {% for group in configuration.inherited_macro_groups %}
+            <details class="zabbix-config-template-group">
+                <summary>
+                    <span>
+                        <strong>{{ group.template_name }}</strong>
+                        <span>{% if group.is_direct_link %}Template vinculado à estação{% else %}Template ancestral{% endif %} · {{ group.macros|length }} parâmetro(s)</span>
+                    </span>
+                </summary>
+                {{ render_macro_table(group.macros, 'Nenhum parâmetro herdado deste template está disponível para sobrescrita.') }}
+            </details>
+            {% else %}
+            <div class="zabbix-config-idle">Não há parâmetros herdados disponíveis para sobrescrita.</div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="zabbix-config-section">
+            <div class="zabbix-config-section-head">
+                <div>
+                    <h3>Configurações deste template</h3>
+                    <p>Somente parâmetros definidos diretamente neste template.</p>
+                </div>
+            </div>
+            {{ render_macro_table(configuration.direct_macros, 'Este template não possui parâmetros definidos diretamente.') }}
+        </div>
+        {% endif %}
+    </section>
+    {% elif not error_message %}
+    <div class="zabbix-config-idle">
+        Escolha uma estação ou um template para consultar os parâmetros efetivos e suas heranças.
+    </div>
+    {% endif %}
+
+    <dialog id="zabbix-confirm-dialog" class="zabbix-confirm-dialog" aria-labelledby="zabbix-confirm-title">
+        <div class="zabbix-confirm-dialog-card">
+            <h2 id="zabbix-confirm-title" class="zabbix-confirm-dialog-title">Confirmar alteração</h2>
+            <p id="zabbix-confirm-message" class="zabbix-confirm-dialog-message"></p>
+            <div class="zabbix-confirm-dialog-note">
+                Confirme somente com um clique do mouse. Qualquer tecla fecha esta janela sem alterar a configuração.
+            </div>
+            <div class="zabbix-confirm-dialog-actions">
+                <button type="button" class="btn-secondary-action" id="zabbix-confirm-cancel">Cancelar</button>
+                <button type="button" class="btn-primary-action" id="zabbix-confirm-submit">Confirmar alteração</button>
+            </div>
+        </div>
+    </dialog>
+</section>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/zabbix_configuration_page.js', v='20260810-macro-confirmation-dialog') }}"></script>
+{% endblock %}

@@ -304,6 +304,32 @@
         </a>
     </div>
 
+    <!-- ======================= HOST CONFIGURATION ======================= -->
+    <div>
+        <a href="{{ url_for('zabbix_configuration.configuration_dashboard') }}" class="module-link" data-loading-message="Abrindo configuração das estações...">
+            <div class="card background-neutral-0 padding-l border-radius-m module-card">
+
+                <div class="display-flex align-items-center gap-m">
+
+                    <div class="module-icon text-primary">
+                        <i class="fa fa-sliders"></i>
+                    </div>
+
+                    <div>
+                        <div class="font-semi-bold">
+                            Configuração das Estações
+                        </div>
+                        <div class="font-size-s text-neutral-6 margin-top-xs module-description">
+                            Macros do Zabbix por template e por estação, com indicação de sobrescritas.
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+        </a>
+    </div>
+
 </div>
 
 {% endblock %}
@@ -317,5 +343,5 @@
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
 ></script>
-<script src="{{ url_for('static', filename='js/index_map.js', v='20260522-map-popup-respect-active-filters') }}"></script>
+<script src="{{ url_for('static', filename='js/index_map.js', v='20260811-public-prefix') }}"></script>
 {% endblock %}

@@ -9,7 +9,7 @@
 <div class="breadcrumb">
     <a href="{{ url_for('index') }}">Início</a>
     <span class="breadcrumb-separator">›</span>
-    <span>Tarefas</span>
+    <span>Tarefas Recentes</span>
 </div>
 {% endblock %}
 
@@ -17,15 +17,24 @@
 
 <div id="task-list-page-root">
 
-<h1 class="wf-screen-title margin-bottom-l">Tarefas Recentes</h1>
+<div class="wf-page-hero card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+    <div>
+        <h1 class="wf-screen-title margin-bottom-s">Tarefas Recentes</h1>
+        <p class="wf-page-hero-copy">
+            Acompanhe as solicitações criadas recentemente e retorne à criação de tarefas quando necessário.
+        </p>
+    </div>
+    <div class="wf-page-hero-note">
+        A lista mostra as últimas tarefas registradas e seus estados atuais de execução.
+    </div>
+</div>
 
 <div class="card background-neutral-0 padding-l border-radius-m">
 
 <div class="task-list-header">
     <div>
-        <h1 class="margin-bottom-s">Tarefas Recentes</h1>
         <div class="task-summary-text is-compact">
-            Acompanhe as tarefas mais recentes e, se quiser, volte direto para criar uma nova ação.
+            Use as ações abaixo para iniciar uma nova solicitação ou retornar ao início.
         </div>
     </div>
     <div class="task-list-actions">

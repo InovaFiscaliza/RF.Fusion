@@ -20,12 +20,14 @@ echo "root:${SSH_PASSWORD:-changeme}" | chpasswd
 # RF.Fusion runtime
 # -------------------------------------------------
 export PYTHONUNBUFFERED=1
+export PYTHONPATH="/RF.Fusion/src${PYTHONPATH:+:${PYTHONPATH}}"
 export WEBFUSION_HOST="${WEBFUSION_HOST:-127.0.0.1}"
 export WEBFUSION_PORT="${WEBFUSION_PORT:-8000}"
 export WEBFUSION_THREADS="${WEBFUSION_THREADS:-8}"
 export WEBFUSION_CHANNEL_TIMEOUT="${WEBFUSION_CHANNEL_TIMEOUT:-300}"
 export WEBFUSION_ACCEL_REDIRECT_PREFIX="${WEBFUSION_ACCEL_REDIRECT_PREFIX:-/_repo_download}"
 export WEBFUSION_ACCEL_REDIRECT_ROOT="${WEBFUSION_ACCEL_REDIRECT_ROOT:-/mnt/reposfi}"
+export WEBFUSION_PUBLIC_DOWNLOAD_PREFIX="${WEBFUSION_PUBLIC_DOWNLOAD_PREFIX:-/downloads}"
 
 echo "[entrypoint] Python: $(python3 --version)"
 echo "[entrypoint] RF.Fusion mount:"

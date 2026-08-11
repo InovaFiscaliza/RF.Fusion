@@ -1,0 +1,524 @@
+.zabbix-config-page-root {
+    display: grid;
+    gap: 20px;
+    padding-bottom: 28px;
+}
+
+.zabbix-config-hero,
+.zabbix-config-detail-head,
+.zabbix-config-macro-form {
+    display: flex;
+    gap: 16px;
+}
+
+.zabbix-config-hero,
+.zabbix-config-detail-head {
+    align-items: flex-start;
+    justify-content: space-between;
+    flex-wrap: wrap;
+}
+
+.zabbix-config-hero-copy {
+    max-width: 780px;
+    margin: 0;
+    color: var(--wf-text-soft);
+    line-height: 1.6;
+}
+
+.zabbix-config-hero-note {
+    display: flex;
+    max-width: 310px;
+    gap: 9px;
+    align-items: flex-start;
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: #eff6ff;
+    color: #1e4f85;
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.zabbix-config-alert {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 12px 14px;
+    border: 1px solid;
+    border-radius: 10px;
+    font-size: 14px;
+}
+
+.zabbix-config-alert-error {
+    border-color: #fecaca;
+    background: #fef2f2;
+    color: #991b1b;
+}
+
+.zabbix-config-alert-success {
+    border-color: #bbf7d0;
+    background: #f0fdf4;
+    color: #166534;
+}
+
+.zabbix-config-selector {
+    width: 100%;
+    max-width: none;
+    background: linear-gradient(180deg, rgba(248, 250, 252, 0.95) 0%, #ffffff 100%);
+}
+
+.zabbix-config-selector-heading {
+    margin-bottom: 15px;
+}
+
+.zabbix-config-filter-grid {
+    display: grid;
+    grid-template-columns: minmax(220px, 300px) minmax(360px, 1fr) auto;
+    gap: 14px;
+    align-items: end;
+}
+
+.zabbix-config-field {
+    display: grid;
+    min-width: 180px;
+    gap: 6px;
+}
+
+.zabbix-config-target-field {
+    min-width: min(100%, 440px);
+    flex: 1 1 340px;
+}
+
+.zabbix-config-field label {
+    margin: 0;
+}
+
+.zabbix-config-selector-action label {
+    margin: 0 0 6px;
+}
+
+.zabbix-config-page-root .btn-primary-action,
+.zabbix-config-page-root .btn-secondary-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 42px;
+    padding: 0 18px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.zabbix-config-page-root .btn-primary-action {
+    border: 1px solid #1f4f8b;
+    background: #1f4f8b;
+    color: #ffffff;
+}
+
+.zabbix-config-page-root .btn-primary-action:hover {
+    border-color: #163a66;
+    background: #163a66;
+}
+
+.zabbix-config-page-root .btn-secondary-action {
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #0f172a;
+}
+
+.zabbix-config-page-root .btn-secondary-action:hover {
+    border-color: #94a3b8;
+    background: #f8fafc;
+    color: #0f172a;
+}
+
+.zabbix-config-selector-help {
+    margin: 12px 0 0;
+    color: #64748b;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.zabbix-config-detail {
+    overflow: hidden;
+}
+
+.zabbix-config-detail-head {
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--wf-border);
+    background: var(--wf-surface-soft);
+}
+
+.zabbix-config-detail-head h2 {
+    margin: 3px 0 0;
+    color: var(--wf-text-strong);
+    font-size: 20px;
+}
+
+.zabbix-config-section {
+    padding: 20px;
+}
+
+.zabbix-config-inheritance-section {
+    border-top: 1px solid var(--wf-border);
+    background: var(--wf-surface-soft);
+}
+
+.zabbix-config-section-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 14px;
+}
+
+.zabbix-config-section-head h3 {
+    margin: 0;
+    color: var(--wf-text-strong);
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.zabbix-config-section-head p {
+    margin: 4px 0 0;
+    color: var(--wf-text-muted);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.zabbix-config-template-group {
+    overflow: hidden;
+    margin-top: 10px;
+    border: 1px solid var(--wf-border);
+    border-radius: 8px;
+    background: var(--wf-surface);
+}
+
+.zabbix-config-template-group summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 14px 16px;
+    color: var(--wf-text-strong);
+    cursor: pointer;
+    list-style: none;
+}
+
+.zabbix-config-template-group summary::-webkit-details-marker {
+    display: none;
+}
+
+.zabbix-config-template-group summary::after {
+    display: inline-flex;
+    width: 22px;
+    height: 22px;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: #e8f0fa;
+    color: var(--wf-accent);
+    content: "+";
+    font-size: 17px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.zabbix-config-template-group[open] summary {
+    border-bottom: 1px solid var(--wf-border);
+    background: #f8fbff;
+}
+
+.zabbix-config-template-group[open] summary::after {
+    content: "-";
+}
+
+.zabbix-config-template-group summary strong,
+.zabbix-config-template-group summary span span {
+    display: block;
+}
+
+.zabbix-config-template-group summary span span {
+    margin-top: 3px;
+    color: var(--wf-text-muted);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.zabbix-config-eyebrow,
+.zabbix-config-technical-name {
+    color: var(--wf-text-muted);
+    font-size: 12px;
+}
+
+.zabbix-config-eyebrow {
+    color: var(--wf-accent);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.zabbix-config-technical-name {
+    margin-top: 4px;
+}
+
+.zabbix-config-profile-list {
+    display: flex;
+    max-width: 430px;
+    gap: 7px;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    color: var(--wf-text-muted);
+    font-size: 12px;
+}
+
+.zabbix-config-profile-tag,
+.zabbix-config-type-badge {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 4px 8px;
+    background: #e8f0fa;
+    color: var(--wf-accent);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.zabbix-config-table-wrap {
+    overflow-x: auto;
+}
+
+.zabbix-config-table {
+    width: 100%;
+    min-width: 1060px;
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.zabbix-config-column-parameter {
+    width: 17%;
+}
+
+.zabbix-config-column-value {
+    width: 24%;
+}
+
+.zabbix-config-column-type {
+    width: 9%;
+}
+
+.zabbix-config-column-origin {
+    width: 16%;
+}
+
+.zabbix-config-column-action {
+    width: 34%;
+}
+
+.zabbix-config-table th {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--wf-border);
+    background: var(--wf-surface-soft);
+    color: var(--wf-text-soft);
+    font-size: 12px;
+    text-align: left;
+    text-transform: uppercase;
+}
+
+.zabbix-config-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--wf-border);
+    color: var(--wf-text-soft);
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
+.zabbix-config-table tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+.zabbix-config-table tbody tr:hover {
+    background: var(--wf-surface-soft);
+}
+
+.zabbix-config-table code {
+    display: inline-block;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    color: var(--wf-text-strong);
+    font-size: 12px;
+}
+
+.zabbix-config-macro-name {
+    color: var(--wf-text-strong);
+    font-family: Consolas, "Liberation Mono", monospace;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.zabbix-config-macro-description,
+.zabbix-config-action-hint {
+    margin-top: 5px;
+    color: var(--wf-text-muted);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.zabbix-config-secret-value {
+    color: var(--wf-text-soft);
+    font-style: italic;
+}
+
+.zabbix-config-origin {
+    color: #475569;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.zabbix-config-origin.is-direct {
+    color: #0f766e;
+    font-weight: 700;
+}
+
+.zabbix-config-macro-form {
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.zabbix-config-macro-form input {
+    width: min(175px, 100%);
+}
+
+.zabbix-config-restore-form {
+    margin-top: 7px;
+}
+
+.zabbix-config-restore-button {
+    min-height: 34px;
+    padding: 0 12px;
+    font-size: 12px;
+}
+
+.zabbix-config-locked-form .form-control:disabled,
+.zabbix-config-locked-form .btn-secondary-action:disabled {
+    cursor: not-allowed;
+    opacity: 0.65;
+}
+
+.zabbix-config-locked-form .form-control:disabled {
+    background: #f1f5f9;
+    color: var(--wf-text-muted);
+}
+
+.zabbix-config-idle,
+.zabbix-config-empty {
+    padding: 17px;
+    border: 1px dashed var(--wf-border-strong);
+    border-radius: 8px;
+    background: var(--wf-surface-soft);
+    color: var(--wf-text-muted);
+}
+
+.zabbix-config-empty {
+    text-align: center;
+}
+
+.zabbix-confirm-dialog {
+    width: min(520px, calc(100vw - 32px));
+    border: 0;
+    border-radius: 12px;
+    padding: 0;
+    box-shadow: 0 20px 50px rgba(15, 23, 42, 0.24);
+}
+
+.zabbix-confirm-dialog::backdrop {
+    background: rgba(15, 23, 42, 0.42);
+}
+
+.zabbix-confirm-dialog-card {
+    padding: 22px;
+    background: #ffffff;
+}
+
+.zabbix-confirm-dialog-title {
+    margin: 0 0 8px;
+    color: var(--wf-text-strong);
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.zabbix-confirm-dialog-message {
+    margin: 0;
+    color: var(--wf-text-soft);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.zabbix-confirm-dialog-note {
+    margin-top: 16px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--wf-surface-soft);
+    color: var(--wf-text-muted);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.zabbix-confirm-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 20px;
+    flex-wrap: wrap;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+@media (max-width: 900px) {
+    .zabbix-config-filter-grid {
+        grid-template-columns: minmax(220px, 0.45fr) minmax(300px, 1fr);
+    }
+
+    .zabbix-config-selector-action {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 720px) {
+    .zabbix-config-hero-note {
+        max-width: none;
+    }
+
+    .zabbix-config-filter-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .zabbix-config-selector-action {
+        grid-column: auto;
+    }
+
+    .zabbix-config-selector-action .btn-primary-action {
+        width: 100%;
+    }
+
+    .zabbix-config-profile-list {
+        justify-content: flex-start;
+    }
+
+    .zabbix-confirm-dialog-actions {
+        display: grid;
+        grid-template-columns: 1fr;
+    }
+}

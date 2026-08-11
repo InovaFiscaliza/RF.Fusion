@@ -4,14 +4,14 @@
 
 {% block breadcrumb %}
 <div class="breadcrumb">
-    <a href="{{ url_for('index') }}">Consulta</a>
+    <a href="{{ url_for('index') }}">Início</a>
     <span class="breadcrumb-separator">›</span>
-    <span>Spectrum</span>
+    <span>Consulta de Espectros</span>
 </div>
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260522-spectrum-query-ux') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260811-public-prefix') }}">
 {% endblock %}
 
 {% block content %}
@@ -25,9 +25,17 @@
     data-initial-availability-end="{{ filter_availability.DATE_END if filter_availability and filter_availability.DATE_END else '' }}"
 >
 
-<h1 class="wf-screen-title margin-bottom-l">
-    Consulta de Espectros
-</h1>
+<div class="wf-page-hero card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+    <div>
+        <h1 class="wf-screen-title margin-bottom-s">Consulta de Espectros</h1>
+        <p class="wf-page-hero-copy">
+            Pesquise arquivos e espectros por estação, localização, período e faixa de frequência.
+        </p>
+    </div>
+    <div class="wf-page-hero-note">
+        Os detalhes internos de cada arquivo são carregados somente quando você os solicita.
+    </div>
+</div>
 
 <!-- ====================== FILTROS ====================== -->
 
@@ -373,5 +381,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/spectrum_page.js', v='20260518-spectrum-faceted-filters') }}"></script>
+<script src="{{ url_for('static', filename='js/spectrum_page.js', v='20260811-public-prefix') }}"></script>
 {% endblock %}
