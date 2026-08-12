@@ -10,7 +10,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/server_page.css', v='20260625-server-usage-banner') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/server_page.css', v='20260811-server-text-flow') }}">
 {% endblock %}
 
 {% block content %}
@@ -27,7 +27,7 @@
     data-summary-metrics-initial-loaded="{{ '1' if server_summary_metrics else '0' }}"
 >
 
-<div class="wf-page-hero card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+<div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m margin-bottom-l">
     <div>
         <h1 class="wf-screen-title margin-bottom-s">Panorama da Máquina Virtual</h1>
         <p class="wf-page-hero-copy">
@@ -704,12 +704,12 @@
                         </div>
                         <button
                             type="submit"
-                            class="btn-search"
+                            class="btn btn-primary btn-search"
                             form="server-filter-form"
                         >
                             Atualizar Panorama
                         </button>
-                        <a class="btn-secondary" href="{{ url_for('server.server') }}">
+                        <a class="btn btn-secondary" href="{{ url_for('server.server') }}">
                             Limpar filtro
                         </a>
                     </div>

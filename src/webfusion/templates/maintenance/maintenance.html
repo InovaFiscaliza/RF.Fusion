@@ -2,7 +2,7 @@
 {% block title %}Manutenção Operacional{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/maintenance_page.css', v='20260807-host-task-action-select') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/maintenance_page.css', v='20260811-results-separation') }}">
 {% endblock %}
 
 {% block breadcrumb %}
@@ -15,7 +15,7 @@
 
 {% block content %}
 <div id="maintenance-page-root" class="maintenance-page-root">
-    <div class="maintenance-hero card background-neutral-0 padding-l border-radius-m">
+    <div class="maintenance-hero card wf-panel background-neutral-0 padding-l border-radius-m">
         <div>
             <h1 class="wf-screen-title margin-bottom-s">Manutenção Operacional</h1>
             <p class="maintenance-hero-copy">
@@ -115,8 +115,8 @@
                         <input id="host_task_search" type="text" name="host_task_search" class="form-control" value="{{ host_task_filters.search }}" placeholder="Host, tipo ou mensagem">
                     </div>
                     <div class="maintenance-filter-actions">
-                        <a href="{{ url_for('maintenance.maintenance_dashboard') }}" class="btn-secondary-action maintenance-action-button">Limpar filtros</a>
-                        <button type="submit" class="btn-primary-action maintenance-action-button">Consultar tarefas</button>
+                        <a href="{{ url_for('maintenance.maintenance_dashboard') }}" class="btn btn-secondary btn-secondary-action maintenance-action-button">Limpar filtros</a>
+                        <button type="submit" class="btn btn-primary btn-primary-action maintenance-action-button">Consultar tarefas</button>
                     </div>
                 </div>
             </form>
@@ -128,7 +128,7 @@
                 <input type="hidden" name="host_task_status" value="{{ host_task_filters.status if host_task_filters.status is not none else 'all' }}">
                 <input type="hidden" name="host_task_search" value="{{ host_task_filters.search }}">
                 <input type="hidden" name="host_task_limit" value="{{ host_task_filters.limit }}">
-                <div class="maintenance-toolbar">
+                <div class="maintenance-toolbar maintenance-results-toolbar">
                     <div>
                         <div class="maintenance-toolbar-title">Tarefas encontradas</div>
                         <div class="maintenance-toolbar-copy">{% if host_task_loaded %}{{ host_task_rows|length }} linha(s) carregadas.{% else %}Consulte quando necessário; esta lista não é carregada automaticamente.{% endif %}</div>
@@ -136,7 +136,7 @@
                 </div>
                 <div class="maintenance-target-action-grid maintenance-host-action-grid">
                     <div class="maintenance-filter-field"><label class="form-label" for="host_task_action">Ação</label><div class="select-shell"><select id="host_task_action" name="action" class="form-control" disabled><option value="">Selecione tarefas primeiro</option>{% for action_key, action_label in action_options.items() %}<option value="{{ action_key }}">{{ action_label }}</option>{% endfor %}</select></div></div>
-                    <div class="maintenance-filter-field maintenance-target-action-submit"><label class="form-label">Aplicar</label><button id="host-task-apply-action" type="submit" class="btn-primary-action" disabled>Aplicar às selecionadas</button></div>
+                    <div class="maintenance-filter-field maintenance-target-action-submit"><label class="form-label">Aplicar</label><button id="host-task-apply-action" type="submit" class="btn btn-primary btn-primary-action" disabled>Aplicar às selecionadas</button></div>
                     <div id="host-task-action-guidance" class="maintenance-target-action-guidance">Selecione ao menos uma tarefa para ver as ações compatíveis.</div>
                 </div>
                 <div class="maintenance-table-filter-bar">
@@ -202,7 +202,7 @@
                     <div class="maintenance-filter-field"><label class="form-label" for="file_task_date_from">Data inicial</label><input id="file_task_date_from" type="date" name="file_task_date_from" class="form-control" value="{{ file_task_filters.date_from }}"></div>
                     <div class="maintenance-filter-field"><label class="form-label" for="file_task_date_to">Data final exclusiva</label><input id="file_task_date_to" type="date" name="file_task_date_to" class="form-control" value="{{ file_task_filters.date_to }}"></div>
                 </div>
-                <div class="maintenance-filter-search"><div class="maintenance-filter-field maintenance-filter-search-field"><label class="form-label" for="file_task_search">Busca complementar</label><input id="file_task_search" type="text" name="file_task_search" class="form-control" value="{{ file_task_filters.search }}" placeholder="Arquivo, host ou mensagem"></div><div class="maintenance-filter-actions"><a href="{{ url_for('maintenance.maintenance_dashboard') }}" class="btn-secondary-action maintenance-action-button">Limpar filtros</a><button type="submit" class="btn-primary-action maintenance-action-button">Consultar fila</button></div></div>
+                <div class="maintenance-filter-search"><div class="maintenance-filter-field maintenance-filter-search-field"><label class="form-label" for="file_task_search">Busca complementar</label><input id="file_task_search" type="text" name="file_task_search" class="form-control" value="{{ file_task_filters.search }}" placeholder="Arquivo, host ou mensagem"></div><div class="maintenance-filter-actions"><a href="{{ url_for('maintenance.maintenance_dashboard') }}" class="btn btn-secondary btn-secondary-action maintenance-action-button">Limpar filtros</a><button type="submit" class="btn btn-primary btn-primary-action maintenance-action-button">Consultar fila</button></div></div>
             </form>
 
             <div class="maintenance-module-note">Escolha a etapa e a situação de destino após selecionar os arquivos. Preparar backup apenas remove as referências de servidor da fila; não exclui conteúdo do repositório.</div>
@@ -217,11 +217,11 @@
                 <input type="hidden" name="file_task_date_from" value="{{ file_task_filters.date_from }}">
                 <input type="hidden" name="file_task_date_to" value="{{ file_task_filters.date_to }}">
                 <input type="hidden" name="file_task_limit" value="{{ file_task_filters.limit }}">
-                <div class="maintenance-toolbar"><div><div class="maintenance-toolbar-title">Arquivos encontrados</div><div class="maintenance-toolbar-copy">{% if file_task_loaded %}{{ file_task_rows|length }} linha(s) carregadas.{% else %}Consulte quando necessário; esta fila não é carregada automaticamente.{% endif %}</div></div></div>
+                <div class="maintenance-toolbar maintenance-results-toolbar"><div><div class="maintenance-toolbar-title">Arquivos encontrados</div><div class="maintenance-toolbar-copy">{% if file_task_loaded %}{{ file_task_rows|length }} linha(s) carregadas.{% else %}Consulte quando necessário; esta fila não é carregada automaticamente.{% endif %}</div></div></div>
                 <div class="maintenance-target-action-grid">
                     <div class="maintenance-filter-field"><label class="form-label" for="file_task_target_stage">Etapa de destino</label><div class="select-shell"><select id="file_task_target_stage" name="file_task_target_stage" class="form-control" disabled><option value="">Selecione arquivos primeiro</option>{% for stage_key, stage_label in history_target_stage_options.items() %}<option value="{{ stage_key }}">{{ stage_label }}</option>{% endfor %}</select></div></div>
                     <div class="maintenance-filter-field"><label class="form-label" for="file_task_target_status">Situação inicial</label><div class="select-shell"><select id="file_task_target_status" name="file_task_target_status" class="form-control" disabled><option value="">Selecione a etapa</option>{% for status_code, status_label in history_target_status_options.items() %}<option value="{{ status_code }}">{{ status_label }}</option>{% endfor %}</select></div></div>
-                    <div class="maintenance-filter-field maintenance-target-action-submit"><label class="form-label">Aplicar</label><button id="file-task-apply-action" type="submit" class="btn-primary-action" disabled>Preparar tarefas selecionadas</button></div>
+                    <div class="maintenance-filter-field maintenance-target-action-submit"><label class="form-label">Aplicar</label><button id="file-task-apply-action" type="submit" class="btn btn-primary btn-primary-action" disabled>Preparar tarefas selecionadas</button></div>
                     <div id="file-task-action-guidance" class="maintenance-target-action-guidance">Selecione ao menos um arquivo para ver os destinos compatíveis.</div>
                 </div>
                 <div class="maintenance-table-filter-bar"><div class="maintenance-filter-field maintenance-table-filter-field"><label class="form-label" for="file-task-table-filter">Filtrar linhas carregadas</label><input id="file-task-table-filter" type="search" class="form-control" placeholder="Refinar a tabela abaixo" {% if not file_task_loaded %}disabled{% endif %}></div><div id="file-task-table-filter-count" class="maintenance-table-filter-count">{% if file_task_loaded %}{{ file_task_rows|length }} linha(s) visíveis{% else %}Nenhuma linha carregada{% endif %}</div></div>
@@ -260,7 +260,7 @@
                     <div class="maintenance-filter-field"><label class="form-label" for="history_date_to">Data final exclusiva</label><input id="history_date_to" type="date" name="history_date_to" class="form-control" value="{{ history_filters.date_to }}"></div>
                     <div class="maintenance-filter-field maintenance-history-message-field"><label class="form-label" for="history_message">Mensagem para refinar</label><input id="history_message" type="text" name="history_message" class="form-control" value="{{ history_filters.message }}" placeholder="Use junto com host ou nome completo do arquivo"></div>
                     <div class="maintenance-filter-field"><label class="form-label" for="history_limit">Limite</label><div class="select-shell"><select id="history_limit" name="history_limit" class="form-control">{% for option in [50, 100] %}<option value="{{ option }}" {% if history_filters.limit == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></div></div>
-                    <div class="maintenance-filter-actions maintenance-history-filter-actions"><a href="{{ url_for('maintenance.maintenance_dashboard') }}" class="btn-secondary-action maintenance-action-button">Limpar filtros</a><button type="submit" class="btn-primary-action maintenance-action-button">Consultar histórico</button></div>
+                    <div class="maintenance-filter-actions maintenance-history-filter-actions"><a href="{{ url_for('maintenance.maintenance_dashboard') }}" class="btn btn-secondary btn-secondary-action maintenance-action-button">Limpar filtros</a><button type="submit" class="btn btn-primary btn-primary-action maintenance-action-button">Consultar histórico</button></div>
                 </div>
             </form>
 
@@ -284,7 +284,7 @@
                 <div class="maintenance-target-action-grid">
                     <div class="maintenance-filter-field"><label class="form-label" for="history_target_stage">Etapa de destino</label><div class="select-shell"><select id="history_target_stage" name="history_target_stage" class="form-control" disabled><option value="">Selecione registros primeiro</option>{% for stage_key, stage_label in history_target_stage_options.items() %}<option value="{{ stage_key }}">{{ stage_label }}</option>{% endfor %}</select></div></div>
                     <div class="maintenance-filter-field"><label class="form-label" for="history_target_status">Situação inicial</label><div class="select-shell"><select id="history_target_status" name="history_target_status" class="form-control" disabled><option value="">Selecione a etapa</option>{% for status_code, status_label in history_target_status_options.items() %}<option value="{{ status_code }}">{{ status_label }}</option>{% endfor %}</select></div></div>
-                    <div class="maintenance-filter-field maintenance-target-action-submit"><label class="form-label">Aplicar</label><button id="maintenance-history-apply-action" type="submit" class="btn-primary-action" disabled>Preparar tarefas selecionadas</button></div>
+                    <div class="maintenance-filter-field maintenance-target-action-submit"><label class="form-label">Aplicar</label><button id="maintenance-history-apply-action" type="submit" class="btn btn-primary btn-primary-action" disabled>Preparar tarefas selecionadas</button></div>
                     <div id="maintenance-history-action-guidance" class="maintenance-target-action-guidance">Selecione ao menos um registro para ver as ações compatíveis.</div>
                 </div>
                 <div class="maintenance-table-wrap"><table class="maintenance-table"><thead><tr><th class="maintenance-check-col"><input id="maintenance-history-select-all" type="checkbox" aria-label="Selecionar todos os registros visíveis" {% if not history_loaded %}disabled{% endif %}></th><th>ID do registro</th><th>Host</th><th>Descoberta</th><th>Backup</th><th>Processamento</th><th>Fila atual</th><th>Offline</th><th>Arquivo no Host</th><th>Arquivo no Servidor</th><th>Mensagem</th></tr></thead><tbody>

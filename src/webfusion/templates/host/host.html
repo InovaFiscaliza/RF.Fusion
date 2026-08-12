@@ -10,12 +10,12 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260811-public-prefix') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260811-panel-hierarchy') }}">
 {% endblock %}
 
 {% block content %}
 <div id="host-page-root" {% if stats %}data-host-id="{{ stats.ID_HOST }}"{% endif %}>
-    <div class="wf-page-hero card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+    <div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m margin-bottom-l">
         <div>
             <h1 class="wf-screen-title margin-bottom-s">Panorama da Estação</h1>
             <p class="wf-page-hero-copy">
@@ -52,8 +52,8 @@
                     <div class="host-query-field">
                         <label>&nbsp;</label>
                         <div class="host-query-actions">
-                            <button type="submit" class="btn-search width-full">Pesquisar</button>
-                            <a class="btn-secondary" href="{{ url_for('host.host') }}">Limpar filtros</a>
+                            <button type="submit" class="btn btn-primary btn-search width-full">Pesquisar</button>
+                            <a class="btn btn-secondary" href="{{ url_for('host.host') }}">Limpar filtros</a>
                         </div>
                     </div>
                     <div class="host-query-field">

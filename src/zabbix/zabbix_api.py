@@ -37,6 +37,10 @@ PROTECTED_MACRO_NAMES = frozenset(
         "{$SNMP_COMMUNITY}",
         "{$DIGI_PORT}",
         "{$DIGI_TIMEOUT}",
+        "{$ELSYS_PASS}",
+        "{$ELSYS_PORT}",
+        "{$ELSYS_USER}",
+        "{$WUSER}"
     }
 )
 

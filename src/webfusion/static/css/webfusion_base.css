@@ -1,14 +1,17 @@
 :root {
-    --wf-text-strong: #0f172a;
-    --wf-text: #1f2937;
-    --wf-text-soft: #475569;
-    --wf-text-muted: #64748b;
-    --wf-border: #e2e8f0;
-    --wf-border-strong: #cbd5e1;
-    --wf-surface: #ffffff;
-    --wf-surface-soft: #f8fafc;
-    --wf-accent: #1f4f8b;
-    --wf-accent-dark: #163a66;
+    --wf-content-gutter: clamp(1rem, 3vw, 2.5rem);
+    --wf-content-block-space: clamp(1.5rem, 4vw, 2.5rem);
+    --wf-header-logo-size: clamp(1.75rem, 5vw, 2rem);
+    --wf-text-strong: var(--color-neutral-9);
+    --wf-text: var(--color-neutral-8);
+    --wf-text-soft: var(--color-neutral-7);
+    --wf-text-muted: var(--color-neutral-7);
+    --wf-border: var(--color-neutral-4);
+    --wf-border-strong: var(--color-neutral-5);
+    --wf-surface: var(--color-neutral-0);
+    --wf-surface-soft: var(--color-neutral-1);
+    --wf-accent: var(--color-blue-dark);
+    --wf-accent-dark: var(--color-blue-darker);
 }
 
 html,
@@ -16,23 +19,8 @@ body {
     overflow-y: auto !important;
 }
 
-body {
-    font-size: 13px;
-    line-height: 1.5;
-    color: var(--wf-text);
-    background: #f8fafc;
-}
-
 body .layout.layout-top.fixed-header {
     overflow: visible !important;
-}
-
-h1 {
-    font-size: 28px;
-    color: var(--wf-text-strong);
-    font-weight: 700;
-    letter-spacing: -0.01em;
-    line-height: 1.2;
 }
 
 .wf-screen-title {
@@ -88,8 +76,27 @@ h1 {
     }
 }
 
-.header {
-    width: 100%;
+.wf-header-link {
+    color: inherit;
+    text-decoration: none;
+}
+
+.wf-header-link:hover,
+.wf-header-link:focus {
+    color: inherit;
+    text-decoration: none;
+}
+
+.wf-header-link .app-logo {
+    height: var(--wf-header-logo-size);
+    margin-right: var(--space-s);
+}
+
+.wf-header-link > span {
+    font-size: var(--font-size-h6);
+    font-weight: var(--font-semi-bold);
+    letter-spacing: 0.01em;
+    white-space: nowrap;
 }
 
 body .layout.layout-top.fixed-header .header {
@@ -98,8 +105,25 @@ body .layout.layout-top.fixed-header .header {
 
 body .main-content {
     overflow: visible !important;
-    padding-top: calc(var(--header-size, 56px) + var(--os-safe-area-top, 0px) + 16px);
-    padding-bottom: 80px;
+    padding-bottom: var(--wf-content-block-space);
+}
+
+body .conteudo-centralizado {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+}
+
+.header .conteudo-centralizado {
+    padding-inline: var(--wf-content-gutter);
+}
+
+.layout .main-content.conteudo-centralizado {
+    padding: var(--wf-content-block-space) var(--wf-content-gutter);
+}
+
+.layout .wf-global-footer.conteudo-centralizado {
+    padding: var(--space-base) var(--wf-content-gutter);
 }
 
 .wf-global-footer {
@@ -279,60 +303,103 @@ textarea:focus {
     margin: 0;
 }
 
-.btn-search {
-    background-color: #1f4f8b;
-    color: #ffffff;
-    border: 1px solid #1f4f8b;
-    border-radius: 8px;
-    padding: 8px 18px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background-color 0.2s ease, border-color 0.2s ease;
-}
-
-.btn-search:hover {
-    background-color: #163a66;
-    border-color: #163a66;
-}
-
-.btn-secondary {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 38px;
-    padding: 8px 18px;
-    border: 1px solid #cbd5e1;
-    border-radius: 8px;
-    background: #ffffff;
-    color: #0f172a;
-    font-weight: 600;
-    text-decoration: none;
-    box-sizing: border-box;
-    transition: background-color 0.2s ease, border-color 0.2s ease;
-}
-
-.btn-secondary:hover {
-    background: #f8fafc;
-    border-color: #94a3b8;
-}
-
-.card {
-    border: 1px solid var(--wf-border);
-    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
-}
-
 .section-title {
     margin-top: 32px;
     margin-bottom: 16px;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--wf-border);
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--wf-text-strong);
+    font-size: var(--font-size-h6);
+    font-weight: var(--font-semi-bold);
+    color: var(--color-blue-dark);
 }
 
 .section-title-tight {
     margin-top: 0;
+}
+
+/* Shared panel hierarchy used by every WebFusion route. */
+.wf-panel,
+.host-section-card,
+.server-section-card,
+.spectrum-query-card,
+.zabbix-config-selector,
+.zabbix-config-detail,
+.maintenance-module {
+    border: 1px solid var(--wf-border);
+    border-radius: var(--border-radius-supersoft);
+    background: var(--wf-surface);
+    box-shadow: none;
+}
+
+.wf-subpanel,
+.host-metric-cluster,
+.server-metric-cluster,
+.filter-mode-shell,
+.task-intent-shell,
+.execution-config-shell,
+.station-profile-shell,
+.maintenance-target-action-grid,
+.zabbix-config-template-group {
+    border: 1px solid var(--wf-border);
+    border-radius: var(--border-radius-supersoft);
+    background: var(--wf-surface-soft);
+}
+
+.wf-panel-title,
+.station-map-title,
+.spectrum-query-card-title,
+.host-section-title,
+.server-section-title,
+.maintenance-module-title,
+.maintenance-summary-title,
+.maintenance-toolbar-title,
+.zabbix-config-detail-head h2,
+.zabbix-config-section-head h3,
+.task-intent-title,
+.execution-panel-title,
+.station-profile-title,
+.filter-mode-title,
+.task-summary-title {
+    margin: 0;
+    color: var(--color-blue-dark);
+    font-size: var(--font-size-h6);
+    font-weight: var(--font-semi-bold);
+    line-height: 1.3;
+}
+
+.wf-panel-copy {
+    margin: 4px 0 0;
+    color: var(--wf-text-muted);
+    font-size: var(--font-size-base);
+    line-height: 1.5;
+}
+
+.host-section-kicker,
+.server-section-kicker,
+.zabbix-config-eyebrow,
+.host-metric-cluster-title,
+.server-metric-cluster-title {
+    color: var(--color-blue-dark);
+    font-size: var(--font-size-s);
+    font-weight: var(--font-semi-bold);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.host-section-copy,
+.server-section-copy,
+.host-metric-cluster-copy,
+.server-metric-cluster-copy {
+    color: var(--wf-text-muted);
+}
+
+.spectrum-query-card-title,
+.task-intent-title,
+.execution-panel-title,
+.station-profile-title,
+.filter-mode-title,
+.task-summary-title {
+    margin-bottom: var(--space-xs);
 }
 
 .summary-grid {

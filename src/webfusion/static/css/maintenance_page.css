@@ -30,10 +30,6 @@
 
 .maintenance-module {
     overflow: hidden;
-    border: 1px solid #dbe4ef;
-    border-radius: 12px;
-    background: #ffffff;
-    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
 }
 
 .maintenance-module-summary {
@@ -42,7 +38,6 @@
     justify-content: space-between;
     gap: 16px;
     padding: 18px 20px;
-    color: #0f172a;
     cursor: pointer;
     list-style: none;
 }
@@ -69,7 +64,7 @@
 
 .maintenance-module[open] .maintenance-module-summary {
     border-bottom: 1px solid #e2e8f0;
-    background: linear-gradient(90deg, #f8fbff, #ffffff);
+    background: var(--wf-surface-soft);
 }
 
 .maintenance-module[open] .maintenance-module-summary::after {
@@ -79,11 +74,6 @@
 .maintenance-module-title,
 .maintenance-module-copy {
     display: block;
-}
-
-.maintenance-module-title {
-    font-size: 16px;
-    font-weight: 700;
 }
 
 .maintenance-module-copy {
@@ -107,13 +97,6 @@
     color: #475569;
     font-size: 13px;
     line-height: 1.5;
-}
-
-.maintenance-summary-title,
-.maintenance-toolbar-title {
-    font-size: 16px;
-    font-weight: 700;
-    color: #0f172a;
 }
 
 .maintenance-summary-grid {
@@ -218,6 +201,11 @@
     flex-wrap: wrap;
 }
 
+.maintenance-filter-actions .btn + .btn,
+.maintenance-bulk-actions .btn + .btn {
+    margin-left: 0;
+}
+
 .maintenance-field-label-row {
     display: flex;
     align-items: center;
@@ -253,52 +241,16 @@
     color: #ffffff;
 }
 
-.maintenance-action-button {
-    min-width: 140px;
-    text-decoration: none;
-}
-
-.btn-primary-action,
-.btn-secondary-action {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 42px;
-    padding: 0 18px;
-    border-radius: 8px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background-color 0.2s ease, border-color 0.2s ease;
-}
-
-.btn-primary-action {
-    border: 1px solid #1f4f8b;
-    background: #1f4f8b;
-    color: #ffffff;
-}
-
-.btn-primary-action:hover {
-    background: #163a66;
-    border-color: #163a66;
-    color: #ffffff;
-}
-
-.btn-secondary-action {
-    border: 1px solid #cbd5e1;
-    background: #ffffff;
-    color: #0f172a;
-}
-
-.btn-secondary-action:hover {
-    background: #f8fafc;
-    border-color: #94a3b8;
-    color: #0f172a;
-}
-
 .maintenance-toolbar {
     justify-content: space-between;
     align-items: center;
     margin-bottom: 16px;
+}
+
+.maintenance-results-toolbar {
+    margin-top: var(--space-m);
+    padding-top: var(--space-m);
+    border-top: 1px solid var(--wf-border);
 }
 
 .maintenance-history-toolbar {
@@ -356,9 +308,6 @@
     align-items: end;
     margin: 18px 0;
     padding: 16px;
-    border: 1px solid #dbe4ef;
-    border-radius: 10px;
-    background: #f8fbff;
 }
 
 .maintenance-host-action-grid {

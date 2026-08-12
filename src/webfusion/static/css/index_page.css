@@ -398,6 +398,31 @@
     box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.18);
 }
 
+.station-map-marker.is-selected {
+    transform: scale(1.18);
+    box-shadow:
+        0 0 0 4px rgba(22, 103, 173, 0.28),
+        0 0 0 6px rgba(255, 255, 255, 0.82),
+        0 2px 5px rgba(15, 23, 42, 0.22);
+}
+
+.leaflet-control-zoom a.leaflet-control-zoom-home {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #1f4f8b;
+}
+
+.leaflet-control-zoom a.leaflet-control-zoom-home svg {
+    width: 0.9375rem;
+    height: 0.9375rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
+}
+
 /* -------------------------------------------------------------
  * External hover panel — lives outside Leaflet's clip boundary
  * ------------------------------------------------------------- */
@@ -421,6 +446,19 @@
 
 #station-hover-panel[hidden] {
     display: none;
+}
+
+#station-hover-panel.is-pinned {
+    overflow: hidden;
+    border: 1px solid rgba(22, 103, 173, 0.32);
+    box-shadow:
+        0 10px 30px rgba(15, 23, 42, 0.18),
+        0 0 0 2px rgba(22, 103, 173, 0.05);
+}
+
+#station-hover-panel.is-dragging {
+    cursor: grabbing;
+    user-select: none;
 }
 
 @keyframes station-hover-panel-in {
@@ -447,6 +485,76 @@
     background: #cbd5e1;
     border-radius: 999px;
     border: 2px solid #ffffff;
+}
+
+.station-popup-toolbar {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.625rem;
+    flex: 0 0 auto;
+    padding: 0.75rem 0.875rem;
+    border-bottom: 1px solid #dbe4f0;
+    background: #ffffff;
+    color: #0f172a;
+    cursor: grab;
+    touch-action: none;
+}
+
+.station-popup-toolbar-label {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    font-family: "Rawline", Raleway, sans-serif;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    line-height: 1.35;
+    color: #1f4f8b;
+    overflow-wrap: anywhere;
+}
+
+.station-popup-pinned-shell {
+    display: flex;
+    flex-direction: column;
+    max-height: inherit;
+}
+
+.station-popup-pinned-content {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.station-popup-pinned-content::-webkit-scrollbar {
+    width: 0.5625rem;
+}
+
+.station-popup-pinned-content::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border: 0.125rem solid #ffffff;
+    border-radius: 999px;
+}
+
+.station-popup-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 999px;
+    background: #ffffff;
+    color: #475569;
+    cursor: pointer;
+    flex: 0 0 auto;
+}
+
+.station-popup-close:hover,
+.station-popup-close:focus-visible {
+    border-color: #64748b;
+    background: #f8fafc;
+    outline: none;
 }
 
 .station-popup-title {
@@ -539,6 +647,11 @@
     border: 1px solid #dbe4f0;
     border-radius: 10px;
     background: #ffffff;
+}
+
+.station-popup-cluster-point.is-selected {
+    border-color: #bfd3e8;
+    box-shadow: inset 3px 0 0 #1667ad;
 }
 
 .station-popup-cluster-point-kind {
@@ -677,6 +790,11 @@
     border-top: 1px solid #e2e8f0;
     padding-top: 11px;
     margin-top: 11px;
+}
+
+.station-entry.is-selected-station {
+    border-left: 3px solid #1667ad;
+    padding-left: 0.5rem;
 }
 
 .station-entry:first-of-type {

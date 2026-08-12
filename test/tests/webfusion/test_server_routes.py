@@ -65,17 +65,23 @@ def load_server_routes():
         "OFFLINE_HOSTS": 3,
         "BUSY_HOSTS": 2,
         "SERVER_MEMORY": {
+            "total_bytes": 2_147_483_648,
+            "used_bytes": 1_073_741_824,
+            "available_bytes": 1_073_741_824,
+            "use_percent": 50,
             "used_human": "1 GB",
             "total_human": "2 GB",
             "available_human": "1 GB",
-            "use_percent": 50,
         },
         "REPOSFI_USAGE": {
             "mounted": True,
+            "total_bytes": 2_199_023_255_552,
+            "used_bytes": 1_099_511_627_776,
+            "free_bytes": 1_099_511_627_776,
+            "use_percent": 50,
             "used_human": "1 TB",
             "total_human": "2 TB",
             "free_human": "1 TB",
-            "use_percent": 50,
             "path": "/mnt/reposfi",
         },
         "APP_ANALISE_STATUS": {
@@ -88,6 +94,8 @@ def load_server_routes():
     fake_host_service.get_server_processing_error_overview = lambda: {"rows": []}
     fake_host_service.get_server_summary_metrics = lambda: {
         "CURRENT_MONTH_LABEL": "2026-06",
+        "DISCOVERED_FILES_TOTAL": 99,
+        "BACKUP_DONE_GB_THIS_MONTH": 1.25,
     }
 
     sys.modules["flask"] = fake_flask
@@ -134,6 +142,21 @@ class TestServerUsageMetrics(unittest.TestCase):
         self.assertEqual(status_code, 202)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["download_action_count"], 1)
+
+    def test_zabbix_metrics_route_returns_flat_server_payload(self):
+        payload = self.routes.server_zabbix_metrics()
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["reference_month"], "2026-06")
+        self.assertEqual(payload["host_total"], 10)
+        self.assertEqual(payload["host_online"], 7)
+        self.assertEqual(payload["memory_available_bytes"], 1_073_741_824)
+        self.assertEqual(payload["reposfi_mounted"], 1)
+        self.assertEqual(payload["appanalise_online"], 1)
+        self.assertEqual(payload["discovered_files_total"], 99)
+        self.assertEqual(payload["backup_done_gb_this_month"], 1.25)
+        self.assertEqual(payload["webfusion_page_view_count_total"], 0)
+        self.assertEqual(payload["webfusion_nginx_download_count_current_month"], 0)
 
     def test_usage_metric_helpers_keep_independent_counters(self):
         self.usage_metrics.record_page_view()
@@ -247,6 +270,38 @@ class TestServerUsageMetrics(unittest.TestCase):
 
         self.assertEqual(first_snapshot["totals"]["nginx_download_count"], 1)
         self.assertEqual(second_snapshot["totals"]["nginx_download_count"], 2)
+
+    def test_reconcile_nginx_download_metrics_replaces_duplicate_month_total(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "access.log"
+            log_path.write_text(
+                (
+                    '10.88.0.34 - - [06/Jul/2026:18:06:19 +0000] '
+                    '"GET /downloads/sample-a.mat HTTP/1.1" 200 100 "-" "ua"\n'
+                    '10.88.0.34 - - [06/Jul/2026:18:06:20 +0000] '
+                    '"GET /downloads/sample-b.mat HTTP/1.1" 206 100 "-" "ua"\n'
+                ),
+                encoding="utf-8",
+            )
+            previous_path = os.environ.get("WEBFUSION_NGINX_DOWNLOAD_LOG_PATH")
+            os.environ["WEBFUSION_NGINX_DOWNLOAD_LOG_PATH"] = str(log_path)
+            try:
+                self.usage_metrics.get_usage_metrics_snapshot()
+                self.usage_metrics._increment_counter_by_month_in_memory(
+                    counter_name="nginx_download_count",
+                    reference_month=self.usage_metrics._normalize_reference_month("2026-07-01"),
+                    amount=4,
+                )
+                reconciled = self.usage_metrics.reconcile_nginx_download_metrics()
+                snapshot = self.usage_metrics.get_usage_metrics_snapshot()
+            finally:
+                if previous_path is None:
+                    os.environ.pop("WEBFUSION_NGINX_DOWNLOAD_LOG_PATH", None)
+                else:
+                    os.environ["WEBFUSION_NGINX_DOWNLOAD_LOG_PATH"] = previous_path
+
+        self.assertEqual(reconciled, {"2026-07": 2})
+        self.assertEqual(snapshot["totals"]["nginx_download_count"], 2)
 
 
 if __name__ == "__main__":

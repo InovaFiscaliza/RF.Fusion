@@ -386,7 +386,7 @@
 /* ===================================================================== */
 html, body{
     /*font-family: "Fira Sans" !important;*/
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif !important;
+    font-family: 'Rawline', Raleway, sans-serif !important;
     font-weight: var(--font-regular);
     color: var(--color-neutral-7);
 }

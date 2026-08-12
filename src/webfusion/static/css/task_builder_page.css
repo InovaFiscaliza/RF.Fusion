@@ -9,15 +9,6 @@
     min-width: 0;
 }
 
-.section-title {
-    font-weight: 600;
-    margin-top: 28px;
-    margin-bottom: 16px;
-    border-bottom: 1px solid #e5e7eb;
-    padding-bottom: 6px;
-    font-size: 15px;
-}
-
 .filter-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -39,18 +30,8 @@
 
 .filter-mode-shell {
     margin-top: 18px;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-    background: #f8fafc;
     padding: 18px;
     min-height: 138px;
-}
-
-.filter-mode-title {
-    margin: 0 0 6px;
-    font-size: 14px;
-    font-weight: 700;
-    color: #0f172a;
 }
 
 .filter-mode-note {
@@ -145,19 +126,14 @@
     gap: 10px;
 }
 
-.task-intent-shell {
-    margin-top: 18px;
-    border: 1px solid #dbe4f0;
-    border-radius: 12px;
-    background: #f8fafc;
-    padding: 16px 18px;
+.task-builder-actions .btn + .btn,
+.confirm-dialog-actions .btn + .btn {
+    margin-left: 0;
 }
 
-.task-intent-title {
-    margin: 0 0 6px;
-    font-size: 13px;
-    font-weight: 700;
-    color: #0f172a;
+.task-intent-shell {
+    margin-top: 18px;
+    padding: 16px 18px;
 }
 
 .task-intent-note {
@@ -169,21 +145,11 @@
 
 .execution-config-shell {
     margin-top: 20px;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-    background: #f8fafc;
     padding: 18px;
 }
 
 .execution-panel[hidden] {
     display: none !important;
-}
-
-.execution-panel-title {
-    margin: 0 0 6px;
-    font-size: 14px;
-    font-weight: 700;
-    color: #0f172a;
 }
 
 .execution-panel-note {
@@ -202,17 +168,7 @@
 
 .station-profile-shell {
     margin-top: 18px;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
-    background: #f8fafc;
     padding: 18px;
-}
-
-.station-profile-title {
-    margin: 0 0 6px;
-    font-size: 14px;
-    font-weight: 700;
-    color: #0f172a;
 }
 
 .station-profile-note {
@@ -246,46 +202,6 @@
     margin-top: 4px;
     font-size: 12px;
     color: #64748b;
-}
-
-.btn-primary-action {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 42px;
-    padding: 0 18px;
-    border-radius: 8px;
-    border: 1px solid #1f4f8b;
-    background: #1f4f8b;
-    color: #ffffff;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background-color 0.2s ease, border-color 0.2s ease;
-}
-
-.btn-primary-action:hover {
-    background: #163a66;
-    border-color: #163a66;
-}
-
-.btn-secondary-action {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 42px;
-    padding: 0 18px;
-    border-radius: 8px;
-    border: 1px solid #cbd5e1;
-    background: #ffffff;
-    color: #0f172a;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background-color 0.2s ease, border-color 0.2s ease;
-}
-
-.btn-secondary-action:hover {
-    background: #f8fafc;
-    border-color: #94a3b8;
 }
 
 .confirm-dialog {

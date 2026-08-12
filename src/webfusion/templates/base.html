@@ -9,10 +9,11 @@
     <!-- ===================== CSS INSTITUCIONAL ===================== -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/_Basic.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/OutSystemsReactWidgets.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/webfusion_fonts.css', v='20260811-rawline') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/AnatelReactiveTheme.AnatelReactiveTheme.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/AnatelReactiveTheme.AnatelReactiveTheme.extra.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/Desempenho_CW.Desempenho.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/webfusion_base.css', v='20260811-page-hero') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/webfusion_base.css', v='20260811-header-brand') }}">
 
     {% block extra_css %}{% endblock %}
 </head>
@@ -30,40 +31,35 @@
 </div>
 
 <div class="layout layout-top fixed-header">
-
-    <!-- ===================== HEADER INSTITUCIONAL ===================== -->
-    <header class="header background-primary text-neutral-0">
-        <div class="ThemeGrid_Container">
-
-            <div class="display-flex align-items-center padding-y-s">
-
-                <!-- LOGO / TÍTULO -->
-                <div class="display-flex align-items-center gap-s">
-                    <i class="fa fa-signal"></i>
-                    <span class="font-semi-bold font-size-h5">
-                        RF.Fusion
-                    </span>
+    <div class="main">
+        <header class="header" role="banner">
+            <div class="header-top conteudo-centralizado">
+                <div class="header-content display-flex">
+                    <div class="header-navigation OSInline">
+                        <nav class="app-menu-content display-flex background-info text-neutral-0" aria-label="Navegação principal">
+                            <div class="header-logo">
+                                <a class="application-name display-flex align-items-center full-height wf-header-link" href="{{ url_for('index') }}">
+                                    <img class="app-logo" src="{{ url_for('static', filename='img/Desempenho_CW.iconesembg.png') }}" alt="">
+                                    <span>RF.Fusion</span>
+                                </a>
+                            </div>
+                        </nav>
+                    </div>
                 </div>
-
             </div>
+        </header>
 
+        <div class="content">
+            <main class="main-content conteudo-centralizado" role="main">
+                {% block breadcrumb %}{% endblock %}
+                {% block content %}{% endblock %}
+            </main>
         </div>
-    </header>
 
-    <!-- ===================== CONTEÚDO PRINCIPAL ===================== -->
-    <main class="main-content ThemeGrid_Container">
-
-        <!-- Breadcrumb opcional -->
-        {% block breadcrumb %}{% endblock %}
-
-        <!-- Conteúdo dinâmico -->
-        {% block content %}{% endblock %}
-
-    </main>
-
-    <footer class="wf-global-footer ThemeGrid_Container">
-        Desenvolvido por LITE - Laboratório de Inovação Tecnológica - ANATEL
-    </footer>
+        <footer class="wf-global-footer conteudo-centralizado">
+            Desenvolvido por LITE - Laboratório de Inovação Tecnológica - ANATEL
+        </footer>
+    </div>
 
 </div>
 

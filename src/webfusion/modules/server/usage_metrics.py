@@ -338,33 +338,8 @@ def _increment_counter_by_month_in_memory(
         )
 
 
-def _load_checkpoint_from_db(source_name: str) -> dict[str, object] | None:
-    """Read one persisted log-ingestion checkpoint."""
-
-    conn = _get_summary_connection()
-    try:
-        cursor = conn.cursor()
-        _create_checkpoint_table(cursor)
-        cursor.execute(
-            f"""
-            SELECT
-                `NA_SOURCE_NAME` AS source_name,
-                `NA_LOG_PATH` AS log_path,
-                `NA_FILE_SIGNATURE` AS file_signature,
-                `NU_LAST_OFFSET` AS last_offset,
-                `NU_LAST_SIZE` AS last_size,
-                `NU_LAST_MTIME_NS` AS last_mtime_ns
-            FROM `{_CHECKPOINT_TABLE}`
-            WHERE `NA_SOURCE_NAME` = %s
-            """,
-            (source_name,),
-        )
-        return cursor.fetchone() or None
-    finally:
-        conn.close()
-
-
-def _save_checkpoint_to_db(
+def _save_checkpoint_with_cursor(
+    cursor,
     *,
     source_name: str,
     log_path: str,
@@ -373,42 +348,114 @@ def _save_checkpoint_to_db(
     last_size: int,
     last_mtime_ns: int,
 ) -> None:
-    """Persist one log-ingestion checkpoint."""
+    """Save one checkpoint inside an existing transaction."""
 
-    conn = _get_summary_connection()
-    try:
-        cursor = conn.cursor()
-        _create_checkpoint_table(cursor)
+    cursor.execute(
+        f"""
+        INSERT INTO `{_CHECKPOINT_TABLE}` (
+            `NA_SOURCE_NAME`,
+            `NA_LOG_PATH`,
+            `NA_FILE_SIGNATURE`,
+            `NU_LAST_OFFSET`,
+            `NU_LAST_SIZE`,
+            `NU_LAST_MTIME_NS`
+        )
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            `NA_LOG_PATH` = VALUES(`NA_LOG_PATH`),
+            `NA_FILE_SIGNATURE` = VALUES(`NA_FILE_SIGNATURE`),
+            `NU_LAST_OFFSET` = VALUES(`NU_LAST_OFFSET`),
+            `NU_LAST_SIZE` = VALUES(`NU_LAST_SIZE`),
+            `NU_LAST_MTIME_NS` = VALUES(`NU_LAST_MTIME_NS`)
+        """,
+        (
+            source_name,
+            log_path,
+            file_signature,
+            int(last_offset),
+            int(last_size),
+            int(last_mtime_ns),
+        ),
+    )
+
+
+def _lock_checkpoint_for_update(cursor, *, log_path: str) -> dict[str, object]:
+    """Lock the NGINX checkpoint before reading its unseen log range."""
+
+    _create_checkpoint_table(cursor)
+    cursor.execute(
+        f"""
+        INSERT INTO `{_CHECKPOINT_TABLE}` (`NA_SOURCE_NAME`, `NA_LOG_PATH`)
+        VALUES (%s, %s)
+        ON DUPLICATE KEY UPDATE `NA_SOURCE_NAME` = VALUES(`NA_SOURCE_NAME`)
+        """,
+        (_NGINX_DOWNLOAD_LOG_SOURCE, log_path),
+    )
+    cursor.execute(
+        f"""
+        SELECT
+            `NA_SOURCE_NAME` AS source_name,
+            `NA_LOG_PATH` AS log_path,
+            `NA_FILE_SIGNATURE` AS file_signature,
+            `NU_LAST_OFFSET` AS last_offset,
+            `NU_LAST_SIZE` AS last_size,
+            `NU_LAST_MTIME_NS` AS last_mtime_ns
+        FROM `{_CHECKPOINT_TABLE}`
+        WHERE `NA_SOURCE_NAME` = %s
+        FOR UPDATE
+        """,
+        (_NGINX_DOWNLOAD_LOG_SOURCE,),
+    )
+    return cursor.fetchone() or {}
+
+
+def _increment_nginx_months_with_cursor(
+    cursor,
+    counts_by_month: dict[date, int],
+) -> None:
+    """Add parsed download counts inside the checkpoint transaction."""
+
+    for reference_month, value in counts_by_month.items():
         cursor.execute(
             f"""
-            INSERT INTO `{_CHECKPOINT_TABLE}` (
-                `NA_SOURCE_NAME`,
-                `NA_LOG_PATH`,
-                `NA_FILE_SIGNATURE`,
-                `NU_LAST_OFFSET`,
-                `NU_LAST_SIZE`,
-                `NU_LAST_MTIME_NS`
-            )
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                `NA_LOG_PATH` = VALUES(`NA_LOG_PATH`),
-                `NA_FILE_SIGNATURE` = VALUES(`NA_FILE_SIGNATURE`),
-                `NU_LAST_OFFSET` = VALUES(`NU_LAST_OFFSET`),
-                `NU_LAST_SIZE` = VALUES(`NU_LAST_SIZE`),
-                `NU_LAST_MTIME_NS` = VALUES(`NU_LAST_MTIME_NS`)
+            INSERT INTO `{_COUNTER_TABLE}` (`NA_METRIC_NAME`, `DT_REFERENCE_MONTH`, `NU_VALUE`)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE `NU_VALUE` = `NU_VALUE` + VALUES(`NU_VALUE`)
             """,
             (
-                source_name,
-                log_path,
-                file_signature,
-                int(last_offset),
-                int(last_size),
-                int(last_mtime_ns),
+                _NGINX_DOWNLOAD_METRIC,
+                reference_month.replace(day=1),
+                int(value),
             ),
         )
-        conn.commit()
-    finally:
-        conn.close()
+
+
+def _replace_nginx_months_with_cursor(
+    cursor,
+    counts_by_month: dict[date, int],
+) -> None:
+    """Replace durable download counts with one complete log reconciliation."""
+
+    cursor.execute(
+        f"""
+        DELETE FROM `{_COUNTER_TABLE}`
+        WHERE `NA_METRIC_NAME` = %s
+        """,
+        (_NGINX_DOWNLOAD_METRIC,),
+    )
+
+    for reference_month, value in counts_by_month.items():
+        cursor.execute(
+            f"""
+            INSERT INTO `{_COUNTER_TABLE}` (`NA_METRIC_NAME`, `DT_REFERENCE_MONTH`, `NU_VALUE`)
+            VALUES (%s, %s, %s)
+            """,
+            (
+                _NGINX_DOWNLOAD_METRIC,
+                reference_month.replace(day=1),
+                int(value),
+            ),
+        )
 
 
 def _load_checkpoint_from_memory(source_name: str) -> dict[str, object] | None:
@@ -439,60 +486,6 @@ def _save_checkpoint_to_memory(
             "last_size": int(last_size),
             "last_mtime_ns": int(last_mtime_ns),
         }
-
-
-def _load_checkpoint(source_name: str) -> dict[str, object] | None:
-    """Read one checkpoint from the configured backend."""
-
-    if _use_memory_backend():
-        return _load_checkpoint_from_memory(source_name)
-
-    try:
-        return _load_checkpoint_from_db(source_name)
-    except Exception:
-        return _load_checkpoint_from_memory(source_name)
-
-
-def _save_checkpoint(
-    *,
-    source_name: str,
-    log_path: str,
-    file_signature: str,
-    last_offset: int,
-    last_size: int,
-    last_mtime_ns: int,
-) -> None:
-    """Persist one checkpoint into the configured backend."""
-
-    if _use_memory_backend():
-        _save_checkpoint_to_memory(
-            source_name=source_name,
-            log_path=log_path,
-            file_signature=file_signature,
-            last_offset=last_offset,
-            last_size=last_size,
-            last_mtime_ns=last_mtime_ns,
-        )
-        return
-
-    try:
-        _save_checkpoint_to_db(
-            source_name=source_name,
-            log_path=log_path,
-            file_signature=file_signature,
-            last_offset=last_offset,
-            last_size=last_size,
-            last_mtime_ns=last_mtime_ns,
-        )
-    except Exception:
-        _save_checkpoint_to_memory(
-            source_name=source_name,
-            log_path=log_path,
-            file_signature=file_signature,
-            last_offset=last_offset,
-            last_size=last_size,
-            last_mtime_ns=last_mtime_ns,
-        )
 
 
 def _build_log_file_signature(stat_result: os.stat_result) -> str:
@@ -603,6 +596,56 @@ def _read_nginx_download_counts(
     }
 
 
+def _sync_nginx_download_metrics_in_db(log_path: str) -> None:
+    """Commit new download counts and their checkpoint together."""
+
+    conn = _get_summary_connection()
+    try:
+        cursor = conn.cursor()
+        _create_metrics_table(cursor)
+        conn.begin()
+        checkpoint = _lock_checkpoint_for_update(cursor, log_path=log_path)
+        counts_by_month, next_checkpoint = _read_nginx_download_counts(
+            log_path,
+            checkpoint,
+        )
+
+        if next_checkpoint is None:
+            conn.rollback()
+            return
+
+        _increment_nginx_months_with_cursor(cursor, counts_by_month)
+        _save_checkpoint_with_cursor(cursor, **next_checkpoint)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _sync_nginx_download_metrics_in_memory(log_path: str) -> None:
+    """Keep test-mode ingestion behavior aligned with the durable flow."""
+
+    checkpoint = _load_checkpoint_from_memory(_NGINX_DOWNLOAD_LOG_SOURCE)
+    counts_by_month, next_checkpoint = _read_nginx_download_counts(
+        log_path,
+        checkpoint,
+    )
+
+    if next_checkpoint is None:
+        return
+
+    for reference_month, value in counts_by_month.items():
+        _increment_counter_by_month_in_memory(
+            counter_name=_NGINX_DOWNLOAD_METRIC,
+            reference_month=reference_month,
+            amount=value,
+        )
+
+    _save_checkpoint_to_memory(**next_checkpoint)
+
+
 def sync_nginx_download_metrics() -> None:
     """Ingest successful NGINX download deliveries into monthly usage metrics."""
 
@@ -611,31 +654,81 @@ def sync_nginx_download_metrics() -> None:
         return
 
     with _COUNTER_LOCK:
-        checkpoint = _load_checkpoint(_NGINX_DOWNLOAD_LOG_SOURCE)
-        counts_by_month, next_checkpoint = _read_nginx_download_counts(
-            log_path,
-            checkpoint,
-        )
-
-        if next_checkpoint is None:
+        if _use_memory_backend():
+            _sync_nginx_download_metrics_in_memory(log_path)
             return
 
-        for reference_month, value in counts_by_month.items():
-            if _use_memory_backend():
-                _increment_counter_by_month_in_memory(
-                    counter_name=_NGINX_DOWNLOAD_METRIC,
-                    reference_month=reference_month,
-                    amount=value,
-                )
-                continue
+        _sync_nginx_download_metrics_in_db(log_path)
 
-            _increment_counter_by_month_in_db(
-                counter_name=_NGINX_DOWNLOAD_METRIC,
-                reference_month=reference_month,
-                amount=value,
-            )
 
-        _save_checkpoint(**next_checkpoint)
+def _reconcile_nginx_download_metrics_in_db(log_path: str) -> dict[str, int]:
+    """Replace download metrics with a complete read of the active log."""
+
+    conn = _get_summary_connection()
+    try:
+        cursor = conn.cursor()
+        _create_metrics_table(cursor)
+        conn.begin()
+        _lock_checkpoint_for_update(cursor, log_path=log_path)
+        counts_by_month, next_checkpoint = _read_nginx_download_counts(log_path, None)
+
+        if next_checkpoint is None:
+            conn.rollback()
+            return {}
+
+        _replace_nginx_months_with_cursor(cursor, counts_by_month)
+        _save_checkpoint_with_cursor(cursor, **next_checkpoint)
+        conn.commit()
+        return {
+            _format_reference_month(reference_month)[:7]: int(value)
+            for reference_month, value in sorted(counts_by_month.items())
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _reconcile_nginx_download_metrics_in_memory(log_path: str) -> dict[str, int]:
+    """Replace test-mode download counts with the active log content."""
+
+    counts_by_month, next_checkpoint = _read_nginx_download_counts(log_path, None)
+    if next_checkpoint is None:
+        return {}
+
+    stale_keys = [
+        key
+        for key in _MONTHLY_COUNTERS
+        if key[0] == _NGINX_DOWNLOAD_METRIC
+    ]
+    for key in stale_keys:
+        del _MONTHLY_COUNTERS[key]
+
+    for reference_month, value in counts_by_month.items():
+        _MONTHLY_COUNTERS[
+            (_NGINX_DOWNLOAD_METRIC, _format_reference_month(reference_month))
+        ] = int(value)
+
+    _save_checkpoint_to_memory(**next_checkpoint)
+    return {
+        _format_reference_month(reference_month)[:7]: int(value)
+        for reference_month, value in sorted(counts_by_month.items())
+    }
+
+
+def reconcile_nginx_download_metrics() -> dict[str, int]:
+    """Rebuild download metrics and checkpoint from the active NGINX log."""
+
+    log_path = _get_nginx_download_log_path()
+    if not log_path:
+        return {}
+
+    with _COUNTER_LOCK:
+        if _use_memory_backend():
+            return _reconcile_nginx_download_metrics_in_memory(log_path)
+
+        return _reconcile_nginx_download_metrics_in_db(log_path)
 
 
 def _increment_counter(counter_name: str) -> int:

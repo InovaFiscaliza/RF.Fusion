@@ -2,7 +2,7 @@
 {% block title %}Tarefas Recentes{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/task_list_page.css', v='20260415-page-css-extraction') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/task_list_page.css', v='20260811-panel-hierarchy') }}">
 {% endblock %}
 
 {% block breadcrumb %}
@@ -17,7 +17,7 @@
 
 <div id="task-list-page-root">
 
-<div class="wf-page-hero card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+<div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m margin-bottom-l">
     <div>
         <h1 class="wf-screen-title margin-bottom-s">Tarefas Recentes</h1>
         <p class="wf-page-hero-copy">
@@ -29,7 +29,7 @@
     </div>
 </div>
 
-<div class="card background-neutral-0 padding-l border-radius-m">
+<div class="card wf-panel background-neutral-0 padding-l border-radius-m">
 
 <div class="task-list-header">
     <div>
@@ -38,8 +38,8 @@
         </div>
     </div>
     <div class="task-list-actions">
-        <a href="{{ url_for('task.task_builder') }}" class="task-list-button task-list-button-primary">Criar outra tarefa</a>
-        <a href="{{ url_for('index') }}" class="task-list-button task-list-button-secondary">Voltar ao início</a>
+        <a href="{{ url_for('task.task_builder') }}" class="btn btn-primary task-list-button task-list-button-primary">Criar outra tarefa</a>
+        <a href="{{ url_for('index') }}" class="btn btn-secondary task-list-button task-list-button-secondary">Voltar ao início</a>
     </div>
 </div>
 
@@ -56,8 +56,8 @@
         </div>
         {% endif %}
         <div class="task-summary-actions">
-            <a href="{{ url_for('task.task_builder') }}" class="task-list-button task-list-button-secondary">Criar outra tarefa</a>
-            <button type="button" class="task-summary-close" id="task-summary-close-button">Ver lista</button>
+            <a href="{{ url_for('task.task_builder') }}" class="btn btn-secondary task-list-button task-list-button-secondary">Criar outra tarefa</a>
+            <button type="button" class="btn btn-primary task-summary-close" id="task-summary-close-button">Ver lista</button>
         </div>
     </div>
 </div>

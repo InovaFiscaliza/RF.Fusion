@@ -12,7 +12,8 @@
      * Data flow:
      *   1. `/api/map/stations` returns a lightweight point list for first paint
      *   2. the map renders markers, filters, and legend from that snapshot
-     *   3. `/api/map/stations/<site_id>` is fetched lazily on hover to enrich the popup
+     *   3. `/api/map/stations/<site_id>` is fetched lazily when a point preview
+     *      or selected panel needs station-level actions
      *
      * Important model nuance:
      *   - one plotted point represents one locality assumed by a station/site
@@ -88,6 +89,9 @@
     // clip boundary, so it never gets cropped by the map container.
     const hoverPanel = document.getElementById("station-hover-panel");
     let panelActiveMarker = null;
+    let panelMode = "hover";
+    let pinnedMarker = null;
+    let panelDragState = null;
 
     // Keep the panel visible while the cursor travels from marker to panel.
     hoverPanel.addEventListener("mouseenter", () => {
@@ -97,8 +101,31 @@
         if (panelActiveMarker?.__wfScheduleClose) panelActiveMarker.__wfScheduleClose();
     });
 
+    hoverPanel.addEventListener("click", (event) => {
+        if (!event.target.closest?.("[data-station-panel-close]")) {
+            return;
+        }
+
+        event.preventDefault();
+        hideHoverPanel();
+    });
+
+    hoverPanel.addEventListener("pointerdown", (event) => {
+        const dragHandle = event.target.closest?.("[data-station-panel-drag-handle]");
+
+        if (!dragHandle || event.target.closest?.("[data-station-panel-close]")) {
+            return;
+        }
+
+        startPinnedPanelDrag(event, dragHandle);
+    });
+
+    document.addEventListener("pointermove", movePinnedPanel);
+    document.addEventListener("pointerup", finishPinnedPanelDrag);
+    document.addEventListener("pointercancel", finishPinnedPanelDrag);
+
     const MAP_THEME_STORAGE_KEY = "webfusion.station_map_theme";
-    const POPUP_HOVER_OPEN_DELAY_MS = 140;
+    const POPUP_HOVER_OPEN_DELAY_MS = 450;
     const MARKER_FOCUS_ZOOM_THRESHOLD = 7;
     const MAX_NEARBY_POPUP_POINTS = 5;
     const DEFAULT_STATUS_FILTER_VALUE = "all";
@@ -1009,6 +1036,45 @@
     }
 
     /**
+     * Restore the initial map view without changing the selected theme.
+     */
+    function resetMapToInitialState() {
+        hideHoverPanel();
+        clearMapFilters();
+    }
+
+    /**
+     * Add the home action to Leaflet's native zoom bar.
+     */
+    function addMapHomeControl() {
+        const zoomContainer = map.zoomControl?.getContainer?.();
+
+        if (!zoomContainer) {
+            return;
+        }
+
+        const button = L.DomUtil.create(
+            "a",
+            "leaflet-control-zoom-home",
+            zoomContainer
+        );
+
+        button.href = "#";
+        button.setAttribute("role", "button");
+        button.setAttribute("aria-label", "Voltar ao estado inicial do mapa");
+        button.title = "Voltar ao estado inicial do mapa";
+        button.innerHTML = `
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M3.5 10.5 12 3l8.5 7.5v9.25a1.25 1.25 0 0 1-1.25 1.25h-14A1.25 1.25 0 0 1 4 19.75V10.5Z"></path>
+                <path d="M9.25 21v-6.5h5.5V21"></path>
+            </svg>
+        `;
+
+        L.DomEvent.on(button, "click", L.DomEvent.stop);
+        L.DomEvent.on(button, "click", resetMapToInitialState);
+    }
+
+    /**
      * Normalize the optional temporal controls into query parameters.
      *
      * Once the manual fields are parsed, ISO lexical order is still safe when
@@ -1446,7 +1512,52 @@
         element.dataset.wfMarkerHoverBound = "1";
         element.addEventListener("mouseenter", () => marker.fire("mouseover"));
         element.addEventListener("mouseleave", () => marker.fire("mouseout"));
-        element.addEventListener("click", () => showHoverPanel(marker));
+        element.addEventListener("click", () => showHoverPanel(marker, { pinned: true }));
+    }
+
+    /**
+     * Reflect the fixed panel selection in the marker icon after every repaint.
+     */
+    function syncPinnedMarkerState(marker) {
+        const markerElement = marker?.getElement();
+        const isPinnedMarker = marker === pinnedMarker;
+
+        markerElement?.querySelector(".station-map-marker")?.classList.toggle(
+            "is-selected",
+            isPinnedMarker
+        );
+
+        if (typeof marker?.setZIndexOffset === "function") {
+            marker.setZIndexOffset(isPinnedMarker ? 1000 : 0);
+        }
+    }
+
+    /**
+     * Keep one selected marker highlighted while its fixed panel is visible.
+     */
+    function setPinnedMarker(marker) {
+        const previousMarker = pinnedMarker;
+        pinnedMarker = marker;
+        panelMode = "pinned";
+
+        if (previousMarker && previousMarker !== marker) {
+            syncPinnedMarkerState(previousMarker);
+        }
+
+        syncPinnedMarkerState(marker);
+    }
+
+    /**
+     * Remove selection styling when the fixed panel is dismissed.
+     */
+    function clearPinnedMarker() {
+        if (pinnedMarker) {
+            const marker = pinnedMarker;
+            pinnedMarker = null;
+            syncPinnedMarkerState(marker);
+        }
+
+        panelMode = "hover";
     }
 
     /**
@@ -1655,13 +1766,14 @@
     /**
      * Render the station-action entries for one point.
      */
-    function buildPointStationEntriesHtml(point) {
+    function buildPointStationEntriesHtml(point, options = {}) {
         if (!Array.isArray(point.stations) || point.stations.length === 0) {
             return "";
         }
 
         const orderedStations = [...point.stations].sort(comparePopupStationOrder);
         const isSingleStationPoint = orderedStations.length === 1;
+        const selectedPointClass = options.isSelectedPoint ? " is-selected-station" : "";
 
         return orderedStations.map((station) => {
             const equipmentName = escapeHtml(station.equipment_name || "Equipamento");
@@ -1678,7 +1790,7 @@
             const spectrumHref = buildSpectrumHref(point, station);
 
             return `
-                <div class="station-entry${isSingleStationPoint ? " station-entry-single" : ""}">
+                <div class="station-entry${isSingleStationPoint ? " station-entry-single" : ""}${selectedPointClass}">
                     <div class="station-entry-header${isSingleStationPoint ? " station-entry-header-single" : ""}">
                         <span class="station-entry-name">${equipmentName}</span>
                         <span class="station-status ${stationStatusClass(station)}">${stationStatusLabel(station)}</span>
@@ -1700,6 +1812,7 @@
      */
     function buildPointActionAreaHtml(point, options = {}) {
         const isCluster = Boolean(options.cluster);
+        const isSelectedPoint = Boolean(options.isSelectedPoint);
         const messageClass = isCluster
             ? "station-popup-cluster-point-message"
             : "station-popup-meta";
@@ -1716,7 +1829,7 @@
             return `<div class="${messageClass}">Sem equipamento/host vinculado para ações rápidas.</div>`;
         }
 
-        const entriesHtml = buildPointStationEntriesHtml(point);
+        const entriesHtml = buildPointStationEntriesHtml(point, { isSelectedPoint });
 
         if (isCluster) {
             return `
@@ -1740,6 +1853,10 @@
     function buildPointCardHtml(point, options = {}) {
         const stateKey = getPointStateKey(point);
         const pointScopeLabel = options.pointScopeLabel || "";
+        const selectedSiteId = options.selectedSiteId;
+        const isSelectedPoint = selectedSiteId !== null
+            && selectedSiteId !== undefined
+            && String(point.site_id) === String(selectedSiteId);
         const stationCount = Array.isArray(point.stations)
             ? point.stations.length
             : null;
@@ -1749,12 +1866,15 @@
         const metaParts = [
             `ID_SITE ${point.site_id}`,
         ].filter(Boolean);
-        const pointActionsHtml = buildPointActionAreaHtml(point, { cluster: true });
+        const pointActionsHtml = buildPointActionAreaHtml(point, {
+            cluster: true,
+            isSelectedPoint,
+        });
         const pointName = getPointDisplayName(point) || `ID_SITE ${point.site_id}`;
         const locationModeLabel = getPointLocationModeLabel(point);
 
         return `
-            <div class="station-popup-cluster-point">
+            <div class="station-popup-cluster-point${isSelectedPoint ? " is-selected" : ""}">
                 ${pointScopeLabel ? `<div class="station-popup-cluster-point-kind">${escapeHtml(pointScopeLabel)}</div>` : ""}
                 <div class="station-popup-cluster-point-header">
                     <div class="station-popup-cluster-point-heading">
@@ -1775,14 +1895,17 @@
      * Render the summary popup used when several points collapse together at
      * the current zoom level.
      */
-    function buildClusterPopupHtml(clusterSummary) {
+    function buildClusterPopupHtml(clusterSummary, options = {}) {
         const showGroupHeaders = clusterSummary.groups.length > 1;
         const groupsHtml = clusterSummary.groups.map((group) => {
             const pointRowsHtml = group.points.map((point) => {
                 const pointScopeLabel = group.points.length > 1
                     ? "Ponto geográfico"
                     : "";
-                return buildPointCardHtml(point, { pointScopeLabel });
+                return buildPointCardHtml(point, {
+                    pointScopeLabel,
+                    selectedSiteId: options.selectedSiteId,
+                });
             }).join("");
 
             if (!showGroupHeaders) {
@@ -1867,29 +1990,77 @@
      *   - graceful error fallback when detail fetch fails
      *   - full station action list once detail data is available
      */
-    function buildPopupHtml(point) {
-        if (point.popupClusterSummary?.useCluster) {
-            return buildClusterPopupHtml(point.popupClusterSummary);
-        }
-
-        // Popups have three rendering phases:
-        //   1. skeleton/loading
-        //   2. graceful degradation on detail error
-        //   3. full action set once lazy details arrive
-        //
-        // That staged rendering is intentional: hovering a point should feel
-        // immediate even before the detailed station payload arrives, but the
-        // popup must still degrade cleanly when the detail request fails.
-        const stateLabel = getPointStateDisplayLabel(point);
-        const localityLabel = getPointLocalityShortLabel(point) || getPointLocalityLabel(point);
-        const pointCardHtml = buildPointCardHtml(point);
+    function buildPinnedPanelToolbarHtml(point) {
+        const regionLabel = getPointLocalityShortLabel(point)
+            || getPointStateDisplayLabel(point);
+        const toolbarLabel = regionLabel
+            ? `Região de ${regionLabel} e proximidades`
+            : "Região e proximidades";
 
         return `
-            <div class="station-popup">
-                <div class="station-popup-title">${escapeHtml(stateLabel)}</div>
-                ${localityLabel ? `<div class="station-popup-subtitle">${escapeHtml(localityLabel)}</div>` : ""}
-                <div class="station-popup-cluster-point-list station-popup-single-point-list">
-                    ${pointCardHtml}
+            <div
+                class="station-popup-toolbar"
+                data-station-panel-drag-handle
+                title="Arraste para mover este painel"
+            >
+                <span class="station-popup-toolbar-label">
+                    ${escapeHtml(toolbarLabel)}
+                </span>
+                <button
+                    type="button"
+                    class="station-popup-close"
+                    data-station-panel-close
+                    aria-label="Fechar painel do ponto selecionado"
+                    title="Fechar"
+                >
+                    <i class="fa fa-times"></i>
+                </button>
+            </div>
+        `;
+    }
+
+    function buildPopupHtml(point, options = {}) {
+        let popupHtml;
+
+        if (point.popupClusterSummary?.useCluster) {
+            popupHtml = buildClusterPopupHtml(point.popupClusterSummary, {
+                selectedSiteId: options.selectedSiteId,
+            });
+        } else {
+            // Popups have three rendering phases:
+            //   1. skeleton/loading
+            //   2. graceful degradation on detail error
+            //   3. full action set once lazy details arrive
+            //
+            // That staged rendering is intentional: hovering a point should feel
+            // immediate even before the detailed station payload arrives, but the
+            // popup must still degrade cleanly when the detail request fails.
+            const stateLabel = getPointStateDisplayLabel(point);
+            const localityLabel = getPointLocalityShortLabel(point) || getPointLocalityLabel(point);
+            const pointCardHtml = buildPointCardHtml(point, {
+                selectedSiteId: options.selectedSiteId,
+            });
+
+            popupHtml = `
+                <div class="station-popup">
+                    <div class="station-popup-title">${escapeHtml(stateLabel)}</div>
+                    ${localityLabel ? `<div class="station-popup-subtitle">${escapeHtml(localityLabel)}</div>` : ""}
+                    <div class="station-popup-cluster-point-list station-popup-single-point-list">
+                        ${pointCardHtml}
+                    </div>
+                </div>
+            `;
+        }
+
+        if (!options.isPinned) {
+            return popupHtml;
+        }
+
+        return `
+            <div class="station-popup-pinned-shell">
+                ${buildPinnedPanelToolbarHtml(point)}
+                <div class="station-popup-pinned-content">
+                    ${popupHtml}
                 </div>
             </div>
         `;
@@ -1910,6 +2081,7 @@
         if (typeof marker.setIcon === "function") {
             marker.setIcon(createMarkerIcon(point));
             ensureMarkerElementInteractivity(marker);
+            syncPinnedMarkerState(marker);
         }
     }
 
@@ -1929,7 +2101,7 @@
         });
     }
 
-    // Hover popups stay lightweight at first render; station actions are
+    // Point panels stay lightweight at first render; station actions are
     // loaded lazily only when the user actually opens a point.
 
     /**
@@ -1937,8 +2109,13 @@
      * `.station-map-wrap` container, clamped so the panel never overflows
      * the map edges.
      */
-    function positionHoverPanel(marker) {
+    function positionHoverPanel(marker, options = {}) {
         if (!marker || hoverPanel.hidden) {
+            return;
+        }
+
+        if (panelMode === "pinned" && !options.anchorPinned) {
+            clampPinnedPanelPosition();
             return;
         }
 
@@ -2008,26 +2185,137 @@
     }
 
     /**
-     * Display the hover panel for `marker`, load lazy details, and close any
-     * other panel that may have been open.
+     * Keep a manually positioned panel inside the visible map area.
      */
-    function showHoverPanel(marker) {
+    function getPinnedPanelBounds() {
+        const wrapRect = hoverPanel.parentElement.getBoundingClientRect();
+        const panelW = hoverPanel.offsetWidth || 340;
+        const panelH = hoverPanel.offsetHeight || 200;
+        const padding = 8;
+        const viewportH = window.innerHeight || document.documentElement.clientHeight || wrapRect.height;
+        const minTop = Math.max(padding, (0 - wrapRect.top) + padding);
+        const maxBottom = Math.min(
+            wrapRect.height - padding,
+            viewportH - wrapRect.top - padding
+        );
+
+        return {
+            wrapRect,
+            minLeft: padding,
+            maxLeft: Math.max(padding, wrapRect.width - padding - panelW),
+            minTop,
+            maxTop: Math.max(minTop, maxBottom - panelH),
+        };
+    }
+
+    function clampPinnedPanelPosition() {
+        if (hoverPanel.hidden || panelMode !== "pinned") {
+            return;
+        }
+
+        const bounds = getPinnedPanelBounds();
+        const panelRect = hoverPanel.getBoundingClientRect();
+        const currentLeft = Number.parseFloat(hoverPanel.style.left);
+        const currentTop = Number.parseFloat(hoverPanel.style.top);
+        const left = Number.isFinite(currentLeft)
+            ? currentLeft
+            : panelRect.left - bounds.wrapRect.left;
+        const top = Number.isFinite(currentTop)
+            ? currentTop
+            : panelRect.top - bounds.wrapRect.top;
+
+        hoverPanel.style.left = `${Math.round(Math.min(Math.max(left, bounds.minLeft), bounds.maxLeft))}px`;
+        hoverPanel.style.top = `${Math.round(Math.min(Math.max(top, bounds.minTop), bounds.maxTop))}px`;
+    }
+
+    function startPinnedPanelDrag(event, dragHandle) {
+        if (panelMode !== "pinned" || event.button !== 0) {
+            return;
+        }
+
+        const panelRect = hoverPanel.getBoundingClientRect();
+        panelDragState = {
+            pointerId: event.pointerId,
+            offsetX: event.clientX - panelRect.left,
+            offsetY: event.clientY - panelRect.top,
+        };
+
+        dragHandle.setPointerCapture?.(event.pointerId);
+        hoverPanel.classList.add("is-dragging");
+        event.preventDefault();
+    }
+
+    function movePinnedPanel(event) {
+        if (!panelDragState || event.pointerId !== panelDragState.pointerId) {
+            return;
+        }
+
+        const bounds = getPinnedPanelBounds();
+        const left = event.clientX - bounds.wrapRect.left - panelDragState.offsetX;
+        const top = event.clientY - bounds.wrapRect.top - panelDragState.offsetY;
+
+        hoverPanel.style.left = `${Math.round(Math.min(Math.max(left, bounds.minLeft), bounds.maxLeft))}px`;
+        hoverPanel.style.top = `${Math.round(Math.min(Math.max(top, bounds.minTop), bounds.maxTop))}px`;
+    }
+
+    function finishPinnedPanelDrag(event) {
+        if (!panelDragState || event.pointerId !== panelDragState.pointerId) {
+            return;
+        }
+
+        panelDragState = null;
+        hoverPanel.classList.remove("is-dragging");
+    }
+
+    /**
+     * Render the active panel after lazy data or nearby-point data changes.
+     */
+    function renderHoverPanelContent(marker) {
         const point = marker?.__wfPoint;
+
         if (!point) {
+            return;
+        }
+
+        hoverPanel.innerHTML = buildPopupHtml(point, {
+            isPinned: panelMode === "pinned",
+            selectedSiteId: pinnedMarker?.__wfPoint?.site_id,
+        });
+    }
+
+    /**
+     * Display a transient hover panel or a fixed panel selected by click.
+     */
+    function showHoverPanel(marker, options = {}) {
+        const point = marker?.__wfPoint;
+        const shouldPin = Boolean(options.pinned);
+
+        if (!point) {
+            return;
+        }
+
+        if (panelMode === "pinned" && !shouldPin) {
             return;
         }
 
         closeOtherPopups(marker);
         panelActiveMarker = marker;
 
-        hoverPanel.innerHTML = buildPopupHtml(point);
+        if (shouldPin) {
+            setPinnedMarker(marker);
+        }
+
+        hoverPanel.classList.toggle("is-pinned", panelMode === "pinned");
+        renderHoverPanelContent(marker);
         hoverPanel.removeAttribute("hidden");
 
         // Position immediately, then again after the first paint so the panel
         // height is known and the vertical clamp is accurate.
-        positionHoverPanel(marker);
+        positionHoverPanel(marker, { anchorPinned: shouldPin });
         window.requestAnimationFrame(() => {
-            if (panelActiveMarker === marker) positionHoverPanel(marker);
+            if (panelActiveMarker === marker) {
+                positionHoverPanel(marker, { anchorPinned: shouldPin });
+            }
         });
 
         refreshPopupNearbySummary(marker);
@@ -2042,9 +2330,15 @@
      * Hide the hover panel and clear the active-marker reference.
      */
     function hideHoverPanel() {
+        panelDragState = null;
         panelActiveMarker = null;
+        clearPinnedMarker();
         hoverPanel.setAttribute("hidden", "");
+        hoverPanel.classList.remove("is-pinned", "is-dragging");
         hoverPanel.innerHTML = "";
+        hoverPanel.style.left = "";
+        hoverPanel.style.top = "";
+        hoverPanel.style.maxHeight = "";
     }
 
     /**
@@ -2061,7 +2355,7 @@
         point.popupClusterSummary = nearbySummary.useCluster ? nearbySummary : null;
 
         if (panelActiveMarker === marker) {
-            hoverPanel.innerHTML = buildPopupHtml(point);
+            renderHoverPanelContent(marker);
             // Re-clamp after a content change because the panel height may differ.
             window.requestAnimationFrame(() => {
                 if (panelActiveMarker === marker) positionHoverPanel(marker);
@@ -2253,6 +2547,10 @@
         }
 
         function scheduleOpen() {
+            if (panelMode === "pinned") {
+                return;
+            }
+
             /* Hover popups use a small delay to distinguish intentional
              * inspection from the cursor merely sweeping across the map. This
              * reduces accidental popup spam and avoids eager detail loading for
@@ -2266,6 +2564,10 @@
         }
 
         function scheduleClose() {
+            if (panelMode === "pinned") {
+                return;
+            }
+
             cancelOpen();
             cancelClose();
             closeTimer = window.setTimeout(hideHoverPanel, 180);
@@ -2595,6 +2897,9 @@
 
             return (pointA.site_id || 0) - (pointB.site_id || 0);
         });
+        // Markers are about to be replaced, so a fixed panel cannot safely
+        // remain tied to its previous point.
+        hideHoverPanel();
         markerLayer.clearLayers();
         bounds.length = 0;
         renderedMarkers = [];
@@ -2824,7 +3129,8 @@
         if (panelActiveMarker) positionHoverPanel(panelActiveMarker);
     });
 
-    // Reposition the panel while the map is panned so it tracks the marker.
+    // Hover panels track their marker. Fixed panels keep their manual position
+    // and are only clamped back into the visible map area.
     map.on("moveend", () => {
         if (panelActiveMarker) positionHoverPanel(panelActiveMarker);
     });
@@ -2839,6 +3145,7 @@
 
     // Startup restores the shell theme first, then normalizes the temporal
     // controls, then loads the initial summary-backed point dataset.
+    addMapHomeControl();
     applyMapTheme(loadSavedMapTheme());
     syncTemporalFields({syncDisplay: true});
 

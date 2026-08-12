@@ -11,7 +11,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/task_builder_page.css', v='20260810-zabbix-backup-defaults') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/task_builder_page.css', v='20260811-panel-hierarchy') }}">
 
 {% endblock %}
 
@@ -27,7 +27,7 @@
     data-zabbix-backup-defaults-url="{{ url_for('task.task_zabbix_backup_defaults', host_id=0) }}"
 >
 
-<div class="wf-page-hero card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+<div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m margin-bottom-l">
     <div>
         <h1 class="wf-screen-title margin-bottom-s">Criar Nova Tarefa</h1>
         <p class="wf-page-hero-copy">
@@ -39,7 +39,7 @@
     </div>
 </div>
 
-<div class="card background-neutral-0 padding-l border-radius-m">
+<div class="card wf-panel background-neutral-0 padding-l border-radius-m">
 
     <form method="post" id="task-builder-form">
 
@@ -404,8 +404,8 @@
            confirming the whole builder should feel like acting on the entire
            draft task, not only on the last subsection currently visible. #}
         <div class="task-builder-actions">
-            <a class="btn-secondary-action" href="{{ url_for('task.task_builder') }}">Limpar formulário</a>
-            <button type="submit" class="btn-primary-action" id="task-submit-button">Criar Tarefa</button>
+            <a class="btn btn-secondary btn-secondary-action" href="{{ url_for('task.task_builder') }}">Limpar formulário</a>
+            <button type="submit" class="btn btn-primary btn-primary-action" id="task-submit-button">Criar Tarefa</button>
         </div>
 
     </form>
@@ -440,8 +440,8 @@
                 </div>
             </div>
             <div class="confirm-dialog-actions">
-                <button type="button" class="btn-secondary-action" id="task-confirm-cancel">Cancelar</button>
-                <button type="button" class="btn-primary-action" id="task-confirm-submit">Confirmar criação</button>
+                <button type="button" class="btn btn-secondary btn-secondary-action" id="task-confirm-cancel">Cancelar</button>
+                <button type="button" class="btn btn-primary btn-primary-action" id="task-confirm-submit">Confirmar criação</button>
             </div>
         </div>
     </dialog>

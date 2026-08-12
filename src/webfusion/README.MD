@@ -200,6 +200,7 @@ ativos hoje se concentram nos módulos listados acima.
 - `/api/spectrum/localities`
 - `/api/spectrum/file/<file_id>/spectra`
 - `/api/server/summary-metrics`
+- `/server/zabbix_metrics`
 - `/api/server/processing-errors`
 - `/api/server/backup-errors`
 - `/api/server/hosts`

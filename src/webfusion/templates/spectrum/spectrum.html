@@ -11,7 +11,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260811-public-prefix') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260811-description-text-flow') }}">
 {% endblock %}
 
 {% block content %}
@@ -25,7 +25,7 @@
     data-initial-availability-end="{{ filter_availability.DATE_END if filter_availability and filter_availability.DATE_END else '' }}"
 >
 
-<div class="wf-page-hero card background-neutral-0 padding-l border-radius-m margin-bottom-l">
+<div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m margin-bottom-l">
     <div>
         <h1 class="wf-screen-title margin-bottom-s">Consulta de Espectros</h1>
         <p class="wf-page-hero-copy">
@@ -39,10 +39,10 @@
 
 <!-- ====================== FILTROS ====================== -->
 
-<div class="card background-neutral-0 padding-l border-radius-m margin-bottom-l spectrum-query-card">
+<div class="card wf-panel background-neutral-0 padding-l border-radius-m margin-bottom-l spectrum-query-card">
 
     <div class="spectrum-query-card-header">
-        <div class="spectrum-query-card-title">
+        <div class="spectrum-query-card-title wf-panel-title">
             Parâmetros de Pesquisa
         </div>
         <div class="spectrum-query-card-description">
@@ -209,14 +209,14 @@
         <div class="spectrum-query-submit-row">
             <div class="spectrum-query-submit-actions">
                 <a
-                    class="btn-secondary"
+                    class="btn btn-secondary"
                     id="clear-spectrum-filters"
                     href="{{ url_for('spectrum.spectrum') }}"
                     data-loading-message="Limpando filtros..."
                 >
                     Limpar filtros
                 </a>
-                <button type="submit" class="btn-search">
+                <button type="submit" class="btn btn-primary btn-search">
                     Pesquisar
                 </button>
             </div>

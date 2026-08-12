@@ -47,6 +47,60 @@ def _serialize_host_rows(rows):
     return serialized
 
 
+def _build_zabbix_metrics_payload() -> dict[str, object]:
+    """Build the flat monitoring payload without rendering the dashboard."""
+
+    server_overview = get_server_overview()
+    summary_metrics = get_server_summary_metrics()
+    usage_metrics = get_usage_metrics_snapshot()
+    usage_totals = usage_metrics["totals"]
+    usage_current_month = usage_metrics["current_month_totals"]
+    memory = server_overview["SERVER_MEMORY"]
+    reposfi = server_overview["REPOSFI_USAGE"]
+    appanalise = server_overview["APP_ANALISE_STATUS"]
+
+    payload = {
+        "status": "ok",
+        "reference_month": summary_metrics["CURRENT_MONTH_LABEL"],
+        "host_total": int(server_overview["TOTAL_HOSTS"]),
+        "host_online": int(server_overview["ONLINE_HOSTS"]),
+        "host_offline": int(server_overview["OFFLINE_HOSTS"]),
+        "host_busy": int(server_overview["BUSY_HOSTS"]),
+        "memory_total_bytes": int(memory["total_bytes"]),
+        "memory_used_bytes": int(memory["used_bytes"]),
+        "memory_available_bytes": int(memory["available_bytes"]),
+        "memory_used_percent": float(memory["use_percent"]),
+        "reposfi_mounted": int(bool(reposfi["mounted"])),
+        "reposfi_total_bytes": int(reposfi.get("total_bytes") or 0),
+        "reposfi_used_bytes": int(reposfi.get("used_bytes") or 0),
+        "reposfi_free_bytes": int(reposfi.get("free_bytes") or 0),
+        "reposfi_used_percent": float(reposfi.get("use_percent") or 0),
+        "appanalise_online": int(bool(appanalise["online"])),
+        "appanalise_latency_ms": float(appanalise.get("latency_ms") or 0),
+    }
+
+    payload.update(
+        {
+            key.lower(): value
+            for key, value in summary_metrics.items()
+            if key != "CURRENT_MONTH_LABEL"
+        }
+    )
+    payload.update(
+        {
+            f"webfusion_{name}_total": int(value)
+            for name, value in usage_totals.items()
+        }
+    )
+    payload.update(
+        {
+            f"webfusion_{name}_current_month": int(value)
+            for name, value in usage_current_month.items()
+        }
+    )
+    return payload
+
+
 @server_bp.route("/server", methods=["GET"])
 def server():
     """Render the global server dashboard.
@@ -77,6 +131,17 @@ def server():
         online_only=online_only,
         search=search,
     )
+
+
+@server_bp.route("/server/zabbix_metrics", methods=["GET"])
+def server_zabbix_metrics() -> object:
+    """Return the `/server` indicators as one flat JSON payload for Zabbix."""
+
+    try:
+        return jsonify(_build_zabbix_metrics_payload())
+    except Exception:
+        current_app.logger.exception("failed_to_build_server_zabbix_metrics")
+        return jsonify({"status": "error"}), 503
 
 
 @server_bp.route("/api/server/processing-errors", methods=["GET"])

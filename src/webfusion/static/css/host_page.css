@@ -16,25 +16,8 @@
     gap: 6px;
 }
 
-.host-section-kicker {
-    color: #1d4ed8;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-}
-
-.host-section-title {
-    margin: 0;
-    color: #0f172a;
-    font-size: 21px;
-    font-weight: 700;
-    line-height: 1.2;
-}
-
 .host-section-copy {
     margin: 0;
-    color: #64748b;
     font-size: 13px;
     line-height: 1.55;
     max-width: 72ch;
@@ -141,9 +124,6 @@
 }
 
 .host-metric-cluster {
-    border: 1px solid #e2e8f0;
-    border-radius: 14px;
-    background: #fbfdff;
     padding: 14px;
 }
 
@@ -158,16 +138,10 @@
 
 .host-metric-cluster-title {
     margin: 0;
-    color: #33527f;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
 }
 
 .host-metric-cluster-copy {
     margin: 4px 0 0;
-    color: #64748b;
     font-size: 12px;
     line-height: 1.5;
 }
@@ -234,10 +208,6 @@
 
     .host-section-card {
         gap: 14px;
-    }
-
-    .host-section-title {
-        font-size: 19px;
     }
 
     .host-query-grid {
