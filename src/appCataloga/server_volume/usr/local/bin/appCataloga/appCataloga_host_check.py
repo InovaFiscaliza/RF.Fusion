@@ -4,9 +4,10 @@
 Queued HOST_TASK worker for connectivity checks and statistics refresh.
 
 Consumes HOST_TASK rows in priority order:
-  1. CHECK            — confirm connectivity and queue a PROCESSING row on success
-  2. CHECK_CONNECTION — reconcile connectivity without queuing follow-up work
-  3. UPDATE_STATISTICS — refresh host summary metrics
+  1. INTERACTIVE_CHECK — run an operator-requested connectivity test
+  2. CHECK             — confirm connectivity and queue a PROCESSING row on success
+  3. CHECK_CONNECTION  — reconcile connectivity without queuing follow-up work
+  4. UPDATE_STATISTICS — refresh host summary metrics
 
 One constraint: this worker never locks HOST.IS_BUSY, so it never blocks
 data-plane workers from running on the same host.
@@ -34,9 +35,11 @@ log = logging_utils.log()
 process_status = {"running": True}
 
 # Priority order for reading the HOST_TASK queue.
-# CHECK must come before CHECK_CONNECTION so fresh bootstrap work
-# is never delayed by lighter reconciliation tasks.
+# Interactive checks run after any task already claimed by this single worker,
+# then ahead of ordinary pending checks so an operator can validate a change
+# without waiting for the regular queue backlog.
 HOST_TASK_PRIORITY = (
+    k.HOST_TASK_INTERACTIVE_CHECK_TYPE,
     k.HOST_TASK_CHECK_TYPE,
     k.HOST_TASK_CHECK_CONNECTION_TYPE,
     k.HOST_TASK_UPDATE_STATISTICS_TYPE,
@@ -91,13 +94,17 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     Another worker may win the race between read and claim.
     That case is normal and should not be logged as a failure.
     """
+    message = "Host check task running"
+    if task["task_type"] == k.HOST_TASK_INTERACTIVE_CHECK_TYPE:
+        message = "Teste de estação iniciado. Preparando a verificação de conectividade."
+
     result = db.host_task_update(
         task_id=task["task_id"],
         expected_status=k.TASK_PENDING,
         NU_STATUS=k.TASK_RUNNING,
         NU_PID=os.getpid(),
         DT_HOST_TASK=datetime.now(),
-        NA_MESSAGE="Host check task running",
+        NA_MESSAGE=message,
     )
     if result["rows_affected"] == 1:
         log.task_claimed(
@@ -117,6 +124,16 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     return False
 
 
+def _publish_interactive_progress(db: dbHandlerBKP, task: dict, message: str) -> None:
+    """Publish one real-time progress stage for an interactive station test."""
+    db.host_task_update(
+        task_id=task["task_id"],
+        expected_status=k.TASK_RUNNING,
+        DT_HOST_TASK=datetime.now(),
+        NA_MESSAGE=message,
+    )
+
+
 def _do_work(db: dbHandlerBKP, task: dict) -> tuple[int, str]:
     """Dispatch the claimed task to the domain flow for its task type.
 
@@ -124,6 +141,19 @@ def _do_work(db: dbHandlerBKP, task: dict) -> tuple[int, str]:
     Domain handlers decide the connectivity or statistics result.
     """
     match task["task_type"]:
+        case k.HOST_TASK_INTERACTIVE_CHECK_TYPE:
+            return host_connectivity.run_interactive_check(
+                db,
+                task,
+                service_name=SERVICE_NAME,
+                logger=log,
+                progress_reporter=lambda message: _publish_interactive_progress(
+                    db,
+                    task,
+                    message,
+                ),
+            )
+
         case k.HOST_TASK_UPDATE_STATISTICS_TYPE:
             return host_runtime.run_update_statistics(
                 db,
@@ -161,6 +191,7 @@ def _classify_work_failure(exc: Exception, *, task: dict | None) -> tuple[str, s
     transport errors appear in other workers too.
     """
     if task and task["task_type"] in {
+        k.HOST_TASK_INTERACTIVE_CHECK_TYPE,
         k.HOST_TASK_CHECK_TYPE,
         k.HOST_TASK_CHECK_CONNECTION_TYPE,
     }:
@@ -210,11 +241,17 @@ def _finalize_error(
     err.log_error(host_id=task["host_id"], task_id=task["task_id"])
 
     try:
+        error_message = f"Host Check Error | {err.format_persisted_error()}"
+        if task["task_type"] == k.HOST_TASK_INTERACTIVE_CHECK_TYPE:
+            error_message = (
+                "Teste de estação não pôde ser concluído. "
+                "Consulte o log técnico para detalhes."
+            )
         db.host_task_update(
             task_id=task["task_id"],
             NU_STATUS=k.TASK_ERROR,
             NU_PID=k.HOST_UNLOCKED_PID,
-            NA_MESSAGE=f"Host Check Error | {err.format_persisted_error()}",
+            NA_MESSAGE=error_message,
             DT_HOST_TASK=datetime.now(),
         )
     except Exception as e2:

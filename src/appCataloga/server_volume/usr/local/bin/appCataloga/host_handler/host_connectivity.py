@@ -15,7 +15,7 @@ import os
 import socket
 import sys
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from db.dbHandlerBKP import dbHandlerBKP
@@ -143,6 +143,19 @@ def _ping_address(addr: str, timeout_sec: float) -> bool:
         return ping(addr, timeout=timeout_sec) is not None
     except Exception:
         return False
+
+
+def _ping_latency_ms(addr: str, timeout_sec: float) -> float | None:
+    """Return ICMP latency in milliseconds for the interactive progress view."""
+    try:
+        latency_sec = ping(addr, timeout=timeout_sec)
+    except Exception:
+        return None
+
+    if latency_sec is None:
+        return None
+
+    return round(float(latency_sec) * 1000, 1)
 
 
 def persist_host_connectivity_state(
@@ -293,6 +306,7 @@ def probe_host_connectivity(
     port: int,
     user: str,
     password: str,
+    progress_reporter: Callable[[str], None] | None = None,
 ) -> ConnectivityProbePayload:
     """
     Classify host operational connectivity for discovery/backup purposes.
@@ -304,9 +318,25 @@ def probe_host_connectivity(
         - auth_error: host is reachable, but credentials were rejected
     """
     resolved_addrs = resolve_host_addresses(addr)
-    reachable = [a for a in resolved_addrs if _ping_address(a, k.ICMP_TIMEOUT_SEC)]
+    reachable: list[str] = []
+
+    for resolved_addr in resolved_addrs:
+        if progress_reporter is None:
+            if _ping_address(resolved_addr, k.ICMP_TIMEOUT_SEC):
+                reachable.append(resolved_addr)
+            continue
+
+        progress_reporter(f"ICMP: verificando {resolved_addr}.")
+        latency_ms = _ping_latency_ms(resolved_addr, k.ICMP_TIMEOUT_SEC)
+        if latency_ms is not None:
+            reachable.append(resolved_addr)
+            progress_reporter(
+                f"ICMP: {resolved_addr} respondeu em {latency_ms:.1f} ms."
+            )
 
     if not reachable:
+        if progress_reporter is not None:
+            progress_reporter("ICMP: a estação não respondeu ao teste de conectividade.")
         return {
             "state": k.HOST_CONN_OFFLINE,
             "online": False,
@@ -320,16 +350,28 @@ def probe_host_connectivity(
     best_failure: dict | None = None
 
     for resolved_addr in reachable:
+        if progress_reporter is not None:
+            progress_reporter(
+                f"SSH: verificando acesso em {resolved_addr}:{port}."
+            )
         result = ssh_probe(addr=resolved_addr, port=port, user=user, password=password)
         result["resolved_addr"] = resolved_addr
         result["resolved_candidates"] = resolved_addrs
 
         if result["state"] == k.HOST_CONN_ONLINE:
+            if progress_reporter is not None:
+                progress_reporter("SSH: acesso confirmado.")
             return result
 
         # Auth rejection outranks degradation — operators need to fix credentials.
         if best_failure is None or result["state"] == k.HOST_CONN_AUTH_ERROR:
             best_failure = result
+
+    if progress_reporter is not None and best_failure is not None:
+        if best_failure["state"] == k.HOST_CONN_AUTH_ERROR:
+            progress_reporter("SSH: autenticação recusada pela estação.")
+        else:
+            progress_reporter("SSH: não foi possível confirmar o acesso à estação.")
 
     # reachable is non-empty, so best_failure is always set after the loop.
     assert best_failure is not None
@@ -490,6 +532,37 @@ def _persist_connectivity_outcome(
             raise ValueError(f"Unsupported connectivity state: {connectivity['state']}")
 
 
+def _build_interactive_result(
+    connectivity: ConnectivityProbePayload,
+    status: int,
+    message: str,
+) -> tuple[int, str]:
+    """Render a human-facing terminal message for one manual station test."""
+    match connectivity["state"]:
+        case k.HOST_CONN_ONLINE:
+            return (
+                k.TASK_DONE,
+                "Teste concluído com sucesso: ICMP e SSH confirmados.",
+            )
+        case k.HOST_CONN_OFFLINE:
+            return (
+                k.TASK_ERROR,
+                "Teste concluído com falha: a estação não respondeu ao ICMP.",
+            )
+        case k.HOST_CONN_AUTH_ERROR:
+            return (
+                k.TASK_ERROR,
+                "Teste concluído com falha: a autenticação SSH foi recusada.",
+            )
+        case k.HOST_CONN_DEGRADED:
+            return (
+                k.TASK_ERROR,
+                "Teste concluído com falha: ICMP respondeu, mas o acesso SSH não foi confirmado.",
+            )
+        case _:
+            return status, message
+
+
 def run_check(
     db: dbHandlerBKP,
     task: dict,
@@ -497,6 +570,8 @@ def run_check(
     service_name: str,
     logger: logger_type,
     promote_to_processing: bool,
+    progress_reporter: Callable[[str], None] | None = None,
+    terminal_on_degraded: bool = False,
 ) -> tuple[int, str]:
     """
     Execute one queued connectivity task (CHECK or CHECK_CONNECTION).
@@ -526,6 +601,7 @@ def run_check(
         port=task["port"],
         user=task["user"],
         password=task["password"],
+        progress_reporter=progress_reporter,
     )
 
     logger.event(
@@ -551,6 +627,9 @@ def run_check(
         state=connectivity["state"],
     )
 
+    if progress_reporter is not None:
+        progress_reporter("Atualizando o estado operacional da estação.")
+
     persist_started_at = time.monotonic()
     # Persistence decides both queue outcome and whether this online probe
     # should fan out into a follow-up discovery task.
@@ -561,6 +640,12 @@ def run_check(
         promote_to_processing=promote_to_processing,
         logger=logger,
     )
+    if terminal_on_degraded:
+        status, message = _build_interactive_result(
+            connectivity,
+            status,
+            message,
+        )
     persist_elapsed_sec = round(time.monotonic() - persist_started_at, 3)
     since_start_sec = round(since_start_sec + persist_elapsed_sec, 3)
     logger.task_phase(
@@ -588,3 +673,23 @@ def run_check(
         )
 
     return status, message
+
+
+def run_interactive_check(
+    db: dbHandlerBKP,
+    task: dict,
+    *,
+    service_name: str,
+    logger: logger_type,
+    progress_reporter: Callable[[str], None],
+) -> tuple[int, str]:
+    """Run one operator-requested test without retrying degraded SSH results."""
+    return run_check(
+        db,
+        task,
+        service_name=service_name,
+        logger=logger,
+        promote_to_processing=False,
+        progress_reporter=progress_reporter,
+        terminal_on_degraded=True,
+    )

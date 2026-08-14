@@ -206,6 +206,10 @@ ativos hoje se concentram nos módulos listados acima.
 - `/api/server/hosts`
 - `/api/host/<host_id>/locations`
 
+O endpoint `/server/zabbix_metrics` entrega contagens, percentuais e latência
+em seus formatos naturais. Todos os volumes são expostos em bytes por meio de
+chaves `*_bytes_*`, adequadas para itens numéricos sem sinal do Zabbix.
+
 ## Execução Local
 
 O entrypoint é [app.py](/RFFusion/src/webfusion/app.py). Em execução direta, a

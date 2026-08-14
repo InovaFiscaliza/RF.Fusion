@@ -19,6 +19,7 @@ HOST_TASK_UPDATE_STATISTICS_TYPE = 3
 HOST_TASK_CHECK_CONNECTION_TYPE = 4
 HOST_TASK_BACKLOG_CONTROL_TYPE = 5
 HOST_TASK_BACKLOG_ROLLBACK_TYPE = 6
+HOST_TASK_INTERACTIVE_CHECK_TYPE = 7
 
 TASK_ERROR = -1
 TASK_DONE = 0
@@ -125,6 +126,7 @@ def _create_host_task(db, host_id, task_type, filter_dict, message):
         ),
     )
     db.commit()
+    return cursor.lastrowid
 
 
 def queue_host_task_safe(db, host_id, task_type, filter_dict, message):
@@ -165,6 +167,43 @@ def queue_host_task_safe(db, host_id, task_type, filter_dict, message):
         message=message,
     )
     return "created"
+
+
+def queue_interactive_connectivity_test(db, host_id):
+    """Create or reuse one high-priority manual connectivity test per host."""
+    tasks = _select_candidate_host_tasks(
+        db,
+        host_id,
+        HOST_TASK_INTERACTIVE_CHECK_TYPE,
+    )
+    existing = _find_reusable_singleton_host_task(tasks)
+    message = (
+        "Teste de estação solicitado pelo WebFusion. "
+        "Aguardando o verificador de conectividade."
+    )
+
+    if existing:
+        task_id = int(existing["ID_HOST_TASK"])
+        if existing["NU_STATUS"] == TASK_RUNNING:
+            return {"task_id": task_id, "created": False, "active": True}
+
+        _refresh_host_task(
+            db=db,
+            task_id=task_id,
+            task_type=HOST_TASK_INTERACTIVE_CHECK_TYPE,
+            filter_dict={},
+            message=message,
+        )
+        return {"task_id": task_id, "created": False, "active": False}
+
+    task_id = _create_host_task(
+        db=db,
+        host_id=host_id,
+        task_type=HOST_TASK_INTERACTIVE_CHECK_TYPE,
+        filter_dict={},
+        message=message,
+    )
+    return {"task_id": int(task_id), "created": True, "active": False}
 
 
 def _build_task_action_name(task_type, mode):

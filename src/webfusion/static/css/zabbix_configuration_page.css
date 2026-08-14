@@ -5,14 +5,12 @@
 }
 
 .zabbix-config-hero,
-.zabbix-config-detail-head,
 .zabbix-config-macro-form {
     display: flex;
     gap: 16px;
 }
 
-.zabbix-config-hero,
-.zabbix-config-detail-head {
+.zabbix-config-hero {
     align-items: flex-start;
     justify-content: space-between;
     flex-wrap: wrap;
@@ -107,9 +105,19 @@
 }
 
 .zabbix-config-detail-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(240px, auto);
+    gap: 16px 28px;
+    align-items: center;
     padding: 18px 20px;
     border-bottom: 1px solid var(--wf-border);
     background: var(--wf-surface-soft);
+}
+
+.zabbix-config-detail-identity {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
 }
 
 .zabbix-config-detail-head h2 {
@@ -212,13 +220,26 @@
 
 .zabbix-config-profile-list {
     display: flex;
-    max-width: 430px;
     gap: 7px;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: flex-start;
     flex-wrap: wrap;
     color: var(--wf-text-muted);
     font-size: 12px;
+}
+
+.zabbix-config-station-test {
+    display: grid;
+    justify-items: end;
+    gap: 6px;
+    color: var(--wf-text-muted);
+    font-size: 12px;
+    line-height: 1.4;
+    text-align: right;
+}
+
+.zabbix-config-station-test-unavailable {
+    color: var(--wf-text-muted);
 }
 
 .zabbix-config-profile-tag,
@@ -298,6 +319,11 @@
     font-size: 12px;
 }
 
+.zabbix-config-filter-summary {
+    font-family: inherit;
+    font-weight: 600;
+}
+
 .zabbix-config-macro-name {
     color: var(--wf-text-strong);
     font-family: Consolas, "Liberation Mono", monospace;
@@ -330,13 +356,41 @@
 }
 
 .zabbix-config-macro-form {
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    column-gap: 0.5rem;
+    row-gap: 0.375rem;
+    align-items: start;
 }
 
 .zabbix-config-macro-form input {
-    width: min(175px, 100%);
+    min-width: 0;
+    width: 100%;
+}
+
+.zabbix-config-expandable-editor {
+    position: relative;
+    min-width: 0;
+    grid-column: 1;
+    grid-row: 1 / span 2;
+}
+
+.zabbix-config-macro-form > .form-control {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+}
+
+.zabbix-config-macro-form .zabbix-config-expandable-editor .zabbix-config-expandable-value {
+    width: 100%;
+    line-height: 1.45;
+}
+
+.zabbix-config-filter-builder-trigger {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+    white-space: nowrap;
 }
 
 .zabbix-config-macro-form .btn,
@@ -344,7 +398,15 @@
     min-width: 0;
 }
 
+.zabbix-config-macro-form .btn-primary-action {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+}
+
 .zabbix-config-restore-form {
+    display: flex;
+    justify-content: flex-end;
     margin-top: 7px;
 }
 
@@ -425,6 +487,114 @@
     margin-left: 0;
 }
 
+.zabbix-filter-builder-dialog {
+    width: min(48rem, calc(100vw - 2rem));
+    max-height: calc(100vh - 2rem);
+    border: 0;
+    border-radius: 0.75rem;
+    padding: 0;
+    box-shadow: 0 1.25rem 3.125rem rgba(15, 23, 42, 0.24);
+}
+
+.zabbix-filter-builder-dialog::backdrop {
+    background: rgba(15, 23, 42, 0.42);
+}
+
+.zabbix-filter-builder-card {
+    display: grid;
+    gap: 1.25rem;
+    max-height: calc(100vh - 2rem);
+    overflow: auto;
+    padding: 1.375rem;
+    background: var(--wf-surface);
+}
+
+.zabbix-filter-builder-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.zabbix-filter-builder-head h2 {
+    margin: 0;
+    color: var(--wf-text-strong);
+    font-size: 1.125rem;
+}
+
+.zabbix-filter-builder-head p {
+    margin: 0.5rem 0 0;
+    color: var(--wf-text-soft);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+}
+
+.zabbix-filter-builder-close {
+    display: inline-grid;
+    width: 2rem;
+    height: 2rem;
+    place-items: center;
+    flex: 0 0 auto;
+    border: 1px solid var(--wf-border-strong);
+    border-radius: 999px;
+    background: var(--wf-surface);
+    color: var(--wf-accent);
+    cursor: pointer;
+}
+
+.zabbix-filter-builder-close:hover,
+.zabbix-filter-builder-close:focus-visible {
+    background: var(--wf-surface-soft);
+    outline: 0;
+}
+
+.zabbix-filter-builder-feedback {
+    margin: 0;
+    padding: 0.625rem 0.75rem;
+    border: 1px solid #facc15;
+    border-radius: 0.5rem;
+    background: #fefce8;
+    color: #854d0e;
+    font-size: 0.8125rem;
+    line-height: 1.45;
+}
+
+.zabbix-filter-builder-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+}
+
+.zabbix-filter-builder-field {
+    display: grid;
+    gap: 0.375rem;
+}
+
+.zabbix-filter-builder-field[hidden] {
+    display: none;
+}
+
+.zabbix-filter-builder-field label {
+    margin: 0;
+}
+
+.zabbix-filter-builder-field span {
+    color: var(--wf-text-muted);
+    font-size: 0.75rem;
+    line-height: 1.4;
+}
+
+.zabbix-filter-builder-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.625rem;
+    flex-wrap: wrap;
+}
+
+.zabbix-filter-builder-actions .btn + .btn {
+    margin-left: 0;
+}
+
 .sr-only {
     position: absolute;
     width: 1px;
@@ -447,6 +617,10 @@
 }
 
 @media (max-width: 720px) {
+    .zabbix-config-detail-head {
+        grid-template-columns: 1fr;
+    }
+
     .zabbix-config-hero-note {
         max-width: none;
     }
@@ -467,7 +641,21 @@
         justify-content: flex-start;
     }
 
+    .zabbix-config-station-test {
+        justify-items: start;
+        text-align: left;
+    }
+
     .zabbix-confirm-dialog-actions {
+        display: grid;
+        grid-template-columns: 1fr;
+    }
+
+    .zabbix-filter-builder-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .zabbix-filter-builder-actions {
         display: grid;
         grid-template-columns: 1fr;
     }

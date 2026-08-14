@@ -36,6 +36,7 @@ class FakeCursor:
     def __init__(self, db):
         self.db = db
         self._last_result = []
+        self.lastrowid = db.next_task_id
 
     def execute(self, sql, params=None):
         compact_sql = " ".join(sql.split())
@@ -60,6 +61,7 @@ class FakeDB:
         self.select_results = list(select_results or [])
         self.executions = []
         self.commit_calls = 0
+        self.next_task_id = 901
 
     def cursor(self):
         return FakeCursor(self)
@@ -279,6 +281,52 @@ class TestTaskService(unittest.TestCase):
         self.assertTrue(insert_sql.startswith("INSERT INTO HOST_TASK"))
         self.assertIn('"max_total_gb": "30"', insert_params[3])
         self.assertIn('"sort_order": "newest_first"', insert_params[3])
+
+    def test_interactive_connectivity_test_creates_one_dedicated_task(self):
+        db = FakeDB(select_results=[[]])
+
+        result = self.module.queue_interactive_connectivity_test(
+            db=db,
+            host_id=41,
+        )
+
+        self.assertEqual(
+            result,
+            {"task_id": 901, "created": True, "active": False},
+        )
+        insert_sql, insert_params = db.executions[-1]
+        self.assertTrue(insert_sql.startswith("INSERT INTO HOST_TASK"))
+        self.assertEqual(
+            insert_params[1],
+            self.module.HOST_TASK_INTERACTIVE_CHECK_TYPE,
+        )
+        self.assertIn("Teste de estação solicitado", insert_params[-1])
+
+    def test_interactive_connectivity_test_reuses_running_task(self):
+        db = FakeDB(
+            select_results=[
+                [
+                    {
+                        "ID_HOST_TASK": 902,
+                        "NU_TYPE": self.module.HOST_TASK_INTERACTIVE_CHECK_TYPE,
+                        "NU_STATUS": self.module.TASK_RUNNING,
+                        "FILTER": "{}",
+                    }
+                ]
+            ]
+        )
+
+        result = self.module.queue_interactive_connectivity_test(
+            db=db,
+            host_id=41,
+        )
+
+        self.assertEqual(
+            result,
+            {"task_id": 902, "created": False, "active": True},
+        )
+        self.assertEqual(len(db.executions), 1)
+        self.assertEqual(db.commit_calls, 0)
 
 
 if __name__ == "__main__":

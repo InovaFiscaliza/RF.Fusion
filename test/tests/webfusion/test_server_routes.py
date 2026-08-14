@@ -154,7 +154,8 @@ class TestServerUsageMetrics(unittest.TestCase):
         self.assertEqual(payload["reposfi_mounted"], 1)
         self.assertEqual(payload["appanalise_online"], 1)
         self.assertEqual(payload["discovered_files_total"], 99)
-        self.assertEqual(payload["backup_done_gb_this_month"], 1.25)
+        self.assertEqual(payload["backup_done_bytes_this_month"], 1_342_177_280)
+        self.assertNotIn("backup_done_gb_this_month", payload)
         self.assertEqual(payload["webfusion_page_view_count_total"], 0)
         self.assertEqual(payload["webfusion_nginx_download_count_current_month"], 0)
 

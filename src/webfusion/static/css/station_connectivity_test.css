@@ -1,0 +1,187 @@
+.station-connectivity-test-dialog {
+    width: min(100% - 2rem, 34rem);
+    max-width: none;
+    margin: auto;
+    padding: 0;
+    border: 1px solid var(--wf-border);
+    border-radius: 14px;
+    background: var(--wf-surface);
+    box-shadow: 0 1.5rem 3.5rem rgba(15, 47, 83, 0.22);
+    color: var(--wf-text);
+}
+
+.station-connectivity-test-dialog::backdrop {
+    background: rgba(17, 37, 64, 0.35);
+}
+
+.station-connectivity-test-card {
+    display: grid;
+    gap: 18px;
+    padding: 22px;
+}
+
+.station-connectivity-test-head {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    justify-content: space-between;
+}
+
+.station-connectivity-test-eyebrow {
+    margin: 0 0 4px;
+    color: var(--wf-accent);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+.station-connectivity-test-title {
+    margin: 0;
+    color: var(--wf-text-strong);
+    font-size: 21px;
+    line-height: 1.2;
+}
+
+.station-connectivity-test-close {
+    display: inline-flex;
+    width: 32px;
+    height: 32px;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    padding: 0;
+    border: 1px solid #c7d8eb;
+    border-radius: 50%;
+    background: #fff;
+    color: var(--wf-accent);
+    cursor: pointer;
+}
+
+.station-connectivity-test-close:hover,
+.station-connectivity-test-close:focus-visible {
+    border-color: var(--wf-accent);
+    background: #edf5ff;
+}
+
+.station-connectivity-test-status {
+    display: grid;
+    gap: 6px;
+    padding: 13px 14px;
+    border: 1px solid #cfe1f7;
+    border-radius: 10px;
+    background: #f5f9ff;
+}
+
+.station-connectivity-test-status-label {
+    color: var(--wf-text-muted);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.station-connectivity-test-status-message {
+    color: var(--wf-text);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.station-connectivity-test-steps {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.station-connectivity-test-step {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+    min-height: 48px;
+    padding: 9px 10px;
+    border: 1px solid var(--wf-border);
+    border-radius: 9px;
+    background: #fff;
+    color: var(--wf-text-muted);
+}
+
+.station-connectivity-test-step-icon {
+    display: inline-flex;
+    width: 28px;
+    height: 28px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: #edf2f7;
+    color: #60758f;
+    font-size: 12px;
+}
+
+.station-connectivity-test-step strong,
+.station-connectivity-test-step span {
+    display: block;
+}
+
+.station-connectivity-test-step strong {
+    color: var(--wf-text);
+    font-size: 14px;
+}
+
+.station-connectivity-test-step span {
+    margin-top: 2px;
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+.station-connectivity-test-step.is-active {
+    border-color: #7fb8f2;
+    background: #f2f8ff;
+    color: var(--wf-accent);
+}
+
+.station-connectivity-test-step.is-active .station-connectivity-test-step-icon {
+    background: var(--wf-accent);
+    color: #fff;
+    animation: station-connectivity-test-pulse 1.2s ease-in-out infinite;
+}
+
+.station-connectivity-test-step.is-complete .station-connectivity-test-step-icon {
+    background: #d8f4e3;
+    color: #117a45;
+}
+
+.station-connectivity-test-step.is-failed .station-connectivity-test-step-icon {
+    background: #fde6e4;
+    color: #b42318;
+}
+
+.station-connectivity-test-footnote {
+    margin: 0;
+    color: var(--wf-text-muted);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+@keyframes station-connectivity-test-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(0, 102, 204, 0.3); }
+    50% { box-shadow: 0 0 0 7px rgba(0, 102, 204, 0); }
+}
+
+@media (max-width: 640px) {
+    .station-connectivity-test-card {
+        padding: 18px;
+    }
+
+    .station-connectivity-test-title {
+        font-size: 19px;
+    }
+
+    .zabbix-config-station-test {
+        width: 100%;
+        margin-left: 0;
+        align-items: flex-start;
+        flex-direction: column;
+    }
+}

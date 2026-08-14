@@ -484,6 +484,20 @@
         return shouldHighlight ? `<strong>${content}</strong>` : content;
     }
 
+    function formatFrequency(value) {
+        const numericValue = Number(value);
+
+        if (!Number.isFinite(numericValue)) {
+            return value ?? "—";
+        }
+
+        return numericValue.toFixed(2);
+    }
+
+    function formatFrequencyRange(startValue, endValue) {
+        return `${formatFrequency(startValue)} – ${formatFrequency(endValue)}`;
+    }
+
     function buildDetailHtml(rows) {
         if (!Array.isArray(rows) || rows.length === 0) {
             return '<div class="file-detail-empty">Nenhum espectro vinculado a este arquivo.</div>';
@@ -497,7 +511,10 @@
                 <tr class="${isMatch ? "file-detail-match" : ""}">
                     <td>${renderDetailCell(row.ID_SPECTRUM, isMatch)}</td>
                     <td>${renderDetailCell(row.NA_DESCRIPTION || "—", isMatch)}</td>
-                    <td>${renderDetailCell(`${row.NU_FREQ_START} – ${row.NU_FREQ_END}`, isMatch)}</td>
+                    <td>${renderDetailCell(
+                        formatFrequencyRange(row.NU_FREQ_START, row.NU_FREQ_END),
+                        isMatch
+                    )}</td>
                     <td>${renderDetailCell(row.DT_TIME_START || "—", isMatch)}</td>
                     <td>${renderDetailCell(row.DT_TIME_END || "—", isMatch)}</td>
                     <td>${renderDetailCell(row.NU_RBW || "—", isMatch)}</td>

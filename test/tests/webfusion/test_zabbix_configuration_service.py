@@ -57,12 +57,34 @@ class FakeZabbixClient:
                     "is_direct_on_target": False,
                     "source_macro_id": "46",
                     "accepts_value": True,
+                    "editable_value": "10482",
                 },
             ],
         }
 
     def get_template_configuration(self, target_id):
         raise AssertionError(f"Unexpected template lookup: {target_id}")
+
+    def get_host_configurations(self, target_ids):
+        return {
+            str(target_id): {
+                "macros": [
+                    {
+                        "name": "{$BACKUP_PATH}",
+                        "type": "0",
+                        "accepts_value": True,
+                        "editable_value": "/mnt/collective",
+                    },
+                    {
+                        "name": "{$BACKUP_EXTENSION}",
+                        "type": "0",
+                        "accepts_value": True,
+                        "editable_value": ".bin",
+                    },
+                ]
+            }
+            for target_id in target_ids
+        }
 
     def create_macro(self, **kwargs):
         self.created.append(kwargs)
@@ -212,6 +234,24 @@ class TestZabbixConfigurationService(unittest.TestCase):
 
         self.assertEqual(settings["ZABBIX_API_URL"], "http://override.example/api_jsonrpc.php")
         self.assertEqual(settings["ZABBIX_API_TOKEN"], "environment-token")
+
+    def test_collective_backup_defaults_include_only_managed_hosts(self):
+        defaults = service.get_hosts_backup_defaults(["501", "999"])
+
+        self.assertEqual(
+            defaults,
+            {
+                "501": {
+                    "file_path": "/mnt/collective",
+                    "extension": ".bin",
+                }
+            },
+        )
+
+    def test_host_configuration_exposes_operational_host_id(self):
+        configuration = service.get_configuration("host", "501")
+
+        self.assertEqual(configuration["operational_host_id"], 10482)
 
 
 if __name__ == "__main__":

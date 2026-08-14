@@ -11,7 +11,9 @@ The route layer keeps three concerns local:
 - batching rules for individual versus collective task creation
 """
 
+import json
 import re
+from typing import Any
 from flask import (
     Blueprint,
     Response,
@@ -26,7 +28,9 @@ from modules.task.service import (
     EXPOSED_TASK_TYPES,
     HOST_TASK_BACKLOG_ROLLBACK_TYPE,
     HOST_TASK_CHECK_TYPE,
+    HOST_TASK_INTERACTIVE_CHECK_TYPE,
     create_task,
+    queue_interactive_connectivity_test,
 )
 from modules.server.usage_metrics import record_page_view
 from modules.zabbix_configuration.service import (
@@ -34,6 +38,7 @@ from modules.zabbix_configuration.service import (
     ZabbixApiError,
     ZabbixConfigurationError,
     get_configuration,
+    get_hosts_backup_defaults,
 )
 from db import get_connection_bpdata as get_connection
 
@@ -51,6 +56,47 @@ DEFAULT_UMS300_FILE_PATH = "C:/Users/NUC/Downloads"
 DEFAULT_UMS300_EXTENSION = ".bin"
 ZABBIX_BACKUP_PATH_MACRO = "{$BACKUP_PATH}"
 ZABBIX_BACKUP_EXTENSION_MACRO = "{$BACKUP_EXTENSION}"
+MAX_COLLECTIVE_ZABBIX_DEFAULT_HOSTS = 500
+
+TASK_ACTION_BACKUP = "backup"
+TASK_ACTION_BACKLOG_ROLLBACK = "backlog_rollback"
+TASK_ACTION_DISCOVER = "discover"
+TASK_ACTION_REDISCOVER = "rediscover"
+TASK_ACTION_CONNECTIVITY_TEST = "connectivity_test"
+TASK_ACTION_DEFAULT = TASK_ACTION_DISCOVER
+
+TASK_ACTIONS = (
+    {
+        "value": TASK_ACTION_BACKUP,
+        "label": "Enviar para Fila de Backup",
+        "task_type": HOST_TASK_CHECK_TYPE,
+        "fixed_mode": None,
+    },
+    {
+        "value": TASK_ACTION_BACKLOG_ROLLBACK,
+        "label": "Remover da Fila de Backup",
+        "task_type": HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+        "fixed_mode": None,
+    },
+    {
+        "value": TASK_ACTION_DISCOVER,
+        "label": "Executar Descoberta Incremental",
+        "task_type": HOST_TASK_CHECK_TYPE,
+        "fixed_mode": "NONE",
+    },
+    {
+        "value": TASK_ACTION_REDISCOVER,
+        "label": "Executar Descoberta Completa",
+        "task_type": HOST_TASK_CHECK_TYPE,
+        "fixed_mode": "REDISCOVERY",
+    },
+    {
+        "value": TASK_ACTION_CONNECTIVITY_TEST,
+        "label": "Testar Conectividade da Estação",
+        "task_type": HOST_TASK_INTERACTIVE_CHECK_TYPE,
+        "fixed_mode": None,
+    },
+)
 
 # Different station families do not always share the same path/extension
 # conventions. These defaults let the UI suggest sensible values before the
@@ -159,12 +205,63 @@ def _normalize_filter_mode_for_task_type(raw_value, task_type):
     return normalized
 
 
-def _extract_host_prefix(host_name):
+def _normalize_task_action(raw_value: object) -> str:
+    """Keep the submitted action within the small task-builder vocabulary."""
+    normalized = str(raw_value or "").strip().lower()
+    available_actions = {action["value"] for action in TASK_ACTIONS}
+
+    if normalized in available_actions:
+        return normalized
+
+    return TASK_ACTION_DEFAULT
+
+
+def _resolve_task_action(action_value: str) -> dict[str, Any]:
+    """Return the queue type and optional fixed mode for one visible action."""
+    normalized_action = _normalize_task_action(action_value)
+    return next(
+        action
+        for action in TASK_ACTIONS
+        if action["value"] == normalized_action
+    )
+
+
+def _action_from_legacy_selection(task_type: int, mode: str) -> str:
+    """Preserve direct URLs created before the action selector existed."""
+    if task_type == HOST_TASK_BACKLOG_ROLLBACK_TYPE:
+        return TASK_ACTION_BACKLOG_ROLLBACK
+    if mode == "REDISCOVERY":
+        return TASK_ACTION_REDISCOVER
+    if mode == "NONE":
+        return TASK_ACTION_DISCOVER
+    return TASK_ACTION_BACKUP
+
+
+def _resolve_action_mode(action: dict[str, Any], raw_mode: object) -> str:
+    """Apply an action's fixed filter or validate its selectable mode."""
+    fixed_mode = action["fixed_mode"]
+    if fixed_mode:
+        return str(fixed_mode)
+
+    task_type = int(action["task_type"])
+    mode = _normalize_filter_mode_for_task_type(raw_mode, task_type)
+
+    # Discovery and rediscovery are explicit actions, not generic backup modes.
+    if action["value"] == TASK_ACTION_BACKUP and mode in {"NONE", "REDISCOVERY"}:
+        return "ALL"
+
+    return mode
+
+
+def _extract_host_prefix(host_name: object) -> str:
     """Return the leading alphabetical station family marker from a host name."""
     normalized_name = str(host_name or "").strip().upper()
 
     if normalized_name.startswith("UMS"):
         return "UMS300"
+
+    if normalized_name.startswith("ERMX"):
+        return "ERMX"
 
     match = re.match(r"^[A-Z]+", normalized_name)
     return match.group(0) if match else ""
@@ -215,19 +312,21 @@ def _build_station_profile_rows(host_prefix_rows, selected_values=None):
 
         field_key = _station_profile_field_key(prefix)
         defaults = _resolve_filter_defaults_for_prefix(prefix)
+        file_path_key = f"profile_file_path__{field_key}"
+        extension_key = f"profile_extension__{field_key}"
+        selected_file_path = selected_values.get(file_path_key)
+        selected_extension = selected_values.get(extension_key)
 
         rows.append(
             {
                 "prefix": prefix,
                 "field_key": field_key,
                 "hosts": int(row.get("HOSTS") or 0),
-                "file_path": selected_values.get(
-                    f"profile_file_path__{field_key}",
-                    defaults["file_path"],
-                ),
-                "extension": selected_values.get(
-                    f"profile_extension__{field_key}",
-                    defaults["extension"],
+                "file_path": selected_file_path or defaults["file_path"],
+                "extension": selected_extension or defaults["extension"],
+                "has_custom_value": bool(
+                    (selected_file_path and selected_file_path != defaults["file_path"])
+                    or (selected_extension and selected_extension != defaults["extension"])
                 ),
             }
         )
@@ -274,6 +373,42 @@ def _extract_station_profile_overrides(form_data, station_profile_rows):
     return overrides
 
 
+def _parse_collective_zabbix_defaults(raw_value, allowed_host_ids):
+    """Accept a bounded client snapshot only for the selected host scope."""
+    if not raw_value:
+        return {}
+
+    try:
+        payload = json.loads(raw_value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    allowed_ids = {str(host_id) for host_id in allowed_host_ids}
+    defaults_by_host = {}
+
+    for host_id, values in payload.items():
+        normalized_host_id = str(host_id)
+        if normalized_host_id not in allowed_ids or not isinstance(values, dict):
+            continue
+
+        file_path = str(values.get("file_path") or "").strip()
+        extension = str(values.get("extension") or "").strip()
+        if not file_path or not extension:
+            continue
+        if len(file_path) > 2048 or len(extension) > 255:
+            continue
+
+        defaults_by_host[normalized_host_id] = {
+            "file_path": file_path,
+            "extension": extension,
+        }
+
+    return defaults_by_host
+
+
 def _looks_like_auto_filter_defaults(filter_data):
     """
     Detect whether the current filter fields still look auto-suggested.
@@ -302,7 +437,12 @@ def _looks_like_auto_filter_defaults(filter_data):
     return file_path in auto_paths and extension in auto_extensions
 
 
-def _build_collective_task_batches(host_rows, filter_data, profile_overrides=None):
+def _build_collective_task_batches(
+    host_rows,
+    filter_data,
+    profile_overrides=None,
+    zabbix_defaults_by_host=None,
+):
     """
     Split collective requests by station family when defaults are still implicit.
 
@@ -312,6 +452,44 @@ def _build_collective_task_batches(host_rows, filter_data, profile_overrides=Non
     """
     if not host_rows:
         return []
+
+    if zabbix_defaults_by_host:
+        batches_by_backup_defaults = {}
+        fallback_rows = []
+
+        for row in host_rows:
+            defaults = zabbix_defaults_by_host.get(str(row["ID_HOST"])) or {}
+            file_path = str(defaults.get("file_path") or "").strip()
+            extension = str(defaults.get("extension") or "").strip()
+
+            if not file_path or not extension:
+                fallback_rows.append(row)
+                continue
+
+            batches_by_backup_defaults.setdefault(
+                (file_path, extension),
+                [],
+            ).append(row["ID_HOST"])
+
+        batches = []
+        for (file_path, extension), host_ids in batches_by_backup_defaults.items():
+            merged_filter = dict(filter_data)
+            merged_filter.update(
+                {
+                    "file_path": file_path,
+                    "extension": extension,
+                }
+            )
+            batches.append({"hosts": host_ids, "filter_data": merged_filter})
+
+        if not fallback_rows:
+            return batches
+
+        return batches + _build_collective_task_batches(
+            host_rows=fallback_rows,
+            filter_data=filter_data,
+            profile_overrides=profile_overrides,
+        )
 
     if profile_overrides:
         grouped_hosts = {}
@@ -378,14 +556,19 @@ def task_builder():
     db = get_connection()
     cursor = db.cursor()
     selected_host = request.args.get("host_id")
-    selected_task_type = str(
-        _normalize_selected_task_type(request.args.get("task_type"))
+    legacy_task_type = _normalize_selected_task_type(request.args.get("task_type"))
+    legacy_mode = _normalize_filter_mode(request.args.get("mode", "NONE"))
+    selected_action = _normalize_task_action(
+        request.args.get("action")
+        or _action_from_legacy_selection(legacy_task_type, legacy_mode)
     )
+    selected_action_definition = _resolve_task_action(selected_action)
+    selected_task_type = str(selected_action_definition["task_type"])
     selected_execution_type = request.args.get("execution_type", "individual")
     selected_host_filter = request.args.get("host_filter", "ALL")
-    selected_mode = _normalize_filter_mode_for_task_type(
-        request.args.get("mode", "NONE"),
-        selected_task_type,
+    selected_mode = _resolve_action_mode(
+        selected_action_definition,
+        legacy_mode,
     )
     selected_start_date = request.args.get("start_date", "")
     selected_end_date = request.args.get("end_date", "")
@@ -406,6 +589,13 @@ def task_builder():
         selected_max_total_gb = ""
         selected_sort_order = "newest_first"
 
+    selected_filter_defaults_custom = not _looks_like_auto_filter_defaults(
+        {
+            "file_path": selected_file_path,
+            "extension": selected_extension,
+        }
+    )
+
     # --------------------------------------------------
     # Discover host prefixes dynamically
     # --------------------------------------------------
@@ -413,6 +603,7 @@ def task_builder():
         SELECT
             CASE
                 WHEN UPPER(NA_HOST_NAME) LIKE 'UMS%' THEN 'UMS300'
+                WHEN UPPER(NA_HOST_NAME) LIKE 'ERMX%' THEN 'ERMX'
                 ELSE REGEXP_SUBSTR(UPPER(NA_HOST_NAME), '^[A-Z]+')
             END AS PREFIX,
             COUNT(*) AS HOSTS
@@ -457,11 +648,33 @@ def task_builder():
     # --------------------------------------------------
     if request.method == "POST":
 
-        task_type = _normalize_selected_task_type(request.form.get("task_type"))
+        selected_action = _normalize_task_action(request.form.get("action"))
+        action_definition = _resolve_task_action(selected_action)
+        task_type = int(action_definition["task_type"])
         execution_type = request.form.get("execution_type")
-        mode = _normalize_filter_mode_for_task_type(
+
+        if selected_action == TASK_ACTION_CONNECTIVITY_TEST:
+            raw_host_id = request.form.get("host_id")
+            try:
+                host_id = int(raw_host_id)
+            except (TypeError, ValueError):
+                host_id = None
+
+            if execution_type != "individual" or not host_id:
+                return redirect(url_for("task.task_builder", action=selected_action))
+
+            queue_interactive_connectivity_test(db, host_id)
+            return redirect(
+                url_for(
+                    "task.task_list",
+                    queued_count=1,
+                    skipped_count=0,
+                )
+            )
+
+        mode = _resolve_action_mode(
+            action_definition,
             request.form.get("mode"),
-            task_type,
         )
 
         # Task filter payload
@@ -534,10 +747,18 @@ def task_builder():
                         station_profile_rows,
                     )
 
+                zabbix_defaults_by_host = {}
+                if task_type == HOST_TASK_CHECK_TYPE:
+                    zabbix_defaults_by_host = _parse_collective_zabbix_defaults(
+                        request.form.get("collective_zabbix_defaults"),
+                        [host_row["ID_HOST"] for host_row in selected_hosts],
+                    )
+
                 for batch in _build_collective_task_batches(
                     host_rows=selected_hosts,
                     filter_data=filter_data,
                     profile_overrides=profile_overrides,
+                    zabbix_defaults_by_host=zabbix_defaults_by_host,
                 ):
                     batch_summary = create_task(
                         db=db,
@@ -584,6 +805,7 @@ def task_builder():
         host_prefixes=host_prefixes,
         online_only=online_only,
         selected_host=selected_host,
+        selected_action=selected_action,
         selected_task_type=selected_task_type,
         selected_execution_type=selected_execution_type,
         selected_host_filter=selected_host_filter,
@@ -596,10 +818,12 @@ def task_builder():
         selected_file_name=selected_file_name,
         selected_max_total_gb=selected_max_total_gb,
         selected_sort_order=selected_sort_order,
+        selected_filter_defaults_custom=selected_filter_defaults_custom,
         selected_collective_host_ids=selected_collective_host_ids,
         selected_collective_host_search=selected_collective_host_search,
         station_profile_rows=station_profile_rows,
-        exposed_task_types=EXPOSED_TASK_TYPES,
+        task_actions=TASK_ACTIONS,
+        backup_task_type=HOST_TASK_CHECK_TYPE,
         stop_task_type=HOST_TASK_BACKLOG_ROLLBACK_TYPE,
     )
 
@@ -621,6 +845,51 @@ def task_zabbix_backup_defaults(host_id):
         {
             **defaults,
             "source": "zabbix" if any(defaults.values()) else "fallback",
+        }
+    )
+
+
+@task_bp.route("/api/hosts/backup-defaults", methods=["GET"])
+def task_zabbix_collective_backup_defaults():
+    """Provide effective backup defaults for a bounded collective selection."""
+    host_ids = sorted(
+        {
+            str(host_id)
+            for host_id in request.args.getlist("host_id")
+            if str(host_id).isdigit() and int(str(host_id)) > 0
+        },
+        key=int,
+    )
+
+    if len(host_ids) > MAX_COLLECTIVE_ZABBIX_DEFAULT_HOSTS:
+        return jsonify(
+            {
+                "defaults": {},
+                "source": "fallback",
+                "message": "A seleção coletiva excede o limite de consulta ao Zabbix.",
+            }
+        ), 400
+
+    try:
+        defaults = get_hosts_backup_defaults(host_ids)
+    except (ZabbixApiError, ZabbixConfigurationError) as error:
+        current_app.logger.warning(
+            "task_collective_zabbix_defaults_unavailable: %s",
+            error,
+        )
+        return jsonify(
+            {
+                "defaults": {},
+                "source": "fallback",
+                "message": "Não foi possível consultar a configuração coletiva no Zabbix.",
+            }
+        )
+
+    return jsonify(
+        {
+            "defaults": defaults,
+            "source": "zabbix",
+            "message": "Configuração coletiva consultada no Zabbix.",
         }
     )
 

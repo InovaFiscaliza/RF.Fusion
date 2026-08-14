@@ -1262,6 +1262,7 @@ class dbHandlerBKP(DBHandlerBase):
             k.HOST_TASK_CHECK_CONNECTION_TYPE,
             k.HOST_TASK_BACKLOG_CONTROL_TYPE,
             k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+            k.HOST_TASK_INTERACTIVE_CHECK_TYPE,
         )
 
         self._connect()

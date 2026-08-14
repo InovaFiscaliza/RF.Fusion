@@ -11,7 +11,8 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/task_builder_page.css', v='20260811-panel-hierarchy') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/task_builder_page.css', v='20260812-filter-alignment') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/station_connectivity_test.css', v='20260813-station-test') }}">
 
 {% endblock %}
 
@@ -23,8 +24,11 @@
 <div
     id="task-builder-root"
     data-stop-task-type="{{ stop_task_type }}"
+    data-backup-task-type="{{ backup_task_type }}"
+    data-selected-filter-defaults-custom="{{ 'true' if selected_filter_defaults_custom else 'false' }}"
     data-selected-collective-host-ids='{{ selected_collective_host_ids|tojson }}'
     data-zabbix-backup-defaults-url="{{ url_for('task.task_zabbix_backup_defaults', host_id=0) }}"
+    data-zabbix-collective-backup-defaults-url="{{ url_for('task.task_zabbix_collective_backup_defaults') }}"
 >
 
 <div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m margin-bottom-l">
@@ -35,13 +39,19 @@
         </p>
     </div>
     <div class="wf-page-hero-note">
-        Na execução individual, caminho e extensão podem ser sugeridos pela configuração da estação.
+        Caminho e extensão são consultados no Zabbix para a estação ou grupo selecionado.
     </div>
 </div>
 
 <div class="card wf-panel background-neutral-0 padding-l border-radius-m">
 
     <form method="post" id="task-builder-form">
+        <input
+            type="hidden"
+            name="collective_zabbix_defaults"
+            id="collective-zabbix-defaults"
+            value=""
+        >
 
         {# Top-line intent:
            define what action will be created, whether it targets one station
@@ -54,13 +64,19 @@
             <div class="task-builder-field">
                 <label>Ação</label>
                 <div class="select-shell">
-                    <select name="task_type" class="form-control" required>
-                        {% for task_type_id, task_type_label in exposed_task_types.items() %}
-                        <option value="{{ task_type_id }}" {% if selected_task_type == task_type_id|string %}selected{% endif %}>
-                            {{ task_type_label }}
+                    <select name="action" id="task-action" class="form-control" required>
+                        {% for action in task_actions %}
+                        <option
+                            value="{{ action.value }}"
+                            data-task-type="{{ action.task_type }}"
+                            data-fixed-mode="{{ action.fixed_mode or '' }}"
+                            {% if selected_action == action.value %}selected{% endif %}
+                        >
+                            {{ action.label }}
                         </option>
                         {% endfor %}
                     </select>
+                    <input type="hidden" name="task_type" id="task-type" value="{{ selected_task_type }}">
                 </div>
             </div>
 
@@ -98,13 +114,15 @@
 
         </div>
 
-        {# This intent card is updated by JS when the task type changes. It is
+        {# This intent card is updated by JS when the action changes. It is
            here to translate low-level task codes into human-facing language
            before the user commits to a potentially expensive operation. #}
         <div class="task-intent-shell">
-            <h2 class="task-intent-title" id="task-type-note-title">Fluxo normal de backup</h2>
+            <h2 class="task-intent-title" id="task-type-note-title">
+                {% if selected_action == "backlog_rollback" %}Remoção da fila de backup{% elif selected_action == "discover" %}Descoberta incremental{% elif selected_action == "rediscover" %}Descoberta completa{% elif selected_action == "connectivity_test" %}Teste de conectividade{% else %}Envio para fila de backup{% endif %}
+            </h2>
             <p class="task-intent-note" id="task-type-note">
-                Cria a solicitação normal de backup. A estação passa por verificação do host, descoberta e, depois, o backlog elegível entra na fila de backup.
+                {% if selected_action == "backlog_rollback" %}Remove da fila os arquivos selecionados que ainda não foram copiados. Eles poderão ser identificados e enviados novamente em uma operação posterior.{% elif selected_action == "discover" %}Identifica no caminho configurado os arquivos novos ou alterados desde a última descoberta registrada para a estação.{% elif selected_action == "rediscover" %}Examina todos os arquivos no caminho configurado, sem considerar a data da última descoberta. Use quando precisar conferir novamente todo o conteúdo da estação.{% elif selected_action == "connectivity_test" %}Executa uma checagem prioritária de ICMP e SSH para uma única estação e acompanha o resultado em tempo real.{% else %}Inclui na fila de backup os arquivos que atendem ao filtro escolhido. A cópia para o repositório central é executada conforme a capacidade da fila.{% endif %}
             </p>
         </div>
 
@@ -158,7 +176,7 @@
 
                                 {% for p in host_prefixes %}
                                 <option value="{{ p.PREFIX }}" {% if selected_host_filter == p.PREFIX %}selected{% endif %}>
-                                    {{ p.PREFIX }} ({{ p.HOSTS }})
+                                    {% if p.PREFIX == "ERMX" %}ERMx{% else %}{{ p.PREFIX }}{% endif %} ({{ p.HOSTS }})
                                 </option>
                                 {% endfor %}
                             </select>
@@ -190,6 +208,14 @@
                                 Opcional. Se nada for selecionado, a tarefa será criada para todos os hosts do filtro acima.
                                 Use Ctrl/Cmd para selecionar múltiplos hosts.
                             </div>
+                            <div
+                                class="collective-zabbix-defaults-summary"
+                            >
+                                <div class="collective-zabbix-defaults-title">Configuração de Backup no Zabbix</div>
+                                <div id="collective-zabbix-defaults-summary" aria-live="polite">
+                                    Selecione o grupo para consultar caminho e extensão efetivos no Zabbix.
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -207,13 +233,13 @@
                 <h2 class="station-profile-title">Perfis por Família de Estação</h2>
                 <p class="station-profile-note">
                     Quando a execução coletiva estiver em <strong>Todas</strong>, cada família recebe seu próprio caminho e extensão.
-                    RFEye, CelPlan e UMS300 já vêm preenchidos; novas famílias podem ser ajustadas aqui conforme forem entrando no ambiente.
+                    Os valores efetivos são consultados no Zabbix sem varrer as estações uma a uma; ajustes manuais continuam disponíveis.
                 </p>
 
                 {% for row in station_profile_rows %}
                 <div class="station-profile-row">
                     <div>
-                        <div class="station-profile-label">{{ row.prefix }}</div>
+                        <div class="station-profile-label">{% if row.prefix == "ERMX" %}ERMx{% else %}{{ row.prefix }}{% endif %}</div>
                         <div class="station-profile-meta">{{ row.hosts }} host(s)</div>
                     </div>
 
@@ -224,6 +250,9 @@
                             name="profile_file_path__{{ row.field_key }}"
                             class="form-control"
                             value="{{ row.file_path }}"
+                            data-station-profile-prefix="{{ row.prefix }}"
+                            data-station-profile-field="file_path"
+                            data-station-profile-custom="{{ 'true' if row.has_custom_value else 'false' }}"
                         >
                     </div>
 
@@ -234,6 +263,9 @@
                             name="profile_extension__{{ row.field_key }}"
                             class="form-control"
                             value="{{ row.extension }}"
+                            data-station-profile-prefix="{{ row.prefix }}"
+                            data-station-profile-field="extension"
+                            data-station-profile-custom="{{ 'true' if row.has_custom_value else 'false' }}"
                         >
                     </div>
                 </div>
@@ -253,7 +285,7 @@
 
             <div class="section-title">Filtro</div>
 
-            <div class="filter-base-grid">
+            <div class="filter-base-grid" id="filter-base-grid">
 
                 <div class="task-builder-field">
                     <label>Modo</label>
@@ -277,12 +309,12 @@
                     </div>
                 </div>
 
-                <div class="task-builder-field">
+                <div class="task-builder-field" id="extension-wrapper">
                     <label>Extensão</label>
                     <input type="text" name="extension" class="form-control" value="{{ selected_extension }}">
                 </div>
 
-                <div class="task-builder-field">
+                <div class="task-builder-field" id="file-path-wrapper">
                     <label>Caminho</label>
                     <input type="text" name="file_path" value="{{ selected_file_path }}" class="form-control">
                     <div class="field-help filter-zabbix-defaults-note" id="zabbix-backup-defaults-note" aria-live="polite">
@@ -351,8 +383,19 @@
                     </div>
 
                     <div class="task-builder-field" id="file-name-wrapper" {% if selected_mode != "FILE" %}hidden{% endif %}>
-                        <label>Nome do arquivo</label>
-                        <input type="text" name="file_name" class="form-control" value="{{ selected_file_name }}">
+                        <label>Nome ou padrão de arquivo</label>
+                        <input
+                            type="text"
+                            name="file_name"
+                            class="form-control"
+                            value="{{ selected_file_name }}"
+                            placeholder="Ex.: rfeye*.bin ou *.zip"
+                            spellcheck="false"
+                        >
+                        <div class="field-help">
+                            Use <strong>*</strong> para representar qualquer trecho do nome. Exemplos: <code>rfeye*.bin</code> ou <code>*.zip</code>.
+                            Se o padrão já incluir a extensão, o campo <strong>Extensão</strong> não é considerado.
+                        </div>
                     </div>
 
                     <div
@@ -453,5 +496,6 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/task_builder_page.js', v='20260810-zabbix-backup-defaults') }}"></script>
+<script src="{{ url_for('static', filename='js/station_connectivity_test.js', v='20260813-station-test-stage-order') }}"></script>
+<script src="{{ url_for('static', filename='js/task_builder_page.js', v='20260813-connectivity-test') }}"></script>
 {% endblock %}

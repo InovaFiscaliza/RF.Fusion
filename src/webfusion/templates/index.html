@@ -24,10 +24,10 @@
 <div class="card wf-panel background-neutral-0 padding-l border-radius-m margin-bottom-l station-map-card">
     <div class="station-map-header">
         <div>
-            <div class="station-map-title wf-panel-title">Mapa dos dados gerados</div>
-            <div class="station-map-meta">
-                Visão de estação por localidade, disponível apenas para estações com arquivos já processados.
-            </div>
+            <h2 class="station-map-title wf-panel-title">Dashboard de Geolocalização das Estações</h2>
+            <p class="station-map-meta wf-panel-copy">
+                Visualize a distribuição geográfica das estações e os dados já processados, incluindo localidades atuais e históricas.
+            </p>
         </div>
         <div class="station-map-meta">
             <span id="station-map-count">Carregando pontos...</span>
@@ -187,7 +187,7 @@
 
                     <div>
                         <div class="font-semi-bold">
-                            Consulta de Arquivos
+                            Consulta aos Arquivos
                         </div>
                         <div class="font-size-s text-neutral-6 margin-top-xs module-description">
                             Pesquisa, paginação e download de espectros coletados.
@@ -213,7 +213,7 @@
 
                     <div>
                         <div class="font-semi-bold">
-                            Panorama da Máquina Virtual
+                            Panorama do Servidor
                         </div>
                         <div class="font-size-s text-neutral-6 margin-top-xs module-description">
                             Consolidado global, infraestrutura compartilhada e visão agregada das estações.
@@ -239,7 +239,7 @@
 
                     <div>
                         <div class="font-semi-bold">
-                            Consulta Host
+                            Consulta às Estações
                         </div>
                         <div class="font-size-s text-neutral-6 margin-top-xs module-description">
                             Estatísticas operacionais e estado dos nós RF.Fusion.
@@ -265,7 +265,7 @@
 
                     <div>
                         <div class="font-semi-bold">
-                            Criar Tarefa
+                            Criação de Tarefas
                         </div>
                         <div class="font-size-s text-neutral-6 margin-top-xs module-description">
                             Criação manual de tarefas para execução nos hosts.
@@ -291,7 +291,7 @@
 
                     <div>
                         <div class="font-semi-bold">
-                            Manutenção Operacional
+                            Manutenção de Tarefas
                         </div>
                         <div class="font-size-s text-neutral-6 margin-top-xs module-description">
                             Consulta e intervenção manual em HOST_TASK e FILE_TASK com validações operacionais.
@@ -317,7 +317,7 @@
 
                     <div>
                         <div class="font-semi-bold">
-                            Configuração das Estações
+                            Configuração de Estações
                         </div>
                         <div class="font-size-s text-neutral-6 margin-top-xs module-description">
                             Macros do Zabbix por template e por estação, com indicação de sobrescritas.
@@ -343,5 +343,5 @@
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
 ></script>
-<script src="{{ url_for('static', filename='js/index_map.js', v='20260811-map-controls-identity') }}"></script>
+<script src="{{ url_for('static', filename='js/index_map.js', v='20260813-selected-point-first') }}"></script>
 {% endblock %}

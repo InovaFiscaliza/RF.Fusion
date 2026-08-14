@@ -18,10 +18,14 @@
 
 .filter-base-grid {
     display: grid;
-    grid-template-columns: minmax(220px, 280px) minmax(220px, 320px) minmax(360px, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 18px 20px;
     width: 100%;
-    align-items: end;
+    align-items: start;
+}
+
+.filter-base-grid--zabbix-managed {
+    grid-template-columns: minmax(220px, 280px);
 }
 
 .filter-zabbix-defaults-note {
@@ -81,6 +85,21 @@
     height: 220px;
     max-height: 220px;
     padding: 8px 10px;
+}
+
+.collective-zabbix-defaults-summary {
+    border-left: 3px solid var(--color-primary, #0056a6);
+    color: var(--color-neutral-9, #334155);
+    font-size: var(--font-size-s, 0.875rem);
+    line-height: 1.4;
+    padding-left: 10px;
+}
+
+.collective-zabbix-defaults-title {
+    color: var(--color-primary, #0056a6);
+    font-size: var(--font-size-s, 0.875rem);
+    font-weight: 700;
+    margin-bottom: 3px;
 }
 
 .field-help {
@@ -287,7 +306,7 @@ input[type="checkbox"] {
 
 @media (max-width: 900px) {
     .filter-base-grid {
-        grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .filter-base-grid .task-builder-field:last-child {

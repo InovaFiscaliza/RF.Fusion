@@ -11,6 +11,7 @@
 
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260811-panel-hierarchy') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/station_connectivity_test.css', v='20260813-station-test') }}">
 {% endblock %}
 
 {% block content %}
@@ -109,10 +110,24 @@
         </section>
 
         <section class="card background-neutral-0 padding-l border-radius-m host-section-card">
-            <div class="host-section-head">
-                <div class="host-section-kicker">Operação</div>
-                <h2 class="host-section-title">Estado Operacional</h2>
-                <p class="host-section-copy">Situação atual de conectividade, execução e sinais operacionais da estação.</p>
+            <div class="host-section-head host-operation-section-head">
+                <div class="host-section-head-content">
+                    <div class="host-section-kicker">Operação</div>
+                    <h2 class="host-section-title">Estado Operacional</h2>
+                    <p class="host-section-copy">Situação atual de conectividade, execução e sinais operacionais da estação.</p>
+                </div>
+                <div class="host-section-action">
+                    <button
+                        type="button"
+                        class="btn btn-secondary btn-secondary-action station-connectivity-test-trigger"
+                        data-station-connectivity-test
+                        data-host-id="{{ stats.ID_HOST }}"
+                        data-host-name="{{ stats.NA_HOST_NAME }}"
+                    >
+                        <i class="fa fa-plug"></i> Testar estação
+                    </button>
+                    <span class="host-section-action-copy">Verifica ICMP e SSH e atualiza o estado operacional.</span>
+                </div>
             </div>
             <div class="host-status-row">
                 {% if stats.IS_OFFLINE %}<span class="status-badge status-offline">Offline</span>{% else %}<span class="status-badge status-online">Online</span>{% endif %}
@@ -382,5 +397,6 @@
 {% endblock %}
 
 {% block extra_js %}
+<script src="{{ url_for('static', filename='js/station_connectivity_test.js', v='20260813-station-test-stage-order') }}"></script>
 <script src="{{ url_for('static', filename='js/host_page.js', v='20260811-public-prefix') }}"></script>
 {% endblock %}

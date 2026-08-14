@@ -13,7 +13,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/AnatelReactiveTheme.AnatelReactiveTheme.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/AnatelReactiveTheme.AnatelReactiveTheme.extra.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/Desempenho_CW.Desempenho.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/webfusion_base.css', v='20260811-header-brand') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/webfusion_base.css', v='20260813-header-hover') }}">
 
     {% block extra_css %}{% endblock %}
 </head>
@@ -37,11 +37,20 @@
                 <div class="header-content display-flex">
                     <div class="header-navigation OSInline">
                         <nav class="app-menu-content display-flex background-info text-neutral-0" aria-label="Navegação principal">
-                            <div class="header-logo">
+                            <div class="header-logo wf-header-brand">
                                 <a class="application-name display-flex align-items-center full-height wf-header-link" href="{{ url_for('index') }}">
                                     <img class="app-logo" src="{{ url_for('static', filename='img/Desempenho_CW.iconesembg.png') }}" alt="">
                                     <span>RF.Fusion</span>
                                 </a>
+                            </div>
+                            <div class="wf-header-nav-links" aria-label="Módulos do sistema">
+                                <a class="wf-header-nav-link{% if request.endpoint == 'index' %} is-active{% endif %}" href="{{ url_for('index') }}"{% if request.endpoint == 'index' %} aria-current="page"{% endif %} data-loading-message="Abrindo mapa das estações...">Mapa</a>
+                                <a class="wf-header-nav-link{% if request.endpoint == 'spectrum.spectrum' %} is-active{% endif %}" href="{{ url_for('spectrum.spectrum') }}"{% if request.endpoint == 'spectrum.spectrum' %} aria-current="page"{% endif %} data-loading-message="Abrindo consulta de espectros...">Consulta aos Arquivos</a>
+                                <a class="wf-header-nav-link{% if request.endpoint and request.endpoint.startswith('server.') %} is-active{% endif %}" href="{{ url_for('server.server') }}"{% if request.endpoint and request.endpoint.startswith('server.') %} aria-current="page"{% endif %} data-loading-message="Carregando visão do servidor...">Panorama do Servidor</a>
+                                <a class="wf-header-nav-link{% if request.endpoint and request.endpoint.startswith('host.') %} is-active{% endif %}" href="{{ url_for('host.host') }}"{% if request.endpoint and request.endpoint.startswith('host.') %} aria-current="page"{% endif %} data-loading-message="Abrindo consulta de estações...">Consulta às Estações</a>
+                                <a class="wf-header-nav-link{% if request.endpoint and request.endpoint.startswith('task.') %} is-active{% endif %}" href="{{ url_for('task.task_builder') }}"{% if request.endpoint and request.endpoint.startswith('task.') %} aria-current="page"{% endif %} data-loading-message="Abrindo tarefas...">Criação de Tarefas</a>
+                                <a class="wf-header-nav-link{% if request.endpoint and request.endpoint.startswith('maintenance.') %} is-active{% endif %}" href="{{ url_for('maintenance.maintenance_dashboard') }}"{% if request.endpoint and request.endpoint.startswith('maintenance.') %} aria-current="page"{% endif %} data-loading-message="Abrindo manutenção operacional...">Manutenção de Tarefas</a>
+                                <a class="wf-header-nav-link{% if request.endpoint and request.endpoint.startswith('zabbix_configuration.') %} is-active{% endif %}" href="{{ url_for('zabbix_configuration.configuration_dashboard') }}"{% if request.endpoint and request.endpoint.startswith('zabbix_configuration.') %} aria-current="page"{% endif %} data-loading-message="Abrindo configuração das estações...">Configuração de Estações</a>
                             </div>
                         </nav>
                     </div>

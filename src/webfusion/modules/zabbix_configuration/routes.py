@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from flask import Blueprint, current_app, redirect, render_template, request, url_for
+from flask import Blueprint, Response, current_app, redirect, render_template, request, url_for
 
 from modules.server.usage_metrics import record_page_view
 from modules.zabbix_configuration.service import (
@@ -23,6 +23,43 @@ zabbix_configuration_bp = Blueprint(
     __name__,
     url_prefix="/host-configuration",
 )
+
+ZABBIX_CONFIGURATION_AUTH_USERNAME = "admin"
+ZABBIX_CONFIGURATION_AUTH_PASSWORD = "admin"
+ZABBIX_CONFIGURATION_AUTH_REALM = "RF.Fusion Host Configuration"
+
+
+def _zabbix_configuration_auth_failed() -> Response:
+    """Trigger the browser basic-auth challenge for station configuration."""
+
+    return Response(
+        "Authentication required.",
+        401,
+        {"WWW-Authenticate": f'Basic realm="{ZABBIX_CONFIGURATION_AUTH_REALM}"'},
+    )
+
+
+def _has_valid_zabbix_configuration_credentials() -> bool:
+    """Validate the bootstrap credentials for Zabbix macro changes."""
+
+    auth = request.authorization
+    if not auth:
+        return False
+
+    return (
+        str(auth.username or "") == ZABBIX_CONFIGURATION_AUTH_USERNAME
+        and str(auth.password or "") == ZABBIX_CONFIGURATION_AUTH_PASSWORD
+    )
+
+
+@zabbix_configuration_bp.before_request
+def require_zabbix_configuration_auth() -> Response | None:
+    """Protect configuration reads and writes with the shared module auth."""
+
+    if not _has_valid_zabbix_configuration_credentials():
+        return _zabbix_configuration_auth_failed()
+
+    return None
 
 
 @zabbix_configuration_bp.route("/", methods=["GET"])

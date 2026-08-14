@@ -183,6 +183,101 @@ class TestTaskRoutes(unittest.TestCase):
         self.assertEqual(flattened[(31,)], ("/mnt/internal/custom", ".bin"))
         self.assertEqual(flattened[(32,)], ("C:/CelPlan/Custom", ".zip"))
 
+    def test_ermx_hosts_share_one_station_family(self):
+        self.assertEqual(self.module._extract_host_prefix("ERMxES02"), "ERMX")
+        self.assertEqual(self.module._extract_host_prefix("ERMxBA01"), "ERMX")
+
+        batches = self.module._build_collective_task_batches(
+            host_rows=[
+                {"ID_HOST": 35, "NA_HOST_NAME": "ERMxES02"},
+                {"ID_HOST": 36, "NA_HOST_NAME": "ERMxBA01"},
+            ],
+            filter_data={
+                "mode": "NONE",
+                "start_date": None,
+                "end_date": None,
+                "last_n_files": None,
+                "extension": None,
+                "file_path": None,
+                "file_name": None,
+            },
+            profile_overrides={
+                "ERMX": {
+                    "file_path": "/data/ermx",
+                    "extension": ".bin",
+                }
+            },
+        )
+
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(batches[0]["hosts"], [35, 36])
+        self.assertEqual(batches[0]["filter_data"]["file_path"], "/data/ermx")
+
+    def test_collective_zabbix_defaults_split_batches_by_effective_values(self):
+        batches = self.module._build_collective_task_batches(
+            host_rows=[
+                {"ID_HOST": 41, "NA_HOST_NAME": "ERMxBA01"},
+                {"ID_HOST": 42, "NA_HOST_NAME": "ERMxBA02"},
+                {"ID_HOST": 43, "NA_HOST_NAME": "ERMxBA03"},
+            ],
+            filter_data={
+                "mode": "NONE",
+                "start_date": None,
+                "end_date": None,
+                "last_n_files": None,
+                "extension": ".bin",
+                "file_path": "/mnt/internal/data",
+                "file_name": None,
+            },
+            zabbix_defaults_by_host={
+                "41": {"file_path": "/data/ermx", "extension": ".zip"},
+                "42": {"file_path": "/data/ermx", "extension": ".zip"},
+                "43": {"file_path": "/data/ermx-legacy", "extension": ".bin"},
+            },
+        )
+
+        flattened = {
+            tuple(batch["hosts"]): (
+                batch["filter_data"]["file_path"],
+                batch["filter_data"]["extension"],
+            )
+            for batch in batches
+        }
+
+        self.assertEqual(flattened[(41, 42)], ("/data/ermx", ".zip"))
+        self.assertEqual(flattened[(43,)], ("/data/ermx-legacy", ".bin"))
+
+    def test_collective_zabbix_defaults_ignore_unselected_host_payload(self):
+        defaults = self.module._parse_collective_zabbix_defaults(
+            '{"41":{"file_path":"/data/ermx","extension":".zip"},'
+            '"999":{"file_path":"/untrusted","extension":".raw"}}',
+            [41],
+        )
+
+        self.assertEqual(
+            defaults,
+            {"41": {"file_path": "/data/ermx", "extension": ".zip"}},
+        )
+
+    def test_collective_backup_defaults_endpoint_deduplicates_host_ids(self):
+        self.module.request.args = SimpleNamespace(
+            getlist=lambda name: ["41", "invalid", "41", "42"]
+        )
+
+        with patch.object(
+            self.module,
+            "get_hosts_backup_defaults",
+            return_value={
+                "41": {"file_path": "/data/ermx", "extension": ".zip"},
+                "42": {"file_path": "/data/ermx", "extension": ".zip"},
+            },
+        ) as get_hosts_backup_defaults:
+            response = self.module.task_zabbix_collective_backup_defaults()
+
+        self.assertEqual(response["source"], "zabbix")
+        self.assertEqual(response["defaults"]["41"]["file_path"], "/data/ermx")
+        get_hosts_backup_defaults.assert_called_once_with(["41", "42"])
+
     def test_collective_explicit_filter_stays_shared(self):
         batches = self.module._build_collective_task_batches(
             host_rows=[
@@ -270,6 +365,70 @@ class TestTaskRoutes(unittest.TestCase):
                 self.module.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
             ),
             "RANGE",
+        )
+
+    def test_action_selection_fixes_discovery_and_rediscovery_modes(self):
+        discover_action = self.module._resolve_task_action(
+            self.module.TASK_ACTION_DISCOVER
+        )
+        rediscover_action = self.module._resolve_task_action(
+            self.module.TASK_ACTION_REDISCOVER
+        )
+
+        self.assertEqual(
+            self.module._resolve_action_mode(discover_action, "ALL"),
+            "NONE",
+        )
+        self.assertEqual(
+            self.module._resolve_action_mode(rediscover_action, "ALL"),
+            "REDISCOVERY",
+        )
+
+    def test_connectivity_action_uses_the_interactive_queue_type(self):
+        action = self.module._resolve_task_action(
+            self.module.TASK_ACTION_CONNECTIVITY_TEST
+        )
+
+        self.assertEqual(
+            action["task_type"],
+            self.module.HOST_TASK_INTERACTIVE_CHECK_TYPE,
+        )
+
+    def test_generic_backup_rejects_discovery_and_rediscovery_modes(self):
+        backup_action = self.module._resolve_task_action(
+            self.module.TASK_ACTION_BACKUP
+        )
+
+        self.assertEqual(
+            self.module._resolve_action_mode(backup_action, "NONE"),
+            "ALL",
+        )
+        self.assertEqual(
+            self.module._resolve_action_mode(backup_action, "REDISCOVERY"),
+            "ALL",
+        )
+
+    def test_legacy_task_links_map_to_the_matching_visible_action(self):
+        self.assertEqual(
+            self.module._action_from_legacy_selection(
+                self.module.HOST_TASK_CHECK_TYPE,
+                "NONE",
+            ),
+            self.module.TASK_ACTION_DISCOVER,
+        )
+        self.assertEqual(
+            self.module._action_from_legacy_selection(
+                self.module.HOST_TASK_CHECK_TYPE,
+                "REDISCOVERY",
+            ),
+            self.module.TASK_ACTION_REDISCOVER,
+        )
+        self.assertEqual(
+            self.module._action_from_legacy_selection(
+                self.module.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+                "ALL",
+            ),
+            self.module.TASK_ACTION_BACKLOG_ROLLBACK,
         )
 
     def test_extract_zabbix_backup_defaults_uses_only_plain_text_macros(self):

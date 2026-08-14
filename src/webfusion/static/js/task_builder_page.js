@@ -17,14 +17,20 @@
         return;
     }
 
-    const taskType = document.querySelector("[name='task_type']");
+    const actionSelect = document.getElementById("task-action");
+    const taskType = document.getElementById("task-type");
     const executionType = document.querySelector("[name='execution_type']");
     const hostSelect = document.querySelector("[name='host_id']");
     const hostFilterSelect = document.querySelector("[name='host_filter']");
     const modeSelect = document.querySelector("[name='mode']");
     const filePathInput = document.querySelector("[name='file_path']");
     const extensionInput = document.querySelector("[name='extension']");
+    const filePathWrapper = document.getElementById("file-path-wrapper");
+    const extensionWrapper = document.getElementById("extension-wrapper");
+    const filterBaseGrid = document.getElementById("filter-base-grid");
     const zabbixDefaultsNote = document.getElementById("zabbix-backup-defaults-note");
+    const collectiveZabbixDefaultsInput = document.getElementById("collective-zabbix-defaults");
+    const collectiveZabbixDefaultsSummary = document.getElementById("collective-zabbix-defaults-summary");
     const onlineOnlyCheckbox = document.querySelector("[name='online_only']");
     const collectiveHostsSelect = document.getElementById("collective-hosts-select");
     const collectiveHostsWrapper = document.getElementById("collective-hosts-wrapper");
@@ -40,6 +46,7 @@
     const confirmationFilter = document.getElementById("task-confirm-filter");
     const taskTypeNoteTitle = document.getElementById("task-type-note-title");
     const taskTypeNote = document.getElementById("task-type-note");
+    const onlineWrapper = document.getElementById("online-wrapper");
 
     const filterSection = document.getElementById("filter-section");
     const individualConfigPanel = document.getElementById("individual-config-panel");
@@ -60,13 +67,35 @@
     const maxTotalWrapper = document.getElementById("max-total-wrapper");
     const sortOrderWrapper = document.getElementById("sort-order-wrapper");
 
-    if (!taskType || !executionType || !modeSelect || !taskBuilderForm) {
+    if (!actionSelect || !taskType || !executionType || !modeSelect || !taskBuilderForm) {
         return;
     }
 
     const noneOption = modeSelect.querySelector("option[value='NONE']");
     const rediscoveryOption = modeSelect.querySelector("option[value='REDISCOVERY']");
     const fileOption = modeSelect.querySelector("option[value='FILE']");
+
+    function getSelectedActionOption() {
+        return actionSelect.selectedOptions[0] || null;
+    }
+
+    function getSelectedActionFixedMode() {
+        const selectedAction = getSelectedActionOption();
+        return String(selectedAction?.dataset.fixedMode || "").trim().toUpperCase();
+    }
+
+    function syncActionSelection() {
+        const selectedAction = getSelectedActionOption();
+        if (!selectedAction) {
+            return;
+        }
+
+        taskType.value = String(selectedAction.dataset.taskType || "");
+        const fixedMode = getSelectedActionFixedMode();
+        if (fixedMode) {
+            modeSelect.value = fixedMode;
+        }
+    }
 
     const defaultFilePath = "/mnt/internal/data";
     const cwsmFilePath = "C:/CelPlan/CellWireless RU/Spectrum/Completed";
@@ -75,13 +104,20 @@
     const cwsmExtension = ".zip";
     const ums300Extension = ".bin";
     const zabbixDefaultsUrlTemplate = String(root.dataset.zabbixBackupDefaultsUrl || "");
+    const collectiveZabbixDefaultsUrl = String(root.dataset.zabbixCollectiveBackupDefaultsUrl || "");
     const zabbixDefaultsDebounceMs = 200;
+    const collectiveZabbixDefaultsDebounceMs = 350;
 
-    /* Task types 3 and 4 are utility tasks ("Atualizar estatísticas" and
-     * "Verificar conexão"), so they intentionally bypass the detailed filter
-     * parameter controls used by backlog-oriented tasks. */
-    const FILTERLESS_TASK_TYPES = new Set(["3", "4"]);
+    /* Utility tasks bypass the detailed filter controls used by
+     * backlog-oriented operations. */
+    const FILTERLESS_TASK_TYPES = new Set(["3", "4", "7"]);
     const stopTaskType = String(root.dataset.stopTaskType || "");
+    const backupTaskType = String(root.dataset.backupTaskType || "");
+    const connectivityTestAction = "connectivity_test";
+
+    function isConnectivityTestAction() {
+        return String(actionSelect.value || "") === connectivityTestAction;
+    }
     const selectedCollectiveHostIds = new Set(
         JSON.parse(root.dataset.selectedCollectiveHostIds || "[]").map((value) => String(value))
     );
@@ -122,6 +158,18 @@
     let lastZabbixExtension = "";
     let zabbixDefaultsRequestSequence = 0;
     let zabbixDefaultsTimer = null;
+    let collectiveZabbixDefaults = {};
+    let collectiveZabbixDefaultsRequestSequence = 0;
+    let collectiveZabbixDefaultsTimer = null;
+    let collectiveZabbixDefaultsLoading = false;
+    let collectiveBaseFilterUserEdited = root.dataset.selectedFilterDefaultsCustom === "true";
+    const collectiveProfilesUserEdited = new Set();
+
+    document.querySelectorAll("[data-station-profile-custom='true']").forEach((input) => {
+        collectiveProfilesUserEdited.add(
+            String(input.dataset.stationProfilePrefix || "").toUpperCase()
+        );
+    });
 
     /* Host families are inferred from the alphabetical prefix because the
      * builder uses that lightweight classification to:
@@ -134,6 +182,10 @@
 
         if (normalizedName.startsWith("UMS")) {
             return "UMS300";
+        }
+
+        if (normalizedName.startsWith("ERMX")) {
+            return "ERMX";
         }
 
         const match = normalizedName.match(/^[A-Z]+/);
@@ -238,6 +290,303 @@
             option.selected = selectedCollectiveHostIds.has(host.id);
             collectiveHostsSelect.appendChild(option);
         });
+    }
+
+    function getCurrentCollectiveHosts() {
+        const selectedPrefix = hostFilterSelect ? hostFilterSelect.value : "ALL";
+        const manuallySelectedHosts = hostCatalog.filter((host) => {
+            if (!selectedCollectiveHostIds.has(host.id)) {
+                return false;
+            }
+
+            return selectedPrefix === "ALL"
+                || extractHostPrefix(host.name) === selectedPrefix.toUpperCase();
+        });
+
+        if (manuallySelectedHosts.length > 0) {
+            return manuallySelectedHosts;
+        }
+
+        return hostCatalog.filter((host) => {
+            return selectedPrefix === "ALL"
+                || extractHostPrefix(host.name) === selectedPrefix.toUpperCase();
+        });
+    }
+
+    function setCollectiveZabbixDefaultsSummary(message) {
+        if (collectiveZabbixDefaultsSummary) {
+            collectiveZabbixDefaultsSummary.textContent = message;
+        }
+    }
+
+    function resetCollectiveZabbixDefaults(message) {
+        collectiveZabbixDefaults = {};
+        collectiveZabbixDefaultsLoading = false;
+        if (collectiveZabbixDefaultsInput) {
+            collectiveZabbixDefaultsInput.value = "";
+        }
+        setCollectiveZabbixDefaultsSummary(message);
+    }
+
+    function groupCollectiveZabbixDefaults(defaults, hosts) {
+        const groups = new Map();
+        let missingCount = 0;
+
+        hosts.forEach((host) => {
+            const values = defaults[host.id] || {};
+            const filePath = String(values.file_path || "").trim();
+            const extension = String(values.extension || "").trim();
+
+            if (!filePath || !extension) {
+                missingCount += 1;
+                return;
+            }
+
+            const key = filePath + "\u0000" + extension;
+            const group = groups.get(key) || { filePath, extension, count: 0 };
+            group.count += 1;
+            groups.set(key, group);
+        });
+
+        return {
+            groups: Array.from(groups.values()),
+            missingCount,
+        };
+    }
+
+    function isCollectiveBackup() {
+        if (
+            executionType.value !== "collective"
+            || String(taskType.value) !== backupTaskType
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    function shouldUseCollectiveZabbixDefaults() {
+        if (!isCollectiveBackup()) {
+            return false;
+        }
+
+        // A fully broad collective run can contain the entire fleet. The
+        // existing family profiles stay available for that case; Zabbix is
+        // queried only after the operator narrows the group or hand-picks
+        // hosts, which keeps the remote configuration service lightweight.
+        return selectedCollectiveHostIds.size > 0
+            || (hostFilterSelect && hostFilterSelect.value !== "ALL");
+    }
+
+    function syncCollectiveBackupConfigurationFields() {
+        const zabbixManaged = isCollectiveBackup();
+
+        setFieldVisibility(extensionWrapper, !zabbixManaged);
+        setFieldVisibility(filePathWrapper, !zabbixManaged);
+
+        if (filterBaseGrid) {
+            filterBaseGrid.classList.toggle(
+                "filter-base-grid--zabbix-managed",
+                zabbixManaged
+            );
+        }
+    }
+
+    function applyUniformCollectiveDefaults(group, configuredHostCount) {
+        if (!group || configuredHostCount !== getCurrentCollectiveHosts().length) {
+            return;
+        }
+
+        if (!collectiveBaseFilterUserEdited && filePathInput) {
+            const currentFilePath = String(filePathInput.value || "").trim();
+            if (isSuggestedFilePath(currentFilePath)) {
+                filePathInput.value = group.filePath;
+                lastZabbixFilePath = group.filePath;
+            }
+        }
+
+        if (!collectiveBaseFilterUserEdited && extensionInput) {
+            const currentExtension = String(extensionInput.value || "").trim().toLowerCase();
+            if (isSuggestedExtension(currentExtension)) {
+                extensionInput.value = group.extension;
+                lastZabbixExtension = group.extension.toLowerCase();
+            }
+        }
+    }
+
+    function updateStationProfileDefaults(defaults, hosts) {
+        const hostsByPrefix = new Map();
+        hosts.forEach((host) => {
+            const prefix = extractHostPrefix(host.name);
+            if (!prefix) {
+                return;
+            }
+            const rows = hostsByPrefix.get(prefix) || [];
+            rows.push(host);
+            hostsByPrefix.set(prefix, rows);
+        });
+
+        hostsByPrefix.forEach((prefixHosts, prefix) => {
+            if (collectiveProfilesUserEdited.has(prefix)) {
+                return;
+            }
+
+            const grouped = groupCollectiveZabbixDefaults(defaults, prefixHosts);
+            if (grouped.groups.length !== 1 || grouped.missingCount > 0) {
+                return;
+            }
+
+            const values = grouped.groups[0];
+            const pathInput = document.querySelector(
+                "[data-station-profile-prefix='" + CSS.escape(prefix) + "'][data-station-profile-field='file_path']"
+            );
+            const extensionProfileInput = document.querySelector(
+                "[data-station-profile-prefix='" + CSS.escape(prefix) + "'][data-station-profile-field='extension']"
+            );
+
+            if (pathInput) {
+                pathInput.value = values.filePath;
+            }
+            if (extensionProfileInput) {
+                extensionProfileInput.value = values.extension;
+            }
+        });
+    }
+
+    function syncCollectiveZabbixDefaultsInput() {
+        if (!collectiveZabbixDefaultsInput) {
+            return;
+        }
+
+        if (!shouldUseCollectiveZabbixDefaults() || collectiveBaseFilterUserEdited) {
+            collectiveZabbixDefaultsInput.value = "";
+            return;
+        }
+
+        const allowedDefaults = {};
+        getCurrentCollectiveHosts().forEach((host) => {
+            const prefix = extractHostPrefix(host.name);
+            if (collectiveProfilesUserEdited.has(prefix)) {
+                return;
+            }
+
+            const values = collectiveZabbixDefaults[host.id];
+            if (values) {
+                allowedDefaults[host.id] = values;
+            }
+        });
+        collectiveZabbixDefaultsInput.value = Object.keys(allowedDefaults).length
+            ? JSON.stringify(allowedDefaults)
+            : "";
+    }
+
+    async function syncCollectiveZabbixBackupDefaults() {
+        const requestSequence = ++collectiveZabbixDefaultsRequestSequence;
+
+        if (!shouldUseCollectiveZabbixDefaults() || !collectiveZabbixDefaultsUrl) {
+            resetCollectiveZabbixDefaults(
+                "Caminho e extensão efetivos são consultados no Zabbix para solicitações coletivas de backup."
+            );
+            return;
+        }
+
+        const hosts = getCurrentCollectiveHosts();
+        if (!hosts.length) {
+            resetCollectiveZabbixDefaults(
+                "Não há hosts elegíveis no filtro coletivo atual."
+            );
+            return;
+        }
+
+        collectiveZabbixDefaultsLoading = true;
+        setCollectiveZabbixDefaultsSummary(
+            "Consultando caminho e extensão efetivos de " + hosts.length + " host(s) no Zabbix..."
+        );
+
+        try {
+            const url = new URL(collectiveZabbixDefaultsUrl, window.location.origin);
+            hosts.forEach((host) => url.searchParams.append("host_id", host.id));
+            const response = await fetch(url.toString(), {
+                headers: { Accept: "application/json" },
+                credentials: "same-origin",
+            });
+            if (!response.ok) {
+                throw new Error("Collective Zabbix defaults request failed");
+            }
+
+            const payload = await response.json();
+            if (requestSequence !== collectiveZabbixDefaultsRequestSequence) {
+                return;
+            }
+
+            collectiveZabbixDefaultsLoading = false;
+            collectiveZabbixDefaults = payload.defaults || {};
+            const grouped = groupCollectiveZabbixDefaults(collectiveZabbixDefaults, hosts);
+            const configuredCount = hosts.length - grouped.missingCount;
+
+            updateStationProfileDefaults(collectiveZabbixDefaults, hosts);
+            syncCollectiveZabbixDefaultsInput();
+
+            if (!grouped.groups.length) {
+                setCollectiveZabbixDefaultsSummary(
+                    "O Zabbix não retornou caminho e extensão para este grupo; os perfis locais permanecem em uso."
+                );
+                return;
+            }
+
+            if (grouped.groups.length === 1 && grouped.missingCount === 0) {
+                const group = grouped.groups[0];
+                applyUniformCollectiveDefaults(group, configuredCount);
+                setCollectiveZabbixDefaultsSummary(
+                    "Zabbix: " + configuredCount + " host(s) com caminho " + group.filePath
+                    + " e extensão " + group.extension + "."
+                );
+                return;
+            }
+
+            const descriptions = grouped.groups.slice(0, 3).map((group) => {
+                return group.count + " host(s): " + group.filePath + " (" + group.extension + ")";
+            });
+            if (grouped.groups.length > descriptions.length) {
+                descriptions.push("e mais " + (grouped.groups.length - descriptions.length) + " configuração(ões)");
+            }
+            if (grouped.missingCount) {
+                descriptions.push(grouped.missingCount + " host(s) sem macro de backup");
+            }
+            setCollectiveZabbixDefaultsSummary(
+                "Zabbix identificou configurações diferentes no grupo. As tarefas serão separadas por caminho e extensão: "
+                + descriptions.join("; ") + "."
+            );
+        } catch (error) {
+            if (requestSequence !== collectiveZabbixDefaultsRequestSequence) {
+                return;
+            }
+            resetCollectiveZabbixDefaults(
+                "Não foi possível consultar o Zabbix; os perfis locais permanecem em uso."
+            );
+        }
+    }
+
+    function scheduleCollectiveZabbixBackupDefaultsSync() {
+        if (collectiveZabbixDefaultsTimer) {
+            window.clearTimeout(collectiveZabbixDefaultsTimer);
+        }
+
+        // Invalidate a response for the previous collective scope immediately
+        // instead of letting it briefly overwrite a newer host selection.
+        collectiveZabbixDefaultsRequestSequence += 1;
+
+        if (!shouldUseCollectiveZabbixDefaults()) {
+            resetCollectiveZabbixDefaults(
+                "Escolha um tipo de estação ou hosts específicos para consultar caminho e extensão efetivos no Zabbix."
+            );
+            return;
+        }
+
+        collectiveZabbixDefaultsTimer = window.setTimeout(function () {
+            collectiveZabbixDefaultsTimer = null;
+            void syncCollectiveZabbixBackupDefaults();
+        }, collectiveZabbixDefaultsDebounceMs);
     }
 
     /* The builder derives a coarse "selection profile" so it can decide when
@@ -406,20 +755,21 @@
     }
 
     /* Individual execution has one concrete host, so its backup defaults can
-     * safely come from the Zabbix configuration. Collective requests retain
-     * the local family profiles to avoid one remote request per station.
+     * safely come from the Zabbix configuration. Collective execution uses a
+     * separate batched request below to preserve per-host overrides without
+     * making one remote call per station.
      */
     async function syncZabbixBackupDefaults() {
         const requestSequence = ++zabbixDefaultsRequestSequence;
         const hostId = hostSelect ? String(hostSelect.value || "").trim() : "";
 
-        if (
-            executionType.value !== "individual"
-            || !hostId
-            || !zabbixDefaultsUrlTemplate
-        ) {
+        if (executionType.value !== "individual") {
+            return;
+        }
+
+        if (!hostId || !zabbixDefaultsUrlTemplate) {
             setZabbixDefaultsNote(
-                "Na execução coletiva, caminho e extensão seguem os perfis por família de estação."
+                "Não há uma estação disponível para consultar no Zabbix."
             );
             return;
         }
@@ -504,6 +854,11 @@
             return;
         }
 
+        if (isConnectivityTestAction()) {
+            submitButton.textContent = "Iniciar teste";
+            return;
+        }
+
         // A tiny copy change reinforces whether the current draft fans out
         // into one task or many tasks across a collective scope.
         submitButton.textContent = executionType.value === "collective"
@@ -562,31 +917,57 @@
         lastDiscoveryNote.innerHTML = "No modo <strong>Descoberta</strong>, a descoberta continua a partir deste marco.";
     }
 
-    /* Task type changes alter the meaning of the entire builder. This helper
-     * keeps the explanatory card in sync so low-level task codes are always
-     * translated into an operational sentence before the user submits.
-     */
+    /* Action changes alter the meaning of the entire builder. Keep the
+     * explanatory card aligned with the operational intent rather than the
+     * underlying queue type shared by more than one action. */
     function updateTaskTypeNote() {
         if (!taskTypeNote) {
             return;
         }
 
-        const isStop = String(taskType.value) === stopTaskType;
+        const selectedAction = String(actionSelect.value || "");
 
-        if (isStop) {
+        if (selectedAction === "backlog_rollback") {
             if (taskTypeNoteTitle) {
-                taskTypeNoteTitle.textContent = "Retirada da fila de backup";
+                taskTypeNoteTitle.textContent = "Remoção da fila de backup";
             }
 
-            taskTypeNote.textContent = "Retira da fila os arquivos que ainda estão em BACKUP/PENDING e os devolve para DISCOVERY/DONE dentro do filtro selecionado.";
+            taskTypeNote.textContent = "Remove da fila os arquivos selecionados que ainda não foram copiados. Eles poderão ser identificados e enviados novamente em uma operação posterior.";
+            return;
+        }
+
+        if (selectedAction === "discover") {
+            if (taskTypeNoteTitle) {
+                taskTypeNoteTitle.textContent = "Descoberta incremental";
+            }
+
+            taskTypeNote.textContent = "Identifica no caminho configurado os arquivos novos ou alterados desde a última descoberta registrada para a estação.";
+            return;
+        }
+
+        if (selectedAction === "rediscover") {
+            if (taskTypeNoteTitle) {
+                taskTypeNoteTitle.textContent = "Descoberta completa";
+            }
+
+            taskTypeNote.textContent = "Examina todos os arquivos no caminho configurado, sem considerar a data da última descoberta. Use quando precisar conferir novamente todo o conteúdo da estação.";
+            return;
+        }
+
+        if (selectedAction === connectivityTestAction) {
+            if (taskTypeNoteTitle) {
+                taskTypeNoteTitle.textContent = "Teste de conectividade";
+            }
+
+            taskTypeNote.textContent = "Executa uma checagem prioritária de ICMP e SSH para uma única estação e acompanha o resultado em tempo real.";
             return;
         }
 
         if (taskTypeNoteTitle) {
-            taskTypeNoteTitle.textContent = "Fluxo normal de backup";
+            taskTypeNoteTitle.textContent = "Envio para fila de backup";
         }
 
-        taskTypeNote.textContent = "Cria a solicitação normal de backup. A estação passa por verificação do host, descoberta e, depois, o backlog elegível entra na fila de backup.";
+        taskTypeNote.textContent = "Inclui na fila de backup os arquivos que atendem ao filtro escolhido. A cópia para o repositório central é executada conforme a capacidade da fila.";
     }
 
     /* Wrapper visibility and control enablement move together. Hiding a field
@@ -625,15 +1006,17 @@
     function syncModeAvailability() {
         const isStop = String(taskType.value) === stopTaskType;
         const collective = executionType.value === "collective";
+        const fixedMode = getSelectedActionFixedMode();
+        const genericBackup = !fixedMode && !isStop;
 
         if (noneOption) {
-            noneOption.hidden = isStop;
-            noneOption.disabled = isStop;
+            noneOption.hidden = isStop || genericBackup;
+            noneOption.disabled = isStop || genericBackup;
         }
 
         if (rediscoveryOption) {
-            rediscoveryOption.hidden = isStop;
-            rediscoveryOption.disabled = isStop;
+            rediscoveryOption.hidden = isStop || genericBackup;
+            rediscoveryOption.disabled = isStop || genericBackup;
         }
 
         if (fileOption) {
@@ -651,9 +1034,16 @@
             invalidModes.add("REDISCOVERY");
         }
 
-        if (invalidModes.has(modeSelect.value)) {
-            modeSelect.value = isStop ? "ALL" : "NONE";
+        if (genericBackup) {
+            invalidModes.add("NONE");
+            invalidModes.add("REDISCOVERY");
         }
+
+        if (invalidModes.has(modeSelect.value)) {
+            modeSelect.value = "ALL";
+        }
+
+        modeSelect.disabled = Boolean(fixedMode);
     }
 
     /* The confirmation dialog needs a compact human-readable filter summary,
@@ -667,14 +1057,18 @@
             : "NONE";
         parts.push("Modo " + modeLabel);
 
-        const extensionValue = String(extensionInput ? extensionInput.value : "").trim();
-        if (extensionValue) {
-            parts.push("Extensão " + extensionValue);
-        }
+        if (isCollectiveBackup()) {
+            parts.push("Configuração de backup definida no Zabbix");
+        } else {
+            const extensionValue = String(extensionInput ? extensionInput.value : "").trim();
+            if (extensionValue) {
+                parts.push("Extensão " + extensionValue);
+            }
 
-        const filePathValue = String(filePathInput ? filePathInput.value : "").trim();
-        if (filePathValue) {
-            parts.push("Caminho " + filePathValue);
+            const filePathValue = String(filePathInput ? filePathInput.value : "").trim();
+            if (filePathValue) {
+                parts.push("Caminho " + filePathValue);
+            }
         }
 
         if (modeSelect.value === "RANGE") {
@@ -756,7 +1150,9 @@
      * remains semantically aligned with the richer dialog UI.
      */
     function buildConfirmationSummaryText() {
-        const taskTypeLabel = taskType.selectedOptions[0] ? taskType.selectedOptions[0].textContent.trim() : "-";
+        const taskTypeLabel = actionSelect.selectedOptions[0]
+            ? actionSelect.selectedOptions[0].textContent.trim()
+            : "-";
         const executionLabel = executionType.selectedOptions[0] ? executionType.selectedOptions[0].textContent.trim() : "-";
         const scopeLabel = buildScopeSummary();
         const filterLabel = buildFilterSummary();
@@ -820,16 +1216,56 @@
      * top-level semantics synchronized.
      */
     function toggleTaskType() {
+        const connectivityTest = isConnectivityTestAction();
         if (filterSection) {
-            filterSection.style.display = "block";
+            filterSection.hidden = connectivityTest;
+            filterSection.style.display = connectivityTest ? "none" : "block";
         }
 
+        if (onlineWrapper) {
+            onlineWrapper.hidden = connectivityTest;
+        }
+
+        const collectiveOption = executionType.querySelector("option[value='collective']");
+        if (collectiveOption) {
+            collectiveOption.disabled = connectivityTest;
+        }
+
+        if (connectivityTest) {
+            executionType.value = "individual";
+        }
+
+        syncActionSelection();
         updateTaskTypeNote();
+
+        if (connectivityTest) {
+            if (individualConfigPanel) {
+                individualConfigPanel.hidden = false;
+            }
+            if (collectiveConfigPanel) {
+                collectiveConfigPanel.hidden = true;
+            }
+            if (hostWrapper) {
+                hostWrapper.hidden = false;
+            }
+            if (stationTypeWrapper) {
+                stationTypeWrapper.hidden = true;
+            }
+            if (collectiveHostsWrapper) {
+                collectiveHostsWrapper.hidden = true;
+            }
+            if (stationProfilesPanel) {
+                stationProfilesPanel.hidden = true;
+            }
+        }
+
         toggleBudgetFields();
         syncModeAvailability();
         toggleModeFields();
         updateSubmitButtonLabel();
         syncLastDiscoveryContext();
+        syncCollectiveBackupConfigurationFields();
+        scheduleCollectiveZabbixBackupDefaultsSync();
     }
 
     /* Execution mode is the largest structural switch in the UI.
@@ -839,6 +1275,10 @@
      * station-family profiles and suggested defaults.
      */
     function toggleExecution() {
+        if (isConnectivityTestAction()) {
+            executionType.value = "individual";
+        }
+
         const collective = executionType.value === "collective";
 
         if (individualConfigPanel) {
@@ -866,9 +1306,11 @@
         renderCollectiveHosts();
         updateSubmitButtonLabel();
         toggleStationProfilesPanel();
+        syncCollectiveBackupConfigurationFields();
         syncSuggestedFilePath();
         syncSuggestedExtension();
         scheduleZabbixBackupDefaultsSync();
+        scheduleCollectiveZabbixBackupDefaultsSync();
         syncLastDiscoveryContext();
     }
 
@@ -884,7 +1326,9 @@
         }
 
         if (filterModeNote) {
-            filterModeNote.textContent = modeMeta.note;
+            filterModeNote.textContent = isCollectiveBackup()
+                ? "O caminho e a extensão são definidos pela configuração efetiva de cada estação no Zabbix."
+                : modeMeta.note;
         }
 
         if (FILTERLESS_TASK_TYPES.has(String(taskType.value))) {
@@ -930,7 +1374,7 @@
         onlineOnlyCheckbox.addEventListener("change", handleOnlineOnlyFilterToggle);
     }
 
-    taskType.addEventListener("change", toggleTaskType);
+    actionSelect.addEventListener("change", toggleTaskType);
     executionType.addEventListener("change", toggleExecution);
     modeSelect.addEventListener("change", toggleModeFields);
 
@@ -949,6 +1393,7 @@
             toggleStationProfilesPanel();
             syncSuggestedFilePath();
             syncSuggestedExtension();
+            scheduleCollectiveZabbixBackupDefaultsSync();
         });
     }
 
@@ -961,8 +1406,27 @@
             syncCollectiveSelectionState();
             syncSuggestedFilePath();
             syncSuggestedExtension();
+            scheduleCollectiveZabbixBackupDefaultsSync();
         });
     }
+
+    [filePathInput, extensionInput].forEach((input) => {
+        if (!input) {
+            return;
+        }
+
+        input.addEventListener("input", function () {
+            collectiveBaseFilterUserEdited = true;
+            syncCollectiveZabbixDefaultsInput();
+        });
+    });
+
+    document.querySelectorAll("[data-station-profile-prefix]").forEach((input) => {
+        input.addEventListener("input", function () {
+            collectiveProfilesUserEdited.add(String(input.dataset.stationProfilePrefix || "").toUpperCase());
+            syncCollectiveZabbixDefaultsInput();
+        });
+    });
 
     /* Submission is always funneled through confirmation first. The
      * `submitConfirmed` flag is the minimal state needed to distinguish:
@@ -970,12 +1434,40 @@
      * - the second submit triggered programmatically after confirmation.
      */
     taskBuilderForm.addEventListener("submit", function (event) {
+        if (isConnectivityTestAction()) {
+            event.preventDefault();
+
+            const selectedHost = hostSelect && hostSelect.selectedOptions[0];
+            const hostId = Number(selectedHost?.value || 0);
+            if (!hostId || typeof window.startStationConnectivityTest !== "function") {
+                if (taskTypeNote) {
+                    taskTypeNote.textContent = "Selecione uma estação válida para iniciar o teste de conectividade.";
+                }
+                return;
+            }
+
+            void window.startStationConnectivityTest(
+                hostId,
+                selectedHost.dataset.hostName || selectedHost.textContent.trim(),
+            );
+            return;
+        }
+
         if (submitConfirmed) {
             submitConfirmed = false;
             return;
         }
 
+        if (collectiveZabbixDefaultsLoading && shouldUseCollectiveZabbixDefaults()) {
+            event.preventDefault();
+            setCollectiveZabbixDefaultsSummary(
+                "Aguarde a consulta de caminho e extensão no Zabbix terminar antes de criar as tarefas."
+            );
+            return;
+        }
+
         event.preventDefault();
+        syncCollectiveZabbixDefaultsInput();
         openTaskConfirmation();
     });
 
@@ -1012,6 +1504,7 @@
      * matches those values: visible panels, legal modes, collective list,
      * profile shell, suggestions and read-only context blocks.
      */
+    syncActionSelection();
     toggleTaskType();
     toggleExecution();
     toggleModeFields();

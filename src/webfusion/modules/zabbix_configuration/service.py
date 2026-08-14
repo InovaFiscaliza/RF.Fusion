@@ -20,6 +20,8 @@ TARGET_KIND_HOST = "host"
 TARGET_KIND_TEMPLATE = "template"
 ACTION_SAVE = "save"
 ACTION_RESTORE = "restore"
+BACKUP_PATH_MACRO = "{$BACKUP_PATH}"
+BACKUP_EXTENSION_MACRO = "{$BACKUP_EXTENSION}"
 ZABBIX_SECRET_FILE = (
     Path(__file__).resolve().parents[3] / "zabbix" / ".secret" / "zabbix_api.env"
 )
@@ -52,8 +54,54 @@ def get_configuration(target_kind: str, target_id: str) -> dict[str, Any]:
     _ensure_target_is_managed(normalized_kind, normalized_id, catalog)
     client = _build_client()
     if normalized_kind == TARGET_KIND_HOST:
-        return client.get_host_configuration(normalized_id)
+        configuration = client.get_host_configuration(normalized_id)
+        configuration["operational_host_id"] = _get_operational_host_id(configuration)
+        return configuration
     return client.get_template_configuration(normalized_id)
+
+
+def _get_operational_host_id(configuration: dict[str, Any]) -> int | None:
+    """Read the BPDATA host identifier exposed by the appCataloga macro."""
+    for macro in configuration.get("macros") or []:
+        if macro.get("name") != "{$HOST_ID}":
+            continue
+        raw_value = str(macro.get("editable_value") or "").strip()
+        if raw_value.isdigit() and int(raw_value) > 0:
+            return int(raw_value)
+    return None
+
+
+def get_hosts_backup_defaults(
+    host_ids: list[str | int],
+) -> dict[str, dict[str, str | None]]:
+    """Load effective backup defaults for managed hosts in one Zabbix batch."""
+    requested_host_ids = sorted(
+        {
+            str(host_id)
+            for host_id in host_ids
+            if str(host_id).isdigit() and int(str(host_id)) > 0
+        },
+        key=int,
+    )
+    if not requested_host_ids:
+        return {}
+
+    catalog = get_catalog()
+    managed_host_ids = {
+        str(host.get("hostid"))
+        for host in catalog["hosts"]
+    }
+    selected_host_ids = [
+        host_id for host_id in requested_host_ids if host_id in managed_host_ids
+    ]
+    if not selected_host_ids:
+        return {}
+
+    configurations = _build_client().get_host_configurations(selected_host_ids)
+    return {
+        host_id: _extract_backup_defaults(configuration)
+        for host_id, configuration in configurations.items()
+    }
 
 
 def apply_macro_change(
@@ -205,6 +253,33 @@ def _find_macro(configuration: dict[str, Any], macro_name: str) -> dict[str, Any
     )
 
 
+def _extract_backup_defaults(
+    configuration: dict[str, Any],
+) -> dict[str, str | None]:
+    """Expose only plain-text backup values from an effective host config."""
+    field_by_macro = {
+        BACKUP_PATH_MACRO: "file_path",
+        BACKUP_EXTENSION_MACRO: "extension",
+    }
+    defaults: dict[str, str | None] = {
+        "file_path": None,
+        "extension": None,
+    }
+
+    for macro in configuration.get("macros", []):
+        field_name = field_by_macro.get(str(macro.get("name") or ""))
+        if not field_name:
+            continue
+        if str(macro.get("type")) != "0" or not macro.get("accepts_value"):
+            continue
+
+        value = str(macro.get("editable_value") or "").strip()
+        if value:
+            defaults[field_name] = value
+
+    return defaults
+
+
 def _clear_catalog_cache() -> None:
     """Drop target metadata after a successful remote configuration change."""
     _catalog_cache["value"] = None
@@ -221,4 +296,5 @@ __all__ = [
     "apply_macro_change",
     "get_catalog",
     "get_configuration",
+    "get_hosts_backup_defaults",
 ]

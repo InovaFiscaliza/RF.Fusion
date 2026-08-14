@@ -3,7 +3,8 @@
 {% block title %}RF.Fusion - Configuração das Estações{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/zabbix_configuration_page.css', v='20260811-hero-text-flow') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/zabbix_configuration_page.css', v='20260813-station-action-layout') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/station_connectivity_test.css', v='20260813-station-test') }}">
 {% endblock %}
 
 {% block breadcrumb %}
@@ -109,6 +110,8 @@
             </thead>
             <tbody>
                 {% for macro in macros %}
+                {% set is_filter_macro = macro.name.endswith('_FILTER}') %}
+                {% set is_expandable_macro = is_filter_macro or macro.name == '{$BACKUP_PATH}' %}
                 <tr>
                     <td>
                         <div class="zabbix-config-macro-name">{{ macro.name }}</div>
@@ -119,6 +122,8 @@
                     <td>
                         {% if macro.type == '1' %}
                         <span class="zabbix-config-secret-value"><i class="fa fa-lock"></i> {{ macro.display_value }}</span>
+                        {% elif is_filter_macro %}
+                        <code class="zabbix-config-filter-summary" data-filter-summary="{{ macro.display_value }}">Filtro configurado</code>
                         {% else %}
                         <code>{{ macro.display_value }}</code>
                         {% endif %}
@@ -141,7 +146,18 @@
                             <input id="value-{{ macro.source_macro_id }}" class="form-control" type="password" name="value" placeholder="Novo valor protegido" autocomplete="new-password">
                             {% else %}
                             <label class="sr-only" for="value-{{ macro.source_macro_id }}">Valor de {{ macro.name }}</label>
+                            {% if is_expandable_macro %}
+                            <span class="zabbix-config-expandable-editor{% if is_filter_macro %} zabbix-config-filter-editor{% endif %}">
+                                <input id="value-{{ macro.source_macro_id }}" class="form-control zabbix-config-expandable-value{% if is_filter_macro %} zabbix-config-filter-value{% endif %}" type="text" name="value" value="{{ macro.editable_value }}" title="{{ macro.editable_value }}" autocomplete="off" spellcheck="false">
+                            </span>
+                            {% else %}
                             <input id="value-{{ macro.source_macro_id }}" class="form-control" type="text" name="value" value="{{ macro.editable_value }}" autocomplete="off">
+                            {% endif %}
+                            {% endif %}
+                            {% if is_filter_macro %}
+                            <button type="button" class="btn btn-small btn-secondary-action zabbix-config-filter-builder-trigger" data-filter-builder-target="value-{{ macro.source_macro_id }}">
+                                Montar filtro
+                            </button>
                             {% endif %}
                             <button type="submit" class="btn btn-primary btn-small btn-primary-action">
                                 {% if macro.is_direct_on_target %}Salvar{% else %}Sobrescrever{% endif %}
@@ -182,7 +198,7 @@
     {% if configuration %}
     <section class="zabbix-config-detail card wf-panel background-neutral-0 border-radius-m">
         <div class="zabbix-config-detail-head">
-            <div>
+            <div class="zabbix-config-detail-identity">
                 <div class="zabbix-config-eyebrow">
                     {% if configuration.kind == target_kind_host %}Estação{% else %}Template{% endif %}
                 </div>
@@ -190,17 +206,36 @@
                 {% if configuration.technical_name and configuration.technical_name != configuration.title %}
                 <div class="zabbix-config-technical-name">{{ configuration.technical_name }}</div>
                 {% endif %}
+                <div class="zabbix-config-profile-list">
+                    <span>Perfis vinculados</span>
+                    {% if configuration.profiles %}
+                        {% for profile in configuration.profiles %}
+                        <span class="zabbix-config-profile-tag">{{ profile }}</span>
+                        {% endfor %}
+                    {% else %}
+                        <span class="zabbix-config-profile-tag">Sem template pai</span>
+                    {% endif %}
+                </div>
             </div>
-            <div class="zabbix-config-profile-list">
-                <span>Perfis vinculados</span>
-                {% if configuration.profiles %}
-                    {% for profile in configuration.profiles %}
-                    <span class="zabbix-config-profile-tag">{{ profile }}</span>
-                    {% endfor %}
+            {% if configuration.kind == target_kind_host %}
+            <div class="zabbix-config-station-test">
+                {% if configuration.operational_host_id %}
+                <button
+                    type="button"
+                    class="btn btn-secondary btn-secondary-action station-connectivity-test-trigger"
+                    data-station-connectivity-test
+                    data-host-id="{{ configuration.operational_host_id }}"
+                    data-host-name="{{ configuration.title }}"
+                >
+                    <i class="fa fa-plug"></i> Testar estação
+                </button>
                 {% else %}
-                    <span class="zabbix-config-profile-tag">Sem template pai</span>
+                <span class="zabbix-config-station-test-unavailable">
+                    O identificador operacional da estação não está disponível para teste.
+                </span>
                 {% endif %}
             </div>
+            {% endif %}
         </div>
         {% if configuration.kind == target_kind_host %}
         <div class="zabbix-config-section">
@@ -265,9 +300,78 @@
             </div>
         </div>
     </dialog>
+
+    <dialog id="zabbix-filter-builder-dialog" class="zabbix-filter-builder-dialog" aria-labelledby="zabbix-filter-builder-title">
+        <form id="zabbix-filter-builder-form" class="zabbix-filter-builder-card" novalidate>
+            <div class="zabbix-filter-builder-head">
+                <div>
+                    <h2 id="zabbix-filter-builder-title">Montar filtro</h2>
+                    <p>Defina os critérios da macro. Caminho e extensão continuam definidos separadamente no Zabbix. Aplicar apenas escreve o JSON no campo; a configuração só vai ao Zabbix depois do botão Salvar ou Sobrescrever.</p>
+                </div>
+                <button type="button" class="zabbix-filter-builder-close" data-filter-builder-cancel aria-label="Fechar construtor de filtro">
+                    <i class="fa fa-times"></i>
+                </button>
+            </div>
+
+            <p id="zabbix-filter-builder-feedback" class="zabbix-filter-builder-feedback" hidden></p>
+
+            <div class="zabbix-filter-builder-grid">
+                <div class="zabbix-filter-builder-field">
+                    <label class="form-label" for="zabbix-filter-mode">Tipo de filtro</label>
+                    <div class="select-shell">
+                        <select id="zabbix-filter-mode" class="form-control" name="mode">
+                            <option value="NONE">Descoberta Incremental</option>
+                            <option value="REDISCOVERY">Descoberta Total</option>
+                            <option value="ALL">Backup Completo</option>
+                            <option value="RANGE">Backup por data</option>
+                            <option value="LAST">Backup por últimos arquivos</option>
+                            <option value="FILE">Backup por arquivo específico</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="zabbix-filter-builder-field" data-filter-modes="FILE">
+                    <label class="form-label" for="zabbix-filter-file-name">Nome ou padrão</label>
+                    <input id="zabbix-filter-file-name" class="form-control" name="file_name" type="text" placeholder="Ex.: rfeye*.bin ou *.zip" required autocomplete="off" spellcheck="false">
+                    <span>Use <strong>*</strong> para qualquer sequência de caracteres.</span>
+                </div>
+                <div class="zabbix-filter-builder-field" data-filter-modes="RANGE">
+                    <label class="form-label" for="zabbix-filter-start-date">Data inicial</label>
+                    <input id="zabbix-filter-start-date" class="form-control" name="start_date" type="date" lang="pt-BR" autocomplete="off">
+                </div>
+                <div class="zabbix-filter-builder-field" data-filter-modes="RANGE">
+                    <label class="form-label" for="zabbix-filter-end-date">Data final</label>
+                    <input id="zabbix-filter-end-date" class="form-control" name="end_date" type="date" lang="pt-BR" autocomplete="off">
+                </div>
+                <div class="zabbix-filter-builder-field" data-filter-modes="LAST">
+                    <label class="form-label" for="zabbix-filter-last-count">Quantidade de arquivos</label>
+                    <input id="zabbix-filter-last-count" class="form-control" name="last_n_files" type="number" min="1" step="1" required inputmode="numeric">
+                </div>
+                <div class="zabbix-filter-builder-field" data-filter-modes="ALL FILE RANGE LAST">
+                    <label class="form-label" for="zabbix-filter-max-gb">Limite total (GB)</label>
+                    <input id="zabbix-filter-max-gb" class="form-control" name="max_total_gb" type="number" min="0.01" step="0.01" inputmode="decimal">
+                    <span>Opcional. Restringe o volume selecionado.</span>
+                </div>
+                <div class="zabbix-filter-builder-field" data-filter-modes="ALL FILE RANGE LAST">
+                    <label class="form-label" for="zabbix-filter-sort-order">Prioridade</label>
+                    <div class="select-shell">
+                        <select id="zabbix-filter-sort-order" class="form-control" name="sort_order">
+                            <option value="newest_first">Mais recentes primeiro</option>
+                            <option value="oldest_first">Mais antigos primeiro</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="zabbix-filter-builder-actions">
+                <button type="button" class="btn btn-secondary btn-secondary-action" data-filter-builder-cancel>Cancelar</button>
+                <button type="button" class="btn btn-primary btn-primary-action" id="zabbix-filter-builder-apply">Aplicar no campo</button>
+            </div>
+        </form>
+    </dialog>
 </section>
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/zabbix_configuration_page.js', v='20260810-macro-confirmation-dialog') }}"></script>
+<script src="{{ url_for('static', filename='js/station_connectivity_test.js', v='20260813-station-test-stage-order') }}"></script>
+<script src="{{ url_for('static', filename='js/zabbix_configuration_page.js', v='20260813-filter-date-ptbr') }}"></script>
 {% endblock %}

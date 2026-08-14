@@ -52,6 +52,9 @@ class FakeLog:
     def error(self, message: str) -> None:
         self.events.append(("error", {"message": message}))
 
+    def task_phase(self, service_name: str, **fields) -> None:
+        self.events.append(("task_phase", {"service": service_name, **fields}))
+
 
 class FakeSSHClient:
     """Paramiko stand-in that records connect attempts and optional failures."""
@@ -480,6 +483,107 @@ class HostConnectivityTests(unittest.TestCase):
 
         self.assertEqual(addresses, ["192.168.19.101"])
         getaddrinfo.assert_not_called()
+
+    def test_interactive_check_publishes_progress_and_closes_degraded_result(self) -> None:
+        task = {
+            "task_id": 902,
+            "host_id": 41,
+            "task_type": host_check_worker.k.HOST_TASK_INTERACTIVE_CHECK_TYPE,
+            "addr": "172.24.1.41",
+            "port": 22,
+            "user": "root",
+            "password": "secret",
+            "was_offline": False,
+            "host_check_error_count": 0,
+            "host_filter": {},
+            "now": datetime(2026, 8, 13, 12, 0, 0),
+        }
+        db = FakeDB(hosts=[])
+
+        def fake_interactive_check(_db, _task, **kwargs):
+            kwargs["progress_reporter"]("ICMP: 172.24.1.41 respondeu em 12.0 ms.")
+            return host_check_worker.k.TASK_ERROR, "SSH não confirmado"
+
+        with patch.object(
+            host_check_worker.host_connectivity,
+            "run_interactive_check",
+            side_effect=fake_interactive_check,
+        ):
+            status, message = host_check_worker._do_work(db, task)
+
+        self.assertEqual(status, host_check_worker.k.TASK_ERROR)
+        self.assertEqual(message, "SSH não confirmado")
+        self.assertEqual(
+            db.host_task_updates[-1]["NA_MESSAGE"],
+            "ICMP: 172.24.1.41 respondeu em 12.0 ms.",
+        )
+        self.assertEqual(
+            db.host_task_updates[-1]["expected_status"],
+            host_check_worker.k.TASK_RUNNING,
+        )
+
+    def test_interactive_check_turns_degraded_retry_into_terminal_error(self) -> None:
+        task = {
+            "task_id": 903,
+            "host_id": 42,
+            "task_type": host_check_worker.k.HOST_TASK_INTERACTIVE_CHECK_TYPE,
+            "addr": "172.24.1.42",
+            "port": 22,
+            "user": "root",
+            "password": "secret",
+            "was_offline": False,
+            "host_check_error_count": 0,
+            "host_filter": {},
+            "now": datetime(2026, 8, 13, 12, 0, 0),
+        }
+        logger = FakeLog()
+
+        with patch.object(
+            host_check_worker.host_connectivity,
+            "probe_host_connectivity",
+            return_value={
+                "state": host_check_worker.k.HOST_CONN_DEGRADED,
+                "online": False,
+                "reason": "ssh_timeout",
+                "icmp_online": True,
+                "ssh_online": False,
+                "error": "timed out",
+            },
+        ), patch.object(
+            host_check_worker.host_connectivity,
+            "_persist_connectivity_outcome",
+            return_value=(host_check_worker.k.TASK_PENDING, "retry", False),
+        ):
+            status, message = host_check_worker.host_connectivity.run_interactive_check(
+                FakeDB(hosts=[]),
+                task,
+                service_name="test",
+                logger=logger,
+                progress_reporter=lambda _message: None,
+            )
+
+        self.assertEqual(status, host_check_worker.k.TASK_ERROR)
+        self.assertIn("ICMP respondeu", message)
+
+    def test_interactive_result_translates_offline_outcome(self) -> None:
+        status, message = host_check_worker.host_connectivity._build_interactive_result(
+            {
+                "state": host_check_worker.k.HOST_CONN_OFFLINE,
+                "online": False,
+                "reason": "icmp_unreachable",
+                "icmp_online": False,
+                "ssh_online": False,
+                "error": None,
+            },
+            host_check_worker.k.TASK_ERROR,
+            "Host unreachable (connectivity check failed)",
+        )
+
+        self.assertEqual(status, host_check_worker.k.TASK_ERROR)
+        self.assertEqual(
+            message,
+            "Teste concluído com falha: a estação não respondeu ao ICMP.",
+        )
 
 class HostMaintenanceTests(unittest.TestCase):
     """Protect the background sweep that resumes or keeps hosts suspended."""

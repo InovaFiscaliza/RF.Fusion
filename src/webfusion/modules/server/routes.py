@@ -24,6 +24,7 @@ from modules.server.usage_metrics import (
 
 
 server_bp = Blueprint("server", __name__)
+BYTES_PER_GIB = 1024 * 1024 * 1024
 
 
 def _serialize_host_rows(rows):
@@ -43,6 +44,28 @@ def _serialize_host_rows(rows):
                 clean_row[key] = value.strftime("%Y-%m-%d %H:%M:%S")
 
         serialized.append(clean_row)
+
+    return serialized
+
+
+def _serialize_summary_metrics_for_zabbix(
+    summary_metrics: dict[str, object],
+) -> dict[str, object]:
+    """Convert summary volume values from GiB to integer bytes for Zabbix."""
+
+    serialized = {}
+
+    for key, value in summary_metrics.items():
+        if key == "CURRENT_MONTH_LABEL":
+            continue
+
+        normalized_key = key.lower()
+        if "_gb_" not in normalized_key:
+            serialized[normalized_key] = value
+            continue
+
+        byte_key = normalized_key.replace("_gb_", "_bytes_")
+        serialized[byte_key] = int(round(float(value or 0) * BYTES_PER_GIB))
 
     return serialized
 
@@ -80,11 +103,7 @@ def _build_zabbix_metrics_payload() -> dict[str, object]:
     }
 
     payload.update(
-        {
-            key.lower(): value
-            for key, value in summary_metrics.items()
-            if key != "CURRENT_MONTH_LABEL"
-        }
+        _serialize_summary_metrics_for_zabbix(summary_metrics)
     )
     payload.update(
         {

@@ -330,7 +330,11 @@
                     <td title="{{ r.LOCALITY_DETAILS or r.LOCALITY_DISPLAY }}">{{ r.LOCALITY_DISPLAY }}</td>
                     <td>{{ r.DT_TIME_START }}</td>
                     <td>{{ r.DT_TIME_END }}</td>
-                    <td>{{ r.NU_FREQ_START }} – {{ r.NU_FREQ_END }}</td>
+                    <td>
+                        {% if r.NU_FREQ_START is not none %}{{ "%.2f"|format(r.NU_FREQ_START) }}{% else %}—{% endif %}
+                        –
+                        {% if r.NU_FREQ_END is not none %}{{ "%.2f"|format(r.NU_FREQ_END) }}{% else %}—{% endif %}
+                    </td>
                     <td>{{ r.NU_SPECTRA }}</td>
                     <td>
                         {% if r.NA_FILE %}
@@ -381,5 +385,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/spectrum_page.js', v='20260811-public-prefix') }}"></script>
+<script src="{{ url_for('static', filename='js/spectrum_page.js', v='20260813-frequency-display') }}"></script>
 {% endblock %}

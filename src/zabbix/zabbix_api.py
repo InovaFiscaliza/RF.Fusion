@@ -190,6 +190,107 @@ class ZabbixApiClient:
             "inherited_macro_groups": inherited_macro_groups,
         }
 
+    def get_host_configurations(
+        self,
+        host_ids: list[str | int],
+    ) -> dict[str, dict[str, Any]]:
+        """Resolve effective macros for multiple hosts with shared API calls.
+
+        Collective WebFusion operations need the effective values of each
+        station, including host-level overrides. Loading the hosts together
+        keeps the Zabbix request count bounded by the template hierarchy and
+        avoids issuing the single-host workflow once per selected station.
+        """
+        normalized_host_ids = sorted(
+            {
+                str(host_id)
+                for host_id in host_ids
+                if str(host_id).isdigit() and int(str(host_id)) > 0
+            },
+            key=int,
+        )
+        if not normalized_host_ids:
+            return {}
+
+        hosts = self._call(
+            API_METHOD_HOST_GET,
+            {
+                "hostids": normalized_host_ids,
+                "output": ["hostid", "host", "name", "status"],
+                "selectParentTemplates": ["templateid", "host", "name"],
+            },
+        )
+        if not hosts:
+            return {}
+
+        direct_templates = [
+            template
+            for host in hosts
+            for template in host.get("parentTemplates") or []
+        ]
+        _, template_records = self._load_template_hierarchy(direct_templates)
+        owner_records = {
+            str(host["hostid"]): {
+                "name": str(host.get("name") or host.get("host") or "Host"),
+                "kind": "host",
+            }
+            for host in hosts
+        }
+        owner_records.update(
+            {
+                template_id: {
+                    "name": str(
+                        template.get("name") or template.get("host") or "Template"
+                    ),
+                    "kind": "template",
+                }
+                for template_id, template in template_records.items()
+            }
+        )
+        macros_by_owner = self._get_macros_by_owner(owner_records)
+        configurations: dict[str, dict[str, Any]] = {}
+
+        for host in hosts:
+            host_id = str(host["hostid"])
+            template_layers = self._build_template_layers_from_records(
+                direct_templates=host.get("parentTemplates") or [],
+                template_records=template_records,
+            )
+            precedence = [(host_id, "host")]
+            precedence.extend(
+                (template_id, "template")
+                for layer in template_layers
+                for template_id in layer
+            )
+            effective_macros = self._resolve_effective_macros(
+                precedence=precedence,
+                macros_by_owner=macros_by_owner,
+                owner_records=owner_records,
+                target_owner_id=host_id,
+            )
+
+            configurations[host_id] = {
+                "kind": "host",
+                "target_id": host_id,
+                "title": str(host.get("name") or host.get("host") or "Host"),
+                "technical_name": str(host.get("host") or ""),
+                "profiles": [
+                    str(template.get("name") or template.get("host") or "")
+                    for template in host.get("parentTemplates") or []
+                ],
+                "macros": effective_macros,
+                "direct_macros": [
+                    macro for macro in effective_macros if macro["is_direct_on_target"]
+                ],
+                "inherited_macro_groups": self._group_inherited_host_macros(
+                    effective_macros=effective_macros,
+                    template_layers=template_layers,
+                    owner_records=owner_records,
+                ),
+            }
+
+        return configurations
+
     def get_template_configuration(self, template_id: str | int) -> dict[str, Any]:
         """Resolve one template's own and inherited macros."""
         template = self._get_template(template_id)
@@ -347,6 +448,46 @@ class ZabbixApiClient:
                         pending.append(parent_id)
 
         return layers, template_records
+
+    @staticmethod
+    def _build_template_layers_from_records(
+        *,
+        direct_templates: list[dict[str, Any]],
+        template_records: dict[str, dict[str, Any]],
+    ) -> list[list[str]]:
+        """Build one host's template precedence from already loaded records."""
+        pending = deque(
+            sorted(
+                {str(template["templateid"]) for template in direct_templates},
+                key=int,
+            )
+        )
+        visited: set[str] = set()
+        layers: list[list[str]] = []
+
+        while pending:
+            current_layer = []
+            for _ in range(len(pending)):
+                template_id = pending.popleft()
+                if template_id in visited:
+                    continue
+                visited.add(template_id)
+                current_layer.append(template_id)
+
+            if not current_layer:
+                continue
+
+            ordered_layer = sorted(current_layer, key=int)
+            layers.append(ordered_layer)
+            for template_id in ordered_layer:
+                for parent in (
+                    template_records.get(template_id, {}).get("parentTemplates") or []
+                ):
+                    parent_id = str(parent["templateid"])
+                    if parent_id not in visited:
+                        pending.append(parent_id)
+
+        return layers
 
     def _get_macros_by_owner(
         self,

@@ -92,6 +92,7 @@
     let panelMode = "hover";
     let pinnedMarker = null;
     let panelDragState = null;
+    let pinnedPanelHasManualPosition = false;
 
     // Keep the panel visible while the cursor travels from marker to panel.
     hoverPanel.addEventListener("mouseenter", () => {
@@ -653,6 +654,13 @@
      */
     function formatStationCountLabel(stationCount) {
         return `${stationCount} ${stationCount === 1 ? "estação" : "estações"}`;
+    }
+
+    /**
+     * Format point counts with the correct Portuguese singular and plural.
+     */
+    function formatPointCountLabel(pointCount) {
+        return `${pointCount} ${pointCount === 1 ? "ponto" : "pontos"}`;
     }
 
     /**
@@ -1539,6 +1547,7 @@
         const previousMarker = pinnedMarker;
         pinnedMarker = marker;
         panelMode = "pinned";
+        pinnedPanelHasManualPosition = false;
 
         if (previousMarker && previousMarker !== marker) {
             syncPinnedMarkerState(previousMarker);
@@ -1558,6 +1567,7 @@
         }
 
         panelMode = "hover";
+        pinnedPanelHasManualPosition = false;
     }
 
     /**
@@ -1635,10 +1645,17 @@
     }
 
     /**
-     * Sort one popup-cluster point so the most operationally relevant entries
-     * appear first inside each locality group.
+     * Keep the selected point first, then apply the operational order.
      */
-    function compareClusterPointPriority(pointA, pointB) {
+    function compareClusterPointPriority(pointA, pointB, selectedPoint) {
+        if (pointA === selectedPoint && pointB !== selectedPoint) {
+            return -1;
+        }
+
+        if (pointB === selectedPoint && pointA !== selectedPoint) {
+            return 1;
+        }
+
         return comparePopupPointOrder(pointA, pointB);
     }
 
@@ -1658,7 +1675,11 @@
                 distance: marker === activeMarker ? 0 : getMarkerPixelDistance(activeMarker, marker),
             }))
             .filter((entry) => entry.marker === activeMarker || entry.distance <= maxDistance)
-            .sort((entryA, entryB) => compareClusterPointPriority(entryA.point, entryB.point));
+            .sort((entryA, entryB) => compareClusterPointPriority(
+                entryA.point,
+                entryB.point,
+                activeMarker.__wfPoint
+            ));
 
         if (clusteredEntries.length <= 1) {
             return {
@@ -1701,9 +1722,19 @@
         const groups = [...groupsByKey.values()]
             .map((group) => ({
                 ...group,
-                points: [...group.points].sort(compareClusterPointPriority),
+                points: [...group.points].sort((pointA, pointB) =>
+                    compareClusterPointPriority(
+                        pointA,
+                        pointB,
+                        activeMarker.__wfPoint
+                    )
+                ),
             }))
             .sort((groupA, groupB) => {
+                if (groupA.isActiveGroup !== groupB.isActiveGroup) {
+                    return groupA.isActiveGroup ? -1 : 1;
+                }
+
                 const stateDiff = compareDisplayText(groupA.stateLabel, groupB.stateLabel);
                 if (stateDiff !== 0) {
                     return stateDiff;
@@ -1726,7 +1757,7 @@
             ? groups[0].context
             : "";
         const meta = localityCount === 1
-            ? `${pointCount} ponto(s) agrupado(s) neste zoom`
+            ? `${formatPointCountLabel(pointCount)} ${pointCount === 1 ? "agrupado" : "agrupados"} neste zoom`
             : `${localityCount} localidades agrupadas neste zoom`;
 
         return {
@@ -1916,7 +1947,7 @@
                 <div class="station-popup-cluster-group">
                     <div class="station-popup-cluster-group-header">
                         <span class="station-popup-cluster-group-title">${escapeHtml(group.label)}</span>
-                        <span class="station-popup-cluster-group-count">${escapeHtml(`${group.points.length} ponto(s)`)}</span>
+                        <span class="station-popup-cluster-group-count">${escapeHtml(formatPointCountLabel(group.points.length))}</span>
                     </div>
                     ${group.context ? `<div class="station-popup-cluster-group-context">${escapeHtml(group.context)}</div>` : ""}
                     <div class="station-popup-cluster-point-list">
@@ -1927,7 +1958,7 @@
         }).join("");
 
         const overflowHtml = clusterSummary.hiddenCount > 0
-            ? `<div class="station-popup-cluster-hint">+${clusterSummary.hiddenCount} ponto(s) adicional(is) neste zoom.</div>`
+            ? `<div class="station-popup-cluster-hint">+${formatPointCountLabel(clusterSummary.hiddenCount)} ${clusterSummary.hiddenCount === 1 ? "adicional" : "adicionais"} neste zoom.</div>`
             : "";
 
         return `
@@ -2137,8 +2168,9 @@
         const padding = 8;
 
         // Marker centre relative to the wrap element (the panel's offset parent).
-        const markerCX    = markerRect.left - wrapRect.left + markerRect.width  / 2;
-        const markerCY    = markerRect.top  - wrapRect.top  + markerRect.height / 2;
+        const markerCX = markerRect.left - wrapRect.left + markerRect.width / 2;
+        const markerCY = markerRect.top - wrapRect.top + markerRect.height / 2;
+        const halfMarkerW = markerRect.width / 2;
         const halfMarkerH = markerRect.height / 2;
 
         const wrapW = wrapRect.width;
@@ -2158,18 +2190,30 @@
 
         const measuredPanelH = hoverPanel.offsetHeight || panelH;
 
-        // Default: centre horizontally on the marker, open above it.
+        const topAbove = markerCY - halfMarkerH - gap - measuredPanelH;
+        const topBelow = markerCY + halfMarkerH + gap;
+        const fitsAbove = topAbove >= visibleTopInWrap;
+        const fitsBelow = topBelow + measuredPanelH <= visibleBottomInWrap;
+        const spaceLeft = markerCX - halfMarkerW - gap - padding;
+        const spaceRight = wrapW - padding - markerCX - halfMarkerW - gap;
+        const canOpenLeft = spaceLeft >= panelW;
+        const canOpenRight = spaceRight >= panelW;
+        const needsLateralPosition = !fitsAbove && !fitsBelow;
         let left = markerCX - panelW / 2;
-        let top  = markerCY - halfMarkerH - gap - measuredPanelH;
+        let top = fitsAbove ? topAbove : topBelow;
 
-        // Horizontal clamp.
-        if (left < padding)                  left = padding;
-        if (left + panelW > wrapW - padding) left = wrapW - padding - panelW;
-
-        // Prefer above; flip below when the panel would overflow the top edge.
-        if (top < visibleTopInWrap) {
-            top = markerCY + halfMarkerH + gap;
+        // A tall panel would cover its marker after vertical clamping. Use a
+        // side with enough room so the pointer can remain on the marker.
+        if (needsLateralPosition && (canOpenLeft || canOpenRight)) {
+            const openRight = canOpenRight && (!canOpenLeft || spaceRight >= spaceLeft);
+            left = openRight
+                ? markerCX + halfMarkerW + gap
+                : markerCX - halfMarkerW - gap - panelW;
+            top = markerCY - measuredPanelH / 2;
         }
+
+        const maxLeft = Math.max(padding, wrapW - padding - panelW);
+        left = Math.min(Math.max(left, padding), maxLeft);
 
         // Bottom clamp — catches both the default position and the flipped one.
         if (top + measuredPanelH > visibleBottomInWrap) {
@@ -2239,6 +2283,7 @@
             offsetX: event.clientX - panelRect.left,
             offsetY: event.clientY - panelRect.top,
         };
+        pinnedPanelHasManualPosition = true;
 
         dragHandle.setPointerCapture?.(event.pointerId);
         hoverPanel.classList.add("is-dragging");
@@ -2356,9 +2401,13 @@
 
         if (panelActiveMarker === marker) {
             renderHoverPanelContent(marker);
-            // Re-clamp after a content change because the panel height may differ.
+            // Reposition after a content change because the panel height may differ.
             window.requestAnimationFrame(() => {
-                if (panelActiveMarker === marker) positionHoverPanel(marker);
+                if (panelActiveMarker === marker) {
+                    positionHoverPanel(marker, {
+                        anchorPinned: panelMode === "pinned" && !pinnedPanelHasManualPosition,
+                    });
+                }
             });
         }
     }
@@ -2907,7 +2956,7 @@
         orderedPoints.forEach((point) => addPointToMap(point));
         renderLegend(filteredPoints);
 
-        pointCount.textContent = `${filteredPoints.length} ponto(s) plotado(s)`;
+        pointCount.textContent = `${formatPointCountLabel(filteredPoints.length)} ${filteredPoints.length === 1 ? "plotado" : "plotados"}`;
         updateClearFiltersButtonState();
 
         if (filteredPoints.length > 0 && bounds.length > 0) {

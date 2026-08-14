@@ -152,6 +152,26 @@ class TestZabbixApiClient(unittest.TestCase):
         self.assertEqual(len(text_value_calls), 1)
         self.assertEqual(text_value_calls[0]["filter"], {"type": MACRO_TYPE_TEXT})
 
+    def test_collective_host_configurations_share_macro_resolution(self):
+        client = FixtureZabbixClient()
+
+        configurations = client.get_host_configurations(["501"])
+        macros = {
+            macro["name"]: macro
+            for macro in configurations["501"]["macros"]
+        }
+
+        self.assertEqual(configurations["501"]["title"], "RFEye000501")
+        self.assertEqual(macros["{$BACKUP_PATH}"]["editable_value"], "/mnt/internal")
+        self.assertTrue(macros["{$SSH_PORT}"]["is_direct_on_target"])
+
+        metadata_calls = [
+            params
+            for method, params in client.calls
+            if method == API_METHOD_USER_MACRO_GET and "filter" not in params
+        ]
+        self.assertEqual(len(metadata_calls), 1)
+
     def test_write_operations_use_only_single_macro_methods(self):
         client = FixtureZabbixClient()
         recorded_calls = []
