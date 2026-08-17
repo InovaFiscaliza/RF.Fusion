@@ -1,230 +1,229 @@
-# webfusion
+# WebFusion
 
-O `webfusion` é a interface web operacional do RF.Fusion. Ele expõe, no
-navegador, o estado das estações, o catálogo de espectros, os dashboards
-operacionais e um conjunto pequeno de ações que geram tarefas no backend.
+O WebFusion e a interface operacional do RF.Fusion. Ele concentra a consulta
+dos dados processados, o acompanhamento da infraestrutura, a operação
+controlada de filas e a configuração de estações integradas ao Zabbix.
 
-Este README descreve apenas o módulo desta pasta. Para a visão geral da
-plataforma, consulte [README.md](/RFFusion/README.md).
+Este documento descreve apenas este módulo. Para a visão geral da plataforma,
+consulte [README.md](/RFFusion/README.md).
 
 ## Papel no Sistema
 
-O `webfusion` tem quatro responsabilidades principais:
+O WebFusion não executa backup, descoberta, processamento ou teste de rede no
+processo HTTP. Ele:
 
-1. apresentar a página inicial e o mapa de estações
-2. permitir navegação de espectros e arquivos do repositório
-3. exibir painéis operacionais globais e por host
-4. converter ações do operador em registros persistidos de `HOST_TASK`
+1. consulta dados operacionais e analíticos para apresentar ao operador;
+2. cria ou ajusta registros persistidos que o appCataloga consumirá;
+3. consulta e atualiza macros do Zabbix nos fluxos autorizados;
+4. publica métricas consolidadas para navegação e monitoramento.
 
-O desenho é predominantemente de leitura. A maior parte do código monta HTML
-ou JSON a partir dos bancos para consumo incremental pelo navegador.
+Essa separação evita que uma requisição do navegador bloqueie os workers de
+coleta ou processamento. O teste de conectividade, por exemplo, cria uma
+HOST_TASK prioritária e acompanha seu estado por polling. ICMP e SSH são
+executados pelo appCataloga.
 
-## Arquitetura de Runtime
+## Acesso e Runtime
 
-O runtime é propositalmente simples:
+O processo Python usa Flask, Jinja e Waitress. O Nginx do container WebFusion
+fica à frente da aplicação, encaminha as requisições HTTP e pode servir arquivos
+do repositório sem transferi-los pelo processo Python.
 
-- `Flask` cuida das rotas, renderização inicial e endpoints JSON
-- `Jinja` renderiza as páginas HTML
-- `waitress` publica a aplicação WSGI
-- `nginx` fica à frente da aplicação e, quando possível, entrega downloads
-  diretamente do repositório
+    navegador -> Nginx :9082 -> Waitress 127.0.0.1:8000 -> Flask
 
-Esse split é importante porque o volume montado em `/mnt/reposfi` costuma ser
-servido com mais eficiência pelo `nginx` do que pelo processo Python.
+O prefixo público é configurado pelo Nginx:
 
-## Fontes de Dados
+    http://<servidor>:9082/rffusion/
 
-O `webfusion` lê três schemas MariaDB:
+Internamente, a aplicação continua servindo suas rotas a partir de /. O
+ProxyFix em [app.py](/RFFusion/src/webfusion/app.py) usa o cabeçalho
+X-Forwarded-Prefix enviado pelo Nginx para gerar URLs públicas corretas sob
+/rffusion/.
 
-### `BPDATA`
+Endpoints de verificação:
 
-Banco operacional usado para:
+    interno: http://127.0.0.1:8000/health
+    público: http://<servidor>:9082/rffusion/health
 
-- inventário e estado dos hosts
-- filas `HOST_TASK` e `FILE_TASK`
-- histórico `FILE_TASK_HISTORY`
+## Dados e Integrações
 
-### `RFDATA`
+| Origem | Uso no WebFusion |
+|---|---|
+| BPDATA | hosts, HOST_TASK, FILE_TASK e FILE_TASK_HISTORY |
+| RFDATA | espectros, equipamentos, localidades e metadados analíticos |
+| RFFUSION_SUMMARY | mapa, snapshots, erros, volumes e agregações rápidas |
+| Zabbix | macros efetivas por template e estação |
+| /mnt/reposfi | arquivos disponíveis para download pelo Nginx |
 
-Banco analítico usado para:
+O módulo de configuração usa [zabbix_api.py](/RFFusion/src/zabbix/zabbix_api.py).
+As variáveis ZABBIX_API_URL, ZABBIX_API_TOKEN e
+ZABBIX_API_TIMEOUT_SECONDS podem vir do ambiente ou de
+src/zabbix/.secret/zabbix_api.env. Esse arquivo contém segredo operacional e
+não deve ser versionado nem exposto na interface.
 
-- espectros
-- localidades
-- equipamentos
-- metadados de arquivos do repositório
+Ao atualizar macros SSH suportadas em uma estação, o fluxo tenta sincronizar o
+valor operacional correspondente em BPDATA.HOST depois de a alteração no
+Zabbix ser confirmada. A interface informa quando a alteração no Zabbix foi
+aceita, mas a sincronização operacional não foi concluída.
 
-### `RFFUSION_SUMMARY`
+## Módulos
 
-Banco de leitura materializado usado para:
+| Módulo | Rota pública relativa | Finalidade |
+|---|---|---|
+| Mapa | / | distribuição geográfica de estações e localidades atuais ou históricas |
+| Consulta aos Arquivos | /spectrum | consulta de arquivos e espectros, com download controlado |
+| Panorama do Servidor | /server | indicadores de host, filas, acervo, erros, uso e repositório |
+| Consulta às Estações | /host | visão operacional, geográfica e histórica de uma estação |
+| Criação de Tarefas | /task/ | criação individual ou coletiva de operações de backup e descoberta |
+| Manutenção de Tarefas | /maintenance/ | consulta e intervenção controlada nas filas e no histórico |
+| Configuração de Estações | /host-configuration/ | macros Zabbix por template ou estação |
 
-- mapa da página inicial
-- snapshots globais e por host
-- agregações rápidas de erro e volume
+As rotas da tabela são relativas ao prefixo público. Por exemplo, o panorama
+do servidor é acessado em http://<servidor>:9082/rffusion/server.
 
-## Modelo de Aplicação
+### Mapa
 
-O fluxo principal segue este padrão:
+O mapa usa tabelas de resumo para evitar joins analíticos pesados. Pontos e
+detalhes são carregados sob demanda por /api/map/stations e
+/api/map/stations/<site_id>.
 
-1. uma rota Flask recebe parâmetros da URL
-2. a rota delega para um `service.py`
-3. o service consulta e transforma os dados
-4. a resposta volta como HTML renderizado ou JSON
+### Consulta aos Arquivos
 
-As páginas combinam um shell HTML inicial com endpoints menores carregados via
-JavaScript. Isso reduz o peso do primeiro render e facilita atualizar apenas os
-trechos que mudam.
+/spectrum oferece filtros geográficos, de período, frequência e descrição. Os
+detalhes de espectro e localidades são carregados depois da página inicial.
+
+Endpoints relevantes:
+
+- /api/spectrum/filters
+- /api/spectrum/localities
+- /api/spectrum/file/<file_id>/spectra
+- /spectrum/download/<spectrum_id>
+- /spectrum/download-file/<file_id>
+
+### Panorama do Servidor
+
+O dashboard /server separa o shell inicial dos painéis de consulta tardia. Ele
+também fornece uma leitura plana para o template Zabbix RFFusion_server:
+
+    /server/zabbix_metrics
+
+O payload é JSON simples. Valores de memória, repositório e volume são expostos
+em bytes nas chaves correspondentes, para consumo numérico direto pelo Zabbix.
+
+### Consulta às Estações
+
+/host apresenta a situação de uma estação, erros agregados, localização e
+histórico. O teste de conectividade cria uma tarefa prioritária e a janela
+acompanha seu progresso sem executar ICMP ou SSH no WebFusion.
+
+- POST /api/host/<host_id>/connectivity-test
+- GET /api/host/<host_id>/connectivity-test/<task_id>
+
+### Criação de Tarefas
+
+/task/ transforma a intenção do operador em HOST_TASK persistida. As ações
+incluem envio ou retirada da fila de backup, descoberta incremental, descoberta
+completa e teste de conectividade.
+
+Para backup, caminho e extensão são consultados das macros efetivas do Zabbix,
+respeitando sobrescritas da estação. A página não se conecta diretamente à
+estação remota.
+
+### Manutenção de Tarefas
+
+/maintenance/ oferece painéis para tarefas de host, fila de arquivos e
+histórico de arquivos. As consultas são limitadas. Uma consulta ao histórico
+sem filtros é ordenada pelas entradas processadas mais recentes, evitando
+carregamentos integrais de FILE_TASK_HISTORY.
+
+As ações disponíveis são validadas no servidor conforme o estágio e a situação
+selecionados. O módulo não substitui a máquina de estados do appCataloga.
+
+### Configuração de Estações
+
+/host-configuration/ apresenta macros por template ou por estação. Para uma
+estação, separa valores próprios e herdados, indicando sobrescritas.
+
+Campos protegidos e valores secretos não são revelados. As alterações exigem
+confirmação na interface e são aplicadas ao Zabbix antes de qualquer tentativa
+de sincronização com o banco operacional.
+
+## Autenticação e Segurança
+
+Os módulos de escrita e configuração usam autenticação HTTP Basic leve:
+
+- /task/
+- /maintenance/
+- /host-configuration/
+- operações de teste em /host
+
+Essa proteção é temporária e voltada ao ambiente operacional atual. As
+credenciais não devem ser copiadas para documentação, JavaScript ou URLs. Uma
+evolução futura deve migrar esses módulos para uma autenticação centralizada.
+
+Valores de macros secretas permanecem ocultos. Para alterá-los, o operador
+informa um novo valor, sem recuperar o segredo armazenado no Zabbix.
 
 ## Organização do Código
 
-### [app.py](/RFFusion/src/webfusion/app.py)
+    src/webfusion/
+    |-- app.py                         aplicação Flask e rotas de infraestrutura
+    |-- db.py                          conexões MariaDB
+    |-- modules/
+    |   |-- map/                       dados do mapa inicial
+    |   |-- spectrum/                  consulta e download de espectros
+    |   |-- server/                    panorama e métricas Zabbix
+    |   |-- host/                      consulta e teste de estações
+    |   |-- task/                      criação e acompanhamento de tarefas
+    |   |-- maintenance/               manutenção de filas e histórico
+    |   +-- zabbix_configuration/      macros Zabbix e sincronização operacional
+    |-- templates/                     páginas Jinja
+    +-- static/                        CSS, JavaScript, fontes e imagens
 
-Entrypoint da aplicação.
+O padrão de cada feature é:
 
-Responsável por:
-
-- criar a aplicação Flask
-- registrar blueprints
-- expor `/health`
-- manter a rota inicial `/`
-- expor as APIs do mapa
-- manter o helper legado `/popup`
-
-### [db.py](/RFFusion/src/webfusion/db.py)
-
-Centraliza as conexões para `BPDATA`, `RFDATA` e `RFFUSION_SUMMARY`.
-
-### `modules/*`
-
-Organização por feature.
-
-- `routes.py`: recebe requests HTTP e retorna HTML ou JSON
-- `service.py`: executa consultas e monta payloads para a interface
-- `builder.py` e `worker.py`: suporte aos fluxos de criação e acompanhamento
-  de tarefas, quando a feature precisa
-
-### `templates/`
-
-Templates Jinja usados no render inicial das páginas.
-
-### `static/js/`
-
-Comportamento no navegador para filtros, tabelas, mapa e carregamentos
-incrementais.
-
-### `static/css/`
-
-Folhas de estilo comuns e por página.
-
-## Módulos Ativos
-
-### Mapa e Home
-
-- shell: `/`
-- APIs: `/api/map/stations`, `/api/map/stations/<site_id>`
-- service: [modules/map/service.py](/RFFusion/src/webfusion/modules/map/service.py)
-- template: [templates/index.html](/RFFusion/src/webfusion/templates/index.html)
-
-O mapa usa dados de `RFFUSION_SUMMARY` para evitar joins pesados em tempo de
-requisição.
-
-### Spectrum
-
-- rotas: [modules/spectrum/routes.py](/RFFusion/src/webfusion/modules/spectrum/routes.py)
-- service: [modules/spectrum/service.py](/RFFusion/src/webfusion/modules/spectrum/service.py)
-- template: [templates/spectrum/spectrum.html](/RFFusion/src/webfusion/templates/spectrum/spectrum.html)
-
-Esse módulo suporta navegação por espectro e por arquivo de repositório.
-
-### Server
-
-- rota: `/server`
-- rotas: [modules/server/routes.py](/RFFusion/src/webfusion/modules/server/routes.py)
-- apoio de dados: [modules/host/service.py](/RFFusion/src/webfusion/modules/host/service.py)
-- template: [templates/server/server.html](/RFFusion/src/webfusion/templates/server/server.html)
-
-É o dashboard operacional global do sistema.
-
-### Host
-
-- rota: `/host`
-- rotas: [modules/host/routes.py](/RFFusion/src/webfusion/modules/host/routes.py)
-- service: [modules/host/service.py](/RFFusion/src/webfusion/modules/host/service.py)
-- template: [templates/host/host.html](/RFFusion/src/webfusion/templates/host/host.html)
-
-É o drill-down por estação, combinando estado operacional, filas, histórico e
-localidade reconciliada.
-
-### Task
-
-- prefixo: `/task`
-- rotas: [modules/task/routes.py](/RFFusion/src/webfusion/modules/task/routes.py)
-- services: [modules/task/service.py](/RFFusion/src/webfusion/modules/task/service.py)
-- suporte: [modules/task/builder.py](/RFFusion/src/webfusion/modules/task/builder.py),
-  [modules/task/worker.py](/RFFusion/src/webfusion/modules/task/worker.py)
-- templates: [task_builder.html](/RFFusion/src/webfusion/templates/task/task_builder.html),
-  [task_list.html](/RFFusion/src/webfusion/templates/task/task_list.html)
-
-É o módulo mais orientado a escrita, usado para acionar tarefas no backend.
-
-## Estrutura do Diretório
-
-```text
-src/webfusion/
-|-- app.py
-|-- db.py
-|-- modules/
-|   |-- host/
-|   |-- map/
-|   |-- server/
-|   |-- spectrum/
-|   `-- task/
-|-- static/
-|   |-- css/
-|   |-- fonts/
-|   `-- js/
-`-- templates/
-    |-- host/
-    |-- popup/
-    |-- server/
-    |-- spectrum/
-    `-- task/
-```
-
-Observação: há diretórios auxiliares ou legados em `modules/`, mas os fluxos
-ativos hoje se concentram nos módulos listados acima.
-
-## Endpoints Assíncronos Mais Relevantes
-
-- `/api/map/stations`
-- `/api/map/stations/<site_id>`
-- `/api/spectrum/localities`
-- `/api/spectrum/file/<file_id>/spectra`
-- `/api/server/summary-metrics`
-- `/server/zabbix_metrics`
-- `/api/server/processing-errors`
-- `/api/server/backup-errors`
-- `/api/server/hosts`
-- `/api/host/<host_id>/locations`
-
-O endpoint `/server/zabbix_metrics` entrega contagens, percentuais e latência
-em seus formatos naturais. Todos os volumes são expostos em bytes por meio de
-chaves `*_bytes_*`, adequadas para itens numéricos sem sinal do Zabbix.
+1. routes.py recebe a requisição, valida a entrada e monta a resposta HTTP;
+2. service.py contém consultas, normalização e regras da feature;
+3. templates renderizam o shell inicial;
+4. JavaScript carrega detalhes, filtros e tabelas sob demanda.
 
 ## Execução Local
 
-O entrypoint é [app.py](/RFFusion/src/webfusion/app.py). Em execução direta, a
-aplicação usa as variáveis:
+O entrypoint é [app.py](/RFFusion/src/webfusion/app.py). As variáveis aceitas
+em execução direta são:
 
-- `WEBFUSION_HOST`
-- `WEBFUSION_PORT`
-- `WEBFUSION_THREADS`
-- `WEBFUSION_CHANNEL_TIMEOUT`
+- WEBFUSION_HOST, padrão 127.0.0.1
+- WEBFUSION_PORT, padrão 8000
+- WEBFUSION_THREADS, padrão 8
+- WEBFUSION_CHANNEL_TIMEOUT, padrão 300
 
-Na implantação normal do projeto, o módulo é publicado pelo container do
-webserver descrito em [install/webserver/README.MD](/RFFusion/install/webserver/README.MD).
+Exemplo para desenvolvimento, dentro de um ambiente Python com as dependências
+do projeto instaladas:
 
-## Referências Relacionadas
+    cd /RFFusion/src/webfusion
+    python app.py
 
-- [/RFFusion/README.md](/RFFusion/README.md)
-- [/RFFusion/install/webserver/README.MD](/RFFusion/install/webserver/README.MD)
-- [/RFFusion/src/mariadb/scripts/README.md](/RFFusion/src/mariadb/scripts/README.md)
+Na implantação normal, use o container descrito em
+[install/webserver/README.MD](/RFFusion/install/webserver/README.MD). Não
+substitua o Nginx pelo servidor de desenvolvimento Flask em ambiente
+operacional.
+
+## Validação
+
+Os testes do WebFusion ficam em [test/tests/webfusion](/RFFusion/test/tests/webfusion).
+Para executar somente essa suíte:
+
+    /opt/conda/envs/appdata/bin/pytest -q /RFFusion/test/tests/webfusion
+
+Antes de publicar alterações de rota, valide pelo menos:
+
+1. GET /rffusion/health pelo Nginx;
+2. carregamento das páginas afetadas sob o prefixo /rffusion/;
+3. uma operação de escrita em ambiente controlado, quando houver;
+4. ausência de segredos no HTML, JSON, logs e mensagens de erro.
+
+## Referências
+
+- [README.md](/RFFusion/README.md)
+- [install/webserver/README.MD](/RFFusion/install/webserver/README.MD)
+- [src/zabbix](/RFFusion/src/zabbix)
+- [src/mariadb/scripts/README.md](/RFFusion/src/mariadb/scripts/README.md)

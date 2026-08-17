@@ -415,6 +415,56 @@ def persist_ssh_probe_signal(
             raise ValueError(f"Unsupported connectivity state: {connectivity['state']}")
 
 
+def persist_icmp_observation(
+    *,
+    db: dbHandlerBKP,
+    host_id: int,
+    observed_at: datetime,
+) -> None:
+    """
+    Refresh the last connectivity-check timestamp after a successful ICMP probe.
+
+    This is an observation only. It does not change `IS_OFFLINE`, counters, or
+    dependent queues, which require the definitive state-machine helper.
+    """
+    db.host_update(
+        host_id=host_id,
+        DT_LAST_CHECK=observed_at,
+    )
+
+
+def persist_reachable_probe_observation(
+    *,
+    db: dbHandlerBKP,
+    host_id: int,
+    connectivity: ConnectivityProbePayload,
+    observed_at: datetime,
+    logger: logger_type,
+) -> None:
+    """
+    Persist the SSH signal and ICMP observation for a reachable host.
+
+    This path intentionally does not transition the host online or offline.
+    It is used when the canonical probe confirms ICMP but reports either SSH
+    success or degradation, leaving definitive state transitions to
+    `persist_host_connectivity_state(...)`.
+    """
+    if not connectivity["icmp_online"]:
+        raise ValueError("Reachable probe observation requires a positive ICMP result")
+
+    persist_ssh_probe_signal(
+        host_id,
+        connectivity,
+        observed_at=observed_at,
+        logger=logger,
+    )
+    persist_icmp_observation(
+        db=db,
+        host_id=host_id,
+        observed_at=observed_at,
+    )
+
+
 # --- connectivity task handlers (called from appCataloga_host_check.py) ---
 
 

@@ -706,16 +706,13 @@ class HostMaintenanceTests(unittest.TestCase):
         )
         self.assertIn(
             (
-                "host_check_all_state_change",
+                "host_state_transition",
                 {
-                    "component": "host_maintenance",
-                    "operation": "process_due_host",
+                    "component": "host_connectivity",
+                    "operation": "persist_state",
                     "host_id": 77,
-                    "host": "station-a",
-                    "address": "172.24.1.77",
                     "previous_state": "offline",
                     "current_state": "online",
-                    "reason": "ssh_connect_ok",
                 },
             ),
             fake_log.events,
@@ -926,7 +923,11 @@ class HostMaintenanceTests(unittest.TestCase):
             host_maintenance_worker.host_connectivity,
             "is_host_online",
             return_value=True,
-        ):
+        ), patch.object(
+            host_maintenance_worker.host_connectivity,
+            "persist_icmp_observation",
+            wraps=host_maintenance_worker.host_connectivity.persist_icmp_observation,
+        ) as persist_icmp_observation:
             checked = self._run_maintenance_batch(db=db, now=now)
 
         self.assertEqual(checked, 1)
@@ -935,6 +936,11 @@ class HostMaintenanceTests(unittest.TestCase):
             [{"host_id": 88, "DT_LAST_CHECK": now}],
         )
         self.assertEqual(db.queued_tasks, [])
+        persist_icmp_observation.assert_called_once_with(
+            db=db,
+            host_id=88,
+            observed_at=now,
+        )
 
     def test_run_host_check_all_batch_does_not_mark_online_host_offline_after_short_ping_miss(self) -> None:
         now = datetime(2026, 3, 23, 12, 0, 0)
@@ -954,6 +960,15 @@ class HostMaintenanceTests(unittest.TestCase):
             ]
         )
 
+        connectivity = {
+            "state": "online",
+            "online": True,
+            "reason": "ssh_connect_ok",
+            "icmp_online": True,
+            "ssh_online": True,
+            "error": None,
+        }
+
         with patch.object(
             host_maintenance_worker.host_connectivity,
             "is_host_online",
@@ -962,15 +977,15 @@ class HostMaintenanceTests(unittest.TestCase):
             with patch.object(
                 host_maintenance_worker.host_connectivity,
                 "probe_host_connectivity",
-                return_value={
-                    "state": "online",
-                    "online": True,
-                    "reason": "ssh_connect_ok",
-                    "icmp_online": True,
-                    "ssh_online": True,
-                    "error": None,
-                },
-            ) as probe_host_connectivity:
+                return_value=connectivity,
+            ) as probe_host_connectivity, patch.object(
+                host_maintenance_worker.host_connectivity,
+                "persist_reachable_probe_observation",
+                wraps=(
+                    host_maintenance_worker.host_connectivity
+                    .persist_reachable_probe_observation
+                ),
+            ) as persist_reachable_probe_observation:
                 checked = self._run_maintenance_batch(db=db, now=now)
 
         self.assertEqual(checked, 1)
@@ -983,6 +998,13 @@ class HostMaintenanceTests(unittest.TestCase):
         self.assertEqual(db.suspended_hosts, [])
         self.assertEqual(db.resumed_hosts, [])
         probe_host_connectivity.assert_called_once()
+        persist_reachable_probe_observation.assert_called_once_with(
+            db=db,
+            host_id=89,
+            connectivity=connectivity,
+            observed_at=now,
+            logger=host_maintenance_worker.log,
+        )
 
     def test_run_host_check_all_batch_skips_busy_host(self) -> None:
         now = datetime(2026, 3, 23, 12, 0, 0)
@@ -1143,16 +1165,13 @@ class HostMaintenanceTests(unittest.TestCase):
 
         self.assertIn(
             (
-                "host_check_all_state_change",
+                "host_state_transition",
                 {
-                    "component": "host_maintenance",
-                    "operation": "process_due_host",
+                    "component": "host_connectivity",
+                    "operation": "persist_state",
                     "host_id": 102,
-                    "host": "station-falls-offline",
-                    "address": "172.24.1.102",
                     "previous_state": "online",
                     "current_state": "offline",
-                    "reason": "icmp_unreachable",
                 },
             ),
             fake_log.events,

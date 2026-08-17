@@ -50,6 +50,7 @@ class FakeZabbixClient:
                     "is_direct_on_target": True,
                     "source_macro_id": "45",
                     "accepts_value": True,
+                    "editable_value": "2828",
                 },
                 {
                     "name": "{$HOST_ID}",
@@ -103,9 +104,15 @@ class TestZabbixConfigurationService(unittest.TestCase):
         self.client = FakeZabbixClient()
         service._clear_catalog_cache()
         self.client_patch = patch.object(service, "_build_client", return_value=self.client)
+        self.operational_sync_patch = patch.object(
+            service,
+            "_persist_operational_host_connection",
+        )
         self.client_patch.start()
+        self.operational_sync_mock = self.operational_sync_patch.start()
 
     def tearDown(self):
+        self.operational_sync_patch.stop()
         self.client_patch.stop()
         service._clear_catalog_cache()
 
@@ -132,7 +139,7 @@ class TestZabbixConfigurationService(unittest.TestCase):
         self.assertEqual(self.client.updated, [])
 
     def test_restoring_direct_macro_deletes_only_direct_override(self):
-        service.apply_macro_change(
+        synchronized = service.apply_macro_change(
             target_kind="host",
             target_id="501",
             macro_name="{$SSH_PORT}",
@@ -140,6 +147,95 @@ class TestZabbixConfigurationService(unittest.TestCase):
         )
 
         self.assertEqual(self.client.deleted, [{"macro_id": "45"}])
+        self.assertTrue(synchronized)
+        self.operational_sync_mock.assert_called_once_with(
+            host_id=10482,
+            column="NA_HOST_PORT",
+            value=2828,
+        )
+
+    def test_saving_ssh_password_syncs_the_operational_host_after_zabbix(self):
+        self.client.get_host_configuration = lambda target_id: {
+            "kind": "host",
+            "target_id": target_id,
+            "macros": [
+                {
+                    "name": "{$SSH_PASSWD}",
+                    "type": "1",
+                    "is_direct_on_target": False,
+                    "source_macro_id": "47",
+                    "accepts_value": True,
+                },
+                {
+                    "name": "{$HOST_ID}",
+                    "type": "0",
+                    "is_direct_on_target": False,
+                    "source_macro_id": "46",
+                    "accepts_value": True,
+                    "editable_value": "10482",
+                },
+            ],
+        }
+
+        synchronized = service.apply_macro_change(
+            target_kind="host",
+            target_id="501",
+            macro_name="{$SSH_PASSWD}",
+            action=service.ACTION_SAVE,
+            submitted_value="senha-nova",
+        )
+
+        self.assertTrue(synchronized)
+        self.operational_sync_mock.assert_called_once_with(
+            host_id=10482,
+            column="NA_HOST_PASSWORD",
+            value="senha-nova",
+        )
+
+    def test_rejects_secret_restore_before_changing_zabbix(self):
+        self.client.get_host_configuration = lambda target_id: {
+            "kind": "host",
+            "target_id": target_id,
+            "macros": [
+                {
+                    "name": "{$SSH_PASSWD}",
+                    "type": "1",
+                    "is_direct_on_target": True,
+                    "source_macro_id": "47",
+                    "accepts_value": True,
+                },
+                {
+                    "name": "{$HOST_ID}",
+                    "type": "0",
+                    "is_direct_on_target": False,
+                    "source_macro_id": "46",
+                    "accepts_value": True,
+                    "editable_value": "10482",
+                },
+            ],
+        }
+
+        with self.assertRaises(service.ZabbixConfigurationError):
+            service.apply_macro_change(
+                target_kind="host",
+                target_id="501",
+                macro_name="{$SSH_PASSWD}",
+                action=service.ACTION_RESTORE,
+            )
+
+        self.assertEqual(self.client.deleted, [])
+
+    def test_rejects_invalid_ssh_port_before_changing_zabbix(self):
+        with self.assertRaises(service.ZabbixConfigurationError):
+            service.apply_macro_change(
+                target_kind="host",
+                target_id="501",
+                macro_name="{$SSH_PORT}",
+                action=service.ACTION_SAVE,
+                submitted_value="porta-inválida",
+            )
+
+        self.assertEqual(self.client.updated, [])
 
     def test_rejects_restore_when_macro_is_already_inherited(self):
         with self.assertRaises(service.ZabbixConfigurationError):

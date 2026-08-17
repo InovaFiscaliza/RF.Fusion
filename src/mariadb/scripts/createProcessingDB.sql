@@ -115,6 +115,7 @@ CREATE TABLE `FILE_TASK_HISTORY` (
   KEY `idx_fth_host_file_name` (`NA_HOST_FILE_NAME`,`ID_HISTORY`),
   KEY `idx_fth_server_file_name` (`NA_SERVER_FILE_NAME`,`ID_HISTORY`),
   KEY `idx_fth_host_date_host` (`FK_HOST`,`DT_FILE_CREATED_HOST`),
+  KEY `idx_fth_processed_recent` (`DT_PROCESSED`,`ID_HISTORY`),
   KEY `idx_fth_backup_recreate` (`NU_STATUS_BACKUP`,`ID_HISTORY`),
   KEY `idx_fth_processing_recreate` (`NU_STATUS_BACKUP`,`NU_STATUS_PROCESSING`,`ID_HISTORY`),
   CONSTRAINT `FK_HISTORY_HOST` FOREIGN KEY (`FK_HOST`) REFERENCES `HOST` (`ID_HOST`)

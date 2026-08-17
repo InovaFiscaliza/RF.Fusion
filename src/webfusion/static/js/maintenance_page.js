@@ -780,19 +780,9 @@
 
         if (historyFilterForm) {
             historyFilterForm.addEventListener("submit", function (event) {
-                const historyHostSelect = document.getElementById("history_host_id");
-                const hostFileNameInput = document.getElementById("history_host_file_name");
-                const serverFileNameInput = document.getElementById("history_server_file_name");
                 const dateFieldInput = document.getElementById("history_date_field");
                 const dateFromInput = document.getElementById("history_date_from");
                 const dateToInput = document.getElementById("history_date_to");
-                const hasIdentityFilter = [
-                    historyHostSelect,
-                    hostFileNameInput,
-                    serverFileNameInput,
-                ].some(function (input) {
-                    return input && input.value.trim() !== "";
-                });
                 const hasDateBoundary = [dateFromInput, dateToInput].some(function (input) {
                     return input && input.value.trim() !== "";
                 });
@@ -812,12 +802,6 @@
                 ) {
                     event.preventDefault();
                     window.alert("A data final exclusiva deve ser posterior à data inicial.");
-                    return;
-                }
-
-                if (!hasIdentityFilter) {
-                    event.preventDefault();
-                    window.alert("Selecione um host ou informe o nome completo de um arquivo. Data e mensagem apenas refinam esses filtros.");
                     return;
                 }
 

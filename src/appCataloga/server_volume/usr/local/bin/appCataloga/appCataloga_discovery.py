@@ -173,7 +173,11 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
     This function measures only completed internal phases.
     """
     scan_started_at = time.monotonic()
+    
+    # Discovery is the only phase that produces files, so it reports discovered volume.
     processed, discovered_volume_kb = _stream_discovery_batches(db, sftp, task)
+    
+    # Elapsed time and log results
     scan_elapsed_sec = round(time.monotonic() - scan_started_at, 3)
     log.task_phase(
         SERVICE_NAME,

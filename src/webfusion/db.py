@@ -52,3 +52,39 @@ def get_connection_bpdata():
 def get_connection_summary():
     """Open a DictCursor connection to the materialized summary database."""
     return pymysql.connect(**DB_CFG_RFFUSION_SUMMARY)
+
+
+HOST_CONNECTION_COLUMNS = frozenset(
+    {
+        "NA_HOST_PORT",
+        "NA_HOST_USER",
+        "NA_HOST_PASSWORD",
+    }
+)
+
+
+def update_host_connection_value(*, host_id: int, column: str, value: int | str) -> None:
+    """Persist one Zabbix-backed connection value for an operational host."""
+    if column not in HOST_CONNECTION_COLUMNS:
+        raise ValueError("Coluna de conexão operacional não permitida.")
+
+    connection = get_connection_bpdata()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT ID_HOST FROM HOST WHERE ID_HOST = %s",
+                (host_id,),
+            )
+            if cursor.fetchone() is None:
+                raise LookupError("O host operacional não foi encontrado no RF.Fusion.")
+
+            cursor.execute(
+                f"UPDATE HOST SET {column} = %s WHERE ID_HOST = %s",
+                (value, host_id),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()

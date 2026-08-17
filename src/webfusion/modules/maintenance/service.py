@@ -94,7 +94,10 @@ TASK_STATUS_LABELS = {
 DEFAULT_PAGE_LIMIT = 200
 MAX_PAGE_LIMIT = 500
 DEFAULT_HISTORY_PAGE_LIMIT = 50
-MAX_HISTORY_PAGE_LIMIT = 100
+HISTORY_PAGE_LIMIT_OPTIONS = (50, 100, 200)
+HISTORY_PROCESSED_RECENT_INDEX = "idx_fth_processed_recent"
+HISTORY_ORDER_BY_ID = "h.ID_HISTORY DESC"
+HISTORY_ORDER_BY_PROCESSED = "h.DT_PROCESSED DESC, h.ID_HISTORY DESC"
 
 HISTORY_TARGET_BACKUP = "backup"
 HISTORY_TARGET_PROCESS = "process"
@@ -191,13 +194,15 @@ def _normalize_limit(raw_value: str | None) -> int:
 
 
 def _normalize_history_limit(raw_value: str | None) -> int:
-    """Clamp history queries to a smaller window than the regular queue page."""
+    """Keep history queries inside the explicit safe visible windows."""
     try:
         parsed = int(raw_value or DEFAULT_HISTORY_PAGE_LIMIT)
     except (TypeError, ValueError):
         return DEFAULT_HISTORY_PAGE_LIMIT
 
-    return max(20, min(parsed, MAX_HISTORY_PAGE_LIMIT))
+    if parsed in HISTORY_PAGE_LIMIT_OPTIONS:
+        return parsed
+    return DEFAULT_HISTORY_PAGE_LIMIT
 
 
 def build_filters(args: dict[str, Any] | Any) -> dict[str, Any]:
@@ -280,12 +285,7 @@ def _require_history_target_status(raw_value: str | None) -> int:
 
 
 def history_filters_are_actionable(filters: dict[str, Any]) -> bool:
-    """Require at least one anchored history filter before hitting the DB.
-
-    FILE_TASK_HISTORY is large enough that opening the query with only a limit
-    still risks a wide scan. The maintenance UI therefore requires
-    one concrete narrowing input before it loads history candidates.
-    """
+    """Allow a bounded recent view, but keep message search anchored."""
     has_identity_filter = any(
         [
             bool(filters.get("host_id")),
@@ -293,17 +293,18 @@ def history_filters_are_actionable(filters: dict[str, Any]) -> bool:
             bool(filters.get("server_file_name")),
         ]
     )
-    return has_identity_filter
+    if filters.get("message"):
+        return has_identity_filter
+    return filters.get("limit") in HISTORY_PAGE_LIMIT_OPTIONS
 
 
 def validate_history_filters(filters: dict[str, Any]) -> None:
-    """Reject history searches that would ignore filters or scan on message text."""
+    """Validate bounded history searches before querying the durable table."""
     _validate_date_filters(filters, date_fields=HISTORY_DATE_FIELDS)
 
     if not history_filters_are_actionable(filters):
         raise ValueError(
-            "Selecione um host ou informe o nome completo de um arquivo para consultar o histórico. "
-            "Data e mensagem apenas refinam esses filtros."
+            "Informe um host ou o nome completo de um arquivo antes de refinar por mensagem."
         )
 
 
@@ -554,8 +555,25 @@ def list_tasks(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
     return list_host_tasks(db, filters)
 
 
+def _history_order_by(db) -> str:
+    """Use processing recency only after its supporting index is available."""
+    cursor = db.cursor()
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.statistics
+        WHERE table_schema = DATABASE()
+          AND table_name = 'FILE_TASK_HISTORY'
+          AND index_name = %s
+        LIMIT 1
+        """,
+        (HISTORY_PROCESSED_RECENT_INDEX,),
+    )
+    return HISTORY_ORDER_BY_PROCESSED if cursor.fetchall() else HISTORY_ORDER_BY_ID
+
+
 def list_file_history(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return an anchored view of the durable file history."""
+    """Return a bounded view of the durable file history."""
     validate_history_filters(filters)
     sql_parts = ["1 = 1"]
     params: list[Any] = []
@@ -592,6 +610,7 @@ def list_file_history(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
             sql_parts.append(f"{sql_field} < %s")
             params.append(filters["date_to"])
 
+    order_by = _history_order_by(db)
     cursor = db.cursor()
     cursor.execute(
         f"""
@@ -621,7 +640,7 @@ def list_file_history(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
          AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
          AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
         WHERE {" AND ".join(sql_parts)}
-        ORDER BY h.ID_HISTORY DESC
+        ORDER BY {order_by}
         LIMIT %s
         """,
         tuple(params + [filters["limit"]]),

@@ -10,7 +10,7 @@ What is covered here:
     - bulk-action summaries for blocked and missing queue rows
     - history-driven recreation summaries for backup/process retries
     - structured history filters for date and file fields
-    - guard against unanchored history scans
+    - bounded recent history queries without mandatory filters
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ class TestMaintenanceService(unittest.TestCase):
         self.assertEqual(filters["discovery_status"], 0)
         self.assertEqual(filters["backup_status"], -1)
         self.assertEqual(filters["processing_status"], 1)
-        self.assertEqual(filters["limit"], 100)
+        self.assertEqual(filters["limit"], 200)
 
     def test_build_file_task_filters_keeps_the_selected_date_range(self):
         filters = self.module.build_file_task_filters(
@@ -115,8 +115,8 @@ class TestMaintenanceService(unittest.TestCase):
                 }
             )
 
-    def test_history_filters_are_actionable_requires_one_anchor(self):
-        self.assertFalse(
+    def test_history_filters_allow_a_bounded_recent_window(self):
+        self.assertTrue(
             self.module.history_filters_are_actionable(
                 {
                     "host_id": None,
@@ -125,6 +125,7 @@ class TestMaintenanceService(unittest.TestCase):
                     "message": "",
                     "date_from": "",
                     "date_to": "",
+                    "limit": 50,
                 }
             )
         )
@@ -137,6 +138,7 @@ class TestMaintenanceService(unittest.TestCase):
                     "message": "",
                     "date_from": "",
                     "date_to": "",
+                    "limit": 100,
                 }
             )
         )
@@ -150,6 +152,7 @@ class TestMaintenanceService(unittest.TestCase):
                     "date_field": "",
                     "date_from": "",
                     "date_to": "",
+                    "limit": 50,
                 }
             )
         )
@@ -169,7 +172,7 @@ class TestMaintenanceService(unittest.TestCase):
             )
 
     def test_validate_history_filters_rejects_message_only_search(self):
-        with self.assertRaisesRegex(ValueError, "mensagem apenas refinam"):
+        with self.assertRaisesRegex(ValueError, "antes de refinar por mensagem"):
             self.module.validate_history_filters(
                 {
                     "host_id": None,
@@ -179,22 +182,60 @@ class TestMaintenanceService(unittest.TestCase):
                     "date_field": "",
                     "date_from": "",
                     "date_to": "",
+                    "limit": 50,
                 }
             )
 
-    def test_validate_history_filters_rejects_date_only_search(self):
-        with self.assertRaisesRegex(ValueError, "Data e mensagem apenas refinam"):
-            self.module.validate_history_filters(
-                {
-                    "host_id": None,
-                    "host_file_name": "",
-                    "server_file_name": "",
-                    "message": "",
-                    "date_field": "DT_PROCESSED",
-                    "date_from": "2026-07-08",
-                    "date_to": "2026-07-09",
-                }
-            )
+    def test_validate_history_filters_allows_unfiltered_bounded_window(self):
+        self.module.validate_history_filters(
+            {
+                "host_id": None,
+                "host_file_name": "",
+                "server_file_name": "",
+                "message": "",
+                "date_field": "",
+                "date_from": "",
+                "date_to": "",
+                "limit": 200,
+            }
+        )
+
+    def test_list_history_allows_the_recent_bounded_window(self):
+        executed = []
+
+        class FakeCursor:
+            def execute(self, sql, params=None):
+                executed.append((sql, params))
+
+            def fetchall(self):
+                if "information_schema.statistics" in executed[-1][0]:
+                    return [{"present": 1}]
+                return []
+
+        class FakeDB:
+            def cursor(self):
+                return FakeCursor()
+
+        self.module.list_file_history(
+            FakeDB(),
+            {
+                "host_id": None,
+                "host_file_name": "",
+                "server_file_name": "",
+                "message": "",
+                "date_field": "",
+                "date_from": "",
+                "date_to": "",
+                "discovery_status": None,
+                "backup_status": None,
+                "processing_status": None,
+                "limit": 200,
+            },
+        )
+
+        sql, params = executed[-1]
+        self.assertIn("ORDER BY h.DT_PROCESSED DESC, h.ID_HISTORY DESC", sql)
+        self.assertEqual(params, (200,))
 
     def test_apply_history_action_rejects_unknown_target_before_querying(self):
         service = self.module
@@ -245,7 +286,7 @@ class TestMaintenanceService(unittest.TestCase):
             },
         )
 
-        sql, params = executed[0]
+        sql, params = executed[-1]
         self.assertIn("h.FK_HOST = %s", sql)
         self.assertIn("h.NA_HOST_FILE_NAME = %s", sql)
         self.assertIn("h.NA_SERVER_FILE_NAME = %s", sql)
@@ -261,6 +302,40 @@ class TestMaintenanceService(unittest.TestCase):
         self.assertIn(0, params)
         self.assertIn(-1, params)
         self.assertIn(1, params)
+
+    def test_list_history_falls_back_to_identity_order_without_the_index(self):
+        executed = []
+
+        class FakeCursor:
+            def execute(self, sql, params=None):
+                executed.append((sql, params))
+
+            def fetchall(self):
+                return []
+
+        class FakeDB:
+            def cursor(self):
+                return FakeCursor()
+
+        self.module.list_file_history(
+            FakeDB(),
+            {
+                "host_id": None,
+                "host_file_name": "",
+                "server_file_name": "",
+                "message": "",
+                "date_field": "",
+                "date_from": "",
+                "date_to": "",
+                "discovery_status": None,
+                "backup_status": None,
+                "processing_status": None,
+                "limit": 50,
+            },
+        )
+
+        sql, _ = executed[-1]
+        self.assertIn("ORDER BY h.ID_HISTORY DESC", sql)
 
     def test_list_history_does_not_limit_rows_to_one_operation(self):
         executed = []
@@ -290,7 +365,7 @@ class TestMaintenanceService(unittest.TestCase):
             },
         )
 
-        sql, params = executed[0]
+        sql, params = executed[-1]
         self.assertNotIn("h.NU_STATUS_BACKUP = %s", sql)
         self.assertNotIn("h.NU_STATUS_PROCESSING = %s", sql)
         self.assertIn(241, params)

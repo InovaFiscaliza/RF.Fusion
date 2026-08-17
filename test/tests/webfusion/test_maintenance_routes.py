@@ -178,10 +178,9 @@ def load_maintenance_routes():
                 filters.get("server_file_name"),
             ]
         )
-        if not has_identity_filter:
+        if filters.get("message") and not has_identity_filter:
             raise ValueError(
-                "Selecione um host ou informe o nome completo de um arquivo para consultar o histórico. "
-                "Data e mensagem apenas refinam esses filtros."
+                "Informe um host ou o nome completo do arquivo antes de refinar por mensagem."
             )
 
     fake_service.validate_history_filters = validate_history_filters
@@ -347,29 +346,20 @@ class TestMaintenanceRoutes(unittest.TestCase):
         self.assertEqual(len(payload["context"]["file_task_rows"]), 1)
         self.assertFalse(payload["context"]["host_task_loaded"])
 
-    def test_dashboard_keeps_history_unloaded_when_request_has_no_anchor_filter(self):
+    def test_dashboard_loads_recent_history_without_filters(self):
         self.module.request.authorization = SimpleNamespace(
             username="admin",
             password="admin",
         )
-        calls = []
-        original_history_loader = self.module.list_file_history
-        self.module.list_file_history = lambda db, filters: calls.append(
-            filters
-        ) or self.fail("The history loader must not run without an anchor filter.")
         self.module.request.args = {
             "history_load": "1",
         }
 
-        try:
-            payload = self.module.maintenance_dashboard()
-        finally:
-            self.module.list_file_history = original_history_loader
+        payload = self.module.maintenance_dashboard()
 
-        self.assertFalse(payload["context"]["history_loaded"])
-        self.assertEqual(payload["context"]["history_rows"], [])
-        self.assertIn("nome completo de um arquivo", payload["context"]["history_query_message"])
-        self.assertEqual(calls, [])
+        self.assertTrue(payload["context"]["history_loaded"])
+        self.assertEqual(len(payload["context"]["history_rows"]), 1)
+        self.assertIsNone(payload["context"]["history_query_message"])
 
     def test_dashboard_rejects_invalid_history_action_without_mutating_tasks(self):
         self.module.request.authorization = SimpleNamespace(

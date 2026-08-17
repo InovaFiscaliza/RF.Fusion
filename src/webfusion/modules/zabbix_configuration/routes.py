@@ -106,7 +106,7 @@ def update_macro():
     value = request.form.get("value")
 
     try:
-        apply_macro_change(
+        operational_sync_completed = apply_macro_change(
             target_kind=target_kind,
             target_id=target_id,
             macro_name=macro_name,
@@ -120,11 +120,14 @@ def update_macro():
                 "zabbix_configuration.configuration_dashboard",
                 target_kind=target_kind,
                 target_id=target_id,
-                error="change_failed",
+                error=getattr(error, "notice_code", "change_failed"),
             )
         )
 
-    notice = "restored" if action == ACTION_RESTORE else "saved"
+    if action == ACTION_RESTORE:
+        notice = "restored_synced" if operational_sync_completed else "restored"
+    else:
+        notice = "saved_synced" if operational_sync_completed else "saved"
     return redirect(
         url_for(
             "zabbix_configuration.configuration_dashboard",
@@ -139,7 +142,11 @@ def _notice_success_message(notice: str | None) -> str | None:
     """Translate a redirect status into the operator-facing confirmation."""
     messages = {
         "saved": "Configuração salva no Zabbix.",
+        "saved_synced": "Configuração salva no Zabbix e sincronizada com o RF.Fusion.",
         "restored": "A sobrescrita foi removida e a herança foi restaurada.",
+        "restored_synced": (
+            "A sobrescrita foi removida, a herança foi restaurada e o RF.Fusion foi sincronizado."
+        ),
     }
     return messages.get(str(notice or "").strip())
 
@@ -150,6 +157,14 @@ def _notice_error_message(error: str | None) -> str | None:
         "change_failed": (
             "Não foi possível alterar a macro no Zabbix. Verifique as permissões "
             "da API e tente novamente."
+        ),
+        "operational_sync_failed": (
+            "A alteração foi aceita pelo Zabbix, mas não foi possível sincronizar o host "
+            "operacional. Não inicie tarefas até repetir a alteração com sucesso."
+        ),
+        "secret_restore_requires_sync": (
+            "A restauração da senha SSH herdada foi bloqueada para evitar divergência "
+            "entre Zabbix e RF.Fusion. Mantenha a sobrescrita ou informe a senha desejada novamente."
         ),
     }
     return messages.get(str(error or "").strip())

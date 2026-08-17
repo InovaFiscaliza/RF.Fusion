@@ -1,9 +1,9 @@
-"""
-SSH and SFTP transport helpers for appCataloga.
+"""SSH and SFTP transport helpers for appCataloga host workers.
 
-This module wraps Paramiko with the conventions expected by the rest of the
-project: durable connections, metadata-friendly file operations, and
-cross-platform remote traversal helpers.
+Besides the reusable Paramiko transport operations, this module classifies
+short SSH probes and persists their current-state evidence. The probe result
+is intentionally separate from queue decisions: callers decide whether to
+retry, suspend dependent tasks, or mark a host offline.
 """
 
 from __future__ import annotations
@@ -38,12 +38,15 @@ if CONFIG_PATH not in sys.path:
     sys.path.insert(0, CONFIG_PATH)
 
 import config as k  # noqa: E402  (must be available at runtime)
+from db.dbHandlerSummary import dbHandlerSummary  # noqa: E402
 
 if TYPE_CHECKING:
     from db.dbHandlerBKP import dbHandlerBKP
     from shared.logging_utils import log as logger_type
 
 
+# Probe signals are current-state data, not delayed summary outbox work.
+# Create this connection only in workers that actually execute SSH probes.
 _snapshot_signal_db: dbHandlerSummary | None = None
 
 
@@ -77,6 +80,13 @@ def _probe_result(
     ssh_online: bool,
     error: str | None = None,
 ) -> ConnectivityProbePayload:
+    """Build the normalized result returned by every SSH probe path.
+
+    ``online`` is derived only from the canonical connection state. Callers
+    must therefore use ``icmp_online`` and ``ssh_online`` when they need to
+    show partial connectivity, such as a reachable host with failed SSH.
+    ``error`` keeps transport detail for logs without changing that state.
+    """
     return {
         "state": state,
         "online": state == k.HOST_CONN_ONLINE,
@@ -88,11 +98,11 @@ def _probe_result(
 
 
 def _connect_short_ssh_probe(addr: str, port: int, user: str, password: str) -> None:
-    """
-    Attempt the short supervisory SSH login used by host probes.
+    """Attempt the bounded SSH login used by connectivity supervision.
 
-    Intentionally raises the original exception so callers can classify the
-    failure without losing transport details.
+    This probe disables local keys and SSH-agent fallback. Its result therefore
+    validates exactly the configured host credentials. The original exception
+    is propagated so ``ssh_probe`` can classify the transport failure.
     """
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -116,16 +126,16 @@ def _connect_short_ssh_probe(addr: str, port: int, user: str, password: str) -> 
 
 
 def ssh_probe(addr: str, port: int, user: str, password: str) -> ConnectivityProbePayload:
-    """
-    Run the short supervisory SSH login for one ICMP-reachable address.
+    """Classify a short SSH login for an address already reachable by ICMP.
 
-    Outcomes:
-        - online:      SSH login succeeded
-        - auth_error:  credentials rejected (AuthenticationException, non-timeout)
-        - degraded:    everything else — auth timeout, no valid connections,
-                       transport errors, generic failures
+    The function never raises: workers receive one stable payload for success,
+    authentication rejection, timeout, and transport failure. ``icmp_online``
+    is always true because the caller performs this probe only after the ICMP
+    stage succeeded.
 
-    Never raises.
+    Returns:
+        A normalized connectivity payload. ``online`` is true only when SSH
+        authentication succeeds.
     """
     try:
         _connect_short_ssh_probe(addr=addr, port=port, user=user, password=password)
@@ -143,12 +153,14 @@ def ssh_probe(addr: str, port: int, user: str, password: str) -> ConnectivityPro
 
 
 def _get_snapshot_signal_db(logger: logger_type) -> dbHandlerSummary:
-    """Return the process-local summary connection used for SSH signals."""
+    """Return the process-local summary connection used for SSH probe signals.
+
+    One worker can evaluate many hosts. Reusing the connection avoids opening
+    a new database session for every successful or failed SSH login.
+    """
     global _snapshot_signal_db
 
     if _snapshot_signal_db is None:
-        from db.dbHandlerSummary import dbHandlerSummary
-
         _snapshot_signal_db = dbHandlerSummary(
             database=k.SUMMARY_DATABASE_NAME,
             log=logger,
@@ -163,8 +175,14 @@ def record_ssh_success(
     observed_at: datetime,
     logger: logger_type,
 ) -> None:
-    """Clear the current SSH failure state after one valid connection."""
-    _get_snapshot_signal_db(logger).update_host_current_snapshot_signals(
+    """Clear the active SSH failure signal after one successful login.
+
+    The timestamp is updated even when SSH was already available. This keeps
+    the current snapshot distinguishable from a stale previous evaluation.
+    """
+    # Keep connection acquisition separate from the snapshot write boundary.
+    snapshot_db = _get_snapshot_signal_db(logger)
+    snapshot_db.update_host_current_snapshot_signals(
         host_id=host_id,
         values={
             "IS_SSH_FAILURE": False,
@@ -181,8 +199,14 @@ def record_ssh_failure(
     description: str | None,
     logger: logger_type,
 ) -> None:
-    """Persist one classified SSH failure with its latest evidence."""
-    _get_snapshot_signal_db(logger).update_host_current_snapshot_signals(
+    """Persist the latest classified SSH failure for the current host state.
+
+    Only the newest diagnosis is retained in the snapshot. The task and error
+    history preserve the detailed operational trail.
+    """
+    # The newest probe replaces old evidence for the same host.
+    snapshot_db = _get_snapshot_signal_db(logger)
+    snapshot_db.update_host_current_snapshot_signals(
         host_id=host_id,
         values={
             "IS_SSH_FAILURE": True,
@@ -203,12 +227,12 @@ def persist_auth_error(
     *,
     logger: logger_type,
 ) -> tuple[int, str]:
-    """
-    Suspend host-dependent work after an SSH authentication failure.
+    """Persist a credential failure and suspend dependent work for one host.
 
-    Auth rejection is not transient; retries keep failing until credentials
-    are fixed. Suspends all dependent queues and returns ERROR status for
-    the caller to close the task.
+    Authentication failures are not transient. The host check counter and
+    current SSH snapshot are updated before the queues are suspended, so the
+    interface explains why discovery, backup, and processing stopped. The
+    caller receives ``TASK_ERROR`` and remains responsible for its task row.
     """
     next_count = max(0, int(task["host_check_error_count"] or 0)) + 1
 
@@ -246,10 +270,19 @@ def persist_auth_error(
 # SFTP Connection
 # =====================================================================
 class sftpConnection:
-    """Light Paramiko wrapper with appCataloga transport conventions."""
+    """Own one authenticated SSH/SFTP session for a single RF.Fusion host.
+
+    The wrapper centralizes transport timeouts, keepalive configuration,
+    structured logging, and cross-platform metadata access. Callers must
+    close it after each unit of host work; it does not own queue state.
+    """
 
     def _base_log_fields(self) -> dict[str, object]:
-        """Return the stable host transport fields shared by this connection."""
+        """Return safe transport identity fields reused by every connection log.
+
+        Passwords and remote file contents are intentionally excluded from the
+        shared context to prevent accidental disclosure through log events.
+        """
         return {
             "host": self.host_uid,
             "address": self.host_addr,
@@ -267,10 +300,14 @@ class sftpConnection:
         password: str,
         log: logger_type,
     ) -> None:
-        """Initialize SSH and SFTP connections with stability tuning.
+        """Open and configure one SSH/SFTP session for the supplied host.
+
+        Timeouts bound only connection establishment and authentication.
+        Transfer progress is monitored separately by ``transfer`` because
+        large files can legitimately remain active for longer than a login.
 
         Raises:
-            Exception: When connection to remote host fails.
+            Exception: The original Paramiko error when session setup fails.
         """
 
         self.log = log
@@ -875,7 +912,12 @@ class sftpConnection:
     # OS Detection
     # =================================================================
     def detect_remote_os(self) -> str:
-        """Detect remote operating system via SSH. Returns 'linux' or 'windows'."""
+        """Detect the remote shell family needed for metadata collection.
+
+        Linux is tried first through ``uname`` and Windows through PowerShell.
+        If both probes fail, Linux remains the compatibility fallback used by
+        legacy stations; later command failures still surface normally.
+        """
         try:
             stdin, stdout, stderr = self.ssh_client.exec_command(
                 "uname -s", timeout=5
