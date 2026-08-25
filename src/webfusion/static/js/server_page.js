@@ -64,6 +64,9 @@
     const usageMetricsMeta = document.getElementById("server-usage-metrics-meta");
     const usageMetricsAnnualBody = document.getElementById("server-usage-metrics-annual-body");
     const usageMetricsMonthlyBody = document.getElementById("server-usage-metrics-monthly-body");
+    const runtimeHealthPanel = document.getElementById("server-runtime-health-panel");
+    const runtimeHealthMeta = document.getElementById("server-runtime-health-meta");
+    const runtimeHealthList = document.getElementById("server-runtime-health-list");
     const hostTablePanel    = document.getElementById("server-host-table-panel");
     const hostTableMeta     = document.getElementById("server-host-table-meta");
     const hostTableBody     = document.getElementById("server-host-table-body");
@@ -76,6 +79,7 @@
     const backupErrorsEndpoint      = root.dataset.backupErrorsEndpoint || "";
     const usageMetricsEndpoint      = root.dataset.usageMetricsEndpoint || "";
     const summaryMetricsEndpoint    = root.dataset.summaryMetricsEndpoint || "";
+    const runtimeHealthEndpoint     = root.dataset.runtimeHealthEndpoint || "";
     const currentOnlineOnly         = root.dataset.onlineOnly === "1";
     const hasInitialSummaryMetrics  = root.dataset.summaryMetricsInitialLoaded === "1";
 
@@ -436,6 +440,150 @@
         }
     }
 
+    /* Container health is intentionally an explicit, uncached operation.
+     * Infrastructure state is useful only when it represents the current
+     * moment, so the page never persists or reuses an older response. */
+    function runtimeHealthStatusLabel(status) {
+        const labels = {
+            healthy: "Disponível",
+            degraded: "Atenção necessária",
+            unavailable: "Indisponível",
+            unconfigured: "Não configurado"
+        };
+
+        return labels[status] || "Indisponível";
+    }
+
+    function normalizeRuntimeHealthStatus(status) {
+        return ["healthy", "degraded", "unavailable", "unconfigured"].includes(status)
+            ? status
+            : "unavailable";
+    }
+
+    function formatRuntimeHealthTimestamp(value) {
+        const date = new Date(value || "");
+
+        if (Number.isNaN(date.getTime())) {
+            return "agora";
+        }
+
+        return new Intl.DateTimeFormat("pt-BR", {
+            dateStyle: "short",
+            timeStyle: "medium"
+        }).format(date);
+    }
+
+    function renderRuntimeHealth(payload) {
+        if (!runtimeHealthList) {
+            return;
+        }
+
+        const components = Array.isArray(payload.components) ? payload.components : [];
+
+        if (components.length === 0) {
+            runtimeHealthList.innerHTML = `
+                <div class="server-runtime-health-empty">
+                    Não foi possível obter o estado atual dos containers.
+                </div>
+            `;
+            return;
+        }
+
+        runtimeHealthList.innerHTML = components.map((component) => {
+            const status = normalizeRuntimeHealthStatus(component.status);
+            const checks = Array.isArray(component.checks) ? component.checks : [];
+            const checkRows = checks.length > 0
+                ? checks.map((check) => {
+                    const checkStatus = normalizeRuntimeHealthStatus(check.status);
+                    const scriptName = typeof check.script === "string" ? check.script.trim() : "";
+                    const scriptRow = scriptName
+                        ? `
+                            <small class="server-runtime-health-check-script">
+                                Script Python: <code>${escapeHtml(scriptName)}</code>
+                            </small>
+                        `
+                        : "";
+
+                    return `
+                        <li class="server-runtime-health-check">
+                            <span>${escapeHtml(check.name || "Verificação")}</span>
+                            <strong class="server-runtime-health-check-status server-runtime-health-check-status--${checkStatus}">
+                                ${escapeHtml(runtimeHealthStatusLabel(checkStatus))}
+                            </strong>
+                            <small>${escapeHtml(check.detail || "Sem detalhe adicional")}</small>
+                            ${scriptRow}
+                        </li>
+                    `;
+                }).join("")
+                : `
+                    <li class="server-runtime-health-check server-runtime-health-check--message">
+                        ${escapeHtml(component.message || "Sem resposta atual do container.")}
+                    </li>
+                `;
+
+            return `
+                <section class="server-runtime-health-item server-runtime-health-item--${status}">
+                    <div class="server-runtime-health-item-head">
+                        <h3>${escapeHtml(component.label || component.component || "Container")}</h3>
+                        <span class="server-runtime-health-status server-runtime-health-status--${status}">
+                            ${escapeHtml(runtimeHealthStatusLabel(status))}
+                        </span>
+                    </div>
+                    <ul class="server-runtime-health-checks">${checkRows}</ul>
+                </section>
+            `;
+        }).join("");
+    }
+
+    function bindRuntimeHealthPanel() {
+        if (
+            !runtimeHealthPanel
+            || !runtimeHealthMeta
+            || !runtimeHealthList
+            || !runtimeHealthEndpoint
+        ) {
+            return;
+        }
+
+        let loading = false;
+
+        async function loadRuntimeHealth() {
+            if (loading) {
+                return;
+            }
+
+            loading = true;
+            runtimeHealthMeta.textContent = "Consultando o estado atual dos containers...";
+
+            try {
+                const response = await fetch(runtimeHealthEndpoint, { cache: "no-store" });
+                const payload = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(payload.error || "request_failed");
+                }
+
+                renderRuntimeHealth(payload);
+                runtimeHealthMeta.textContent = `Verificação concluída em ${formatRuntimeHealthTimestamp(payload.checked_at)}.`;
+            } catch (error) {
+                runtimeHealthList.innerHTML = `
+                    <div class="server-runtime-health-empty">
+                        Não foi possível consultar os containers neste momento.
+                    </div>
+                `;
+                runtimeHealthMeta.textContent = "Falha na verificação atual. Nenhum estado anterior foi reutilizado.";
+            } finally {
+                loading = false;
+            }
+        }
+
+        runtimeHealthPanel.addEventListener("toggle", function () {
+            if (runtimeHealthPanel.open) {
+                loadRuntimeHealth();
+            }
+        });
+    }
+
     /* The station table is intentionally lazy because it is a navigation aid.
      * The global server totals above must remain stable and independent.
      *
@@ -741,5 +889,6 @@
     });
 
     bindUsageMetricsPanel();
+    bindRuntimeHealthPanel();
     bindHostTablePanel();
 })();

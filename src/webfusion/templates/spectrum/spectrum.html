@@ -11,7 +11,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260811-description-text-flow') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260818-pagination-jump-layout') }}">
 {% endblock %}
 
 {% block content %}
@@ -238,62 +238,73 @@
 
 {% if rows %}
 
-<div class="card background-neutral-0 padding-l border-radius-m">
+<div class="card background-neutral-0 padding-l border-radius-m spectrum-results-card">
 
-    <div class="margin-bottom-s text-neutral-7 font-size-s">
+    <div class="spectrum-results-summary">
         Exibindo {{ (page-1)*50 + 1 }} –
         {{ (page-1)*50 + rows|length }}
         de {{ total }} arquivos
-    </div>
 
-    <div class="margin-bottom-s text-neutral-7 font-size-s file-summary-note">
-        Uma linha por arquivo oficial. Expanda para ver todos os espectros; os que satisfazem a busca aparecem em destaque.
-    </div>
-
-    <div class="pagination-container">
-        <div class="text-neutral-7 font-size-s">
-            Página {{ page }} de {{ total_pages }}
-        </div>
-
-        <div class="pagination-buttons">
-            <div class="pagination-nav-group">
-                {% if page > 1 %}
-                    <a class="btn-page"
-                       href="?{{ page_query_prefix }}page=1">«</a>
-
-                    <a class="btn-page"
-                       href="?{{ page_query_prefix }}page={{ page-1 }}">‹</a>
-                {% else %}
-                    <span class="btn-page btn-page-disabled">«</span>
-                    <span class="btn-page btn-page-disabled">‹</span>
-                {% endif %}
-            </div>
-
-            <div class="pagination-slot-group">
-                {% for p in visible_pages %}
-                    {% if p == page %}
-                        <span class="btn-page btn-page-active">{{ p }}</span>
-                    {% else %}
-                        <a class="btn-page"
-                           href="?{{ page_query_prefix }}page={{ p }}">{{ p }}</a>
-                    {% endif %}
-                {% endfor %}
-            </div>
-
-            <div class="pagination-nav-group">
-                {% if page < total_pages %}
-                    <a class="btn-page"
-                       href="?{{ page_query_prefix }}page={{ page+1 }}">›</a>
-
-                    <a class="btn-page"
-                       href="?{{ page_query_prefix }}page={{ total_pages }}">»</a>
-                {% else %}
-                    <span class="btn-page btn-page-disabled">›</span>
-                    <span class="btn-page btn-page-disabled">»</span>
-                {% endif %}
-            </div>
+        <div class="file-summary-note">
+            Uma linha por arquivo oficial. Expanda para ver todos os espectros; os que satisfazem a busca aparecem em destaque.
         </div>
     </div>
+
+    <nav class="spectrum-pagination" aria-label="Navegação dos resultados">
+        <div class="spectrum-pagination-actions">
+            {% if page > 1 %}
+                <a class="spectrum-pagination-control"
+                   href="?{{ page_query_prefix }}page=1"
+                   aria-label="Ir para a primeira página"
+                   title="Primeira página"
+                   data-loading-message="Carregando resultados..."><i class="fa fa-angle-double-left" aria-hidden="true"></i></a>
+                <a class="spectrum-pagination-control"
+                   href="?{{ page_query_prefix }}page={{ page-1 }}"
+                   aria-label="Ir para a página anterior"
+                   title="Página anterior"
+                   data-loading-message="Carregando resultados..."><i class="fa fa-angle-left" aria-hidden="true"></i></a>
+            {% else %}
+                <span class="spectrum-pagination-control is-disabled" aria-hidden="true"><i class="fa fa-angle-double-left" aria-hidden="true"></i></span>
+                <span class="spectrum-pagination-control is-disabled" aria-hidden="true"><i class="fa fa-angle-left" aria-hidden="true"></i></span>
+            {% endif %}
+
+            <span class="spectrum-pagination-status" aria-current="page">
+                <strong>Página {{ page }}</strong>
+                <span>de {{ total_pages }}</span>
+            </span>
+
+            {% if page < total_pages %}
+                <a class="spectrum-pagination-control"
+                   href="?{{ page_query_prefix }}page={{ page+1 }}"
+                   aria-label="Ir para a próxima página"
+                   title="Próxima página"
+                   data-loading-message="Carregando resultados..."><i class="fa fa-angle-right" aria-hidden="true"></i></a>
+                <a class="spectrum-pagination-control"
+                   href="?{{ page_query_prefix }}page={{ total_pages }}"
+                   aria-label="Ir para a última página"
+                   title="Última página"
+                   data-loading-message="Carregando resultados..."><i class="fa fa-angle-double-right" aria-hidden="true"></i></a>
+            {% else %}
+                <span class="spectrum-pagination-control is-disabled" aria-hidden="true"><i class="fa fa-angle-right" aria-hidden="true"></i></span>
+                <span class="spectrum-pagination-control is-disabled" aria-hidden="true"><i class="fa fa-angle-double-right" aria-hidden="true"></i></span>
+            {% endif %}
+        </div>
+        <form id="spectrum-page-jump-form" class="spectrum-pagination-jump">
+            <label for="spectrum-page-jump">Ir para página</label>
+            <input
+                id="spectrum-page-jump"
+                name="page"
+                type="number"
+                min="1"
+                max="{{ total_pages }}"
+                placeholder="{{ page }}"
+                inputmode="numeric"
+                autocomplete="off"
+                required
+            >
+            <button type="submit">Ir</button>
+        </form>
+    </nav>
 
     <div class="table-wrapper">
         <div class="table-scroll">
@@ -385,5 +396,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/spectrum_page.js', v='20260813-frequency-display') }}"></script>
+<script src="{{ url_for('static', filename='js/spectrum_page.js', v='20260818-pagination-jump') }}"></script>
 {% endblock %}

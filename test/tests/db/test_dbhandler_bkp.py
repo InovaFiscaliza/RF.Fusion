@@ -996,7 +996,7 @@ class GarbageCollectorQueryTests(unittest.TestCase):
         handler._connect = lambda: None
         return handler
 
-    def test_file_history_get_gc_candidates_uses_quarantine_anchor(self) -> None:
+    def test_file_history_get_gc_candidates_requires_processed_quarantine_anchor(self) -> None:
         handler = self.make_handler()
         captured = {}
 
@@ -1019,13 +1019,13 @@ class GarbageCollectorQueryTests(unittest.TestCase):
         self.assertEqual(captured["table"], "FILE_TASK_HISTORY")
         self.assertEqual(captured["where"]["NU_STATUS_PROCESSING"], -1)
         self.assertEqual(captured["where"]["IS_PAYLOAD_DELETED"], 0)
-        self.assertIn(
-            "COALESCE(DT_PROCESSED, DT_FILE_CREATED_SERVER)",
+        self.assertEqual(
             captured["where"]["#CUSTOM#QUARANTINE"],
+            "DT_PROCESSED IS NOT NULL AND DT_PROCESSED < NOW() - INTERVAL 365 DAY",
         )
         self.assertEqual(
             captured["order_by"],
-            "COALESCE(DT_PROCESSED, DT_FILE_CREATED_SERVER), ID_HISTORY",
+            "DT_PROCESSED, ID_HISTORY",
         )
         self.assertEqual(captured["limit"], 25)
         self.assertEqual(

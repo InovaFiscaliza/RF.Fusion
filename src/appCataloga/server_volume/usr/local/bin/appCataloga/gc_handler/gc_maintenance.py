@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import time
+from heapq import heapreplace, heappush
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -32,14 +33,28 @@ def _event_fields(operation: str) -> dict[str, str]:
 
 
 def _is_path_within(path: str, root: str) -> bool:
-    """Return whether `path` stays inside the managed directory `root`."""
+    """Return whether `path` resolves inside the managed directory `root`."""
     try:
-        normalized_path = os.path.normpath(path)
-        normalized_root = os.path.normpath(root)
-        return os.path.commonpath([normalized_path, normalized_root]) == normalized_root
+        resolved_path = os.path.realpath(path)
+        resolved_root = os.path.realpath(root)
+        return os.path.commonpath([resolved_path, resolved_root]) == resolved_root
     except ValueError:
         # Mixed drives or invalid roots must fail closed.
         return False
+
+
+def _is_safe_file_name(file_name: object) -> bool:
+    """Return whether a history filename cannot alter its parent directory."""
+    if not isinstance(file_name, str) or not file_name:
+        return False
+
+    if os.path.isabs(file_name) or os.path.sep in file_name:
+        return False
+
+    if os.path.altsep and os.path.altsep in file_name:
+        return False
+
+    return file_name not in {".", ".."}
 
 
 def _delete_file(path: str, *, logger: logger_type) -> bool:
@@ -90,6 +105,11 @@ def get_resolved_files_gc_candidates(
 
     # Use mtime because resolved-files artifacts have no queue timestamp.
     cutoff_ts = time.time() - (quarantine_days * 86400)
+    if batch_size <= 0:
+        return []
+
+    # Keep only the oldest batch in memory. `resolved_files` may contain a
+    # large backlog and retaining every eligible path would pressure the VM.
     candidates: list[tuple[float, str]] = []
 
     for root, _, files in os.walk(resolved_root):
@@ -110,10 +130,21 @@ def get_resolved_files_gc_candidates(
                 continue
 
             if modified_at <= cutoff_ts:
-                candidates.append((modified_at, full_path))
+                candidate = (-modified_at, full_path)
+                if len(candidates) < batch_size:
+                    heappush(candidates, candidate)
+                elif candidate[0] > candidates[0][0]:
+                    # The heap root is the newest retained file. Replace it
+                    # only when the current candidate is older.
+                    heapreplace(candidates, candidate)
 
-    candidates.sort(key=lambda item: item[0])
-    return [path for _, path in candidates[:batch_size]]
+    return [
+        path
+        for _, path in sorted(
+            ((-modified_at, path) for modified_at, path in candidates),
+            key=lambda item: item[0],
+        )
+    ]
 
 
 def log_gc_configuration(
@@ -173,31 +204,34 @@ def delete_history_artifacts(
         server_path = row["NA_SERVER_FILE_PATH"]
         server_file = row["NA_SERVER_FILE_NAME"]
 
-        if not server_path or not server_file:
+        if not server_path or not _is_safe_file_name(server_file):
             logger.warning_event(
                 "garbage_invalid_path_metadata",
-                **_event_fields("delete_history_artifacts"),
-            )
-            continue
-
-        if not _is_path_within(server_path, trash_root):
-            logger.error_event(
-                "garbage_refused_outside_trash",
-                path=server_path,
-                **_event_fields("delete_history_artifacts"),
-            )
-            continue
-
-        if _is_path_within(server_path, resolved_root):
-            # `resolved_files` is owned by the second GC channel.
-            logger.warning_event(
-                "garbage_history_points_to_resolved_files",
-                path=server_path,
+                history_id=row["ID_HISTORY"],
                 **_event_fields("delete_history_artifacts"),
             )
             continue
 
         file_path = os.path.join(server_path, server_file)
+
+        if not _is_path_within(file_path, trash_root):
+            logger.error_event(
+                "garbage_refused_outside_trash",
+                history_id=row["ID_HISTORY"],
+                path=file_path,
+                **_event_fields("delete_history_artifacts"),
+            )
+            continue
+
+        if _is_path_within(file_path, resolved_root):
+            # `resolved_files` is owned by the second GC channel.
+            logger.warning_event(
+                "garbage_history_points_to_resolved_files",
+                history_id=row["ID_HISTORY"],
+                path=file_path,
+                **_event_fields("delete_history_artifacts"),
+            )
+            continue
 
         if _delete_file(file_path, logger=logger):
             db_bp.file_history_update(

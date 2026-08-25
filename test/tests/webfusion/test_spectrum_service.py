@@ -260,14 +260,18 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["ID_FILE"], 150)
         self.assertEqual(rows[0]["LOCALITY_DISPLAY"], "—")
-        self.assertEqual(len(fake_cursor.executed), 1)
-        self.assertNotIn("LIMIT %s OFFSET %s", fake_cursor.executed[0][0])
+        self.assertEqual(len(fake_cursor.executed), 2)
+        self.assertIn("CREATE TEMPORARY TABLE", fake_cursor.executed[0][0])
+        self.assertIn("tmp_webfusion_filtered_spectra", fake_cursor.executed[0][0])
         self.assertIn("RFFUSION_SUMMARY.SITE_EQUIPMENT_OBS_SUMMARY", fake_cursor.executed[0][0])
         self.assertNotIn("JOIN DIM_SPECTRUM_SITE", fake_cursor.executed[0][0])
         self.assertEqual(
             fake_cursor.executed[0][1],
-            [338, 50.0, 120.0, 338, 50.0, 120.0, 338, 50.0, 120.0],
+            [338, 50.0, 120.0],
         )
+        self.assertNotIn("LIMIT %s OFFSET %s", fake_cursor.executed[1][0])
+        self.assertNotIn("FACT_SPECTRUM fs", fake_cursor.executed[1][0])
+        self.assertEqual(fake_cursor.executed[1][1], ())
 
         cached_rows, cached_total = self.module.get_spectrum_file_data(
             equipment_id=338,
@@ -280,7 +284,7 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(cached_total, 2)
         self.assertEqual(len(cached_rows), 1)
         self.assertEqual(cached_rows[0]["ID_FILE"], 200)
-        self.assertEqual(len(fake_cursor.executed), 1)
+        self.assertEqual(len(fake_cursor.executed), 2)
         self.assertTrue(fake_connection.closed)
 
     def test_get_spectrum_locality_options_uses_summary_scoped_live_rows(self):

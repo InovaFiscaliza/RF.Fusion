@@ -14,6 +14,8 @@
     const districtHint = document.getElementById("district-filter-hint");
     const periodHint = document.getElementById("period-filter-hint");
     const clearFiltersLink = document.getElementById("clear-spectrum-filters");
+    const pageJumpForm = document.getElementById("spectrum-page-jump-form");
+    const pageJumpField = document.getElementById("spectrum-page-jump");
     const startDateField = queryForm ? queryForm.elements.start_date : null;
     const endDateField = queryForm ? queryForm.elements.end_date : null;
     const freqStartField = queryForm ? queryForm.elements.freq_start : null;
@@ -110,6 +112,27 @@
         ].forEach((key) => appendTrimmedParam(params, key, source.get(key) || ""));
 
         return params;
+    }
+
+    function submitPageJump(event) {
+        event.preventDefault();
+        if (!pageJumpField) {
+            return;
+        }
+
+        const requestedPage = Number.parseInt(pageJumpField.value, 10);
+        const totalPages = Number.parseInt(pageJumpField.max, 10);
+        if (!Number.isInteger(requestedPage) || requestedPage < 1 || requestedPage > totalPages) {
+            pageJumpField.setCustomValidity(`Informe uma página entre 1 e ${totalPages}.`);
+            pageJumpField.reportValidity();
+            return;
+        }
+
+        pageJumpField.setCustomValidity("");
+        const targetUrl = new URL(window.location.href);
+        targetUrl.searchParams.set("page", String(requestedPage));
+        window.showPageLoadingOverlay?.("Carregando resultados...");
+        window.location.assign(targetUrl.toString());
     }
 
     function getSelectionSnapshot(field) {
@@ -564,6 +587,8 @@
         detailCache.set(cacheKey, rows);
         return rows;
     }
+
+    pageJumpForm?.addEventListener("submit", submitPageJump);
 
     document.querySelectorAll("[data-file-toggle]").forEach((button) => {
         button.addEventListener("click", async () => {

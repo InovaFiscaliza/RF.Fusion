@@ -563,7 +563,8 @@ class HostConnectivityTests(unittest.TestCase):
             )
 
         self.assertEqual(status, host_check_worker.k.TASK_ERROR)
-        self.assertIn("ICMP respondeu", message)
+        self.assertIn("ICMP: a estação respondeu.", message)
+        self.assertIn("SSH: A conexão SSH não respondeu em até 20 segundos.", message)
 
     def test_interactive_result_translates_offline_outcome(self) -> None:
         status, message = host_check_worker.host_connectivity._build_interactive_result(
@@ -582,7 +583,9 @@ class HostConnectivityTests(unittest.TestCase):
         self.assertEqual(status, host_check_worker.k.TASK_ERROR)
         self.assertEqual(
             message,
-            "Teste concluído com falha: a estação não respondeu ao ICMP.",
+            "Teste concluído com falha. "
+            "ICMP: A estação não respondeu em até 10 segundos. "
+            "SSH: não executado porque o ICMP não respondeu.",
         )
 
 class HostMaintenanceTests(unittest.TestCase):

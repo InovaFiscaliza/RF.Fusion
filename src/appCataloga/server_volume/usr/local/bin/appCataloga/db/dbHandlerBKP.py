@@ -4249,11 +4249,10 @@ class dbHandlerBKP(DBHandlerBase):
             - IS_PAYLOAD_DELETED = 0
             - quarantine anchor older than quarantine_days
 
-        The quarantine anchor is `DT_PROCESSED` when available because GC
-        should start counting from the moment the worker retired the artifact
-        into trash, not from the original payload creation time. When that
-        timestamp is absent, the current server-side artifact creation time
-        remains the fallback anchor.
+        `DT_PROCESSED` is the quarantine anchor because GC starts counting
+        only after the processing lifecycle is terminal. Rows without that
+        timestamp are intentionally excluded: they need manual reconciliation
+        rather than a retention-based deletion decision.
 
         Scope:
             This query covers only the artifact still referenced by
@@ -4276,16 +4275,15 @@ class dbHandlerBKP(DBHandlerBase):
             "NU_STATUS_PROCESSING": -1,
             "IS_PAYLOAD_DELETED": 0,
             "#CUSTOM#QUARANTINE": (
-                f"(COALESCE(DT_PROCESSED, DT_FILE_CREATED_SERVER) IS NULL OR "
-                f"COALESCE(DT_PROCESSED, DT_FILE_CREATED_SERVER) "
-                f"< NOW() - INTERVAL {quarantine_days} DAY)"
+                f"DT_PROCESSED IS NOT NULL AND "
+                f"DT_PROCESSED < NOW() - INTERVAL {quarantine_days} DAY"
             )
         }
 
         return self._select_rows(
             table="FILE_TASK_HISTORY",
             where=where,
-            order_by="COALESCE(DT_PROCESSED, DT_FILE_CREATED_SERVER), ID_HISTORY",
+            order_by="DT_PROCESSED, ID_HISTORY",
             limit=batch_size,
             cols=[
                 "ID_HISTORY",

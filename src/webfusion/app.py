@@ -5,7 +5,6 @@ package:
 
 - the landing page shell
 - the summary-backed station-map APIs used by that page
-- the small legacy popup helper used by older task flows
 - the container health endpoint
 
 All feature-specific pages live in blueprints under ``modules/``.
@@ -120,61 +119,29 @@ def map_station_detail(site_id):
             }
         )
 
-@app.route("/popup", methods=["GET", "POST"])
-def popup():
-    """Render the legacy popup used to preview host-task filter payloads.
-
-    This helper is still useful while the task builder and older operational
-    flows coexist. It stays in the app module because it does not belong to a
-    single WebFusion feature page.
-    """
-
-    hostid = request.args.get("hostid")
-    hostname = request.args.get("hostname")
-
-    filter_json = None
-
-    if request.method == "POST":
-        mode = request.form.get("mode")
-
-        # Mirror the filter contract expected by appCataloga workers.
-        filter_data = {
-            "mode": mode,
-            "start_date": None,
-            "end_date": None,
-            "last_n_files": None,
-            "extension": request.form.get("extension"),
-            "file_path": request.form.get("file_path"),
-            "file_name": None,
-        }
-
-        if mode == "RANGE":
-            filter_data["start_date"] = request.form.get("start_date") or None
-            filter_data["end_date"] = request.form.get("end_date") or None
-
-        if mode == "LAST":
-            filter_data["last_n_files"] = (
-                int(request.form.get("last_n_files"))
-                if request.form.get("last_n_files") else None
-            )
-
-        if mode == "FILE":
-            filter_data["file_name"] = request.form.get("file_name") or None
-
-        filter_json = jsonify(filter_data).get_data(as_text=True)
-
-    record_page_view()
-    return render_template(
-        "popup/popup.html",
-        hostid=hostid,
-        hostname=hostname,
-        filter_json=filter_json
-    )
-
 @app.route("/health")
 def health():
     """Return the minimal liveness response used by container health checks."""
     return {"status": "ok"}
+
+
+@app.route("/debug/headers", methods=["GET"])
+def debug_headers():
+    """Return the identity headers forwarded by the upstream authentication proxy."""
+
+    response = jsonify(
+        {
+            "X-User-Name": request.headers.get("X-User-Name"),
+            "X-User-Email": request.headers.get("X-User-Email"),
+            "X-User-Job-Title": request.headers.get("X-User-Job-Title"),
+            "X-User-Department": request.headers.get("X-User-Department"),
+            "X-User-Location": request.headers.get("X-User-Location"),
+        }
+    )
+    # Identity attributes must not be stored by browsers or proxies.
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 if __name__ == "__main__":
     serve(

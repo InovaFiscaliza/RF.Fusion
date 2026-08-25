@@ -21,10 +21,19 @@ from modules.server.usage_metrics import (
     record_download_action,
     record_page_view,
 )
+from modules.server.runtime_health import get_runtime_health_snapshot
 
 
 server_bp = Blueprint("server", __name__)
 BYTES_PER_GIB = 1024 * 1024 * 1024
+
+
+def _runtime_health_json(payload: dict[str, object]):
+    """Return a health response that intermediaries must not cache."""
+
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    return response
 
 
 def _serialize_host_rows(rows):
@@ -231,6 +240,26 @@ def server_usage_metrics():
             jsonify(
                 {
                     "error": "failed_to_build_server_usage_metrics",
+                }
+            ),
+            503,
+        )
+
+
+@server_bp.route("/server/runtime-health", methods=["GET"])
+def server_runtime_health():
+    """Return a live infrastructure snapshot without depending on database data."""
+
+    try:
+        return _runtime_health_json(get_runtime_health_snapshot())
+    except Exception:
+        current_app.logger.exception("failed_to_build_server_runtime_health")
+        return (
+            _runtime_health_json(
+                {
+                    "status": "unavailable",
+                    "components": [],
+                    "error": "failed_to_build_server_runtime_health",
                 }
             ),
             503,

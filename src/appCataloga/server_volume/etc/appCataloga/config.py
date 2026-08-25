@@ -60,9 +60,7 @@ SUMMARY_HOST_SNAPSHOT_LOCK_TIMEOUT_SEC = 5
 # APP_ANALISE remote processing service
 # =================================================
 APP_ANALISE_HOST_ADD        = "WIMATLABPDIN01"
-#APP_ANALISE_HOST_ADD        = "192.168.104.210"
 APP_ANALISE_HOST_PORT       = 8910
-APP_ANALISE_SOCKET_TIMEOUT  = 10
 APP_ANALISE_BUFFER_SIZE     = 4096
 APP_ANALISE_KEY             = "123456"
 APP_ANALISE_CLIENT_NAME     = "Matlab"
@@ -76,14 +74,6 @@ APP_ANALISE_WORKER_DETAIL   = "worker=APP_ANALISE"
 APP_ANALISE_EMPTY_SPEC_DATA_DETAIL = "handlers:FileReadHandler:EmptySpecData"
 APP_ANALISE_NO_SPECTRAL_DATA_DETAIL = "model:fileReader:CRFSBin:NoSpectralData"
 APP_ANALISE_NO_READABLE_FILES_IN_ZIP_DETAIL = "model:SpecDataBase:NoReadableFilesInZip"
-APP_ANALISE_SOURCE_LINEAGE_FAMILIES = (
-    "cwsm",
-    "rfeye",
-    "miaer",
-    "emrx",
-    "ermx",
-    "ums300"
-)
 APP_ANALISE_CWSM_FILENAME_UTC_OFFSET_HOURS = 3
 APP_ANALISE_MOBILE_TASK_MARKERS = (
     "drive-test",
@@ -133,13 +123,7 @@ BACKUP_TRANSFER_MAX_SECONDS     = HOST_BUSY_TIMEOUT   # Absolute upper bound for
 BACKUP_TRANSFER_STALL_TIMEOUT_SECONDS = 900           # Abort when a transfer makes no progress for too long
 BACKUP_TRANSFER_PROGRESS_POLL_SECONDS = 30           # How often to inspect callback/local file growth
 BACKUP_TRANSFER_HEARTBEAT_SECONDS = 300              # Periodic progress log while a large transfer is still alive
-SFTP_BUSY_RETRY_DETAIL          = "sftp connection busy, will retry"
-SSH_TIMEOUT_RETRY_DETAIL        = "ssh init timeout, awaiting connectivity confirmation"
 
-#------------------------------------------
-# metadata publishing module configuration
-#------------------------------------------
-PUBLISH_FILE = "/mnt/reposfi/Metadata/rf_metadata"  # filename without extension
 #------------------------------------------
 # discovery defaults
 #------------------------------------------
@@ -257,7 +241,6 @@ STAGE_HOST_CREATE   = "HOST_CREATE"
 STAGE_COMMAND       = "COMMAND"
 STAGE_PARSE         = "PARSE"
 STAGE_READ          = "READ"
-STAGE_ACCEPT        = "ACCEPT"
 
 # Connectivity probe state identifiers — used in match/case and comparisons
 HOST_CONN_ONLINE     = "online"
@@ -282,7 +265,6 @@ EVENT_CHECK_CONNECTION = "host_check_connection"
 #------------------------------------------
 CELPLAN_HOST_TAG    = "CWSM"
 CELPLAN_ZIP_TAG     = "_DONE"
-RFEYE_HOST_TAG      = "RFEye"
 #------------------------------------------
 # Garbage Collector Constants
 #------------------------------------------
@@ -293,7 +275,9 @@ GC_QUARANTINE_DAYS = 365
 # main trash that still backs FILE_TASK_HISTORY error rows.
 GC_RESOLVED_FILES_QUARANTINE_DAYS = 60
 GC_IDLE_SLEEP = 60
-GC_LOOP_SLEEP = 5
+# Process one bounded cleanup batch per minute to keep filesystem and database
+# pressure predictable on the production VM.
+GC_LOOP_SLEEP = 60
 
 #------------------------------------------
 # RFFUSION_SUMMARY incremental worker

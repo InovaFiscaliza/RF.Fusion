@@ -10,7 +10,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260811-panel-hierarchy') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260820-intrinsic-query') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/station_connectivity_test.css', v='20260813-station-test') }}">
 {% endblock %}
 
@@ -50,14 +50,14 @@
                             </select>
                         </div>
                     </div>
-                    <div class="host-query-field">
+                    <div class="host-query-field host-query-actions-field">
                         <label>&nbsp;</label>
                         <div class="host-query-actions">
                             <button type="submit" class="btn btn-primary btn-search width-full">Pesquisar</button>
                             <a class="btn btn-secondary" href="{{ url_for('host.host') }}">Limpar filtros</a>
                         </div>
                     </div>
-                    <div class="host-query-field">
+                    <div class="host-query-field host-query-online-field">
                         <label>&nbsp;</label>
                         <div class="online-filter">
                             <label>
@@ -397,6 +397,6 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/station_connectivity_test.js', v='20260813-station-test-stage-order') }}"></script>
+<script src="{{ url_for('static', filename='js/station_connectivity_test.js', v='20260819-station-test-details') }}"></script>
 <script src="{{ url_for('static', filename='js/host_page.js', v='20260811-public-prefix') }}"></script>
 {% endblock %}

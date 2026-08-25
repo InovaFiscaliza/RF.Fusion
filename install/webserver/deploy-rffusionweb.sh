@@ -42,6 +42,26 @@ fi
 # ----------------------------------------------------------------------
 ROOT_USER="root"
 ROOT_PASSWORD="changeme"
+RuntimeHealthPrivateKeyPath="${RUNTIME_HEALTH_SSH_PRIVATE_KEY_PATH:-}"
+RuntimeHealthKnownHostsPath="${RUNTIME_HEALTH_SSH_KNOWN_HOSTS_PATH:-}"
+
+runtimeHealthMounts=()
+if [[ -n "${RuntimeHealthPrivateKeyPath}" || -n "${RuntimeHealthKnownHostsPath}" ]]; then
+    if [[ -z "${RuntimeHealthPrivateKeyPath}" || -z "${RuntimeHealthKnownHostsPath}" ]]; then
+        echo "❌ ERROR: Configure private key and known_hosts together for container health."
+        exit 1
+    fi
+
+    if [[ ! -f "${RuntimeHealthPrivateKeyPath}" || ! -f "${RuntimeHealthKnownHostsPath}" ]]; then
+        echo "❌ ERROR: Runtime health SSH key or known_hosts file was not found."
+        exit 1
+    fi
+
+    runtimeHealthMounts=(
+        -v "${RuntimeHealthPrivateKeyPath}:/run/secrets/rffusion_runtime_health_ed25519:ro"
+        -v "${RuntimeHealthKnownHostsPath}:/run/secrets/rffusion_runtime_health_known_hosts:ro"
+    )
+fi
 
 # ======================================================================
 # 1) Validação do volume no host
@@ -99,6 +119,7 @@ podman run -d \
   -p "${HostSSHPort}:${ContainerSSHPort}" \
   -v "${projectVolume}:/RF.Fusion:Z" \
   -v "${reposVolume}:/mnt/reposfi:ro" \
+  "${runtimeHealthMounts[@]}" \
   "${ImageName}:latest" >/dev/null
 
 sleep 6

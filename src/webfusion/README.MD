@@ -109,6 +109,85 @@ também fornece uma leitura plana para o template Zabbix RFFusion_server:
 O payload é JSON simples. Valores de memória, repositório e volume são expostos
 em bytes nas chaves correspondentes, para consumo numérico direto pelo Zabbix.
 
+O card "Saúde dos Containers" é consultado manualmente e não depende de
+BPDATA, RFDATA ou RFFUSION_SUMMARY. A cada clique, o WebFusion verifica o seu
+Nginx, Waitress e endpoint interno; em paralelo, chama por SSH os scripts
+somente-leitura do appCataloga e do MariaDB. Nenhum valor anterior é armazenado
+ou reutilizado: se um container não responder, a interface mostra a falha atual.
+
+Os scripts executados diretamente pelos volumes montados são:
+
+- src/webfusion/scripts/webfusion_runtime_health.sh
+- src/appCataloga/server_volume/usr/local/bin/appCataloga/shell/appCataloga_runtime_health.sh
+- src/mariadb/scripts/mariadb_runtime_health.sh
+
+O acesso remoto usa uma chave exclusiva com comando forçado. Essa chave não
+recebe terminal, encaminhamento de portas, agente SSH nem permissão para
+executar outros comandos. O WebFusion não recebe acesso ao socket ou à CLI do
+Podman.
+
+Para habilitar a verificação remota na VM já em operação, gere a chave fora do
+repositório:
+
+    install -d -m 700 /RFFusion-dev/.secrets
+    ssh-keygen -t ed25519 -f /RFFusion-dev/.secrets/rffusion_runtime_health_ed25519 -N '' -C rffusion-runtime-health
+    chmod 600 /RFFusion-dev/.secrets/rffusion_runtime_health_ed25519
+    export RUNTIME_HEALTH_SSH_PUBLIC_KEY="$(cat /RFFusion-dev/.secrets/rffusion_runtime_health_ed25519.pub)"
+
+Não use os scripts de deploy apenas para habilitar esta leitura: eles podem
+recriar containers e não são necessários para a configuração inicial. Com os
+containers em execução, instale a chave pública restrita por `podman exec` e
+recarregue somente o SSHD. Depois, atualize o arquivo de chaves dos hosts
+internos:
+
+    podman exec -e "RUNTIME_HEALTH_SSH_PUBLIC_KEY=${RUNTIME_HEALTH_SSH_PUBLIC_KEY}" debian12-python bash -lc '
+      install -d -m 700 /root/.ssh
+      health_key="restrict,command=\"/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shell/appCataloga_runtime_health.sh\" ${RUNTIME_HEALTH_SSH_PUBLIC_KEY}"
+      touch /root/.ssh/authorized_keys
+      grep -Fqx "${health_key}" /root/.ssh/authorized_keys || printf "%s\n" "${health_key}" >> /root/.ssh/authorized_keys
+      chmod 600 /root/.ssh/authorized_keys
+      sshd -t && pkill -HUP sshd
+    '
+    podman exec -e "RUNTIME_HEALTH_SSH_PUBLIC_KEY=${RUNTIME_HEALTH_SSH_PUBLIC_KEY}" debian12-mariadb bash -lc '
+      install -d -m 700 /root/.ssh
+      health_key="restrict,command=\"/RFFusion/src/mariadb/scripts/mariadb_runtime_health.sh\" ${RUNTIME_HEALTH_SSH_PUBLIC_KEY}"
+      touch /root/.ssh/authorized_keys
+      grep -Fqx "${health_key}" /root/.ssh/authorized_keys || printf "%s\n" "${health_key}" >> /root/.ssh/authorized_keys
+      chmod 600 /root/.ssh/authorized_keys
+      sshd -t && pkill -HUP sshd
+    '
+    ssh-keyscan -H 10.88.0.2 > /RFFusion-dev/.secrets/rffusion_runtime_health_known_hosts
+    ssh-keyscan -H -p 2828 10.88.0.33 >> /RFFusion-dev/.secrets/rffusion_runtime_health_known_hosts
+    chmod 600 /RFFusion-dev/.secrets/rffusion_runtime_health_known_hosts
+
+Copie a chave privada e o `known_hosts` para `/run/secrets` do container
+WebFusion em execução, com permissão `0600`. Em um deploy futuro, os scripts
+de deploy aceitam RUNTIME_HEALTH_SSH_PUBLIC_KEY,
+RUNTIME_HEALTH_SSH_PRIVATE_KEY_PATH e RUNTIME_HEALTH_SSH_KNOWN_HOSTS_PATH para
+reaplicar a mesma configuração sem incluir segredos na imagem.
+
+    podman exec rffusion-web mkdir -p /run/secrets
+    podman cp /RFFusion-dev/.secrets/rffusion_runtime_health_ed25519 rffusion-web:/run/secrets/rffusion_runtime_health_ed25519
+    podman cp /RFFusion-dev/.secrets/rffusion_runtime_health_known_hosts rffusion-web:/run/secrets/rffusion_runtime_health_known_hosts
+    podman exec rffusion-web sh -c 'chmod 600 /run/secrets/rffusion_runtime_health_ed25519 /run/secrets/rffusion_runtime_health_known_hosts'
+
+Os endereços e portas acima correspondem à rede Podman atual. Caso sejam
+alterados, o WebFusion aceita as variáveis
+WEBFUSION_RUNTIME_HEALTH_APPCATALOGA_HOST,
+WEBFUSION_RUNTIME_HEALTH_APPCATALOGA_PORT,
+WEBFUSION_RUNTIME_HEALTH_MARIADB_HOST e
+WEBFUSION_RUNTIME_HEALTH_MARIADB_PORT. O timeout pode ser limitado entre um e
+cinco segundos por WEBFUSION_RUNTIME_HEALTH_TIMEOUT_SECONDS.
+
+Para evitar rodadas repetidas de SSH, o último snapshot é reutilizado por 15
+segundos. Ajuste esse intervalo entre cinco e 60 segundos com
+WEBFUSION_RUNTIME_HEALTH_CACHE_SECONDS. Durante uma atualização, novas
+consultas recebem o último snapshot disponível sem abrir novos checks.
+
+Os deploys dos containers recriam as chaves de host SSH. Por isso, depois de
+reimplantar appCataloga ou MariaDB, gere novamente o arquivo known_hosts e
+copie-o novamente para o WebFusion antes de voltar a consultar o card.
+
 ### Consulta às Estações
 
 /host apresenta a situação de uma estação, erros agregados, localização e

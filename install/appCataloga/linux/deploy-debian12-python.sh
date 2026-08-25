@@ -16,6 +16,7 @@ IPAddress="10.88.0.2"
 SSHPassword="changeme"
 HostSSHPort="2828"
 HostAppPort="5555"
+RuntimeHealthPublicKey="${RUNTIME_HEALTH_SSH_PUBLIC_KEY:-}"
 
 # ------------------------------
 # Diretórios e volumes
@@ -82,6 +83,10 @@ args=(
     -p "${HostSSHPort}:22"
     -p "${HostAppPort}:5555"
 )
+
+if [[ -n "${RuntimeHealthPublicKey}" ]]; then
+    args+=(-e "RUNTIME_HEALTH_SSH_PUBLIC_KEY=${RuntimeHealthPublicKey}")
+fi
 
 for mapping in "${volumes[@]}"; do
     host_path="${mapping%%:*}"

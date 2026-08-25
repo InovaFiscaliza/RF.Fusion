@@ -72,6 +72,11 @@ FILE_PATH_CACHE_TTL_SECONDS = 300
 # so operators can move across pagination links without re-scanning the catalog.
 FILE_RESULT_FULL_CACHE_TTL_SECONDS = 300
 
+# The table belongs to one database connection and is dropped automatically
+# when that connection closes. It prevents file search aggregation from
+# re-reading the same filtered FACT_SPECTRUM rows multiple times.
+FILE_FILTER_TEMP_TABLE = "tmp_webfusion_filtered_spectra"
+
 # Bump these integers whenever the query shape changes in a way that would make
 # cached results from the previous version wrong or incomplete. In-process
 # cache entries are keyed by version so old entries are naturally skipped.
@@ -875,6 +880,26 @@ def _set_cached_file_path(cache_key, value):
     }
 
 
+def _materialize_filtered_spectra(cur, filtered_spectra_sql, fact_params):
+    """Store one file-search spectrum filter result in the current connection.
+
+    File mode needs the same filtered spectra to identify repository files,
+    calculate their visible context, and count their complete spectrum set.
+    MariaDB can re-run a derived subquery for each of those operations, so this
+    temporary InnoDB table intentionally evaluates the expensive filter once.
+    """
+
+    cur.execute(
+        f"""
+        CREATE TEMPORARY TABLE {FILE_FILTER_TEMP_TABLE}
+        ENGINE=InnoDB
+        AS
+        {filtered_spectra_sql}
+        """,
+        fact_params,
+    )
+
+
 def _reduce_latest_repo_file_rows(repo_rows):
     """Keep only the newest repository file row for each spectrum.
 
@@ -1162,10 +1187,10 @@ def get_spectrum_file_data(
       short TTL, so that minor cache-expiry races between workers do not cause
       unnecessary full re-runs.
 
-    SQL note: the filtered-spectra subquery appears three times in the generated
-    SQL (file identification, context aggregation, and full-file spectrum count).
-    The ``fact_params`` list is therefore bound three times via
-    ``data_params = fact_params + fact_params + fact_params``.
+    SQL note: the filtered spectra are materialized once in a connection-local
+    temporary table. File identification, context aggregation, and full-file
+    spectrum count then reuse that smaller result instead of each re-reading
+    ``FACT_SPECTRUM``.
 
     Returns:
         (rows, total): rows is a list of dicts for the requested page;
@@ -1313,7 +1338,7 @@ def get_spectrum_file_data(
                 repos.NA_FILE,
                 repos.NA_EXTENSION,
                 repos.VL_FILE_SIZE_KB
-            FROM ({filtered_spectra_sql}) f
+            FROM {FILE_FILTER_TEMP_TABLE} f
             JOIN BRIDGE_SPECTRUM_FILE b
                 ON b.FK_SPECTRUM = f.ID_SPECTRUM
             JOIN DIM_SPECTRUM_FILE repos
@@ -1337,7 +1362,7 @@ def get_spectrum_file_data(
                     DISTINCT {locality_display_sql}
                     ORDER BY {locality_display_sql} SEPARATOR '||'
                 ) AS LOCALITY_LABELS
-            FROM ({filtered_spectra_sql}) f
+            FROM {FILE_FILTER_TEMP_TABLE} f
             JOIN BRIDGE_SPECTRUM_FILE b
                 ON b.FK_SPECTRUM = f.ID_SPECTRUM
             JOIN DIM_SPECTRUM_FILE repos
@@ -1354,7 +1379,7 @@ def get_spectrum_file_data(
             FROM BRIDGE_SPECTRUM_FILE b
             JOIN (
                 SELECT DISTINCT repos.ID_FILE
-                FROM ({filtered_spectra_sql}) f
+                FROM {FILE_FILTER_TEMP_TABLE} f
                 JOIN BRIDGE_SPECTRUM_FILE b
                     ON b.FK_SPECTRUM = f.ID_SPECTRUM
                 JOIN DIM_SPECTRUM_FILE repos
@@ -1369,13 +1394,17 @@ def get_spectrum_file_data(
     """
 
     conn = get_connection()
-    cur = conn.cursor()
-
-    data_params = fact_params + fact_params + fact_params
-    cur.execute(data_query, data_params)
-    full_rows = cur.fetchall()
-
-    conn.close()
+    try:
+        cur = conn.cursor()
+        _materialize_filtered_spectra(
+            cur,
+            filtered_spectra_sql,
+            fact_params,
+        )
+        cur.execute(data_query, ())
+        full_rows = cur.fetchall()
+    finally:
+        conn.close()
 
     _format_row_datetime_fields(full_rows, "DT_TIME_START", "DT_TIME_END")
     _postprocess_file_rows(full_rows)

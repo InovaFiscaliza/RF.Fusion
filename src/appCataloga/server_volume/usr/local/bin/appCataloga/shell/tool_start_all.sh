@@ -35,6 +35,8 @@ services=(
   appCataloga_file_bin_process_appAnalise
   # Keep the summary consumer last because it performs a full reconcile on cold start.
   appCataloga_summary_database
+  # GC is independent from queues and removes only aged quarantined artifacts.
+  #appCataloga_garbage_collector
 )
 
 for svc in "${services[@]}"; do

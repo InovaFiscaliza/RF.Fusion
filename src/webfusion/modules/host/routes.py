@@ -42,9 +42,50 @@ _CONNECTIVITY_TEST_STATUS_LABELS = {
 }
 
 
+def _extract_connectivity_step_detail(
+    message: str,
+    marker: str,
+    next_marker: str | None = None,
+) -> str | None:
+    """Extract one operator-facing detail from the worker's stage markers."""
+    start = message.find(marker)
+    if start < 0:
+        return None
+
+    detail_start = start + len(marker)
+    detail_end = message.find(next_marker, detail_start) if next_marker else len(message)
+    if detail_end < 0:
+        detail_end = len(message)
+
+    detail = message[detail_start:detail_end].strip()
+    return detail or None
+
+
+def _connectivity_test_step_details(message: str) -> dict[str, str]:
+    """Expose ICMP and SSH reasons separately for the station-test dialog."""
+    details: dict[str, str] = {}
+    icmp_detail = _extract_connectivity_step_detail(message, "ICMP:", "SSH:")
+    ssh_detail = _extract_connectivity_step_detail(message, "SSH:")
+
+    if icmp_detail:
+        details["icmp"] = icmp_detail
+    if ssh_detail:
+        details["ssh"] = ssh_detail
+    return details
+
+
 def _connectivity_test_stage(status: int, message: str) -> str:
     """Return the last real test stage reported by the task worker."""
     normalized_message = message.lower()
+    if status == TASK_ERROR:
+        icmp_detail = _extract_connectivity_step_detail(message, "ICMP:", "SSH:")
+        ssh_detail = _extract_connectivity_step_detail(message, "SSH:")
+        if icmp_detail and "não respondeu" in icmp_detail.lower():
+            return "icmp"
+        if ssh_detail and "não executado" not in ssh_detail.lower():
+            return "ssh"
+        if icmp_detail:
+            return "icmp"
     if normalized_message.startswith("icmp:") or "icmp" in normalized_message:
         return "icmp"
     if normalized_message.startswith("ssh:") or "ssh" in normalized_message:
@@ -88,6 +129,7 @@ def _serialize_connectivity_test_row(row: dict) -> dict:
         "status_label": _CONNECTIVITY_TEST_STATUS_LABELS.get(status, "Em andamento"),
         "message": message,
         "stage": _connectivity_test_stage(status, message),
+        "step_details": _connectivity_test_step_details(message),
         "updated_at": updated_at.isoformat(sep=" ") if updated_at else None,
         "is_terminal": status in {TASK_DONE, TASK_ERROR},
     }

@@ -20,6 +20,7 @@ HostDBPort="9081"
 SSHAppUser="rffusion"
 SSHAppPassword="changeme"
 SSHAppPublicKey="${SSH_APP_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICOV2QzbKI1es3i5dc93j9zNtyfQAVPdrtQCpFjrdcWF rffusion-service}"
+RuntimeHealthPublicKey="${RUNTIME_HEALTH_SSH_PUBLIC_KEY:-}"
 
 # ------------------------------
 # Caminhos dos scripts SQL (NOVO LAYOUT)
@@ -70,14 +71,19 @@ if podman ps -a --format '{{.Names}}' | grep -q "^${ContainerName}$"; then
 fi
 
 echo "Starting new container..."
+runtimeHealthArgs=()
+if [[ -n "${RuntimeHealthPublicKey}" ]]; then
+  runtimeHealthArgs+=(-e "RUNTIME_HEALTH_SSH_PUBLIC_KEY=${RuntimeHealthPublicKey}")
+fi
+
 podman run -d \
   --name "${ContainerName}" \
   --hostname "${ContainerName}" \
   --network "${NetworkName}" \
   --ip "${IPAddress}" \
   --cpus=1 \
-  --memory=1g \
-  --memory-swap=1g \
+  --memory=2g \
+  --memory-swap=3g \
   --pids-limit=1024 \
   --cap-add=NET_RAW \
   --cap-add=NET_ADMIN \
@@ -86,6 +92,7 @@ podman run -d \
   -e "SSH_APP_USER=${SSHAppUser}" \
   -e "SSH_APP_PASSWORD=${SSHAppPassword}" \
   -e "SSH_APP_PUBLIC_KEY=${SSHAppPublicKey}" \
+  "${runtimeHealthArgs[@]}" \
   -p "${HostSSHPort}:2828" \
   -p "${HostDBPort}:3306" \
   -v "${repoRoot}:/RFFusion:Z" \

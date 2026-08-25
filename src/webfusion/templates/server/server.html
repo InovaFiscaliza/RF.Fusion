@@ -10,7 +10,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/server_page.css', v='20260811-server-text-flow') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/server_page.css', v='20260819-runtime-health-module') }}">
 {% endblock %}
 
 {% block content %}
@@ -24,6 +24,7 @@
     data-backup-errors-endpoint="{{ url_for('server.server_backup_errors') }}"
     data-usage-metrics-endpoint="{{ url_for('server.server_usage_metrics') }}"
     data-summary-metrics-endpoint="{{ url_for('server.server_summary_metrics') }}"
+    data-runtime-health-endpoint="{{ url_for('server.server_runtime_health') }}"
     data-summary-metrics-initial-loaded="{{ '1' if server_summary_metrics else '0' }}"
 >
 
@@ -264,6 +265,26 @@
                     </div>
                 </div>
             </div>
+            <details class="server-runtime-health-module" id="server-runtime-health-panel">
+                <summary class="server-runtime-health-summary">
+                    <span>
+                        <span class="server-runtime-health-title">Saúde dos Containers</span>
+                        <span class="server-runtime-health-copy">
+                            Verificação atual de WebFusion, appCataloga e MariaDB. Esta leitura não consulta o banco e não usa valores anteriores.
+                        </span>
+                    </span>
+                </summary>
+                <div class="server-runtime-health-body card background-neutral-0 padding-l border-radius-m">
+                    <p id="server-runtime-health-meta" class="server-section-explainer" aria-live="polite">
+                        Cada expansão executa uma verificação pontual com timeout curto.
+                    </p>
+                    <div id="server-runtime-health-list" class="server-runtime-health-list" aria-live="polite">
+                        <div class="server-runtime-health-empty">
+                            Nenhuma verificação executada nesta página.
+                        </div>
+                    </div>
+                </div>
+            </details>
         </section>
     </div>
 
@@ -747,5 +768,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/server_page.js', v='20260701-server-usage-history') }}"></script>
+<script src="{{ url_for('static', filename='js/server_page.js', v='20260819-runtime-health-module') }}"></script>
 {% endblock %}

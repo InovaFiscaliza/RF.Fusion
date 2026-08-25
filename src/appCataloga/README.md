@@ -258,6 +258,13 @@ Os principais sao:
 
 - `tool_start_all.sh`
 - `tool_status_all.sh`
+- `appCataloga_garbage_collector.sh {start|stop|restart|status}`
+
+O garbage collector opera em lotes limitados. Ele remove apenas o artefato
+referenciado por registros de `FILE_TASK_HISTORY` com processamento em erro,
+`DT_PROCESSED` preenchido e quarentena vencida. Arquivos que nao atendem a esse
+contrato, caminhos fora de `trash/` e entradas ambiguas permanecem preservados
+para reconciliacao manual.
 - `tool_stop_all.sh`
 
 Eles iniciam, consultam e encerram o conjunto normal de servicos do

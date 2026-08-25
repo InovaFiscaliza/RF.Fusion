@@ -8,6 +8,7 @@ What is covered here:
     - `/server` injects the aggregated usage metrics payload
     - download-action telemetry increments the lightweight counter
     - the shared usage-metric helpers keep independent monthly counters
+    - the container-health endpoint delegates to the live health collector
 """
 
 import importlib
@@ -35,10 +36,14 @@ def load_server_routes():
 
     class FakeBlueprint:
         def __init__(self, *args, **kwargs):
-            pass
+            self.routes = {}
 
         def route(self, *args, **kwargs):
             def decorator(func):
+                self.routes[func.__name__] = {
+                    "path": args[0],
+                    "methods": kwargs.get("methods"),
+                }
                 return func
 
             return decorator
@@ -49,7 +54,12 @@ def load_server_routes():
             exception=lambda *args, **kwargs: None,
         )
     )
-    fake_flask.jsonify = lambda payload: payload
+    class FakeJsonResponse(dict):
+        def __init__(self, payload):
+            super().__init__(payload)
+            self.headers = {}
+
+    fake_flask.jsonify = lambda payload: FakeJsonResponse(payload)
     fake_flask.render_template = lambda template, **context: {
         "template": template,
         "context": context,
@@ -98,8 +108,23 @@ def load_server_routes():
         "BACKUP_DONE_GB_THIS_MONTH": 1.25,
     }
 
+    fake_runtime_health = ModuleType("modules.server.runtime_health")
+    fake_runtime_health.get_runtime_health_snapshot = lambda: {
+        "checked_at": "2026-06-01T00:00:00Z",
+        "status": "healthy",
+        "components": [
+            {
+                "component": "webfusion",
+                "label": "WebFusion",
+                "status": "healthy",
+                "checks": [],
+            }
+        ],
+    }
+
     sys.modules["flask"] = fake_flask
     sys.modules["modules.host.service"] = fake_host_service
+    sys.modules["modules.server.runtime_health"] = fake_runtime_health
     sys.modules.pop("modules.server.routes", None)
     return importlib.import_module("modules.server.routes")
 
@@ -158,6 +183,18 @@ class TestServerUsageMetrics(unittest.TestCase):
         self.assertNotIn("backup_done_gb_this_month", payload)
         self.assertEqual(payload["webfusion_page_view_count_total"], 0)
         self.assertEqual(payload["webfusion_nginx_download_count_current_month"], 0)
+
+    def test_runtime_health_route_returns_live_collector_payload(self):
+        payload = self.routes.server_runtime_health()
+
+        self.assertEqual(
+            self.routes.server_bp.routes["server_runtime_health"]["path"],
+            "/server/runtime-health",
+        )
+        self.assertEqual(payload["status"], "healthy")
+        self.assertEqual(payload["checked_at"], "2026-06-01T00:00:00Z")
+        self.assertEqual(payload["components"][0]["component"], "webfusion")
+        self.assertEqual(payload.headers["Cache-Control"], "no-store, max-age=0")
 
     def test_usage_metric_helpers_keep_independent_counters(self):
         self.usage_metrics.record_page_view()

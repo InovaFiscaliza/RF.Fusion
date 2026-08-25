@@ -14,7 +14,15 @@
 (function () {
     const overlay = document.getElementById("page-loading-overlay");
     const messageNode = document.getElementById("page-loading-message");
+    const navigationLayer = document.getElementById("wf-navigation-layer");
+    const navigationToggle = document.getElementById("wf-navigation-toggle");
+    const navigationDrawer = document.getElementById("wf-navigation-drawer");
+    const navigationClose = document.getElementById("wf-navigation-close");
+    const navigationBackdrop = document.getElementById("wf-navigation-backdrop");
     const webfusionRoot = String(document.body?.dataset.webfusionRoot || "/");
+    const NAVIGATION_CLOSE_DELAY_MS = 180;
+    let navigationReturnFocus = null;
+    let navigationCloseTimer = null;
 
     /* Browser-generated routes must preserve the reverse-proxy prefix. */
     function buildWebFusionUrl(pathname) {
@@ -95,6 +103,83 @@
     window.showPageLoadingOverlay = showPageLoadingOverlay;
     window.hidePageLoadingOverlay = hidePageLoadingOverlay;
     window.webfusionUrl = buildWebFusionUrl;
+
+    /* Keep the drawer isolated from page modules. It only owns shell focus and
+     * visibility, while navigation itself remains regular server-side links. */
+    function openNavigationDrawer() {
+        if (!navigationLayer || !navigationToggle || !navigationDrawer) {
+            return;
+        }
+
+        window.clearTimeout(navigationCloseTimer);
+        navigationReturnFocus = document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
+        navigationLayer.hidden = false;
+        navigationToggle.setAttribute("aria-expanded", "true");
+        document.body.classList.add("wf-navigation-open");
+
+        window.requestAnimationFrame(function () {
+            navigationLayer.classList.add("is-open");
+            navigationClose?.focus();
+        });
+    }
+
+    function closeNavigationDrawer(options = {}) {
+        if (!navigationLayer || !navigationToggle) {
+            return;
+        }
+
+        const restoreFocus = options.restoreFocus !== false;
+        const returnFocus = navigationReturnFocus;
+        navigationLayer.classList.remove("is-open");
+        navigationToggle.setAttribute("aria-expanded", "false");
+        document.body.classList.remove("wf-navigation-open");
+        window.clearTimeout(navigationCloseTimer);
+        navigationCloseTimer = window.setTimeout(function () {
+            navigationLayer.hidden = true;
+            if (restoreFocus && returnFocus?.isConnected) {
+                returnFocus.focus();
+            }
+        }, NAVIGATION_CLOSE_DELAY_MS);
+    }
+
+    function keepDrawerFocus(event) {
+        if (event.key === "Escape") {
+            event.preventDefault();
+            closeNavigationDrawer();
+            return;
+        }
+
+        if (event.key !== "Tab" || !navigationDrawer) {
+            return;
+        }
+
+        const focusableNodes = navigationDrawer.querySelectorAll(
+            "a[href], button:not([disabled]), [tabindex]:not([tabindex='-1'])"
+        );
+        const focusable = Array.from(focusableNodes);
+        if (focusable.length === 0) {
+            event.preventDefault();
+            navigationDrawer.focus();
+            return;
+        }
+
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+        }
+    }
+
+    navigationToggle?.addEventListener("click", openNavigationDrawer);
+    navigationClose?.addEventListener("click", closeNavigationDrawer);
+    navigationBackdrop?.addEventListener("click", closeNavigationDrawer);
+    navigationDrawer?.addEventListener("keydown", keepDrawerFocus);
 
     /* Global link interception for regular page navigation.
      *
@@ -178,5 +263,8 @@
      * overlay still visible. `pageshow` is the safest global cleanup point to
      * guarantee that returning to a page never traps the user behind stale UI
      * state from an earlier navigation. */
-    window.addEventListener("pageshow", hidePageLoadingOverlay);
+    window.addEventListener("pageshow", function () {
+        hidePageLoadingOverlay();
+        closeNavigationDrawer({ restoreFocus: false });
+    });
 })();

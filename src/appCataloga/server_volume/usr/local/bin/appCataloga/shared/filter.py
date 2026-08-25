@@ -416,7 +416,7 @@ class Filter:
         max_total_kb = None
         if max_total_gb is not None:
             try:
-                max_total_kb = int(float(max_total_gb) * 1024 * 1024)
+                max_total_kb = int(float(max_total_gb) * k.KILOBYTES_PER_GB)
             except (TypeError, ValueError):
                 max_total_kb = None
 

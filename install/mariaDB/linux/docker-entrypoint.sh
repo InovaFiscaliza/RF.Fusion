@@ -17,6 +17,16 @@ fi
 
 echo "root:${SSH_PASSWORD:-changeme}" | chpasswd
 
+# A dedicated WebFusion key can run only the read-only runtime health script.
+# The key is optional so existing deployments remain unchanged until configured.
+if [ -n "${RUNTIME_HEALTH_SSH_PUBLIC_KEY:-}" ]; then
+    install -d -m 700 /root/.ssh
+    health_key="restrict,command=\"/RFFusion/src/mariadb/scripts/mariadb_runtime_health.sh\" ${RUNTIME_HEALTH_SSH_PUBLIC_KEY}"
+    touch /root/.ssh/authorized_keys
+    grep -Fqx "${health_key}" /root/.ssh/authorized_keys || printf '%s\n' "${health_key}" >> /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+fi
+
 default_ssh_app_public_key='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICOV2QzbKI1es3i5dc93j9zNtyfQAVPdrtQCpFjrdcWF rffusion-service'
 
 ssh_user="${SSH_APP_USER:-rffusion}"

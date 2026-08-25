@@ -587,27 +587,70 @@ def _build_interactive_result(
     status: int,
     message: str,
 ) -> tuple[int, str]:
-    """Render a human-facing terminal message for one manual station test."""
+    """Render the terminal diagnosis shown by the manual station-test dialog."""
+
+    def icmp_failure_detail() -> str:
+        """Describe the ICMP failure without exposing transport internals."""
+        if (
+            "resolved_candidates" in connectivity
+            and not connectivity["resolved_candidates"]
+        ):
+            return "O endereço configurado não pôde ser resolvido para teste."
+        return (
+            "A estação não respondeu em até "
+            f"{k.ICMP_TIMEOUT_SEC} segundos."
+        )
+
+    def ssh_failure_detail() -> str:
+        """Translate the classified SSH failure into operator-facing Portuguese."""
+        match connectivity["reason"]:
+            case "ssh_auth_failed":
+                return "As credenciais configuradas foram recusadas pela estação."
+            case "ssh_auth_timeout":
+                return (
+                    "A estação não concluiu a autenticação em até "
+                    f"{k.HOST_CHECK_SSH_PROBE_TIMEOUT_SEC} segundos."
+                )
+            case "ssh_no_valid_connections":
+                return "A porta SSH configurada não aceitou a conexão."
+            case "ssh_timeout":
+                return (
+                    "A conexão SSH não respondeu em até "
+                    f"{k.HOST_CHECK_SSH_PROBE_TIMEOUT_SEC} segundos."
+                )
+            case "ssh_unreachable":
+                return "O serviço SSH não pôde ser alcançado com a configuração atual."
+            case _:
+                return "O acesso SSH não pôde ser confirmado."
+
     match connectivity["state"]:
         case k.HOST_CONN_ONLINE:
             return (
                 k.TASK_DONE,
-                "Teste concluído com sucesso: ICMP e SSH confirmados.",
+                "Teste concluído com sucesso. "
+                "ICMP: a estação respondeu. "
+                "SSH: acesso confirmado.",
             )
         case k.HOST_CONN_OFFLINE:
             return (
                 k.TASK_ERROR,
-                "Teste concluído com falha: a estação não respondeu ao ICMP.",
+                "Teste concluído com falha. "
+                f"ICMP: {icmp_failure_detail()} "
+                "SSH: não executado porque o ICMP não respondeu.",
             )
         case k.HOST_CONN_AUTH_ERROR:
             return (
                 k.TASK_ERROR,
-                "Teste concluído com falha: a autenticação SSH foi recusada.",
+                "Teste concluído com falha. "
+                "ICMP: a estação respondeu. "
+                f"SSH: {ssh_failure_detail()}",
             )
         case k.HOST_CONN_DEGRADED:
             return (
                 k.TASK_ERROR,
-                "Teste concluído com falha: ICMP respondeu, mas o acesso SSH não foi confirmado.",
+                "Teste concluído com falha. "
+                "ICMP: a estação respondeu. "
+                f"SSH: {ssh_failure_detail()}",
             )
         case _:
             return status, message

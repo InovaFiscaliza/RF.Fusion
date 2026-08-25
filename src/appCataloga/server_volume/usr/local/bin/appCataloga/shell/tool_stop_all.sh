@@ -25,6 +25,8 @@ echo
 [[ ! $REPLY =~ ^[Yy]$ ]] && echo "Operation canceled." && exit 1
 
 services=(
+  # Stop GC first so no removal is in progress during shutdown.
+  appCataloga_garbage_collector
   # Stop the summary consumer first so no refresh starts during shutdown.
   appCataloga_summary_database
   appCataloga_file_bkp

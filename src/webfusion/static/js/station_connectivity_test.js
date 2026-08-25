@@ -43,6 +43,12 @@
     const statusMessage = dialog.querySelector(".station-connectivity-test-status-message");
     const closeButton = dialog.querySelector(".station-connectivity-test-close");
     const stepOrder = ["queue", "icmp", "ssh", "persist"];
+    const defaultStepMessages = {
+        queue: "Aguardando o worker de conectividade.",
+        icmp: "Confirmando resposta da estação.",
+        ssh: "Validando acesso configurado.",
+        persist: "Registrando o estado operacional.",
+    };
 
     const clearPolling = () => {
         if (pollTimer !== null) {
@@ -67,6 +73,25 @@
         });
     };
 
+    const resetStepDetails = () => {
+        Object.entries(defaultStepMessages).forEach(([step, message]) => {
+            const detail = dialog.querySelector(`[data-test-step="${step}"] span`);
+            if (detail) {
+                detail.textContent = message;
+            }
+        });
+    };
+
+    const renderStepDetails = (payload) => {
+        const details = payload.step_details || {};
+        Object.entries(details).forEach(([step, message]) => {
+            const detail = dialog.querySelector(`[data-test-step="${step}"] span`);
+            if (detail && typeof message === "string" && message.trim()) {
+                detail.textContent = message;
+            }
+        });
+    };
+
     const stageFromPayload = (payload) => {
         if (stepOrder.includes(payload.stage)) {
             return payload.stage;
@@ -88,7 +113,13 @@
     };
 
     const failureStageFromPayload = (payload) => {
+        if (payload.stage === "icmp" || payload.stage === "ssh") {
+            return payload.stage;
+        }
         const message = String(payload.message || "").toLowerCase();
+        if (message.includes("icmp:") && message.includes("não respondeu")) {
+            return "icmp";
+        }
         if (message.includes("ssh") || message.includes("autenticação")) {
             return "ssh";
         }
@@ -134,6 +165,7 @@
             : `Testando ${payload.host_name || "estação"}`;
         statusLabel.textContent = payload.status_label || "Em execução";
         statusMessage.textContent = payload.message || "Aguardando atualização do teste.";
+        renderStepDetails(payload);
         setStepStates(buildStepStates(payload));
     };
 
@@ -178,6 +210,7 @@
         title.textContent = `Testando ${hostName || "estação"}`;
         statusLabel.textContent = "Solicitando teste";
         statusMessage.textContent = "A tarefa será enviada para a fila prioritária de conectividade.";
+        resetStepDetails();
         setStepStates({ queue: "active" });
         if (trigger) {
             trigger.disabled = true;

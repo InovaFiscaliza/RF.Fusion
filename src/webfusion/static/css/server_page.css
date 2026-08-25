@@ -110,6 +110,198 @@
     margin-top: 0;
 }
 
+.server-runtime-health-module {
+    overflow: hidden;
+    border: 1px solid var(--wf-border);
+    border-radius: var(--border-radius-supersoft);
+    background: var(--wf-surface);
+}
+
+.server-runtime-health-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px 20px;
+    cursor: pointer;
+    list-style: none;
+}
+
+.server-runtime-health-summary::-webkit-details-marker {
+    display: none;
+}
+
+.server-runtime-health-summary::after {
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: #e8f0fa;
+    color: #1f4f8b;
+    content: "+";
+    font-size: 19px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.server-runtime-health-module[open] .server-runtime-health-summary {
+    border-bottom: 1px solid #e2e8f0;
+    background: var(--wf-surface-soft);
+}
+
+.server-runtime-health-module[open] .server-runtime-health-summary::after {
+    content: "-";
+}
+
+.server-runtime-health-title {
+    margin: 0;
+    color: var(--color-blue-dark);
+    font-size: var(--font-size-h6);
+    font-weight: var(--font-semi-bold);
+    line-height: 1.25;
+}
+
+.server-runtime-health-title,
+.server-runtime-health-copy {
+    display: block;
+}
+
+.server-runtime-health-copy {
+    margin-top: 4px;
+    color: var(--wf-text-muted);
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.server-runtime-health-body {
+    border: 0;
+    border-radius: 0;
+}
+
+.server-runtime-health-list {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+}
+
+.server-runtime-health-item,
+.server-runtime-health-empty {
+    border: 1px solid #d8e2ef;
+    border-radius: 10px;
+    background: #f8fbff;
+    padding: 14px;
+}
+
+.server-runtime-health-item--healthy {
+    border-left: 4px solid #159447;
+}
+
+.server-runtime-health-item--degraded,
+.server-runtime-health-item--unconfigured {
+    border-left: 4px solid #b7791f;
+}
+
+.server-runtime-health-item--unavailable {
+    border-left: 4px solid #c53030;
+}
+
+.server-runtime-health-item-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: space-between;
+}
+
+.server-runtime-health-item-head h3 {
+    margin: 0;
+    color: #173f73;
+    font-size: 15px;
+}
+
+.server-runtime-health-status,
+.server-runtime-health-check-status {
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.server-runtime-health-status {
+    padding: 4px 9px;
+}
+
+.server-runtime-health-status--healthy,
+.server-runtime-health-check-status--healthy {
+    color: #126b36;
+}
+
+.server-runtime-health-status--healthy {
+    background: #d8f5e3;
+}
+
+.server-runtime-health-status--degraded,
+.server-runtime-health-status--unconfigured,
+.server-runtime-health-check-status--degraded,
+.server-runtime-health-check-status--unconfigured {
+    color: #8a5311;
+}
+
+.server-runtime-health-status--degraded,
+.server-runtime-health-status--unconfigured {
+    background: #fff1d6;
+}
+
+.server-runtime-health-status--unavailable,
+.server-runtime-health-check-status--unavailable {
+    color: #9d2525;
+}
+
+.server-runtime-health-status--unavailable {
+    background: #fde1e1;
+}
+
+.server-runtime-health-checks {
+    display: grid;
+    gap: 8px;
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+}
+
+.server-runtime-health-check {
+    display: grid;
+    column-gap: 8px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding-top: 8px;
+    border-top: 1px solid #dfe8f2;
+    color: #314d70;
+    font-size: 13px;
+}
+
+.server-runtime-health-check small {
+    grid-column: 1 / -1;
+    margin-top: 3px;
+    color: #657994;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.server-runtime-health-check-script code {
+    color: #314d70;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 11px;
+    overflow-wrap: anywhere;
+}
+
+.server-runtime-health-check--message {
+    display: block;
+    color: #657994;
+    line-height: 1.5;
+}
+
 .section-online-filter {
     flex: 0 0 auto;
 }
@@ -181,6 +373,10 @@
     .table-panel-actions .btn {
         flex: 1 1 100%;
         text-align: center;
+    }
+
+    .server-runtime-health-summary {
+        padding: 16px;
     }
 }
 

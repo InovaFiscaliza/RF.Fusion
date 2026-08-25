@@ -30,6 +30,7 @@ services=(
   appCataloga_file_bkp
   # The summary worker is part of the normal runtime, not an external cron.
   appCataloga_summary_database
+  appCataloga_garbage_collector
 )
 
 for svc in "${services[@]}"; do
