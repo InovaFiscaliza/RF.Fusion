@@ -47,6 +47,20 @@ def _error_fields(err, message: str) -> dict:
     )
 
 
+def _is_current_month_host_file(task: dict, observed_at: datetime) -> bool:
+    """Return whether host file dates can describe the current GPS state."""
+    host_dates = (
+        task.get("host_dt_created"),
+        task.get("host_dt_modified"),
+    )
+    return any(
+        isinstance(value, datetime)
+        and value.year == observed_at.year
+        and value.month == observed_at.month
+        for value in host_dates
+    )
+
+
 def _log_statistics_refresh_failure(task: dict, exc: Exception) -> None:
     """Keep queue resolution definitive even when summary refresh is blocked."""
     log.warning_event(
@@ -67,6 +81,8 @@ def _record_gps_failure_if_needed(
 ) -> None:
     """Persist GPS state only when processing classified the GPS condition."""
     if structured.get("NA_ERROR_CODE") != k.ERROR_CODE_GPS_GNSS_UNAVAILABLE:
+        return
+    if not _is_current_month_host_file(task, observed_at):
         return
 
     host_runtime.record_gps_gnss_unavailable(
@@ -118,6 +134,8 @@ def _read_next_task(db_bp: dbHandlerBKP) -> dict | None:
     extension       = row["FILE_TASK__NA_EXTENSION_SERVER"]
     dt_created      = row["FILE_TASK__DT_FILE_CREATED_SERVER"]
     dt_modified     = row["FILE_TASK__DT_FILE_MODIFIED_SERVER"]
+    host_dt_created = row.get("FILE_TASK__DT_FILE_CREATED_HOST")
+    host_dt_modified = row.get("FILE_TASK__DT_FILE_MODIFIED_HOST")
     vl_file_size_kb = row["FILE_TASK__VL_FILE_SIZE_KB_SERVER"]
 
     return {
@@ -131,6 +149,8 @@ def _read_next_task(db_bp: dbHandlerBKP) -> dict | None:
         "extension"       : extension,
         "dt_created"      : dt_created,
         "dt_modified"     : dt_modified,
+        "host_dt_created" : host_dt_created,
+        "host_dt_modified": host_dt_modified,
         "vl_file_size_kb" : vl_file_size_kb,
         "filename"        : f"{server_path}/{server_name}",
         "export"          : processing_bin.should_export(hostname_db),
@@ -317,20 +337,21 @@ def _finalize_success(
         )
         return
 
-    try:
-        host_runtime.record_gps_gnss_available(
-            task["host_id"],
-            evaluated_at=processed_at,
-            logger=log,
-        )
-    except Exception as exc:
-        log.warning_event(
-            "gps_metric_update_failed",
-            service=SERVICE_NAME,
-            host_id=task["host_id"],
-            task_id=task["file_task_id"],
-            error=exc,
-        )
+    if _is_current_month_host_file(task, processed_at):
+        try:
+            host_runtime.record_gps_gnss_available(
+                task["host_id"],
+                evaluated_at=processed_at,
+                logger=log,
+            )
+        except Exception as exc:
+            log.warning_event(
+                "gps_metric_update_failed",
+                service=SERVICE_NAME,
+                host_id=task["host_id"],
+                task_id=task["file_task_id"],
+                error=exc,
+            )
 
     try:
         db_bp.request_host_summary_refresh(

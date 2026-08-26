@@ -323,7 +323,8 @@ def _build_station_map_dataset_from_summary():
     points_by_site = {}
     site_details = {}
 
-    # Phase 1: build one map point per locality from the summary rows.
+    # --- map points ---
+    # Start from localities so a site remains visible even without station rows.
     for row in site_rows:
         latitude = row.get("VL_LATITUDE")
         longitude = row.get("VL_LONGITUDE")
@@ -367,7 +368,8 @@ def _build_station_map_dataset_from_summary():
             "has_known_host": point["has_known_host"],
         }
 
-    # Phase 2: attach station rows only to localities that are already plotted.
+    # --- station details ---
+    # Ignore orphan rows because they cannot be rendered as a map point.
     for row in station_rows:
         raw_site_id = row.get("ID_SITE")
 
@@ -382,9 +384,8 @@ def _build_station_map_dataset_from_summary():
 
         detail["stations"].append(_build_map_point_station(row))
 
-    # Phase 3: when station rows exist, they become the source of truth for
-    # marker state and online flags. Without station rows, the summary-site
-    # row keeps its seeded values.
+    # --- marker state ---
+    # Station rows override summary seeds because they carry current host state.
     for site_id, detail in site_details.items():
         if detail["stations"]:
             _recompute_site_detail_summary(detail)

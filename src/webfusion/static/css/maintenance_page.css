@@ -422,6 +422,47 @@
     color: #6d28d9;
 }
 
+.maintenance-stage-status {
+    display: grid;
+    gap: 4px;
+}
+
+.maintenance-stage-date {
+    color: #64748b;
+    font-size: 11px;
+    line-height: 1.3;
+    white-space: nowrap;
+}
+
+.maintenance-host-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.maintenance-host-state-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.maintenance-host-state.is-online {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.maintenance-host-state.is-offline {
+    background: #fee2e2;
+    color: #b91c1c;
+}
+
 .maintenance-file-cell,
 .maintenance-message-cell,
 .maintenance-empty-cell {
@@ -434,6 +475,91 @@
     text-align: center;
     color: #64748b;
     padding: 28px 12px;
+}
+
+.maintenance-confirm-dialog {
+    width: min(calc(100% - 32px), 560px);
+    max-width: 560px;
+    margin: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 18px;
+    box-shadow: 0 24px 64px rgba(15, 23, 42, 0.28);
+    color: #1f2937;
+}
+
+.maintenance-confirm-dialog::backdrop {
+    background: rgba(15, 23, 42, 0.46);
+}
+
+.maintenance-confirm-content {
+    padding: 24px;
+}
+
+.maintenance-confirm-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.maintenance-confirm-eyebrow {
+    margin-bottom: 6px;
+    color: #1f64ad;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.maintenance-confirm-header h2 {
+    margin: 0;
+    color: #0f5da8;
+    font-size: 21px;
+}
+
+.maintenance-confirm-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 1px solid #bfdbfe;
+    border-radius: 50%;
+    background: #fff;
+    color: #0f5da8;
+    font-size: 23px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.maintenance-confirm-message {
+    margin: 20px 0 10px;
+    color: #334155;
+    line-height: 1.55;
+}
+
+.maintenance-confirm-host-note {
+    margin: 0;
+    color: #526581;
+    font-size: 14px;
+    line-height: 1.45;
+}
+
+.maintenance-confirm-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 22px;
+}
+
+.maintenance-confirm-actions .btn {
+    justify-content: center;
+    min-height: 42px;
+    margin: 0;
+}
+
+.maintenance-confirm-actions .btn + .btn {
+    margin-left: 0;
 }
 
 @media (max-width: 900px) {
@@ -465,5 +591,16 @@
 
     .maintenance-module-summary {
         padding: 16px;
+    }
+
+    .maintenance-confirm-content {
+        padding: 20px;
+    }
+
+}
+
+@media (max-width: 560px) {
+    .maintenance-confirm-actions {
+        grid-template-columns: 1fr;
     }
 }

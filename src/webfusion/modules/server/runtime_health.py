@@ -1,4 +1,11 @@
-"""Read current RF.Fusion container health without querying application data."""
+"""Collect a small, current RF.Fusion runtime-health snapshot.
+
+This module probes container and remote service health without reading
+application tables. Calls are bounded by short subprocess timeouts and a small
+in-process TTL cache, preventing dashboard polling from repeatedly starting the
+same commands. Returned data is a diagnostic snapshot, not an availability
+history or a replacement for Zabbix.
+"""
 
 from __future__ import annotations
 

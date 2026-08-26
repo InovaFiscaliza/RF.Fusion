@@ -1,15 +1,20 @@
-"""Operational maintenance helpers for manual queue intervention.
+"""Apply bounded, auditable manual queue maintenance.
 
-This module intentionally stays small and conservative. It exposes only the
-state transitions that the current appCataloga runtime already understands, so
-operators can recover queue rows without inventing a parallel lifecycle from
-WebFusion.
+This module accepts only task states already understood by appCataloga. FILE_TASK
+and FILE_TASK_HISTORY changes are committed together, preserving the same
+cross-table view seen by workers and summary metrics. A summary outbox message is
+published only after the queue mutation succeeds, so a refresh failure cannot
+undo the operator action.
+
+Routes own HTTP input and presentation. This service owns validation, SQL, and
+the compact action summary returned to the interface.
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 QUEUE_HOST_TASK = "host"
@@ -98,6 +103,7 @@ HISTORY_PAGE_LIMIT_OPTIONS = (50, 100, 200)
 HISTORY_PROCESSED_RECENT_INDEX = "idx_fth_processed_recent"
 HISTORY_ORDER_BY_ID = "h.ID_HISTORY DESC"
 HISTORY_ORDER_BY_PROCESSED = "h.DT_PROCESSED DESC, h.ID_HISTORY DESC"
+BRAZIL_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 
 HISTORY_TARGET_BACKUP = "backup"
 HISTORY_TARGET_PROCESS = "process"
@@ -132,6 +138,28 @@ HISTORY_PHASE_STATUS_FIELDS = {
 }
 
 
+def _format_brazil_datetime(value: datetime | str | None) -> str:
+    """Format database UTC timestamps for the Brazilian operator interface."""
+    if value is None:
+        return "-"
+
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+
+    return value.astimezone(BRAZIL_TIMEZONE).strftime("%d/%m/%Y %H:%M:%S BRT")
+
+
+def _add_display_datetime(row: dict[str, Any], field: str) -> None:
+    """Add one localized display field without changing its database value."""
+    row[f"{field}_DISPLAY"] = _format_brazil_datetime(row.get(field))
+
+
 def _normalize_queue_kind(raw_value: str | None) -> str:
     """Keep queue selection inside the two maintenance tables."""
     normalized = str(raw_value or QUEUE_HOST_TASK).strip().lower()
@@ -149,7 +177,7 @@ def _require_supported_queue_kind(raw_value: str | None) -> str:
 
 
 def _normalize_task_type(raw_value: str | None) -> int | None:
-    """Parse an optional task-type filter."""
+    """Parse an optional numeric task type; blank input means no type filter."""
     if raw_value in (None, "", "all"):
         return None
 
@@ -160,7 +188,7 @@ def _normalize_task_type(raw_value: str | None) -> int | None:
 
 
 def _normalize_status(raw_value: str | None) -> int | None:
-    """Parse an optional queue-status filter."""
+    """Parse an optional numeric status; blank input means no status filter."""
     if raw_value in (None, "", "all"):
         return None
 
@@ -467,6 +495,7 @@ def list_host_tasks(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
         row["TYPE_LABEL"] = HOST_TASK_TYPE_LABELS.get(row["NU_TYPE"], str(row["NU_TYPE"]))
         row["STATUS_LABEL"] = TASK_STATUS_LABELS.get(row["NU_STATUS"], str(row["NU_STATUS"]))
         row["QUEUE_KIND"] = QUEUE_HOST_TASK
+        _add_display_datetime(row, "DT_HOST_TASK")
     return rows
 
 
@@ -544,6 +573,7 @@ def list_file_tasks(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
         row["TYPE_LABEL"] = FILE_TASK_TYPE_LABELS.get(row["NU_TYPE"], str(row["NU_TYPE"]))
         row["STATUS_LABEL"] = TASK_STATUS_LABELS.get(row["NU_STATUS"], str(row["NU_STATUS"]))
         row["QUEUE_KIND"] = QUEUE_FILE_TASK
+        _add_display_datetime(row, "DT_FILE_TASK")
     return rows
 
 
@@ -666,6 +696,9 @@ def list_file_history(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
                 row["ACTIVE_TASK_STATUS"], str(row["ACTIVE_TASK_STATUS"])
             )
             row["ACTIVE_TASK_LABEL"] = f"{task_type}: {task_status}"
+        _add_display_datetime(row, "DT_DISCOVERED")
+        _add_display_datetime(row, "DT_BACKUP")
+        _add_display_datetime(row, "DT_PROCESSED")
     return rows
 
 
@@ -738,7 +771,11 @@ def _load_file_tasks_for_action(db, task_ids: list[int]) -> list[dict[str, Any]]
 
 
 def _publish_summary_scope(db, host_id: int, reason: str) -> None:
-    """Publish one dirty host scope without risking the committed queue action."""
+    """Request a later host-summary refresh after a committed maintenance action.
+
+    The outbox insert uses its own commit on purpose. A refresh request is useful
+    but must never roll back the queue state already accepted by the operator.
+    """
     cursor = db.cursor()
     cursor.execute(
         """
@@ -1055,10 +1092,15 @@ def _apply_file_task_backup_transition(
     message: str,
     publish_reason: str,
 ) -> None:
-    """Reset one non-running queue row to BACKUP with the selected status."""
+    """Reset one non-running queue row to BACKUP with the selected status.
+
+    The live task and durable history are one operational transition, so both
+    updates share a transaction and an optimistic status check.
+    """
     cursor = db.cursor()
 
     try:
+        # A partial reset would make the queue and history disagree.
         cursor.execute("START TRANSACTION")
         cursor.execute(
             """
@@ -1135,10 +1177,15 @@ def _apply_file_task_process_transition(
     message: str,
     publish_reason: str,
 ) -> None:
-    """Reset one non-running queue row to PROCESS with durable server metadata."""
+    """Reset one non-running queue row to PROCESS with durable server metadata.
+
+    The server identity comes from history. Both records change together so the
+    processor and summary reader observe the same processing state.
+    """
     cursor = db.cursor()
 
     try:
+        # A partial reset would make the queue and history disagree.
         cursor.execute("START TRANSACTION")
         cursor.execute(
             """
@@ -1222,7 +1269,11 @@ def _apply_file_task_reprocess_action(db, row: dict[str, Any]) -> None:
 
 
 def _apply_file_task_action(db, row: dict[str, Any], action: str) -> None:
-    """Persist one atomic FILE_TASK + FILE_TASK_HISTORY maintenance action."""
+    """Persist one atomic FILE_TASK and FILE_TASK_HISTORY maintenance action.
+
+    Stage-changing actions use their dedicated reset paths. Restart and suspend
+    keep the current stage but still update both records atomically.
+    """
     if action in {ACTION_MOVE_TO_BACKUP, ACTION_REDO_BACKUP}:
         _apply_file_task_backup_action(db, row, action)
         return
@@ -1236,6 +1287,7 @@ def _apply_file_task_action(db, row: dict[str, Any], action: str) -> None:
     cursor = db.cursor()
 
     try:
+        # A partial status change would distort the materialized summaries.
         cursor.execute("START TRANSACTION")
         cursor.execute(
             """
@@ -1572,7 +1624,11 @@ def apply_history_action(
     target_stage: str,
     target_status: str | int,
 ) -> dict[str, Any]:
-    """Create selected queue tasks from durable history with one target state."""
+    """Create selected queue tasks from durable history with one target state.
+
+    One transaction covers the selected history rows. Rows blocked by a domain
+    rule are reported but never partially recreated.
+    """
     target_stage = _require_history_target_stage(target_stage)
     target_status = _require_history_target_status(str(target_status))
     unique_ids = sorted({int(history_id) for history_id in history_ids})
@@ -1591,6 +1647,7 @@ def apply_history_action(
     cursor = db.cursor()
 
     try:
+        # Queue creation and history reset must either both persist or neither does.
         cursor.execute("START TRANSACTION")
 
         for row in rows:

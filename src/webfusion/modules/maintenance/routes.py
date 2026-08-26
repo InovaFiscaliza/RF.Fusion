@@ -1,13 +1,14 @@
-"""Routes for the manual queue-maintenance page.
+"""Render and protect the manual queue-maintenance interface.
 
-This module is intentionally conservative. It exposes only a small set of
-operator actions that map to existing queue states already handled by
-appCataloga, so the web UI does not become a parallel workflow engine.
+The routes normalize HTTP input and show the resulting summaries. They delegate
+all validation and state transitions to ``modules.maintenance.service`` so the
+web UI cannot become a second queue workflow engine. Every mutation remains
+behind the maintenance basic-auth check.
 """
 
 from __future__ import annotations
 
-from flask import Blueprint, Response, jsonify, render_template, request
+from flask import Blueprint, Response, jsonify, redirect, render_template, request, url_for
 
 from db import get_connection_bpdata as get_connection
 from modules.maintenance.service import (
@@ -222,6 +223,7 @@ def maintenance_dashboard():
     history_query_message = None
     host_task_action_error = None
     file_task_action_error = None
+    follow_host_id = None
     source_data = request.args if request.method == "GET" else request.form
     host_task_filters = _build_queue_filters(
         source_data,
@@ -247,6 +249,12 @@ def maintenance_dashboard():
             history_loaded = False
             action = request.form.get("action")
             form_scope = request.form.get("maintenance_form", "")
+            try:
+                requested_host_id = int(request.form.get("follow_host_id") or 0)
+            except (TypeError, ValueError):
+                requested_host_id = 0
+            if requested_host_id > 0:
+                follow_host_id = requested_host_id
 
             if form_scope == "history_actions":
                 selected_history_ids = parse_selected_history_ids(request.form)
@@ -374,6 +382,14 @@ def maintenance_dashboard():
         db.close()
 
     record_page_view()
+    action_summary = (
+        history_action_summary
+        or file_task_action_summary
+        or host_task_action_summary
+    )
+    if follow_host_id and action_summary:
+        return redirect(url_for("host.host", host_id=follow_host_id))
+
     return render_template(
         "maintenance/maintenance.html",
         **_build_template_context(

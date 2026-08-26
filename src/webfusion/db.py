@@ -1,13 +1,12 @@
-"""Small database connection helpers for WebFusion.
+"""Provide the three database connections used by WebFusion.
 
-WebFusion reads from three schemas:
+``RFDATA`` owns spectrum and repository metadata, ``BPDATA`` owns the live
+operational queues, and ``RFFUSION_SUMMARY`` owns the materialized read models.
+Service modules select the narrowest source for their request and are
+responsible for closing every connection they open.
 
-- ``RFDATA`` for spectrum and repository metadata
-- ``BPDATA`` for hosts, queues, and processing history
-- ``RFFUSION_SUMMARY`` for pre-aggregated read models used by dashboards
-
-Keeping the connection helpers in one place makes the service modules easier to
-read for anyone who is still getting comfortable with Flask applications.
+The one write helper in this module is limited to connection values mirrored
+from Zabbix. Queue and history mutations remain owned by their feature service.
 """
 
 import pymysql

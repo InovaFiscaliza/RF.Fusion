@@ -70,7 +70,6 @@
     const hostTablePanel    = document.getElementById("server-host-table-panel");
     const hostTableMeta     = document.getElementById("server-host-table-meta");
     const hostTableBody     = document.getElementById("server-host-table-body");
-    const serverFilterForm  = document.getElementById("server-filter-form");
     const onlineOnlyCheckbox = document.getElementById("online_only");
 
     const hostDetailBaseUrl         = root.dataset.hostDetailBaseUrl || "";
@@ -80,8 +79,9 @@
     const usageMetricsEndpoint      = root.dataset.usageMetricsEndpoint || "";
     const summaryMetricsEndpoint    = root.dataset.summaryMetricsEndpoint || "";
     const runtimeHealthEndpoint     = root.dataset.runtimeHealthEndpoint || "";
-    const currentOnlineOnly         = root.dataset.onlineOnly === "1";
+    let currentOnlineOnly           = root.dataset.onlineOnly === "1";
     const hasInitialSummaryMetrics  = root.dataset.summaryMetricsInitialLoaded === "1";
+    let refreshHostTable = null;
 
     /* Several panels on this page still render rows through small HTML
      * fragments. This helper keeps those fragments safe before interpolation,
@@ -113,24 +113,18 @@
         }
     }
 
-    /* The table filter behaves as a direct toggle because operators use it as
-     * a navigation aid, not as a multi-step search form. */
+    /* The table filter is local to this dashboard panel. Reloading the full
+     * page would move the operator away from the rows being compared. */
     function handleOnlineOnlyToggle() {
+        currentOnlineOnly = Boolean(onlineOnlyCheckbox && onlineOnlyCheckbox.checked);
+        root.dataset.onlineOnly = currentOnlineOnly ? "1" : "0";
+
         if (hostTablePanel) {
             persistServerHostTablePanelState(Boolean(hostTablePanel.open));
         }
 
-        if (window.showPageLoadingOverlay) {
-            window.showPageLoadingOverlay("Atualizando filtro de estações...");
-        }
-
-        if (serverFilterForm && serverFilterForm.requestSubmit) {
-            serverFilterForm.requestSubmit();
-            return;
-        }
-
-        if (serverFilterForm) {
-            serverFilterForm.submit();
+        if (refreshHostTable) {
+            refreshHostTable();
         }
     }
 
@@ -142,12 +136,6 @@
         } catch (error) {
             // Ignore storage access issues and keep the default collapsed state.
         }
-    }
-
-    if (serverFilterForm && hostTablePanel) {
-        serverFilterForm.addEventListener("submit", function () {
-            persistServerHostTablePanelState(Boolean(hostTablePanel.open));
-        });
     }
 
     if (onlineOnlyCheckbox) {
@@ -597,20 +585,24 @@
             return;
         }
 
-        let loading = false;
         let loaded = false;
+        let activeRequest = null;
 
-        /* The table request inherits the current query string so the server can
-         * reuse the same filter contract already represented in the page URL.
-         * This keeps the panel aligned with the visible "Apenas Online" state
-         * without inventing a second client-side filtering model.
+        /* The table request sends only the visible table filter. This keeps
+         * server-wide dashboard values independent from this local navigation.
          */
-        async function loadPanel() {
-            if (loading || loaded) {
+        async function loadPanel(force = false) {
+            if (loaded && !force) {
                 return;
             }
 
-            loading = true;
+            if (activeRequest) {
+                activeRequest.abort();
+            }
+
+            const requestedOnlineOnly = currentOnlineOnly;
+            const requestController = new AbortController();
+            activeRequest = requestController;
             hostTableMeta.textContent = "Carregando...";
             hostTableBody.innerHTML = `
                 <tr>
@@ -619,18 +611,31 @@
             `;
 
             try {
-                const params = new URLSearchParams(window.location.search);
-                const response = await fetch(`${hostTableEndpointBase}?${params.toString()}`);
+                const params = new URLSearchParams();
+                if (requestedOnlineOnly) {
+                    params.set("online_only", "1");
+                }
+                const queryString = params.toString();
+                const endpoint = queryString
+                    ? `${hostTableEndpointBase}?${queryString}`
+                    : hostTableEndpointBase;
+                const response = await fetch(endpoint, { signal: requestController.signal });
 
                 if (!response.ok) {
                     throw new Error("request_failed");
                 }
 
                 const payload = await response.json();
+                if (activeRequest !== requestController) {
+                    return;
+                }
                 renderHostRows(payload.rows || []);
                 hostTableMeta.textContent = formatStationCountLabel(payload.count);
                 loaded = true;
             } catch (error) {
+                if (error.name === "AbortError") {
+                    return;
+                }
                 hostTableBody.innerHTML = `
                     <tr>
                         <td colspan="10">Não foi possível carregar a tabela de estações agora.</td>
@@ -638,9 +643,19 @@
                 `;
                 hostTableMeta.textContent = "Falha ao carregar";
             } finally {
-                loading = false;
+                if (activeRequest === requestController) {
+                    activeRequest = null;
+                }
             }
         }
+
+        refreshHostTable = function () {
+            // A closed table must also forget stale rows before its next opening.
+            loaded = false;
+            if (hostTablePanel.open) {
+                loadPanel(true);
+            }
+        };
 
         hostTablePanel.addEventListener("toggle", function () {
             persistServerHostTablePanelState(Boolean(hostTablePanel.open));

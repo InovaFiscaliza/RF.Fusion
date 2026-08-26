@@ -2314,7 +2314,8 @@ class dbHandlerBKP(DBHandlerBase):
         host_file_name: Optional[str] = None,
         server_file_name: Optional[str] = None,
         expected_status: Optional[int] = None,
-        **kwargs,
+        publish_summary: bool = True,
+        **kwargs: Any,
     ) -> Dict[str, Any]:
         """
         Update a `FILE_TASK` row using deterministic identification rules.
@@ -2442,14 +2443,15 @@ class dbHandlerBKP(DBHandlerBase):
                     rows_affected=affected,
                 )
 
-            host_scope_id = host_id
-            if host_scope_id is None and task_id is not None:
-                host_scope_id = self._summary_lookup_file_task_host(task_id)
+            if publish_summary:
+                host_scope_id = host_id
+                if host_scope_id is None and task_id is not None:
+                    host_scope_id = self._summary_lookup_file_task_host(task_id)
 
-            self._summary_publish_host_scope(
-                host_scope_id,
-                reason="file_task_update",
-            )
+                self._summary_publish_host_scope(
+                    host_scope_id,
+                    reason="file_task_update",
+                )
 
             return {
                 "success": True,

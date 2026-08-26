@@ -1,4 +1,10 @@
-"""Service boundary between WebFusion routes and the Zabbix API client."""
+"""Safely bridge WebFusion configuration screens to the Zabbix API.
+
+Only catalogued RF.Fusion hosts and templates may be read or changed. The
+service keeps a short-lived catalog cache for selectors, but writes always read
+the current target configuration first. Connection macros that also exist in
+BPDATA are synchronized only after Zabbix accepts the requested change.
+"""
 
 from __future__ import annotations
 
@@ -35,9 +41,10 @@ _catalog_cache: dict[str, Any] = {"expires_at": 0.0, "value": None}
 
 
 class ZabbixConfigurationError(RuntimeError):
-    """Represent an invalid or unavailable configuration operation."""
+    """Carry a safe redirect notice for an invalid configuration operation."""
 
     def __init__(self, message: str, *, notice_code: str = "change_failed") -> None:
+        """Keep the operator-safe notice code with the underlying failure text."""
         super().__init__(message)
         self.notice_code = notice_code
 

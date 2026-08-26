@@ -1028,7 +1028,8 @@ def get_spectrum_data(
         (rows, total): rows is a list of dicts for the requested page;
         total is the count of all matching spectra, used for pagination math.
     """
-    # -- Clamp sort and pagination inputs before they reach the cache key or SQL.
+    # --- input normalization ---
+    # Clamp sort and pagination inputs before they reach the cache key or SQL.
     # ALLOWED_SORT_FIELDS is the injection guard for the ORDER BY column name.
     if sort_by not in ALLOWED_SORT_FIELDS:
         sort_by = "date_start"
@@ -1064,7 +1065,8 @@ def get_spectrum_data(
     if cached is not None:
         return cached
 
-    # -- Build SQL fragments. WHERE clauses use the summary join so geographic
+    # --- grouped query ---
+    # WHERE clauses use the summary join so geographic
     # filters hit the pre-aggregated table instead of DIM_SPECTRUM_SITE.
     where_clauses, params = _build_summary_scoped_fact_filters(
         equipment_id=equipment_id,
@@ -1133,7 +1135,8 @@ def get_spectrum_data(
     conn = get_connection()
     cur = conn.cursor()
 
-    # -- Execute main data query then fetch file metadata only for the IDs
+    # --- page metadata ---
+    # Execute the main query then fetch file metadata only for the IDs
     # that landed on this page, keeping the bridge/file join narrow.
     cur.execute(data_query, data_params)
     rows = cur.fetchall()
@@ -2063,7 +2066,8 @@ def get_spectrum_filter_options(
     districts = []
     availability = None
 
-    # -- Equipment options: summary is preferred when only geo filters are active.
+    # --- equipment options ---
+    # Summary is preferred when only geo filters are active.
     # The fact fallback is used only when an active filter (date, frequency,
     # description) could exclude equipment that the summary would otherwise show.
     try:
@@ -2101,7 +2105,8 @@ def get_spectrum_filter_options(
             # rather than doing another summary scan.
             equipments = _finalize_equipment_options(get_equipments())
 
-    # -- State options: same summary-first strategy.
+    # --- state options ---
+    # Apply the same summary-first strategy.
     try:
         states = _finalize_state_options(
             _load_summary_state_rows(
@@ -2134,9 +2139,9 @@ def get_spectrum_filter_options(
 
     districts = []
     if include_districts:
-        # -- District options: the most granular geo dimension and the most
-        # expensive to scan. Guarded by include_districts so callers that only
-        # render state/equipment dropdowns do not pay the full district cost.
+        # --- district options ---
+        # Districts are the most granular geo dimension and the most expensive
+        # to scan. The flag avoids this cost for state/equipment-only callers.
         try:
             districts = _finalize_district_options(
                 _load_summary_district_rows(
@@ -2169,7 +2174,8 @@ def get_spectrum_filter_options(
 
     availability = None
     if include_availability:
-        # -- Availability window: gives the date range and aggregate counts for
+        # --- availability window ---
+        # This gives the date range and aggregate counts for
         # the current filter state. Used by the UI to set sensible date picker
         # defaults. The summary path is cheap but does not account for
         # date/frequency filters; the fact fallback is precise but expensive.

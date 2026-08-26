@@ -62,6 +62,340 @@ class TestHostService(unittest.TestCase):
             (False, ""),
         )
 
+    def test_operational_metrics_snapshot_keeps_only_appcataloga_contract(self):
+        with patch.object(
+            self.module,
+            "_get_host_current_snapshot_row",
+            return_value={
+                "ID_HOST": 73,
+                "NA_HOST_NAME": "RFEye000073",
+                "NU_FACT_SPECTRUM_TOTAL": 4900933,
+                "NA_HOST_ADDRESS": "172.16.18.73",
+                "DT_LAST_DISCOVERY": "2026-08-25 12:00:00",
+            },
+        ):
+            payload = self.module.get_host_operational_metrics_snapshot(73)
+
+        self.assertEqual(payload["ID_HOST"], 73)
+        self.assertEqual(payload["NA_HOST_NAME"], "RFEye000073")
+        self.assertEqual(payload["NU_FACT_SPECTRUM_TOTAL"], 4900933)
+        self.assertNotIn("NA_HOST_ADDRESS", payload)
+        self.assertNotIn("DT_LAST_DISCOVERY", payload)
+        self.assertIn("VL_BACKUP_DONE_GB_TOTAL", payload)
+        self.assertIsNone(payload["VL_BACKUP_DONE_GB_TOTAL"])
+
+    def test_current_activity_prefers_running_host_task(self):
+        class FakeCursor:
+            def __init__(self):
+                self.executions = []
+
+            def execute(self, query, params):
+                self.executions.append((query, params))
+
+            def fetchone(self):
+                return {
+                    "TASK_ID": 19,
+                    "HOST_ID": 73,
+                    "TASK_TYPE": 2,
+                    "TASK_STATUS": 2,
+                    "MESSAGE": "Discovery: listando arquivos remotos.",
+                    "UPDATED_AT": None,
+                }
+
+        class FakeConnection:
+            def __init__(self):
+                self.cursor_instance = FakeCursor()
+                self.closed = False
+
+            def cursor(self):
+                return self.cursor_instance
+
+            def close(self):
+                self.closed = True
+
+        connection = FakeConnection()
+        with patch.object(self.module, "get_connection_bpdata", return_value=connection):
+            activity = self.module.get_host_current_activity(73)
+
+        self.assertEqual(activity["source"], "host-task")
+        self.assertEqual(activity["task_id"], 19)
+        self.assertEqual(activity["task_type"], 2)
+        self.assertEqual(len(connection.cursor_instance.executions), 1)
+        self.assertTrue(connection.closed)
+
+    def test_current_activity_falls_back_to_next_backup_file(self):
+        class FakeCursor:
+            def __init__(self):
+                self.executions = []
+                self.rows = [
+                    None,
+                    {
+                        "TASK_ID": 55,
+                        "HOST_ID": 73,
+                        "TASK_TYPE": 1,
+                        "TASK_STATUS": 1,
+                        "FILE_NAME": "capture_20260826.zip",
+                        "FILE_PATH": "/captures",
+                        "FILE_SIZE_KB": 2048,
+                        "MESSAGE": "Aguardando worker de backup.",
+                        "UPDATED_AT": None,
+                    },
+                    None,
+                ]
+
+            def execute(self, query, params):
+                self.executions.append((query, params))
+
+            def fetchone(self):
+                return self.rows.pop(0)
+
+        class FakeConnection:
+            def __init__(self):
+                self.cursor_instance = FakeCursor()
+
+            def cursor(self):
+                return self.cursor_instance
+
+            def close(self):
+                pass
+
+        with patch.object(
+            self.module,
+            "get_connection_bpdata",
+            return_value=FakeConnection(),
+        ):
+            activity = self.module.get_host_current_activity(73)
+
+        self.assertEqual(activity["source"], "backup-file")
+        self.assertEqual(activity["file_name"], "capture_20260826.zip")
+        self.assertEqual(activity["file_size_kb"], 2048)
+        self.assertEqual(activity["status"], 1)
+
+    def test_current_activity_keeps_running_file_stage_visible(self):
+        class FakeCursor:
+            def __init__(self):
+                self.rows = [
+                    None,
+                    None,
+                    {
+                        "TASK_ID": 81,
+                        "HOST_ID": 73,
+                        "TASK_TYPE": 2,
+                        "TASK_STATUS": 2,
+                        "FILE_NAME": "capture_20260826.zip",
+                        "FILE_PATH": "/captures",
+                        "MESSAGE": "Processamento do arquivo em execução.",
+                        "UPDATED_AT": None,
+                    },
+                ]
+
+            def execute(self, query, params):
+                pass
+
+            def fetchone(self):
+                return self.rows.pop(0)
+
+        class FakeConnection:
+            def __init__(self):
+                self.cursor_instance = FakeCursor()
+
+            def cursor(self):
+                return self.cursor_instance
+
+            def close(self):
+                pass
+
+        with patch.object(
+            self.module,
+            "get_connection_bpdata",
+            return_value=FakeConnection(),
+        ):
+            activity = self.module.get_host_current_activity(73)
+
+        self.assertEqual(activity["source"], "file-task")
+        self.assertEqual(activity["task_type"], 2)
+        self.assertEqual(activity["status"], 2)
+
+    def test_running_backup_wins_over_waiting_host_task(self):
+        class FakeCursor:
+            def __init__(self):
+                self.rows = [
+                    {
+                        "TASK_ID": 19,
+                        "HOST_ID": 73,
+                        "TASK_TYPE": 2,
+                        "TASK_STATUS": 1,
+                        "MESSAGE": "Discovery aguardando worker.",
+                        "UPDATED_AT": None,
+                    },
+                    {
+                        "TASK_ID": 55,
+                        "HOST_ID": 73,
+                        "TASK_TYPE": 1,
+                        "TASK_STATUS": 2,
+                        "FILE_NAME": "capture_20260826.zip",
+                        "FILE_PATH": "/captures",
+                        "MESSAGE": "Transferência iniciada.",
+                        "UPDATED_AT": None,
+                    },
+                ]
+
+            def execute(self, query, params):
+                pass
+
+            def fetchone(self):
+                return self.rows.pop(0)
+
+        class FakeConnection:
+            def __init__(self):
+                self.cursor_instance = FakeCursor()
+
+            def cursor(self):
+                return self.cursor_instance
+
+            def close(self):
+                pass
+
+        with patch.object(
+            self.module,
+            "get_connection_bpdata",
+            return_value=FakeConnection(),
+        ):
+            activity = self.module.get_host_current_activity(73)
+
+        self.assertEqual(activity["source"], "backup-file")
+        self.assertEqual(activity["status"], 2)
+
+    def test_backup_activity_detail_survives_promotion_to_processing(self):
+        class FakeCursor:
+            def __init__(self):
+                self.executions = []
+
+            def execute(self, query, params):
+                self.executions.append((query, params))
+
+            def fetchone(self):
+                return {
+                    "TASK_ID": 55,
+                    "HOST_ID": 73,
+                    "TASK_TYPE": 2,
+                    "TASK_STATUS": 1,
+                    "FILE_NAME": "capture_20260826.zip",
+                    "FILE_PATH": "/captures",
+                    "MESSAGE": "Backup concluído para capture_20260826.zip.",
+                    "UPDATED_AT": None,
+                }
+
+        class FakeConnection:
+            def __init__(self):
+                self.cursor_instance = FakeCursor()
+
+            def cursor(self):
+                return self.cursor_instance
+
+            def close(self):
+                pass
+
+        connection = FakeConnection()
+        with patch.object(self.module, "get_connection_bpdata", return_value=connection):
+            activity = self.module.get_host_activity_detail(73, "backup-file", 55)
+
+        self.assertEqual(activity["task_type"], 2)
+        self.assertEqual(
+            activity["message"],
+            "Backup concluído para capture_20260826.zip.",
+        )
+        self.assertEqual(connection.cursor_instance.execution[1], (55, 73))
+
+    def test_file_activity_detail_reads_processing_result_from_history_after_delete(self):
+        class FakeCursor:
+            def __init__(self):
+                self.rows = [
+                    None,
+                    {
+                        "HOST_ID": 73,
+                        "FILE_PATH": "/captures",
+                        "FILE_NAME": "capture_20260826.zip",
+                        "TASK_STATUS": 0,
+                        "MESSAGE": "Processing Done | file=capture_20260826.zip",
+                        "UPDATED_AT": None,
+                    },
+                ]
+                self.executions = []
+
+            def execute(self, query, params):
+                self.executions.append((query, params))
+
+            def fetchone(self):
+                return self.rows.pop(0)
+
+        class FakeConnection:
+            def __init__(self):
+                self.cursor_instance = FakeCursor()
+
+            def cursor(self):
+                return self.cursor_instance
+
+            def close(self):
+                pass
+
+        connection = FakeConnection()
+        with patch.object(self.module, "get_connection_bpdata", return_value=connection):
+            activity = self.module.get_host_activity_detail(
+                73,
+                "file-task",
+                55,
+                "/captures",
+                "capture_20260826.zip",
+            )
+
+        self.assertEqual(activity["status"], 0)
+        self.assertEqual(activity["task_type"], 2)
+        self.assertEqual(activity["message"], "Processing Done | file=capture_20260826.zip")
+        self.assertEqual(
+            connection.cursor_instance.executions[1][1],
+            (73, "/captures", "capture_20260826.zip"),
+        )
+
+    def test_processed_file_spectrum_metadata_uses_the_repository_file_name(self):
+        class FakeCursor:
+            def __init__(self):
+                self.execution = None
+
+            def execute(self, query, params):
+                self.execution = (query, params)
+
+            def fetchone(self):
+                return {"ID_FILE": 41, "SPECTRUM_COUNT": 15}
+
+            def fetchall(self):
+                return [{"ID_SPECTRUM": 9}]
+
+        class FakeConnection:
+            def __init__(self):
+                self.cursor_instance = FakeCursor()
+
+            def cursor(self):
+                return self.cursor_instance
+
+            def close(self):
+                pass
+
+        connection = FakeConnection()
+        with patch.object(self.module, "get_connection_rfdata", return_value=connection):
+            metadata = self.module.get_processed_file_spectrum_metadata("p-123--capture.bin")
+
+        self.assertEqual(metadata["ID_FILE"], 41)
+        self.assertEqual(metadata["SPECTRA"], [{"ID_SPECTRUM": 9}])
+        self.assertEqual(
+            connection.cursor_instance.executions[0][1],
+            ("reposfi", "p-123--capture.bin"),
+        )
+        self.assertEqual(
+            connection.cursor_instance.executions[1][1],
+            (41, self.module.PROCESSED_FILE_SPECTRUM_METADATA_LIMIT),
+        )
+
     def test_format_structured_error_bucket_renders_code_and_summary(self):
         self.assertEqual(
             self.module._format_structured_error_bucket(
@@ -537,7 +871,6 @@ class TestHostService(unittest.TestCase):
                     "DT_LAST_FAIL": None,
                     "DT_LAST_CHECK": "2026-04-08 12:00:00",
                     "NU_HOST_CHECK_ERROR": 0,
-                    "DT_LAST_DISCOVERY": "2026-04-08 11:00:00",
                     "DT_LAST_DISCOVERY_COMPLETED_AT": "2026-04-08 11:05:00",
                     "NU_LAST_DISCOVERY_FILE_COUNT": 6,
                     "VL_LAST_DISCOVERY_KB": 1280,
@@ -651,6 +984,11 @@ class TestHostService(unittest.TestCase):
         self.assertEqual(stats["PAYLOAD_DELETED_FILES_TOTAL"], 9)
         self.assertEqual(stats["PAYLOAD_DELETED_GB_TOTAL"], 1.25)
         self.assertEqual(stats["FACT_SPECTRUM_TOTAL"], 321)
+        self.assertNotIn("PENDING_GB", stats)
+        self.assertNotIn("DONE_GB", stats)
+        self.assertNotIn("GROUPED_PROCESSING_ERRORS", stats)
+        self.assertNotIn("MATCHED_RFDATA_EQUIPMENTS", stats)
+        self.assertNotIn("LOCATION_HISTORY", stats)
         self.assertTrue(snapshot_connection.closed)
         self.assertTrue(monthly_connection.closed)
         self.assertEqual(len(snapshot_cursor.executed), 1)
@@ -658,6 +996,7 @@ class TestHostService(unittest.TestCase):
         self.assertIn("IS_SSH_FAILURE", snapshot_cursor.executed[0][0])
         self.assertIn("VL_LAST_DISCOVERY_KB", snapshot_cursor.executed[0][0])
         self.assertIn("NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL", snapshot_cursor.executed[0][0])
+        self.assertNotIn("DT_LAST_DISCOVERY,", snapshot_cursor.executed[0][0])
         self.assertEqual(snapshot_cursor.executed[0][1], (42,))
         self.assertEqual(len(monthly_cursor.executed), 1)
         self.assertIn("FROM HOST_MONTHLY_METRIC", monthly_cursor.executed[0][0])

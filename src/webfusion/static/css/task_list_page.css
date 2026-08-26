@@ -10,7 +10,7 @@
 }
 
 .task-summary-modal {
-    width: min(420px, 100%);
+    width: min(600px, 100%);
     background: #ffffff;
     border-radius: 14px;
     padding: 22px 22px 18px;
@@ -31,12 +31,19 @@
 .task-summary-actions {
     margin-top: 16px;
     display: flex;
+    gap: 10px;
     justify-content: flex-end;
+    flex-wrap: wrap;
 }
 
 .task-list-actions .btn + .btn,
 .task-summary-actions .btn + .btn {
     margin-left: 0;
+}
+
+.task-summary-actions .btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
 .task-table-wrap {
@@ -118,4 +125,14 @@
     word-break: break-word;
     line-height: 1.5;
     color: #334155;
+}
+
+@media (max-width: 620px) {
+    .task-summary-actions {
+        justify-content: stretch;
+    }
+
+    .task-summary-actions .btn {
+        flex: 1 1 100%;
+    }
 }

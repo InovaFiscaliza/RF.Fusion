@@ -10,7 +10,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260820-intrinsic-query') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260826-transfer-progress') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/station_connectivity_test.css', v='20260813-station-test') }}">
 {% endblock %}
 
@@ -131,9 +131,30 @@
             </div>
             <div class="host-status-row">
                 {% if stats.IS_OFFLINE %}<span class="status-badge status-offline">Offline</span>{% else %}<span class="status-badge status-online">Online</span>{% endif %}
-                {% if stats.IS_BUSY %}<span class="status-badge status-busy">Ocupada</span>{% else %}<span class="status-badge status-idle">Disponível</span>{% endif %}
+                {% if stats.IS_BUSY %}<span class="status-badge status-busy" data-host-operational-busy data-host-operational-busy-initial="1">Ocupada</span>{% else %}<span class="status-badge status-idle" data-host-operational-busy data-host-operational-busy-initial="0">Disponível</span>{% endif %}
                 {% if stats.IS_SSH_FAILURE %}<span class="status-badge status-warning">Falha SSH ativa</span>{% else %}<span class="status-badge status-online">SSH disponível</span>{% endif %}
                 {% if stats.IS_GPS_GNSS_UNAVAILABLE %}<span class="status-badge status-warning">GPS/GNSS indisponível</span>{% else %}<span class="status-badge status-online">GPS/GNSS disponível</span>{% endif %}
+            </div>
+            <div class="host-current-activity" data-host-current-activity>
+                <div class="host-current-activity-copy">
+                    <div class="summary-card-label">Tarefa atual da estação</div>
+                    <div class="host-current-activity-title" data-host-activity-title>Consultando atividade...</div>
+                    <div class="host-current-activity-message" data-host-activity-message>Verificando a fila operacional e o backup.</div>
+                    <div class="host-current-activity-timestamp" data-host-activity-timestamp></div>
+                </div>
+                <div class="host-current-activity-actions">
+                    <span class="status-badge status-idle" data-host-activity-status>Consultando</span>
+                    <button type="button" class="btn btn-secondary btn-secondary-action" data-host-activity-open disabled>
+                        <i class="fa fa-eye"></i> Acompanhar atividade
+                    </button>
+                    <a
+                        href="{{ url_for('maintenance.maintenance_dashboard', file_task_load=1, file_task_host_id=stats.ID_HOST) }}"
+                        class="btn btn-secondary btn-secondary-action"
+                        data-loading-message="Consultando fila de arquivos da estação..."
+                    >
+                        <i class="fa fa-list"></i> Ver fila de arquivos
+                    </a>
+                </div>
             </div>
             <div class="summary-grid host-summary-grid--activity">
                 <div class="summary-card">
@@ -398,5 +419,5 @@
 
 {% block extra_js %}
 <script src="{{ url_for('static', filename='js/station_connectivity_test.js', v='20260819-station-test-details') }}"></script>
-<script src="{{ url_for('static', filename='js/host_page.js', v='20260811-public-prefix') }}"></script>
+<script src="{{ url_for('static', filename='js/host_page.js', v='20260826-activity-transfer-progress') }}"></script>
 {% endblock %}

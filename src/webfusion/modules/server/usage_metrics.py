@@ -4,6 +4,11 @@ The server dashboard needs lightweight adoption signals that survive container
 restarts without becoming a full audit trail. Persisting one monthly counter
 row per metric keeps the write path simple while still allowing total, yearly,
 and monthly aggregations for the `/server` page.
+
+Nginx download delivery is ingested through a checkpoint. The checkpoint and
+its counters share one transaction, so a restart does not silently count the
+same completed log range twice. The in-memory backend exists only for tests and
+local development.
 """
 
 from __future__ import annotations
@@ -49,7 +54,7 @@ def _use_memory_backend() -> bool:
 
 
 def _ensure_counter_name(counter_name: str) -> None:
-    """Reject unexpected metric names early."""
+    """Reject unexpected names before they reach a dynamic counter operation."""
 
     if counter_name not in _METRIC_NAMES:
         raise ValueError(f"Unknown usage metric: {counter_name}")
@@ -459,7 +464,7 @@ def _replace_nginx_months_with_cursor(
 
 
 def _load_checkpoint_from_memory(source_name: str) -> dict[str, object] | None:
-    """Read one in-memory log-ingestion checkpoint."""
+    """Read the test-mode checkpoint without exposing the mutable stored value."""
 
     with _COUNTER_LOCK:
         checkpoint = _CHECKPOINTS_MEMORY.get(source_name)
@@ -475,7 +480,7 @@ def _save_checkpoint_to_memory(
     last_size: int,
     last_mtime_ns: int,
 ) -> None:
-    """Persist one in-memory log-ingestion checkpoint."""
+    """Persist the test-mode checkpoint using the durable backend field shape."""
 
     with _COUNTER_LOCK:
         _CHECKPOINTS_MEMORY[source_name] = {

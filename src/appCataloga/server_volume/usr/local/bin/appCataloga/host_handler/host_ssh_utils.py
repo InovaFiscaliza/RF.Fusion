@@ -16,7 +16,7 @@ import socket
 import threading
 import time
 import paramiko
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
 
@@ -552,6 +552,7 @@ class sftpConnection:
         stall_timeout_seconds: float | None = None,
         progress_poll_seconds: float | None = None,
         heartbeat_seconds: float | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> None:
         """Download a remote file to a local path with progress watchdogs.
 
@@ -598,6 +599,22 @@ class sftpConnection:
                     state["last_progress_at"] = now
                 if total > state["remote_total_bytes"]:
                     state["remote_total_bytes"] = total
+
+            if progress_callback is None:
+                return
+
+            try:
+                progress_callback(transferred, total)
+            except Exception as exc:
+                # Live monitoring must not interrupt a valid backup transfer.
+                self.log.warning_event(
+                    "backup_transfer_progress_callback_failed",
+                    **self._base_log_fields(),
+                    component="host_ssh",
+                    operation="transfer",
+                    remote_file=remote_file,
+                    error=exc,
+                )
 
         def watchdog() -> None:
             while not stop_event.wait(progress_poll_seconds):
@@ -1146,6 +1163,7 @@ class sftpConnection:
         local_path: str,
         server_filename: str,
         discovery_snapshot: dict,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> dict:
         """
         Transfer a file from a remote host to the local repository with integrity validation.
@@ -1286,6 +1304,7 @@ class sftpConnection:
             stall_timeout_seconds=k.BACKUP_TRANSFER_STALL_TIMEOUT_SECONDS,
             progress_poll_seconds=k.BACKUP_TRANSFER_PROGRESS_POLL_SECONDS,
             heartbeat_seconds=k.BACKUP_TRANSFER_HEARTBEAT_SECONDS,
+            progress_callback=progress_callback,
         )
 
         # ---------------------------------------------------------

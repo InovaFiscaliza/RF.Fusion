@@ -258,6 +258,25 @@ class WorkerDetectionTests(unittest.TestCase):
 class BackupFlowTests(unittest.TestCase):
     """Validate the backup worker contracts around transfer and finalization."""
 
+    def test_transfer_progress_callback_updates_only_live_task_detail(self) -> None:
+        fake_db = FakeTaskDB()
+        task = {
+            "host_id": 11,
+            "file_task_id": 22,
+            "host_file_path": "/remote",
+            "host_file_name": "sample.bin",
+        }
+
+        callback = backup_worker._create_transfer_progress_callback(fake_db, task)
+        callback(1536, 4096)
+
+        self.assertEqual(len(fake_db.file_task_updates), 1)
+        update = fake_db.file_task_updates[0]
+        self.assertEqual(update["task_id"], 22)
+        self.assertEqual(update["expected_status"], backup_worker.k.TASK_RUNNING)
+        self.assertFalse(update["publish_summary"])
+        self.assertIn("transfer=1536/4096 bytes", update["NA_MESSAGE"])
+
     def test_transfer_file_task_refreshes_remote_metadata_before_backup(self) -> None:
         refreshed_metadata = FileMetadata(
             NA_FULL_PATH="/remote/sample.bin",
@@ -315,6 +334,10 @@ class BackupFlowTests(unittest.TestCase):
             final_file = Path(tmpdir) / "server.bin"
             final_file.write_bytes(b"y" * (110 * 1024))
             fake_sftp = FakeSFTP()
+            progress_updates = []
+
+            def progress_callback(transferred: int, total: int) -> None:
+                progress_updates.append((transferred, total))
 
             transfer_result = backup_worker.sftpConnection.transfer_file_task(
                 fake_sftp,
@@ -323,6 +346,7 @@ class BackupFlowTests(unittest.TestCase):
                 local_path=tmpdir,
                 server_filename="server.bin",
                 discovery_snapshot=discovery_snapshot,
+                progress_callback=progress_callback,
             )
 
             self.assertAlmostEqual(transfer_result["updated_size_kb"], 5.0)
@@ -342,6 +366,10 @@ class BackupFlowTests(unittest.TestCase):
             self.assertEqual(
                 fake_sftp.transfer_kwargs["progress_poll_seconds"],
                 backup_worker.k.BACKUP_TRANSFER_PROGRESS_POLL_SECONDS,
+            )
+            self.assertIs(
+                fake_sftp.transfer_kwargs["progress_callback"],
+                progress_callback,
             )
 
     def test_finalize_success_persists_refreshed_metadata(self) -> None:

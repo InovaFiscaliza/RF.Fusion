@@ -516,6 +516,35 @@ class TestTaskRoutes(unittest.TestCase):
         )
         get_configuration.assert_called_once_with("host", "10482")
 
+    def test_task_list_exposes_individual_host_for_creation_summary(self):
+        class FakeCursor:
+            def execute(self, query):
+                pass
+
+            def fetchall(self):
+                return []
+
+        class FakeConnection:
+            def cursor(self):
+                return FakeCursor()
+
+        self.module.request.args = {
+            "queued_count": "1",
+            "skipped_count": "0",
+            "created_host_id": "10482",
+        }
+        with patch.object(self.module, "get_connection", return_value=FakeConnection()):
+            with patch.object(self.module, "record_page_view"):
+                with patch.object(
+                    self.module,
+                    "render_template",
+                    side_effect=lambda template, **context: context,
+                ):
+                    context = self.module.task_list()
+
+        self.assertTrue(context["show_creation_summary"])
+        self.assertEqual(context["created_host_id"], 10482)
+
 
 if __name__ == "__main__":
     unittest.main()

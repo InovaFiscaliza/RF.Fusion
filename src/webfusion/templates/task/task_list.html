@@ -2,7 +2,7 @@
 {% block title %}Tarefas Recentes{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/task_list_page.css', v='20260811-panel-hierarchy') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/task_list_page.css', v='20260826-creation-summary-actions') }}">
 {% endblock %}
 
 {% block breadcrumb %}
@@ -55,8 +55,18 @@
             {{ skipped_count }} tarefa(s) já estavam pendentes ou em execução e foram mantidas como estavam.
         </div>
         {% endif %}
+        {% if created_host_id %}
+        <div class="task-summary-text">
+            A tarefa foi criada para uma única estação. Acompanhe a execução e a mensagem do worker no panorama operacional.
+        </div>
+        {% endif %}
         <div class="task-summary-actions">
             <a href="{{ url_for('task.task_builder') }}" class="btn btn-secondary task-list-button task-list-button-secondary">Criar outra tarefa</a>
+            {% if created_host_id %}
+            <a href="{{ url_for('host.host', host_id=created_host_id) }}" class="btn btn-secondary task-list-button task-list-button-secondary">
+                <i class="fa fa-eye"></i> Acompanhar estação
+            </a>
+            {% endif %}
             <button type="button" class="btn btn-primary task-summary-close" id="task-summary-close-button">Ver lista</button>
         </div>
     </div>

@@ -1,4 +1,9 @@
-"""Routes for the RF.Fusion station configuration page."""
+"""Render and protect the managed RF.Fusion Zabbix configuration page.
+
+Routes handle basic authentication, redirects, and operator notices. The
+service module validates targets, calls the remote API, and synchronizes the
+small set of Zabbix connection macros mirrored in BPDATA.
+"""
 
 from __future__ import annotations
 

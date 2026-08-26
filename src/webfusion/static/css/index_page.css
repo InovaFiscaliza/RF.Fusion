@@ -306,6 +306,12 @@
     background: linear-gradient(180deg, #f7fafc 0%, #eef4fb 100%);
 }
 
+/* The light canvas needs a cool, low-saturation ocean closer to the former
+ * CARTO style. This affects only the base layer, not markers or labels. */
+#station-map .wf-map-base-layer-light {
+    filter: grayscale(0.72) brightness(1.07) contrast(0.98);
+}
+
 /* The legend is intentionally simple because the marker-state semantics
  * already live in JS. The container just needs a flexible shell here. */
 .map-legend {

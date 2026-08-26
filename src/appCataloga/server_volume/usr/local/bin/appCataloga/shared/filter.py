@@ -16,7 +16,7 @@ from __future__ import annotations
 import sys
 import os
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Protocol, Union
 from . import tools
 
@@ -606,9 +606,8 @@ class Filter:
         This function operates EXCLUSIVELY on FileMetadata instances.
         Legacy dict-based metadata is no longer supported by design.
 
-        Safety protections enforced before any semantic filtering:
+        Safety protection enforced before any semantic filtering:
             1. Minimum file size (KB)
-            2. Minimum file age (ignore files too recently created)
 
         Supported modes:
             FILE / ALL / NONE → extension-only filtering
@@ -627,20 +626,6 @@ class Filter:
         filtered = [
             m for m in metadata_list
             if m.VL_FILE_SIZE_KB >= min_size_kb
-        ]
-
-        if not filtered:
-            return []
-
-        # ------------------------------------------------------------------
-        # 2) Minimum file age protection
-        # ------------------------------------------------------------------
-        min_age_minutes = getattr(k, "MIN_FILE_AGE_MINUTES", 30)
-        age_threshold = datetime.now() - timedelta(minutes=min_age_minutes)
-
-        filtered = [
-            m for m in filtered
-            if m.DT_FILE_CREATED and m.DT_FILE_CREATED <= age_threshold
         ]
 
         if not filtered:

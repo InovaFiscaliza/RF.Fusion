@@ -12,6 +12,125 @@
         }
     }
 
+    const confirmationDialog = document.getElementById("maintenance-confirm-dialog");
+    const confirmationMessage = document.getElementById("maintenance-confirm-message");
+    const confirmationHostNote = document.getElementById("maintenance-confirm-host-note");
+    const confirmationSubmitButton = document.querySelector("[data-maintenance-confirm-submit]");
+    let pendingConfirmationForm = null;
+    let pendingFollowHostId = "";
+    let confirmedForm = null;
+
+    function selectedHostId(rows) {
+        const hostIds = Array.from(new Set(rows.map(function (row) {
+            return String(row.dataset.hostId || "").trim();
+        }).filter(Boolean)));
+
+        return hostIds.length === 1 ? hostIds[0] : "";
+    }
+
+    function setFollowHostInput(form, hostId) {
+        if (!form) {
+            return;
+        }
+
+        let input = form.querySelector("[data-maintenance-follow-host]");
+        if (!hostId) {
+            if (input) {
+                input.remove();
+            }
+            return;
+        }
+
+        if (!input) {
+            input = document.createElement("input");
+            input.type = "hidden";
+            input.name = "follow_host_id";
+            input.dataset.maintenanceFollowHost = "1";
+            form.appendChild(input);
+        }
+        input.value = hostId;
+    }
+
+    function closeConfirmationDialog() {
+        setFollowHostInput(pendingConfirmationForm, "");
+        pendingConfirmationForm = null;
+        pendingFollowHostId = "";
+        if (confirmationDialog && confirmationDialog.open) {
+            confirmationDialog.close();
+        }
+    }
+
+    function requestMaintenanceConfirmation(form, message, hostId) {
+        if (!confirmationDialog || typeof confirmationDialog.showModal !== "function") {
+            const shouldSubmit = window.confirm(message);
+            if (shouldSubmit) {
+                setFollowHostInput(form, hostId);
+            }
+            return shouldSubmit;
+        }
+
+        pendingConfirmationForm = form;
+        pendingFollowHostId = hostId;
+        confirmationMessage.textContent = message;
+        confirmationHostNote.hidden = !hostId;
+        if (confirmationSubmitButton) {
+            confirmationSubmitButton.textContent = hostId
+                ? "Confirmar e acompanhar estação"
+                : "Confirmar ação";
+        }
+
+        confirmationDialog.showModal();
+        return false;
+    }
+
+    function consumeConfirmedSubmission(form) {
+        if (confirmedForm !== form) {
+            return false;
+        }
+
+        confirmedForm = null;
+        return true;
+    }
+
+    if (confirmationDialog) {
+        const cancelConfirmationButton = confirmationDialog.querySelector("[data-maintenance-confirm-cancel]");
+        const closeConfirmationButton = confirmationDialog.querySelector("[data-maintenance-confirm-close]");
+
+        [cancelConfirmationButton, closeConfirmationButton].filter(Boolean).forEach(function (button) {
+            button.addEventListener("click", closeConfirmationDialog);
+        });
+
+        confirmationDialog.addEventListener("cancel", function () {
+            pendingConfirmationForm = null;
+        });
+        confirmationDialog.addEventListener("close", function () {
+            pendingConfirmationForm = null;
+        });
+
+        if (confirmationSubmitButton) {
+            confirmationSubmitButton.addEventListener("click", function () {
+                const form = pendingConfirmationForm;
+                const followHostId = pendingFollowHostId;
+                if (!form) {
+                    closeConfirmationDialog();
+                    return;
+                }
+
+                closeConfirmationDialog();
+                setFollowHostInput(form, followHostId);
+                confirmedForm = form;
+                if (typeof form.requestSubmit === "function") {
+                    form.requestSubmit();
+                    return;
+                }
+
+                // Older browsers skip submit listeners for form.submit().
+                showLoading(form.dataset.loadingMessage || "Preparando tarefas...");
+                form.submit();
+            });
+        }
+    }
+
     function savePanelState() {
         const panelState = {};
         document.querySelectorAll("[data-maintenance-panel]").forEach(function (panel) {
@@ -207,6 +326,11 @@
 
         if (actionForm) {
             actionForm.addEventListener("submit", function (event) {
+                if (consumeConfirmedSubmission(actionForm)) {
+                    showLoading(actionForm.dataset.loadingMessage || "Aplicando ação...");
+                    return;
+                }
+
                 const selectedCount = selectedRows().length;
                 if (selectedCount === 0) {
                     event.preventDefault();
@@ -225,12 +349,15 @@
                 const actionLabel = actionSelect
                     ? selectedActionLabel()
                     : (config.actionLabels[action] || "aplicar esta ação");
-                if (!window.confirm("Confirma " + actionLabel + " para " + selectedCount + " item(ns)?")) {
-                    event.preventDefault();
-                    return;
+                event.preventDefault();
+                if (requestMaintenanceConfirmation(
+                    actionForm,
+                    "Confirma " + actionLabel + " para " + selectedCount + " item(ns)?",
+                    selectedHostId(selectedRows()),
+                )) {
+                    showLoading(actionForm.dataset.loadingMessage || "Aplicando ação...");
+                    actionForm.submit();
                 }
-
-                showLoading(actionForm.dataset.loadingMessage || "Aplicando ação...");
             });
         }
 
@@ -540,6 +667,11 @@
         }
         if (actionForm) {
             actionForm.addEventListener("submit", function (event) {
+                if (consumeConfirmedSubmission(actionForm)) {
+                    showLoading(actionForm.dataset.loadingMessage || "Preparando tarefas...");
+                    return;
+                }
+
                 const selectedCount = selectedRows().length;
                 if (selectedCount === 0) {
                     event.preventDefault();
@@ -556,12 +688,15 @@
                 const actionLabel = selectedOptionLabel(targetStageSelect)
                     + " / "
                     + selectedOptionLabel(targetStatusSelect);
-                if (!window.confirm("Confirma preparar " + selectedCount + " item(ns) como " + actionLabel + "?")) {
-                    event.preventDefault();
-                    return;
+                event.preventDefault();
+                if (requestMaintenanceConfirmation(
+                    actionForm,
+                    "Confirma preparar " + selectedCount + " item(ns) como " + actionLabel + "?",
+                    selectedHostId(selectedRows()),
+                )) {
+                    showLoading(actionForm.dataset.loadingMessage || "Preparando tarefas...");
+                    actionForm.submit();
                 }
-
-                showLoading(actionForm.dataset.loadingMessage || "Preparando tarefas...");
             });
         }
 
@@ -753,6 +888,11 @@
 
         if (actionForm) {
             actionForm.addEventListener("submit", function (event) {
+                if (consumeConfirmedSubmission(actionForm)) {
+                    showLoading(actionForm.dataset.loadingMessage || "Preparando tarefas...");
+                    return;
+                }
+
                 const selectedCount = selectedRows().length;
                 if (selectedCount === 0) {
                     event.preventDefault();
@@ -769,12 +909,15 @@
                 const actionLabel = selectedOptionLabel(targetStageSelect)
                     + " / "
                     + selectedOptionLabel(targetStatusSelect);
-                if (!window.confirm("Confirma preparar " + selectedCount + " item(ns) como " + actionLabel + "?")) {
-                    event.preventDefault();
-                    return;
+                event.preventDefault();
+                if (requestMaintenanceConfirmation(
+                    actionForm,
+                    "Confirma preparar " + selectedCount + " item(ns) como " + actionLabel + "?",
+                    selectedHostId(selectedRows()),
+                )) {
+                    showLoading(actionForm.dataset.loadingMessage || "Preparando tarefas...");
+                    actionForm.submit();
                 }
-
-                showLoading(actionForm.dataset.loadingMessage || "Preparando tarefas...");
             });
         }
 

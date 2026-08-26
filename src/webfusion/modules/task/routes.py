@@ -9,6 +9,9 @@ The route layer keeps three concerns local:
 - lightweight HTTP auth for this module
 - form normalization and UI defaults
 - batching rules for individual versus collective task creation
+
+The route never changes queue state directly. It builds a validated request and
+delegates durable task reuse or creation to ``modules.task.service``.
 """
 
 import json
@@ -98,9 +101,8 @@ TASK_ACTIONS = (
     },
 )
 
-# Different station families do not always share the same path/extension
-# conventions. These defaults let the UI suggest sensible values before the
-# operator customizes them.
+# Station families use different path and extension conventions. Defaults keep
+# the form useful before an operator provides a family-specific override.
 
 
 def _task_auth_failed():
@@ -596,9 +598,7 @@ def task_builder():
         }
     )
 
-    # --------------------------------------------------
-    # Discover host prefixes dynamically
-    # --------------------------------------------------
+    # --- station-family discovery ---
     cursor.execute("""
         SELECT
             CASE
@@ -617,9 +617,7 @@ def task_builder():
         selected_values=request.args,
     )
 
-    # --------------------------------------------------
-    # Determine checkbox state (online-only filter)
-    # --------------------------------------------------
+    # --- host visibility ---
     if request.method == "POST":
         online_only = request.form.get("online_only") == "1"
     else:
@@ -627,9 +625,7 @@ def task_builder():
         # filter to explicitly request the full HOST list.
         online_only = request.args.get("online_only", "1") == "1"
 
-    # --------------------------------------------------
-    # Load hosts for individual selection
-    # --------------------------------------------------
+    # --- individual host selection ---
     query = """
         SELECT ID_HOST, NA_HOST_NAME, DT_LAST_DISCOVERY
         FROM HOST
@@ -643,9 +639,7 @@ def task_builder():
     cursor.execute(query)
     hosts = cursor.fetchall()
 
-    # --------------------------------------------------
-    # Handle POST submission
-    # --------------------------------------------------
+    # --- submitted task request ---
     if request.method == "POST":
 
         selected_action = _normalize_task_action(request.form.get("action"))
@@ -669,6 +663,7 @@ def task_builder():
                     "task.task_list",
                     queued_count=1,
                     skipped_count=0,
+                    created_host_id=host_id,
                 )
             )
 
@@ -677,7 +672,7 @@ def task_builder():
             request.form.get("mode"),
         )
 
-        # Task filter payload
+        # The worker expects a complete filter dictionary for every task.
         filter_data = {
             "start_date": request.form.get("start_date") or None,
             "end_date": request.form.get("end_date") or None,
@@ -693,9 +688,8 @@ def task_builder():
             filter_data["max_total_gb"] = None
             filter_data["sort_order"] = None
 
-        # ==================================================
-        # Collective execution
-        # ==================================================
+        # --- collective task creation ---
+        created_host_id = None
         if execution_type == "collective":
 
             host_filter = request.form.get("host_filter", "ALL")
@@ -715,7 +709,7 @@ def task_builder():
             if online_only:
                 query += " AND IS_OFFLINE = 0"
 
-            # Apply prefix filter dynamically
+            # Apply the selected station family before creating a batch.
             if host_filter != "ALL":
                 if str(host_filter).upper() == "UMS300":
                     query += " AND UPPER(NA_HOST_NAME) LIKE %s"
@@ -770,18 +764,17 @@ def task_builder():
                     creation_summary["queued_count"] += batch_summary["queued_count"]
                     creation_summary["skipped_count"] += batch_summary["skipped_count"]
 
-        # ==================================================
-        # Individual execution
-        # ==================================================
+        # --- individual task creation ---
         else:
 
             host_id = request.form.get("host_id")
             creation_summary = {"queued_count": 0, "skipped_count": 0}
 
             if host_id:
+                created_host_id = int(host_id)
                 creation_summary = create_task(
                     db=db,
-                    hosts=[int(host_id)],
+                    hosts=[created_host_id],
                     task_type=task_type,
                     mode=mode,
                     filter_data=filter_data,
@@ -792,12 +785,11 @@ def task_builder():
                 "task.task_list",
                 queued_count=creation_summary["queued_count"],
                 skipped_count=creation_summary["skipped_count"],
+                created_host_id=created_host_id,
             )
         )
 
-    # --------------------------------------------------
-    # Render page
-    # --------------------------------------------------
+    # --- page response ---
     record_page_view()
     return render_template(
         "task/task_builder.html",
@@ -925,6 +917,9 @@ def task_list():
 
     queued_count = _safe_int_arg("queued_count")
     skipped_count = _safe_int_arg("skipped_count")
+    created_host_id = _safe_int_arg("created_host_id")
+    if created_host_id is not None and created_host_id <= 0:
+        created_host_id = None
 
     record_page_view()
     return render_template(
@@ -932,5 +927,6 @@ def task_list():
         tasks=tasks,
         queued_count=queued_count,
         skipped_count=skipped_count,
+        created_host_id=created_host_id,
         show_creation_summary=queued_count is not None or skipped_count is not None,
     )

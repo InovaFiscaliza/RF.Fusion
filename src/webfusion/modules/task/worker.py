@@ -1,22 +1,21 @@
-"""Legacy/example worker for HOST_TASK execution.
+"""Legacy HOST_TASK socket-dispatch example.
 
-This file is not part of the normal Flask request flow. It is kept as a small
-reference for queue consumption logic and should be read as operational sample
-code rather than as a core WebFusion runtime module.
+This file is excluded from the Flask request lifecycle and is not started by
+the current deployment. It documents the former bridge from a BPDATA task row
+to an external socket client; appCataloga owns the supported queue runtime.
 """
 
 import time
 import json
 from db import get_connection
-from socket_client import send_socket_payload  # você vai criar
+from socket_client import send_socket_payload  # Provided only by legacy deployments.
 
 
 def run_worker():
     """Poll pending tasks and forward them to the socket layer.
 
-    This file is mainly useful as a reference bridge between the database task
-    contract and a socket-execution model. It is not part of the normal Flask
-    request lifecycle.
+    This legacy loop has no claim-race protection and must not be used as a
+    production queue worker. It remains only as a payload-shape reference.
     """
 
     while True:

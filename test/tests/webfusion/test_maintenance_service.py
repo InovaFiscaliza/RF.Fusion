@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 
@@ -40,6 +41,65 @@ class TestMaintenanceService(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_maintenance_service()
+
+    def test_format_brazil_datetime_converts_utc_to_brazil_time(self):
+        rendered = self.module._format_brazil_datetime(
+            datetime(2026, 8, 26, 15, 0, 0)
+        )
+
+        self.assertEqual(rendered, "26/08/2026 12:00:00 BRT")
+
+    def test_list_history_adds_localized_dates_for_all_stages(self):
+        class FakeCursor:
+            def __init__(self):
+                self.queries = 0
+
+            def execute(self, sql, params=None):
+                self.queries += 1
+
+            def fetchall(self):
+                if self.queries == 1:
+                    return [{"present": 1}]
+                return [
+                    {
+                        "ID_HISTORY": 1,
+                        "NU_STATUS_DISCOVERY": 0,
+                        "NU_STATUS_BACKUP": 0,
+                        "NU_STATUS_PROCESSING": 0,
+                        "ID_FILE_TASK": None,
+                        "DT_DISCOVERED": datetime(2026, 8, 26, 12, 0, 0),
+                        "DT_BACKUP": datetime(2026, 8, 26, 13, 0, 0),
+                        "DT_PROCESSED": datetime(2026, 8, 26, 14, 0, 0),
+                    }
+                ]
+
+        class FakeDB:
+            def __init__(self):
+                self.cursor_instance = FakeCursor()
+
+            def cursor(self):
+                return self.cursor_instance
+
+        rows = self.module.list_file_history(
+            FakeDB(),
+            {
+                "host_id": None,
+                "host_file_name": "",
+                "server_file_name": "",
+                "message": "",
+                "date_field": "",
+                "date_from": "",
+                "date_to": "",
+                "discovery_status": None,
+                "backup_status": None,
+                "processing_status": None,
+                "limit": 50,
+            },
+        )
+
+        self.assertEqual(rows[0]["DT_DISCOVERED_DISPLAY"], "26/08/2026 09:00:00 BRT")
+        self.assertEqual(rows[0]["DT_BACKUP_DISPLAY"], "26/08/2026 10:00:00 BRT")
+        self.assertEqual(rows[0]["DT_PROCESSED_DISPLAY"], "26/08/2026 11:00:00 BRT")
 
     def test_build_filters_normalizes_invalid_values(self):
         filters = self.module.build_filters(

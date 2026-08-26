@@ -10,7 +10,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/server_page.css', v='20260819-runtime-health-module') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/server_page.css', v='20260826-host-table-filter') }}">
 {% endblock %}
 
 {% block content %}
@@ -39,8 +39,6 @@
         Os painéis detalhados são carregados sob demanda para manter o panorama inicial ágil.
     </div>
 </div>
-
-<form id="server-filter-form" method="get" data-loading-message="Atualizando panorama da máquina virtual..."></form>
 
 <div class="server-page-stack">
     <div class="server-top-grid">
@@ -717,22 +715,11 @@
                                     id="online_only"
                                     name="online_only"
                                     value="1"
-                                    form="server-filter-form"
                                     {% if online_only %}checked{% endif %}
                                 >
                                 Apenas Online na Tabela
                             </label>
                         </div>
-                        <button
-                            type="submit"
-                            class="btn btn-primary btn-search"
-                            form="server-filter-form"
-                        >
-                            Atualizar Panorama
-                        </button>
-                        <a class="btn btn-secondary" href="{{ url_for('server.server') }}">
-                            Limpar filtro
-                        </a>
                     </div>
                 </div>
                 <div class="annual-breakdown">
@@ -768,5 +755,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/server_page.js', v='20260819-runtime-health-module') }}"></script>
+<script src="{{ url_for('static', filename='js/server_page.js', v='20260826-host-table-filter') }}"></script>
 {% endblock %}

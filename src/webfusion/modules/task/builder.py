@@ -1,7 +1,8 @@
-"""Helpers for building task filter payloads.
+"""Build the stable filter payload stored with WebFusion-created host tasks.
 
-The resulting dictionary mirrors the filter structure expected by appCataloga
-workers, so the web layer can remain thin and predictable.
+The resulting dictionary mirrors the appCataloga worker contract. A default
+``NONE_FILTER`` is deliberately complete: workers can read every expected key
+without depending on whether a particular form control was displayed.
 """
 
 NONE_FILTER = {

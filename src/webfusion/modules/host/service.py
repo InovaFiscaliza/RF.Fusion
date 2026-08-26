@@ -9,7 +9,9 @@ This module is where WebFusion reconciles three different kinds of information:
 
 The `/server` and `/host` pages share much of that meaning, so the service code
 stays together here instead of duplicating SQL, caching, and error-grouping
-rules across several files.
+rules across several files. Runtime probes use short TTL caches; the
+appCataloga-compatible host snapshot intentionally reads the materialized row
+directly so a collector never receives WebFusion display fields.
 """
 
 import os
@@ -19,7 +21,7 @@ import subprocess
 import time
 from datetime import datetime
 
-from db import get_connection_summary
+from db import get_connection_bpdata, get_connection_rfdata, get_connection_summary
 
 
 _RUNTIME_OVERVIEW_CACHE = {
@@ -70,6 +72,91 @@ HOST_LIST_CACHE_TTL_SECONDS = 60.0
 SERVER_HOST_ROWS_CACHE_TTL_SECONDS = 60.0
 HOST_LOCATION_HISTORY_CACHE_TTL_SECONDS = 120.0
 HOST_STATISTICS_CACHE_TTL_SECONDS = 60.0
+
+# These values are the durable BPDATA queue contract shared with appCataloga.
+# They stay named here because this read-only WebFusion view must distinguish
+# a host-level operation from the next file that the backup worker will fetch.
+FILE_TASK_BACKUP_TYPE = 1
+FILE_TASK_PROCESS_TYPE = 2
+FILE_TASK_DISCOVERY_TYPE = 3
+TASK_PENDING = 1
+TASK_RUNNING = 2
+PROCESSED_FILE_SPECTRUM_METADATA_LIMIT = 200
+
+HOST_ACTIVITY_SOURCE = "host-task"
+BACKUP_ACTIVITY_SOURCE = "backup-file"
+FILE_ACTIVITY_SOURCE = "file-task"
+
+# This is the stable field contract currently published by the appCataloga
+# metrics gateway. Keep it separate from the broader WebFusion host drill-down
+# row so consumers can migrate without receiving WebFusion-only fields.
+HOST_OPERATIONAL_METRIC_FIELDS = (
+    "ID_HOST",
+    "NA_HOST_NAME",
+    "IS_OFFLINE",
+    "IS_BUSY",
+    "DT_LAST_CHECK",
+    "DT_LAST_OFFLINE_AT",
+    "NA_LAST_OFFLINE_DESCRIPTION",
+    "DT_LAST_DISCOVERY_COMPLETED_AT",
+    "NU_LAST_DISCOVERY_FILE_COUNT",
+    "VL_LAST_DISCOVERY_KB",
+    "DT_LAST_DISCOVERY_WITH_FILES",
+    "DT_LAST_BACKUP",
+    "NU_BACKUP_DONE_THIS_MONTH",
+    "VL_BACKUP_DONE_GB_THIS_MONTH",
+    "DT_LAST_PROCESSING",
+    "NU_PROCESSING_DONE_THIS_MONTH",
+    "VL_PROCESSING_DONE_GB_THIS_MONTH",
+    "NU_BACKUP_QUEUE_FILES_TOTAL",
+    "VL_BACKUP_QUEUE_GB_TOTAL",
+    "NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL",
+    "VL_BACKUP_QUEUE_RUNNING_GB_TOTAL",
+    "NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL",
+    "VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL",
+    "NU_PROCESSING_QUEUE_FILES_TOTAL",
+    "VL_PROCESSING_QUEUE_GB_TOTAL",
+    "NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL",
+    "VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL",
+    "NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL",
+    "VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL",
+    "NU_PAYLOAD_DELETED_FILES_TOTAL",
+    "VL_PAYLOAD_DELETED_GB_TOTAL",
+    "NU_DISCOVERED_FILES_TOTAL",
+    "VL_DISCOVERED_GB_TOTAL",
+    "NU_BACKUP_DONE_FILES_TOTAL",
+    "VL_BACKUP_DONE_GB_TOTAL",
+    "NU_PROCESSING_DONE_FILES_TOTAL",
+    "VL_PROCESSING_DONE_GB_TOTAL",
+    "NU_BACKUP_PENDING_FILES_CURRENT",
+    "VL_BACKUP_PENDING_GB_CURRENT",
+    "NU_BACKUP_ERROR_FILES_CURRENT",
+    "VL_BACKUP_ERROR_GB_CURRENT",
+    "NU_BACKUP_SUSPENDED_FILES_CURRENT",
+    "VL_BACKUP_SUSPENDED_GB_CURRENT",
+    "NU_PROCESSING_PENDING_FILES_CURRENT",
+    "VL_PROCESSING_PENDING_GB_CURRENT",
+    "NU_PROCESSING_ERROR_FILES_CURRENT",
+    "VL_PROCESSING_ERROR_GB_CURRENT",
+    "NU_PROCESSING_FROZEN_FILES_CURRENT",
+    "VL_PROCESSING_FROZEN_GB_CURRENT",
+    "NU_FACT_SPECTRUM_TOTAL",
+    "NA_CURRENT_LOCALITY_LABEL",
+    "NA_CURRENT_SITE_LABEL",
+    "NA_CURRENT_STATE_CODE",
+    "VL_CURRENT_LATITUDE",
+    "VL_CURRENT_LONGITUDE",
+    "IS_SSH_FAILURE",
+    "DT_LAST_SSH_EVALUATED_AT",
+    "DT_LAST_SSH_FAILURE_AT",
+    "NA_LAST_SSH_FAILURE_CODE",
+    "NA_LAST_SSH_FAILURE_DESCRIPTION",
+    "IS_GPS_GNSS_UNAVAILABLE",
+    "DT_LAST_GPS_GNSS_EVALUATED_AT",
+    "DT_LAST_GPS_GNSS_UNAVAILABLE_AT",
+    "NA_LAST_GPS_GNSS_UNAVAILABLE_DESCRIPTION",
+    "NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME",
+)
 
 
 def _format_bytes_human(num_bytes):
@@ -804,15 +891,6 @@ def _get_summary_host_rows(search=None, online_only=False):
     return rows
 
 
-def _empty_host_location_payload():
-    """Return the empty locality payload expected by the host page."""
-
-    return {
-        "equipment_matches": [],
-        "location_history": [],
-    }
-
-
 def _get_host_current_snapshot_row(host_id):
     """Read the summary snapshot row that backs one host drill-down."""
 
@@ -830,7 +908,6 @@ def _get_host_current_snapshot_row(host_id):
             DT_LAST_CHECK,
             DT_LAST_OFFLINE_AT,
             NA_LAST_OFFLINE_DESCRIPTION,
-            DT_LAST_DISCOVERY,
             DT_LAST_DISCOVERY_COMPLETED_AT,
             NU_LAST_DISCOVERY_FILE_COUNT,
             VL_LAST_DISCOVERY_KB,
@@ -898,6 +975,404 @@ def _get_host_current_snapshot_row(host_id):
     row = cur.fetchone() or {}
     conn.close()
     return row
+
+
+def get_host_operational_metrics_snapshot(host_id: int) -> dict:
+    """Read the appCataloga-compatible metrics contract for one host."""
+
+    row = _get_host_current_snapshot_row(host_id)
+    if not row:
+        return {}
+
+    return {
+        field: row.get(field)
+        for field in HOST_OPERATIONAL_METRIC_FIELDS
+    }
+
+
+def _read_active_host_activity(cursor, host_id: int) -> dict | None:
+    """Return the host-level task currently claiming operational attention."""
+    cursor.execute(
+        """
+        SELECT
+            ID_HOST_TASK AS TASK_ID,
+            FK_HOST AS HOST_ID,
+            NU_TYPE AS TASK_TYPE,
+            NU_STATUS AS TASK_STATUS,
+            NA_MESSAGE AS MESSAGE,
+            DT_HOST_TASK AS UPDATED_AT
+        FROM HOST_TASK
+        WHERE FK_HOST = %s
+          AND NU_STATUS IN (%s, %s)
+        ORDER BY
+            CASE WHEN NU_STATUS = %s THEN 0 ELSE 1 END,
+            DT_HOST_TASK ASC,
+            ID_HOST_TASK ASC
+        LIMIT 1
+        """,
+        (host_id, TASK_PENDING, TASK_RUNNING, TASK_RUNNING),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "source": HOST_ACTIVITY_SOURCE,
+        "task_id": int(row["TASK_ID"]),
+        "host_id": int(row["HOST_ID"]),
+        "task_type": int(row["TASK_TYPE"]),
+        "status": int(row["TASK_STATUS"]),
+        "message": row.get("MESSAGE") or None,
+        "updated_at": row.get("UPDATED_AT"),
+    }
+
+
+def _read_active_backup_activity(cursor, host_id: int) -> dict | None:
+    """Return the running backup file, or the next pending backup file."""
+    cursor.execute(
+        """
+        SELECT
+            ID_FILE_TASK AS TASK_ID,
+            FK_HOST AS HOST_ID,
+            NU_TYPE AS TASK_TYPE,
+            NU_STATUS AS TASK_STATUS,
+            NA_HOST_FILE_NAME AS FILE_NAME,
+            NA_HOST_FILE_PATH AS FILE_PATH,
+            VL_FILE_SIZE_KB_HOST AS FILE_SIZE_KB,
+            NA_MESSAGE AS MESSAGE,
+            DT_FILE_TASK AS UPDATED_AT
+        FROM FILE_TASK
+        WHERE FK_HOST = %s
+          AND NU_TYPE = %s
+          AND NU_STATUS IN (%s, %s)
+        ORDER BY
+            CASE WHEN NU_STATUS = %s THEN 0 ELSE 1 END,
+            DT_FILE_TASK ASC,
+            ID_FILE_TASK ASC
+        LIMIT 1
+        """,
+        (
+            host_id,
+            FILE_TASK_BACKUP_TYPE,
+            TASK_PENDING,
+            TASK_RUNNING,
+            TASK_RUNNING,
+        ),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "source": BACKUP_ACTIVITY_SOURCE,
+        "task_id": int(row["TASK_ID"]),
+        "host_id": int(row["HOST_ID"]),
+        "task_type": int(row["TASK_TYPE"]),
+        "status": int(row["TASK_STATUS"]),
+        "file_name": row.get("FILE_NAME") or row.get("FILE_PATH") or None,
+        "file_path": row.get("FILE_PATH") or None,
+        "file_size_kb": row.get("FILE_SIZE_KB"),
+        "message": row.get("MESSAGE") or None,
+        "updated_at": row.get("UPDATED_AT"),
+    }
+
+
+def _read_running_file_activity(cursor, host_id: int) -> dict | None:
+    """Return a running file stage that has not remained in the backup type."""
+    cursor.execute(
+        """
+        SELECT
+            ID_FILE_TASK AS TASK_ID,
+            FK_HOST AS HOST_ID,
+            NU_TYPE AS TASK_TYPE,
+            NU_STATUS AS TASK_STATUS,
+            NA_HOST_FILE_NAME AS FILE_NAME,
+            NA_HOST_FILE_PATH AS FILE_PATH,
+            VL_FILE_SIZE_KB_HOST AS FILE_SIZE_KB,
+            NA_MESSAGE AS MESSAGE,
+            DT_FILE_TASK AS UPDATED_AT
+        FROM FILE_TASK
+        WHERE FK_HOST = %s
+          AND NU_STATUS = %s
+        ORDER BY DT_FILE_TASK ASC, ID_FILE_TASK ASC
+        LIMIT 1
+        """,
+        (host_id, TASK_RUNNING),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "source": FILE_ACTIVITY_SOURCE,
+        "task_id": int(row["TASK_ID"]),
+        "host_id": int(row["HOST_ID"]),
+        "task_type": int(row["TASK_TYPE"]),
+        "status": int(row["TASK_STATUS"]),
+        "file_name": row.get("FILE_NAME") or row.get("FILE_PATH") or None,
+        "file_path": row.get("FILE_PATH") or None,
+        "file_size_kb": row.get("FILE_SIZE_KB"),
+        "message": row.get("MESSAGE") or None,
+        "updated_at": row.get("UPDATED_AT"),
+    }
+
+
+def _read_host_activity_detail(cursor, host_id: int, task_id: int) -> dict | None:
+    """Read one host-task row so an open dialog can reach its terminal state."""
+    cursor.execute(
+        """
+        SELECT
+            ID_HOST_TASK AS TASK_ID,
+            FK_HOST AS HOST_ID,
+            NU_TYPE AS TASK_TYPE,
+            NU_STATUS AS TASK_STATUS,
+            NA_MESSAGE AS MESSAGE,
+            DT_HOST_TASK AS UPDATED_AT
+        FROM HOST_TASK
+        WHERE ID_HOST_TASK = %s
+          AND FK_HOST = %s
+        LIMIT 1
+        """,
+        (task_id, host_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "source": HOST_ACTIVITY_SOURCE,
+        "task_id": int(row["TASK_ID"]),
+        "host_id": int(row["HOST_ID"]),
+        "task_type": int(row["TASK_TYPE"]),
+        "status": int(row["TASK_STATUS"]),
+        "message": row.get("MESSAGE") or None,
+        "updated_at": row.get("UPDATED_AT"),
+    }
+
+
+def _read_file_activity_detail(
+    cursor,
+    host_id: int,
+    task_id: int,
+    source: str,
+) -> dict | None:
+    """Read one file row without losing it when the worker changes its stage."""
+    cursor.execute(
+        """
+        SELECT
+            ID_FILE_TASK AS TASK_ID,
+            FK_HOST AS HOST_ID,
+            NU_TYPE AS TASK_TYPE,
+            NU_STATUS AS TASK_STATUS,
+            NA_HOST_FILE_NAME AS FILE_NAME,
+            NA_HOST_FILE_PATH AS FILE_PATH,
+            VL_FILE_SIZE_KB_HOST AS FILE_SIZE_KB,
+            NA_SERVER_FILE_NAME AS SERVER_FILE_NAME,
+            NA_MESSAGE AS MESSAGE,
+            DT_FILE_TASK AS UPDATED_AT
+        FROM FILE_TASK
+        WHERE ID_FILE_TASK = %s
+          AND FK_HOST = %s
+        LIMIT 1
+        """,
+        (task_id, host_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "source": source,
+        "task_id": int(row["TASK_ID"]),
+        "host_id": int(row["HOST_ID"]),
+        "task_type": int(row["TASK_TYPE"]),
+        "status": int(row["TASK_STATUS"]),
+        "file_name": row.get("FILE_NAME") or row.get("FILE_PATH") or None,
+        "file_path": row.get("FILE_PATH") or None,
+        "server_file_name": row.get("SERVER_FILE_NAME") or None,
+        "file_size_kb": row.get("FILE_SIZE_KB"),
+        "message": row.get("MESSAGE") or None,
+        "updated_at": row.get("UPDATED_AT"),
+    }
+
+
+def _read_file_history_activity(
+    cursor,
+    host_id: int,
+    file_path: str,
+    file_name: str,
+) -> dict | None:
+    """Return the durable processing result after its live task is deleted."""
+    cursor.execute(
+        """
+        SELECT
+            FK_HOST AS HOST_ID,
+            NA_HOST_FILE_PATH AS FILE_PATH,
+            NA_HOST_FILE_NAME AS FILE_NAME,
+            NA_SERVER_FILE_NAME AS SERVER_FILE_NAME,
+            NU_STATUS_PROCESSING AS TASK_STATUS,
+            NA_MESSAGE AS MESSAGE,
+            DT_PROCESSED AS UPDATED_AT
+        FROM FILE_TASK_HISTORY
+        WHERE FK_HOST = %s
+          AND NA_HOST_FILE_PATH = %s
+          AND NA_HOST_FILE_NAME = %s
+        LIMIT 1
+        """,
+        (host_id, file_path, file_name),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        "source": FILE_ACTIVITY_SOURCE,
+        "task_id": 0,
+        "host_id": int(row["HOST_ID"]),
+        "task_type": FILE_TASK_PROCESS_TYPE,
+        "status": int(row["TASK_STATUS"]),
+        "file_name": row.get("FILE_NAME") or None,
+        "file_path": row.get("FILE_PATH") or None,
+        "server_file_name": row.get("SERVER_FILE_NAME") or None,
+        "message": row.get("MESSAGE") or None,
+        "updated_at": row.get("UPDATED_AT"),
+    }
+
+
+def get_host_current_activity(host_id: int) -> dict | None:
+    """Return one live host task, falling back to its backup queue activity.
+
+    The view intentionally reads BPDATA directly and bypasses the summary
+    cache. Operators use it to observe the worker now, while the materialized
+    summary remains responsible for historical counters on the rest of `/host`.
+    """
+    connection = get_connection_bpdata()
+    try:
+        cursor = connection.cursor()
+        host_activity = _read_active_host_activity(cursor, int(host_id))
+        if host_activity and host_activity["status"] == TASK_RUNNING:
+            return host_activity
+
+        backup_activity = _read_active_backup_activity(cursor, int(host_id))
+        if backup_activity and backup_activity["status"] == TASK_RUNNING:
+            return backup_activity
+
+        file_activity = _read_running_file_activity(cursor, int(host_id))
+        if file_activity:
+            return file_activity
+
+        # A waiting host task remains more descriptive than a future file,
+        # but it must not hide a backup transfer that is already in progress.
+        return host_activity or backup_activity
+    finally:
+        connection.close()
+
+
+def get_host_activity_detail(
+    host_id: int,
+    source: str,
+    task_id: int,
+    file_path: str | None = None,
+    file_name: str | None = None,
+) -> dict | None:
+    """Return one activity row, including terminal status for dialog polling."""
+    connection = get_connection_bpdata()
+    try:
+        cursor = connection.cursor()
+        if source == HOST_ACTIVITY_SOURCE:
+            return _read_host_activity_detail(cursor, int(host_id), int(task_id))
+        if source in {BACKUP_ACTIVITY_SOURCE, FILE_ACTIVITY_SOURCE}:
+            activity = _read_file_activity_detail(
+                cursor,
+                int(host_id),
+                int(task_id),
+                source,
+            )
+            if activity:
+                return activity
+            if file_path and file_name:
+                return _read_file_history_activity(
+                    cursor,
+                    int(host_id),
+                    file_path,
+                    file_name,
+                )
+        return None
+    finally:
+        connection.close()
+
+
+def get_processed_file_spectrum_metadata(server_file_name: str) -> dict | None:
+    """Read summary and per-spectrum metadata for one repository file."""
+    normalized_name = str(server_file_name or "").strip()
+    if not normalized_name:
+        return None
+
+    connection = get_connection_rfdata()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT
+                repos.ID_FILE,
+                repos.NA_FILE,
+                COUNT(DISTINCT bridge.FK_SPECTRUM) AS SPECTRUM_COUNT,
+                MIN(spectrum.DT_TIME_START) AS TIME_START,
+                MAX(spectrum.DT_TIME_END) AS TIME_END,
+                MIN(spectrum.NU_FREQ_START) AS FREQUENCY_START,
+                MAX(spectrum.NU_FREQ_END) AS FREQUENCY_END,
+                COUNT(DISTINCT spectrum.FK_SITE) AS SITE_COUNT,
+                COUNT(DISTINCT spectrum.FK_EQUIPMENT) AS EQUIPMENT_COUNT
+            FROM DIM_SPECTRUM_FILE repos
+            JOIN BRIDGE_SPECTRUM_FILE bridge
+              ON bridge.FK_FILE = repos.ID_FILE
+            JOIN FACT_SPECTRUM spectrum
+              ON spectrum.ID_SPECTRUM = bridge.FK_SPECTRUM
+            WHERE repos.NA_VOLUME = %s
+              AND repos.NA_FILE = %s
+            GROUP BY repos.ID_FILE, repos.NA_FILE
+            ORDER BY repos.ID_FILE DESC
+            LIMIT 1
+            """,
+            ("reposfi", normalized_name),
+        )
+        metadata = cursor.fetchone()
+        if not metadata:
+            return None
+
+        cursor.execute(
+            """
+            SELECT
+                spectrum.ID_SPECTRUM,
+                spectrum.NU_FREQ_START AS FREQUENCY_START,
+                spectrum.NU_FREQ_END AS FREQUENCY_END,
+                spectrum.NA_DESCRIPTION AS DESCRIPTION,
+                spectrum.DT_TIME_START AS TIME_START,
+                spectrum.DT_TIME_END AS TIME_END,
+                COALESCE(site.NA_SITE, CONCAT('Site ', spectrum.FK_SITE)) AS LOCALITY,
+                COALESCE(
+                    equipment.NA_EQUIPMENT,
+                    CONCAT('Equipamento ', spectrum.FK_EQUIPMENT)
+                ) AS EQUIPMENT
+            FROM DIM_SPECTRUM_FILE repos
+            JOIN BRIDGE_SPECTRUM_FILE bridge
+              ON bridge.FK_FILE = repos.ID_FILE
+            JOIN FACT_SPECTRUM spectrum
+              ON spectrum.ID_SPECTRUM = bridge.FK_SPECTRUM
+            LEFT JOIN DIM_SPECTRUM_SITE site
+              ON site.ID_SITE = spectrum.FK_SITE
+            LEFT JOIN DIM_SPECTRUM_EQUIPMENT equipment
+              ON equipment.ID_EQUIPMENT = spectrum.FK_EQUIPMENT
+            WHERE repos.ID_FILE = %s
+            ORDER BY spectrum.DT_TIME_START DESC, spectrum.ID_SPECTRUM DESC
+            LIMIT %s
+            """,
+            (metadata["ID_FILE"], PROCESSED_FILE_SPECTRUM_METADATA_LIMIT),
+        )
+        metadata["SPECTRA"] = cursor.fetchall() or []
+        return metadata
+    finally:
+        connection.close()
 
 
 def _get_host_monthly_metric_rows(host_id):
@@ -1423,9 +1898,6 @@ def get_host_statistics(host_id):
     if not row:
         return None
 
-    row["PENDING_GB"] = round(float(row.get("VL_BACKUP_PENDING_GB_CURRENT") or 0), 2)
-    row["DONE_GB"] = round(float(row.get("VL_BACKUP_DONE_GB_TOTAL") or 0), 2)
-
     current_month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     monthly_rows = _get_host_monthly_metric_rows(normalized_host_id)
     row["CURRENT_MONTH_LABEL"] = current_month_start.strftime("%Y-%m")
@@ -1472,11 +1944,6 @@ def get_host_statistics(host_id):
     backup_yearly_breakdown, processing_yearly_breakdown = _build_host_yearly_breakdowns(monthly_rows)
     row["BACKUP_YEARLY_BREAKDOWN"] = backup_yearly_breakdown
     row["PROCESSING_YEARLY_BREAKDOWN"] = processing_yearly_breakdown
-
-    row["GROUPED_PROCESSING_ERRORS"] = None
-
-    row["MATCHED_RFDATA_EQUIPMENTS"] = None
-    row["LOCATION_HISTORY"] = None
 
     _HOST_STATISTICS_CACHE[normalized_host_id] = {
         "expires_at": now + HOST_STATISTICS_CACHE_TTL_SECONDS,

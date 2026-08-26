@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import traceback
+from collections.abc import Callable
 from datetime import datetime
 
 from utils.bootstrap_paths import bootstrap_app_paths
@@ -39,6 +40,8 @@ import config as k
 # Globals
 # ======================================================================
 SERVICE_NAME = "appCataloga_file_bkp"
+TRANSFER_PROGRESS_DETAIL_PREFIX = "transfer="
+TRANSFER_PROGRESS_DETAIL_SUFFIX = " bytes"
 log = logging_utils.log()
 process_status = {
     "worker": 0,
@@ -466,7 +469,61 @@ def parse_arguments() -> None:
     process_status["worker"] = worker
 
 
-def _do_work(sftp: sftpConnection, task: dict) -> dict:
+def _create_transfer_progress_callback(
+    db: dbHandlerBKP,
+    task: dict,
+) -> Callable[[int, int], None]:
+    """Build a throttled FILE_TASK update callback for one backup transfer."""
+    last_persisted_at = 0.0
+
+    def persist_progress(transferred_bytes: int, total_bytes: int) -> None:
+        nonlocal last_persisted_at
+
+        if total_bytes <= 0:
+            return
+
+        now = time.monotonic()
+        if (
+            last_persisted_at
+            and now - last_persisted_at < k.BACKUP_TRANSFER_PROGRESS_PERSIST_SECONDS
+        ):
+            return
+
+        message = tools.compose_message(
+            task_type=k.FILE_TASK_BACKUP_TYPE,
+            task_status=k.TASK_RUNNING,
+            path=task["host_file_path"],
+            name=task["host_file_name"],
+            detail=(
+                f"{TRANSFER_PROGRESS_DETAIL_PREFIX}{max(0, transferred_bytes)}"
+                f"/{total_bytes}{TRANSFER_PROGRESS_DETAIL_SUFFIX}"
+            ),
+        )
+
+        try:
+            db.file_task_update(
+                task_id=task["file_task_id"],
+                expected_status=k.TASK_RUNNING,
+                DT_FILE_TASK=datetime.now(),
+                NA_MESSAGE=message,
+                publish_summary=False,
+            )
+            last_persisted_at = now
+        except Exception as exc:
+            # Queue state remains valid even if the optional display update fails.
+            log.warning_event(
+                "backup_transfer_progress_persist_failed",
+                service=SERVICE_NAME,
+                worker_id=process_status["worker"],
+                host_id=task["host_id"],
+                task_id=task["file_task_id"],
+                error=exc,
+            )
+
+    return persist_progress
+
+
+def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
     """
     Transfer one remote file to the repository and return backup artifacts.
 
@@ -480,6 +537,7 @@ def _do_work(sftp: sftpConnection, task: dict) -> dict:
         local_path=task["server_file_path"],
         server_filename=task["server_filename"],
         discovery_snapshot=task["discovery_snapshot"],
+        progress_callback=_create_transfer_progress_callback(db, task),
     )
     transfer_elapsed_sec = round(time.monotonic() - transfer_started_at, 3)
 
@@ -681,7 +739,7 @@ def main() -> None:
             # The entrypoint measures total work time.
             # `_do_work()` measures only the completed transfer phase.
             work_started_at = time.monotonic()
-            result = _do_work(sftp_conn, task)
+            result = _do_work(db, sftp_conn, task)
             elapsed_sec = time.monotonic() - work_started_at
 
             # --- finalize success ---

@@ -189,6 +189,7 @@ class TransferWatchdogTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             local_file = str(Path(tmpdir) / "sample.bin")
             conn = self._build_connection(sftp=StreamingSFTP())
+            progress_updates = []
 
             conn.transfer(
                 "/remote/sample.bin",
@@ -197,9 +198,13 @@ class TransferWatchdogTests(unittest.TestCase):
                 stall_timeout_seconds=0.2,
                 progress_poll_seconds=0.01,
                 heartbeat_seconds=0.02,
+                progress_callback=lambda transferred, total: progress_updates.append(
+                    (transferred, total)
+                ),
             )
 
             self.assertEqual(Path(local_file).read_bytes(), b"x" * 6)
+            self.assertEqual(progress_updates[-1], (6, 6))
             self.assertFalse(
                 any("backup_transfer_abort" in entry for entry in conn.log.entries)
             )

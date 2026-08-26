@@ -1,13 +1,14 @@
-"""Application entrypoint for the WebFusion web interface.
+"""Assemble the WebFusion Flask application.
 
-This module owns only the routes that do not fit cleanly inside one feature
-package:
+This module owns only cross-feature routes:
 
 - the landing page shell
 - the summary-backed station-map APIs used by that page
-- the container health endpoint
+- the container liveness and proxy-diagnostic endpoints
 
-All feature-specific pages live in blueprints under ``modules/``.
+Feature pages and their JSON APIs live in blueprints under ``modules/``. The
+application does not implement queue, catalog, or Zabbix rules directly; those
+rules stay in their feature service modules.
 """
 
 import os

@@ -72,6 +72,12 @@ def load_maintenance_routes():
         "context": context,
     }
     fake_flask.jsonify = lambda payload: payload
+    fake_flask.redirect = lambda location: {"redirect": location}
+    fake_flask.url_for = lambda endpoint, **values: (
+        "/host?host_id=" + str(values["host_id"])
+        if endpoint == "host.host"
+        else "/maintenance/"
+    )
     fake_flask.request = SimpleNamespace(
         authorization=None,
         args={},
@@ -472,6 +478,24 @@ class TestMaintenanceRoutes(unittest.TestCase):
 
         self.assertEqual(calls, [([10], "process", 1)])
         self.assertEqual(payload["context"]["file_task_action_summary"]["updated_count"], 1)
+
+    def test_dashboard_redirects_to_host_after_successful_follow_action(self):
+        self.module.request.authorization = SimpleNamespace(
+            username="admin",
+            password="admin",
+        )
+        self.module.request.method = "POST"
+        self.module.request.form = {
+            "maintenance_form": "file_task_targets",
+            "file_task_target_stage": "backup",
+            "file_task_target_status": "1",
+            "selected_ids": [20],
+            "follow_host_id": "101",
+        }
+
+        payload = self.module.maintenance_dashboard()
+
+        self.assertEqual(payload, {"redirect": "/host?host_id=101"})
 
     def test_file_task_hosts_returns_only_the_optional_queue_subset(self):
         payload = self.module.file_task_hosts()

@@ -199,22 +199,37 @@
         },
         light: {
             label: "Claro",
-            url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+            url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
             options: {
-                subdomains: "abcd",
-                maxZoom: 20,
+                className: "wf-map-base-layer-light",
+                maxZoom: 16,
                 noWrap: true,
-                attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
+                attribution: "Tiles &copy; Esri"
+            },
+            overlay: {
+                url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
+                options: {
+                    maxZoom: 16,
+                    noWrap: true,
+                    attribution: "Labels &copy; Esri"
+                }
             }
         },
         dark: {
             label: "Escuro",
-            url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+            url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
             options: {
-                subdomains: "abcd",
-                maxZoom: 20,
+                maxZoom: 16,
                 noWrap: true,
-                attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
+                attribution: "Tiles &copy; Esri"
+            },
+            overlay: {
+                url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
+                options: {
+                    maxZoom: 16,
+                    noWrap: true,
+                    attribution: "Labels &copy; Esri"
+                }
             }
         },
         satellite: {
@@ -239,9 +254,8 @@
     // ---------------------------------------------------------------------
     // Theme persistence and layer switching
     // ---------------------------------------------------------------------
-    // Themes are intentionally simple basemap presets. Only satellite carries
-    // a second overlay layer because imagery without labels proved too opaque
-    // for operational navigation.
+    // Canvas and satellite themes carry a reference overlay because their base
+    // layers alone do not provide enough geographic context for operations.
     /**
      * Read the persisted basemap choice from local storage.
      *

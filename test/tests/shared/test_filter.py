@@ -12,6 +12,7 @@ What is covered here:
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 from pathlib import Path
 import sys
 
@@ -23,7 +24,13 @@ from _support import ensure_app_paths, import_package_module, SHARED_ROOT
 ensure_app_paths()
 
 filter_module = import_package_module("app_shared", SHARED_ROOT, "filter")
+file_metadata_module = import_package_module(
+    "app_shared",
+    SHARED_ROOT,
+    "file_metadata",
+)
 Filter = filter_module.Filter
+FileMetadata = file_metadata_module.FileMetadata
 
 
 class FilterContractTests(unittest.TestCase):
@@ -95,6 +102,25 @@ class FilterContractTests(unittest.TestCase):
         db_eval = filter_obj.evaluate_database(host_id=77, search_type=1, search_status=0)
         self.assertIsNone(db_eval["where"])
         self.assertIsNone(db_eval["msg_prefix"])
+
+    def test_recent_file_is_not_filtered_by_age(self) -> None:
+        metadata = FileMetadata(
+            NA_FULL_PATH="/mnt/internal/current.zip",
+            NA_PATH="/mnt/internal",
+            NA_FILE="current.zip",
+            NA_EXTENSION=".zip",
+            VL_FILE_SIZE_KB=1,
+            DT_FILE_CREATED=datetime.now(),
+            DT_FILE_MODIFIED=None,
+            DT_FILE_ACCESSED=None,
+            NA_OWNER="owner",
+            NA_GROUP="group",
+            NA_PERMISSIONS="-rw-r--r--",
+        )
+
+        result = Filter({"mode": "ALL"}).evaluate_metadata([metadata])
+
+        self.assertEqual(result, [metadata])
 
 
 if __name__ == "__main__":

@@ -2244,6 +2244,8 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             "host_file_name": "host_sample.zip",
             "host_path": "/host/path",
             "filename": "sample.zip",
+            "host_dt_created": datetime(2025, 7, 1, 0, 0, 0),
+            "host_dt_modified": datetime(2025, 7, 1, 0, 0, 0),
         }
         result = {
             "file_meta": {
@@ -2267,7 +2269,8 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         db_bp.request_host_summary_refresh = raise_statistics_refresh
 
         with patch.object(worker, "log", fake_log):
-            worker._finalize_success(db_bp, task, result, elapsed_sec=1.234)
+            with patch.object(worker.host_runtime, "record_gps_gnss_available") as record_signal:
+                worker._finalize_success(db_bp, task, result, elapsed_sec=1.234)
 
         self.assertEqual(db_bp.transaction_events, ["begin", "commit"])
         self.assertEqual(len(db_bp.task_deletes), 1)
@@ -2281,16 +2284,20 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             any("host_statistics_refresh_failed" in warning for warning in fake_log.warnings)
         )
         self.assertFalse(any("task_finalization_failed" in str(e) for e in fake_log.errors))
+        record_signal.assert_not_called()
 
     def test_finalize_success_keeps_done_when_gps_metric_update_fails(self) -> None:
         fake_log = FakeWorkerLog()
         db_bp = FakeDbBkp()
+        current_file_date = datetime.now()
         task = {
             "file_task_id": 104,
             "host_id": 11,
             "host_file_name": "host_sample.zip",
             "host_path": "/host/path",
             "filename": "sample.zip",
+            "host_dt_created": current_file_date,
+            "host_dt_modified": current_file_date,
         }
         result = {
             "file_meta": {
@@ -2326,6 +2333,56 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 isinstance(item, tuple) and item[0] == "task_done"
                 for item in fake_log.entries
             )
+        )
+
+    def test_gps_failure_ignores_historical_host_file_dates(self) -> None:
+        observed_at = datetime(2026, 8, 26, 12, 0, 0)
+        task = {
+            "host_id": 11,
+            "host_file_name": "historical.zip",
+            "host_dt_created": datetime(2025, 8, 26, 12, 0, 0),
+            "host_dt_modified": datetime(2025, 8, 26, 12, 0, 0),
+        }
+        structured = {
+            "NA_ERROR_CODE": worker.k.ERROR_CODE_GPS_GNSS_UNAVAILABLE,
+            "NA_ERROR_SUMMARY": "Invalid GPS reading",
+        }
+
+        with patch.object(worker.host_runtime, "record_gps_gnss_unavailable") as record_signal:
+            worker._record_gps_failure_if_needed(
+                task,
+                observed_at=observed_at,
+                structured=structured,
+            )
+
+        record_signal.assert_not_called()
+
+    def test_gps_failure_accepts_current_month_host_modification(self) -> None:
+        observed_at = datetime(2026, 8, 26, 12, 0, 0)
+        task = {
+            "host_id": 11,
+            "host_file_name": "current.zip",
+            "host_dt_created": datetime(2025, 8, 26, 12, 0, 0),
+            "host_dt_modified": datetime(2026, 8, 1, 8, 0, 0),
+        }
+        structured = {
+            "NA_ERROR_CODE": worker.k.ERROR_CODE_GPS_GNSS_UNAVAILABLE,
+            "NA_ERROR_SUMMARY": "Invalid GPS reading",
+        }
+
+        with patch.object(worker.host_runtime, "record_gps_gnss_unavailable") as record_signal:
+            worker._record_gps_failure_if_needed(
+                task,
+                observed_at=observed_at,
+                structured=structured,
+            )
+
+        record_signal.assert_called_once_with(
+            11,
+            evaluated_at=observed_at,
+            description="Invalid GPS reading",
+            host_file_name="current.zip",
+            logger=worker.log,
         )
 
 
