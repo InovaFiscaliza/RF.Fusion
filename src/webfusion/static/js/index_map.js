@@ -35,6 +35,7 @@
     const defaultCenter = [-14.2350, -51.9253];
     const brazilBounds = [[-35.5, -74.5], [7.5, -29.0]];
     const pointCount = document.getElementById("station-map-count");
+    const initialMapPayloadElement = document.getElementById("station-map-initial-payload");
     const webfusionUrl = typeof window.webfusionUrl === "function"
         ? window.webfusionUrl
         : (pathname) => pathname;
@@ -84,6 +85,10 @@
     let currentBaseLayer = null;
     let currentOverlayLayer = null;
     let latestDatasetRequestId = 0;
+    let hasLoadedStationPoints = false;
+    let initialMapPayload = readInitialMapPayload();
+    let markerRenderFrame = null;
+    let markerRenderVersion = 0;
 
     // External hover panel — singleton element that lives outside Leaflet's
     // clip boundary, so it never gets cropped by the map container.
@@ -127,6 +132,7 @@
 
     const MAP_THEME_STORAGE_KEY = "webfusion.station_map_theme";
     const POPUP_HOVER_OPEN_DELAY_MS = 450;
+    const MARKER_RENDER_BATCH_SIZE = 40;
     const MARKER_FOCUS_ZOOM_THRESHOLD = 7;
     const MAX_NEARBY_POPUP_POINTS = 5;
     const DEFAULT_STATUS_FILTER_VALUE = "all";
@@ -2941,6 +2947,74 @@
     }
 
     /**
+     * Stop a pending marker batch before a newer filter result replaces it.
+     *
+     * A version is used in addition to cancelling the animation frame because
+     * an already running callback cannot be cancelled.
+     */
+    function cancelPendingMarkerRender() {
+        markerRenderVersion += 1;
+
+        if (markerRenderFrame !== null) {
+            window.cancelAnimationFrame(markerRenderFrame);
+            markerRenderFrame = null;
+        }
+
+        return markerRenderVersion;
+    }
+
+    /**
+     * Show the final count and focus the map after all marker batches finish.
+     */
+    function finishMarkerRender(pointCountValue, renderVersion) {
+        if (renderVersion !== markerRenderVersion) {
+            return;
+        }
+
+        markerRenderFrame = null;
+        pointCount.textContent = `${formatPointCountLabel(pointCountValue)} ${pointCountValue === 1 ? "plotado" : "plotados"}`;
+
+        if (pointCountValue > 0 && bounds.length > 0) {
+            map.fitBounds(bounds, {
+                padding: [30, 30],
+                maxZoom: getSelectedSiteId() ? 11 : 8
+            });
+            return;
+        }
+
+        map.setView(defaultCenter, 4);
+    }
+
+    /**
+     * Render a bounded number of DOM markers in one animation frame.
+     *
+     * Leaflet `divIcon` markers require individual DOM nodes and event wiring.
+     * Splitting that work keeps the map responsive while a large first result
+     * is being painted, without changing the point model or marker behavior.
+     */
+    function renderMarkerBatch(points, nextIndex, renderVersion) {
+        if (renderVersion !== markerRenderVersion) {
+            return;
+        }
+
+        const endIndex = Math.min(nextIndex + MARKER_RENDER_BATCH_SIZE, points.length);
+
+        for (let pointIndex = nextIndex; pointIndex < endIndex; pointIndex += 1) {
+            addPointToMap(points[pointIndex]);
+        }
+
+        if (endIndex < points.length) {
+            pointCount.textContent = `Plotando ${formatPointCountLabel(endIndex)} de ${formatPointCountLabel(points.length)}...`;
+            markerRenderFrame = window.requestAnimationFrame(() => {
+                renderMarkerBatch(points, endIndex, renderVersion);
+            });
+            return;
+        }
+
+        finishMarkerRender(points.length, renderVersion);
+    }
+
+    /**
      * Re-render the markers, legend and map bounds from the current control
      * state.
      *
@@ -2962,25 +3036,44 @@
         });
         // Markers are about to be replaced, so a fixed panel cannot safely
         // remain tied to its previous point.
+        const renderVersion = cancelPendingMarkerRender();
+
         hideHoverPanel();
         markerLayer.clearLayers();
         bounds.length = 0;
         renderedMarkers = [];
 
-        orderedPoints.forEach((point) => addPointToMap(point));
         renderLegend(filteredPoints);
-
-        pointCount.textContent = `${formatPointCountLabel(filteredPoints.length)} ${filteredPoints.length === 1 ? "plotado" : "plotados"}`;
         updateClearFiltersButtonState();
 
-        if (filteredPoints.length > 0 && bounds.length > 0) {
-            map.fitBounds(bounds, {
-                padding: [30, 30],
-                maxZoom: getSelectedSiteId() ? 11 : 8
-            });
-        } else {
-            map.setView(defaultCenter, 4);
+        renderMarkerBatch(orderedPoints, 0, renderVersion);
+    }
+
+    /**
+     * Read the server-rendered first snapshot, if the template provided one.
+     */
+    function readInitialMapPayload() {
+        const payloadText = initialMapPayloadElement?.textContent?.trim();
+
+        if (!payloadText) {
+            return null;
         }
+
+        try {
+            return JSON.parse(payloadText);
+        } catch (error) {
+            // A later API request can still recover when an embedded payload fails.
+            return null;
+        }
+    }
+
+    /**
+     * Consume the inline snapshot once so later temporal filters use fresh API data.
+     */
+    function consumeInitialMapPayload() {
+        const payload = initialMapPayload;
+        initialMapPayload = null;
+        return payload;
     }
 
     /**
@@ -2995,11 +3088,16 @@
         const previousStateCode = stateFilter ? stateFilter.value : "";
         const previousSiteSearch = siteFilter ? siteFilter.value : "";
         const previousSelectedSiteId = selectedSiteId;
+        const payload = consumeInitialMapPayload();
 
+        hasLoadedStationPoints = false;
         pointCount.textContent = "Carregando pontos...";
 
-        return fetch(buildMapApiUrl("/api/map/stations"))
-            .then((response) => response.json())
+        const payloadPromise = payload
+            ? Promise.resolve(payload)
+            : fetch(buildMapApiUrl("/api/map/stations")).then((response) => response.json());
+
+        return payloadPromise
             .then((payload) => {
                 if (requestId !== latestDatasetRequestId) {
                     return;
@@ -3007,6 +3105,7 @@
 
                 const stationPoints = Array.isArray(payload.points) ? payload.points : [];
                 allStationPoints = stationPoints;
+                hasLoadedStationPoints = true;
                 populateStateFilter(allStationPoints);
 
                 if (
@@ -3034,6 +3133,8 @@
 
                 allStationPoints = [];
                 selectedSiteId = "";
+                hasLoadedStationPoints = false;
+                cancelPendingMarkerRender();
                 markerLayer.clearLayers();
                 renderedMarkers = [];
                 bounds.length = 0;
@@ -3205,6 +3306,16 @@
     window.addEventListener("scroll", () => {
         if (panelActiveMarker) positionHoverPanel(panelActiveMarker);
     }, { passive: true });
+
+    // A back/forward cache restore can preserve an unfinished fetch without
+    // resuming it. Reload only that incomplete snapshot after the page returns.
+    window.addEventListener("pageshow", (event) => {
+        if (!event.persisted || hasLoadedStationPoints) {
+            return;
+        }
+
+        loadStationPoints();
+    });
 
     // Startup restores the shell theme first, then normalizes the temporal
     // controls, then loads the initial summary-backed point dataset.

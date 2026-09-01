@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+
+{% block title %}RF.Fusion - Usuários{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/users_page.css', v='20260831-privileges-actions-aligned') }}">
+{% endblock %}
+
+{% block breadcrumb %}
+<div class="breadcrumb">
+    <a href="{{ url_for('index') }}" data-loading-message="Abrindo mapa das estações...">Início</a>
+    <span class="breadcrumb-separator">›</span>
+    <span>Usuários</span>
+</div>
+{% endblock %}
+
+{% block content %}
+<section class="users-page-root">
+    <div class="wf-page-hero">
+        <div>
+            <h1 class="wf-screen-title margin-bottom-s">Usuários</h1>
+            <p class="wf-page-hero-copy">Consulte identidades, cadastre acessos antecipadamente e defina os privilégios administrativos.</p>
+        </div>
+    </div>
+
+    {% if error_message %}
+    <div class="users-alert users-alert-error" role="alert">
+        <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
+        <span>{{ error_message }}</span>
+    </div>
+    {% endif %}
+
+    {% if success_message %}
+    <div class="users-alert users-alert-success" role="status">
+        <i class="fa fa-check-circle" aria-hidden="true"></i>
+        <span>{{ success_message }}</span>
+    </div>
+    {% endif %}
+
+    <section class="card wf-panel background-neutral-0 padding-l border-radius-m users-create-panel" aria-labelledby="users-create-title">
+        <div class="users-panel-heading">
+            <div>
+                <h2 id="users-create-title" class="wf-panel-title">Cadastrar usuário</h2>
+                <p class="wf-panel-copy">O cadastro manual permite definir o acesso antes da primeira autenticação pelo F5.</p>
+            </div>
+        </div>
+        <form method="post" class="users-create-form" data-loading-message="Cadastrando usuário...">
+            <div class="users-fields-grid">
+                <div class="users-field users-field-wide">
+                    <label class="form-label" for="user-name">Nome</label>
+                    <input id="user-name" class="form-control" type="text" name="user_name" maxlength="255" autocomplete="name">
+                </div>
+                <div class="users-field users-field-wide">
+                    <label class="form-label" for="user-email">E-mail</label>
+                    <input id="user-email" class="form-control" type="email" name="user_email" maxlength="320" required autocomplete="email">
+                </div>
+                <div class="users-field">
+                    <label class="form-label" for="user-job-title">Cargo</label>
+                    <input id="user-job-title" class="form-control" type="text" name="job_title" maxlength="255" autocomplete="organization-title">
+                </div>
+                <div class="users-field">
+                    <label class="form-label" for="user-department">Lotação</label>
+                    <input id="user-department" class="form-control" type="text" name="department" maxlength="255" autocomplete="organization">
+                </div>
+                <div class="users-field">
+                    <label class="form-label" for="user-location">Localidade</label>
+                    <input id="user-location" class="form-control" type="text" name="location" maxlength="255">
+                </div>
+            </div>
+            <div class="users-create-actions">
+                <fieldset class="users-privilege-set">
+                    <legend>Privilégios iniciais</legend>
+                    <label class="users-checkbox" for="user-is-admin">
+                        <input id="user-is-admin" type="checkbox" name="is_admin" value="1">
+                        <span>Administrador</span>
+                    </label>
+                    <label class="users-checkbox" for="user-is-developer">
+                        <input id="user-is-developer" type="checkbox" name="is_developer" value="1">
+                        <span>Desenvolvedor</span>
+                    </label>
+                </fieldset>
+                <button type="submit" class="btn btn-primary btn-primary-action">
+                    <i class="fa fa-user-plus" aria-hidden="true"></i>
+                    Cadastrar usuário
+                </button>
+            </div>
+        </form>
+    </section>
+
+    <section class="card wf-panel background-neutral-0 padding-l border-radius-m users-directory-panel" aria-labelledby="users-directory-title">
+        <div class="users-directory-head">
+            <div>
+                <h2 id="users-directory-title" class="wf-panel-title">Diretório de usuários</h2>
+                <p class="wf-panel-copy">Os dados recebidos posteriormente pelo F5 atualizam o cadastro correspondente ao e-mail.</p>
+            </div>
+            <form method="get" class="users-search-form" data-loading-message="Pesquisando usuários...">
+                <label class="sr-only" for="users-search">Pesquisar usuários</label>
+                <input id="users-search" class="form-control" type="search" name="search" value="{{ search }}" placeholder="Nome, e-mail, cargo ou lotação" autocomplete="off">
+                <button type="submit" class="btn btn-secondary btn-secondary-action">
+                    <i class="fa fa-search" aria-hidden="true"></i>
+                    Pesquisar
+                </button>
+            </form>
+        </div>
+
+        <div class="users-table-wrap">
+            <table class="users-table">
+                <thead>
+                    <tr>
+                        <th>Usuário</th>
+                        <th>Lotação</th>
+                        <th>Privilégios</th>
+                        <th>Ações</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    <tr>
+                        <td data-label="Usuário">
+                            <div class="users-name">{{ user.NA_USER_NAME or user.NA_USER_EMAIL }}</div>
+                            <a class="users-email" href="mailto:{{ user.NA_USER_EMAIL }}">{{ user.NA_USER_EMAIL }}</a>
+                            {% if user.NA_JOB_TITLE %}<div class="users-detail">{{ user.NA_JOB_TITLE }}</div>{% endif %}
+                        </td>
+                        <td data-label="Lotação">
+                            <div>{{ user.NA_DEPARTMENT or 'Não informado' }}</div>
+                            {% if user.NA_LOCATION %}<div class="users-detail">{{ user.NA_LOCATION }}</div>{% endif %}
+                        </td>
+                        <td data-label="Privilégios">
+                            <div class="users-role-badges">
+                                {% if user.IS_ADMIN %}<span class="users-role-badge is-admin">Administrador</span>{% endif %}
+                                {% if user.IS_DEVELOPER %}<span class="users-role-badge is-developer">Desenvolvedor</span>{% endif %}
+                                {% if not user.IS_ADMIN and not user.IS_DEVELOPER %}<span class="users-role-none">Sem privilégios</span>{% endif %}
+                            </div>
+                        </td>
+                        <td data-label="Ações">
+                            <div class="users-row-actions">
+                                <form method="post" action="{{ url_for('users.update_user_privileges') }}" class="users-privileges-form" data-loading-message="Atualizando privilégios...">
+                                    <input type="hidden" name="user_email" value="{{ user.NA_USER_EMAIL }}">
+                                    <label class="users-checkbox" for="admin-{{ user.ID_USER }}">
+                                        <input id="admin-{{ user.ID_USER }}" type="checkbox" name="is_admin" value="1" {% if user.IS_ADMIN %}checked{% endif %}>
+                                        <span>Administrador</span>
+                                    </label>
+                                    <label class="users-checkbox" for="developer-{{ user.ID_USER }}">
+                                        <input id="developer-{{ user.ID_USER }}" type="checkbox" name="is_developer" value="1" {% if user.IS_DEVELOPER %}checked{% endif %}>
+                                        <span>Desenvolvedor</span>
+                                    </label>
+                                    <button type="submit" class="btn btn-small btn-secondary-action">
+                                        <i class="fa fa-shield" aria-hidden="true"></i>
+                                        Aplicar privilégios
+                                    </button>
+                                </form>
+                                <button
+                                    type="button"
+                                    class="btn btn-small users-delete-button"
+                                    data-user-delete-name="{{ user.NA_USER_NAME or user.NA_USER_EMAIL }}"
+                                    data-user-delete-email="{{ user.NA_USER_EMAIL }}"
+                                >
+                                    <i class="fa fa-trash" aria-hidden="true"></i>
+                                    Excluir usuário
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="4" class="users-empty">Nenhum usuário encontrado.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</section>
+
+<dialog id="users-delete-dialog" class="users-delete-dialog" aria-labelledby="users-delete-title">
+    <form method="post" action="{{ url_for('users.delete_user') }}" class="users-delete-dialog-card" id="users-delete-form" data-loading-message="Excluindo usuário...">
+        <input type="hidden" name="user_email" id="users-delete-email">
+        <h2 id="users-delete-title" class="users-delete-title">Excluir usuário?</h2>
+        <p class="users-delete-copy">
+            Esta ação remove o usuário <strong id="users-delete-name">-</strong> e todos os privilégios administrativos associados.
+        </p>
+        <p class="users-delete-warning">O usuário só poderá voltar por um novo cadastro ou uma nova autenticação F5 válida.</p>
+        <div class="users-delete-actions">
+            <button type="button" class="btn btn-secondary btn-secondary-action" id="users-delete-cancel">Cancelar</button>
+            <button type="submit" class="btn users-delete-confirm-button">
+                <i class="fa fa-trash" aria-hidden="true"></i>
+                Excluir usuário
+            </button>
+        </div>
+    </form>
+</dialog>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/users_page.js', v='20260831-user-delete-dialog') }}"></script>
+{% endblock %}

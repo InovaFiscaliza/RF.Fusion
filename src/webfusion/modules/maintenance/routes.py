@@ -8,7 +8,7 @@ behind the maintenance basic-auth check.
 
 from __future__ import annotations
 
-from flask import Blueprint, Response, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, jsonify, redirect, render_template, request, url_for
 
 from db import get_connection_bpdata as get_connection
 from modules.maintenance.service import (
@@ -41,39 +41,6 @@ from modules.server.usage_metrics import record_page_view
 
 
 maintenance_bp = Blueprint("maintenance", __name__, url_prefix="/maintenance")
-
-MAINTENANCE_AUTH_USERNAME = "admin"
-MAINTENANCE_AUTH_PASSWORD = "admin"
-MAINTENANCE_AUTH_REALM = "RF.Fusion Maintenance"
-
-
-def _maintenance_auth_failed():
-    """Trigger the browser basic-auth challenge for maintenance access."""
-    return Response(
-        "Authentication required.",
-        401,
-        {"WWW-Authenticate": f'Basic realm="{MAINTENANCE_AUTH_REALM}"'},
-    )
-
-
-def _has_valid_maintenance_credentials():
-    """Validate the bootstrap credentials protecting manual queue actions."""
-    auth = request.authorization
-    if not auth:
-        return False
-
-    return (
-        str(auth.username or "") == MAINTENANCE_AUTH_USERNAME
-        and str(auth.password or "") == MAINTENANCE_AUTH_PASSWORD
-    )
-
-
-@maintenance_bp.before_request
-def require_maintenance_auth():
-    """Protect the maintenance page behind the same simple auth style as tasks."""
-    if not _has_valid_maintenance_credentials():
-        return _maintenance_auth_failed()
-
 
 def _build_queue_filters(source: dict, *, prefix: str, queue_kind: str) -> dict:
     """Normalize one panel's prefixed filter values."""

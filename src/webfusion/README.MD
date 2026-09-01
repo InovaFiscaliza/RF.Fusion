@@ -44,6 +44,50 @@ Endpoints de verificação:
     interno: http://127.0.0.1:8000/health
     público: http://<servidor>:9082/rffusion/health
 
+### Controle de acesso
+
+O controle de acesso usa os cabeçalhos de identidade encaminhados pelo F5:
+`X-User-Name`, `X-User-Email`, `X-User-Job-Title`, `X-User-Department` e
+`X-User-Location`. A identidade é exibida na barra superior. Quando o e-mail
+é observado, o WebFusion o registra em `WEBFUSION.USERS` ou atualiza os
+atributos já cadastrados para o mesmo e-mail. O e-mail em minúsculas é a chave
+inequívoca da identidade.
+
+As páginas de criação e manutenção de tarefas, administração de usuários e
+configuração de estações exigem que o e-mail encaminhado esteja ativo em
+`WEBFUSION.ADMINS` ou `WEBFUSION.DEVELOPERS`. A tabela `ADMINS` tem precedência
+quando um e-mail estiver nas duas listas. Os demais módulos permanecem
+disponíveis em modo de consulta, inclusive quando o acesso ocorre sem F5 e,
+portanto, sem cabeçalhos: nesse caso a interface identifica o visitante como
+`Anônimo`.
+
+Antes de publicar o controle, aplique o schema
+`src/mariadb/scripts/createWebFusionDB.sql` no MariaDB e cadastre os usuários
+autorizados. O e-mail deve ser normalizado em minúsculas, pois é a chave usada
+na autorização. Exemplo de cadastro:
+
+```sql
+USE WEBFUSION;
+
+INSERT INTO DEVELOPERS (
+    NA_USER_NAME,
+    NA_USER_EMAIL,
+    NA_JOB_TITLE,
+    NA_DEPARTMENT,
+    NA_LOCATION
+) VALUES (
+    'Nome do usuário',
+    'nome.usuario@anatel.gov.br',
+    'Cargo',
+    'Unidade',
+    'Brasília'
+);
+```
+
+O proxy público deve remover quaisquer cabeçalhos `X-User-*` recebidos do
+cliente e encaminhar somente os valores produzidos pelo F5. Sem essa regra, um
+cliente que alcance diretamente o upstream poderia forjar uma identidade.
+
 ## Dados e Integrações
 
 | Origem | Uso no WebFusion |
@@ -75,6 +119,7 @@ aceita, mas a sincronização operacional não foi concluída.
 | Consulta às Estações | /host | visão operacional, geográfica e histórica de uma estação |
 | Criação de Tarefas | /task/ | criação individual ou coletiva de operações de backup e descoberta |
 | Manutenção de Tarefas | /maintenance/ | consulta e intervenção controlada nas filas e no histórico |
+| Usuários | /users/ | consulta, cadastro manual e concessão ou revogação de privilégios |
 | Configuração de Estações | /host-configuration/ | macros Zabbix por template ou estação |
 
 As rotas da tabela são relativas ao prefixo público. Por exemplo, o panorama

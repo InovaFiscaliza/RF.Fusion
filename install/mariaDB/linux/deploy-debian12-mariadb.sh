@@ -28,6 +28,7 @@ RuntimeHealthPublicKey="${RUNTIME_HEALTH_SSH_PUBLIC_KEY:-}"
 sqlProcessing="/RFFusion/src/mariadb/scripts/createProcessingDB.sql"
 sqlMeasure="/RFFusion/src/mariadb/scripts/createMeasureDB.sql"
 sqlFusionSummary="/RFFusion/src/mariadb/scripts/createFusionSummaryDB.sql"
+sqlWebFusion="/RFFusion/src/mariadb/scripts/createWebFusionDB.sql"
 
 # ------------------------------
 # Caminhos do host
@@ -119,5 +120,6 @@ echo "=== [6/6] Initializing MariaDB databases ==="
 podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlProcessing}" || true
 podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlMeasure}" || true
 podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlFusionSummary}" || true
+podman exec -i "${ContainerName}" bash -c "mysql -u root -p${DBPassword} < ${sqlWebFusion}" || true
 
 echo "=== ✅ Deployment completed successfully ==="

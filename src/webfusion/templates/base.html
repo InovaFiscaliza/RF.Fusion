@@ -60,7 +60,7 @@
                                 <span class="wf-visually-hidden">Abrir menu de módulos</span>
                             </button>
                             <div class="header-logo wf-header-brand">
-                                <a class="application-name display-flex align-items-center full-height wf-header-link" href="{{ url_for('index') }}">
+                                <a class="application-name display-flex align-items-center full-height wf-header-link" href="{{ url_for('index') }}" data-loading-message="Abrindo mapa das estações...">
                                     <img class="app-logo wf-header-logo-mark" src="{{ url_for('static', filename='img/RFfusion_ico.svg') }}" alt="">
                                     <span>RF.Fusion</span>
                                 </a>
@@ -70,9 +70,16 @@
                                 {{ navigation_link('Consulta aos Arquivos', 'spectrum.spectrum', request.endpoint == 'spectrum.spectrum', 'Abrindo consulta de espectros...', 'wf-header-nav-link') }}
                                 {{ navigation_link('Panorama do Servidor', 'server.server', request.endpoint and request.endpoint.startswith('server.'), 'Carregando visão do servidor...', 'wf-header-nav-link') }}
                                 {{ navigation_link('Consulta às Estações', 'host.host', request.endpoint and request.endpoint.startswith('host.'), 'Abrindo consulta de estações...', 'wf-header-nav-link') }}
-                                {{ navigation_link('Criação de Tarefas', 'task.task_builder', request.endpoint and request.endpoint.startswith('task.'), 'Abrindo tarefas...', 'wf-header-nav-link') }}
-                                {{ navigation_link('Manutenção de Tarefas', 'maintenance.maintenance_dashboard', request.endpoint and request.endpoint.startswith('maintenance.'), 'Abrindo manutenção operacional...', 'wf-header-nav-link') }}
-                                {{ navigation_link('Configuração de Estações', 'zabbix_configuration.configuration_dashboard', request.endpoint and request.endpoint.startswith('zabbix_configuration.'), 'Abrindo configuração das estações...', 'wf-header-nav-link') }}
+                                {% if current_user.role %}
+                                    {{ navigation_link('Criação de Tarefas', 'task.task_builder', request.endpoint and request.endpoint.startswith('task.'), 'Abrindo tarefas...', 'wf-header-nav-link') }}
+                                    {{ navigation_link('Manutenção de Tarefas', 'maintenance.maintenance_dashboard', request.endpoint and request.endpoint.startswith('maintenance.'), 'Abrindo manutenção operacional...', 'wf-header-nav-link') }}
+                                    {{ navigation_link('Configuração de Estações', 'zabbix_configuration.configuration_dashboard', request.endpoint and request.endpoint.startswith('zabbix_configuration.'), 'Abrindo configuração das estações...', 'wf-header-nav-link') }}
+                                    {{ navigation_link('Usuários', 'users.user_directory', request.endpoint and request.endpoint.startswith('users.'), 'Abrindo administração de usuários...', 'wf-header-nav-link') }}
+                                    {% endif %}
+                            </div>
+                            <div class="wf-header-user" title="Usuário conectado">
+                                <i class="fa fa-user" aria-hidden="true"></i>
+                                <span>{{ current_user.label }}</span>
                             </div>
                         </nav>
                     </div>
@@ -115,9 +122,12 @@
                     {{ navigation_link('Consulta aos Arquivos', 'spectrum.spectrum', request.endpoint == 'spectrum.spectrum', 'Abrindo consulta de espectros...', 'wf-navigation-drawer-link', 'fa-search') }}
                     {{ navigation_link('Panorama do Servidor', 'server.server', request.endpoint and request.endpoint.startswith('server.'), 'Carregando visão do servidor...', 'wf-navigation-drawer-link', 'fa-dashboard') }}
                     {{ navigation_link('Consulta às Estações', 'host.host', request.endpoint and request.endpoint.startswith('host.'), 'Abrindo consulta de estações...', 'wf-navigation-drawer-link', 'fa-server') }}
-                    {{ navigation_link('Criação de Tarefas', 'task.task_builder', request.endpoint and request.endpoint.startswith('task.'), 'Abrindo tarefas...', 'wf-navigation-drawer-link', 'fa-cogs') }}
-                    {{ navigation_link('Manutenção de Tarefas', 'maintenance.maintenance_dashboard', request.endpoint and request.endpoint.startswith('maintenance.'), 'Abrindo manutenção operacional...', 'wf-navigation-drawer-link', 'fa-wrench') }}
-                    {{ navigation_link('Configuração de Estações', 'zabbix_configuration.configuration_dashboard', request.endpoint and request.endpoint.startswith('zabbix_configuration.'), 'Abrindo configuração das estações...', 'wf-navigation-drawer-link', 'fa-sliders') }}
+                    {% if current_user.role %}
+                        {{ navigation_link('Criação de Tarefas', 'task.task_builder', request.endpoint and request.endpoint.startswith('task.'), 'Abrindo tarefas...', 'wf-navigation-drawer-link', 'fa-cogs') }}
+                        {{ navigation_link('Manutenção de Tarefas', 'maintenance.maintenance_dashboard', request.endpoint and request.endpoint.startswith('maintenance.'), 'Abrindo manutenção operacional...', 'wf-navigation-drawer-link', 'fa-wrench') }}
+                        {{ navigation_link('Usuários', 'users.user_directory', request.endpoint and request.endpoint.startswith('users.'), 'Abrindo administração de usuários...', 'wf-navigation-drawer-link', 'fa-users') }}
+                        {{ navigation_link('Configuração de Estações', 'zabbix_configuration.configuration_dashboard', request.endpoint and request.endpoint.startswith('zabbix_configuration.'), 'Abrindo configuração das estações...', 'wf-navigation-drawer-link', 'fa-sliders') }}
+                    {% endif %}
                 </nav>
             </aside>
         </div>
@@ -136,7 +146,7 @@
 
 </div>
 
-<script src="{{ url_for('static', filename='js/base_page.js', v='20260818-navigation-drawer') }}"></script>
+<script src="{{ url_for('static', filename='js/base_page.js', v='20260831-initial-map-overlay') }}"></script>
 
 {% block extra_js %}{% endblock %}
 

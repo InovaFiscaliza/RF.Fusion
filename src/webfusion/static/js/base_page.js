@@ -264,7 +264,10 @@
      * guarantee that returning to a page never traps the user behind stale UI
      * state from an earlier navigation. */
     window.addEventListener("pageshow", function () {
-        hidePageLoadingOverlay();
         closeNavigationDrawer({ restoreFocus: false });
+
+        if (!window.webfusionInitialPageLoadPending) {
+            hidePageLoadingOverlay();
+        }
     });
 })();

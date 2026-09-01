@@ -7,7 +7,7 @@
 
 {% block breadcrumb %}
 <div class="breadcrumb">
-    <a href="{{ url_for('index') }}">Início</a>
+    <a href="{{ url_for('index') }}" data-loading-message="Abrindo mapa das estações...">Início</a>
     <span class="breadcrumb-separator">›</span>
     <span>Tarefas Recentes</span>
 </div>
@@ -39,7 +39,7 @@
     </div>
     <div class="task-list-actions">
         <a href="{{ url_for('task.task_builder') }}" class="btn btn-primary task-list-button task-list-button-primary">Criar outra tarefa</a>
-        <a href="{{ url_for('index') }}" class="btn btn-secondary task-list-button task-list-button-secondary">Voltar ao início</a>
+        <a href="{{ url_for('index') }}" class="btn btn-secondary task-list-button task-list-button-secondary" data-loading-message="Abrindo mapa das estações...">Voltar ao início</a>
     </div>
 </div>
 

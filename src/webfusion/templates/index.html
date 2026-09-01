@@ -252,6 +252,7 @@
         </a>
     </div>
 
+    {% if current_user.role %}
     <!-- ======================= TASK ======================= -->
     <div>
         <a href="{{ url_for('task.task_builder') }}" class="module-link" data-loading-message="Abrindo criação de task...">
@@ -330,6 +331,34 @@
         </a>
     </div>
 
+    <!-- ======================= USERS ======================= -->
+    <div>
+        <a href="{{ url_for('users.user_directory') }}" class="module-link" data-loading-message="Abrindo administração de usuários...">
+            <div class="card background-neutral-0 padding-l border-radius-m module-card">
+
+                <div class="display-flex align-items-center gap-m">
+
+                    <div class="module-icon text-primary">
+                        <i class="fa fa-users"></i>
+                    </div>
+
+                    <div>
+                        <div class="font-semi-bold">
+                            Usuários
+                        </div>
+                        <div class="font-size-s text-neutral-6 margin-top-xs module-description">
+                            Consulta de identidades e administração de privilégios de acesso.
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+        </a>
+    </div>
+
+    {% endif %}
+
 </div>
 
 {% endblock %}
@@ -343,5 +372,6 @@
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
 ></script>
-<script src="{{ url_for('static', filename='js/index_map.js', v='20260826-map-ocean-tone') }}"></script>
+<script id="station-map-initial-payload" type="application/json">{{ {'points': initial_map_points}|tojson }}</script>
+<script src="{{ url_for('static', filename='js/index_map.js', v='20260831-map-inline-initial-payload') }}"></script>
 {% endblock %}

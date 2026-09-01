@@ -19,7 +19,6 @@ import re
 from typing import Any
 from flask import (
     Blueprint,
-    Response,
     current_app,
     jsonify,
     redirect,
@@ -48,9 +47,6 @@ from db import get_connection_bpdata as get_connection
 
 task_bp = Blueprint("task", __name__, url_prefix="/task")
 
-TASK_AUTH_USERNAME = "admin"
-TASK_AUTH_PASSWORD = "admin"
-TASK_AUTH_REALM = "RF.Fusion Task"
 DEFAULT_LINUX_FILE_PATH = "/mnt/internal/data"
 DEFAULT_LINUX_EXTENSION = ".bin"
 DEFAULT_CWSM_FILE_PATH = "C:/CelPlan/CellWireless RU/Spectrum/Completed"
@@ -103,34 +99,6 @@ TASK_ACTIONS = (
 
 # Station families use different path and extension conventions. Defaults keep
 # the form useful before an operator provides a family-specific override.
-
-
-def _task_auth_failed():
-    """Trigger the browser basic-auth challenge used by the task module."""
-    return Response(
-        "Authentication required.",
-        401,
-        {"WWW-Authenticate": f'Basic realm="{TASK_AUTH_REALM}"'},
-    )
-
-
-def _has_valid_task_credentials():
-    """
-    Validate the simple bootstrap credentials for the task module.
-
-    This is intentionally minimal for the first protection layer. If the
-    module graduates to broader use, these credentials should move to a proper
-    configuration source and session-backed authentication.
-    """
-    auth = request.authorization
-
-    if not auth:
-        return False
-
-    return (
-        str(auth.username or "") == TASK_AUTH_USERNAME
-        and str(auth.password or "") == TASK_AUTH_PASSWORD
-    )
 
 
 def _safe_int_arg(name):
@@ -530,15 +498,6 @@ def _build_collective_task_batches(
         batches.append({"hosts": host_ids, "filter_data": merged_filter})
 
     return batches
-
-
-@task_bp.before_request
-def require_task_auth():
-    """
-    Protect the task builder and task list behind a basic-auth prompt.
-    """
-    if not _has_valid_task_credentials():
-        return _task_auth_failed()
 
 
 @task_bp.route("/", methods=["GET", "POST"])

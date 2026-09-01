@@ -1,0 +1,86 @@
+/* ================================================================
+   createWebFusionDB.sql
+   Schema for WebFusion access-control identities.
+   ================================================================ */
+
+CREATE DATABASE IF NOT EXISTS WEBFUSION
+    DEFAULT CHARACTER SET utf8mb4
+    DEFAULT COLLATE utf8mb4_unicode_ci;
+
+USE WEBFUSION;
+
+CREATE TABLE IF NOT EXISTS `ADMINS` (
+  `ID_ADMIN` bigint(20) NOT NULL AUTO_INCREMENT,
+  `NA_USER_NAME` varchar(255) NOT NULL,
+  `NA_USER_EMAIL` varchar(320) NOT NULL,
+  `NA_JOB_TITLE` varchar(255) DEFAULT NULL,
+  `NA_DEPARTMENT` varchar(255) DEFAULT NULL,
+  `NA_LOCATION` varchar(255) DEFAULT NULL,
+  `IS_ACTIVE` tinyint(1) NOT NULL DEFAULT 1,
+  `DT_CREATED_AT` datetime NOT NULL DEFAULT current_timestamp(),
+  `DT_UPDATED_AT` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`ID_ADMIN`),
+  UNIQUE KEY `UQ_ADMINS_USER_EMAIL` (`NA_USER_EMAIL`),
+  KEY `IX_ADMINS_ACTIVE_EMAIL` (`IS_ACTIVE`,`NA_USER_EMAIL`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `DEVELOPERS` (
+  `ID_DEVELOPER` bigint(20) NOT NULL AUTO_INCREMENT,
+  `NA_USER_NAME` varchar(255) NOT NULL,
+  `NA_USER_EMAIL` varchar(320) NOT NULL,
+  `NA_JOB_TITLE` varchar(255) DEFAULT NULL,
+  `NA_DEPARTMENT` varchar(255) DEFAULT NULL,
+  `NA_LOCATION` varchar(255) DEFAULT NULL,
+  `IS_ACTIVE` tinyint(1) NOT NULL DEFAULT 1,
+  `DT_CREATED_AT` datetime NOT NULL DEFAULT current_timestamp(),
+  `DT_UPDATED_AT` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`ID_DEVELOPER`),
+  UNIQUE KEY `UQ_DEVELOPERS_USER_EMAIL` (`NA_USER_EMAIL`),
+  KEY `IX_DEVELOPERS_ACTIVE_EMAIL` (`IS_ACTIVE`,`NA_USER_EMAIL`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `USERS` (
+  `ID_USER` bigint(20) NOT NULL AUTO_INCREMENT,
+  `NA_USER_NAME` varchar(255) DEFAULT NULL,
+  `NA_USER_EMAIL` varchar(320) NOT NULL,
+  `NA_JOB_TITLE` varchar(255) DEFAULT NULL,
+  `NA_DEPARTMENT` varchar(255) DEFAULT NULL,
+  `NA_LOCATION` varchar(255) DEFAULT NULL,
+  `DT_CREATED_AT` datetime NOT NULL DEFAULT current_timestamp(),
+  `DT_UPDATED_AT` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`ID_USER`),
+  UNIQUE KEY `UQ_USERS_USER_EMAIL` (`NA_USER_EMAIL`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE `USERS`
+  ADD COLUMN IF NOT EXISTS `DT_UPDATED_AT` datetime NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp();
+
+INSERT IGNORE INTO `USERS` (
+  `NA_USER_NAME`,
+  `NA_USER_EMAIL`,
+  `NA_JOB_TITLE`,
+  `NA_DEPARTMENT`,
+  `NA_LOCATION`
+)
+SELECT
+  `NA_USER_NAME`,
+  `NA_USER_EMAIL`,
+  `NA_JOB_TITLE`,
+  `NA_DEPARTMENT`,
+  `NA_LOCATION`
+FROM `ADMINS`;
+
+INSERT IGNORE INTO `USERS` (
+  `NA_USER_NAME`,
+  `NA_USER_EMAIL`,
+  `NA_JOB_TITLE`,
+  `NA_DEPARTMENT`,
+  `NA_LOCATION`
+)
+SELECT
+  `NA_USER_NAME`,
+  `NA_USER_EMAIL`,
+  `NA_JOB_TITLE`,
+  `NA_DEPARTMENT`,
+  `NA_LOCATION`
+FROM `DEVELOPERS`;
