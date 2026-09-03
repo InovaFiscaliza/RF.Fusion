@@ -98,7 +98,9 @@ cliente que alcance diretamente o upstream poderia forjar uma identidade.
 | Zabbix | macros efetivas por template e estação |
 | /mnt/reposfi | arquivos disponíveis para download pelo Nginx |
 
-O módulo de configuração usa [zabbix_api.py](/RFFusion/src/zabbix/zabbix_api.py).
+Os módulos que integram o Zabbix usam o pacote
+[zabbix_api](/RFFusion/src/webfusion/zabbix_api), que centraliza a conexão e
+as chamadas compartilhadas da API.
 As variáveis ZABBIX_API_URL, ZABBIX_API_TOKEN e
 ZABBIX_API_TIMEOUT_SECONDS podem vir do ambiente ou de
 src/zabbix/.secret/zabbix_api.env. Esse arquivo contém segredo operacional e
@@ -292,6 +294,7 @@ informa um novo valor, sem recuperar o segredo armazenado no Zabbix.
     src/webfusion/
     |-- app.py                         aplicação Flask e rotas de infraestrutura
     |-- db.py                          conexões MariaDB
+    |-- .secret                        configuração local de conexões MariaDB (não versionada)
     |-- modules/
     |   |-- map/                       dados do mapa inicial
     |   |-- spectrum/                  consulta e download de espectros
@@ -311,6 +314,14 @@ O padrão de cada feature é:
 4. JavaScript carrega detalhes, filtros e tabelas sob demanda.
 
 ## Execução Local
+
+### Configuração local do banco
+
+Antes de iniciar o WebFusion, crie `src/webfusion/.secret`. O arquivo é
+ignorado pelo Git e deve conter os quatro dicionários `DB_CFG_RFDATA`,
+`DB_CFG_BPDATA`, `DB_CFG_RFFUSION_SUMMARY` e `DB_CFG_WEBFUSION`. Cada
+dicionário requer as chaves `host`, `port`, `user`, `password` e `database`.
+Não versione, publique ou registre os valores desse arquivo.
 
 O entrypoint é [app.py](/RFFusion/src/webfusion/app.py). As variáveis aceitas
 em execução direta são:
@@ -349,5 +360,6 @@ Antes de publicar alterações de rota, valide pelo menos:
 
 - [README.md](/RFFusion/README.md)
 - [install/webserver/README.MD](/RFFusion/install/webserver/README.MD)
+- [src/webfusion/zabbix_api](/RFFusion/src/webfusion/zabbix_api)
 - [src/zabbix](/RFFusion/src/zabbix)
 - [src/mariadb/scripts/README.md](/RFFusion/src/mariadb/scripts/README.md)

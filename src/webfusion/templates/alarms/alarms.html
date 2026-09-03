@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block title %}RF.Fusion - Alarmes Operacionais{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/alarms_page.css', v='20260903-appcataloga-problems') }}">
+{% endblock %}
+
+{% block breadcrumb %}
+<div class="breadcrumb">
+    <a href="{{ url_for('index') }}" data-loading-message="Abrindo mapa das estações...">Início</a>
+    <span class="breadcrumb-separator">›</span>
+    <span>Alarmes Operacionais</span>
+</div>
+{% endblock %}
+
+{% block content %}
+<section class="alarms-page-root">
+    <div class="alarms-page-header">
+        <div>
+            <h1 class="wf-screen-title margin-bottom-s">Alarmes Operacionais</h1>
+            <p class="alarms-page-copy">Problemas ativos associados ao contexto appCataloga.</p>
+        </div>
+        <a class="btn btn-secondary btn-secondary-action alarms-zabbix-link" href="{{ alarms[0].zabbix_url if alarms and alarms[0].zabbix_url else '#' }}" {% if alarms and alarms[0].zabbix_url %}target="_blank" rel="noopener noreferrer"{% else %}aria-disabled="true"{% endif %}>
+            <i class="fa fa-external-link" aria-hidden="true"></i>
+            <span>Abrir Zabbix</span>
+        </a>
+    </div>
+
+    {% if error_message %}
+    <div class="alarms-alert alarms-alert-error" role="alert">
+        <i class="fa fa-exclamation-triangle" aria-hidden="true"></i>
+        <span>{{ error_message }}</span>
+    </div>
+    {% elif alarms %}
+    <div class="alarms-table-wrap">
+        <table class="alarms-table">
+            <thead>
+                <tr>
+                    <th>Aberto em</th>
+                    <th>Severidade</th>
+                    <th>Estação</th>
+                    <th>Problema</th>
+                    <th>Estado</th>
+                    <th>Tags</th>
+                    <th><span class="wf-visually-hidden">Ação</span></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for alarm in alarms %}
+                <tr>
+                    <td class="alarms-time">{{ alarm.opened_at }}</td>
+                    <td><span class="alarms-severity alarms-severity-{{ alarm.severity_class }}">{{ alarm.severity_label }}</span></td>
+                    <td>{{ alarm.hosts }}</td>
+                    <td class="alarms-problem-name">{{ alarm.name }}</td>
+                    <td>
+                        {% if alarm.acknowledged %}<span class="alarms-state is-acknowledged">Reconhecido</span>{% else %}<span class="alarms-state is-pending">Pendente</span>{% endif %}
+                        {% if alarm.suppressed %}<span class="alarms-state is-suppressed">Suprimido</span>{% endif %}
+                    </td>
+                    <td>
+                        <div class="alarms-tags">
+                            {% for tag in alarm.tags %}<span class="alarms-tag">{{ tag.name }}: {{ tag.value }}</span>{% endfor %}
+                        </div>
+                    </td>
+                    <td>
+                        {% if alarm.zabbix_url %}
+                        <a class="alarms-action" href="{{ alarm.zabbix_url }}" target="_blank" rel="noopener noreferrer" title="Abrir e tratar este problema no Zabbix" aria-label="Abrir e tratar este problema no Zabbix">
+                            <i class="fa fa-external-link" aria-hidden="true"></i>
+                        </a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="alarms-empty" role="status">
+        <i class="fa fa-check-circle" aria-hidden="true"></i>
+        <span>Não há alarmes ativos do appCataloga no Zabbix.</span>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}

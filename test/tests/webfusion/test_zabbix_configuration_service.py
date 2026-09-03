@@ -16,6 +16,7 @@ for root in (str(SRC_ROOT), str(WEBFUSION_ROOT)):
         sys.path.insert(0, root)
 
 from modules.zabbix_configuration import service  # noqa: E402
+from zabbix_api import connection  # noqa: E402
 
 
 class FakeZabbixClient:
@@ -103,7 +104,7 @@ class TestZabbixConfigurationService(unittest.TestCase):
     def setUp(self):
         self.client = FakeZabbixClient()
         service._clear_catalog_cache()
-        self.client_patch = patch.object(service, "_build_client", return_value=self.client)
+        self.client_patch = patch.object(service, "build_client", return_value=self.client)
         self.operational_sync_patch = patch.object(
             service,
             "_persist_operational_host_connection",
@@ -295,8 +296,8 @@ class TestZabbixConfigurationService(unittest.TestCase):
                 "ZABBIX_API_TIMEOUT_SECONDS=7\n",
                 encoding="utf-8",
             )
-            with patch.object(service, "ZABBIX_SECRET_FILE", secret_file), patch.dict(
-                service.os.environ,
+            with patch.object(connection, "ZABBIX_SECRET_FILE", secret_file), patch.dict(
+                connection.os.environ,
                 {
                     "ZABBIX_API_URL": "",
                     "ZABBIX_API_TOKEN": "",
@@ -304,7 +305,7 @@ class TestZabbixConfigurationService(unittest.TestCase):
                 },
                 clear=False,
             ):
-                settings = service._get_zabbix_settings()
+                settings = connection.get_settings()
 
         self.assertEqual(settings["ZABBIX_API_URL"], "http://zabbix.example/api_jsonrpc.php")
         self.assertEqual(settings["ZABBIX_API_TOKEN"], "local-token")
@@ -318,15 +319,15 @@ class TestZabbixConfigurationService(unittest.TestCase):
                 "ZABBIX_API_TOKEN=local-token\n",
                 encoding="utf-8",
             )
-            with patch.object(service, "ZABBIX_SECRET_FILE", secret_file), patch.dict(
-                service.os.environ,
+            with patch.object(connection, "ZABBIX_SECRET_FILE", secret_file), patch.dict(
+                connection.os.environ,
                 {
                     "ZABBIX_API_URL": "http://override.example/api_jsonrpc.php",
                     "ZABBIX_API_TOKEN": "environment-token",
                 },
                 clear=False,
             ):
-                settings = service._get_zabbix_settings()
+                settings = connection.get_settings()
 
         self.assertEqual(settings["ZABBIX_API_URL"], "http://override.example/api_jsonrpc.php")
         self.assertEqual(settings["ZABBIX_API_TOKEN"], "environment-token")

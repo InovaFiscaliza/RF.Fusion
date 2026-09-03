@@ -8,10 +8,12 @@ from pathlib import Path
 
 
 SRC_ROOT = Path("/RFFusion/src")
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+WEBFUSION_ROOT = SRC_ROOT / "webfusion"
+for root in (str(SRC_ROOT), str(WEBFUSION_ROOT)):
+    if root not in sys.path:
+        sys.path.insert(0, root)
 
-from zabbix.zabbix_api import (  # noqa: E402
+from zabbix_api.client import (  # noqa: E402
     API_METHOD_HOST_GET,
     API_METHOD_TEMPLATE_GET,
     API_METHOD_USER_MACRO_CREATE,

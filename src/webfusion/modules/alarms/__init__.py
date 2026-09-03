@@ -1,0 +1,1 @@
+"""Read-only operational alarms sourced from the RF.Fusion Zabbix context."""

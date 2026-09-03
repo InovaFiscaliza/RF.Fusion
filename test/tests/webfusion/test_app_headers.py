@@ -25,16 +25,16 @@ class TestIdentityHeaderDebugRoute(unittest.TestCase):
         cls.client = module.app.test_client()
 
     def setUp(self):
-        self.module.OBSERVED_USER_PROFILES.clear()
+        self.module.AUTH_SERVICE.observed_user_profiles.clear()
         self.register_observed_user = patch.object(
-            self.module,
+            importlib.import_module("auth.service"),
             "register_observed_user",
         )
         self.register_user_mock = self.register_observed_user.start()
         self.addCleanup(self.register_observed_user.stop)
 
     def tearDown(self):
-        self.module.OBSERVED_USER_PROFILES.clear()
+        self.module.AUTH_SERVICE.observed_user_profiles.clear()
 
     def test_returns_forwarded_identity_headers_without_cache(self):
         response = self.client.get(
@@ -173,23 +173,17 @@ class TestIdentityHeaderDebugRoute(unittest.TestCase):
 
     def test_restricted_module_rejects_user_without_access_role(self):
         module = importlib.import_module("app")
-        original_get_access_role = module.get_access_role
-        module.get_access_role = lambda user_email: None
-        try:
+        with patch("auth.service.get_access_role", return_value=None):
             response = self.client.get(
                 "/task/",
                 headers={"X-User-Email": "visitor@example.org"},
             )
-        finally:
-            module.get_access_role = original_get_access_role
 
         self.assertEqual(response.status_code, 403)
 
     def test_template_context_queries_access_role_for_navigation(self):
         module = importlib.import_module("app")
-        original_get_access_role = module.get_access_role
-        module.get_access_role = lambda user_email: "developer"
-        try:
+        with patch("auth.service.get_access_role", return_value="developer"):
             with module.app.test_request_context(
                 "/",
                 headers={
@@ -199,16 +193,13 @@ class TestIdentityHeaderDebugRoute(unittest.TestCase):
                 module.load_request_identity()
                 context = module.inject_request_identity()
                 self.assertEqual(context["current_user"]["role"], "developer")
-        finally:
-            module.get_access_role = original_get_access_role
 
     def test_api_routes_do_not_query_access_role(self):
         module = importlib.import_module("app")
-        original_get_access_role = module.get_access_role
-        module.get_access_role = lambda user_email: self.fail(
-            "API routes must not query the access-control database."
-        )
-        try:
+        with patch(
+            "auth.service.get_access_role",
+            side_effect=AssertionError("API routes must not query the access-control database."),
+        ):
             with module.app.test_request_context(
                 "/api/map/stations",
                 headers={
@@ -218,14 +209,10 @@ class TestIdentityHeaderDebugRoute(unittest.TestCase):
             ):
                 module.load_request_identity()
                 self.assertIsNone(module.g.webfusion_user["role"])
-        finally:
-            module.get_access_role = original_get_access_role
 
     def test_restricted_module_accepts_configured_user_role(self):
         module = importlib.import_module("app")
-        original_get_access_role = module.get_access_role
-        module.get_access_role = lambda user_email: "developer"
-        try:
+        with patch("auth.service.get_access_role", return_value="developer"):
             with module.app.test_request_context(
                 "/task/",
                 headers={
@@ -237,8 +224,6 @@ class TestIdentityHeaderDebugRoute(unittest.TestCase):
                 self.assertIsNone(module.require_restricted_access())
                 self.assertEqual(module.g.webfusion_user["role"], "developer")
                 self.assertEqual(module.g.webfusion_user["label"], "Maria Silva")
-        finally:
-            module.get_access_role = original_get_access_role
 
 
 if __name__ == "__main__":

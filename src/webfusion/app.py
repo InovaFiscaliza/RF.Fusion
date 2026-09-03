@@ -13,7 +13,6 @@ rules stay in their feature service modules.
 
 import os
 import logging
-import re
 import sys
 from pathlib import Path
 
@@ -34,12 +33,13 @@ from modules.task.routes import task_bp
 from modules.maintenance.routes import maintenance_bp
 from modules.users.routes import users_bp
 from modules.zabbix_configuration.routes import zabbix_configuration_bp
+from modules.alarms.routes import alarms_bp
 from modules.map.service import (
     get_station_map_points,
     get_station_map_site_detail,
 )
 from modules.server.usage_metrics import record_page_view
-from db import get_access_role, register_observed_user
+from auth.service import AuthService
 
 
 app = Flask(__name__)
@@ -47,20 +47,7 @@ app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_prefix=1)
 app.logger.setLevel(logging.INFO)
 
-ACCESS_RESTRICTED_BLUEPRINTS = frozenset(
-    {
-        "maintenance",
-        "task",
-        "users",
-        "zabbix_configuration",
-    }
-)
-ANONYMOUS_USER_LABEL = "Anônimo"
-IDENTITY_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-OBSERVED_USER_PROFILES: dict[
-    str,
-    tuple[str | None, str | None, str | None, str | None],
-] = {}
+AUTH_SERVICE = AuthService()
 
 # Register feature blueprints first; the app-level routes below are kept only
 # for the landing page and a few small cross-module helpers.
@@ -72,114 +59,43 @@ app.register_blueprint(task_bp)
 app.register_blueprint(maintenance_bp)
 app.register_blueprint(users_bp)
 app.register_blueprint(zabbix_configuration_bp)
-
-
-def _identity_header_value(name: str) -> str | None:
-    """Return an identity header normalized after the WSGI header decode."""
-    value = str(request.headers.get(name) or "").strip()
-    if not value:
-        return None
-
-    try:
-        return value.encode("latin-1").decode("utf-8")
-    except UnicodeError:
-        return value
-
-
-def _request_identity() -> dict[str, str | None]:
-    """Build the current identity from headers set by the authentication proxy."""
-    header_email = _identity_header_value("X-User-Email")
-    email = header_email.casefold() if _is_valid_identity_email(header_email) else None
-    name = _normalize_identity_name(_identity_header_value("X-User-Name"), email)
-    return {
-        "name": name,
-        "email": email,
-        "job_title": _identity_header_value("X-User-Job-Title"),
-        "department": _identity_header_value("X-User-Department"),
-        "location": _identity_header_value("X-User-Location"),
-        "label": name or email or ANONYMOUS_USER_LABEL,
-        "role": None,
-    }
-
-
-def _is_valid_identity_email(value: str | None) -> bool:
-    """Accept only one non-empty email address from the authentication proxy."""
-    return bool(IDENTITY_EMAIL_PATTERN.fullmatch(str(value or "").strip()))
-
-
-def _normalize_identity_name(name: str | None, email: str | None) -> str | None:
-    """Remove an email duplicated inside a display name sent by the proxy."""
-    normalized_name = str(name or "").strip()
-    if not normalized_name or not email:
-        return normalized_name or None
-
-    if email not in normalized_name.casefold():
-        return normalized_name
-
-    normalized_name = re.sub(re.escape(email), "", normalized_name, flags=re.IGNORECASE)
-    return normalized_name.strip(" -|") or None
-
-
-def _record_observed_user(identity: dict[str, str | None]) -> None:
-    """Register a newly observed F5 identity without blocking navigation."""
-    user_email = identity["email"]
-    user_profile = (
-        identity["name"],
-        identity["job_title"],
-        identity["department"],
-        identity["location"],
-    )
-    if not _is_valid_identity_email(user_email):
-        app.logger.warning("webfusion_observed_user_ignored_invalid_email")
-        return
-
-    if OBSERVED_USER_PROFILES.get(user_email) == user_profile:
-        return
-
-    try:
-        register_observed_user(
-            user_name=identity["name"],
-            user_email=user_email,
-            job_title=identity["job_title"],
-            department=identity["department"],
-            location=identity["location"],
-        )
-    except Exception:
-        app.logger.exception("webfusion_observed_user_registration_failed")
-        return
-
-    OBSERVED_USER_PROFILES[user_email] = user_profile
-
-
-def _load_access_role(identity: dict[str, str | None]) -> None:
-    """Load the role once when a route guard or template needs it."""
-    user_email = identity["email"]
-    if not user_email or identity["role"] is not None:
-        return
-
-    try:
-        identity["role"] = get_access_role(user_email)
-    except Exception:
-        app.logger.exception("webfusion_access_role_lookup_failed")
+app.register_blueprint(alarms_bp)
 
 
 @app.before_request
 def load_request_identity() -> None:
-    """Make the proxy identity available to route guards and base templates."""
-    identity = _request_identity()
+    """Make the proxy identity available to route guards and base templates.
+
+    Args:
+        None. Flask supplies the current request context.
+
+    Returns:
+        None. Stores a normalized identity in `flask.g.webfusion_user`; for a
+        restricted blueprint, also loads the active access role.
+    """
+    identity = AUTH_SERVICE.request_identity(request)
     endpoint = request.endpoint or ""
     blueprint_name = endpoint.partition(".")[0]
-    if blueprint_name in ACCESS_RESTRICTED_BLUEPRINTS:
-        _load_access_role(identity)
+    if AUTH_SERVICE.is_restricted_blueprint(blueprint_name):
+        AUTH_SERVICE.load_access_role(identity, app.logger)
     g.webfusion_user = identity
 
 
 @app.before_request
 def require_restricted_access() -> Response | None:
-    """Allow protected WebFusion modules only to configured active users."""
+    """Allow protected WebFusion modules only to configured active users.
+
+    Args:
+        None. Flask supplies the current request and `flask.g.webfusion_user`.
+
+    Returns:
+        Access decision. Type: flask.Response | None. Returns a 403 response
+        for protected modules without an active role; otherwise returns `None`
+        so Flask continues the request.
+    """
     endpoint = request.endpoint or ""
     blueprint_name = endpoint.partition(".")[0]
-    if blueprint_name not in ACCESS_RESTRICTED_BLUEPRINTS:
+    if not AUTH_SERVICE.is_restricted_blueprint(blueprint_name):
         return None
 
     if g.webfusion_user["role"] is None:
@@ -189,18 +105,35 @@ def require_restricted_access() -> Response | None:
 
 @app.context_processor
 def inject_request_identity() -> dict[str, dict[str, str | None]]:
-    """Expose the current proxy identity to every rendered base template."""
-    identity = getattr(g, "webfusion_user", _request_identity())
-    _record_observed_user(identity)
-    _load_access_role(identity)
+    """Expose the current proxy identity to every rendered base template.
+
+    Args:
+        None. Flask supplies the current request context.
+
+    Returns:
+        Template context. Type: dict[str, dict[str, str | None]]. Contains the
+        required key `current_user`, whose value has the identity keys `name`,
+        `email`, `job_title`, `department`, `location`, `label`, and `role`.
+    """
+    identity = getattr(g, "webfusion_user", AUTH_SERVICE.request_identity(request))
+    AUTH_SERVICE.record_observed_user(identity, app.logger)
+    AUTH_SERVICE.load_access_role(identity, app.logger)
     return {"current_user": identity}
 
 @app.route("/")
-def index():
+def index() -> str:
     """Render the landing page shell.
 
     The first map snapshot is embedded in the page. This avoids a second
     browser request that can remain pending after a history-cache restore.
+
+    Args:
+        None. Flask supplies the current request context.
+
+    Returns:
+        Rendered landing page HTML. Type: str. The template receives
+        `initial_map_points` as list[dict[str, object]], or an empty list when
+        the summary query fails.
     """
     record_page_view()
     try:
@@ -213,11 +146,20 @@ def index():
 
 
 @app.route("/api/map/stations")
-def map_stations():
+def map_stations() -> Response:
     """Return the cached summary-backed station map payload.
 
     The page intentionally renders before this endpoint resolves, so failures
     should degrade to an empty map instead of breaking the whole landing page.
+
+    Args:
+        None. Flask supplies optional `start_date` and `end_date` query
+        parameters as strings.
+
+    Returns:
+        JSON response. Type: flask.Response. Its object contains the required
+        key `points` with value list[dict[str, object]], or an empty list when
+        the summary query fails.
     """
     start_date = request.args.get("start_date") or None
     end_date = request.args.get("end_date") or None
@@ -238,12 +180,20 @@ def map_stations():
 
 
 @app.route("/api/map/stations/<int:site_id>")
-def map_station_detail(site_id):
+def map_station_detail(site_id: int) -> Response:
     """Return popup metadata for one map point.
 
     The popup is loaded on demand after the operator focuses a site, which
     keeps the initial map payload smaller than embedding every station detail
     into the first HTML response.
+
+    Args:
+        site_id: Identifier of the selected map site. Type: int.
+
+    Returns:
+        JSON response. Type: flask.Response. The object contains `site_id`,
+        `stations`, `has_online_host`, and `has_known_host`; `stations` is a
+        list[dict[str, object]] and is empty when the detail query fails.
     """
     start_date = request.args.get("start_date") or None
     end_date = request.args.get("end_date") or None
@@ -268,22 +218,39 @@ def map_station_detail(site_id):
         )
 
 @app.route("/health")
-def health():
-    """Return the minimal liveness response used by container health checks."""
+def health() -> dict[str, str]:
+    """Return the minimal liveness response used by container health checks.
+
+    Args:
+        None. Flask supplies the current request context.
+
+    Returns:
+        Liveness payload. Type: dict[str, str]. Contains the required key
+        `status` with value `ok`.
+    """
     return {"status": "ok"}
 
 
 @app.route("/debug/headers", methods=["GET"])
-def debug_headers():
-    """Return the identity headers forwarded by the upstream authentication proxy."""
+def debug_headers() -> Response:
+    """Return the identity headers forwarded by the authentication proxy.
+
+    Args:
+        None. Flask supplies the current request and its `X-User-*` headers.
+
+    Returns:
+        JSON response. Type: flask.Response. The object contains `X-User-Name`,
+        `X-User-Email`, `X-User-Job-Title`, `X-User-Department`, and
+        `X-User-Location`; each value is str | None.
+    """
 
     response = jsonify(
         {
-            "X-User-Name": _identity_header_value("X-User-Name"),
-            "X-User-Email": _identity_header_value("X-User-Email"),
-            "X-User-Job-Title": _identity_header_value("X-User-Job-Title"),
-            "X-User-Department": _identity_header_value("X-User-Department"),
-            "X-User-Location": _identity_header_value("X-User-Location"),
+            "X-User-Name": AUTH_SERVICE.identity_header_value(request, "X-User-Name"),
+            "X-User-Email": AUTH_SERVICE.identity_header_value(request, "X-User-Email"),
+            "X-User-Job-Title": AUTH_SERVICE.identity_header_value(request, "X-User-Job-Title"),
+            "X-User-Department": AUTH_SERVICE.identity_header_value(request, "X-User-Department"),
+            "X-User-Location": AUTH_SERVICE.identity_header_value(request, "X-User-Location"),
         }
     )
     # Identity attributes must not be stored by browsers or proxies.

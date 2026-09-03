@@ -6,8 +6,18 @@ Antes de responder, planejar, editar ou refatorar codigo neste repositorio, leia
 
 1. [ARCHITECTURE.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/.instructions/ARCHITECTURE.md)
 2. [INSTRUCTIONS.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/.instructions/INSTRUCTIONS.md)
+3. [ENVIRONMENT.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/.instructions/ENVIRONMENT.md)
+4. [ENVIRONMENT.md](/RFFusion/src/webfusion/.instructions/ENVIRONMENT.md)
 
 Esses arquivos sao o contexto obrigatorio do projeto.
+
+As instrucoes de ambiente definem o container autorizado para executar cada
+aplicacao, seus testes e suas dependencias. Elas prevalecem sobre a conveniencia
+do ambiente local do agente ao escolher comandos de execucao.
+
+Para validacoes do WebFusion no container webserver, use exclusivamente o
+interpretador `/opt/conda/envs/appdata/bin/python` (ambiente `appdata`, Python
+3.10.8).
 
 ## Ordem de autoridade
 

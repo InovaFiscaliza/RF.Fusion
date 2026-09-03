@@ -1,8 +1,7 @@
-"""Small, dependency-free client for the RF.Fusion Zabbix configuration API.
+"""Dependency-free client for shared RF.Fusion Zabbix API operations.
 
-The client deliberately operates only on the RF.Fusion template profiles and
-their directly linked hosts.  It never logs the API token and never requests
-the value of secret or vault-backed macros.
+The client limits configuration operations to RF.Fusion profiles and hosts.
+It never logs the token or requests secret or vault-backed macro values.
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ from urllib.request import Request, urlopen
 
 
 API_METHOD_HOST_GET = "host.get"
+API_METHOD_PROBLEM_GET = "problem.get"
 API_METHOD_TEMPLATE_GET = "template.get"
 API_METHOD_USER_MACRO_CREATE = "usermacro.create"
 API_METHOD_USER_MACRO_DELETE = "usermacro.delete"
@@ -52,17 +52,45 @@ RF_FUSION_TEMPLATE_HOSTS = (
     "UMS300",
 )
 
+APPCATALOGA_CONTEXT_TAG = "Contex"
+APPCATALOGA_CONTEXT_VALUE = "appCataloga"
+TAG_OPERATOR_CONTAINS = 0
+
 MACRO_NAME_PATTERN = re.compile(r"^\{\$[A-Z0-9_.]+\}$")
 
 
 class ZabbixApiError(RuntimeError):
-    """Represent an operational failure returned by the Zabbix API."""
+    """Represent an operational failure or invalid Zabbix API response.
+
+    Use this exception to report safe failures to the presentation layer.
+    """
 
 
 class ZabbixApiClient:
-    """Read and update station macros through the Zabbix JSON-RPC API."""
+    """Execute authorized Zabbix JSON-RPC queries and changes.
+
+    Attributes:
+        _api_url: Normalized JSON-RPC endpoint. Type: str.
+        _api_token: Authentication token, used only in the request body. Type: str.
+        _timeout_seconds: Maximum wait time for each request. Type: int.
+        _request_id: Instance JSON-RPC sequence. Type: int. Starts at 0.
+    """
 
     def __init__(self, api_url: str, api_token: str, *, timeout_seconds: int = 10):
+        """Initialize the client with the authenticated API connection.
+
+        Args:
+            api_url: JSON-RPC endpoint URL. Type: str.
+            api_token: Technical-account authentication token. Type: str.
+            timeout_seconds: Maximum time per request, constrained from 3 to 30.
+                Type: int.
+
+        Returns:
+            None: Initializes connection attributes and the request sequence.
+
+        Raises:
+            ZabbixApiError: If the URL or token is missing.
+        """
         self._api_url = str(api_url or "").strip()
         self._api_token = str(api_token or "").strip()
         self._timeout_seconds = max(3, min(int(timeout_seconds), 30))
@@ -74,7 +102,19 @@ class ZabbixApiClient:
             raise ZabbixApiError("O token da API do Zabbix não foi configurado.")
 
     def list_catalog(self) -> dict[str, list[dict[str, Any]]]:
-        """Return the managed templates and their directly linked stations."""
+        """List managed RF.Fusion templates and their linked hosts.
+
+        Args:
+            None.
+
+        Returns:
+            dict[str, list[dict[str, Any]]]: Contains `templates` with `templateid`,
+            `host`, and `name`, plus `hosts` with `hostid`, `host`, `name`, `status`, and
+            `profiles`.
+
+        Raises:
+            ZabbixApiError: If the API cannot fulfill a query.
+        """
         templates = self._call(
             API_METHOD_TEMPLATE_GET,
             {
@@ -89,6 +129,7 @@ class ZabbixApiClient:
         }
         template_ids = set(templates_by_id)
 
+        # Only hosts linked to managed RF.Fusion templates belong in this catalog.
         hosts = self._call(
             API_METHOD_HOST_GET,
             {
@@ -135,8 +176,95 @@ class ZabbixApiClient:
             "hosts": managed_hosts,
         }
 
+    def list_appcataloga_problems(self) -> list[dict[str, Any]]:
+        """List active problems whose context contains `appCataloga`.
+
+        Args:
+            None.
+
+        Returns:
+            list[dict[str, Any]]: Problems with `eventid`, `objectid`, `name`,
+            `clock`, `severity`, `acknowledged`, `suppressed`, `tags` e `hosts`.
+
+        Raises:
+            ZabbixApiError: If the API rejects or does not respond to the query.
+        """
+        problems = self._call(
+            API_METHOD_PROBLEM_GET,
+            {
+                "output": [
+                    "eventid",
+                    "objectid",
+                    "name",
+                    "clock",
+                    "severity",
+                    "acknowledged",
+                    "suppressed",
+                ],
+                "selectHosts": ["hostid", "host", "name"],
+                "selectTags": ["tag", "value"],
+                "tags": [
+                    {
+                        "tag": APPCATALOGA_CONTEXT_TAG,
+                        "value": APPCATALOGA_CONTEXT_VALUE,
+                        "operator": TAG_OPERATOR_CONTAINS,
+                    }
+                ],
+                "sortfield": ["eventid"],
+                "sortorder": "DESC",
+                "limit": 100,
+            },
+        )
+        # Problem responses do not reliably embed hosts in this Zabbix version.
+        return [
+            {
+                **problem,
+                "hosts": self._get_hosts_for_trigger(problem.get("objectid")),
+            }
+            for problem in problems
+        ]
+
+    def _get_hosts_for_trigger(self, trigger_id: Any) -> list[dict[str, Any]]:
+        """Query trigger hosts through the permitted `host.get` operation.
+
+        Args:
+            trigger_id: Trigger identifier returned by the problem. Type: Any.
+
+        Returns:
+            list[dict[str, Any]]: Hosts with `hostid`, `host`, and `name`; returns an
+            empty list when the identifier is not positive.
+
+        Raises:
+            ZabbixApiError: If the API cannot query valid hosts.
+        """
+        normalized_trigger_id = str(trigger_id or "").strip()
+        if not normalized_trigger_id.isdigit() or int(normalized_trigger_id) <= 0:
+            return []
+        # The technical account permits host.get but not trigger.get.
+        return self._call(
+            API_METHOD_HOST_GET,
+            {
+                "triggerids": [normalized_trigger_id],
+                "output": ["hostid", "host", "name"],
+                "sortfield": "host",
+                "sortorder": "ASC",
+            },
+        )
+
     def get_host_configuration(self, host_id: str | int) -> dict[str, Any]:
-        """Resolve one host's effective macros and the source of each value."""
+        """Resolve a host's effective macros and the source of each value.
+
+        Args:
+            host_id: Zabbix host identifier. Type: str | int.
+
+        Returns:
+            dict[str, Any]: Configuration with `kind`, `target_id`, `title`,
+            `technical_name`, `profiles`, `macros`, `direct_macros`, and
+            `inherited_macro_groups`.
+
+        Raises:
+            ZabbixApiError: If the host, templates, or macros cannot be read.
+        """
         host = self._get_host(host_id)
         template_layers, template_records = self._load_template_hierarchy(
             host.get("parentTemplates") or []
@@ -194,12 +322,17 @@ class ZabbixApiClient:
         self,
         host_ids: list[str | int],
     ) -> dict[str, dict[str, Any]]:
-        """Resolve effective macros for multiple hosts with shared API calls.
+        """Resolve effective macros for multiple hosts with shared queries.
 
-        Collective WebFusion operations need the effective values of each
-        station, including host-level overrides. Loading the hosts together
-        keeps the Zabbix request count bounded by the template hierarchy and
-        avoids issuing the single-host workflow once per selected station.
+        Args:
+            host_ids: Zabbix host identifiers. Type: list[str | int].
+
+        Returns:
+            dict[str, dict[str, Any]]: Configurations indexed by `hostid`; each has
+            the same shape as `get_host_configuration`.
+
+        Raises:
+            ZabbixApiError: If the API cannot retrieve hosts, templates, or macros.
         """
         normalized_host_ids = sorted(
             {
@@ -292,7 +425,18 @@ class ZabbixApiClient:
         return configurations
 
     def get_template_configuration(self, template_id: str | int) -> dict[str, Any]:
-        """Resolve one template's own and inherited macros."""
+        """Resolve a template's direct and inherited macros.
+
+        Args:
+            template_id: Zabbix template identifier. Type: str | int.
+
+        Returns:
+            dict[str, Any]: Configuration with `kind`, `target_id`, `title`,
+            `technical_name`, `profiles`, `macros`, and `direct_macros`.
+
+        Raises:
+            ZabbixApiError: If the template, hierarchy, or macros cannot be read.
+        """
         template = self._get_template(template_id)
         template_layers, template_records = self._load_template_hierarchy([template])
         target_id = str(template["templateid"])
@@ -341,7 +485,20 @@ class ZabbixApiClient:
         macro_type: str,
         value: str,
     ) -> None:
-        """Create a direct macro override on a host or template."""
+        """Create a direct macro override on a host or template.
+
+        Args:
+            owner_id: Identifier of the owner host or template. Type: str.
+            macro_name: Valid macro name. Type: str.
+            macro_type: Allowed Zabbix macro type. Type: str.
+            value: Value to save. Type: str.
+
+        Returns:
+            None: Sends the creation request to the API.
+
+        Raises:
+            ZabbixApiError: If the macro is invalid or the API rejects creation.
+        """
         self._validate_writable_macro(macro_name, macro_type)
         self._call(
             API_METHOD_USER_MACRO_CREATE,
@@ -354,17 +511,50 @@ class ZabbixApiClient:
         )
 
     def update_macro(self, *, macro_id: str, value: str) -> None:
-        """Update a direct macro without changing its name or type."""
+        """Update a direct macro value without changing its name or type.
+
+        Args:
+            macro_id: Zabbix direct macro identifier. Type: str.
+            value: New macro value. Type: str.
+
+        Returns:
+            None: Sends the update request to the API.
+
+        Raises:
+            ZabbixApiError: If the API rejects the update.
+        """
         self._call(
             API_METHOD_USER_MACRO_UPDATE,
             {"hostmacroid": str(macro_id), "value": value},
         )
 
     def delete_macro(self, *, macro_id: str) -> None:
-        """Remove one direct macro so the configured inheritance takes effect."""
+        """Remove a direct macro to restore its configured inheritance.
+
+        Args:
+            macro_id: Zabbix direct macro identifier. Type: str.
+
+        Returns:
+            None: Sends the deletion request to the API.
+
+        Raises:
+            ZabbixApiError: If the API rejects deletion.
+        """
         self._call(API_METHOD_USER_MACRO_DELETE, [str(macro_id)])
 
     def _get_host(self, host_id: str | int) -> dict[str, Any]:
+        """Retrieve a Zabbix host with its directly linked templates.
+
+        Args:
+            host_id: Zabbix host identifier. Type: str | int.
+
+        Returns:
+            dict[str, Any]: Host with `hostid`, `host`, `name`, `status`, and
+            `parentTemplates`.
+
+        Raises:
+            ZabbixApiError: If the host does not exist or the query fails.
+        """
         hosts = self._call(
             API_METHOD_HOST_GET,
             {
@@ -378,6 +568,18 @@ class ZabbixApiClient:
         return hosts[0]
 
     def _get_template(self, template_id: str | int) -> dict[str, Any]:
+        """Retrieve a Zabbix template with its directly linked templates.
+
+        Args:
+            template_id: Zabbix template identifier. Type: str | int.
+
+        Returns:
+            dict[str, Any]: Template with `templateid`, `host`, `name`, and
+            `parentTemplates`.
+
+        Raises:
+            ZabbixApiError: If the template does not exist or the query fails.
+        """
         templates = self._call(
             API_METHOD_TEMPLATE_GET,
             {
@@ -394,7 +596,19 @@ class ZabbixApiClient:
         self,
         direct_templates: list[dict[str, Any]],
     ) -> tuple[list[list[str]], dict[str, dict[str, Any]]]:
-        """Load template ancestry one small breadth-first layer at a time."""
+        """Load template ancestry one breadth-first layer at a time.
+
+        Args:
+            direct_templates: Templates linked directly to the target. Type:
+            list[dict[str, Any]]. Each item must include `templateid`.
+
+        Returns:
+            tuple[list[list[str]], dict[str, dict[str, Any]]]: Ordered template-ID
+            layers and template records indexed by ID.
+
+        Raises:
+            ZabbixApiError: If the API cannot retrieve a missing layer.
+        """
         template_records = {
             str(item["templateid"]): item for item in direct_templates
         }
@@ -409,6 +623,7 @@ class ZabbixApiClient:
             for _ in range(len(pending)):
                 template_id = pending.popleft()
                 if template_id in visited:
+                    # Templates can converge through multiple inheritance paths.
                     continue
                 visited.add(template_id)
                 current_layer.append(template_id)
@@ -423,6 +638,7 @@ class ZabbixApiClient:
                 or "parentTemplates" not in template_records[template_id]
             ]
             if missing_ids:
+                # Parent references omit their own parent hierarchy in API output.
                 fetched_templates = self._call(
                     API_METHOD_TEMPLATE_GET,
                     {
@@ -455,7 +671,17 @@ class ZabbixApiClient:
         direct_templates: list[dict[str, Any]],
         template_records: dict[str, dict[str, Any]],
     ) -> list[list[str]]:
-        """Build one host's template precedence from already loaded records."""
+        """Build template precedence from previously loaded records.
+
+        Args:
+            direct_templates: Templates linked directly to the host. Type:
+            list[dict[str, Any]]. Each item must include `templateid`.
+            template_records: Templates indexed by ID, including ancestors. Type:
+            dict[str, dict[str, Any]].
+
+        Returns:
+            list[list[str]]: Template-ID layers in precedence order.
+        """
         pending = deque(
             sorted(
                 {str(template["templateid"]) for template in direct_templates},
@@ -493,11 +719,24 @@ class ZabbixApiClient:
         self,
         owner_records: dict[str, dict[str, str]],
     ) -> dict[str, list[dict[str, Any]]]:
-        """Fetch metadata for every macro, and values only for plain-text ones."""
+        """Fetch macro metadata and values only for text macros.
+
+        Args:
+            owner_records: Owners indexed by ID with `name` and `kind`. Type:
+            dict[str, dict[str, str]].
+
+        Returns:
+            dict[str, list[dict[str, Any]]]: Macros by owner. Each macro contains
+            `macro_id`, `owner_id`, `name`, `type`, `description`, and `value`.
+
+        Raises:
+            ZabbixApiError: If the API cannot retrieve metadata or values.
+        """
         owner_ids = sorted(owner_records, key=int)
         if not owner_ids:
             return {}
 
+        # Request secret metadata separately to avoid reading protected values.
         metadata_rows = self._call(
             API_METHOD_USER_MACRO_GET,
             {
@@ -542,12 +781,26 @@ class ZabbixApiClient:
         owner_records: dict[str, dict[str, str]],
         target_owner_id: str,
     ) -> list[dict[str, Any]]:
-        """Keep the first macro in Zabbix precedence order for every name."""
+        """Resolve the first macro of each name by Zabbix precedence.
+
+        Args:
+            precedence: Owner-ID and type pairs in priority order. Type:
+            list[tuple[str, str]].
+            macros_by_owner: Normalized macros by owner. Type:
+            dict[str, list[dict[str, Any]]].
+            owner_records: Owner metadata by ID. Type: dict[str, dict[str, str]].
+            target_owner_id: Requested host or template ID. Type: str.
+
+        Returns:
+            list[dict[str, Any]]: Effective macros ordered by name, including
+            display values, source metadata, and editing indicators.
+        """
         resolved: dict[str, dict[str, Any]] = {}
         for owner_id, owner_kind in precedence:
             owner = owner_records[owner_id]
             for macro in macros_by_owner.get(owner_id, []):
                 if macro["name"] in resolved:
+                    # The first owner is the effective value in Zabbix precedence.
                     continue
                 macro_type = macro["type"]
                 is_direct = owner_id == target_owner_id
@@ -596,11 +849,25 @@ class ZabbixApiClient:
         template_layers: list[list[str]],
         owner_records: dict[str, dict[str, str]],
     ) -> list[dict[str, Any]]:
-        """Group effective inherited macros by the template that owns them."""
+        """Group inherited macros by the template that provides each macro.
+
+        Args:
+            effective_macros: Effective macros for a host. Type:
+            list[dict[str, Any]].
+            template_layers: Template layers in precedence order. Type:
+            list[list[str]].
+            owner_records: Template metadata by ID. Type:
+            dict[str, dict[str, str]].
+
+        Returns:
+            list[dict[str, Any]]: Groups with `template_id`, `template_name`,
+            `is_direct_link`, and `macros`.
+        """
         direct_template_ids = set(template_layers[0]) if template_layers else set()
         macros_by_template: dict[str, list[dict[str, Any]]] = {}
         for macro in effective_macros:
             if macro["is_direct_on_target"]:
+                # Direct host values do not belong to inherited template groups.
                 continue
             macros_by_template.setdefault(macro["source_owner_id"], []).append(macro)
 
@@ -623,13 +890,37 @@ class ZabbixApiClient:
 
     @staticmethod
     def _validate_writable_macro(macro_name: str, macro_type: str) -> None:
+        """Validate that a writable macro stays within the permitted scope.
+
+        Args:
+            macro_name: Macro name in Zabbix format. Type: str.
+            macro_type: Zabbix macro type. Type: str.
+
+        Returns:
+            None: Completes when the macro is valid for modification.
+
+        Raises:
+            ZabbixApiError: If the macro name or type is not allowed.
+        """
         if not MACRO_NAME_PATTERN.fullmatch(macro_name):
             raise ZabbixApiError("O nome da macro informado não é permitido.")
         if str(macro_type) not in {MACRO_TYPE_TEXT, MACRO_TYPE_SECRET}:
             raise ZabbixApiError("Somente macros de texto ou segredo podem ser alteradas.")
 
     def _call(self, method: str, params: Any) -> Any:
-        """Submit one JSON-RPC request without exposing authentication data."""
+        """Send one JSON-RPC request without exposing authentication data.
+
+        Args:
+            method: Zabbix JSON-RPC method name. Type: str.
+            params: Parameters accepted by the requested method. Type: Any.
+
+        Returns:
+            Any: The `result` field returned by the Zabbix API.
+
+        Raises:
+            ZabbixApiError: If an HTTP or connection failure, invalid JSON, API
+            error, or response without `result` occurs.
+        """
         self._request_id += 1
         payload = json.dumps(
             {
@@ -640,6 +931,7 @@ class ZabbixApiClient:
                 "id": self._request_id,
             }
         ).encode("utf-8")
+        # Keep the token inside the JSON-RPC body, never in the URL or logs.
         request = Request(
             self._api_url,
             data=payload,
@@ -660,6 +952,7 @@ class ZabbixApiClient:
             raise ZabbixApiError("A resposta da API do Zabbix é inválida.") from error
 
         if "error" in decoded:
+            # Return API diagnostics without including authentication data.
             detail = decoded["error"].get("data") or decoded["error"].get("message")
             raise ZabbixApiError(f"A API do Zabbix recusou a operação: {detail}")
         if "result" not in decoded:

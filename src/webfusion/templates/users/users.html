@@ -3,7 +3,7 @@
 {% block title %}RF.Fusion - Usuários{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/users_page.css', v='20260831-privileges-actions-aligned') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/users_page.css', v='20260901-directory-comboboxes-and-confirmation') }}">
 {% endblock %}
 
 {% block breadcrumb %}
@@ -19,7 +19,7 @@
     <div class="wf-page-hero">
         <div>
             <h1 class="wf-screen-title margin-bottom-s">Usuários</h1>
-            <p class="wf-page-hero-copy">Consulte identidades, cadastre acessos antecipadamente e defina os privilégios administrativos.</p>
+            <p class="wf-page-hero-copy">Consulte identidades, cadastre acessos antecipadamente e administre privilégios.</p>
         </div>
     </div>
 
@@ -37,70 +37,62 @@
     </div>
     {% endif %}
 
-    <section class="card wf-panel background-neutral-0 padding-l border-radius-m users-create-panel" aria-labelledby="users-create-title">
-        <div class="users-panel-heading">
-            <div>
-                <h2 id="users-create-title" class="wf-panel-title">Cadastrar usuário</h2>
-                <p class="wf-panel-copy">O cadastro manual permite definir o acesso antes da primeira autenticação pelo F5.</p>
-            </div>
-        </div>
-        <form method="post" class="users-create-form" data-loading-message="Cadastrando usuário...">
-            <div class="users-fields-grid">
-                <div class="users-field users-field-wide">
-                    <label class="form-label" for="user-name">Nome</label>
-                    <input id="user-name" class="form-control" type="text" name="user_name" maxlength="255" autocomplete="name">
-                </div>
-                <div class="users-field users-field-wide">
-                    <label class="form-label" for="user-email">E-mail</label>
-                    <input id="user-email" class="form-control" type="email" name="user_email" maxlength="320" required autocomplete="email">
-                </div>
-                <div class="users-field">
-                    <label class="form-label" for="user-job-title">Cargo</label>
-                    <input id="user-job-title" class="form-control" type="text" name="job_title" maxlength="255" autocomplete="organization-title">
-                </div>
-                <div class="users-field">
-                    <label class="form-label" for="user-department">Lotação</label>
-                    <input id="user-department" class="form-control" type="text" name="department" maxlength="255" autocomplete="organization">
-                </div>
-                <div class="users-field">
-                    <label class="form-label" for="user-location">Localidade</label>
-                    <input id="user-location" class="form-control" type="text" name="location" maxlength="255">
-                </div>
-            </div>
-            <div class="users-create-actions">
-                <fieldset class="users-privilege-set">
-                    <legend>Privilégios iniciais</legend>
-                    <label class="users-checkbox" for="user-is-admin">
-                        <input id="user-is-admin" type="checkbox" name="is_admin" value="1">
-                        <span>Administrador</span>
-                    </label>
-                    <label class="users-checkbox" for="user-is-developer">
-                        <input id="user-is-developer" type="checkbox" name="is_developer" value="1">
-                        <span>Desenvolvedor</span>
-                    </label>
-                </fieldset>
-                <button type="submit" class="btn btn-primary btn-primary-action">
-                    <i class="fa fa-user-plus" aria-hidden="true"></i>
-                    Cadastrar usuário
-                </button>
-            </div>
-        </form>
-    </section>
-
     <section class="card wf-panel background-neutral-0 padding-l border-radius-m users-directory-panel" aria-labelledby="users-directory-title">
         <div class="users-directory-head">
             <div>
                 <h2 id="users-directory-title" class="wf-panel-title">Diretório de usuários</h2>
                 <p class="wf-panel-copy">Os dados recebidos posteriormente pelo F5 atualizam o cadastro correspondente ao e-mail.</p>
             </div>
-            <form method="get" class="users-search-form" data-loading-message="Pesquisando usuários...">
-                <label class="sr-only" for="users-search">Pesquisar usuários</label>
-                <input id="users-search" class="form-control" type="search" name="search" value="{{ search }}" placeholder="Nome, e-mail, cargo ou lotação" autocomplete="off">
-                <button type="submit" class="btn btn-secondary btn-secondary-action">
-                    <i class="fa fa-search" aria-hidden="true"></i>
-                    Pesquisar
+            <div class="users-directory-tools">
+                <button type="button" class="btn btn-primary btn-primary-action" id="users-create-button">
+                    <i class="fa fa-user-plus" aria-hidden="true"></i>
+                    Cadastrar usuário
                 </button>
-            </form>
+                <form method="get" class="users-search-form" data-loading-message="Pesquisando usuários...">
+                    <div class="users-filter-field">
+                        <label class="sr-only" for="users-email-filter">Filtrar por usuário</label>
+                        <div class="users-combobox-wrap" data-users-combobox>
+                            <input id="users-email-filter" class="form-control users-combobox" type="search" value="{{ filters.email }}" placeholder="Todos os usuários" autocomplete="off" data-users-combobox-input>
+                            <input type="hidden" name="email" value="{{ filters.email }}" data-users-combobox-value>
+                            <div class="users-combobox-menu" hidden data-users-combobox-menu></div>
+                        </div>
+                    </div>
+                    <div class="users-filter-field">
+                        <label class="sr-only" for="users-job-title-filter">Filtrar por cargo</label>
+                        <div class="users-select-wrap">
+                            <select id="users-job-title-filter" class="form-control users-filter-select" name="job_title">
+                                <option value="">Todos os cargos</option>
+                                {% for option in filter_options.job_titles %}
+                                <option value="{{ option.value }}" {% if filters.job_title == option.value %}selected{% endif %}>{{ option.label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                    <div class="users-filter-field">
+                        <label class="sr-only" for="users-department-filter">Filtrar por lotação</label>
+                        <div class="users-select-wrap">
+                            <select id="users-department-filter" class="form-control users-filter-select" name="department">
+                                <option value="">Todas as lotações</option>
+                                {% for option in filter_options.departments %}
+                                <option value="{{ option.value }}" {% if filters.department == option.value %}selected{% endif %}>{{ option.label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                    <label class="sr-only" for="users-role-filter">Filtrar por privilégio</label>
+                    <div class="users-select-wrap">
+                        <select id="users-role-filter" class="form-control users-role-filter" name="role">
+                            {% for value, label in role_filters %}
+                            <option value="{{ value }}" {% if filters.role == value %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-secondary btn-secondary-action">
+                        <i class="fa fa-search" aria-hidden="true"></i>
+                        Pesquisar
+                    </button>
+                </form>
+            </div>
         </div>
 
         <div class="users-table-wrap">
@@ -134,21 +126,17 @@
                         </td>
                         <td data-label="Ações">
                             <div class="users-row-actions">
-                                <form method="post" action="{{ url_for('users.update_user_privileges') }}" class="users-privileges-form" data-loading-message="Atualizando privilégios...">
-                                    <input type="hidden" name="user_email" value="{{ user.NA_USER_EMAIL }}">
-                                    <label class="users-checkbox" for="admin-{{ user.ID_USER }}">
-                                        <input id="admin-{{ user.ID_USER }}" type="checkbox" name="is_admin" value="1" {% if user.IS_ADMIN %}checked{% endif %}>
-                                        <span>Administrador</span>
-                                    </label>
-                                    <label class="users-checkbox" for="developer-{{ user.ID_USER }}">
-                                        <input id="developer-{{ user.ID_USER }}" type="checkbox" name="is_developer" value="1" {% if user.IS_DEVELOPER %}checked{% endif %}>
-                                        <span>Desenvolvedor</span>
-                                    </label>
-                                    <button type="submit" class="btn btn-small btn-secondary-action">
-                                        <i class="fa fa-shield" aria-hidden="true"></i>
-                                        Aplicar privilégios
-                                    </button>
-                                </form>
+                                <button
+                                    type="button"
+                                    class="btn btn-small btn-secondary-action users-privileges-button"
+                                    data-user-privileges-name="{{ user.NA_USER_NAME or user.NA_USER_EMAIL }}"
+                                    data-user-privileges-email="{{ user.NA_USER_EMAIL }}"
+                                    data-user-is-admin="{{ 'true' if user.IS_ADMIN else 'false' }}"
+                                    data-user-is-developer="{{ 'true' if user.IS_DEVELOPER else 'false' }}"
+                                >
+                                    <i class="fa fa-shield" aria-hidden="true"></i>
+                                    Gerenciar
+                                </button>
                                 <button
                                     type="button"
                                     class="btn btn-small users-delete-button"
@@ -156,7 +144,7 @@
                                     data-user-delete-email="{{ user.NA_USER_EMAIL }}"
                                 >
                                     <i class="fa fa-trash" aria-hidden="true"></i>
-                                    Excluir usuário
+                                    Excluir
                                 </button>
                             </div>
                         </td>
@@ -172,6 +160,113 @@
     </section>
 </section>
 
+<dialog id="users-create-dialog" class="users-dialog" aria-labelledby="users-create-title">
+    <form method="post" class="users-dialog-card" id="users-create-form" data-loading-message="Cadastrando usuário...">
+        <div class="users-dialog-heading">
+            <div>
+                <h2 id="users-create-title" class="users-dialog-title">Cadastrar usuário</h2>
+                <p class="users-dialog-copy">Defina o acesso antes da primeira autenticação pelo F5.</p>
+            </div>
+            <button type="button" class="users-dialog-close" data-users-dialog-close="users-create-dialog" aria-label="Fechar cadastro de usuário">
+                <i class="fa fa-times" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="users-fields-grid">
+            <div class="users-field users-field-wide">
+                <label class="form-label" for="user-name">Nome</label>
+                <input id="user-name" class="form-control" type="text" name="user_name" maxlength="255" autocomplete="name">
+            </div>
+            <div class="users-field users-field-wide">
+                <label class="form-label" for="user-email">E-mail</label>
+                <input id="user-email" class="form-control" type="email" name="user_email" maxlength="320" required autocomplete="email">
+            </div>
+            <div class="users-field">
+                <label class="form-label" for="user-job-title">Cargo</label>
+                <input id="user-job-title" class="form-control" type="text" name="job_title" maxlength="255" autocomplete="organization-title">
+            </div>
+            <div class="users-field">
+                <label class="form-label" for="user-department">Lotação</label>
+                <input id="user-department" class="form-control" type="text" name="department" maxlength="255" autocomplete="organization">
+            </div>
+            <div class="users-field">
+                <label class="form-label" for="user-location">Localidade</label>
+                <input id="user-location" class="form-control" type="text" name="location" maxlength="255">
+            </div>
+        </div>
+        <div class="users-dialog-actions">
+            <fieldset class="users-privilege-set">
+                <legend>Privilégios iniciais</legend>
+                <label class="users-checkbox" for="user-is-admin">
+                    <input id="user-is-admin" type="checkbox" name="is_admin" value="1">
+                    <span>Administrador</span>
+                </label>
+                <label class="users-checkbox" for="user-is-developer">
+                    <input id="user-is-developer" type="checkbox" name="is_developer" value="1">
+                    <span>Desenvolvedor</span>
+                </label>
+            </fieldset>
+            <button type="submit" class="btn btn-primary btn-primary-action">
+                <i class="fa fa-user-plus" aria-hidden="true"></i>
+                Cadastrar usuário
+            </button>
+        </div>
+    </form>
+</dialog>
+
+<dialog id="users-privileges-dialog" class="users-dialog" aria-labelledby="users-privileges-title">
+    <form class="users-dialog-card" id="users-privileges-form">
+        <input type="hidden" name="user_email" id="users-privileges-email">
+        <div class="users-dialog-heading">
+            <div>
+                <h2 id="users-privileges-title" class="users-dialog-title">Gerenciar privilégios</h2>
+                <p class="users-dialog-copy">Defina os papéis de <strong id="users-privileges-name">-</strong>.</p>
+            </div>
+            <button type="button" class="users-dialog-close" data-users-dialog-close="users-privileges-dialog" aria-label="Fechar gerenciamento de privilégios">
+                <i class="fa fa-times" aria-hidden="true"></i>
+            </button>
+        </div>
+        <fieldset class="users-privilege-set users-dialog-privilege-set">
+            <legend>Privilégios ativos</legend>
+            <label class="users-checkbox" for="users-privileges-admin">
+                <input id="users-privileges-admin" type="checkbox" name="is_admin" value="1">
+                <span>Administrador</span>
+            </label>
+            <label class="users-checkbox" for="users-privileges-developer">
+                <input id="users-privileges-developer" type="checkbox" name="is_developer" value="1">
+                <span>Desenvolvedor</span>
+            </label>
+        </fieldset>
+        <div class="users-dialog-actions">
+            <button type="button" class="btn btn-secondary btn-secondary-action" data-users-dialog-close="users-privileges-dialog">Cancelar</button>
+            <button type="button" class="btn btn-primary btn-primary-action" id="users-privileges-confirm-button">
+                <i class="fa fa-check" aria-hidden="true"></i>
+                Salvar privilégios
+            </button>
+        </div>
+    </form>
+</dialog>
+
+<dialog id="users-privileges-confirm-dialog" class="users-dialog" aria-labelledby="users-privileges-confirm-title">
+    <form method="post" action="{{ url_for('users.update_user_privileges') }}" class="users-dialog-card" id="users-privileges-confirm-form" data-loading-message="Atualizando privilégios...">
+        <input type="hidden" name="user_email" id="users-privileges-confirm-email">
+        <input type="hidden" name="is_admin" id="users-privileges-confirm-admin" value="">
+        <input type="hidden" name="is_developer" id="users-privileges-confirm-developer" value="">
+        <h2 id="users-privileges-confirm-title" class="users-dialog-title">Confirmar privilégios?</h2>
+        <p class="users-dialog-copy">A atualização será aplicada para <strong id="users-privileges-confirm-name">-</strong>.</p>
+        <dl class="users-confirmation-list">
+            <div><dt>Administrador</dt><dd id="users-privileges-confirm-admin-label">Não</dd></div>
+            <div><dt>Desenvolvedor</dt><dd id="users-privileges-confirm-developer-label">Não</dd></div>
+        </dl>
+        <div class="users-dialog-actions">
+            <button type="button" class="btn btn-secondary btn-secondary-action" data-users-dialog-close="users-privileges-confirm-dialog">Cancelar</button>
+            <button type="submit" class="btn btn-primary btn-primary-action">
+                <i class="fa fa-check" aria-hidden="true"></i>
+                Confirmar alteração
+            </button>
+        </div>
+    </form>
+</dialog>
+
 <dialog id="users-delete-dialog" class="users-delete-dialog" aria-labelledby="users-delete-title">
     <form method="post" action="{{ url_for('users.delete_user') }}" class="users-delete-dialog-card" id="users-delete-form" data-loading-message="Excluindo usuário...">
         <input type="hidden" name="user_email" id="users-delete-email">
@@ -181,7 +276,7 @@
         </p>
         <p class="users-delete-warning">O usuário só poderá voltar por um novo cadastro ou uma nova autenticação F5 válida.</p>
         <div class="users-delete-actions">
-            <button type="button" class="btn btn-secondary btn-secondary-action" id="users-delete-cancel">Cancelar</button>
+            <button type="button" class="btn btn-secondary btn-secondary-action" data-users-dialog-close="users-delete-dialog">Cancelar</button>
             <button type="submit" class="btn users-delete-confirm-button">
                 <i class="fa fa-trash" aria-hidden="true"></i>
                 Excluir usuário
@@ -192,5 +287,6 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/users_page.js', v='20260831-user-delete-dialog') }}"></script>
+<script id="users-filter-options" type="application/json">{{ filter_options | tojson }}</script>
+<script src="{{ url_for('static', filename='js/users_page.js', v='20260901-directory-comboboxes-and-confirmation') }}"></script>
 {% endblock %}

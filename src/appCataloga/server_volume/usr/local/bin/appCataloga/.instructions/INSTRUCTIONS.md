@@ -70,9 +70,33 @@
 >     Bad: `# We need to handle the case where the task acquisition process
 >       has already been completed by another concurrent worker instance.`
 >     Good: `# Another worker may have claimed this task first. Skip it.`
+>     Comentários dentro de funções devem ser incluídos nos pontos de decisão e
+>     em trechos que não forem evidentes pela leitura do código. Devem explicar
+>     a regra, condição ou restrição que motivou a decisão e o risco de manutenção
+>     caso ela seja alterada. Não comente instruções óbvias, nomes de variáveis
+>     ou chamadas que já expressem claramente sua finalidade.
 >     Markdown documentation files (`*.md`) must be written in Portuguese
 >     (PT-BR). This language rule is separate from code comments: comments stay
 >     in English, documentation stays in PT-BR.**
+> 13. **As docstrings devem documentar o contrato completo da função.** Toda
+>     docstring de função e método deve informar o que ela faz, descrever cada
+>     argumento de entrada e seu tipo (`int`, `float`, `str`, `list`, etc.) e
+>     descrever cada valor de saída e seu tipo. Para valores estruturados,
+>     documente o formato esperado: dicionários devem listar chaves, tipos dos
+>     valores e chaves obrigatórias; listas devem descrever o tipo e formato de
+>     cada item. Use as seções `Args:` e `Returns:`. Quando não houver retorno
+>     útil, `Returns:` deve declarar explicitamente `None`. Inclua `Raises:`
+>     sempre que exceções fizerem parte do contrato esperado.**
+> 14. **Classes e atributos devem ser documentados.** Toda classe deve possuir
+>     uma docstring que descreva sua responsabilidade, quando deve ser usada e
+>     quais dados ou recursos administra. Classes com estado devem incluir a
+>     seção `Attributes:`, informando para cada atributo relevante seu nome,
+>     significado, finalidade, tipo e, quando estruturado, seu formato. Para
+>     dicionários, documente chaves, tipos dos valores e obrigatoriedade; para
+>     listas, o tipo e formato dos itens. Informe também valores iniciais ou
+>     obrigatoriedade quando eles afetarem o comportamento. Atributos locais,
+>     temporários ou evidentes que não façam parte do estado ou contrato da
+>     classe não precisam ser documentados.**
 
 This document is the authoritative refactoring roadmap for all `appCataloga_*.py`
 workers. It was written by reading all nine workers end-to-end alongside their

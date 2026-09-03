@@ -98,6 +98,8 @@ _build/
 # credential files
 .reposfi
 src/zabbix/.secret/
+src/webfusion/.secret
+src/webfusion/.webserver_ssh.env
 f2073b.csv
 list.csv
 src/appCataloga/server_volume/usr/local/bin/appCataloga/ARCHITECTURE.md

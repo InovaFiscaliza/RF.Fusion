@@ -1,0 +1,110 @@
+.alarms-page-root {
+    padding-bottom: 32px;
+}
+
+.alarms-page-header {
+    align-items: flex-start;
+    display: flex;
+    gap: 24px;
+    justify-content: space-between;
+    margin-bottom: 24px;
+}
+
+.alarms-page-copy {
+    color: #4e5965;
+    margin: 0;
+}
+
+.alarms-zabbix-link {
+    flex: 0 0 auto;
+}
+
+.alarms-table-wrap {
+    background: #ffffff;
+    border: 1px solid #c7cdd4;
+    overflow-x: auto;
+}
+
+.alarms-table {
+    border-collapse: collapse;
+    min-width: 1080px;
+    width: 100%;
+}
+
+.alarms-table th,
+.alarms-table td {
+    border-bottom: 1px solid #dfe3e7;
+    padding: 12px 14px;
+    text-align: left;
+    vertical-align: top;
+}
+
+.alarms-table th {
+    background: #f2f4f6;
+    color: #303846;
+    font-size: 13px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.alarms-time {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.alarms-problem-name {
+    font-weight: 600;
+    min-width: 260px;
+}
+
+.alarms-severity,
+.alarms-state,
+.alarms-tag {
+    display: inline-block;
+    font-size: 12px;
+    line-height: 1.25;
+    padding: 3px 6px;
+}
+
+.alarms-severity { color: #ffffff; font-weight: 700; }
+.alarms-severity-not-classified { background: #7d8791; }
+.alarms-severity-information { background: #3d79b8; }
+.alarms-severity-warning { background: #d68c18; }
+.alarms-severity-average { background: #e16c35; }
+.alarms-severity-high { background: #c6403e; }
+.alarms-severity-disaster { background: #7b2531; }
+.alarms-state { background: #f0f2f4; color: #3e4955; margin: 0 4px 4px 0; }
+.alarms-state.is-acknowledged { background: #dcefdc; color: #27602b; }
+.alarms-state.is-pending { background: #fce4dc; color: #8a3f1d; }
+.alarms-state.is-suppressed { background: #e7e0f3; color: #553c79; }
+
+.alarms-tags { display: flex; flex-wrap: wrap; gap: 4px; min-width: 220px; }
+.alarms-tag { background: #e9eef1; color: #364452; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.alarms-action {
+    align-items: center;
+    color: #1d5c93;
+    display: inline-flex;
+    font-size: 16px;
+    justify-content: center;
+    min-height: 28px;
+    min-width: 28px;
+}
+
+.alarms-alert,
+.alarms-empty {
+    align-items: center;
+    background: #ffffff;
+    border: 1px solid #c7cdd4;
+    display: flex;
+    gap: 10px;
+    padding: 18px;
+}
+
+.alarms-alert-error { border-left: 4px solid #c6403e; color: #8a2424; }
+.alarms-empty { border-left: 4px solid #28723a; color: #245d30; }
+
+@media (max-width: 720px) {
+    .alarms-page-header { align-items: stretch; flex-direction: column; gap: 16px; }
+    .alarms-zabbix-link { justify-content: center; }
+}

@@ -73,6 +73,7 @@
                                 {% if current_user.role %}
                                     {{ navigation_link('Criação de Tarefas', 'task.task_builder', request.endpoint and request.endpoint.startswith('task.'), 'Abrindo tarefas...', 'wf-header-nav-link') }}
                                     {{ navigation_link('Manutenção de Tarefas', 'maintenance.maintenance_dashboard', request.endpoint and request.endpoint.startswith('maintenance.'), 'Abrindo manutenção operacional...', 'wf-header-nav-link') }}
+                                    {{ navigation_link('Alarmes Operacionais', 'alarms.alarms_dashboard', request.endpoint and request.endpoint.startswith('alarms.'), 'Consultando alarmes operacionais...', 'wf-header-nav-link') }}
                                     {{ navigation_link('Configuração de Estações', 'zabbix_configuration.configuration_dashboard', request.endpoint and request.endpoint.startswith('zabbix_configuration.'), 'Abrindo configuração das estações...', 'wf-header-nav-link') }}
                                     {{ navigation_link('Usuários', 'users.user_directory', request.endpoint and request.endpoint.startswith('users.'), 'Abrindo administração de usuários...', 'wf-header-nav-link') }}
                                     {% endif %}
@@ -125,6 +126,7 @@
                     {% if current_user.role %}
                         {{ navigation_link('Criação de Tarefas', 'task.task_builder', request.endpoint and request.endpoint.startswith('task.'), 'Abrindo tarefas...', 'wf-navigation-drawer-link', 'fa-cogs') }}
                         {{ navigation_link('Manutenção de Tarefas', 'maintenance.maintenance_dashboard', request.endpoint and request.endpoint.startswith('maintenance.'), 'Abrindo manutenção operacional...', 'wf-navigation-drawer-link', 'fa-wrench') }}
+                        {{ navigation_link('Alarmes Operacionais', 'alarms.alarms_dashboard', request.endpoint and request.endpoint.startswith('alarms.'), 'Consultando alarmes operacionais...', 'wf-navigation-drawer-link', 'fa-bell') }}
                         {{ navigation_link('Usuários', 'users.user_directory', request.endpoint and request.endpoint.startswith('users.'), 'Abrindo administração de usuários...', 'wf-navigation-drawer-link', 'fa-users') }}
                         {{ navigation_link('Configuração de Estações', 'zabbix_configuration.configuration_dashboard', request.endpoint and request.endpoint.startswith('zabbix_configuration.'), 'Abrindo configuração das estações...', 'wf-navigation-drawer-link', 'fa-sliders') }}
                     {% endif %}

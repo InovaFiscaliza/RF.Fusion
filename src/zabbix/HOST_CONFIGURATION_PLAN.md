@@ -176,11 +176,13 @@ ZABBIX_API_TOKEN=<token-da-conta-tecnica>
 ZABBIX_API_TIMEOUT_SECONDS=10
 ```
 
-Quando não houver variáveis de ambiente, o módulo usa como alternativa local o
-arquivo ignorado `src/zabbix/.secret/zabbix_api.env`, desde que ele esteja no
-volume montado em `/RF.Fusion`. O token não deve constar em arquivo versionado,
-log ou saída de erro. A role da conta técnica precisa permitir, no mínimo, `host.get`, `template.get`,
-`usermacro.get`, `usermacro.create`, `usermacro.update` e `usermacro.delete`.
+Quando não houver variáveis de ambiente, o pacote
+`src/webfusion/zabbix_api` usa como alternativa local o arquivo ignorado
+`src/zabbix/.secret/zabbix_api.env`, desde que ele esteja no volume montado em
+`/RF.Fusion`. O token não deve constar em arquivo versionado, log ou saída de
+erro. A role da conta técnica precisa permitir, no mínimo, `host.get`,
+`template.get`, `usermacro.get`, `usermacro.create`, `usermacro.update` e
+`usermacro.delete`.
 
 ### 7.4 Sincronização com BPDATA
 
