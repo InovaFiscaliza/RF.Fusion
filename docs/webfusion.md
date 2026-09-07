@@ -25,11 +25,19 @@ WHERE NA_USER_EMAIL = %s AND IS_ACTIVE = 1 LIMIT 1;
 
 | Método | Caminho | Parâmetros | Retorno |
 | --- | --- | --- | --- |
-| GET | `/` | nenhum | HTML |
-| GET | `/api/map/stations` | `start_date`, `end_date` opcionais | JSON com `points` |
-| GET | `/api/map/stations/<int:site_id>` | `site_id`; `start_date`, `end_date` opcionais | JSON |
+| GET | `/rffusion/` | nenhum | Página HTML principal de interface do usuário |
+| GET | `/downloads/` | nenhum | Raíz da pasta compartilhada para download de arquivos |
 | GET | `/health` | nenhum | JSON `{"status": "ok"}` |
 | GET | `/debug/headers` | nenhum | JSON dos cabeçalhos `X-User-*` |
+
+## Mapa
+
+Rotas do blueprint `map`, sem guarda de role local:
+
+| Método | Caminho | Parâmetros | Retorno |
+| --- | --- | --- | --- |
+| GET | `/rffusion/api/map/stations` | `start_date`, `end_date` opcionais | JSON com `points` |
+| GET | `/rffusion/api/map/stations/<int:site_id>` | `site_id`; `start_date`, `end_date` opcionais | JSON |
 
 Exemplo: `https://fiscalizacao.anatel.gov.br/rffusion/api/map/stations?start_date=2026-09-01&end_date=2026-09-30`.
 
@@ -40,10 +48,10 @@ Rotas do blueprint `spectrum`, sem guarda de role local:
 | Método | Caminho | Parâmetros | Retorno |
 | --- | --- | --- | --- |
 | GET | `/spectrum` | `equipment_id`, `state_id`, `district_id`, `site_id`, `start_date`, `end_date`, `freq_start`, `freq_end`, `description`, `sort_by`, `sort_order`, `page` | HTML |
-| GET | `/api/spectrum/filters` | filtros anteriores, exceto ordenação/página; `bootstrap=1` opcional | JSON |
-| GET | `/api/spectrum/localities` | `equipment_id`; `state_id`, `district_id`, `site_id`, `start_date`, `end_date`, `freq_start`, `freq_end`, `description` | JSON com `rows` |
 | GET | `/spectrum/download/<int:spectrum_id>` | `spectrum_id` | download ou 404 |
 | GET | `/spectrum/download-file/<int:file_id>` | `file_id` | download ou 404 |
+| GET | `/api/spectrum/filters` | filtros anteriores, exceto ordenação/página; `bootstrap=1` opcional | JSON |
+| GET | `/api/spectrum/localities` | `equipment_id`; `state_id`, `district_id`, `site_id`, `start_date`, `end_date`, `freq_start`, `freq_end`, `description` | JSON com `rows` |
 | GET | `/api/spectrum/file/<int:file_id>/spectra` | `file_id` e filtros de espectro | JSON com `rows` |
 
 `freq_start` e `freq_end` são convertidos em valores numéricos e validados.
@@ -95,6 +103,6 @@ As rotas abaixo exigem role ativa em `WEBFUSION.ADMINS` ou
 
 ## Fontes de Implementação
 
-- `src/webfusion/app.py`: rotas gerais e mapa.
-- `src/webfusion/auth/service.py` e `src/webfusion/auth/db_users.py`: identidade e roles.
-- `src/webfusion/modules/*/routes.py`: rotas dos blueprints.
+- [src/webfusion/app.py](../src/webfusion/app.py): rotas gerais e mapa.
+- [src/webfusion/auth/service.py](../src/webfusion/auth/service.py) e [src/webfusion/auth/db_users.py](../src/webfusion/auth/db_users.py): identidade e roles.
+- [src/webfusion/modules/*/routes.py](../src/webfusion/modules/*/routes.py): rotas dos blueprints.
