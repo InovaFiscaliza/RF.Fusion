@@ -21,14 +21,29 @@ WHERE NA_USER_EMAIL = %s AND IS_ACTIVE = 1 LIMIT 1;
 
 `/users/` é uma página HTML administrativa.
 
-## Rotas Gerais
+## Rotas Gerais no NGINX
 
-| Método | Caminho | Parâmetros | Retorno |
-| --- | --- | --- | --- |
-| GET | `/rffusion/` | nenhum | Página HTML principal de interface do usuário |
-| GET | `/downloads/` | nenhum | Raíz da pasta compartilhada para download de arquivos |
-| GET | `/health` | nenhum | JSON `{"status": "ok"}` |
-| GET | `/debug/headers` | nenhum | JSON dos cabeçalhos `X-User-*` |
+Criado documento de ajuda para mapenamento de endpoints. Sugerido para incorporação no projeto e edições futuras permite uma visão geral da arquitetura, expondo algumas inconsistências, caso descrição atual seja correta.
+
+As rotas à seguir são aquelas efetivamente expostas pelo NGINX no ambiente de produção. Todas as rotas listadas em seguida devem ser acessadas com o prefixo `/rffusion` no URL e utilizar a porta 9082 para acesso à aplicação web. Por exemplo, onde o caminho `/api/map/stations` é acessível localmente como `http://<IP>:9082/rffusion/api/map/stations`, que é posteriormente mapeado pelo proxy de autenticação como `https://fiscalizacao.anatel.gov.br/rffusion/api/map/stations`.
+
+Além do endpoint principal `/rffusion`, é também mapeando o endpoint `/downloads/` para acesso à pasta compartilhada de downloads.
+
+```mermaid
+sequenceDiagram
+    actor Usuário
+    participant Proxy as Proxy de Autenticação<br/>(fiscalizacao.anatel.gov.br)
+    participant NGINX as NGINX<br/>(porta 9082)
+    participant WebFusion as Aplicação WebFusion
+
+    Usuário->>Proxy: GET https://fiscalizacao.anatel.gov.br/rffusion/api/map/stations
+    Note over Proxy: Autentica usuário e<br/>injeta cabeçalhos X-User-*
+    Proxy->>NGINX: GET http://<IP>:9082/rffusion/api/map/stations<br/>(com X-User-Email, X-User-Name, etc.)
+    NGINX->>WebFusion: Encaminha requisição<br/>ao endpoint /api/map/stations
+    WebFusion-->>NGINX: Resposta (JSON/HTML)
+    NGINX-->>Proxy: Resposta
+    Proxy-->>Usuário: Resposta final
+```
 
 ## Mapa
 
@@ -36,8 +51,8 @@ Rotas do blueprint `map`, sem guarda de role local:
 
 | Método | Caminho | Parâmetros | Retorno |
 | --- | --- | --- | --- |
-| GET | `/rffusion/api/map/stations` | `start_date`, `end_date` opcionais | JSON com `points` |
-| GET | `/rffusion/api/map/stations/<int:site_id>` | `site_id`; `start_date`, `end_date` opcionais | JSON |
+| GET | `/api/map/stations` | `start_date`, `end_date` opcionais | JSON com `points` |
+| GET | `/api/map/stations/<int:site_id>` | `site_id`; `start_date`, `end_date` opcionais | JSON |
 
 Exemplo: `https://fiscalizacao.anatel.gov.br/rffusion/api/map/stations?start_date=2026-09-01&end_date=2026-09-30`.
 
@@ -79,6 +94,11 @@ Rotas do blueprint `spectrum`, sem guarda de role local:
 | GET | `/server/runtime-health` | nenhum | JSON |
 | POST | `/api/server/usage-metrics/download-action` | nenhum | JSON, normalmente 202 |
 | GET | `/api/server/hosts` | `search`, `online_only=1` opcionais | JSON com `rows` e `count` |
+
+## Rotas de uso genérico e debug
+
+| GET | `/health` | nenhum | JSON `{"status": "ok"}` |
+| GET | `/debug/headers` | nenhum | JSON dos cabeçalhos `X-User-*` |
 
 ## Rotas Restritas
 
