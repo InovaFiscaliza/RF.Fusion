@@ -336,25 +336,12 @@ def _flush_fixed_site_updates(
             longitude_raw=payload["longitude_raw"],
             latitude_raw=payload["latitude_raw"],
             altitude_raw=payload["altitude_raw"],
-            log_result=False,
         )
 
         if logger is None:
             continue
 
         occurrences = int(payload["occurrences"])
-        if update_result["action"] == "skipped_limit":
-            logger.event(
-                "site_gnss_update_skipped_limit",
-                component="appanalise_processing",
-                operation="flush_fixed_site_updates",
-                site_id=site_id,
-                existing_gnss=update_result["existing_gnss"],
-                limit=update_result["limit"],
-                occurrences=occurrences,
-            )
-            continue
-
         logger.event(
             "site_gnss_updated",
             component="appanalise_processing",

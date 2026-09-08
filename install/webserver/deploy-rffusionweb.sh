@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+runtimeHealthBootstrap="${scriptDir}/../../service/rffusion-runtime-health-bootstrap.sh"
 
 # ======================================================================
 # RF.Fusion - Deploy Web UI + Python Dispatcher
@@ -138,6 +139,14 @@ if [[ "${containerStatus}" != "running" ]]; then
 fi
 
 echo "✅ Container is running."
+
+# Reinstall health credentials after recreating the WebFusion container.
+# The health panel remains optional when internal services are unavailable.
+if bash "${runtimeHealthBootstrap}"; then
+    echo "✅ Runtime health SSH configuration completed."
+else
+    echo "⚠️ Runtime health SSH configuration failed."
+fi
 
 # ======================================================================
 # 7) Testes básicos

@@ -39,6 +39,7 @@ CIFS_OPTIONS="credentials=${CIFS_CREDENTIALS},uid=987,gid=983,file_mode=0666,dir
 # prompt that is bypassed by piping 'y' via stdin (-i flag on podman exec).
 # ---------------------------------------------------------------------------
 APPCATALOGA_START_SCRIPT="/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shell/tool_start_all.sh"
+RUNTIME_HEALTH_BOOTSTRAP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rffusion-runtime-health-bootstrap.sh"
 
 # How long (seconds) to wait for MariaDB to accept connections before aborting
 MARIADB_READY_TIMEOUT=120
@@ -169,5 +170,14 @@ start_appcataloga_services
 
 # 3. webfusion — web UI and dispatcher, depends on both DB and appCataloga.
 start_container "$WEBFUSION_CONTAINER"
+
+# Restore the restricted SSH health-check credentials after every stack boot.
+# A failure here must not stop containers that are already healthy.
+if bash "${RUNTIME_HEALTH_BOOTSTRAP}"; then
+    log "Runtime health SSH configuration completed."
+else
+    log "WARNING: Runtime health SSH configuration failed."
+    log "         Containers are running; check the bootstrap logs before using the health panel."
+fi
 
 log "=== RFFusion stack is up ==="

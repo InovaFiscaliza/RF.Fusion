@@ -8,15 +8,17 @@
 #            Do NOT run it from inside a container.
 #
 # Usage:
-#   bash install-service.sh [REPO_ROOT]
+#   bash install-service.sh [REPO_ROOT] [CONTAINER_USER]
 #
 # Arguments:
 #   REPO_ROOT  Path on the HOST where the RF.Fusion repository is located.
 #              Default: /RFFusion-dev/RF.Fusion
+#   CONTAINER_USER  User that owns the rootless Podman containers.
+#                   Default: RFFUSION_CONTAINER_USER, then SUDO_USER.
 #
 # Examples:
 #   bash /RFFusion-dev/RF.Fusion/service/install-service.sh
-#   bash install-service.sh /opt/RF.Fusion
+#   bash install-service.sh /opt/RF.Fusion rffusion
 # =============================================================================
 
 set -Eeuo pipefail
@@ -27,6 +29,7 @@ set -Eeuo pipefail
 # Host-side path to the RF.Fusion repository root.
 # Override by passing it as the first argument.
 REPO_ROOT="${1:-/RFFusion-dev/RF.Fusion}"
+CONTAINER_USER="${2:-${RFFUSION_CONTAINER_USER:-${SUDO_USER:-}}}"
 
 SERVICE_DIR="${REPO_ROOT}/service"
 SERVICE_TEMPLATE="${SERVICE_DIR}/rffusion-containers.service"
@@ -44,6 +47,15 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+if [[ -z "${CONTAINER_USER}" ]] || ! id "${CONTAINER_USER}" >/dev/null 2>&1; then
+    echo "ERROR: Provide the user that owns the rootless Podman containers."
+    echo "       Usage: bash install-service.sh [REPO_ROOT] CONTAINER_USER"
+    exit 1
+fi
+
+CONTAINER_UID="$(id -u "${CONTAINER_USER}")"
+CONTAINER_GROUP="$(id -gn "${CONTAINER_USER}")"
+
 if [[ ! -d "${SERVICE_DIR}" ]]; then
     echo "ERROR: Service directory not found: ${SERVICE_DIR}"
     echo "       Pass the correct repo root as an argument:"
@@ -53,7 +65,8 @@ fi
 
 for required in "${SERVICE_TEMPLATE}" \
                 "${SERVICE_DIR}/rffusion-start.sh" \
-                "${SERVICE_DIR}/rffusion-stop.sh"; do
+                "${SERVICE_DIR}/rffusion-stop.sh" \
+                "${SERVICE_DIR}/rffusion-runtime-health-bootstrap.sh"; do
     if [[ ! -f "${required}" ]]; then
         echo "ERROR: Required file not found: ${required}"
         exit 1
@@ -66,6 +79,11 @@ done
 log "Setting execute permission on scripts..."
 chmod +x "${SERVICE_DIR}/rffusion-start.sh"
 chmod +x "${SERVICE_DIR}/rffusion-stop.sh"
+chmod +x "${SERVICE_DIR}/rffusion-runtime-health-bootstrap.sh"
+
+log "Preparing runtime health secrets directory for ${CONTAINER_USER}..."
+install -d -m 700 -o "${CONTAINER_USER}" -g "${CONTAINER_GROUP}" \
+    "$(dirname "${REPO_ROOT}")/.secrets"
 
 # ---------------------------------------------------------------------------
 # Generate the final .service file with the real scripts path substituted
@@ -73,7 +91,9 @@ chmod +x "${SERVICE_DIR}/rffusion-stop.sh"
 # across different host layouts without manual editing.
 # ---------------------------------------------------------------------------
 log "Generating systemd unit: ${INSTALLED_UNIT}"
-sed "s|__SCRIPTS_DIR__|${SERVICE_DIR}|g" \
+sed -e "s|__SCRIPTS_DIR__|${SERVICE_DIR}|g" \
+    -e "s|__CONTAINER_USER__|${CONTAINER_USER}|g" \
+    -e "s|__CONTAINER_UID__|${CONTAINER_UID}|g" \
     "${SERVICE_TEMPLATE}" \
     > "${INSTALLED_UNIT}"
 
@@ -84,6 +104,9 @@ log "Unit written to: ${INSTALLED_UNIT}"
 # ---------------------------------------------------------------------------
 log "Reloading systemd daemon..."
 systemctl daemon-reload
+
+log "Enabling lingering for ${CONTAINER_USER} (rootless Podman after boot)..."
+loginctl enable-linger "${CONTAINER_USER}"
 
 log "Enabling ${SERVICE_NAME} service (auto-start on boot)..."
 systemctl enable "${SERVICE_NAME}.service"
@@ -98,6 +121,7 @@ echo "========================================================="
 echo ""
 echo " Unit file : ${INSTALLED_UNIT}"
 echo " Scripts   : ${SERVICE_DIR}"
+echo " Podman user: ${CONTAINER_USER} (UID ${CONTAINER_UID})"
 echo ""
 echo " Useful commands:"
 echo "   Start now  : systemctl start  ${SERVICE_NAME}"

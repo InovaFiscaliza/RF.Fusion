@@ -163,6 +163,46 @@ class SiteLookupTests(DbHandlerRfmBaseTests):
 
         self.assertEqual(site_id, 12)
 
+    def test_get_site_id_rejects_point_beyond_distance_limit(self) -> None:
+        handler = self.make_handler()
+        handler._select_rows = lambda **kwargs: [
+            {
+                "ID_SITE": 13,
+                "LONGITUDE": -43.174108,
+                "LATITUDE": -22.901971,
+                "DISTANCE": 50.1,
+            }
+        ]
+
+        site_id = handler.get_site_id(
+            {
+                "longitude": -43.174108,
+                "latitude": -22.901971,
+            }
+        )
+
+        self.assertFalse(site_id)
+
+    def test_get_site_id_matches_point_within_distance_limit(self) -> None:
+        handler = self.make_handler()
+        handler._select_rows = lambda **kwargs: [
+            {
+                "ID_SITE": 14,
+                "LONGITUDE": -43.174108,
+                "LATITUDE": -22.901971,
+                "DISTANCE": 49.9,
+            }
+        ]
+
+        site_id = handler.get_site_id(
+            {
+                "longitude": -43.174108,
+                "latitude": -22.901971,
+            }
+        )
+
+        self.assertEqual(site_id, 14)
+
 
 class SiteWriteTests(DbHandlerRfmBaseTests):
     """Validate direct site insert/update behavior without a real database."""
@@ -217,26 +257,28 @@ class SiteWriteTests(DbHandlerRfmBaseTests):
         self.assertEqual(handler.db_connection.rollbacks, 1)
         self.assertIn("Error inserting site in DIM_SPECTRUM_SITE", str(ctx.exception))
 
-    def test_update_site_skips_write_after_gnss_limit(self) -> None:
+    def test_update_site_continues_weighted_centroid_after_1000_samples(self) -> None:
         handler = self.make_handler()
         handler.cursor = FakeCursor()
         handler._select_rows = lambda **kwargs: [
             {
-                "LONGITUDE": -46.633308,
-                "LATITUDE": -23.55052,
+                "LONGITUDE": 20.0,
+                "LATITUDE": 10.0,
                 "NU_ALTITUDE": 760.0,
-                "NU_GNSS_MEASUREMENTS": db_rfm_module.k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS,
+                "NU_GNSS_MEASUREMENTS": 1000,
             }
         ]
 
         handler.update_site(
             site=77,
-            longitude_raw=[-46.6333],
-            latitude_raw=[-23.5505],
+            longitude_raw=[21.0],
+            latitude_raw=[11.0],
             altitude_raw=[761.0],
         )
 
-        self.assertEqual(handler.cursor.executed, [])
+        self.assertEqual(len(handler.cursor.executed), 1)
+        _, params = handler.cursor.executed[0]
+        self.assertEqual(params[2:], (1001, 77))
 
     def test_update_site_updates_weighted_centroid(self) -> None:
         handler = self.make_handler()

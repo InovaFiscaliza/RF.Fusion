@@ -138,8 +138,7 @@ REPO_VOLUME_NAME = "reposfi"
 #------------------------------------------
 # Geographic site definition
 #------------------------------------------
-MAXIMUM_GNSS_DEVIATION = 0.0005
-MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS = 1000
+SITE_MATCH_DISTANCE_METERS = 50.0
 SITE_DISTRICT_AUTO_CREATE = False         # Keep district resolution conservative unless explicitly enabled
 #------------------------------------------
 # Nomintim Geocoding parameters

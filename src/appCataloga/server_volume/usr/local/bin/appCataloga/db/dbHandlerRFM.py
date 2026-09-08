@@ -565,12 +565,22 @@ class dbHandlerRFM(DBHandlerBase):
         longitude_raw: list[float],
         latitude_raw: list[float],
         altitude_raw: list[float],
-        *,
-        log_result: bool = True,
     ) -> dict:
         """Update a fixed site's centroid using new GNSS samples.
 
-        All appCataloga sites are represented by a fixed centroid.
+        Args:
+            site (int): Existing ``DIM_SPECTRUM_SITE.ID_SITE`` value.
+            longitude_raw (list[float]): New longitude samples in decimal degrees.
+            latitude_raw (list[float]): New latitude samples in decimal degrees.
+            altitude_raw (list[float]): New altitude samples in meters.
+
+        Returns:
+            dict: Updated centroid details with ``action``, ``site_id``,
+                ``latitude``, ``longitude``, ``altitude``, ``total_gnss`` and
+                ``previous_gnss``.
+
+        Raises:
+            Exception: If the site does not exist or the update fails.
         """
 
         try:
@@ -602,17 +612,6 @@ class dbHandlerRFM(DBHandlerBase):
             db_latitude = float(site_data["LATITUDE"])
             db_altitude = float(site_data["NU_ALTITUDE"])
             db_nu_gnss = int(site_data["NU_GNSS_MEASUREMENTS"])
-
-            # After enough observations, keep the site stable and stop moving
-            # the centroid on every new file.
-            if db_nu_gnss >= k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS:
-                result = {
-                    "action": "skipped_limit",
-                    "site_id": int(site),
-                    "existing_gnss": db_nu_gnss,
-                    "limit": int(k.MAXIMUM_NUMBER_OF_GNSS_MEASUREMENTS),
-                }
-                return result
 
             # Fold the new samples into the historical centroid using the
             # stored measurement count as the previous weight.
@@ -658,55 +657,44 @@ class dbHandlerRFM(DBHandlerBase):
 
 
     def get_site_id(self, data: dict) -> int | bool:
-        """Return the matching `ID_SITE`, or `False` when none matches.
+        """Return the nearest site within the configured geodesic distance.
 
-        The lookup starts from the nearest stored sites and accepts the first
-        one within the configured tolerance on both axes.
+        Args:
+            data (dict): Point containing ``longitude`` and ``latitude`` in
+                decimal degrees.
+
+        Returns:
+            int | bool: Matching ``ID_SITE``, or ``False`` when the nearest
+                site is at least ``SITE_MATCH_DISTANCE_METERS`` away.
+
+        Raises:
+            Exception: If the database lookup fails.
         """
         try:
             self._connect()
 
-            # Ask the database for the nearest candidates first. The Python
-            # side then applies the centroid tolerance rule.
+            # MariaDB calculates the spherical distance so the same threshold
+            # has a consistent physical meaning at every latitude.
             cols = [
                 "ID_SITE",
-                "ST_X(GEO_POINT) AS LONGITUDE",
-                "ST_Y(GEO_POINT) AS LATITUDE",
                 f"ST_Distance_Sphere(GEO_POINT, ST_GeomFromText('POINT({data['longitude']} {data['latitude']})', 4326)) AS DISTANCE"
             ]
 
             rows = self._select_rows(
                 table="DIM_SPECTRUM_SITE",
                 order_by="DISTANCE ASC",
-                limit=20,
+                limit=1,
                 cols=cols
             )
 
             if not rows:
                 return False
 
-            # The nearest row is not necessarily a valid match; it must still
-            # be within the configured tolerance on both coordinate axes.
-            for nearest in rows:
-                nearest_site_id = int(nearest["ID_SITE"])
-                nearest_longitude = float(nearest["LONGITUDE"])
-                nearest_latitude = float(nearest["LATITUDE"])
+            nearest = rows[0]
+            if float(nearest["DISTANCE"]) >= k.SITE_MATCH_DISTANCE_METERS:
+                return False
 
-                near_in_longitude = (
-                    abs(data["longitude"] - nearest_longitude)
-                    < k.MAXIMUM_GNSS_DEVIATION
-                )
-                near_in_latitude = (
-                    abs(data["latitude"] - nearest_latitude)
-                    < k.MAXIMUM_GNSS_DEVIATION
-                )
-                location_exist_in_db = near_in_latitude and near_in_longitude
-
-                if not location_exist_in_db:
-                    continue
-                return nearest_site_id
-
-            return False
+            return int(nearest["ID_SITE"])
 
         except Exception as e:
             raise Exception(f"Error retrieving location coordinates from database: {e}")

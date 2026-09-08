@@ -22,6 +22,12 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 
+# Containers are owned by a rootless Podman user. The installer replaces both
+# placeholders so this system unit uses that user's Podman storage and socket.
+User=__CONTAINER_USER__
+Environment=XDG_RUNTIME_DIR=/run/user/__CONTAINER_UID__
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/__CONTAINER_UID__/bus
+
 # RemainAfterExit=yes keeps the unit in "active" state after ExecStart exits.
 # This is correct for a oneshot service that launches background daemons
 # (Podman containers already run detached). It also ensures ExecStop is
