@@ -367,7 +367,6 @@ class SiteResolutionTests(unittest.TestCase):
             "latitude_raw": [-23.55052],
             "altitude_raw": [760.0],
             "nu_gnss_measurements": 1,
-            "geographic_path": None,
         }
         enriched_site = {
             **fixed_site,
@@ -403,7 +402,6 @@ class SiteResolutionTests(unittest.TestCase):
             "latitude_raw": [-23.55052],
             "altitude_raw": [760.0],
             "nu_gnss_measurements": 1,
-            "geographic_path": None,
         }
         enriched_site = {
             **fixed_site,
@@ -438,7 +436,6 @@ class SiteResolutionTests(unittest.TestCase):
             "latitude_raw": [16.506472],
             "altitude_raw": [-1.0],
             "nu_gnss_measurements": 1,
-            "geographic_path": None,
         }
         corrected_site = {
             **fixed_site,
@@ -485,7 +482,6 @@ class SiteResolutionTests(unittest.TestCase):
             "latitude_raw": [-10.286181],
             "altitude_raw": [10.0],
             "nu_gnss_measurements": 1,
-            "geographic_path": None,
         }
         bin_data = {
             "spectrum": [
@@ -502,9 +498,9 @@ class SiteResolutionTests(unittest.TestCase):
         self.assertEqual(bin_data["spectrum"][0].site_id, 77)
         self.assertEqual(bin_data["spectrum"][1].site_id, 77)
 
-    def test_resolve_spectrum_sites_keeps_mobile_geometry_stable(self) -> None:
+    def test_resolve_spectrum_sites_updates_every_matched_point(self) -> None:
         db = FakeDbRfmIngest(site_id=91)
-        mobile_site = {
+        site_data = {
             "longitude": -35.897411,
             "latitude": -7.230131,
             "altitude": 12.0,
@@ -512,17 +508,16 @@ class SiteResolutionTests(unittest.TestCase):
             "latitude_raw": [-7.230131],
             "altitude_raw": [12.0],
             "nu_gnss_measurements": 1,
-            "geographic_path": "POLYGON((-1 -1, 1 -1, 1 1, -1 1, -1 -1))",
         }
         bin_data = {
-            "spectrum": [SimpleNamespace(site_data=dict(mobile_site))]
+            "spectrum": [SimpleNamespace(site_data=dict(site_data))]
         }
 
         site_ids = processing.resolve_spectrum_sites(db, bin_data)
 
         self.assertEqual(site_ids, [91])
         self.assertEqual(len(db.get_site_id_calls), 1)
-        self.assertEqual(len(db.update_site_calls), 0)
+        self.assertEqual(len(db.update_site_calls), 1)
 
     def test_resolve_spectrum_sites_discards_only_bad_site_resolution(self) -> None:
         good_site = {
@@ -533,7 +528,6 @@ class SiteResolutionTests(unittest.TestCase):
             "latitude_raw": [-10.286181],
             "altitude_raw": [10.0],
             "nu_gnss_measurements": 1,
-            "geographic_path": None,
         }
         bad_site = {
             "longitude": -35.897411,
@@ -543,7 +537,6 @@ class SiteResolutionTests(unittest.TestCase):
             "latitude_raw": [-7.230131],
             "altitude_raw": [12.0],
             "nu_gnss_measurements": 1,
-            "geographic_path": "POLYGON((-1 -1, 1 -1, 1 1, -1 1, -1 -1))",
         }
         good_spectrum = SimpleNamespace(description="good", site_data=dict(good_site))
         bad_spectrum = SimpleNamespace(description="bad", site_data=dict(bad_site))
@@ -581,7 +574,6 @@ class SiteResolutionTests(unittest.TestCase):
             "latitude_raw": [-10.286181],
             "altitude_raw": [10.0],
             "nu_gnss_measurements": 1,
-            "geographic_path": None,
         }
         bin_data = {
             "spectrum": [SimpleNamespace(site_data=dict(fixed_site))]
@@ -964,7 +956,6 @@ class RunProcessingFlowTests(unittest.TestCase):
                 "latitude_raw": [-22.908333],
                 "altitude_raw": [5.0],
                 "nu_gnss_measurements": 1,
-                "geographic_path": None,
             },
             start_dateidx=datetime(2025, 10, 31, 15, 50, 27),
             stop_dateidx=datetime(2025, 11, 1, 3, 48, 51),
@@ -1064,6 +1055,8 @@ class RunProcessingFlowTests(unittest.TestCase):
                 "host_path": "C:/CelPlan/CellWireless RU/Spectrum/Completed/2025_11/Compressed",
                 "host_file": "source.zip",
                 "repository_volume": processing.k.REPO_VOLUME_NAME,
+                "previous_repository_path": "/mnt/reposfi/trash",
+                "previous_repository_file": "source.zip",
                 "repository_path": "/mnt/reposfi/2025/site_219/catalog",
                 "repository_file": "sample_DONE.mat",
             },

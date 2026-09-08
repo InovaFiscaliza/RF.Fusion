@@ -212,7 +212,6 @@ def reverse_geocode_site_data(
     # location, so valid Northern-Brazil coordinates keep their real sign.
     if (
         location is None
-        and not site_data.get("geographic_path")
         and float(site_data["latitude"]) > 0
         and float(site_data["longitude"]) < 0
     ):

@@ -246,8 +246,8 @@ class DetectProtocolErrorTests(unittest.TestCase):
         self.assertEqual(result["hostname"], "cwsm21100005")
         self.assertEqual(len(result["spectrum"]), 1)
         self.assertEqual(result["spectrum"][0].trace_length, 720)
-        self.assertFalse(result["spectrum"][0].site_data["is_mobile"])
-        self.assertIsNone(result["spectrum"][0].site_data["geographic_path"])
+        self.assertNotIn("is_mobile", result["spectrum"][0].site_data)
+        self.assertNotIn("geographic_path", result["spectrum"][0].site_data)
 
     def test_normalize_response_accepts_seven_digit_cwsm_receiver(self) -> None:
         payload = {
@@ -287,7 +287,7 @@ class DetectProtocolErrorTests(unittest.TestCase):
         self.assertEqual(result["hostnames"], ["cwsm21100021"])
         self.assertEqual(result["spectrum"][0].equipment_name, "cwsm21100021")
 
-    def test_normalize_response_builds_mobile_geographic_path_for_drive_test(self) -> None:
+    def test_normalize_response_keeps_drive_test_as_point(self) -> None:
         payload = {
             "Request": {"type": "FileRead"},
             "Answer": {
@@ -325,11 +325,10 @@ class DetectProtocolErrorTests(unittest.TestCase):
         result = self.parser.normalize_response(payload)
         site_data = result["spectrum"][0].site_data
 
-        self.assertTrue(site_data["is_mobile"])
-        self.assertIsNotNone(site_data["geographic_path"])
-        self.assertIn("POLYGON((", site_data["geographic_path"])
-        self.assertIn("-35.999449", site_data["geographic_path"])
-        self.assertIn("-7.262797", site_data["geographic_path"])
+        self.assertEqual(site_data["latitude"], -7.230131)
+        self.assertEqual(site_data["longitude"], -35.897411)
+        self.assertNotIn("is_mobile", site_data)
+        self.assertNotIn("geographic_path", site_data)
         self.assertEqual(
             result["hostnames"],
             ["Keysight Technologies,N9936B,MY59221878,A.11.55"],

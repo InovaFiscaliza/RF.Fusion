@@ -160,6 +160,21 @@ If a worker needs a query that does not have a public method, the correct fix
 is to add a named public method to the DB handler — not to call `_select_rows`
 from outside.
 
+### 3.3.1 Database connector standard
+
+All direct MariaDB/MySQL connections in appCataloga must use the official
+`mysql.connector` module:
+
+```python
+import mysql.connector
+
+connection = mysql.connector.connect(**config)
+```
+
+Only DB handlers may import the connector and create connections. Workers,
+domain handlers, and shared modules must access the database through public DB
+handler methods. Do not introduce alternative drivers or connection APIs.
+
 ### 3.4 Transaction ownership
 
 Any write that spans two or more tables must be wrapped in a transaction:

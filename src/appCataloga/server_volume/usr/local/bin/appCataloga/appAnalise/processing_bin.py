@@ -47,42 +47,49 @@ ERMX_FAMILY_PREFIXES = ("ermx", "emrx")
 UMS_FAMILY_PREFIXES = ("ums",)
 ERMX_EQUIPMENT_TYPE_HINT = "ermx"
 UMS_EQUIPMENT_TYPE_HINT = "ums300"
-# Module-level buffer used exclusively within `resolve_spectrum_sites()` call frames.
-# `resolve_spectrum_sites()` sets this to a fresh dict at entry and restores None
-# on exit (via try/finally), so `upsert_site()` can accumulate per-call GNSS
-# aggregation without requiring an extra parameter across the call chain.
-# This pattern is intentionally non-reentrant: it is safe only because every
-# worker is a single-threaded process that processes one file at a time.
+# Batch SITE updates once per payload without changing public call signatures.
+# This is non-reentrant because each worker processes one file at a time.
 _FIXED_SITE_UPDATE_AGGREGATOR = None
 
 
 SiteData = dict[str, Any]
-SiteCacheKey = tuple[float, float, float, str]
+SiteCacheKey = tuple[float, float, float]
 FixedSiteUpdateBucket = dict[str, list[float] | int]
 FixedSiteUpdates = dict[int, FixedSiteUpdateBucket]
 
 
 @dataclass(frozen=True)
 class EquipmentIdentity:
-    """Catalog identity used to persist and type one spectrum equipment."""
+    """Store the catalog identity and type hint for one spectrum equipment.
+
+    Use this immutable value as the per-payload cache key for equipment lookup.
+
+    Attributes:
+        persisted_equipment_name (str): Name stored in the equipment dimension.
+        equipment_type_hint (str): Value used to infer the equipment type.
+    """
 
     persisted_equipment_name: str
     equipment_type_hint: str
 
 
 def is_transient_filesystem_error(exc: Exception) -> bool:
-    """
-    Return whether a filesystem failure is worth retrying later.
+    """Check whether a filesystem failure can be retried.
 
     These errors usually come from busy or stale files on shared storage. They
     are operationally noisy, but they do not mean the payload itself is bad.
+
+    Args:
+        exc (Exception): Filesystem exception from artifact processing.
+
+    Returns:
+        bool: ``True`` when a retry may succeed.
     """
     return file_utils.is_transient_filesystem_error(exc)
 
 
 def should_export(hostname: str) -> bool:
-    """
-    Decide whether appAnalise should export a `.mat` artifact for this host.
+    """Decide whether appAnalise should export a ``.mat`` artifact.
 
     Station-family rule:
         - CelPlan (`CWSM` hostname prefix): accept the `.mat` export as the
@@ -93,6 +100,12 @@ def should_export(hostname: str) -> bool:
 
     The function stays isolated so future host-family policy changes do not
     leak into the worker loop.
+
+    Args:
+        hostname (str): Measurement station hostname.
+
+    Returns:
+        bool: ``True`` for CelPlan/CWSM hosts; otherwise ``False``.
     """
     normalized = (hostname or "").strip().lower()
     return normalized.startswith("cwsm")
@@ -103,8 +116,7 @@ def resolve_equipment_persistence_identity(
     hostname_db: str,
     spectrum_equipment_name: str | None,
 ) -> EquipmentIdentity:
-    """
-    Resolve the catalog identity and equipment-type hint for one spectrum.
+    """Resolve the catalog identity and type hint for one spectrum.
 
     Most station families must persist the equipment identity coming from the
     payload itself. ERMx/EMRx and UMS300 are the exceptions: the operational
@@ -118,10 +130,15 @@ def resolve_equipment_persistence_identity(
     same station changes analyzer hardware over time.
 
     Returns:
-        EquipmentIdentity:
-            - persisted_equipment_name: stored in
-              ``DIM_SPECTRUM_EQUIPMENT.NA_EQUIPMENT``
-            - equipment_type_hint: used to infer ``FK_EQUIPMENT_TYPE``
+    Args:
+        hostname_db (str): Operational hostname from the queue task.
+        spectrum_equipment_name (str | None): Receiver identifier in the payload.
+
+    Returns:
+        EquipmentIdentity: Name to persist and type hint to resolve.
+
+    Raises:
+        errors.BinValidationError: If no canonical equipment identifier exists.
     """
     normalized_host = (hostname_db or "").strip().lower()
     raw_spectrum_name = (
@@ -164,20 +181,36 @@ def resolve_equipment_persistence_identity(
 
 
 def _build_repository_hostname_key(hostname: str) -> str:
-    """Build a stable folder-safe hostname key for repository fallback paths."""
+    """Build a stable folder-safe hostname key.
+
+    Args:
+        hostname (str): Raw station hostname.
+
+    Returns:
+        str: Lowercase hostname safe for a repository directory name.
+    """
     normalized = NON_ALNUM_RE.sub("_", (hostname or "").strip().lower()).strip("_")
     return normalized or "unknown_host"
 
 
 def upsert_site(db_rfm: dbHandlerRFM, site_data: SiteData) -> int:
-    """
-    Resolve or create one SITE referenced by a normalized spectrum row.
+    """Resolve or create the SITE referenced by one spectrum.
 
     SITE ownership is intentionally separate from the larger spectrum
     transaction. Geocoding or SITE creation can be slower and noisier than the
     actual spectrum inserts, so the worker resolves these references first and
     enters the RFDATA transaction only once every spectrum already knows which
     `ID_SITE` it will use.
+
+    Args:
+        db_rfm (dbHandlerRFM): RFDATA handler used for lookup and persistence.
+        site_data (dict[str, Any]): Point summary with coordinates and raw GNSS samples.
+
+    Returns:
+        int: Resolved or inserted ``DIM_SPECTRUM_SITE.ID_SITE``.
+
+    Raises:
+        Exception: If geographic resolution or RFDATA persistence fails.
     """
     site_id = db_rfm.get_site_id(site_data)
 
@@ -196,23 +229,19 @@ def upsert_site(db_rfm: dbHandlerRFM, site_data: SiteData) -> int:
                 force_create_district=True,
             )
 
-        # Fixed stations still refine their centroid over time. Mobile captures
-        # carry a prepared GEOGRAPHIC_PATH and therefore keep the stored site
-        # geometry stable once the summary polygon is already known.
-        if not site_data.get("geographic_path"):
-            if _FIXED_SITE_UPDATE_AGGREGATOR is not None:
-                _queue_fixed_site_update(
-                    _FIXED_SITE_UPDATE_AGGREGATOR,
-                    site_id,
-                    site_data,
-                )
-            else:
-                db_rfm.update_site(
-                    site=site_id,
-                    longitude_raw=site_data["longitude_raw"],
-                    latitude_raw=site_data["latitude_raw"],
-                    altitude_raw=site_data["altitude_raw"],
-                )
+        if _FIXED_SITE_UPDATE_AGGREGATOR is not None:
+            _queue_fixed_site_update(
+                _FIXED_SITE_UPDATE_AGGREGATOR,
+                site_id,
+                site_data,
+            )
+        else:
+            db_rfm.update_site(
+                site=site_id,
+                longitude_raw=site_data["longitude_raw"],
+                latitude_raw=site_data["latitude_raw"],
+                altitude_raw=site_data["altitude_raw"],
+            )
         return site_id
 
     site_data = geolocation_utils.reverse_geocode_site_data(
@@ -226,20 +255,19 @@ def upsert_site(db_rfm: dbHandlerRFM, site_data: SiteData) -> int:
     # existing SITE row instead of inserting the corrected point twice.
     site_id = db_rfm.get_site_id(site_data)
     if site_id:
-        if not site_data.get("geographic_path"):
-            if _FIXED_SITE_UPDATE_AGGREGATOR is not None:
-                _queue_fixed_site_update(
-                    _FIXED_SITE_UPDATE_AGGREGATOR,
-                    site_id,
-                    site_data,
-                )
-            else:
-                db_rfm.update_site(
-                    site=site_id,
-                    longitude_raw=site_data["longitude_raw"],
-                    latitude_raw=site_data["latitude_raw"],
-                    altitude_raw=site_data["altitude_raw"],
-                )
+        if _FIXED_SITE_UPDATE_AGGREGATOR is not None:
+            _queue_fixed_site_update(
+                _FIXED_SITE_UPDATE_AGGREGATOR,
+                site_id,
+                site_data,
+            )
+        else:
+            db_rfm.update_site(
+                site=site_id,
+                longitude_raw=site_data["longitude_raw"],
+                latitude_raw=site_data["latitude_raw"],
+                altitude_raw=site_data["altitude_raw"],
+            )
         return site_id
 
     return db_rfm.insert_site(
@@ -253,12 +281,20 @@ def _queue_fixed_site_update(
     site_id: int,
     site_data: SiteData,
 ) -> None:
-    """Accumulate raw GNSS samples for one fixed site update.
+    """Accumulate raw GNSS samples for one SITE update.
 
     One payload can contain many spectra that map to the same fixed SITE. This
     helper merges their raw longitude, latitude, and altitude samples into one
     in-memory bucket so ``resolve_spectrum_sites()`` can call
     ``db_rfm.update_site()`` once per site after the full payload is resolved.
+
+    Args:
+        site_updates (dict[int, dict]): In-memory update buckets by SITE id.
+        site_id (int): Resolved SITE identifier.
+        site_data (dict[str, Any]): Summary containing raw coordinate samples.
+
+    Returns:
+        None.
     """
     update_bucket = site_updates.setdefault(
         int(site_id),
@@ -281,7 +317,19 @@ def _flush_fixed_site_updates(
     *,
     logger: logger_type | None = None,
 ) -> None:
-    """Apply one aggregated centroid update per fixed site and log once."""
+    """Apply one aggregated centroid update per SITE.
+
+    Args:
+        db_rfm (dbHandlerRFM): RFDATA handler used to update centroids.
+        site_updates (dict[int, dict]): Aggregated raw GNSS samples by SITE id.
+        logger (logger_type | None): Optional structured event logger.
+
+    Returns:
+        None.
+
+    Raises:
+        Exception: If a SITE update fails.
+    """
     for site_id, payload in site_updates.items():
         update_result = db_rfm.update_site(
             site=site_id,
@@ -321,12 +369,18 @@ def _flush_fixed_site_updates(
 
 
 def _build_spectrum_identity_key(spectrum_row: dict[str, Any]) -> tuple[Any, ...]:
-    """Build the in-memory idempotence key used during one payload insert.
+    """Build the in-memory idempotence key for one payload insert.
 
     RFeye fixed stations can republish the same logical spectrum from a
     growing partial file. For that family only, `DT_TIME_END` is excluded so
     later parses collapse into the original logical spectrum instead of
     creating a second in-batch identity.
+
+    Args:
+        spectrum_row (dict[str, Any]): Resolved FACT row payload.
+
+    Returns:
+        tuple[Any, ...]: Key that identifies one spectrum within the batch.
     """
     key = (
         spectrum_row["id_site"],
@@ -344,21 +398,32 @@ def _build_spectrum_identity_key(spectrum_row: dict[str, Any]) -> tuple[Any, ...
 
 
 def _build_site_cache_key(site_data: SiteData) -> SiteCacheKey:
-    """Build one deterministic cache key for a normalized site summary."""
+    """Build a deterministic cache key for a point summary.
+
+    Args:
+        site_data (dict[str, Any]): Summary with longitude, latitude, and altitude.
+
+    Returns:
+        tuple[float, float, float]: Rounded coordinate cache key.
+    """
     return (
         round(float(site_data["longitude"]), 6),
         round(float(site_data["latitude"]), 6),
         round(float(site_data["altitude"]), 3),
-        site_data.get("geographic_path") or "",
     )
 
 
 def _is_infrastructure_site_resolution_error(exc: Exception) -> bool:
-    """
-    Return whether a SITE-resolution failure should still abort the whole file.
+    """Check whether a SITE-resolution failure must abort the file.
 
     Spectrum-level discard is meant for deterministic locality defects in one
     row, not for shared infrastructure failures such as DB/geocoder outages.
+
+    Args:
+        exc (Exception): SITE-resolution exception.
+
+    Returns:
+        bool: ``True`` when the failure is shared infrastructure.
     """
     if isinstance(exc, GeocoderServiceError):
         return True
@@ -386,17 +451,27 @@ def resolve_spectrum_sites(
     *,
     logger: logger_type | None = None,
 ) -> list[int]:
-    """
-    Resolve ``ID_SITE`` for every normalized spectrum row before insertion.
+    """Resolve ``ID_SITE`` values for normalized spectra before insertion.
 
     Multiple spectra in one file can point to different localities. The worker
     therefore resolves SITE ownership per spectrum, while caching repeated
-    fixed/mobile summaries so the same payload does not geocode or update the
-    same SITE over and over again.
+    point summaries so the same payload does not geocode or update the same
+    SITE over and over again.
+
+    Args:
+        db_rfm (dbHandlerRFM): RFDATA handler used for SITE operations.
+        bin_data (dict[str, Any]): Normalized payload with ``spectrum`` rows.
+        logger (logger_type | None): Optional logger for discarded spectra.
+
+    Returns:
+        list[int]: SITE identifiers in the same order as retained spectra.
+
+    Raises:
+        ValueError: If no spectrum remains after SITE resolution.
+        Exception: If a shared database or geocoder failure occurs.
     """
-    # One processed payload can repeat the same fixed point or the same mobile
-    # bounding geometry many times. Cache the SITE resolution locally so a
-    # single file does not geocode or touch the same SITE more than once.
+    # Cache repeated point summaries so one file does not geocode or update the
+    # same SITE more than once.
     global _FIXED_SITE_UPDATE_AGGREGATOR
 
     site_cache: dict[SiteCacheKey, int] = {}
@@ -479,12 +554,19 @@ def resolve_spectrum_sites(
 
 
 def resolve_spectrum_procedure(db_rfm: dbHandlerRFM, bin_data: dict[str, Any]) -> int:
-    """Resolve the payload-level procedure dimension once per file.
+    """Resolve and attach the payload-level procedure dimension.
 
     appAnalise exposes one collection method at the payload level, not per
     spectrum row. This helper resolves that dimension once and stores the
     resulting id on ``bin_data`` so later steps can reuse it without
     repeating the lookup.
+
+    Args:
+        db_rfm (dbHandlerRFM): RFDATA handler used for dimension lookup.
+        bin_data (dict[str, Any]): Payload containing a ``method`` string.
+
+    Returns:
+        int: Resolved procedure identifier.
     """
     procedure_id = db_rfm.insert_procedure(bin_data["method"])
     bin_data["procedure_id"] = procedure_id
@@ -492,11 +574,18 @@ def resolve_spectrum_procedure(db_rfm: dbHandlerRFM, bin_data: dict[str, Any]) -
 
 
 def resolve_spectrum_detector(db_rfm: dbHandlerRFM, bin_data: dict[str, Any]) -> int:
-    """Resolve the payload-level detector dimension once per file.
+    """Resolve and attach the payload-level detector dimension.
 
     The current pipeline persists one default detector for every imported
     spectrum. Keeping this lookup outside ``insert_spectra_batch()`` makes the
     later FACT insert phase consume only already-resolved dimension ids.
+
+    Args:
+        db_rfm (dbHandlerRFM): RFDATA handler used for dimension lookup.
+        bin_data (dict[str, Any]): Payload updated with ``detector_id``.
+
+    Returns:
+        int: Resolved detector identifier.
     """
     detector_id = db_rfm.insert_detector_type(k.DEFAULT_DETECTOR)
     bin_data["detector_id"] = detector_id
@@ -509,13 +598,21 @@ def resolve_spectrum_equipment(
     *,
     hostname_db: str,
 ) -> dict[EquipmentIdentity, int]:
-    """Resolve equipment identity and ids for every normalized spectrum.
+    """Resolve equipment identities and identifiers for normalized spectra.
 
     This is the only dimension resolver that still carries station-family
     rules. Hybrid families such as ERMx and UMS persist the operational host
     identity but infer the equipment type from a different payload field. The
     helper attaches the resolved ``equipment_id`` and related metadata to each
     spectrum so the insert phase stays purely relational.
+
+    Args:
+        db_rfm (dbHandlerRFM): RFDATA handler used for equipment lookup.
+        bin_data (dict[str, Any]): Payload with normalized spectrum rows.
+        hostname_db (str): Operational hostname from the queue task.
+
+    Returns:
+        dict[EquipmentIdentity, int]: Equipment identifiers by canonical identity.
     """
     equipment_cache: dict[EquipmentIdentity, int] = {}
 
@@ -549,11 +646,18 @@ def resolve_spectrum_trace_types(
     db_rfm: dbHandlerRFM,
     bin_data: dict[str, Any],
 ) -> dict[str, int]:
-    """Resolve trace-type ids for every normalized spectrum.
+    """Resolve trace-type identifiers for normalized spectra.
 
     Multiple spectra in one payload often reuse the same processing label.
     This helper deduplicates those lookups within the current batch and stores
     the resolved ``trace_type_id`` directly on each spectrum object.
+
+    Args:
+        db_rfm (dbHandlerRFM): RFDATA handler used for dimension lookup.
+        bin_data (dict[str, Any]): Payload with normalized spectrum rows.
+
+    Returns:
+        dict[str, int]: Trace-type identifiers by processing label.
     """
     trace_type_cache: dict[str, int] = {}
 
@@ -570,11 +674,18 @@ def resolve_spectrum_measure_units(
     db_rfm: dbHandlerRFM,
     bin_data: dict[str, Any],
 ) -> dict[str, int]:
-    """Resolve measure-unit ids for every normalized spectrum.
+    """Resolve measure-unit identifiers for normalized spectra.
 
     appAnalise may repeat the same engineering unit across many spectra in one
     file. This helper resolves each distinct unit once per batch and annotates
     every spectrum with the resulting ``measure_unit_id`` for the insert phase.
+
+    Args:
+        db_rfm (dbHandlerRFM): RFDATA handler used for dimension lookup.
+        bin_data (dict[str, Any]): Payload with normalized spectrum rows.
+
+    Returns:
+        dict[str, int]: Measure-unit identifiers by unit label.
     """
     measure_unit_cache: dict[str, int] = {}
 
@@ -601,6 +712,17 @@ def _ensure_spectrum_dimensions_resolved(
     assumes SITE, equipment, trace type, measure unit, procedure, and detector
     were all resolved earlier in the flow. This guard fails fast when that
     contract is broken.
+
+    Args:
+        spectrum (Any): Normalized spectrum with resolved dimension attributes.
+        procedure_id (int): Resolved procedure identifier.
+        detector_id (int): Resolved detector identifier.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If any required dimension identifier is missing.
     """
     # `insert_spectra_batch()` now assumes all dimension lookups happened
     # earlier in the flow. Failing fast here keeps that contract explicit.
@@ -624,12 +746,20 @@ def _build_resolved_spectrum_row(
     procedure_id: int,
     detector_id: int,
 ) -> dict[str, Any]:
-    """Build one ``FACT_SPECTRUM`` payload from a resolved spectrum row.
+    """Build one ``FACT_SPECTRUM`` row from a resolved spectrum.
 
     At this point every foreign key dimension has already been attached to the
     spectrum object. The helper's only job is to translate the normalized
     spectrum fields plus those pre-resolved ids into the row shape expected by
     ``db_rfm.insert_spectrum()``.
+
+    Args:
+        spectrum (Any): Spectrum with resolved SITE and dimension identifiers.
+        procedure_id (int): Resolved procedure identifier.
+        detector_id (int): Resolved detector identifier.
+
+    Returns:
+        dict[str, Any]: FACT row payload accepted by ``insert_spectrum``.
     """
     metadata = spectrum.metadata if hasattr(spectrum, "metadata") else {}
     persisted_equipment_name = getattr(spectrum, "persisted_equipment_name", "")
@@ -672,7 +802,7 @@ def _register_spectrum_file_lineage(
     dt_modified: datetime,
     log_success: bool = True,
 ) -> int:
-    """Register one analytical file artifact and link it to persisted spectra.
+    """Register one analytical file artifact and link it to spectra.
 
     The processing flow records two file perspectives for the same spectra:
     the original source file seen on the host and the final canonical artifact
@@ -683,6 +813,22 @@ def _register_spectrum_file_lineage(
     This helper keeps that two-step contract in one place so the caller only
     needs to provide the file metadata that changes between host and repository
     contexts.
+
+    Args:
+        db_rfm (dbHandlerRFM): RFDATA handler used for file and bridge inserts.
+        spectrum_ids (list[int]): Persisted ``FACT_SPECTRUM`` identifiers.
+        hostname (str): Hostname associated with the artifact.
+        volume (str): Logical storage volume.
+        path (str): Artifact directory.
+        file_name (str): Artifact filename.
+        extension (str): Artifact extension.
+        size_kb (int): Artifact size in kilobytes.
+        dt_created (datetime): Artifact creation timestamp.
+        dt_modified (datetime): Artifact modification timestamp.
+        log_success (bool): Whether the handler should log the file insert.
+
+    Returns:
+        int: Inserted or resolved analytical file identifier.
     """
     file_id = db_rfm.insert_file(
         hostname=hostname,
@@ -713,12 +859,26 @@ def _reset_reprocessed_file_lineage(
     host/repository lineage for that artifact pair inside the current
     transaction so the fresh appAnalise payload becomes the only source of
     truth for the subsequent FACT and bridge inserts.
+
+    Args:
+        db_rfm (dbHandlerRFM): RFDATA handler with an open transaction.
+        task (dict[str, Any]): Queue task with source artifact metadata.
+        repository_path (str): Final repository artifact directory.
+        repository_file_name (str): Final repository artifact name.
+
+    Returns:
+        dict[str, int]: Counts reported by the database lineage reset.
+
+    Raises:
+        Exception: If lineage reset fails.
     """
     return db_rfm.reset_reprocessed_file_lineage(
         host_volume=task["hostname_db"],
         host_path=task["host_path"],
         host_file=task["host_file_name"],
         repository_volume=k.REPO_VOLUME_NAME,
+        previous_repository_path=task["server_path"],
+        previous_repository_file=task["server_name"],
         repository_path=repository_path,
         repository_file=repository_file_name,
     )
@@ -728,8 +888,7 @@ def insert_spectra_batch(
     db_rfm: dbHandlerRFM,
     bin_data: dict[str, Any],
 ) -> list[int]:
-    """
-    Persist all already-resolved spectra for one normalized payload.
+    """Persist resolved spectra for one normalized payload.
 
     Spectrum deduplication:
         ``spectrum_id_cache`` guards against exact duplicate spectrum rows that
@@ -751,6 +910,17 @@ def insert_spectra_batch(
         - Inserts into ``FACT_SPECTRUM`` within the caller's open RFDATA
           transaction.
         - Does **not** commit; the caller is responsible for the transaction.
+
+    Args:
+        db_rfm (dbHandlerRFM): RFDATA handler with an open transaction.
+        bin_data (dict[str, Any]): Payload with resolved dimensions and spectra.
+
+    Returns:
+        list[int]: FACT identifiers, including repeated ids for in-batch duplicates.
+
+    Raises:
+        ValueError: If a spectrum is missing a resolved dimension.
+        Exception: If fact persistence fails.
     """
     spectrum_id_cache = {}
     procedure_id = int(bin_data.get("procedure_id") or 0)
@@ -804,13 +974,30 @@ def _log_processing_completion(
     new_path: str,
     file_meta: dict,
 ) -> None:
-    """Emit the final structured log event for one successful processing flow.
+    """Emit the final event for a successful processing flow.
 
     The worker already owns the queue lifecycle logs. This helper records the
     domain-side completion snapshot after spectra were persisted and the final
     artifact was promoted. It keeps the per-file success log consistent across
     payload families while centralizing the timing and output fields in one
     place.
+
+    Args:
+        logger (logger_type): Structured event logger.
+        service_name (str): Worker service name.
+        task (dict): Queue task being processed.
+        work_started_at (float): Monotonic start timestamp.
+        process_elapsed_sec (float): appAnalise transport duration.
+        site_elapsed_sec (float): SITE resolution duration.
+        db_elapsed_sec (float): RFDATA persistence duration.
+        finalize_elapsed_sec (float): Artifact promotion duration.
+        resolved_site_ids (list[int]): SITE identifiers used by the payload.
+        spectrum_ids (list[int]): Persisted FACT identifiers.
+        new_path (str): Final repository directory.
+        file_meta (dict): Final artifact metadata with ``file_name``.
+
+    Returns:
+        None.
     """
     logger.task_phase(
         service_name,
@@ -840,8 +1027,7 @@ def run_processing_flow(
     logger: logger_type,
     service_name: str,
 ) -> dict[str, Any]:
-    """
-    Orchestrate the appAnalise domain pipeline for one claimed ``FILE_TASK``.
+    """Run the appAnalise domain pipeline for one claimed ``FILE_TASK``.
 
     The worker entrypoint still owns queue state transitions, retries, and the
     outer elapsed time contract. This helper owns the domain steps inside one
@@ -854,6 +1040,20 @@ def run_processing_flow(
 
     Returns the artifacts and metadata that the worker later uses to finalize
     ``FILE_TASK`` and ``FILE_TASK_HISTORY`` in BPDATA.
+
+    Args:
+        db_rfm (dbHandlerRFM): RFDATA handler used for analytical persistence.
+        task (dict[str, Any]): Claimed queue task and source artifact metadata.
+        app_analise (AppAnaliseConnection): Client that processes the source file.
+        logger (logger_type): Structured event logger.
+        service_name (str): Worker service name.
+
+    Returns:
+        dict[str, Any]: File metadata, destination, normalized payload, SITE ids,
+            spectrum ids, accepted answer, and raw decoded payload.
+
+    Raises:
+        Exception: If processing, resolution, persistence, or artifact promotion fails.
     """
     work_started_at = time.monotonic()
 
@@ -883,8 +1083,7 @@ def run_processing_flow(
     )
     db_rfm.begin_transaction()
 
-    # Reprocessing must clear the previous lineage for this artifact pair
-    # before the fresh spectra are inserted. The new payload is authoritative.
+    # Clear old lineage first. The fresh payload is authoritative.
     _reset_reprocessed_file_lineage(
         db_rfm,
         task=task,
@@ -969,8 +1168,7 @@ def run_processing_flow(
         file_meta=file_meta,
     )
 
-    # The worker finalizes queue state later. The domain returns only the
-    # artifacts needed to persist DONE/ERROR against FILE_TASK history.
+    # The entrypoint owns final queue state and receives only domain artifacts.
     return {
         "file_meta": file_meta,
         "new_path": new_path,
@@ -987,13 +1185,20 @@ def build_repository_destination_path(
     bin_data: dict[str, Any],
     hostname_db: str,
 ) -> str:
-    """
-    Resolve the canonical repository folder for the final processing artifact.
+    """Resolve the repository folder for the final artifact.
 
     Fixed payloads still inherit the traditional site-based repository path.
     When one processed file spans several resolved sites, the artifact is moved
     to a neutral appAnalise bucket instead of pretending that the whole file
     belongs to only one locality.
+
+    Args:
+        db_rfm (dbHandlerRFM): RFDATA handler used to build a SITE path.
+        bin_data (dict[str, Any]): Payload with resolved spectrum SITE ids.
+        hostname_db (str): Operational hostname for multi-SITE fallback paths.
+
+    Returns:
+        str: Absolute repository directory for the final artifact.
     """
     year = bin_data["spectrum"][0].start_dateidx.year
     site_ids = {

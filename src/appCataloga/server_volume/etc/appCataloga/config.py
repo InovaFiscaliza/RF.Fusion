@@ -75,12 +75,6 @@ APP_ANALISE_EMPTY_SPEC_DATA_DETAIL = "handlers:FileReadHandler:EmptySpecData"
 APP_ANALISE_NO_SPECTRAL_DATA_DETAIL = "model:fileReader:CRFSBin:NoSpectralData"
 APP_ANALISE_NO_READABLE_FILES_IN_ZIP_DETAIL = "model:SpecDataBase:NoReadableFilesInZip"
 APP_ANALISE_CWSM_FILENAME_UTC_OFFSET_HOURS = 3
-APP_ANALISE_MOBILE_TASK_MARKERS = (
-    "drive-test",
-    "drive test",
-)
-APP_ANALISE_MOBILE_GPS_STD_THRESHOLD = 0.001
-APP_ANALISE_MOBILE_PATH_STD_MULTIPLIER = 2.0
 APP_ANALISE_MULTI_SITE_REPO_SUBDIR = "appanalise_multi_site"
 #------------------------------------------
 # SSH LIMITS

@@ -5,7 +5,7 @@ How to run:
     /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/db/test_dbhandler_rfm.py -q
 
 What is covered here:
-    - site lookup rules for fixed and mobile summaries
+    - site lookup rules for fixed point summaries
     - direct site insert and centroid update rules
     - geographic code resolution and district auto-create
     - repository path and file type resolution
@@ -130,7 +130,6 @@ class SiteLookupTests(DbHandlerRfmBaseTests):
                 "ID_SITE": 11,
                 "LONGITUDE": -36.543807,
                 "LATITUDE": -10.286181,
-                "GEOGRAPHIC_PATH": None,
                 "DISTANCE": 0.0,
             }
         ]
@@ -139,20 +138,18 @@ class SiteLookupTests(DbHandlerRfmBaseTests):
             {
                 "longitude": -36.543807,
                 "latitude": -10.286181,
-                "geographic_path": None,
             }
         )
 
         self.assertEqual(site_id, 11)
 
-    def test_get_site_id_requires_same_mobile_path(self) -> None:
+    def test_get_site_id_matches_nearby_point_without_path_comparison(self) -> None:
         handler = self.make_handler()
         handler._select_rows = lambda **kwargs: [
             {
                 "ID_SITE": 12,
                 "LONGITUDE": -35.897411,
                 "LATITUDE": -7.230131,
-                "GEOGRAPHIC_PATH": "POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))",
                 "DISTANCE": 0.0,
             }
         ]
@@ -161,11 +158,10 @@ class SiteLookupTests(DbHandlerRfmBaseTests):
             {
                 "longitude": -35.897411,
                 "latitude": -7.230131,
-                "geographic_path": "POLYGON((2 2, 3 2, 3 3, 2 3, 2 2))",
             }
         )
 
-        self.assertFalse(site_id)
+        self.assertEqual(site_id, 12)
 
 
 class SiteWriteTests(DbHandlerRfmBaseTests):
@@ -200,42 +196,6 @@ class SiteWriteTests(DbHandlerRfmBaseTests):
         self.assertEqual(
             params,
             (760.0, 1, 35, 3550308, None, "Roof A"),
-        )
-
-    def test_insert_site_includes_mobile_geographic_path(self) -> None:
-        handler = self.make_handler()
-        handler.cursor = FakeCursor(lastrowid=124)
-        handler._normalize_site_data = lambda data: dict(data)
-        handler._get_geographic_codes = lambda **kwargs: (25, 2507507, None)
-
-        site_id = handler.insert_site(
-            {
-                "longitude": -35.897411,
-                "latitude": -7.230131,
-                "altitude": 12.0,
-                "nu_gnss_measurements": 1,
-                "state": "Paraíba",
-                "county": "Campina Grande",
-                "district": None,
-                "site_name": None,
-                "geographic_path": "POLYGON((-1 -1, 1 -1, 1 1, -1 1, -1 -1))",
-            }
-        )
-
-        self.assertEqual(site_id, 124)
-        sql, params = handler.cursor.executed[0]
-        self.assertIn("GEOGRAPHIC_PATH", sql)
-        self.assertEqual(
-            params,
-            (
-                12.0,
-                1,
-                25,
-                2507507,
-                None,
-                "Campina Grande",
-                "POLYGON((-1 -1, 1 -1, 1 1, -1 1, -1 -1))",
-            ),
         )
 
     def test_insert_site_rolls_back_and_wraps_error(self) -> None:
@@ -1031,7 +991,13 @@ class SpectrumAndBridgeTests(DbHandlerRfmBaseTests):
         handler = self.make_handler()
         summary_calls = []
         handler._summary_publish_scope = lambda **kwargs: summary_calls.append(kwargs)
-        handler._select_file_ids_by_artifacts = lambda **kwargs: [601, 602]
+        selected_artifacts = {}
+
+        def fake_select_file_ids_by_artifacts(*, artifacts):
+            selected_artifacts["artifacts"] = artifacts
+            return [601, 602, 603]
+
+        handler._select_file_ids_by_artifacts = fake_select_file_ids_by_artifacts
         handler._select_spectrum_merge_rows_by_file_ids = lambda **kwargs: [
             {"ID_SPECTRUM": 2001, "FK_SITE": 7, "FK_EQUIPMENT": 8},
             {"ID_SPECTRUM": 2002, "FK_SITE": 7, "FK_EQUIPMENT": 8},
@@ -1049,6 +1015,7 @@ class SpectrumAndBridgeTests(DbHandlerRfmBaseTests):
             {"ID_SPECTRUM": 2001, "FK_SITE": 7, "FK_EQUIPMENT": 8},
             {"ID_SPECTRUM": 2002, "FK_SITE": 7, "FK_EQUIPMENT": 8},
         ]
+        handler._select_orphan_file_ids = lambda **kwargs: [601, 602, 603]
 
         deleted_rows = []
 
@@ -1063,6 +1030,8 @@ class SpectrumAndBridgeTests(DbHandlerRfmBaseTests):
             host_path="C:/host",
             host_file="source.zip",
             repository_volume="reposfi",
+            previous_repository_path="/mnt/reposfi/2025/site_390/catalog",
+            previous_repository_file="sample_DONE.mat",
             repository_path="/mnt/reposfi/2025/site_80/catalog",
             repository_file="sample_DONE.mat",
         )
@@ -1070,18 +1039,27 @@ class SpectrumAndBridgeTests(DbHandlerRfmBaseTests):
         self.assertEqual(
             result,
             {
-                "file_ids": 2,
+                "file_ids": 3,
                 "removed_file_links": 4,
                 "removed_emitter_links": 2,
                 "removed_spectra": 2,
             },
         )
-        self.assertEqual(deleted_file_ids["file_ids"], [601, 602])
+        self.assertEqual(deleted_file_ids["file_ids"], [601, 602, 603])
+        self.assertEqual(
+            selected_artifacts["artifacts"],
+            [
+                ("cwsm212031", "C:/host", "source.zip"),
+                ("reposfi", "/mnt/reposfi/2025/site_80/catalog", "sample_DONE.mat"),
+                ("reposfi", "/mnt/reposfi/2025/site_390/catalog", "sample_DONE.mat"),
+            ],
+        )
         self.assertEqual(
             deleted_rows,
             [
                 ("BRIDGE_SPECTRUM_EMITTER", "FK_SPECTRUM", [2001, 2002]),
                 ("FACT_SPECTRUM", "ID_SPECTRUM", [2001, 2002]),
+                ("DIM_SPECTRUM_FILE", "ID_FILE", [601, 602, 603]),
             ],
         )
         self.assertEqual(

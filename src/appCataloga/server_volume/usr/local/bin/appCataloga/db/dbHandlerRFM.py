@@ -309,7 +309,6 @@ class dbHandlerRFM(DBHandlerBase):
                     "ST_X(GEO_POINT) AS LONGITUDE",
                     "ST_Y(GEO_POINT) AS LATITUDE",
                     "NU_ALTITUDE",
-                    "GEOGRAPHIC_PATH",
                 ],
                 limit=1,
             )
@@ -512,11 +511,6 @@ class dbHandlerRFM(DBHandlerBase):
                 "NA_SITE": self._resolve_site_name(data),
             }
 
-            # Mobile captures may carry a prepared WKT path in addition to the
-            # centroid stored in `GEO_POINT`.
-            if data.get("geographic_path"):
-                insert_data["GEOGRAPHIC_PATH"] = data["geographic_path"]
-
             # `GEO_POINT` is written as a spatial expression; the remaining
             # columns still use regular parameter binding.
             geom_expr = (
@@ -576,8 +570,7 @@ class dbHandlerRFM(DBHandlerBase):
     ) -> dict:
         """Update a fixed site's centroid using new GNSS samples.
 
-        This path is only for fixed stations. Mobile rows keep the prepared
-        path stable and are not refined here by repeated centroid averaging.
+        All appCataloga sites are represented by a fixed centroid.
         """
 
         try:
@@ -667,20 +660,18 @@ class dbHandlerRFM(DBHandlerBase):
     def get_site_id(self, data: dict) -> int | bool:
         """Return the matching `ID_SITE`, or `False` when none matches.
 
-        The lookup starts from the nearest stored sites and then applies the
-        RF.Fusion matching rule: fixed sites match by centroid tolerance;
-        mobile sites also require the same stored `GEOGRAPHIC_PATH`.
+        The lookup starts from the nearest stored sites and accepts the first
+        one within the configured tolerance on both axes.
         """
         try:
             self._connect()
 
             # Ask the database for the nearest candidates first. The Python
-            # side then applies the fixed/mobile matching rules.
+            # side then applies the centroid tolerance rule.
             cols = [
                 "ID_SITE",
                 "ST_X(GEO_POINT) AS LONGITUDE",
                 "ST_Y(GEO_POINT) AS LATITUDE",
-                "GEOGRAPHIC_PATH",
                 f"ST_Distance_Sphere(GEO_POINT, ST_GeomFromText('POINT({data['longitude']} {data['latitude']})', 4326)) AS DISTANCE"
             ]
 
@@ -694,19 +685,12 @@ class dbHandlerRFM(DBHandlerBase):
             if not rows:
                 return False
 
-            incoming_path = data.get("geographic_path")
-
-            # The nearest row is not necessarily a valid match; a nearby site
-            # from a different locality or a different mobile polygon must be
-            # rejected.
+            # The nearest row is not necessarily a valid match; it must still
+            # be within the configured tolerance on both coordinate axes.
             for nearest in rows:
                 nearest_site_id = int(nearest["ID_SITE"])
                 nearest_longitude = float(nearest["LONGITUDE"])
                 nearest_latitude = float(nearest["LATITUDE"])
-                stored_path = nearest.get("GEOGRAPHIC_PATH")
-
-                if isinstance(stored_path, bytes):
-                    stored_path = stored_path.decode("utf-8", errors="replace")
 
                 near_in_longitude = (
                     abs(data["longitude"] - nearest_longitude)
@@ -720,15 +704,7 @@ class dbHandlerRFM(DBHandlerBase):
 
                 if not location_exist_in_db:
                     continue
-
-                # Mobile rows also require the same stored path.
-                if incoming_path:
-                    if stored_path == incoming_path:
-                        return nearest_site_id
-                    continue
-
-                if not stored_path:
-                    return nearest_site_id
+                return nearest_site_id
 
             return False
 
@@ -1325,6 +1301,25 @@ class dbHandlerRFM(DBHandlerBase):
         )
         return int(self.cursor.rowcount or 0)
 
+    def _select_orphan_file_ids(self, *, file_ids: list[int]) -> list[int]:
+        """Return selected file records that no longer have spectrum links."""
+        if not file_ids:
+            return []
+
+        placeholders = ", ".join(["%s"] * len(file_ids))
+        rows = self._select_raw(
+            f"""
+            SELECT file.ID_FILE
+            FROM DIM_SPECTRUM_FILE file
+            LEFT JOIN BRIDGE_SPECTRUM_FILE bridge ON bridge.FK_FILE = file.ID_FILE
+            WHERE file.ID_FILE IN ({placeholders})
+            GROUP BY file.ID_FILE
+            HAVING COUNT(bridge.FK_SPECTRUM) = 0
+            """,
+            tuple(file_ids),
+        )
+        return [int(row["ID_FILE"]) for row in rows]
+
     def reset_reprocessed_file_lineage(
         self,
         *,
@@ -1332,6 +1327,8 @@ class dbHandlerRFM(DBHandlerBase):
         host_path: str,
         host_file: str,
         repository_volume: str,
+        previous_repository_path: Optional[str] = None,
+        previous_repository_file: Optional[str] = None,
         repository_path: str,
         repository_file: str,
     ) -> dict[str, int]:
@@ -1342,19 +1339,31 @@ class dbHandlerRFM(DBHandlerBase):
         not only time coverage but also the spectrum partitioning itself
         (for example one wide trace becoming several narrower sub-bands).
 
-        This helper clears all existing bridge rows for the host/repository
-        artifact pair before the caller inserts the fresh spectra inside the
-        same transaction. Orphaned FACT and emitter rows are deleted only when
-        no other file still references them.
+        This helper clears all existing bridge rows for the source, its prior
+        repository artifact, and its new repository destination before the
+        caller inserts the fresh spectra inside the same transaction. The prior
+        artifact identity comes from FILE_TASK_HISTORY, so a destination path
+        change cannot leave stale facts on the previous SITE. Orphaned FACT,
+        emitter, and selected file rows are deleted only when no remaining
+        bridge references them.
         """
         self._connect()
         try:
             self._ensure_transaction()
+            artifacts = [
+                (host_volume, host_path, host_file),
+                (repository_volume, repository_path, repository_file),
+            ]
+            if previous_repository_path and previous_repository_file:
+                artifacts.append(
+                    (
+                        repository_volume,
+                        previous_repository_path,
+                        previous_repository_file,
+                    )
+                )
             file_ids = self._select_file_ids_by_artifacts(
-                artifacts=[
-                    (host_volume, host_path, host_file),
-                    (repository_volume, repository_path, repository_file),
-                ]
+                artifacts=artifacts,
             )
             if not file_ids:
                 return {
@@ -1395,6 +1404,12 @@ class dbHandlerRFM(DBHandlerBase):
                 table="FACT_SPECTRUM",
                 column="ID_SPECTRUM",
                 ids=orphan_spectrum_ids,
+            )
+            orphan_file_ids = self._select_orphan_file_ids(file_ids=file_ids)
+            self._delete_rows_by_int_ids(
+                table="DIM_SPECTRUM_FILE",
+                column="ID_FILE",
+                ids=orphan_file_ids,
             )
 
             if not self.in_transaction:

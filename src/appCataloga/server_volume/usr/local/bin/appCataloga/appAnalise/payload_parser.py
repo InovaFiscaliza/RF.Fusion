@@ -39,8 +39,13 @@ CWSM_LONG_STATION_SUFFIX_DIGITS = 4
 
 
 def _normalize_equipment_text(value: Any) -> str:
-    """
-    Normalize one candidate equipment/host label for matching.
+    """Normalize an equipment or host label for matching.
+
+    Args:
+        value (Any): Candidate label, including ``None``.
+
+    Returns:
+        str: Lowercase trimmed text, or an empty string for ``None``.
     """
     if value is None:
         return ""
@@ -49,8 +54,7 @@ def _normalize_equipment_text(value: Any) -> str:
 
 
 def _canonicalize_single_equipment_identifier(value: Any) -> str | None:
-    """
-    Resolve one raw identifier into the canonical RFDATA equipment key.
+    """Resolve one raw identifier into a canonical RFDATA equipment key.
 
     RFeye identifiers already expose a stable 1:1 key inside longer receiver
     strings. CelPlan/CWSM identifiers can surface in two operational forms:
@@ -60,6 +64,12 @@ def _canonicalize_single_equipment_identifier(value: Any) -> str | None:
     The FACT layer should persist the long receiver form whenever the family is
     known. Malformed CWSM values return `None` so the caller can fall back to a
     more trustworthy host-level identifier instead of persisting garbage.
+
+    Args:
+        value (Any): Raw receiver or hostname value from a payload.
+
+    Returns:
+        str | None: Canonical identifier, or ``None`` when it is unusable.
     """
     normalized = _normalize_equipment_text(value)
 
@@ -107,12 +117,21 @@ def canonicalize_equipment_identifier(
     *,
     fallback_hostname: Any = None,
 ) -> str:
-    """
-    Return the canonical equipment identifier used by RFDATA persistence.
+    """Return the canonical equipment identifier for RFDATA persistence.
 
     The per-spectrum receiver from appAnalise has priority. If that value is
     malformed for a known family, the worker may safely fall back to the host
     identifier already trusted by the orchestration layer.
+
+    Args:
+        raw_value (Any): Preferred per-spectrum receiver identifier.
+        fallback_hostname (Any): Trusted host identifier used as a fallback.
+
+    Returns:
+        str: Canonical equipment identifier.
+
+    Raises:
+        errors.BinValidationError: If neither value provides a valid identifier.
     """
     primary = _canonicalize_single_equipment_identifier(raw_value)
     if primary:
@@ -128,14 +147,16 @@ def canonicalize_equipment_identifier(
 
 
 class AppAnalisePayloadParser:
-    """
-    Validate, normalize, and materialize appAnalise response payloads.
+    """Validate and normalize decoded appAnalise response payloads.
 
     Responsibilities:
         1. validate top-level protocol semantics after JSON decoding
         2. classify service-reported source-file errors
         3. normalize `Spectra` into canonical RF.Fusion `bin_data`
         4. resolve the filesystem artifact that becomes the processing output
+
+    This parser is stateless. Its constants define accepted protocol variants
+    and validation sentinels.
     """
 
     PROCESSOR_NAME = "appAnalise"
@@ -154,124 +175,30 @@ class AppAnalisePayloadParser:
     )
     GPS_SENTINEL_VALUE = -1
 
-    @staticmethod
-    def _coerce_non_negative_float_field(field_name: str, value: Any) -> float:
-        """
-        Parse one optional numeric field as a non-negative float.
-        """
-        parsed = AppAnalisePayloadParser._coerce_float_field(field_name, value)
-
-        if parsed < 0:
-            raise errors.BinValidationError(
-                f"APP_ANALISE returned negative {field_name}: {value}"
-            )
-
-        return parsed
-
-    @staticmethod
-    def _format_wkt_coordinate(value: float) -> str:
-        """
-        Format coordinates deterministically so identical site summaries compare equal.
-        """
-        return f"{float(value):.6f}"
-
-    def _is_mobile_task(self, task_name: str | None) -> bool:
-        """
-        Return whether the related-file task name clearly points to mobile capture.
-        """
-        normalized = (task_name or "").strip().lower()
-
-        if not normalized:
-            return False
-
-        return any(
-            marker in normalized for marker in k.APP_ANALISE_MOBILE_TASK_MARKERS
-        )
-
-    def _build_geographic_path(
-        self,
-        *,
-        latitude: float,
-        longitude: float,
-        latitude_std: float,
-        longitude_std: float,
-    ) -> str | None:
-        """
-        Build a deterministic bounding polygon for mobile captures.
-
-        The current goal is catalog visibility, not full route reconstruction.
-        A simple rectangle derived from the spectrum centroid and GPS standard
-        deviation is enough to distinguish mobile captures from fixed stations.
-        """
-        # We intentionally summarize mobility as a coarse bounding box instead
-        # of trying to reconstruct the real route. For RF.Fusion's current
-        # catalog use case, "where this spectrum moved around" is enough.
-        lat_delta = latitude_std * k.APP_ANALISE_MOBILE_PATH_STD_MULTIPLIER
-        lon_delta = longitude_std * k.APP_ANALISE_MOBILE_PATH_STD_MULTIPLIER
-
-        if lat_delta <= 0 or lon_delta <= 0:
-            return None
-
-        # The polygon is deterministic and axis-aligned so equal mobile
-        # summaries compare equal and can be cached/deduplicated downstream.
-        min_lat = self._format_wkt_coordinate(latitude - lat_delta)
-        max_lat = self._format_wkt_coordinate(latitude + lat_delta)
-        min_lon = self._format_wkt_coordinate(longitude - lon_delta)
-        max_lon = self._format_wkt_coordinate(longitude + lon_delta)
-
-        # WKT polygons must repeat the first coordinate at the end to close
-        # the outer ring explicitly.
-        return (
-            "POLYGON(("
-            f"{min_lon} {min_lat}, "
-            f"{max_lon} {min_lat}, "
-            f"{max_lon} {max_lat}, "
-            f"{min_lon} {max_lat}, "
-            f"{min_lon} {min_lat}"
-            "))"
-        )
-
     def _build_spectrum_site_data(
         self,
         *,
         gps: Dict[str, Any],
-        task_name: str | None,
         latitude: float,
         longitude: float,
         altitude: float,
     ) -> Dict[str, Any]:
-        """
-        Build the site summary attached to one normalized spectrum row.
+        """Build the fixed-point summary for one normalized spectrum.
 
-        Fixed captures stay point-only. Mobile captures still keep the same
-        centroid in `GEO_POINT`, but also carry a bounding polygon in
-        `GEOGRAPHIC_PATH` so the database can distinguish them later.
+        Args:
+            gps (dict[str, Any]): Raw GPS object returned by appAnalise.
+            latitude (float): Validated latitude in decimal degrees.
+            longitude (float): Validated longitude in decimal degrees.
+            altitude (float): Validated altitude reported by the receiver.
+
+        Returns:
+            dict[str, Any]: Site data with point coordinates, one raw GNSS
+                sample per coordinate, and ``nu_gnss_measurements`` equal to 1.
         """
         # appAnalise already returns a summarized GPS object per spectrum. We
         # keep that granularity here because a single processed file may mix
         # several localities and receivers.
-        latitude_std = self._coerce_non_negative_float_field(
-            "GPS.Latitude_std",
-            gps.get("Latitude_std", 0),
-        )
-        longitude_std = self._coerce_non_negative_float_field(
-            "GPS.Longitude_std",
-            gps.get("Longitude_std", 0),
-        )
-
-        # Mobility can be explicit in the task name or inferred from GNSS
-        # dispersion. Either signal is enough to switch this spectrum from a
-        # pure point to a point + geographic path summary.
-        is_mobile = (
-            self._is_mobile_task(task_name)
-            or latitude_std >= k.APP_ANALISE_MOBILE_GPS_STD_THRESHOLD
-            or longitude_std >= k.APP_ANALISE_MOBILE_GPS_STD_THRESHOLD
-        )
-
         return {
-            # Keep the centroid and raw samples even for mobile captures. The
-            # centroid still feeds GEO_POINT while the raw values remain
-            # available for fixed-site refinement and future analysis.
             "longitude": longitude,
             "latitude": latitude,
             "altitude": altitude,
@@ -279,30 +206,20 @@ class AppAnalisePayloadParser:
             "latitude_raw": [latitude],
             "altitude_raw": [altitude],
             "nu_gnss_measurements": 1,
-            "latitude_std": latitude_std,
-            "longitude_std": longitude_std,
-            "is_mobile": is_mobile,
-            # Fixed spectra stay point-only; mobile spectra expose the
-            # additional bounding geometry that DIM_SPECTRUM_SITE can persist.
-            # if is_mobile==false then geographic_path is None, which signals the database to ignore it
-            "geographic_path": (
-                self._build_geographic_path(
-                    latitude=latitude,
-                    longitude=longitude,
-                    latitude_std=latitude_std,
-                    longitude_std=longitude_std,
-                )
-                if is_mobile else None
-            ),
         }
 
     def _extract_spectrum_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Preserve non-dimensional metadata that still matters operationally.
+        """Preserve non-dimensional metadata needed for operator inspection.
 
         The relational model already owns the main analytical columns. This
         helper keeps only the metadata that remains useful for later operator
         inspection without inflating FACT_SPECTRUM with first-class columns.
+
+        Args:
+            metadata (dict[str, Any]): Raw ``MetaData`` object from a spectrum.
+
+        Returns:
+            dict[str, Any]: Optional ``antenna`` and ``others`` metadata.
         """
         extra = {}
         antenna = metadata.get("Antenna")
@@ -323,8 +240,17 @@ class AppAnalisePayloadParser:
 
     @staticmethod
     def _coerce_float_field(field_name: str, value: Any) -> float:
-        """
-        Parse one required numeric payload field as float.
+        """Parse a required numeric payload field.
+
+        Args:
+            field_name (str): Protocol field name used in an error message.
+            value (Any): Value expected to be numeric.
+
+        Returns:
+            float: Parsed numeric value.
+
+        Raises:
+            errors.BinValidationError: If ``value`` cannot be parsed.
         """
         try:
             return float(value)
@@ -335,8 +261,17 @@ class AppAnalisePayloadParser:
 
     @staticmethod
     def _coerce_positive_int_field(field_name: str, value: Any) -> int:
-        """
-        Parse one required payload field as a positive integer.
+        """Parse a required positive integer field.
+
+        Args:
+            field_name (str): Protocol field name used in an error message.
+            value (Any): Value expected to be a positive integer.
+
+        Returns:
+            int: Parsed positive integer.
+
+        Raises:
+            errors.BinValidationError: If the value is invalid or non-positive.
         """
         try:
             parsed = int(value)
@@ -354,8 +289,17 @@ class AppAnalisePayloadParser:
 
     @staticmethod
     def _parse_related_timestamp(field_name: str, value: Any) -> datetime:
-        """
-        Parse one RelatedFiles timestamp using the expected appAnalise format.
+        """Parse one timestamp from a ``RelatedFiles`` entry.
+
+        Args:
+            field_name (str): Protocol field name used in an error message.
+            value (Any): Timestamp text in appAnalise format.
+
+        Returns:
+            datetime: Parsed local timestamp.
+
+        Raises:
+            errors.BinValidationError: If the timestamp is missing or invalid.
         """
         if not isinstance(value, str) or not value.strip():
             raise errors.BinValidationError(
@@ -369,9 +313,14 @@ class AppAnalisePayloadParser:
                 f"APP_ANALISE returned invalid {field_name}: {value}"
             )
 
-    def _is_valid_hostname(self, value):
-        """
-        Return whether a hostname extracted from the payload is usable.
+    def _is_valid_hostname(self, value: Any) -> bool:
+        """Check whether a payload hostname can identify equipment.
+
+        Args:
+            value (Any): Candidate hostname from a payload.
+
+        Returns:
+            bool: ``True`` for a non-placeholder string.
         """
         if not isinstance(value, str):
             return False
@@ -380,11 +329,19 @@ class AppAnalisePayloadParser:
         return normalized not in self.INVALID_HOSTNAME_VALUES
 
     def _normalize_equipment_hostname(self, raw_hostname: Any) -> str:
-        """
-        Normalize one receiver/equipment identifier into RF.Fusion form.
+        """Normalize a receiver identifier into RF.Fusion form.
 
         This normalization now applies at spectrum granularity because one
         processed payload can aggregate several different receivers.
+
+        Args:
+            raw_hostname (Any): Receiver value returned by appAnalise.
+
+        Returns:
+            str: Normalized receiver identifier.
+
+        Raises:
+            errors.BinValidationError: If the receiver is a placeholder or invalid.
         """
         # Reject placeholder receiver values before they can create synthetic
         # equipment rows in DIM_SPECTRUM_EQUIPMENT.
@@ -416,8 +373,13 @@ class AppAnalisePayloadParser:
 
     @staticmethod
     def _collect_spectrum_hostnames(spectra: Iterable[Any]) -> list[str]:
-        """
-        Return the unique `equipment_name` values carried by normalized spectra.
+        """Collect unique equipment names from normalized spectra.
+
+        Args:
+            spectra (Iterable[Any]): Objects that may expose ``equipment_name``.
+
+        Returns:
+            list[str]: Unique non-empty equipment names in input order.
         """
         hostnames = []
         seen = set()
@@ -435,13 +397,21 @@ class AppAnalisePayloadParser:
         return hostnames
 
     def _finalize_hostnames(self, bin_data: Dict[str, Any]) -> None:
-        """
-        Finalize the hostname contract for the whole normalized payload.
+        """Finalize payload-level hostname fields from spectrum identities.
 
         One processed file may contain several receivers, so the real hostname
         ownership already lives on each spectrum row by the time this helper
         runs. Here we only derive the payload-level summary fields from that
         per-spectrum truth.
+
+        Args:
+            bin_data (dict[str, Any]): Normalized payload with ``spectrum`` rows.
+
+        Returns:
+            None.
+
+        Raises:
+            errors.BinValidationError: If no valid equipment name remains.
         """
         normalized_hostnames = self._collect_spectrum_hostnames(
             bin_data.get("spectrum", [])
@@ -464,8 +434,18 @@ class AppAnalisePayloadParser:
         longitude_value: Any,
         altitude_value: Any,
     ) -> tuple[float, float, float]:
-        """
-        Parse and validate one GPS triplet shared by root and spectrum checks.
+        """Parse and validate one GPS coordinate triplet.
+
+        Args:
+            latitude_value (Any): Latitude returned by appAnalise.
+            longitude_value (Any): Longitude returned by appAnalise.
+            altitude_value (Any): Altitude returned by appAnalise.
+
+        Returns:
+            tuple[float, float, float]: Validated latitude, longitude, and altitude.
+
+        Raises:
+            errors.BinValidationError: If coordinates are invalid or use the GNSS sentinel.
         """
         lat = self._coerce_float_field("GPS.Latitude", latitude_value)
         lon = self._coerce_float_field("GPS.Longitude", longitude_value)
@@ -493,15 +473,22 @@ class AppAnalisePayloadParser:
         return lat, lon, alt
 
     def _validate_gps(self, bin_data: Dict[str, Any]) -> None:
-        """
-        Validate the normalized GPS object and coerce numeric fields to float.
+        """Validate and normalize the payload-level GPS object.
+
+        Args:
+            bin_data (dict[str, Any]): Normalized payload containing ``gps``.
+
+        Returns:
+            None.
+
+        Raises:
+            errors.BinValidationError: If GPS fields are missing or invalid.
         """
         gps = bin_data.get("gps")
 
         # The parser already filters bad spectra individually, but the root
         # payload still exposes one representative GPS object used by existing
-        # code paths. Keep this final gate so that object cannot drift into an
-        # invalid state after selective filtering.
+        # Keep this gate after filtering to prevent invalid representative GPS.
         if gps is None:
             raise errors.BinValidationError("GPS metadata missing")
 
@@ -527,8 +514,16 @@ class AppAnalisePayloadParser:
         gps.altitude = alt
 
     def _validate_spectrum_container(self, bin_data: Dict[str, Any]) -> None:
-        """
-        Ensure the normalized spectrum list is iterable and non-empty.
+        """Ensure the normalized spectrum collection is non-empty.
+
+        Args:
+            bin_data (dict[str, Any]): Normalized payload with ``spectrum``.
+
+        Returns:
+            None.
+
+        Raises:
+            errors.BinValidationError: If spectra are missing, invalid, or empty.
         """
         spectra = bin_data.get("spectrum")
 
@@ -544,13 +539,18 @@ class AppAnalisePayloadParser:
 
     @staticmethod
     def _classify_spectrum_discard_reason(exc: Exception) -> str:
-        """
-        Classify one per-spectrum validation failure into a coarse discard reason.
+        """Classify a spectrum validation failure for aggregate reporting.
 
         The worker only needs a small amount of detail here. In particular, if
         every spectrum in the payload was discarded because of GPS defects, the
         final error should say so explicitly instead of falling back to the
         generic "no valid spectra survived" message.
+
+        Args:
+            exc (Exception): Validation failure from one spectrum.
+
+        Returns:
+            str: ``gps`` for GNSS failures; otherwise ``other``.
         """
         message = str(exc).lower()
 
@@ -561,8 +561,13 @@ class AppAnalisePayloadParser:
 
     @classmethod
     def _is_missing_source_file_error(cls, message: object) -> bool:
-        """
-        Return whether an appAnalise error string points to a missing source file.
+        """Check whether a service error describes a missing source file.
+
+        Args:
+            message (object): Error value returned by appAnalise.
+
+        Returns:
+            bool: ``True`` when a configured missing-file marker is present.
         """
         if not isinstance(message, str):
             return False
@@ -574,8 +579,16 @@ class AppAnalisePayloadParser:
 
     @staticmethod
     def validate_source_file(full_path: str) -> None:
-        """
-        Ensure the requested source file still exists before contacting appAnalise.
+        """Ensure a source file still exists before a remote request.
+
+        Args:
+            full_path (str): Absolute source-file path.
+
+        Returns:
+            None.
+
+        Raises:
+            errors.BinValidationError: If the source file is unavailable.
         """
         if not os.path.isfile(full_path):
             raise errors.BinValidationError(
@@ -587,8 +600,20 @@ class AppAnalisePayloadParser:
         answer_error: str,
         requested_full_path: Optional[str] = None,
     ) -> None:
-        """
-        Classify string errors returned in `Answer`.
+        """Classify a string error returned in ``Answer``.
+
+        Args:
+            answer_error (str): Error text returned by appAnalise.
+            requested_full_path (str | None): Requested source-file path.
+
+        Returns:
+            None.
+
+        Raises:
+            errors.AppAnaliseReadTimeoutError: If appAnalise reports a timeout.
+            errors.AppAnaliseFileUnavailableError: If a visible file is unavailable.
+            errors.BinValidationError: If the source is absent locally.
+            errors.AppAnaliseServiceResponseError: For other service failures.
         """
         normalized_error = str(answer_error).strip().lower()
 
@@ -623,8 +648,20 @@ class AppAnalisePayloadParser:
         payload: Dict,
         requested_full_path: Optional[str] = None,
     ) -> None:
-        """
-        Validate the top-level protocol structure before normalization begins.
+        """Validate the top-level appAnalise response protocol.
+
+        Args:
+            payload (dict): Decoded JSON response from appAnalise.
+            requested_full_path (str | None): Source path used for error context.
+
+        Returns:
+            None.
+
+        Raises:
+            errors.AppAnaliseServiceResponseError: If the response has ``Error``.
+            errors.AppAnaliseInvalidSuccessPayloadError: If success shape is invalid.
+            errors.AppAnaliseReadTimeoutError: If ``Answer`` reports a timeout.
+            errors.AppAnaliseFileUnavailableError: If the output is temporarily absent.
         """
         if not isinstance(payload, dict):
             self._raise_invalid_success_payload(
@@ -634,8 +671,7 @@ class AppAnalisePayloadParser:
         err = payload.get("Error")
         if err is not None:
             # `Error` is a protocol-level failure channel that bypasses the
-            # normal success shape of `Answer`. The service replied on purpose,
-            # so this should freeze instead of deleting the queue row.
+            # The service replied intentionally. Freeze the task for review.
             if isinstance(err, (list, tuple)) and len(err) >= 2:
                 code = err[0]
                 message = err[1]
@@ -666,8 +702,16 @@ class AppAnalisePayloadParser:
 
     @staticmethod
     def _raise_invalid_success_payload(message: str) -> None:
-        """
-        Freeze replies that claim success but violate the response contract.
+        """Raise for a malformed response that claims success.
+
+        Args:
+            message (str): Contract violation description.
+
+        Returns:
+            None.
+
+        Raises:
+            errors.AppAnaliseInvalidSuccessPayloadError: Always.
         """
         raise errors.AppAnaliseInvalidSuccessPayloadError(message)
 
@@ -677,8 +721,17 @@ class AppAnalisePayloadParser:
         *,
         allow_empty: bool = False,
     ) -> list[Dict[str, Any]]:
-        """
-        Normalize `Answer.Spectra` into a list of spectrum dictionaries.
+        """Normalize ``Answer.Spectra`` into spectrum dictionaries.
+
+        Args:
+            spectra (Any): Raw ``Spectra`` payload.
+            allow_empty (bool): Whether an empty list is valid.
+
+        Returns:
+            list[dict[str, Any]]: Validated spectrum dictionaries.
+
+        Raises:
+            errors.BinValidationError: If the payload shape is invalid.
         """
         if isinstance(spectra, str):
             raise errors.BinValidationError(
@@ -720,12 +773,23 @@ class AppAnalisePayloadParser:
         file_name: str,
         export: bool,
     ) -> tuple[str, str, str]:
-        """
-        Resolve the path/name/full_path of the artifact owned by this request.
+        """Resolve the artifact path, name, and absolute path for a request.
 
         `export=False` means the original BIN remains authoritative.
         `export=True` means appAnalise generated a derived artifact described in
         `Answer.General`, and that exported file becomes the authoritative one.
+
+        Args:
+            answer (dict): Accepted appAnalise ``Answer`` object.
+            file_path (str): Original source-file directory.
+            file_name (str): Original source-file name.
+            export (bool): Whether the output is an exported artifact.
+
+        Returns:
+            tuple[str, str, str]: Artifact directory, name, and full path.
+
+        Raises:
+            errors.BinValidationError: If required output fields are invalid.
         """
         if export:
             # In export mode the worker must stop treating the source BIN as the
@@ -762,9 +826,14 @@ class AppAnalisePayloadParser:
         return path, name, full_path
 
     @staticmethod
-    def _resolve_general_filename(file_name) -> str:
-        """
-        Normalize `Answer.General.FileName` into a single filename string.
+    def _resolve_general_filename(file_name: Any) -> str:
+        """Normalize ``Answer.General.FileName`` into one filename.
+
+        Args:
+            file_name (Any): String or sequence supplied by appAnalise.
+
+        Returns:
+            str: Filename text. Invalid values are returned for caller validation.
         """
         if isinstance(file_name, str):
             return file_name
@@ -776,8 +845,16 @@ class AppAnalisePayloadParser:
 
     @staticmethod
     def _get_output_artifact_size(full_path: str) -> int:
-        """
-        Read the current size of the output artifact or classify it as transient.
+        """Read the current output artifact size.
+
+        Args:
+            full_path (str): Absolute output artifact path.
+
+        Returns:
+            int: Artifact size in bytes.
+
+        Raises:
+            errors.AppAnaliseFileUnavailableError: If the artifact cannot be read.
         """
         try:
             return os.path.getsize(full_path)
@@ -788,8 +865,16 @@ class AppAnalisePayloadParser:
 
     @staticmethod
     def _stat_output_artifact(full_path: str) -> os.stat_result:
-        """
-        Stat the output artifact or classify the missing file as transient.
+        """Read filesystem metadata for an output artifact.
+
+        Args:
+            full_path (str): Absolute output artifact path.
+
+        Returns:
+            os.stat_result: Filesystem metadata for the artifact.
+
+        Raises:
+            errors.AppAnaliseFileUnavailableError: If the artifact cannot be read.
         """
         try:
             return os.stat(full_path)
@@ -799,8 +884,7 @@ class AppAnalisePayloadParser:
             )
 
     def normalize_response(self, payload: Dict) -> Dict:
-        """
-        Convert a validated appAnalise payload into canonical RF.Fusion `bin_data`.
+        """Convert an appAnalise payload into canonical ``bin_data``.
 
         This step is intentionally narrower than `normalize_payload(...)`.
         Here we only reshape the raw appAnalise structures into the RF.Fusion
@@ -814,6 +898,16 @@ class AppAnalisePayloadParser:
         That mirrors the intended RF.Fusion contract: local corruption inside
         one spectrum should not erase the healthy spectra that came in the same
         file.
+
+        Args:
+            payload (dict): Decoded appAnalise response with an ``Answer`` object.
+
+        Returns:
+            dict: Normalized data with ``hostname``, ``hostnames``, ``method``,
+                ``gps``, ``spectrum``, and ``discarded_spectrum_count`` keys.
+
+        Raises:
+            errors.BinValidationError: If no valid spectrum can be normalized.
         """
         # Phase 1: assert the already-decoded protocol payload is still shaped
         # like an appAnalise success response before we touch any spectrum.
@@ -834,8 +928,7 @@ class AppAnalisePayloadParser:
         discarded_spectra = 0
         discarded_gps_spectra = 0
 
-        # Phase 2: validate and normalize each raw spectrum independently. One
-        # bad spectrum should be dropped, not allowed to poison the whole file.
+        # Isolate bad spectra so one row cannot discard the whole file.
         for spec in spectra_payload:
             try:
                 # The outer spectrum object provides the shared metadata that
@@ -964,9 +1057,6 @@ class AppAnalisePayloadParser:
                             equipment_name=receiver,
                             site_data=self._build_spectrum_site_data(
                                 gps=gps,
-                                task_name=(
-                                task_name if isinstance(task_name, str) else None
-                                ),
                                 latitude=lat,
                                 longitude=lon,
                                 altitude=alt,
@@ -1055,12 +1145,25 @@ class AppAnalisePayloadParser:
         file_name: str,
         export: bool,
     ) -> Dict:
-        """
-        Wait for the output artifact to settle and return its filesystem metadata.
+        """Wait for an output artifact to settle and return its metadata.
 
         appAnalise can finish the socket response slightly before the output
         file stops growing on disk. This helper waits for the artifact size to
         stabilize so the worker does not capture half-written metadata.
+
+        Args:
+            answer (dict): Accepted appAnalise ``Answer`` object.
+            file_path (str): Original source-file directory.
+            file_name (str): Original source-file name.
+            export (bool): Whether appAnalise produced an output artifact.
+
+        Returns:
+            dict: Artifact metadata with path, name, extension, size, timestamps,
+                and ``full_path``.
+
+        Raises:
+            errors.AppAnaliseFileUnavailableError: If the artifact is unavailable.
+            errors.BinValidationError: If the artifact is empty or fields are invalid.
         """
         path, name, full_path = self._resolve_output_location(
             answer=answer,
@@ -1099,8 +1202,7 @@ class AppAnalisePayloadParser:
         }
 
     def normalize_payload(self, payload: Dict) -> Dict:
-        """
-        Normalize and validate one already-decoded appAnalise payload.
+        """Normalize and validate a decoded appAnalise payload.
 
         This is the final semantic gate before the worker can write anything to
         RFDATA. The sequence matters:
@@ -1110,16 +1212,22 @@ class AppAnalisePayloadParser:
 
         Only after this function succeeds should the worker treat the payload
         as safe to persist downstream.
+
+        Args:
+            payload (dict): Decoded appAnalise response with an ``Answer`` object.
+
+        Returns:
+            dict: Valid canonical ``bin_data`` ready for downstream persistence.
+
+        Raises:
+            errors.BinValidationError: If normalization or root validation fails.
         """
         # Step 1: reshape appAnalise's response into RF.Fusion's canonical
         # bin_data structure without yet claiming the whole object is valid.
         bin_data = self.normalize_response(payload)
 
         # Step 2: coerce the hostname into the canonical representation used by
-        # RF.Fusion tables and downstream deduplication logic. This happens in
-        # one place now: every spectrum keeps its own normalized equipment
-        # hostname, and the payload only exposes a root hostname when all
-        # spectra share the same receiver.
+        # Keep hostname normalization central to preserve deduplication keys.
         self._finalize_hostnames(bin_data)
 
         # Step 3: validate the remaining root object. Hostname normalization is

@@ -97,6 +97,10 @@
 >     obrigatoriedade quando eles afetarem o comportamento. Atributos locais,
 >     temporários ou evidentes que não façam parte do estado ou contrato da
 >     classe não precisam ser documentados.**
+> 15. **Conexões MariaDB/MySQL usam `mysql.connector`.** Quando um DB handler
+>     precisar abrir uma conexão, use `import mysql.connector` e
+>     `mysql.connector.connect(...)`. Não introduza drivers ou APIs de conexão
+>     alternativos. Somente DB handlers podem abrir conexões diretamente.
 
 This document is the authoritative refactoring roadmap for all `appCataloga_*.py`
 workers. It was written by reading all nine workers end-to-end alongside their

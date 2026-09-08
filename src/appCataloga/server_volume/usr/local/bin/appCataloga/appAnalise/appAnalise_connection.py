@@ -45,15 +45,29 @@ import config as k  # noqa
 
 
 class _OutageTracker:
-    """
-    Throttle repeated preflight warning logs during an appAnalise outage.
+    """Track one appAnalise outage and throttle repeated warning logs.
 
-    The first failure is logged immediately. Repeated identical failures
-    are suppressed until the configured interval elapses or the error
-    text changes. Recovery is logged once with an outage summary.
+    Use this class for preflight failures that can repeat in the worker loop.
+
+    Attributes:
+        _interval (int): Minimum seconds between repeated warning events.
+        _down (bool): Whether an outage is currently active.
+        _current_error (str | None): Most recent failure text.
+        _first_failure (float | None): Monotonic timestamp of the outage start.
+        _last_warning (float | None): Monotonic timestamp of the last warning.
+        _suppressed_since (int): Warnings suppressed since the last event.
+        _suppressed_total (int): Warnings suppressed during the outage.
     """
 
     def __init__(self, log_interval_sec: int) -> None:
+        """Initialize an outage tracker.
+
+        Args:
+            log_interval_sec (int): Minimum interval between repeated warnings.
+
+        Returns:
+            None.
+        """
         self._interval = log_interval_sec
         self._down = False
         self._current_error: str | None = None
@@ -63,14 +77,30 @@ class _OutageTracker:
         self._suppressed_total: int = 0
 
     def _get_monotonic(self) -> float:
-        """Return current monotonic time. Isolated so tests can patch it."""
+        """Return a patchable monotonic timestamp.
+
+        Returns:
+            float: Current monotonic time in seconds.
+        """
         return time.monotonic()
 
     def _outage_sec(self, now: float) -> int:
+        """Calculate the active outage duration.
+
+        Args:
+            now (float): Current monotonic time in seconds.
+
+        Returns:
+            int: Elapsed outage time in whole seconds.
+        """
         return int(max(0.0, now - float(self._first_failure or now)))
 
     def reset(self) -> None:
-        """Reset all state as if no outage was ever recorded."""
+        """Clear the active outage state.
+
+        Returns:
+            None.
+        """
         self._down = False
         self._current_error = None
         self._first_failure = None
@@ -79,7 +109,15 @@ class _OutageTracker:
         self._suppressed_total = 0
 
     def record_failure(self, error_text: str, logger) -> None:
-        """Log the failure, throttling repeated identical messages."""
+        """Record a preflight failure and emit a warning when due.
+
+        Args:
+            error_text (str): Failure description returned by the transport.
+            logger: Logger that provides ``warning_event``.
+
+        Returns:
+            None.
+        """
         now = self._get_monotonic()
 
         if not self._down:
@@ -93,7 +131,7 @@ class _OutageTracker:
             return
 
         if self._current_error != error_text:
-            # Error text changed — log immediately to show the new failure.
+            # Error changed. Log the new failure immediately.
             logger.warning_event(
                 "appanalise_unavailable_retry",
                 error=error_text,
@@ -115,7 +153,7 @@ class _OutageTracker:
             self._suppressed_total += 1
             return
 
-        # Interval elapsed — emit a "still down" summary.
+        # The interval elapsed. Emit a "still down" summary.
         logger.warning_event(
             "appanalise_unavailable_still_down",
             error=error_text,
@@ -127,7 +165,14 @@ class _OutageTracker:
         self._suppressed_since = 0
 
     def record_recovery(self, logger) -> None:
-        """Emit one recovery event and reset state. No-op if not tracking an outage."""
+        """Emit a recovery event for an active outage, then reset state.
+
+        Args:
+            logger: Logger that provides ``event``.
+
+        Returns:
+            None.
+        """
         if not self._down:
             return
 
@@ -143,16 +188,21 @@ class _OutageTracker:
 
 
 class AppAnaliseConnection:
-    """
-    Transport adapter for the external `appAnalise` service.
+    """Provide socket transport for the external ``appAnalise`` service.
 
-    Responsibilities:
-        1. open and close the TCP socket safely
-        2. send one processing request
-        3. extract the tagged JSON response
-        4. delegate semantic validation to `AppAnalisePayloadParser`
+    Use this client to request processing for one local source file. It owns
+    TCP framing and delegates response semantics to ``AppAnalisePayloadParser``.
+    It never writes to the database.
 
-    This class intentionally does not perform database writes.
+    Attributes:
+        payload_parser (AppAnalisePayloadParser): Semantic response validator.
+        bin_data (dict[str, Any]): Latest normalized payload; empty before use.
+        last_requested_file (str | None): Latest source file path.
+        last_response_text (str | None): Latest decoded socket response.
+        last_payload (dict[str, Any] | None): Latest decoded protocol payload.
+        last_answer (dict[str, Any] | None): Latest accepted ``Answer`` object.
+        last_output_meta (dict[str, Any] | None): Latest resolved artifact metadata.
+        _outage_tracker (_OutageTracker): State for preflight warning throttling.
     """
 
     START_TAG = "<JSON>"
@@ -161,12 +211,12 @@ class AppAnaliseConnection:
     NETWORK_RETRIES = 2
 
     def __init__(self) -> None:
-        """
-        Keep the latest protocol artifacts available for post-failure inspection.
+        """Initialize a client with empty request diagnostics.
 
-        The worker should still raise on failures, but these snapshots make it
-        possible to inspect what appAnalise returned before the request was
-        classified as transient or definitive.
+        The snapshots support failure inspection without suppressing errors.
+
+        Returns:
+            None.
         """
         self.payload_parser = AppAnalisePayloadParser()
         self.bin_data: Dict[str, Any] = {}
@@ -180,11 +230,12 @@ class AppAnaliseConnection:
         )
 
     def _reset_last_result(self) -> None:
-        """
-        Clear per-request debug state before a new processing attempt.
+        """Clear diagnostics from the previous processing request.
 
-        This avoids stale protocol artifacts leaking from one FILE_TASK into
-        the next when operators inspect the client object after a failure.
+        This prevents one FILE_TASK from exposing stale artifacts from another.
+
+        Returns:
+            None.
         """
         self.bin_data = {}
         self.last_requested_file = None
@@ -197,14 +248,13 @@ class AppAnaliseConnection:
         self,
         timeout_seconds: Optional[int] = None,
     ) -> Optional[int]:
-        """
-        Resolve the timeout forwarded to appAnalise's `FileRead` request.
+        """Resolve a safe timeout for the remote ``FileRead`` request.
 
-        The timeout requested from appAnalise should stay strictly below this
-        client's own socket processing timeout whenever it is enabled. That
-        lets appAnalise return a structured `ReadTimeout` reply before the
-        local socket layer gives up and classifies the request as transient
-        transport failure.
+        Args:
+            timeout_seconds (int | None): Explicit timeout, or ``None`` to use config.
+
+        Returns:
+            int | None: Timeout sent to appAnalise, or ``None`` when disabled.
         """
         raw_value = (
             timeout_seconds
@@ -235,11 +285,15 @@ class AppAnaliseConnection:
         export: bool,
         timeout_seconds: Optional[int] = None,
     ) -> Dict:
-        """
-        Build the request payload expected by the appAnalise socket API.
+        """Build the payload required by the appAnalise socket API.
 
-        This helper is intentionally tiny: the socket contract should stay easy
-        to audit here instead of being rebuilt ad hoc inside `_request_process`.
+        Args:
+            full_path (str): Absolute source-file path.
+            export (bool): Whether appAnalise should export an output artifact.
+            timeout_seconds (int | None): Optional remote processing timeout.
+
+        Returns:
+            dict: Request with ``Key``, ``ClientName``, and ``Request`` keys.
         """
         request = {
             "Key": k.APP_ANALISE_KEY,
@@ -259,11 +313,13 @@ class AppAnaliseConnection:
 
     @staticmethod
     def _close_socket(sock: socket.socket) -> None:
-        """
-        Close a socket defensively without leaking cleanup exceptions.
+        """Close a socket without replacing the primary transport failure.
 
-        Transport cleanup must never overwrite the real request failure with a
-        secondary `shutdown()` or `close()` exception.
+        Args:
+            sock (socket.socket): Connected or partially initialized socket.
+
+        Returns:
+            None.
         """
         try:
             sock.shutdown(socket.SHUT_RDWR)
@@ -276,11 +332,13 @@ class AppAnaliseConnection:
             pass
 
     def check_connection_with_log(self, logger) -> bool:
-        """
-        Preflight check with throttled outage logging.
+        """Check service reachability and record a throttled outage event.
 
-        Returns True when appAnalise is reachable. Returns False and emits a
-        throttled warning when the service is unavailable. Never raises.
+        Args:
+            logger: Logger used to emit outage and recovery events.
+
+        Returns:
+            bool: ``True`` when reachable; ``False`` for a transient outage.
         """
         try:
             self.check_connection()
@@ -291,11 +349,13 @@ class AppAnaliseConnection:
             return False
 
     def check_connection(self) -> bool:
-        """
-        Perform a lightweight TCP reachability check against appAnalise.
+        """Perform a lightweight TCP reachability check.
 
-        This is only a preflight. It proves the service is reachable right now,
-        not that a later processing request will succeed end-to-end.
+        Returns:
+            bool: Always ``True`` when the TCP connection succeeds.
+
+        Raises:
+            errors.ExternalServiceTransientError: If the service cannot be reached.
         """
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -316,12 +376,18 @@ class AppAnaliseConnection:
         export: bool = False,
         timeout_seconds: Optional[int] = None,
     ) -> Dict:
-        """
-        Submit a processing request and return the decoded protocol payload.
+        """Submit a request and return its decoded protocol payload.
 
-        Transport retries live here because they are about socket stability,
-        not payload semantics. Once a complete JSON payload is received, the
-        parser layer decides whether it is valid or defective.
+        Args:
+            full_path (str): Absolute source-file path sent to appAnalise.
+            export (bool): Whether appAnalise should export an artifact.
+            timeout_seconds (int | None): Optional remote processing timeout.
+
+        Returns:
+            dict: JSON object extracted from the tagged socket response.
+
+        Raises:
+            errors.ExternalServiceTransientError: If all transport attempts fail.
         """
         request_payload = self._build_request_payload(
             full_path,
@@ -361,12 +427,17 @@ class AppAnaliseConnection:
         )
 
     def _receive_all(self, sock: socket.socket) -> bytes:
-        """
-        Read from the socket until the tagged JSON block is complete.
+        """Read a tagged JSON block from a socket stream.
 
-        The appAnalise protocol is a tagged stream, not a length-prefixed one,
-        so the client must keep reading until both `<JSON>` and `</JSON>` are
-        present in the accumulated buffer.
+        Args:
+            sock (socket.socket): Connected socket that returns response bytes.
+
+        Returns:
+            bytes: Complete response block from ``<JSON>`` through ``</JSON>``.
+
+        Raises:
+            errors.ExternalServiceTransientError: If the response times out,
+                exceeds the size limit, or has incomplete framing.
         """
         buffer = b""
 
@@ -405,11 +476,13 @@ class AppAnaliseConnection:
 
     @staticmethod
     def _safe_decode(data: bytes) -> str:
-        """
-        Decode response bytes using UTF-8 with Latin-1 fallback.
+        """Decode response bytes, preserving legacy diagnostic text.
 
-        UTF-8 is the preferred contract, but the fallback keeps diagnostics
-        readable when the service returns mixed or legacy encodings.
+        Args:
+            data (bytes): Raw response bytes.
+
+        Returns:
+            str: UTF-8 text, or Latin-1 text when UTF-8 fails.
         """
         try:
             return data.decode("utf-8")
@@ -417,12 +490,16 @@ class AppAnaliseConnection:
             return data.decode("latin-1")
 
     def _extract_json(self, payload: str) -> Dict:
-        """
-        Extract the JSON payload wrapped by the protocol tags.
+        """Extract and decode JSON from a tagged protocol response.
 
-        By the time this method runs, transport has already succeeded. Failures
-        here are protocol/payload defects, so they are classified as
-        `BinValidationError`, not transport retry conditions.
+        Args:
+            payload (str): Decoded response containing protocol tags.
+
+        Returns:
+            dict: Decoded JSON object inside the tags.
+
+        Raises:
+            errors.BinValidationError: If tags are missing or JSON is invalid.
         """
         start = payload.find(self.START_TAG)
         end = payload.find(self.END_TAG, start)
@@ -448,25 +525,22 @@ class AppAnaliseConnection:
         export: bool = False,
         timeout_seconds: Optional[int] = None,
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
-        """
-        Process one source file through the full appAnalise client pipeline.
+        """Process one source file through transport and payload validation.
 
-        This method is the handoff point between two layers:
-            1. transport/protocol owned by `AppAnaliseConnection`
-            2. semantic validation owned by `AppAnalisePayloadParser`
-
-        Flow:
-            1. fail fast if the requested source file already vanished locally
-            2. execute the socket request and decode one JSON payload
-            3. validate that the payload is a real appAnalise success contract
-            4. resolve which output artifact belongs to this request
-            5. normalize the accepted payload into canonical RF.Fusion `bin_data`
+        Args:
+            file_path (str): Directory containing the source file.
+            file_name (str): Source-file name within ``file_path``.
+            export (bool): Whether appAnalise should export an output artifact.
+            timeout_seconds (int | None): Optional remote processing timeout.
 
         Returns:
-            tuple[dict, dict]:
-                - Canonical RF.Fusion `bin_data`
-                - Filesystem metadata for the output artifact associated with
-                  this processing request
+            tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+                Normalized ``bin_data``, output metadata, accepted ``Answer``,
+                and the decoded protocol payload, in that order.
+
+        Raises:
+            errors.BinValidationError: If the file, protocol, or payload is invalid.
+            errors.ExternalServiceTransientError: If socket transport fails.
         """
         full_path = os.path.join(file_path, file_name)
         self._reset_last_result()
@@ -476,8 +550,7 @@ class AppAnaliseConnection:
         # external processor cannot make this task recoverable.
         self.payload_parser.validate_source_file(full_path)
 
-        # Phase 2: transport first, semantics second. The connection layer only
-        # knows how to obtain one decoded payload from the socket server.
+        # Transport only returns decoded payloads. The parser owns semantics.
         self.last_payload = self._request_process(
             full_path,
             export,
@@ -485,8 +558,7 @@ class AppAnaliseConnection:
         )
 
         # Phase 3: from here on the payload exists, so failures are no longer
-        # about TCP reachability. The parser now decides whether appAnalise
-        # returned a usable success payload or a defective one.
+        # The parser now validates the returned appAnalise payload.
         self.payload_parser.detect_protocol_error(
             self.last_payload,
             requested_full_path=full_path,

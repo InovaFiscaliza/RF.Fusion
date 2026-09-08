@@ -40,7 +40,6 @@ class ReverseGeocodeSiteDataTests(unittest.TestCase):
             "longitude_raw": [-49.280111],
             "latitude_raw": [16.506472],
             "altitude_raw": [-1.0],
-            "geographic_path": None,
         }
         goias_location = SimpleNamespace(
             raw={
