@@ -54,7 +54,7 @@ O deploy atual assume:
 
 Observacao importante:
 
-- o caminho `/RFFusion-dev/RF.Fusion` esta hardcoded em `deploy-debian12-mariadb.sh`
+- o caminho `/RFFusion-dev/RF.Fusion` esta hardcoded em `deploy-debian12-mariadb.sh`. Para evitar ter que modificar o script, garanta que o projeto esteja nesse caminho no host.
 
 ## Como Fazer O Deploy
 

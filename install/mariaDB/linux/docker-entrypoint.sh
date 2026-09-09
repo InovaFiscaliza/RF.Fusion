@@ -1,7 +1,32 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Default password values
+DEFAULT_ROOT_SSH_PASSWORD="changeme"
+DEFAULT_APP_SSH_PASSWORD="changeme"
+DEFAULT_MARIADB_ROOT_PASSWORD="changeme"
+
 echo "=== [entrypoint] init MariaDB + SSH container ==="
+
+# Function to prompt for password if not set
+prompt_for_password() {
+    local var_name=$1
+    local prompt_text=$2
+    local default_value=$3
+    
+    if [ -z "${!var_name:-}" ]; then
+        read -p "${prompt_text}" -s input_password
+        echo
+        if [ -n "$input_password" ]; then
+            export $var_name="$input_password"
+        elif [ -n "$default_value" ]; then
+            export $var_name="$default_value"
+        else
+            echo "Error: Password is required"
+            exit 1
+        fi
+    fi
+}
 
 # -------------------------------------------------------------------
 # 1) SSH
@@ -9,6 +34,9 @@ echo "=== [entrypoint] init MariaDB + SSH container ==="
 echo "[entrypoint] Configuring SSH..."
 mkdir -p /var/run/sshd
 chmod 755 /var/run/sshd
+
+# Prompt for SSH password if not provided
+prompt_for_password "SSH_PASSWORD" "Enter root SSH password (default: ${DEFAULT_ROOT_SSH_PASSWORD}): " "${DEFAULT_ROOT_SSH_PASSWORD}"
 
 if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
     echo "[entrypoint] Generating SSH host keys..."
@@ -28,6 +56,9 @@ if [ -n "${RUNTIME_HEALTH_SSH_PUBLIC_KEY:-}" ]; then
 fi
 
 default_ssh_app_public_key='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICOV2QzbKI1es3i5dc93j9zNtyfQAVPdrtQCpFjrdcWF rffusion-service'
+
+# Prompt for SSH app user password if not provided
+prompt_for_password "SSH_APP_PASSWORD" "Enter SSH app user password (default: ${DEFAULT_APP_SSH_PASSWORD}): " "${DEFAULT_APP_SSH_PASSWORD}"
 
 ssh_user="${SSH_APP_USER:-rffusion}"
 ssh_user_password="${SSH_APP_PASSWORD:-changeme}"
@@ -57,6 +88,9 @@ echo "[entrypoint] Configuring MariaDB..."
 mkdir -p /var/run/mysqld
 chown -R mysql:mysql /var/run/mysqld
 chmod 775 /var/run/mysqld
+
+# Prompt for MariaDB root password if not provided
+prompt_for_password "MARIADB_ROOT_PASSWORD" "Enter MariaDB root password (default: ${DEFAULT_MARIADB_ROOT_PASSWORD}): " "${DEFAULT_MARIADB_ROOT_PASSWORD}"
 
 if [ ! -d /var/lib/mysql/mysql ]; then
     echo "[entrypoint] Initializing database..."

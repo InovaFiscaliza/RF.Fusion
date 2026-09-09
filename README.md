@@ -99,7 +99,19 @@ Dentro de `src/`, os subdiretorios principais sao:
 
 ## Instalacao E Execucao
 
-O caminho suportado hoje e baseado em containers Linux/Podman.
+O caminho suportado hoje e baseado em containers Linux/Podman utilizando scripts de deploy padronizados.
+
+Para instalação, clone o repositório para uma pasta de trabalho na maquina onde os containers serão executados. Em seguida, siga os passos abaixo para implantar cada componente do sistema.
+
+Para clonar o repositório em uma pasta dentro do home do usuário do host, execute:
+
+```bash
+cd ~
+mkdir -p ~/RFFusion-dev
+cd ~/RFFusion-dev
+git clone https://github.com/InovaFiscaliza/RF.Fusion.git
+cd RF.Fusion
+```
 
 ### 1. Implantar o banco MariaDB
 
