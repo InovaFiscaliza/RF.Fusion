@@ -16,6 +16,8 @@ class FakeBlueprint:
     """Minimal blueprint double that stores the registered request hook."""
 
     def __init__(self, *args, **kwargs):
+        self.name = args[0]
+        self.url_prefix = kwargs.get("url_prefix")
         self.before_request_handler = None
 
     def before_request(self, func):
@@ -29,7 +31,7 @@ class FakeBlueprint:
         return decorator
 
 
-def load_zabbix_configuration_routes():
+def load_configuration_routes():
     """Reload the route module with only the dependencies needed by auth."""
 
     root = str(WEBFUSION_ROOT)
@@ -52,7 +54,7 @@ def load_zabbix_configuration_routes():
     fake_usage_metrics = ModuleType("modules.server.usage_metrics")
     fake_usage_metrics.record_page_view = lambda: None
 
-    fake_service = ModuleType("modules.zabbix_configuration.service")
+    fake_service = ModuleType("modules.configuration.service")
     fake_service.ACTION_RESTORE = "restore"
     fake_service.ACTION_SAVE = "save"
     fake_service.TARGET_KIND_HOST = "host"
@@ -65,20 +67,29 @@ def load_zabbix_configuration_routes():
 
     sys.modules["flask"] = fake_flask
     sys.modules["modules.server.usage_metrics"] = fake_usage_metrics
-    sys.modules["modules.zabbix_configuration.service"] = fake_service
-    sys.modules.pop("modules.zabbix_configuration.routes", None)
-    return importlib.import_module("modules.zabbix_configuration.routes")
+    sys.modules["modules.configuration.service"] = fake_service
+    sys.modules.pop("modules.configuration.routes", None)
+    return importlib.import_module("modules.configuration.routes")
 
 
-class TestZabbixConfigurationRoutes(unittest.TestCase):
+class TestConfigurationRoutes(unittest.TestCase):
     """Keep the station configuration route importable with its dependencies."""
 
     @classmethod
     def setUpClass(cls):
-        cls.module = load_zabbix_configuration_routes()
+        cls.module = load_configuration_routes()
 
     def test_configuration_dashboard_remains_registered(self):
         self.assertTrue(callable(self.module.configuration_dashboard))
+
+    def test_configuration_blueprints_use_consistent_names_and_prefixes(self):
+        self.assertEqual(self.module.configuration_bp.name, "configuration")
+        self.assertEqual(self.module.configuration_bp.url_prefix, "/configuration")
+        self.assertEqual(self.module.configuration_api_bp.name, "configuration_api")
+        self.assertEqual(
+            self.module.configuration_api_bp.url_prefix,
+            "/api/configuration",
+        )
 
 
 if __name__ == "__main__":

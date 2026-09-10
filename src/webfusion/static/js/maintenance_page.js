@@ -4,8 +4,6 @@
         return;
     }
 
-    const panelStorageKey = "webfusion.maintenance.panels.v1";
-
     function showLoading(message) {
         if (typeof window.showPageLoadingOverlay === "function") {
             window.showPageLoadingOverlay(message);
@@ -129,37 +127,6 @@
                 form.submit();
             });
         }
-    }
-
-    function savePanelState() {
-        const panelState = {};
-        document.querySelectorAll("[data-maintenance-panel]").forEach(function (panel) {
-            panelState[panel.dataset.maintenancePanel] = panel.open;
-        });
-
-        try {
-            window.localStorage.setItem(panelStorageKey, JSON.stringify(panelState));
-        } catch (error) {
-            return;
-        }
-    }
-
-    function restorePanelState() {
-        let panelState = {};
-
-        try {
-            panelState = JSON.parse(window.localStorage.getItem(panelStorageKey) || "{}") || {};
-        } catch (error) {
-            panelState = {};
-        }
-
-        document.querySelectorAll("[data-maintenance-panel]").forEach(function (panel) {
-            const panelName = panel.dataset.maintenancePanel;
-            if (typeof panelState[panelName] === "boolean") {
-                panel.open = panelState[panelName];
-            }
-            panel.addEventListener("toggle", savePanelState);
-        });
     }
 
     function bindTaskPanel(config) {
@@ -990,7 +957,6 @@
         });
     });
 
-    restorePanelState();
     bindFileTaskHostSelector();
     bindTaskPanel({
         actionFormId: "host-task-action-form",

@@ -1,5 +1,5 @@
 """
-Validation tests for `webfusion.modules.task.routes`.
+Validation tests for `webfusion.modules.tasks.station_routes`.
 
 How to run:
     /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_task_routes.py -q
@@ -71,8 +71,9 @@ def load_task_routes():
 
     sys.modules["flask"] = fake_flask
     sys.modules["db"] = fake_db
-    sys.modules.pop("modules.task.routes", None)
-    return importlib.import_module("modules.task.routes")
+    sys.modules.pop("modules.tasks.blueprints", None)
+    sys.modules.pop("modules.tasks.station_routes", None)
+    return importlib.import_module("modules.tasks.station_routes")
 
 
 class TestTaskRoutes(unittest.TestCase):
@@ -515,36 +516,6 @@ class TestTaskRoutes(unittest.TestCase):
             },
         )
         get_configuration.assert_called_once_with("host", "10482")
-
-    def test_task_list_exposes_individual_host_for_creation_summary(self):
-        class FakeCursor:
-            def execute(self, query):
-                pass
-
-            def fetchall(self):
-                return []
-
-        class FakeConnection:
-            def cursor(self):
-                return FakeCursor()
-
-        self.module.request.args = {
-            "queued_count": "1",
-            "skipped_count": "0",
-            "created_host_id": "10482",
-        }
-        with patch.object(self.module, "get_connection", return_value=FakeConnection()):
-            with patch.object(self.module, "record_page_view"):
-                with patch.object(
-                    self.module,
-                    "render_template",
-                    side_effect=lambda template, **context: context,
-                ):
-                    context = self.module.task_list()
-
-        self.assertTrue(context["show_creation_summary"])
-        self.assertEqual(context["created_host_id"], 10482)
-
 
 if __name__ == "__main__":
     unittest.main()

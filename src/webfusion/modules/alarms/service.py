@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from modules.zabbix_configuration.service import (
+from modules.configuration.service import (
     get_appcataloga_problems,
     get_zabbix_api_url,
 )
@@ -22,6 +22,7 @@ SEVERITY_DETAILS = {
 }
 DEFAULT_SEVERITY = ("Não classificado", "not-classified")
 ZABBIX_EVENT_ENTRYPOINT = "tr_events.php"
+ZABBIX_PROBLEMS_ENTRYPOINT = "zabbix.php"
 
 
 def list_alarms() -> list[dict[str, Any]]:
@@ -31,6 +32,31 @@ def list_alarms() -> list[dict[str, Any]]:
         _normalize_problem(problem, api_url=api_url)
         for problem in get_appcataloga_problems()
     ]
+
+
+def get_zabbix_problems_url() -> str | None:
+    """Return the Zabbix Monitoring Problems page URL.
+
+    Args:
+        None.
+
+    Returns:
+        str | None: Frontend URL ending in `zabbix.php?action=problem.view`, or
+        `None` when the configured API URL is invalid.
+    """
+    parts = urlsplit(str(get_zabbix_api_url() or "").strip())
+    if not parts.scheme or not parts.netloc:
+        return None
+    base_path = parts.path.rsplit("/", 1)[0]
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            f"{base_path}/{ZABBIX_PROBLEMS_ENTRYPOINT}",
+            urlencode({"action": "problem.view"}),
+            "",
+        )
+    )
 
 
 def _normalize_problem(problem: dict[str, Any], *, api_url: str) -> dict[str, Any]:

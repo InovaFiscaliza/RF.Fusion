@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Tarefas{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/tasks_page.css', v='20260910-shared-navigation') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/tasks_overview.css') }}">
+{% endblock %}
+
+{% block breadcrumb %}
+<div class="breadcrumb">
+    <a href="{{ url_for('index') }}" data-loading-message="Abrindo mapa das estações...">Início</a>
+    <span class="breadcrumb-separator">›</span>
+    <span>Tarefas</span>
+</div>
+{% endblock %}
+
+{% block content %}
+<section class="tasks-page-root" aria-labelledby="tasks-workspace-title">
+    <header class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m">
+        <div>
+            <h1 id="tasks-workspace-title" class="wf-screen-title margin-bottom-s">Tarefas</h1>
+            <p class="wf-page-hero-copy">
+                Crie solicitações para estações e acompanhe cada etapa das filas operacionais.
+            </p>
+        </div>
+    </header>
+
+    <section class="tasks-home-content" aria-label="Operações de tarefas">
+        <nav class="tasks-operations" aria-label="Fluxos de tarefas">
+            <div class="tasks-operation card wf-panel background-neutral-0 border-radius-m">
+                <div>
+                    <h3 class="wf-panel-title">Criar tarefa de estação</h3>
+                    <p class="wf-panel-copy">Agende backup, descoberta, controle de backlog ou teste para uma estação ou grupo.</p>
+                </div>
+                <a class="btn btn-secondary" href="{{ url_for('tasks.task_builder') }}" data-loading-message="Abrindo criação de tarefas...">
+                    <i class="fa fa-plus" aria-hidden="true"></i>
+                    Criar tarefa
+                </a>
+            </div>
+            <div class="tasks-operation card wf-panel background-neutral-0 border-radius-m">
+                <div>
+                    <h3 class="wf-panel-title">Gerenciar tarefas de estação</h3>
+                    <p class="wf-panel-copy">Consulte, reinicie ou suspenda solicitações enviadas para as estações.</p>
+                </div>
+                <a class="btn btn-secondary" href="{{ url_for('tasks.station_tasks') }}" data-loading-message="Abrindo tarefas de estação...">
+                    <i class="fa fa-server" aria-hidden="true"></i>
+                    Gerenciar estações
+                </a>
+            </div>
+            <div class="tasks-operation card wf-panel background-neutral-0 border-radius-m">
+                <div>
+                    <h3 class="wf-panel-title">Gerenciar fila de arquivos</h3>
+                    <p class="wf-panel-copy">Revise as etapas de backup, descoberta e processamento dos arquivos.</p>
+                </div>
+                <a class="btn btn-secondary" href="{{ url_for('tasks.file_tasks') }}" data-loading-message="Abrindo fila de arquivos...">
+                    <i class="fa fa-file-text-o" aria-hidden="true"></i>
+                    Gerenciar arquivos
+                </a>
+            </div>
+            <div class="tasks-operation card wf-panel background-neutral-0 border-radius-m">
+                <div>
+                    <h3 class="wf-panel-title">Recuperar a partir do histórico</h3>
+                    <p class="wf-panel-copy">Recupere backups ou processamentos anteriores a partir do histórico.</p>
+                </div>
+                <a class="btn btn-secondary" href="{{ url_for('tasks.task_history') }}" data-loading-message="Abrindo histórico de tarefas...">
+                    <i class="fa fa-history" aria-hidden="true"></i>
+                    Consultar histórico
+                </a>
+            </div>
+        </nav>
+    </section>
+</section>
+{% endblock %}

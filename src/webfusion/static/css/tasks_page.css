@@ -1,0 +1,46 @@
+.tasks-page-root {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-l);
+    min-width: 0;
+}
+
+.tasks-context-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+    border-bottom: var(--border-size-s) solid var(--wf-border);
+}
+
+.tasks-context-nav a {
+    padding: var(--space-s) var(--space-base);
+    border-bottom: var(--border-size-m) solid transparent;
+    color: var(--wf-text-muted);
+    text-decoration: none;
+}
+
+.tasks-context-nav a:hover,
+.tasks-context-nav a:focus-visible,
+.tasks-context-nav a.is-active {
+    color: var(--wf-accent);
+    border-bottom-color: currentColor;
+}
+
+.tasks-context-nav a.is-active {
+    font-weight: var(--font-semi-bold);
+}
+
+.tasks-context-nav a:focus-visible {
+    outline: var(--border-size-m) solid var(--wf-accent);
+    outline-offset: calc(-1 * var(--border-size-m));
+}
+
+.maintenance-module--standalone .maintenance-module-summary {
+    cursor: default;
+    border-bottom: var(--border-size-s) solid var(--wf-border);
+    background: var(--wf-surface-soft);
+}
+
+.maintenance-module--standalone .maintenance-module-summary::after {
+    display: none;
+}

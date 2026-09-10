@@ -66,17 +66,17 @@
                                 </a>
                             </div>
                             <div class="wf-header-nav-links" aria-label="Módulos do sistema">
-                                {{ navigation_link('Mapa', 'index', request.endpoint == 'index', 'Abrindo mapa das estações...', 'wf-header-nav-link') }}
-                                {{ navigation_link('Consulta aos Arquivos', 'spectrum.spectrum', request.endpoint == 'spectrum.spectrum', 'Abrindo consulta de espectros...', 'wf-header-nav-link') }}
+                                {{ navigation_link('Arquivos', 'spectrum.spectrum', request.endpoint == 'spectrum.spectrum', 'Abrindo arquivos...', 'wf-header-nav-link') }}
                                 {{ navigation_link('Panorama do Servidor', 'server.server', request.endpoint and request.endpoint.startswith('server.'), 'Carregando visão do servidor...', 'wf-header-nav-link') }}
-                                {{ navigation_link('Consulta às Estações', 'host.host', request.endpoint and request.endpoint.startswith('host.'), 'Abrindo consulta de estações...', 'wf-header-nav-link') }}
+                                {{ navigation_link('Estações', 'host.host', request.endpoint and request.endpoint.startswith('host.'), 'Abrindo estações...', 'wf-header-nav-link') }}
+                                {{ navigation_link('Alarmes', 'alarms.alarms_dashboard', request.endpoint and request.endpoint.startswith('alarms.'), 'Consultando alarmes...', 'wf-header-nav-link') }}
                                 {% if current_user.role %}
-                                    {{ navigation_link('Criação de Tarefas', 'task.task_builder', request.endpoint and request.endpoint.startswith('task.'), 'Abrindo tarefas...', 'wf-header-nav-link') }}
-                                    {{ navigation_link('Manutenção de Tarefas', 'maintenance.maintenance_dashboard', request.endpoint and request.endpoint.startswith('maintenance.'), 'Abrindo manutenção operacional...', 'wf-header-nav-link') }}
-                                    {{ navigation_link('Alarmes Operacionais', 'alarms.alarms_dashboard', request.endpoint and request.endpoint.startswith('alarms.'), 'Consultando alarmes operacionais...', 'wf-header-nav-link') }}
-                                    {{ navigation_link('Configuração de Estações', 'zabbix_configuration.configuration_dashboard', request.endpoint and request.endpoint.startswith('zabbix_configuration.'), 'Abrindo configuração das estações...', 'wf-header-nav-link') }}
+                                    {{ navigation_link('Tarefas', 'tasks.task_workspace', request.endpoint and request.endpoint.startswith('tasks.'), 'Abrindo tarefas...', 'wf-header-nav-link') }}
+                                {% endif %}
+                                {% if current_user.role %}
+                                    {{ navigation_link('Configurações', 'configuration.configuration_dashboard', request.endpoint and request.endpoint.startswith('configuration.'), 'Abrindo configurações...', 'wf-header-nav-link') }}
                                     {{ navigation_link('Usuários', 'users.user_directory', request.endpoint and request.endpoint.startswith('users.'), 'Abrindo administração de usuários...', 'wf-header-nav-link') }}
-                                    {% endif %}
+                                {% endif %}
                             </div>
                             <div class="wf-header-user" title="Usuário conectado">
                                 <i class="fa fa-user" aria-hidden="true"></i>
@@ -119,16 +119,17 @@
                     </button>
                 </div>
                 <nav class="wf-navigation-drawer-links" aria-label="Módulos do sistema">
-                    {{ navigation_link('Mapa', 'index', request.endpoint == 'index', 'Abrindo mapa das estações...', 'wf-navigation-drawer-link', 'fa-map-marker') }}
-                    {{ navigation_link('Consulta aos Arquivos', 'spectrum.spectrum', request.endpoint == 'spectrum.spectrum', 'Abrindo consulta de espectros...', 'wf-navigation-drawer-link', 'fa-search') }}
+                    {{ navigation_link('Início', 'index', request.endpoint == 'index', 'Abrindo página inicial...', 'wf-navigation-drawer-link', 'fa-home') }}
+                    {{ navigation_link('Arquivos', 'spectrum.spectrum', request.endpoint == 'spectrum.spectrum', 'Abrindo arquivos...', 'wf-navigation-drawer-link', 'fa-search') }}
                     {{ navigation_link('Panorama do Servidor', 'server.server', request.endpoint and request.endpoint.startswith('server.'), 'Carregando visão do servidor...', 'wf-navigation-drawer-link', 'fa-dashboard') }}
-                    {{ navigation_link('Consulta às Estações', 'host.host', request.endpoint and request.endpoint.startswith('host.'), 'Abrindo consulta de estações...', 'wf-navigation-drawer-link', 'fa-server') }}
+                    {{ navigation_link('Estações', 'host.host', request.endpoint and request.endpoint.startswith('host.'), 'Abrindo estações...', 'wf-navigation-drawer-link', 'fa-server') }}
+                    {{ navigation_link('Alarmes', 'alarms.alarms_dashboard', request.endpoint and request.endpoint.startswith('alarms.'), 'Consultando alarmes...', 'wf-navigation-drawer-link', 'fa-bell') }}
                     {% if current_user.role %}
-                        {{ navigation_link('Criação de Tarefas', 'task.task_builder', request.endpoint and request.endpoint.startswith('task.'), 'Abrindo tarefas...', 'wf-navigation-drawer-link', 'fa-cogs') }}
-                        {{ navigation_link('Manutenção de Tarefas', 'maintenance.maintenance_dashboard', request.endpoint and request.endpoint.startswith('maintenance.'), 'Abrindo manutenção operacional...', 'wf-navigation-drawer-link', 'fa-wrench') }}
-                        {{ navigation_link('Alarmes Operacionais', 'alarms.alarms_dashboard', request.endpoint and request.endpoint.startswith('alarms.'), 'Consultando alarmes operacionais...', 'wf-navigation-drawer-link', 'fa-bell') }}
+                        {{ navigation_link('Tarefas', 'tasks.task_workspace', request.endpoint and request.endpoint.startswith('tasks.'), 'Abrindo tarefas...', 'wf-navigation-drawer-link', 'fa-tasks') }}
+                    {% endif %}
+                    {% if current_user.role %}
                         {{ navigation_link('Usuários', 'users.user_directory', request.endpoint and request.endpoint.startswith('users.'), 'Abrindo administração de usuários...', 'wf-navigation-drawer-link', 'fa-users') }}
-                        {{ navigation_link('Configuração de Estações', 'zabbix_configuration.configuration_dashboard', request.endpoint and request.endpoint.startswith('zabbix_configuration.'), 'Abrindo configuração das estações...', 'wf-navigation-drawer-link', 'fa-sliders') }}
+                        {{ navigation_link('Configurações', 'configuration.configuration_dashboard', request.endpoint and request.endpoint.startswith('configuration.'), 'Abrindo configurações...', 'wf-navigation-drawer-link', 'fa-sliders') }}
                     {% endif %}
                 </nav>
             </aside>

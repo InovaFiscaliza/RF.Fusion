@@ -29,12 +29,11 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from modules.spectrum.routes import spectrum_bp
 from modules.host.routes import host_bp
 from modules.server.routes import server_bp
-from modules.task.routes import task_api_bp, task_bp
-from modules.maintenance.routes import maintenance_api_bp, maintenance_bp
+from modules.tasks.routes import tasks_api_bp, tasks_bp
 from modules.users.routes import users_admin_api_bp, users_api_bp, users_bp
-from modules.zabbix_configuration.routes import (
-    zabbix_configuration_api_bp,
-    zabbix_configuration_bp,
+from modules.configuration.routes import (
+    configuration_api_bp,
+    configuration_bp,
 )
 from modules.alarms.routes import alarms_bp
 from modules.map.service import (
@@ -58,15 +57,13 @@ AUTH_SERVICE = AuthService()
 app.register_blueprint(spectrum_bp)
 app.register_blueprint(host_bp)
 app.register_blueprint(server_bp)
-app.register_blueprint(task_bp)
-app.register_blueprint(task_api_bp)
-app.register_blueprint(maintenance_bp)
-app.register_blueprint(maintenance_api_bp)
+app.register_blueprint(tasks_bp)
+app.register_blueprint(tasks_api_bp)
 app.register_blueprint(users_bp)
 app.register_blueprint(users_api_bp)
 app.register_blueprint(users_admin_api_bp)
-app.register_blueprint(zabbix_configuration_bp)
-app.register_blueprint(zabbix_configuration_api_bp)
+app.register_blueprint(configuration_bp)
+app.register_blueprint(configuration_api_bp)
 app.register_blueprint(alarms_bp)
 
 

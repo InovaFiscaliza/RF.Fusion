@@ -11,7 +11,7 @@ credenciais diretamente.
 
 Os módulos em `modules/` devem manter somente a validação, normalização e a
 apresentação específicas de sua funcionalidade. Por exemplo,
-`zabbix_configuration` interpreta e sincroniza macros, enquanto `alarms`
+`configuration` interpreta e sincroniza macros, enquanto `alarms`
 normaliza problemas para a tabela operacional.
 
 As variáveis `ZABBIX_API_URL`, `ZABBIX_API_TOKEN` e

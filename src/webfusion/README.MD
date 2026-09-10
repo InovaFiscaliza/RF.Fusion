@@ -41,8 +41,14 @@ X-Forwarded-Prefix enviado pelo Nginx para gerar URLs públicas corretas sob
 
 Endpoints de verificação:
 
-    interno: http://127.0.0.1:8000/api/users/login
+    interno: http://127.0.0.1:8000/api/users
     público: http://<servidor>:9082/rffusion/api/server/runtime-health
+
+O endpoint `GET /api/users/login` responde com status HTTP 204 e corpo vazio.
+O cabeçalho `X-User-Profile` contém o perfil persistido como um objeto JSON no
+mesmo formato retornado no body de `GET /api/users/me`, incluindo `NA_ROLE`,
+`IS_ADMIN` e `IS_DEVELOPER`. Sem identidade ou perfil persistido, o valor do
+cabeçalho é `{}`.
 
 ### Controle de acesso
 
@@ -121,10 +127,9 @@ aceita, mas a sincronização operacional não foi concluída.
 | Consulta aos Arquivos | /spectrum | consulta de arquivos e espectros, com download controlado |
 | Panorama do Servidor | /server | indicadores de host, filas, acervo, erros, uso e repositório |
 | Consulta às Estações | /host | visão operacional, geográfica e histórica de uma estação |
-| Criação de Tarefas | /task/ | criação individual ou coletiva de operações de backup e descoberta |
-| Manutenção de Tarefas | /maintenance/ | consulta e intervenção controlada nas filas e no histórico |
+| Tarefas | /tasks/ | criação de solicitações, consulta e intervenção controlada nas filas e no histórico |
 | Usuários | /users/ | consulta, cadastro manual e concessão ou revogação de privilégios |
-| Configuração de Estações | /host-configuration/ | macros Zabbix por template ou estação |
+| Configurações | /configuration/ | macros Zabbix por template ou estação |
 
 As rotas da tabela são relativas ao prefixo público. Por exemplo, o panorama
 do servidor é acessado em http://<servidor>:9082/rffusion/server.
@@ -246,30 +251,37 @@ acompanha seu progresso sem executar ICMP ou SSH no WebFusion.
 - POST /api/host/<host_id>/connectivity-test
 - GET /api/host/<host_id>/connectivity-test/<task_id>
 
-### Criação de Tarefas
+### Tarefas
 
-/task/ transforma a intenção do operador em HOST_TASK persistida. As ações
-incluem envio ou retirada da fila de backup, descoberta incremental, descoberta
-completa e teste de conectividade.
+/tasks/create transforma a intenção do operador em uma solicitação persistida.
+As ações incluem envio ou retirada da fila de backup, descoberta incremental,
+descoberta completa e teste de conectividade.
 
 Para backup, caminho e extensão são consultados das macros efetivas do Zabbix,
 respeitando sobrescritas da estação. A página não se conecta diretamente à
 estação remota.
 
-### Manutenção de Tarefas
-
-/maintenance/ oferece painéis para tarefas de host, fila de arquivos e
-histórico de arquivos. As consultas são limitadas. Uma consulta ao histórico
-sem filtros é ordenada pelas entradas processadas mais recentes, evitando
-carregamentos integrais de FILE_TASK_HISTORY.
+/tasks/stations, /tasks/files e /tasks/history separam as tarefas de estação, a
+fila de arquivos e a recuperação pelo histórico. As consultas são limitadas.
+Uma consulta ao histórico sem filtros é ordenada pelas entradas processadas
+mais recentes, evitando carregamentos integrais da tabela de histórico.
 
 As ações disponíveis são validadas no servidor conforme o estágio e a situação
 selecionados. O módulo não substitui a máquina de estados do appCataloga.
 
-### Configuração de Estações
+Os endpoints JSON do módulo seguem a raiz unificada `/api/tasks`:
 
-/host-configuration/ apresenta macros por template ou por estação. Para uma
+- GET /api/tasks/file-task-hosts
+- GET /api/tasks/host/<host_id>/backup-defaults
+- GET /api/tasks/hosts/backup-defaults
+
+### Configurações
+
+/configuration/ apresenta macros por template ou por estação. Para uma
 estação, separa valores próprios e herdados, indicando sobrescritas.
+
+As alterações de macros são enviadas por POST para
+/api/configuration/macro.
 
 Campos protegidos e valores secretos não são revelados. As alterações exigem
 confirmação na interface e são aplicadas ao Zabbix antes de qualquer tentativa
@@ -279,9 +291,8 @@ de sincronização com o banco operacional.
 
 Os módulos de escrita e configuração usam autenticação HTTP Basic leve:
 
-- /task/
-- /maintenance/
-- /host-configuration/
+- /tasks/
+- /configuration/
 - operações de teste em /host
 
 Essa proteção é temporária e voltada ao ambiente operacional atual. As
@@ -304,7 +315,7 @@ informa um novo valor, sem recuperar o segredo armazenado no Zabbix.
     |   |-- host/                      consulta e teste de estações
     |   |-- task/                      criação e acompanhamento de tarefas
     |   |-- maintenance/               manutenção de filas e histórico
-    |   +-- zabbix_configuration/      macros Zabbix e sincronização operacional
+    |   +-- configuration/             macros Zabbix e sincronização operacional
     |-- templates/                     páginas Jinja
     +-- static/                        CSS, JavaScript, fontes e imagens
 

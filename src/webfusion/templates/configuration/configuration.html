@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 
-{% block title %}RF.Fusion - Configuração das Estações{% endblock %}
+{% block title %}RF.Fusion - Configurações{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/zabbix_configuration_page.css', v='20260813-station-action-layout') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/configuration_page.css', v='20260813-station-action-layout') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/station_connectivity_test.css', v='20260813-station-test') }}">
 {% endblock %}
 
@@ -11,7 +11,7 @@
 <div class="breadcrumb">
     <a href="{{ url_for('index') }}" data-loading-message="Abrindo mapa das estações...">Início</a>
     <span class="breadcrumb-separator">›</span>
-    <span>Configuração das Estações</span>
+    <span>Configurações</span>
 </div>
 {% endblock %}
 
@@ -19,7 +19,7 @@
 <section class="zabbix-config-page-root">
     <div class="zabbix-config-hero card wf-panel background-neutral-0 padding-l border-radius-m">
         <div>
-            <h1 class="wf-screen-title margin-bottom-s">Configuração das Estações</h1>
+            <h1 class="wf-screen-title margin-bottom-s">Configurações</h1>
             <p class="zabbix-config-hero-copy">
                 Consulte e ajuste as macros do Zabbix usadas pelas estações RF.Fusion.
                 A origem de cada valor deixa explícito quando a estação sobrescreve o template.
@@ -136,7 +136,7 @@
                     </td>
                     <td>
                         {% if macro.accepts_value and not macro.is_protected %}
-                        <form method="post" action="{{ url_for('zabbix_configuration_api.update_macro') }}" class="zabbix-config-macro-form" data-zabbix-confirm="{{ action_save }}" data-target-label="{{ configuration.title }}">
+                        <form method="post" action="{{ url_for('configuration_api.update_macro') }}" class="zabbix-config-macro-form" data-zabbix-confirm="{{ action_save }}" data-target-label="{{ configuration.title }}">
                             <input type="hidden" name="target_kind" value="{{ configuration.kind }}">
                             <input type="hidden" name="target_id" value="{{ configuration.target_id }}">
                             <input type="hidden" name="macro_name" value="{{ macro.name }}">
@@ -164,7 +164,7 @@
                             </button>
                         </form>
                         {% if macro.is_direct_on_target %}
-                        <form method="post" action="{{ url_for('zabbix_configuration_api.update_macro') }}" class="zabbix-config-restore-form" data-zabbix-confirm="{{ action_restore }}" data-target-label="{{ configuration.title }}">
+                        <form method="post" action="{{ url_for('configuration_api.update_macro') }}" class="zabbix-config-restore-form" data-zabbix-confirm="{{ action_restore }}" data-target-label="{{ configuration.title }}">
                             <input type="hidden" name="target_kind" value="{{ configuration.kind }}">
                             <input type="hidden" name="target_id" value="{{ configuration.target_id }}">
                             <input type="hidden" name="macro_name" value="{{ macro.name }}">
@@ -373,5 +373,5 @@
 
 {% block extra_js %}
 <script src="{{ url_for('static', filename='js/station_connectivity_test.js', v='20260819-station-test-details') }}"></script>
-<script src="{{ url_for('static', filename='js/zabbix_configuration_page.js', v='20260813-filter-date-ptbr') }}"></script>
+<script src="{{ url_for('static', filename='js/configuration_page.js', v='20260813-filter-date-ptbr') }}"></script>
 {% endblock %}

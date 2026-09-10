@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}RF.Fusion - Alarmes Operacionais{% endblock %}
+{% block title %}RF.Fusion - Alarmes{% endblock %}
 
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/alarms_page.css', v='20260903-appcataloga-problems') }}">
@@ -10,7 +10,7 @@
 <div class="breadcrumb">
     <a href="{{ url_for('index') }}" data-loading-message="Abrindo mapa das estações...">Início</a>
     <span class="breadcrumb-separator">›</span>
-    <span>Alarmes Operacionais</span>
+    <span>Alarmes</span>
 </div>
 {% endblock %}
 
@@ -18,10 +18,10 @@
 <section class="alarms-page-root">
     <div class="alarms-page-header">
         <div>
-            <h1 class="wf-screen-title margin-bottom-s">Alarmes Operacionais</h1>
+            <h1 class="wf-screen-title margin-bottom-s">Alarmes</h1>
             <p class="alarms-page-copy">Problemas ativos associados ao contexto appCataloga.</p>
         </div>
-        <a class="btn btn-secondary btn-secondary-action alarms-zabbix-link" href="{{ alarms[0].zabbix_url if alarms and alarms[0].zabbix_url else '#' }}" {% if alarms and alarms[0].zabbix_url %}target="_blank" rel="noopener noreferrer"{% else %}aria-disabled="true"{% endif %}>
+        <a class="btn btn-secondary btn-secondary-action alarms-zabbix-link" href="{{ zabbix_problems_url or '#' }}" {% if zabbix_problems_url %}target="_blank" rel="noopener noreferrer"{% else %}aria-disabled="true"{% endif %}>
             <i class="fa fa-external-link" aria-hidden="true"></i>
             <span>Abrir Zabbix</span>
         </a>

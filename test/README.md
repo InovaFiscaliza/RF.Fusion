@@ -149,8 +149,10 @@ Principais áreas cobertas:
 - `modules/map/service.py`
 - `modules/spectrum/service.py`
 - `modules/spectrum/routes.py`
-- `modules/task/service.py`
-- `modules/task/routes.py`
+- `modules/tasks/station_service.py`
+- `modules/tasks/service.py`
+- `modules/tasks/station_routes.py`
+- `modules/tasks/queue_routes.py`
 
 Contratos típicos:
 

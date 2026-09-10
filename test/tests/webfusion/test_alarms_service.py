@@ -49,6 +49,19 @@ class TestAlarmsService(unittest.TestCase):
             "https://zabbix.example/zabbix/tr_events.php?triggerid=8001&eventid=12001",
         )
 
+    def test_get_zabbix_problems_url_opens_monitoring_problems(self):
+        with patch.object(
+            service,
+            "get_zabbix_api_url",
+            return_value="https://zabbix.example/zabbix/api_jsonrpc.php",
+        ):
+            result = service.get_zabbix_problems_url()
+
+        self.assertEqual(
+            result,
+            "https://zabbix.example/zabbix/zabbix.php?action=problem.view",
+        )
+
     def test_client_uses_context_contains_filter_for_appcataloga(self):
         client = object.__new__(ZabbixApiClient)
         with patch.object(client, "_call", return_value=[]) as call:

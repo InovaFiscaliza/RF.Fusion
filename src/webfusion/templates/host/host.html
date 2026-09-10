@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Consulta Host{% endblock %}
+{% block title %}Estações{% endblock %}
 
 {% block breadcrumb %}
 <div class="breadcrumb">
@@ -116,6 +116,7 @@
                     <h2 class="host-section-title">Estado Operacional</h2>
                     <p class="host-section-copy">Situação atual de conectividade, execução e sinais operacionais da estação.</p>
                 </div>
+                {% if current_user.role in ('admin', 'developer') %}
                 <div class="host-section-action">
                     <button
                         type="button"
@@ -128,6 +129,7 @@
                     </button>
                     <span class="host-section-action-copy">Verifica ICMP e SSH e atualiza o estado operacional.</span>
                 </div>
+                {% endif %}
             </div>
             <div class="host-status-row">
                 {% if stats.IS_OFFLINE %}<span class="status-badge status-offline">Offline</span>{% else %}<span class="status-badge status-online">Online</span>{% endif %}
@@ -147,13 +149,15 @@
                     <button type="button" class="btn btn-secondary btn-secondary-action" data-host-activity-open disabled>
                         <i class="fa fa-eye"></i> Acompanhar atividade
                     </button>
+                    {% if current_user.role in ('admin', 'developer') %}
                     <a
-                        href="{{ url_for('maintenance.maintenance_dashboard', file_task_load=1, file_task_host_id=stats.ID_HOST) }}"
+                        href="{{ url_for('tasks.file_tasks', file_task_load=1, file_task_host_id=stats.ID_HOST) }}"
                         class="btn btn-secondary btn-secondary-action"
                         data-loading-message="Consultando fila de arquivos da estação..."
                     >
                         <i class="fa fa-list"></i> Ver fila de arquivos
                     </a>
+                    {% endif %}
                 </div>
             </div>
             <div class="summary-grid host-summary-grid--activity">

@@ -1,5 +1,5 @@
 """
-Validation tests for `webfusion.modules.maintenance.service`.
+Validation tests for `webfusion.modules.tasks.service`.
 
 How to run:
     /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_maintenance_service.py -q
@@ -31,8 +31,8 @@ def load_maintenance_service():
     if root not in sys.path:
         sys.path.insert(0, root)
 
-    sys.modules.pop("modules.maintenance.service", None)
-    return importlib.import_module("modules.maintenance.service")
+    sys.modules.pop("modules.tasks.service", None)
+    return importlib.import_module("modules.tasks.service")
 
 
 class TestMaintenanceService(unittest.TestCase):

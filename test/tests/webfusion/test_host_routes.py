@@ -58,7 +58,7 @@ def load_host_routes():
     fake_usage_metrics = ModuleType("modules.server.usage_metrics")
     fake_usage_metrics.record_page_view = lambda: None
 
-    fake_task_service = ModuleType("modules.task.service")
+    fake_task_service = ModuleType("modules.tasks.station_service")
     fake_task_service.HOST_TASK_BACKLOG_CONTROL_TYPE = 5
     fake_task_service.HOST_TASK_BACKLOG_ROLLBACK_TYPE = 6
     fake_task_service.HOST_TASK_CHECK_CONNECTION_TYPE = 4
@@ -70,14 +70,13 @@ def load_host_routes():
     fake_task_service.TASK_ERROR = -1
     fake_task_service.TASK_PENDING = 1
     fake_task_service.TASK_RUNNING = 2
-    fake_task_service.TASK_SUSPENDED = 3
     fake_task_service.queue_interactive_connectivity_test = lambda connection, host_id: {}
 
     sys.modules["flask"] = fake_flask
     sys.modules["db"] = fake_db
     sys.modules["modules.host.service"] = fake_service
     sys.modules["modules.server.usage_metrics"] = fake_usage_metrics
-    sys.modules["modules.task.service"] = fake_task_service
+    sys.modules["modules.tasks.station_service"] = fake_task_service
     sys.modules.pop("modules.host.routes", None)
     return importlib.import_module("modules.host.routes")
 

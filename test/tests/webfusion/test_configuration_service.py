@@ -15,7 +15,7 @@ for root in (str(SRC_ROOT), str(WEBFUSION_ROOT)):
     if root not in sys.path:
         sys.path.insert(0, root)
 
-from modules.zabbix_configuration import service  # noqa: E402
+from modules.configuration import service  # noqa: E402
 from zabbix_api import connection  # noqa: E402
 
 

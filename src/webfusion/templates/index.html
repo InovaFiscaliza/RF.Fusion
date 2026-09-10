@@ -3,7 +3,7 @@
 {% block title %}RF.Fusion - Página Inicial{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/index_page.css', v='20260826-map-ocean-tone-v2') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/index_home.css') }}">
 <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -161,7 +161,10 @@
        The hover panel sits as a sibling inside the wrap so it can overflow the
        map without being clipped by Leaflet's internal popup pane. #}
     <div class="station-map-wrap">
-        <div id="station-map"></div>
+        <div
+            id="station-map"
+            data-can-manage-tasks="{{ 'true' if current_user.role in ('admin', 'developer') else 'false' }}"
+        ></div>
         <div id="station-hover-panel" class="station-hover-panel" hidden></div>
     </div>
 
@@ -187,7 +190,7 @@
 
                     <div>
                         <div class="font-semi-bold">
-                            Consulta aos Arquivos
+                            Arquivos
                         </div>
                         <div class="font-size-s text-neutral-6 margin-top-xs module-description">
                             Pesquisa, paginação e download de espectros coletados.
@@ -239,7 +242,7 @@
 
                     <div>
                         <div class="font-semi-bold">
-                            Consulta às Estações
+                            Estações
                         </div>
                         <div class="font-size-s text-neutral-6 margin-top-xs module-description">
                             Estatísticas operacionais e estado dos nós RF.Fusion.
@@ -253,23 +256,50 @@
     </div>
 
     {% if current_user.role %}
-    <!-- ======================= TASK ======================= -->
+    <!-- ======================= TASKS ======================= -->
     <div>
-        <a href="{{ url_for('task.task_builder') }}" class="module-link" data-loading-message="Abrindo criação de task...">
+        <a href="{{ url_for('tasks.task_workspace') }}" class="module-link" data-loading-message="Abrindo tarefas...">
             <div class="card background-neutral-0 padding-l border-radius-m module-card">
 
                 <div class="display-flex align-items-center gap-m">
 
                     <div class="module-icon text-primary">
-                        <i class="fa fa-cogs"></i>
+                        <i class="fa fa-tasks"></i>
                     </div>
 
                     <div>
                         <div class="font-semi-bold">
-                            Criação de Tarefas
+                            Tarefas
                         </div>
                         <div class="font-size-s text-neutral-6 margin-top-xs module-description">
-                            Criação manual de tarefas para execução nos hosts.
+                            Criação, acompanhamento e operação das filas de tarefas.
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+        </a>
+    </div>
+    {% endif %}
+
+    <!-- ======================= ALARMS ======================= -->
+    <div>
+        <a href="{{ url_for('alarms.alarms_dashboard') }}" class="module-link" data-loading-message="Consultando alarmes...">
+            <div class="card background-neutral-0 padding-l border-radius-m module-card">
+
+                <div class="display-flex align-items-center gap-m">
+
+                    <div class="module-icon text-primary">
+                        <i class="fa fa-bell"></i>
+                    </div>
+
+                    <div>
+                        <div class="font-semi-bold">
+                            Alarmes
+                        </div>
+                        <div class="font-size-s text-neutral-6 margin-top-xs module-description">
+                            Problemas ativos das estações e serviços monitorados.
                         </div>
                     </div>
 
@@ -279,35 +309,10 @@
         </a>
     </div>
 
-    <!-- ======================= MAINTENANCE ======================= -->
-    <div>
-        <a href="{{ url_for('maintenance.maintenance_dashboard') }}" class="module-link" data-loading-message="Abrindo manutenção operacional...">
-            <div class="card background-neutral-0 padding-l border-radius-m module-card">
-
-                <div class="display-flex align-items-center gap-m">
-
-                    <div class="module-icon text-primary">
-                        <i class="fa fa-wrench"></i>
-                    </div>
-
-                    <div>
-                        <div class="font-semi-bold">
-                            Manutenção de Tarefas
-                        </div>
-                        <div class="font-size-s text-neutral-6 margin-top-xs module-description">
-                            Consulta e intervenção manual em HOST_TASK e FILE_TASK com validações operacionais.
-                        </div>
-                    </div>
-
-                </div>
-
-            </div>
-        </a>
-    </div>
-
+    {% if current_user.role %}
     <!-- ======================= HOST CONFIGURATION ======================= -->
     <div>
-        <a href="{{ url_for('zabbix_configuration.configuration_dashboard') }}" class="module-link" data-loading-message="Abrindo configuração das estações...">
+        <a href="{{ url_for('configuration.configuration_dashboard') }}" class="module-link" data-loading-message="Abrindo configurações...">
             <div class="card background-neutral-0 padding-l border-radius-m module-card">
 
                 <div class="display-flex align-items-center gap-m">
@@ -318,7 +323,7 @@
 
                     <div>
                         <div class="font-semi-bold">
-                            Configuração de Estações
+                            Configurações
                         </div>
                         <div class="font-size-s text-neutral-6 margin-top-xs module-description">
                             Macros do Zabbix por template e por estação, com indicação de sobrescritas.
@@ -373,5 +378,5 @@
     crossorigin=""
 ></script>
 <script id="station-map-initial-payload" type="application/json">{{ {'points': initial_map_points}|tojson }}</script>
-<script src="{{ url_for('static', filename='js/index_map.js', v='20260831-map-inline-initial-payload') }}"></script>
+<script src="{{ url_for('static', filename='js/index_map_access.js') }}"></script>
 {% endblock %}

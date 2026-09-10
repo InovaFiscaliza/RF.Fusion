@@ -1,39 +1,51 @@
 {% extends "base.html" %}
-{% block title %}Manutenção Operacional{% endblock %}
+{% block title %}Tarefas{% endblock %}
 
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/maintenance_page.css', v='20260826-host-state-tags') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/tasks_page.css', v='20260910-standard-operations') }}">
 {% endblock %}
 
 {% block breadcrumb %}
 <div class="breadcrumb">
     <a href="{{ url_for('index') }}" data-loading-message="Abrindo mapa das estações...">Início</a>
     <span class="breadcrumb-separator">›</span>
-    <span>Manutenção</span>
+    <a href="{{ url_for('tasks.task_workspace') }}" data-loading-message="Abrindo tarefas...">Tarefas</a>
+    <span class="breadcrumb-separator">›</span>
+    <span>{{ page_content.title }}</span>
 </div>
 {% endblock %}
 
 {% block content %}
-<div id="maintenance-page-root" class="maintenance-page-root">
-    <div class="maintenance-hero card wf-panel background-neutral-0 padding-l border-radius-m">
+<div id="maintenance-page-root" class="tasks-page-root">
+    <nav class="tasks-context-nav" aria-label="Visões de tarefas">
+        <a href="{{ url_for('tasks.task_workspace') }}" data-loading-message="Abrindo tarefas...">Visão geral</a>
+        <a href="{{ url_for('tasks.task_builder') }}" data-loading-message="Abrindo tarefas...">Criar</a>
+        <a class="{% if workflow == 'stations' %}is-active{% endif %}" href="{{ url_for('tasks.station_tasks') }}" {% if workflow == 'stations' %}aria-current="page"{% endif %}>Estações</a>
+        <a class="{% if workflow == 'files' %}is-active{% endif %}" href="{{ url_for('tasks.file_tasks') }}" {% if workflow == 'files' %}aria-current="page"{% endif %}>Arquivos</a>
+        <a class="{% if workflow == 'history' %}is-active{% endif %}" href="{{ url_for('tasks.task_history') }}" {% if workflow == 'history' %}aria-current="page"{% endif %}>Histórico</a>
+    </nav>
+
+    <div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m">
         <div>
-            <h1 class="wf-screen-title margin-bottom-s">Manutenção Operacional</h1>
-            <p class="maintenance-hero-copy">
-                Consulte e recupere, sob demanda, as tarefas do host, a fila de arquivos e o histórico durável de cada arquivo.
+            <h1 class="wf-screen-title margin-bottom-s">{{ page_content.title }}</h1>
+            <p class="wf-page-hero-copy">
+                {{ page_content.description }}
             </p>
         </div>
-        <div class="maintenance-hero-note">
+        <div class="wf-page-hero-note">
             Nenhuma lista é carregada ao abrir a página. As ações que dependem do host permanecem bloqueadas quando ele está offline.
         </div>
     </div>
 
-    <details class="maintenance-module" data-maintenance-panel="host-tasks">
-        <summary class="maintenance-module-summary">
+    {% if workflow == 'stations' %}
+    <section class="maintenance-module maintenance-module--standalone">
+        <header class="maintenance-module-summary">
             <span>
-                <span class="maintenance-module-title">Tarefas do Host</span>
+                <span class="maintenance-module-title">Tarefas de Estação</span>
                 <span class="maintenance-module-copy">Descoberta, conectividade, controle de backlog e estatísticas.</span>
             </span>
-        </summary>
+        </header>
         <div class="maintenance-module-body card background-neutral-0 padding-l border-radius-m">
             {% if host_task_action_summary %}
             <div class="maintenance-summary">
@@ -115,7 +127,7 @@
                         <input id="host_task_search" type="text" name="host_task_search" class="form-control" value="{{ host_task_filters.search }}" placeholder="Host, tipo ou mensagem">
                     </div>
                     <div class="maintenance-filter-actions">
-                        <a href="{{ url_for('maintenance.maintenance_dashboard') }}" class="btn btn-secondary btn-secondary-action maintenance-action-button">Limpar filtros</a>
+                        <a href="{{ url_for('tasks.station_tasks') }}" class="btn btn-secondary btn-secondary-action maintenance-action-button">Limpar filtros</a>
                         <button type="submit" class="btn btn-primary btn-primary-action maintenance-action-button">Consultar tarefas</button>
                     </div>
                 </div>
@@ -160,15 +172,17 @@
                 </div>
             </form>
         </div>
-    </details>
+    </section>
+    {% endif %}
 
-    <details class="maintenance-module" data-maintenance-panel="file-tasks">
-        <summary class="maintenance-module-summary">
+    {% if workflow == 'files' %}
+    <section class="maintenance-module maintenance-module--standalone">
+        <header class="maintenance-module-summary">
             <span>
                 <span class="maintenance-module-title">Fila de Arquivos</span>
                 <span class="maintenance-module-copy">Transferência, processamento e recuperação controlada de arquivos em trânsito.</span>
             </span>
-        </summary>
+        </header>
         <div class="maintenance-module-body card background-neutral-0 padding-l border-radius-m">
             {% if file_task_action_summary %}
             <div class="maintenance-summary">
@@ -193,7 +207,7 @@
             <form method="get" class="maintenance-filter-form" data-loading-message="Consultando fila de arquivos...">
                 <input type="hidden" name="file_task_load" value="1">
                 <div class="maintenance-filter-grid">
-                    <div class="maintenance-filter-field"><div class="maintenance-field-label-row"><label class="form-label" for="file_task_host_id">Host</label><button id="file-task-hosts-toggle" type="button" class="maintenance-host-filter-toggle" data-url="{{ url_for('maintenance_api.file_task_hosts') }}" aria-pressed="false">Filtrar hosts da fila</button></div><div class="select-shell"><select id="file_task_host_id" name="file_task_host_id" class="form-control"><option value="">Todos os hosts</option>{% for host in hosts %}<option value="{{ host.ID_HOST }}" {% if file_task_filters.host_id == host.ID_HOST %}selected{% endif %}>{{ host.NA_HOST_NAME }}{% if host.IS_OFFLINE %} (offline){% endif %}</option>{% endfor %}</select></div></div>
+                    <div class="maintenance-filter-field"><div class="maintenance-field-label-row"><label class="form-label" for="file_task_host_id">Host</label><button id="file-task-hosts-toggle" type="button" class="maintenance-host-filter-toggle" data-url="{{ url_for('tasks_api.file_task_hosts') }}" aria-pressed="false">Filtrar hosts da fila</button></div><div class="select-shell"><select id="file_task_host_id" name="file_task_host_id" class="form-control"><option value="">Todos os hosts</option>{% for host in hosts %}<option value="{{ host.ID_HOST }}" {% if file_task_filters.host_id == host.ID_HOST %}selected{% endif %}>{{ host.NA_HOST_NAME }}{% if host.IS_OFFLINE %} (offline){% endif %}</option>{% endfor %}</select></div></div>
                     <div class="maintenance-filter-field"><label class="form-label" for="file_task_host_file_name">Arquivo no Host (nome completo)</label><input id="file_task_host_file_name" type="text" name="file_task_host_file_name" class="form-control" value="{{ file_task_filters.host_file_name }}" placeholder="Ex.: sample.zip"></div>
                     <div class="maintenance-filter-field"><label class="form-label" for="file_task_task_type">Etapa</label><div class="select-shell"><select id="file_task_task_type" name="file_task_task_type" class="form-control"><option value="all">Todas</option>{% for task_type, label in file_task_type_labels.items() %}<option value="{{ task_type }}" {% if file_task_filters.task_type == task_type %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div></div>
                     <div class="maintenance-filter-field"><label class="form-label" for="file_task_status">Situação</label><div class="select-shell"><select id="file_task_status" name="file_task_status" class="form-control"><option value="all">Todas</option>{% for status_code, status_label in task_status_labels.items() %}<option value="{{ status_code }}" {% if file_task_filters.status == status_code %}selected{% endif %}>{{ status_label }}</option>{% endfor %}</select></div></div>
@@ -202,7 +216,7 @@
                     <div class="maintenance-filter-field"><label class="form-label" for="file_task_date_from">Data inicial</label><input id="file_task_date_from" type="date" name="file_task_date_from" class="form-control" value="{{ file_task_filters.date_from }}"></div>
                     <div class="maintenance-filter-field"><label class="form-label" for="file_task_date_to">Data final exclusiva</label><input id="file_task_date_to" type="date" name="file_task_date_to" class="form-control" value="{{ file_task_filters.date_to }}"></div>
                 </div>
-                <div class="maintenance-filter-search"><div class="maintenance-filter-field maintenance-filter-search-field"><label class="form-label" for="file_task_search">Busca complementar</label><input id="file_task_search" type="text" name="file_task_search" class="form-control" value="{{ file_task_filters.search }}" placeholder="Arquivo, host ou mensagem"></div><div class="maintenance-filter-actions"><a href="{{ url_for('maintenance.maintenance_dashboard') }}" class="btn btn-secondary btn-secondary-action maintenance-action-button">Limpar filtros</a><button type="submit" class="btn btn-primary btn-primary-action maintenance-action-button">Consultar fila</button></div></div>
+                <div class="maintenance-filter-search"><div class="maintenance-filter-field maintenance-filter-search-field"><label class="form-label" for="file_task_search">Busca complementar</label><input id="file_task_search" type="text" name="file_task_search" class="form-control" value="{{ file_task_filters.search }}" placeholder="Arquivo, host ou mensagem"></div><div class="maintenance-filter-actions"><a href="{{ url_for('tasks.file_tasks') }}" class="btn btn-secondary btn-secondary-action maintenance-action-button">Limpar filtros</a><button type="submit" class="btn btn-primary btn-primary-action maintenance-action-button">Consultar fila</button></div></div>
             </form>
 
             <div class="maintenance-module-note">Escolha a etapa e a situação de destino após selecionar os arquivos. Preparar backup apenas remove as referências de servidor da fila; não exclui conteúdo do repositório.</div>
@@ -232,15 +246,17 @@
                 </tbody></table></div>
             </form>
         </div>
-    </details>
+    </section>
+    {% endif %}
 
-    <details class="maintenance-module" data-maintenance-panel="file-history">
-        <summary class="maintenance-module-summary">
+    {% if workflow == 'history' %}
+    <section class="maintenance-module maintenance-module--standalone">
+        <header class="maintenance-module-summary">
             <span>
                 <span class="maintenance-module-title">Histórico de Arquivos</span>
                 <span class="maintenance-module-copy">Registro durável do ciclo completo, com consulta e preparação controlada de novas tarefas.</span>
             </span>
-        </summary>
+        </header>
         <div class="maintenance-module-body card background-neutral-0 padding-l border-radius-m">
             {% if history_action_summary %}
             <div class="maintenance-history-summary"><div class="maintenance-summary-title">Resumo da ação</div><div class="maintenance-summary-grid"><div><div class="maintenance-summary-label">Destino</div><div class="maintenance-summary-value">{{ history_action_summary.action_label }}</div></div><div><div class="maintenance-summary-label">Selecionadas</div><div class="maintenance-summary-value">{{ history_action_summary.selected_count }}</div></div><div><div class="maintenance-summary-label">Inseridas na fila</div><div class="maintenance-summary-value">{{ history_action_summary.updated_count }}</div></div><div><div class="maintenance-summary-label">Bloqueadas</div><div class="maintenance-summary-value">{{ history_action_summary.blocked_count }}</div></div></div>{% if history_blocked_rows %}<div class="maintenance-summary-detail"><div class="maintenance-summary-subtitle">Linhas bloqueadas</div><ul class="maintenance-summary-list">{% for row in history_blocked_rows %}<li>#{{ row.task_id }} | {{ row.host_name }} | {{ row.task_type }} | {{ row.reason_label }}</li>{% endfor %}</ul></div>{% endif %}</div>
@@ -260,7 +276,7 @@
                     <div class="maintenance-filter-field"><label class="form-label" for="history_date_to">Data final exclusiva</label><input id="history_date_to" type="date" name="history_date_to" class="form-control" value="{{ history_filters.date_to }}"></div>
                     <div class="maintenance-filter-field maintenance-history-message-field"><label class="form-label" for="history_message">Mensagem para refinar</label><input id="history_message" type="text" name="history_message" class="form-control" value="{{ history_filters.message }}" placeholder="Use junto com host ou nome completo do arquivo"></div>
                     <div class="maintenance-filter-field"><label class="form-label" for="history_limit">Limite</label><div class="select-shell"><select id="history_limit" name="history_limit" class="form-control">{% for option in [50, 100, 200] %}<option value="{{ option }}" {% if history_filters.limit == option %}selected{% endif %}>{{ option }} registros</option>{% endfor %}</select></div></div>
-                    <div class="maintenance-filter-actions maintenance-history-filter-actions"><a href="{{ url_for('maintenance.maintenance_dashboard') }}" class="btn btn-secondary btn-secondary-action maintenance-action-button">Limpar filtros</a><button type="submit" class="btn btn-primary btn-primary-action maintenance-action-button">Consultar histórico</button></div>
+                    <div class="maintenance-filter-actions maintenance-history-filter-actions"><a href="{{ url_for('tasks.task_history') }}" class="btn btn-secondary btn-secondary-action maintenance-action-button">Limpar filtros</a><button type="submit" class="btn btn-primary btn-primary-action maintenance-action-button">Consultar histórico</button></div>
                 </div>
             </form>
 
@@ -294,7 +310,8 @@
                 </tbody></table></div>
             </form>
         </div>
-    </details>
+    </section>
+    {% endif %}
 </div>
 <dialog id="maintenance-confirm-dialog" class="maintenance-confirm-dialog" aria-labelledby="maintenance-confirm-title">
     <div class="maintenance-confirm-content">
@@ -316,5 +333,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/maintenance_page.js', v='20260826-maintenance-confirm-follow-host') }}"></script>
+<script src="{{ url_for('static', filename='js/maintenance_page.js', v='20260912-separated-task-flows') }}"></script>
 {% endblock %}

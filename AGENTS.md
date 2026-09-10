@@ -16,8 +16,9 @@ aplicacao, seus testes e suas dependencias. Elas prevalecem sobre a conveniencia
 do ambiente local do agente ao escolher comandos de execucao.
 
 Para validacoes do WebFusion no container webserver, use exclusivamente o
-interpretador `/opt/conda/envs/appdata/bin/python` (ambiente `appdata`, Python
-3.10.8).
+interpretador `/usr/local/bin/python` (Python 3.11, imagem `python:3.11-slim`).
+O projeto está montado em `/RF.Fusion` nesse container; consulte
+`install/webserver` para os caminhos e o runtime de deploy.
 
 ## Ordem de autoridade
 

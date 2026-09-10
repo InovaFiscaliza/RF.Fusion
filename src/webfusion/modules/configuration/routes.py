@@ -10,7 +10,7 @@ from __future__ import annotations
 from flask import Blueprint, current_app, redirect, render_template, request, url_for
 
 from modules.server.usage_metrics import record_page_view
-from modules.zabbix_configuration.service import (
+from modules.configuration.service import (
     ACTION_RESTORE,
     ACTION_SAVE,
     TARGET_KIND_HOST,
@@ -23,18 +23,18 @@ from modules.zabbix_configuration.service import (
 )
 
 
-zabbix_configuration_bp = Blueprint(
-    "zabbix_configuration",
+configuration_bp = Blueprint(
+    "configuration",
     __name__,
-    url_prefix="/host-configuration",
+    url_prefix="/configuration",
 )
-zabbix_configuration_api_bp = Blueprint(
-    "zabbix_configuration_api",
+configuration_api_bp = Blueprint(
+    "configuration_api",
     __name__,
-    url_prefix="/api/host-configuration",
+    url_prefix="/api/configuration",
 )
 
-@zabbix_configuration_bp.route("/", methods=["GET"])
+@configuration_bp.route("/", methods=["GET"])
 def configuration_dashboard():
     """Render the selective Zabbix host/template configuration console."""
     target_kind = str(request.args.get("target_kind") or "").strip().lower()
@@ -50,11 +50,11 @@ def configuration_dashboard():
             configuration = get_configuration(target_kind, target_id)
     except (ZabbixApiError, ZabbixConfigurationError) as error:
         error_message = str(error)
-        current_app.logger.warning("zabbix_configuration_unavailable: %s", error)
+        current_app.logger.warning("configuration_unavailable: %s", error)
 
     record_page_view()
     return render_template(
-        "zabbix_configuration/zabbix_configuration.html",
+        "configuration/configuration.html",
         catalog=catalog,
         configuration=configuration,
         selected_target_kind=target_kind,
@@ -68,7 +68,7 @@ def configuration_dashboard():
     )
 
 
-@zabbix_configuration_api_bp.route("/macro", methods=["POST"])
+@configuration_api_bp.route("/macro", methods=["POST"])
 def update_macro():
     """Apply one explicit macro change and return to the selected target."""
     target_kind = str(request.form.get("target_kind") or "").strip().lower()
@@ -86,10 +86,10 @@ def update_macro():
             submitted_value=value,
         )
     except (ZabbixApiError, ZabbixConfigurationError) as error:
-        current_app.logger.warning("zabbix_configuration_change_failed: %s", error)
+        current_app.logger.warning("configuration_change_failed: %s", error)
         return redirect(
             url_for(
-                "zabbix_configuration.configuration_dashboard",
+                "configuration.configuration_dashboard",
                 target_kind=target_kind,
                 target_id=target_id,
                 error=getattr(error, "notice_code", "change_failed"),
@@ -102,7 +102,7 @@ def update_macro():
         notice = "saved_synced" if operational_sync_completed else "saved"
     return redirect(
         url_for(
-            "zabbix_configuration.configuration_dashboard",
+            "configuration.configuration_dashboard",
             target_kind=target_kind,
             target_id=target_id,
             notice=notice,

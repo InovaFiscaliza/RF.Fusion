@@ -36,11 +36,28 @@ API_ROLE_NAMES = {
     "admin": "admin",
     "developer": "dev",
 }
+USER_PROFILE_HEADER = "X-User-Profile"
 
 
 @users_api_bp.route("", methods=["GET"])
+@users_api_bp.route("/", methods=["GET"])
 def user_headers() -> Response:
     """Return the proxy identity as response headers without a body.
+
+    Args:
+        None. Flask supplies the normalized identity through
+            `g.webfusion_user`.
+
+    Returns:
+        Empty response. Type: flask.Response. The status is 204. The response
+        includes the known `X-User-*` identity fields, `X-User-Roles` as
+        `user`, `admin`, or `dev`, and disables caching.
+    """
+    return _identity_headers_response()
+
+
+def _identity_headers_response() -> Response:
+    """Build an empty response containing the normalized proxy identity.
 
     Args:
         None. Flask supplies the normalized identity through
@@ -71,16 +88,29 @@ def user_headers() -> Response:
 
 @users_api_bp.route("/login", methods=["GET"])
 def login_probe() -> Response:
-    """Return the empty successful response expected by the login proxy flow.
+    """Return the stored user profile in a header without a response body.
 
     Args:
-        None. Flask supplies the current request context.
+        None. Flask supplies the normalized identity through
+            `g.webfusion_user`.
 
     Returns:
-        Empty HTML response. Type: flask.Response. The status is 200 and the
-        body is exactly `<body></body>`.
+        Empty response. Type: flask.Response. The status is 204 and the
+        `X-User-Profile` header contains the same JSON object returned by
+        `/api/users/me`. The header contains `{}` when no profile is available.
     """
-    return Response("<body></body>", status=200, mimetype="text/html")
+    user_email = g.webfusion_user["email"]
+    profile = None
+    if user_email:
+        try:
+            profile = service.get_current_user_profile(user_email)
+        except Exception:
+            current_app.logger.exception("webfusion_login_profile_lookup_failed")
+
+    response = Response(status=204)
+    response.headers[USER_PROFILE_HEADER] = current_app.json.dumps(profile or {})
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @users_api_bp.route("/me", methods=["GET"])

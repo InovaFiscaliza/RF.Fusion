@@ -1,0 +1,52 @@
+.tasks-home-content {
+    width: 100%;
+    container: tasks-home / inline-size;
+}
+
+.tasks-operations {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-auto-rows: 1fr;
+    gap: var(--space-m);
+    max-width: none;
+    margin: 0;
+}
+
+.tasks-operation {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-base);
+    padding: var(--space-m);
+    text-align: left;
+}
+
+.tasks-operation .btn {
+    flex-shrink: 0;
+    gap: var(--space-s);
+    width: 100%;
+    min-width: 0;
+}
+
+.tasks-operation .btn:focus-visible {
+    outline: var(--border-size-m) solid var(--wf-accent);
+    outline-offset: var(--border-size-m);
+}
+
+@container tasks-home (max-width: 75rem) {
+    .tasks-operations {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@container tasks-home (max-width: 34rem) {
+    .tasks-operations {
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--space-base);
+    }
+
+    .tasks-operation {
+        padding: var(--space-base);
+    }
+}

@@ -1,17 +1,20 @@
 """Render and protect the manual queue-maintenance interface.
 
 The routes normalize HTTP input and show the resulting summaries. They delegate
-all validation and state transitions to ``modules.maintenance.service`` so the
+all validation and state transitions to ``modules.tasks.service`` so the
 web UI cannot become a second queue workflow engine. Every mutation remains
 behind the maintenance basic-auth check.
 """
 
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from typing import Any
+
+from flask import jsonify, redirect, render_template, request, url_for
 
 from db import get_connection_bpdata as get_connection
-from modules.maintenance.service import (
+from modules.tasks.blueprints import tasks_api_bp, tasks_bp
+from modules.tasks.service import (
     ACTION_OPTIONS,
     FILE_TASK_TYPE_LABELS,
     HISTORY_TARGET_STAGE_OPTIONS,
@@ -39,13 +42,6 @@ from modules.maintenance.service import (
 )
 from modules.server.usage_metrics import record_page_view
 
-
-maintenance_bp = Blueprint("maintenance", __name__, url_prefix="/maintenance")
-maintenance_api_bp = Blueprint(
-    "maintenance_api",
-    __name__,
-    url_prefix="/api/maintenance",
-)
 
 def _build_queue_filters(source: dict, *, prefix: str, queue_kind: str) -> dict:
     """Normalize one panel's prefixed filter values."""
@@ -97,7 +93,7 @@ def _empty_action_summary(*, queue_kind: str, action: str) -> dict:
     """Build the same action summary shape when nothing was selected."""
     action_options = ACTION_OPTIONS
     queue_label = (
-        "Fila de Arquivos" if queue_kind == QUEUE_FILE_TASK else "Tarefas do Host"
+        "Fila de Arquivos" if queue_kind == QUEUE_FILE_TASK else "Tarefas de Estação"
     )
     return {
         "queue_kind": queue_kind,
@@ -184,9 +180,68 @@ def _build_template_context(
     }
 
 
-@maintenance_bp.route("/", methods=["GET", "POST"])
-def maintenance_dashboard():
-    """Render and process the manual queue-maintenance page."""
+WORKFLOW_STATIONS = "stations"
+WORKFLOW_FILES = "files"
+WORKFLOW_HISTORY = "history"
+
+WORKFLOW_PAGE_CONTENT = {
+    WORKFLOW_STATIONS: {
+        "eyebrow": "Estações",
+        "title": "Gerenciar tarefas de estação",
+        "description": "Consulte, reinicie ou suspenda solicitações enviadas para as estações.",
+    },
+    WORKFLOW_FILES: {
+        "eyebrow": "Arquivos em trânsito",
+        "title": "Gerenciar fila de arquivos",
+        "description": "Revise as etapas de backup, descoberta e processamento dos arquivos.",
+    },
+    WORKFLOW_HISTORY: {
+        "eyebrow": "Histórico",
+        "title": "Recuperar a partir do histórico",
+        "description": "Prepare novos backups ou processamentos a partir de registros anteriores.",
+    },
+}
+
+
+@tasks_bp.route("/stations", methods=["GET", "POST"])
+def station_tasks() -> Any:
+    """Render and process station task operations.
+
+    Returns:
+        Any: Rendered station task page or a redirect after a successful action.
+    """
+    return _task_operations(WORKFLOW_STATIONS)
+
+
+@tasks_bp.route("/files", methods=["GET", "POST"])
+def file_tasks() -> Any:
+    """Render and process file queue operations.
+
+    Returns:
+        Any: Rendered file queue page or a redirect after a successful action.
+    """
+    return _task_operations(WORKFLOW_FILES)
+
+
+@tasks_bp.route("/history", methods=["GET", "POST"])
+def task_history() -> Any:
+    """Render and process history recovery operations.
+
+    Returns:
+        Any: Rendered history recovery page or a redirect after a successful action.
+    """
+    return _task_operations(WORKFLOW_HISTORY)
+
+
+def _task_operations(workflow: str) -> Any:
+    """Render and process one task operation workflow.
+
+    Args:
+        workflow: Selected workflow identifier. Type: str.
+
+    Returns:
+        Any: Rendered workflow page or a redirect after a successful action.
+    """
     host_task_action_summary = None
     file_task_action_summary = None
     history_action_summary = None
@@ -204,13 +259,17 @@ def maintenance_dashboard():
     )
     file_task_filters = _build_file_task_filters(source_data)
     history_filters = build_history_filters(source_data)
-    host_task_loaded = (
+    host_task_loaded = workflow == WORKFLOW_STATIONS and (
         request.method == "GET" and request.args.get("host_task_load") == "1"
     )
-    file_task_loaded = (
+    file_task_loaded = workflow == WORKFLOW_FILES and (
         request.method == "GET" and request.args.get("file_task_load") == "1"
     )
-    history_loaded = request.method == "GET" and request.args.get("history_load") == "1"
+    history_loaded = (
+        workflow == WORKFLOW_HISTORY
+        and request.method == "GET"
+        and request.args.get("history_load") == "1"
+    )
 
     db = get_connection()
 
@@ -228,7 +287,7 @@ def maintenance_dashboard():
             if requested_host_id > 0:
                 follow_host_id = requested_host_id
 
-            if form_scope == "history_actions":
+            if form_scope == "history_actions" and workflow == WORKFLOW_HISTORY:
                 selected_history_ids = parse_selected_history_ids(request.form)
                 target_stage = str(request.form.get("history_target_stage") or "").strip()
                 target_status = request.form.get("history_target_status")
@@ -258,7 +317,7 @@ def maintenance_dashboard():
                         "Ação concluída. O histórico não foi recarregado automaticamente "
                         "para evitar uma nova consulta pesada."
                     )
-            elif form_scope == "file_task_targets":
+            elif form_scope == "file_task_targets" and workflow == WORKFLOW_FILES:
                 selected_ids = parse_selected_ids(request.form)
                 target_stage = str(request.form.get("file_task_target_stage") or "").strip()
                 target_status = request.form.get("file_task_target_status")
@@ -289,12 +348,12 @@ def maintenance_dashboard():
                         "Ação concluída. A fila de arquivos não foi recarregada "
                         "automaticamente para evitar uma nova consulta operacional."
                     )
-            elif form_scope == "host_task_actions":
+            elif form_scope == "host_task_actions" and workflow == WORKFLOW_STATIONS:
                 selected_ids = parse_selected_ids(request.form)
                 action_summary = None
                 queue_kind = QUEUE_HOST_TASK
                 action_options = ACTION_OPTIONS
-                panel_name = "tarefas do host"
+                panel_name = "tarefas de estação"
 
                 if action not in action_options:
                     error_message = (
@@ -320,11 +379,17 @@ def maintenance_dashboard():
                 host_task_action_summary = action_summary
                 if action_summary:
                     host_task_query_message = (
-                        "Ação concluída. As tarefas do host não foram recarregadas "
+                        "Ação concluída. As tarefas de estação não foram recarregadas "
                         "automaticamente para evitar uma nova consulta operacional."
                     )
             else:
-                host_task_action_error = "Formulário de manutenção inválido. Nenhuma tarefa foi alterada."
+                error_message = "Formulário de tarefa inválido. Nenhuma tarefa foi alterada."
+                if workflow == WORKFLOW_HISTORY:
+                    history_query_message = error_message
+                elif workflow == WORKFLOW_FILES:
+                    file_task_action_error = error_message
+                else:
+                    host_task_action_error = error_message
 
         hosts = list_maintenance_hosts(db)
         host_task_rows = list_host_tasks(db, host_task_filters) if host_task_loaded else []
@@ -363,7 +428,9 @@ def maintenance_dashboard():
         return redirect(url_for("host.host", host_id=follow_host_id))
 
     return render_template(
-        "maintenance/maintenance.html",
+        "tasks/queues.html",
+        workflow=workflow,
+        page_content=WORKFLOW_PAGE_CONTENT[workflow],
         **_build_template_context(
             hosts=hosts,
             host_task_filters=host_task_filters,
@@ -387,7 +454,7 @@ def maintenance_dashboard():
     )
 
 
-@maintenance_api_bp.route("/file-task-hosts", methods=["GET"])
+@tasks_api_bp.route("/file-task-hosts", methods=["GET"])
 def file_task_hosts():
     """Return the optional host subset that currently has file queue rows."""
     db = get_connection()

@@ -1,18 +1,21 @@
 {% extends "base.html" %}
-{% block title %}Criar Tarefa{% endblock %}
+{% block title %}Tarefas{% endblock %}
 
 {% block breadcrumb %}
 
 <div class="breadcrumb">
     <a href="{{ url_for('index') }}" data-loading-message="Abrindo mapa das estações...">Início</a>
     <span class="breadcrumb-separator">›</span>
-    <span>Criar Tarefa</span>
+    <a href="{{ url_for('tasks.task_workspace') }}" data-loading-message="Abrindo tarefas...">Tarefas</a>
+    <span class="breadcrumb-separator">›</span>
+    <span>Criar</span>
 </div>
 {% endblock %}
 
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/task_builder_page.css', v='20260812-filter-alignment') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/station_connectivity_test.css', v='20260813-station-test') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/tasks_page.css', v='20260910-standard-operations') }}">
 
 {% endblock %}
 
@@ -23,17 +26,26 @@
    handles dynamic toggles, defaults and confirmation flow. #}
 <div
     id="task-builder-root"
+    class="tasks-page-root"
     data-stop-task-type="{{ stop_task_type }}"
     data-backup-task-type="{{ backup_task_type }}"
     data-selected-filter-defaults-custom="{{ 'true' if selected_filter_defaults_custom else 'false' }}"
     data-selected-collective-host-ids='{{ selected_collective_host_ids|tojson }}'
-    data-zabbix-backup-defaults-url="{{ url_for('task_api.task_zabbix_backup_defaults', host_id=0) }}"
-    data-zabbix-collective-backup-defaults-url="{{ url_for('task_api.task_zabbix_collective_backup_defaults') }}"
+    data-zabbix-backup-defaults-url="{{ url_for('tasks_api.task_zabbix_backup_defaults', host_id=0) }}"
+    data-zabbix-collective-backup-defaults-url="{{ url_for('tasks_api.task_zabbix_collective_backup_defaults') }}"
 >
 
-<div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m margin-bottom-l">
+<nav class="tasks-context-nav" aria-label="Visões de tarefas">
+    <a href="{{ url_for('tasks.task_workspace') }}" data-loading-message="Abrindo tarefas...">Visão geral</a>
+    <a class="is-active" href="{{ url_for('tasks.task_builder') }}" aria-current="page">Criar</a>
+    <a href="{{ url_for('tasks.station_tasks') }}" data-loading-message="Abrindo tarefas de estação...">Estações</a>
+    <a href="{{ url_for('tasks.file_tasks') }}" data-loading-message="Abrindo fila de arquivos...">Arquivos</a>
+    <a href="{{ url_for('tasks.task_history') }}" data-loading-message="Abrindo histórico...">Histórico</a>
+</nav>
+
+<div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m">
     <div>
-        <h1 class="wf-screen-title margin-bottom-s">Criar Nova Tarefa</h1>
+        <h1 class="wf-screen-title margin-bottom-s">Criar tarefa de estação</h1>
         <p class="wf-page-hero-copy">
             Crie solicitações individuais ou coletivas de backup e retirada da fila com filtros operacionais.
         </p>
@@ -447,7 +459,7 @@
            confirming the whole builder should feel like acting on the entire
            draft task, not only on the last subsection currently visible. #}
         <div class="task-builder-actions">
-            <a class="btn btn-secondary btn-secondary-action" href="{{ url_for('task.task_builder') }}">Limpar formulário</a>
+            <a class="btn btn-secondary btn-secondary-action" href="{{ url_for('tasks.task_builder') }}">Limpar formulário</a>
             <button type="submit" class="btn btn-primary btn-primary-action" id="task-submit-button">Criar Tarefa</button>
         </div>
 

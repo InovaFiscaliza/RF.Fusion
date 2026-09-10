@@ -37,6 +37,9 @@ Fluxo HTTP:
 
 `cliente -> nginx:80/rffusion/ -> webfusion:127.0.0.1:8000`
 
+A raiz direta `/` nao publica conteudo e responde com HTTP 404, mesmo que a
+imagem base contenha arquivos de boas-vindas fornecidos pelos pacotes do Nginx.
+
 Fluxo de download:
 
 `cliente -> nginx -> /mnt/reposfi`

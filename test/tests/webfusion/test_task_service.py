@@ -1,5 +1,5 @@
 """
-Validation tests for `webfusion.modules.task.service`.
+Validation tests for `webfusion.modules.tasks.station_service`.
 
 How to run:
     /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_task_service.py -q
@@ -26,8 +26,8 @@ def load_task_service():
     if root not in sys.path:
         sys.path.insert(0, root)
 
-    sys.modules.pop("modules.task.service", None)
-    return importlib.import_module("modules.task.service")
+    sys.modules.pop("modules.tasks.station_service", None)
+    return importlib.import_module("modules.tasks.station_service")
 
 
 class FakeCursor:

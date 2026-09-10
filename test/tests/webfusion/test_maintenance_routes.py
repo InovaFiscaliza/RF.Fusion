@@ -1,5 +1,5 @@
 """
-Validation tests for `webfusion.modules.maintenance.routes`.
+Validation tests for `webfusion.modules.tasks.queue_routes`.
 
 How to run:
     /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_maintenance_routes.py -q
@@ -76,7 +76,7 @@ def load_maintenance_routes():
     fake_flask.url_for = lambda endpoint, **values: (
         "/host?host_id=" + str(values["host_id"])
         if endpoint == "host.host"
-        else "/maintenance/"
+        else "/tasks/stations"
     )
     fake_flask.request = SimpleNamespace(
         authorization=None,
@@ -88,7 +88,7 @@ def load_maintenance_routes():
     fake_db = ModuleType("db")
     fake_db.get_connection_bpdata = lambda: FakeDB()
 
-    fake_service = ModuleType("modules.maintenance.service")
+    fake_service = ModuleType("modules.tasks.service")
     fake_service.ACTION_OPTIONS = {"restart": "Reiniciar", "suspend": "Suspender"}
     fake_service.FILE_TASK_ACTION_OPTIONS = {
         "restart": "Reiniciar etapa atual",
@@ -269,10 +269,11 @@ def load_maintenance_routes():
 
     sys.modules["flask"] = fake_flask
     sys.modules["db"] = fake_db
-    sys.modules["modules.maintenance.service"] = fake_service
+    sys.modules["modules.tasks.service"] = fake_service
     sys.modules["modules.server.usage_metrics"] = fake_usage_metrics
-    sys.modules.pop("modules.maintenance.routes", None)
-    return importlib.import_module("modules.maintenance.routes")
+    sys.modules.pop("modules.tasks.blueprints", None)
+    sys.modules.pop("modules.tasks.queue_routes", None)
+    return importlib.import_module("modules.tasks.queue_routes")
 
 
 class TestMaintenanceRoutes(unittest.TestCase):
@@ -287,10 +288,11 @@ class TestMaintenanceRoutes(unittest.TestCase):
         self.module.request.form = {}
         self.module.request.method = "GET"
 
-    def test_dashboard_keeps_task_panels_unloaded_when_authenticated(self):
-        payload = self.module.maintenance_dashboard()
+    def test_station_tasks_starts_unloaded_when_authenticated(self):
+        payload = self.module.station_tasks()
 
-        self.assertEqual(payload["template"], "maintenance/maintenance.html")
+        self.assertEqual(payload["template"], "tasks/queues.html")
+        self.assertEqual(payload["context"]["workflow"], "stations")
         self.assertEqual(payload["context"]["host_task_filters"]["queue_kind"], "host")
         self.assertEqual(payload["context"]["file_task_filters"]["queue_kind"], "file")
         self.assertEqual(payload["context"]["host_task_rows"], [])
@@ -304,7 +306,7 @@ class TestMaintenanceRoutes(unittest.TestCase):
         self.assertFalse(payload["context"]["history_loaded"])
         self.assertIsNone(payload["context"]["history_action_summary"])
 
-    def test_dashboard_loads_host_tasks_only_when_requested(self):
+    def test_station_tasks_load_only_when_requested(self):
         self.module.request.authorization = SimpleNamespace(
             username="admin",
             password="admin",
@@ -314,14 +316,14 @@ class TestMaintenanceRoutes(unittest.TestCase):
             "host_task_host_id": "101",
         }
 
-        payload = self.module.maintenance_dashboard()
+        payload = self.module.station_tasks()
 
         self.assertTrue(payload["context"]["host_task_loaded"])
         self.assertEqual(payload["context"]["host_task_filters"]["host_id"], 101)
         self.assertEqual(len(payload["context"]["host_task_rows"]), 1)
         self.assertFalse(payload["context"]["file_task_loaded"])
 
-    def test_dashboard_loads_file_tasks_only_when_requested(self):
+    def test_file_tasks_load_only_when_requested(self):
         self.module.request.authorization = SimpleNamespace(
             username="admin",
             password="admin",
@@ -332,15 +334,16 @@ class TestMaintenanceRoutes(unittest.TestCase):
             "file_task_host_file_name": "sample.zip",
         }
 
-        payload = self.module.maintenance_dashboard()
+        payload = self.module.file_tasks()
 
+        self.assertEqual(payload["context"]["workflow"], "files")
         self.assertTrue(payload["context"]["file_task_loaded"])
         self.assertEqual(payload["context"]["file_task_filters"]["host_id"], 101)
         self.assertEqual(payload["context"]["file_task_filters"]["host_file_name"], "sample.zip")
         self.assertEqual(len(payload["context"]["file_task_rows"]), 1)
         self.assertFalse(payload["context"]["host_task_loaded"])
 
-    def test_dashboard_loads_recent_history_without_filters(self):
+    def test_task_history_loads_recent_rows_without_filters(self):
         self.module.request.authorization = SimpleNamespace(
             username="admin",
             password="admin",
@@ -349,13 +352,14 @@ class TestMaintenanceRoutes(unittest.TestCase):
             "history_load": "1",
         }
 
-        payload = self.module.maintenance_dashboard()
+        payload = self.module.task_history()
 
+        self.assertEqual(payload["context"]["workflow"], "history")
         self.assertTrue(payload["context"]["history_loaded"])
         self.assertEqual(len(payload["context"]["history_rows"]), 1)
         self.assertIsNone(payload["context"]["history_query_message"])
 
-    def test_dashboard_rejects_invalid_history_action_without_mutating_tasks(self):
+    def test_task_history_rejects_invalid_action_without_mutating_tasks(self):
         self.module.request.authorization = SimpleNamespace(
             username="admin",
             password="admin",
@@ -368,13 +372,13 @@ class TestMaintenanceRoutes(unittest.TestCase):
             "selected_history_ids": [70],
         }
 
-        payload = self.module.maintenance_dashboard()
+        payload = self.module.task_history()
 
         self.assertFalse(payload["context"]["history_loaded"])
         self.assertIn("etapa de destino", payload["context"]["history_query_message"])
         self.assertIsNone(payload["context"]["history_action_summary"])
 
-    def test_dashboard_reprocesses_validated_history_from_history_scope(self):
+    def test_task_history_reprocesses_validated_history(self):
         self.module.request.authorization = SimpleNamespace(
             username="admin",
             password="admin",
@@ -402,7 +406,7 @@ class TestMaintenanceRoutes(unittest.TestCase):
             "selected_history_ids": [70],
         }
         try:
-            payload = self.module.maintenance_dashboard()
+            payload = self.module.task_history()
         finally:
             self.module.apply_history_action = original_history_action
 
@@ -412,7 +416,7 @@ class TestMaintenanceRoutes(unittest.TestCase):
             "Processamento: Aguardando",
         )
 
-    def test_dashboard_rejects_invalid_host_action_without_mutating_tasks(self):
+    def test_station_tasks_reject_invalid_action_without_mutating_tasks(self):
         self.module.request.authorization = SimpleNamespace(
             username="admin",
             password="admin",
@@ -424,12 +428,12 @@ class TestMaintenanceRoutes(unittest.TestCase):
             "selected_ids": [10],
         }
 
-        payload = self.module.maintenance_dashboard()
+        payload = self.module.station_tasks()
 
-        self.assertIn("Ação inválida para tarefas do host", payload["context"]["host_task_action_error"])
+        self.assertIn("Ação inválida para tarefas de estação", payload["context"]["host_task_action_error"])
         self.assertIsNone(payload["context"]["host_task_action_summary"])
 
-    def test_dashboard_file_target_ignores_tampered_queue_kind(self):
+    def test_file_tasks_ignore_tampered_queue_kind(self):
         self.module.request.authorization = SimpleNamespace(
             username="admin",
             password="admin",
@@ -460,14 +464,38 @@ class TestMaintenanceRoutes(unittest.TestCase):
             "selected_ids": [10],
         }
         try:
-            payload = self.module.maintenance_dashboard()
+            payload = self.module.file_tasks()
         finally:
             self.module.apply_file_task_target_action = original_file_action
 
         self.assertEqual(calls, [([10], "process", 1)])
         self.assertEqual(payload["context"]["file_task_action_summary"]["updated_count"], 1)
 
-    def test_dashboard_redirects_to_host_after_successful_follow_action(self):
+    def test_station_tasks_reject_file_action_scope(self):
+        calls = []
+        original_file_action = self.module.apply_file_task_target_action
+        self.module.apply_file_task_target_action = lambda *args, **kwargs: calls.append(
+            (args, kwargs)
+        )
+        self.module.request.method = "POST"
+        self.module.request.form = {
+            "maintenance_form": "file_task_targets",
+            "file_task_target_stage": "process",
+            "file_task_target_status": "1",
+            "selected_ids": [10],
+        }
+        try:
+            payload = self.module.station_tasks()
+        finally:
+            self.module.apply_file_task_target_action = original_file_action
+
+        self.assertEqual(calls, [])
+        self.assertIn(
+            "Formulário de tarefa inválido",
+            payload["context"]["host_task_action_error"],
+        )
+
+    def test_file_tasks_redirect_to_host_after_successful_follow_action(self):
         self.module.request.authorization = SimpleNamespace(
             username="admin",
             password="admin",
@@ -481,7 +509,7 @@ class TestMaintenanceRoutes(unittest.TestCase):
             "follow_host_id": "101",
         }
 
-        payload = self.module.maintenance_dashboard()
+        payload = self.module.file_tasks()
 
         self.assertEqual(payload, {"redirect": "/host?host_id=101"})
 

@@ -11,14 +11,13 @@ The route layer keeps three concerns local:
 - batching rules for individual versus collective task creation
 
 The route never changes queue state directly. It builds a validated request and
-delegates durable task reuse or creation to ``modules.task.service``.
+delegates durable task reuse or creation to ``modules.tasks.station_service``.
 """
 
 import json
 import re
 from typing import Any
 from flask import (
-    Blueprint,
     current_app,
     jsonify,
     redirect,
@@ -26,7 +25,8 @@ from flask import (
     request,
     url_for,
 )
-from modules.task.service import (
+from modules.tasks.blueprints import tasks_api_bp, tasks_bp
+from modules.tasks.station_service import (
     EXPOSED_TASK_TYPES,
     HOST_TASK_BACKLOG_ROLLBACK_TYPE,
     HOST_TASK_CHECK_TYPE,
@@ -35,7 +35,7 @@ from modules.task.service import (
     queue_interactive_connectivity_test,
 )
 from modules.server.usage_metrics import record_page_view
-from modules.zabbix_configuration.service import (
+from modules.configuration.service import (
     TARGET_KIND_HOST,
     ZabbixApiError,
     ZabbixConfigurationError,
@@ -44,9 +44,6 @@ from modules.zabbix_configuration.service import (
 )
 from db import get_connection_bpdata as get_connection
 
-
-task_bp = Blueprint("task", __name__, url_prefix="/task")
-task_api_bp = Blueprint("task_api", __name__, url_prefix="/api/task")
 
 DEFAULT_LINUX_FILE_PATH = "/mnt/internal/data"
 DEFAULT_LINUX_EXTENSION = ".bin"
@@ -501,7 +498,7 @@ def _build_collective_task_batches(
     return batches
 
 
-@task_bp.route("/", methods=["GET", "POST"])
+@tasks_bp.route("/create", methods=["GET", "POST"])
 def task_builder():
     """Render and process the task-builder form.
 
@@ -615,15 +612,14 @@ def task_builder():
                 host_id = None
 
             if execution_type != "individual" or not host_id:
-                return redirect(url_for("task.task_builder", action=selected_action))
+                return redirect(url_for("tasks.task_builder", action=selected_action))
 
             queue_interactive_connectivity_test(db, host_id)
             return redirect(
                 url_for(
-                    "task.task_list",
-                    queued_count=1,
-                    skipped_count=0,
-                    created_host_id=host_id,
+                    "tasks.station_tasks",
+                    host_task_load=1,
+                    host_task_host_id=host_id,
                 )
             )
 
@@ -742,17 +738,16 @@ def task_builder():
 
         return redirect(
             url_for(
-                "task.task_list",
-                queued_count=creation_summary["queued_count"],
-                skipped_count=creation_summary["skipped_count"],
-                created_host_id=created_host_id,
+                "tasks.station_tasks",
+                host_task_load=1,
+                host_task_host_id=created_host_id,
             )
         )
 
     # --- page response ---
     record_page_view()
     return render_template(
-        "task/task_builder.html",
+        "tasks/builder.html",
         hosts=hosts,
         host_prefixes=host_prefixes,
         online_only=online_only,
@@ -780,7 +775,7 @@ def task_builder():
     )
 
 
-@task_api_bp.route("/host/<int:host_id>/backup-defaults", methods=["GET"])
+@tasks_api_bp.route("/host/<int:host_id>/backup-defaults", methods=["GET"])
 def task_zabbix_backup_defaults(host_id):
     """Provide one station's effective backup path and extension on demand."""
     defaults = {"file_path": None, "extension": None}
@@ -801,7 +796,7 @@ def task_zabbix_backup_defaults(host_id):
     )
 
 
-@task_api_bp.route("/hosts/backup-defaults", methods=["GET"])
+@tasks_api_bp.route("/hosts/backup-defaults", methods=["GET"])
 def task_zabbix_collective_backup_defaults():
     """Provide effective backup defaults for a bounded collective selection."""
     host_ids = sorted(
@@ -846,47 +841,3 @@ def task_zabbix_collective_backup_defaults():
     )
 
 
-@task_bp.route("/list")
-def task_list():
-    """Render the latest ``HOST_TASK`` rows and any creation-result summary.
-
-    The redirect from the builder includes ``queued_count`` and
-    ``skipped_count`` so the page can confirm how many logical tasks were
-    actually created or refreshed.
-    """
-
-    db = get_connection()
-    cursor = db.cursor()
-
-    cursor.execute("""
-        SELECT
-            ht.ID_HOST_TASK,
-            ht.FK_HOST,
-            ht.NU_TYPE,
-            ht.NU_STATUS,
-            ht.DT_HOST_TASK,
-            ht.NA_MESSAGE,
-            h.NA_HOST_NAME
-        FROM HOST_TASK ht
-        JOIN HOST h ON h.ID_HOST = ht.FK_HOST
-        ORDER BY ht.DT_HOST_TASK DESC
-        LIMIT 100
-    """)
-
-    tasks = cursor.fetchall()
-
-    queued_count = _safe_int_arg("queued_count")
-    skipped_count = _safe_int_arg("skipped_count")
-    created_host_id = _safe_int_arg("created_host_id")
-    if created_host_id is not None and created_host_id <= 0:
-        created_host_id = None
-
-    record_page_view()
-    return render_template(
-        "task/task_list.html",
-        tasks=tasks,
-        queued_count=queued_count,
-        skipped_count=skipped_count,
-        created_host_id=created_host_id,
-        show_creation_summary=queued_count is not None or skipped_count is not None,
-    )

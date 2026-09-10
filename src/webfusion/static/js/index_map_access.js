@@ -24,7 +24,8 @@
 
     // This script is loaded only on the home page, but keep one cheap guard so
     // it fails silently if the template changes or the script is reused later.
-    if (!window.L || !document.getElementById("station-map")) {
+    const stationMapElement = document.getElementById("station-map");
+    if (!window.L || !stationMapElement) {
         return;
     }
 
@@ -36,6 +37,7 @@
     const brazilBounds = [[-35.5, -74.5], [7.5, -29.0]];
     const pointCount = document.getElementById("station-map-count");
     const initialMapPayloadElement = document.getElementById("station-map-initial-payload");
+    const canManageTasks = stationMapElement.dataset.canManageTasks === "true";
     const webfusionUrl = typeof window.webfusionUrl === "function"
         ? window.webfusionUrl
         : (pathname) => pathname;
@@ -1835,8 +1837,8 @@
             const hostSearchHref = !station.host_id && station.equipment_name
                 ? `${webfusionUrl("/host")}?search=${encodeURIComponent(station.equipment_name)}&online_only=0`
                 : null;
-            const taskHref = station.host_id
-                ? `${webfusionUrl("/task/")}?host_id=${station.host_id}&online_only=0`
+            const taskHref = canManageTasks && station.host_id
+                ? `${webfusionUrl("/tasks/create")}?host_id=${station.host_id}&online_only=0`
                 : null;
             const spectrumHref = buildSpectrumHref(point, station);
 
@@ -1851,7 +1853,7 @@
                         ${spectrumHref ? `<a class="station-action" href="${spectrumHref}" data-loading-message="Abrindo consulta de arquivos...">Arquivos</a>` : ""}
                         ${hostHref ? `<a class="station-action" href="${hostHref}" data-loading-message="Carregando panorama da estação...">Host</a>` : ""}
                         ${hostSearchHref ? `<a class="station-action" href="${hostSearchHref}" data-loading-message="Abrindo consulta de host...">Buscar Host</a>` : ""}
-                        ${taskHref ? `<a class="station-action" href="${taskHref}" data-loading-message="Abrindo criação de task...">Criar Task</a>` : ""}
+                        ${taskHref ? `<a class="station-action" href="${taskHref}" data-loading-message="Abrindo tarefas...">Tarefas</a>` : ""}
                     </div>
                 </div>
             `;

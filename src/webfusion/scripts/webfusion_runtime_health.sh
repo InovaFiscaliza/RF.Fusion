@@ -23,7 +23,7 @@ else
     waitress_detail="Processo Waitress não encontrado"
 fi
 
-if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:8000/api/users/login >/dev/null 2>&1; then
+if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:8000/api/users >/dev/null 2>&1; then
     health_status="healthy"
     health_detail="Endpoint interno respondeu"
 else

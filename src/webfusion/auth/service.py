@@ -19,15 +19,12 @@ ANONYMOUS_USER_LABEL = "Anônimo"
 IDENTITY_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 ACCESS_RESTRICTED_BLUEPRINTS = frozenset(
     {
-        "maintenance",
-        "maintenance_api",
-        "task",
-        "task_api",
+        "tasks",
+        "tasks_api",
         "users",
         "users_admin_api",
-        "zabbix_configuration",
-        "zabbix_configuration_api",
-        "alarms",
+        "configuration",
+        "configuration_api",
     }
 )
 

@@ -31,7 +31,7 @@ from modules.host.service import (
     get_host_statistics,
 )
 from modules.server.usage_metrics import record_page_view
-from modules.task.service import (
+from modules.tasks.station_service import (
     HOST_TASK_BACKLOG_CONTROL_TYPE,
     HOST_TASK_BACKLOG_ROLLBACK_TYPE,
     HOST_TASK_CHECK_CONNECTION_TYPE,
@@ -43,7 +43,6 @@ from modules.task.service import (
     TASK_ERROR,
     TASK_PENDING,
     TASK_RUNNING,
-    TASK_SUSPENDED,
     queue_interactive_connectivity_test,
 )
 
@@ -54,6 +53,7 @@ HOST_OPERATION_AUTH_PASSWORD = "admin"
 HOST_OPERATION_AUTH_REALM = "RF.Fusion Task"
 HOST_METRICS_SUCCESS_MESSAGE = "Host operational metrics read successfully"
 BYTES_PER_KILOBYTE = 1024
+HOST_ACTIVITY_SUSPENDED = 3
 _TRANSFER_PROGRESS_PATTERN = re.compile(
     r"(?:^|\|)\s*transfer=(?P<transferred>\d+)/(?P<total>\d+)\s+bytes(?:\s*\||$)"
 )
@@ -70,7 +70,7 @@ _HOST_ACTIVITY_STATUS_LABELS = {
     TASK_DONE: "Concluído",
     TASK_PENDING: "Aguardando",
     TASK_RUNNING: "Em execução",
-    TASK_SUSPENDED: "Suspensa",
+    HOST_ACTIVITY_SUSPENDED: "Suspensa",
 }
 
 _HOST_ACTIVITY_TYPE_LABELS = {

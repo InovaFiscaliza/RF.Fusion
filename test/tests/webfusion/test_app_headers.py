@@ -36,11 +36,42 @@ class TestCurrentUserApi(unittest.TestCase):
     def tearDown(self):
         self.module.AUTH_SERVICE.observed_user_profiles.clear()
 
-    def test_login_probe_returns_empty_html_body(self):
+    def test_login_returns_current_user_profile_in_header_with_empty_body(self):
+        profile = {
+            "ID_USER": 17,
+            "NA_USER_NAME": "Maria Silva",
+            "NA_USER_EMAIL": "maria.silva@example.org",
+            "NA_JOB_TITLE": "Analista",
+            "NA_DEPARTMENT": "Fiscalização",
+            "NA_LOCATION": "Brasília",
+            "DT_CREATED_AT": "2026-09-01 10:00:00",
+            "DT_UPDATED_AT": "2026-09-10 12:00:00",
+            "NA_ROLE": "admin",
+            "IS_ADMIN": 1,
+            "IS_DEVELOPER": 0,
+        }
+        with patch(
+            "modules.users.routes.service.get_current_user_profile",
+            return_value=profile,
+        ):
+            headers = {"X-User-Email": "maria.silva@example.org"}
+            login_response = self.client.get("/api/users/login", headers=headers)
+            current_user_response = self.client.get("/api/users/me", headers=headers)
+
+        self.assertEqual(login_response.status_code, 204)
+        self.assertEqual(login_response.get_data(), b"")
+        self.assertEqual(
+            self.module.app.json.loads(login_response.headers["X-User-Profile"]),
+            current_user_response.get_json(),
+        )
+        self.assertEqual(login_response.headers["Cache-Control"], "no-store")
+
+    def test_login_without_proxy_identity_returns_empty_profile_header(self):
         response = self.client.get("/api/users/login")
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_data(as_text=True), "<body></body>")
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.get_data(), b"")
+        self.assertEqual(response.headers["X-User-Profile"], "{}")
 
     def test_user_headers_returns_empty_204_with_proxy_identity(self):
         profile = {"NA_ROLE": "developer"}
@@ -80,17 +111,59 @@ class TestCurrentUserApi(unittest.TestCase):
             return_value=None,
         ):
             response = self.client.get(
-                "/api/users",
+                "/api/users/",
                 headers={"X-User-Email": "visitor@example.org"},
             )
 
         self.assertEqual(response.status_code, 204)
         self.assertEqual(response.headers["X-User-Roles"], "user")
 
+    def test_user_headers_accepts_path_without_trailing_slash(self):
+        response = self.client.get("/api/users")
+
+        self.assertEqual(response.status_code, 204)
+
     def test_user_admin_api_remains_restricted(self):
         response = self.client.post("/api/users/")
 
         self.assertEqual(response.status_code, 403)
+
+    def test_task_workspace_requires_role_and_renders_for_authorized_user(self):
+        self.assertEqual(self.client.get("/tasks/").status_code, 403)
+
+        with patch("auth.service.get_access_role", return_value="developer"):
+            response = self.client.get(
+                "/tasks/",
+                headers={"X-User-Email": "operator@example.org"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Tarefas", response.get_data(as_text=True))
+        self.assertIn("Gerenciar tarefas de estação", response.get_data(as_text=True))
+        self.assertIn("Gerenciar fila de arquivos", response.get_data(as_text=True))
+        self.assertIn("Recuperar a partir do histórico", response.get_data(as_text=True))
+
+    def test_home_exposes_task_actions_only_to_privileged_roles(self):
+        scenarios = (
+            (None, {}, "false"),
+            (None, {"X-User-Email": "visitor@example.org"}, "false"),
+            ("admin", {"X-User-Email": "admin@example.org"}, "true"),
+            ("developer", {"X-User-Email": "developer@example.org"}, "true"),
+        )
+
+        for role, headers, expected in scenarios:
+            with self.subTest(role=role, headers=headers):
+                with (
+                    patch("app.get_station_map_points", return_value=[]),
+                    patch("auth.service.get_access_role", return_value=role),
+                ):
+                    response = self.client.get("/", headers=headers)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(
+                    f'data-can-manage-tasks="{expected}"',
+                    response.get_data(as_text=True),
+                )
 
     def test_current_user_returns_database_profile_without_cache(self):
         profile = {
@@ -143,28 +216,78 @@ class TestCurrentUserApi(unittest.TestCase):
         expected_rules = {
             ("/api/server/runtime-health", "GET"),
             ("/api/server/zabbix_metrics", "GET"),
-            ("/api/maintenance/file-task-hosts", "GET"),
-            ("/api/task/host/<int:host_id>/backup-defaults", "GET"),
-            ("/api/task/hosts/backup-defaults", "GET"),
+            ("/api/tasks/file-task-hosts", "GET"),
+            ("/api/tasks/host/<int:host_id>/backup-defaults", "GET"),
+            ("/api/tasks/hosts/backup-defaults", "GET"),
+            ("/tasks/stations", "GET"),
+            ("/tasks/files", "GET"),
+            ("/tasks/history", "GET"),
+            ("/configuration/", "GET"),
             ("/api/users/", "POST"),
             ("/api/users/privileges", "POST"),
             ("/api/users/delete", "POST"),
-            ("/api/host-configuration/macro", "POST"),
+            ("/api/configuration/macro", "POST"),
         }
         removed_rules = {
             ("/server/runtime-health", "GET"),
             ("/server/zabbix_metrics", "GET"),
             ("/maintenance/file-task-hosts", "GET"),
+            ("/api/maintenance/file-task-hosts", "GET"),
+            ("/api/task/host/<int:host_id>/backup-defaults", "GET"),
+            ("/api/task/hosts/backup-defaults", "GET"),
             ("/task/api/host/<int:host_id>/backup-defaults", "GET"),
             ("/task/api/hosts/backup-defaults", "GET"),
+            ("/tasks/queues", "GET"),
+            ("/host-configuration/", "GET"),
             ("/users/", "POST"),
             ("/users/privileges", "POST"),
             ("/users/delete", "POST"),
-            ("/host-configuration/macro", "POST"),
+            ("/configuration/macro", "POST"),
         }
 
         self.assertTrue(expected_rules.issubset(rules))
         self.assertTrue(removed_rules.isdisjoint(rules))
+
+    def test_all_json_handlers_are_registered_below_api_root(self):
+        json_endpoints = {
+            "map_stations",
+            "map_station_detail",
+            "host.host_zabbix_metrics",
+            "host.host_processing_errors",
+            "host.host_backup_errors",
+            "host.host_locations",
+            "host.host_current_activity",
+            "host.host_activity_detail",
+            "host.processed_file_spectrum_metadata",
+            "host.start_connectivity_test",
+            "host.connectivity_test_status",
+            "server.server_zabbix_metrics",
+            "server.server_processing_errors",
+            "server.server_backup_errors",
+            "server.server_summary_metrics",
+            "server.server_usage_metrics",
+            "server.server_runtime_health",
+            "server.server_download_action_metric",
+            "server.server_hosts",
+            "spectrum.spectrum_filters",
+            "spectrum.spectrum_localities",
+            "spectrum.spectrum_file_spectra",
+            "tasks_api.file_task_hosts",
+            "tasks_api.task_zabbix_backup_defaults",
+            "tasks_api.task_zabbix_collective_backup_defaults",
+            "users_api.current_user",
+        }
+        rules_by_endpoint = {
+            rule.endpoint: rule.rule
+            for rule in self.module.app.url_map.iter_rules()
+            if rule.endpoint in json_endpoints
+        }
+
+        self.assertEqual(set(rules_by_endpoint), json_endpoints)
+        self.assertTrue(
+            all(rule.startswith("/api/") for rule in rules_by_endpoint.values()),
+            rules_by_endpoint,
+        )
 
     def test_normalizes_utf8_identity_header_decoded_as_latin1(self):
         with self.module.app.test_request_context(
@@ -258,7 +381,7 @@ class TestCurrentUserApi(unittest.TestCase):
         self.assertEqual(self.register_user_mock.call_count, 2)
 
     def test_restricted_module_rejects_anonymous_user(self):
-        response = self.client.get("/task/")
+        response = self.client.get("/tasks/")
 
         self.assertEqual(response.status_code, 403)
 
@@ -266,11 +389,28 @@ class TestCurrentUserApi(unittest.TestCase):
         module = importlib.import_module("app")
         with patch("auth.service.get_access_role", return_value=None):
             response = self.client.get(
-                "/task/",
+                "/tasks/",
                 headers={"X-User-Email": "visitor@example.org"},
             )
 
         self.assertEqual(response.status_code, 403)
+
+    def test_alarms_is_available_without_a_privileged_role(self):
+        scenarios = ({}, {"X-User-Email": "visitor@example.org"})
+
+        for headers in scenarios:
+            with self.subTest(headers=headers):
+                with (
+                    patch("modules.alarms.routes.list_alarms", return_value=[]),
+                    patch(
+                        "modules.alarms.routes.get_zabbix_problems_url",
+                        return_value="https://zabbix.example/zabbix/zabbix.php?action=problem.view",
+                    ),
+                ):
+                    response = self.client.get("/alarms/", headers=headers)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("Alarmes", response.get_data(as_text=True))
 
     def test_template_context_queries_access_role_for_navigation(self):
         module = importlib.import_module("app")
@@ -305,7 +445,7 @@ class TestCurrentUserApi(unittest.TestCase):
         module = importlib.import_module("app")
         with patch("auth.service.get_access_role", return_value="developer"):
             with module.app.test_request_context(
-                "/task/",
+                "/tasks/",
                 headers={
                     "X-User-Name": "Maria Silva",
                     "X-User-Email": "maria.silva@example.org",
