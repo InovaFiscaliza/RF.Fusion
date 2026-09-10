@@ -46,6 +46,7 @@ from db import get_connection_bpdata as get_connection
 
 
 task_bp = Blueprint("task", __name__, url_prefix="/task")
+task_api_bp = Blueprint("task_api", __name__, url_prefix="/api/task")
 
 DEFAULT_LINUX_FILE_PATH = "/mnt/internal/data"
 DEFAULT_LINUX_EXTENSION = ".bin"
@@ -779,7 +780,7 @@ def task_builder():
     )
 
 
-@task_bp.route("/api/host/<int:host_id>/backup-defaults", methods=["GET"])
+@task_api_bp.route("/host/<int:host_id>/backup-defaults", methods=["GET"])
 def task_zabbix_backup_defaults(host_id):
     """Provide one station's effective backup path and extension on demand."""
     defaults = {"file_path": None, "extension": None}
@@ -800,7 +801,7 @@ def task_zabbix_backup_defaults(host_id):
     )
 
 
-@task_bp.route("/api/hosts/backup-defaults", methods=["GET"])
+@task_api_bp.route("/hosts/backup-defaults", methods=["GET"])
 def task_zabbix_collective_backup_defaults():
     """Provide effective backup defaults for a bounded collective selection."""
     host_ids = sorted(

@@ -20,9 +20,13 @@ IDENTITY_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 ACCESS_RESTRICTED_BLUEPRINTS = frozenset(
     {
         "maintenance",
+        "maintenance_api",
         "task",
+        "task_api",
         "users",
+        "users_admin_api",
         "zabbix_configuration",
+        "zabbix_configuration_api",
         "alarms",
     }
 )
@@ -89,8 +93,8 @@ class AuthService:
         Returns:
             Normalized request identity. Type: dict[str, str | None]. Contains
             the required keys `name`, `email`, `job_title`, `department`,
-            `location`, `label`, and `role`. All values except `label` may be
-            `None`.
+            `location`, `avatar_url`, `label`, and `role`. All values except
+            `label` may be `None`.
         """
         header_email = self.identity_header_value(request, "X-User-Email")
         email = header_email.casefold() if self.is_valid_identity_email(header_email) else None
@@ -104,6 +108,7 @@ class AuthService:
             "job_title": self.identity_header_value(request, "X-User-Job-Title"),
             "department": self.identity_header_value(request, "X-User-Department"),
             "location": self.identity_header_value(request, "X-User-Location"),
+            "avatar_url": self.identity_header_value(request, "X-User-Avatar-Url"),
             "label": name or email or ANONYMOUS_USER_LABEL,
             "role": None,
         }

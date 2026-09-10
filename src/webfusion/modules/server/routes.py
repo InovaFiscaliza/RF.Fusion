@@ -161,7 +161,7 @@ def server():
     )
 
 
-@server_bp.route("/server/zabbix_metrics", methods=["GET"])
+@server_bp.route("/api/server/zabbix_metrics", methods=["GET"])
 def server_zabbix_metrics() -> object:
     """Return the `/server` indicators as one flat JSON payload for Zabbix."""
 
@@ -246,7 +246,7 @@ def server_usage_metrics():
         )
 
 
-@server_bp.route("/server/runtime-health", methods=["GET"])
+@server_bp.route("/api/server/runtime-health", methods=["GET"])
 def server_runtime_health():
     """Return a live infrastructure snapshot without depending on database data."""
 

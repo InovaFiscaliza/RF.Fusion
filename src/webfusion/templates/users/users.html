@@ -161,7 +161,7 @@
 </section>
 
 <dialog id="users-create-dialog" class="users-dialog" aria-labelledby="users-create-title">
-    <form method="post" class="users-dialog-card" id="users-create-form" data-loading-message="Cadastrando usuário...">
+    <form method="post" action="{{ url_for('users_admin_api.create_user') }}" class="users-dialog-card" id="users-create-form" data-loading-message="Cadastrando usuário...">
         <div class="users-dialog-heading">
             <div>
                 <h2 id="users-create-title" class="users-dialog-title">Cadastrar usuário</h2>
@@ -247,7 +247,7 @@
 </dialog>
 
 <dialog id="users-privileges-confirm-dialog" class="users-dialog" aria-labelledby="users-privileges-confirm-title">
-    <form method="post" action="{{ url_for('users.update_user_privileges') }}" class="users-dialog-card" id="users-privileges-confirm-form" data-loading-message="Atualizando privilégios...">
+    <form method="post" action="{{ url_for('users_admin_api.update_user_privileges') }}" class="users-dialog-card" id="users-privileges-confirm-form" data-loading-message="Atualizando privilégios...">
         <input type="hidden" name="user_email" id="users-privileges-confirm-email">
         <input type="hidden" name="is_admin" id="users-privileges-confirm-admin" value="">
         <input type="hidden" name="is_developer" id="users-privileges-confirm-developer" value="">
@@ -268,7 +268,7 @@
 </dialog>
 
 <dialog id="users-delete-dialog" class="users-delete-dialog" aria-labelledby="users-delete-title">
-    <form method="post" action="{{ url_for('users.delete_user') }}" class="users-delete-dialog-card" id="users-delete-form" data-loading-message="Excluindo usuário...">
+    <form method="post" action="{{ url_for('users_admin_api.delete_user') }}" class="users-delete-dialog-card" id="users-delete-form" data-loading-message="Excluindo usuário...">
         <input type="hidden" name="user_email" id="users-delete-email">
         <h2 id="users-delete-title" class="users-delete-title">Excluir usuário?</h2>
         <p class="users-delete-copy">

@@ -27,8 +27,8 @@
     data-backup-task-type="{{ backup_task_type }}"
     data-selected-filter-defaults-custom="{{ 'true' if selected_filter_defaults_custom else 'false' }}"
     data-selected-collective-host-ids='{{ selected_collective_host_ids|tojson }}'
-    data-zabbix-backup-defaults-url="{{ url_for('task.task_zabbix_backup_defaults', host_id=0) }}"
-    data-zabbix-collective-backup-defaults-url="{{ url_for('task.task_zabbix_collective_backup_defaults') }}"
+    data-zabbix-backup-defaults-url="{{ url_for('task_api.task_zabbix_backup_defaults', host_id=0) }}"
+    data-zabbix-collective-backup-defaults-url="{{ url_for('task_api.task_zabbix_collective_backup_defaults') }}"
 >
 
 <div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m margin-bottom-l">

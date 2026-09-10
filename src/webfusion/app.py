@@ -4,7 +4,7 @@ This module owns only cross-feature routes:
 
 - the landing page shell
 - the summary-backed station-map APIs used by that page
-- the container liveness and proxy-diagnostic endpoints
+- small cross-module helpers
 
 Feature pages and their JSON APIs live in blueprints under ``modules/``. The
 application does not implement queue, catalog, or Zabbix rules directly; those
@@ -29,10 +29,13 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from modules.spectrum.routes import spectrum_bp
 from modules.host.routes import host_bp
 from modules.server.routes import server_bp
-from modules.task.routes import task_bp
-from modules.maintenance.routes import maintenance_bp
-from modules.users.routes import users_bp
-from modules.zabbix_configuration.routes import zabbix_configuration_bp
+from modules.task.routes import task_api_bp, task_bp
+from modules.maintenance.routes import maintenance_api_bp, maintenance_bp
+from modules.users.routes import users_admin_api_bp, users_api_bp, users_bp
+from modules.zabbix_configuration.routes import (
+    zabbix_configuration_api_bp,
+    zabbix_configuration_bp,
+)
 from modules.alarms.routes import alarms_bp
 from modules.map.service import (
     get_station_map_points,
@@ -56,9 +59,14 @@ app.register_blueprint(spectrum_bp)
 app.register_blueprint(host_bp)
 app.register_blueprint(server_bp)
 app.register_blueprint(task_bp)
+app.register_blueprint(task_api_bp)
 app.register_blueprint(maintenance_bp)
+app.register_blueprint(maintenance_api_bp)
 app.register_blueprint(users_bp)
+app.register_blueprint(users_api_bp)
+app.register_blueprint(users_admin_api_bp)
 app.register_blueprint(zabbix_configuration_bp)
+app.register_blueprint(zabbix_configuration_api_bp)
 app.register_blueprint(alarms_bp)
 
 
@@ -113,7 +121,8 @@ def inject_request_identity() -> dict[str, dict[str, str | None]]:
     Returns:
         Template context. Type: dict[str, dict[str, str | None]]. Contains the
         required key `current_user`, whose value has the identity keys `name`,
-        `email`, `job_title`, `department`, `location`, `label`, and `role`.
+        `email`, `job_title`, `department`, `location`, `avatar_url`, `label`,
+        and `role`.
     """
     identity = getattr(g, "webfusion_user", AUTH_SERVICE.request_identity(request))
     AUTH_SERVICE.record_observed_user(identity, app.logger)
@@ -216,47 +225,6 @@ def map_station_detail(site_id: int) -> Response:
                 "has_known_host": False,
             }
         )
-
-@app.route("/health")
-def health() -> dict[str, str]:
-    """Return the minimal liveness response used by container health checks.
-
-    Args:
-        None. Flask supplies the current request context.
-
-    Returns:
-        Liveness payload. Type: dict[str, str]. Contains the required key
-        `status` with value `ok`.
-    """
-    return {"status": "ok"}
-
-
-@app.route("/debug/headers", methods=["GET"])
-def debug_headers() -> Response:
-    """Return the identity headers forwarded by the authentication proxy.
-
-    Args:
-        None. Flask supplies the current request and its `X-User-*` headers.
-
-    Returns:
-        JSON response. Type: flask.Response. The object contains `X-User-Name`,
-        `X-User-Email`, `X-User-Job-Title`, `X-User-Department`, and
-        `X-User-Location`; each value is str | None.
-    """
-
-    response = jsonify(
-        {
-            "X-User-Name": AUTH_SERVICE.identity_header_value(request, "X-User-Name"),
-            "X-User-Email": AUTH_SERVICE.identity_header_value(request, "X-User-Email"),
-            "X-User-Job-Title": AUTH_SERVICE.identity_header_value(request, "X-User-Job-Title"),
-            "X-User-Department": AUTH_SERVICE.identity_header_value(request, "X-User-Department"),
-            "X-User-Location": AUTH_SERVICE.identity_header_value(request, "X-User-Location"),
-        }
-    )
-    # Identity attributes must not be stored by browsers or proxies.
-    response.headers["Cache-Control"] = "no-store"
-    return response
-
 
 if __name__ == "__main__":
     serve(

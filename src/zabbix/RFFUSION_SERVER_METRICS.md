@@ -4,7 +4,7 @@ O WebFusion oferece um endpoint de leitura para o template Zabbix
 `rffusion_server`:
 
 ```text
-http://172.16.18.11:9082/rffusion/server/zabbix_metrics
+http://172.16.18.11:9082/rffusion/api/server/zabbix_metrics
 ```
 
 Ele retorna um objeto JSON plano, sem HTML e sem carregar listas de hosts ou
@@ -41,7 +41,7 @@ No template `rffusion_server`, crie o item:
 | Tipo | HTTP agent |
 | Chave | `rffusion.server.metrics.raw` |
 | Tipo de informação | Texto |
-| URL | `http://172.16.18.11:9082/rffusion/server/zabbix_metrics` |
+| URL | `http://172.16.18.11:9082/rffusion/api/server/zabbix_metrics` |
 | Método | GET |
 | Código de status obrigatório | `200` |
 | Intervalo de atualização | `2m` |

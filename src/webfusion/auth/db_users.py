@@ -55,6 +55,73 @@ def get_access_role(user_email: str) -> str | None:
         connection.close()
 
 
+def get_webfusion_user(user_email: str) -> dict[str, object] | None:
+    """Return one WebFusion user with the assigned access profile.
+
+    Args:
+        user_email: Email that identifies the user. Type: str. The value is
+            normalized and must match the WebFusion email format.
+
+    Returns:
+        User profile. Type: dict[str, object] | None. When found, the dictionary
+            contains `ID_USER`, `NA_USER_NAME`, `NA_USER_EMAIL`,
+            `NA_JOB_TITLE`, `NA_DEPARTMENT`, `NA_LOCATION`, `DT_CREATED_AT`,
+            `DT_UPDATED_AT`, `NA_ROLE`, `IS_ADMIN`, and `IS_DEVELOPER`.
+            `NA_ROLE` is `admin`, `developer`, or `None`; admin takes precedence
+            when both profiles are active. Returns `None` when no user exists.
+
+    Raises:
+        ValueError: If `user_email` has an invalid format.
+    """
+    normalized_email = _normalize_webfusion_email(user_email)
+    connection = get_connection_webfusion()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    u.ID_USER,
+                    u.NA_USER_NAME,
+                    u.NA_USER_EMAIL,
+                    u.NA_JOB_TITLE,
+                    u.NA_DEPARTMENT,
+                    u.NA_LOCATION,
+                    u.DT_CREATED_AT,
+                    u.DT_UPDATED_AT,
+                    CASE
+                        WHEN EXISTS(
+                            SELECT 1 FROM ADMINS a
+                            WHERE a.NA_USER_EMAIL = u.NA_USER_EMAIL
+                              AND a.IS_ACTIVE = 1
+                        ) THEN 'admin'
+                        WHEN EXISTS(
+                            SELECT 1 FROM DEVELOPERS d
+                            WHERE d.NA_USER_EMAIL = u.NA_USER_EMAIL
+                              AND d.IS_ACTIVE = 1
+                        ) THEN 'developer'
+                        ELSE NULL
+                    END AS NA_ROLE,
+                    EXISTS(
+                        SELECT 1 FROM ADMINS a
+                        WHERE a.NA_USER_EMAIL = u.NA_USER_EMAIL
+                          AND a.IS_ACTIVE = 1
+                    ) AS IS_ADMIN,
+                    EXISTS(
+                        SELECT 1 FROM DEVELOPERS d
+                        WHERE d.NA_USER_EMAIL = u.NA_USER_EMAIL
+                          AND d.IS_ACTIVE = 1
+                    ) AS IS_DEVELOPER
+                FROM USERS u
+                WHERE u.NA_USER_EMAIL = %s
+                LIMIT 1
+                """,
+                (normalized_email,),
+            )
+            return cursor.fetchone()
+    finally:
+        connection.close()
+
+
 def register_observed_user(
     *,
     user_name: str | None,

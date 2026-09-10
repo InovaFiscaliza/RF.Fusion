@@ -1,12 +1,124 @@
 """Render the restricted WebFusion user-directory administration pages."""
 
 from __future__ import annotations
-from flask import Blueprint, current_app, redirect, render_template, request, url_for
+from flask import (
+    Blueprint,
+    Response,
+    current_app,
+    g,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 from modules.server.usage_metrics import record_page_view
 from modules.users import service
 
 
 users_bp = Blueprint("users", __name__, url_prefix="/users")
+users_api_bp = Blueprint("users_api", __name__, url_prefix="/api/users")
+users_admin_api_bp = Blueprint(
+    "users_admin_api",
+    __name__,
+    url_prefix="/api/users",
+)
+
+RESPONSE_IDENTITY_HEADERS = {
+    "X-User-Name": "name",
+    "X-User-Email": "email",
+    "X-User-Job-Title": "job_title",
+    "X-User-Department": "department",
+    "X-User-Location": "location",
+    "X-User-Avatar-Url": "avatar_url",
+}
+API_ROLE_NAMES = {
+    "admin": "admin",
+    "developer": "dev",
+}
+
+
+@users_api_bp.route("", methods=["GET"])
+def user_headers() -> Response:
+    """Return the proxy identity as response headers without a body.
+
+    Args:
+        None. Flask supplies the normalized identity through
+            `g.webfusion_user`.
+
+    Returns:
+        Empty response. Type: flask.Response. The status is 204. The response
+        includes the known `X-User-*` identity fields, `X-User-Roles` as
+        `user`, `admin`, or `dev`, and disables caching.
+    """
+    identity = g.webfusion_user
+    profile = None
+    if identity["email"]:
+        try:
+            profile = service.get_current_user_profile(identity["email"])
+        except Exception:
+            current_app.logger.exception("webfusion_user_headers_role_lookup_failed")
+
+    response = Response(status=204)
+    for header_name, identity_key in RESPONSE_IDENTITY_HEADERS.items():
+        response.headers[header_name] = identity.get(identity_key) or ""
+
+    assigned_role = str(profile.get("NA_ROLE") or "") if profile else ""
+    response.headers["X-User-Roles"] = API_ROLE_NAMES.get(assigned_role, "user")
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@users_api_bp.route("/login", methods=["GET"])
+def login_probe() -> Response:
+    """Return the empty successful response expected by the login proxy flow.
+
+    Args:
+        None. Flask supplies the current request context.
+
+    Returns:
+        Empty HTML response. Type: flask.Response. The status is 200 and the
+        body is exactly `<body></body>`.
+    """
+    return Response("<body></body>", status=200, mimetype="text/html")
+
+
+@users_api_bp.route("/me", methods=["GET"])
+def current_user() -> Response:
+    """Return the stored profile for the current proxy identity.
+
+    Args:
+        None. Flask supplies the normalized identity through
+            `g.webfusion_user`.
+
+    Returns:
+        JSON response. Type: flask.Response. A successful response contains
+        every `USERS` field plus `NA_ROLE`, `IS_ADMIN`, and `IS_DEVELOPER`.
+        Returns 401 without a proxy identity, 404 for an unregistered user,
+        or 500 when the profile query fails.
+    """
+    user_email = g.webfusion_user["email"]
+    if not user_email:
+        response = jsonify({"error": "proxy_identity_required"})
+        response.status_code = 401
+        return response
+
+    try:
+        profile = service.get_current_user_profile(user_email)
+    except Exception:
+        current_app.logger.exception("webfusion_current_user_lookup_failed")
+        response = jsonify({"error": "current_user_lookup_failed"})
+        response.status_code = 500
+        return response
+
+    if profile is None:
+        response = jsonify({"error": "user_not_found"})
+        response.status_code = 404
+        return response
+
+    response = jsonify(profile)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @users_bp.route("/", methods=["GET"])
@@ -48,7 +160,7 @@ def user_directory():
     )
 
 
-@users_bp.route("/", methods=["POST"])
+@users_admin_api_bp.route("/", methods=["POST"])
 def create_user():
     """Create a directory user before its first F5-authenticated visit.
 
@@ -75,7 +187,7 @@ def create_user():
     return redirect(url_for("users.user_directory", notice="created"))
 
 
-@users_bp.route("/privileges", methods=["POST"])
+@users_admin_api_bp.route("/privileges", methods=["POST"])
 def update_user_privileges():
     """Apply the selected privileges for one directory user.
 
@@ -103,7 +215,7 @@ def update_user_privileges():
     return redirect(url_for("users.user_directory", notice="privileges_updated"))
 
 
-@users_bp.route("/delete", methods=["POST"])
+@users_admin_api_bp.route("/delete", methods=["POST"])
 def delete_user():
     """Delete one directory identity and all of its WebFusion privileges.
 

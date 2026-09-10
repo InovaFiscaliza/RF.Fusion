@@ -95,7 +95,7 @@ O script:
 4. remove o container anterior, se existir
 5. cria um novo container com rede, portas e volumes
 6. valida se o container entrou em estado `running`
-7. testa o endpoint `/health` e a porta SSH publicada
+7. testa o endpoint `/api/server/runtime-health` e a porta SSH publicada
 
 ## Volumes Montados
 
@@ -113,7 +113,7 @@ Observacao:
 Depois do deploy, os acessos esperados sao:
 
 - Web: `http://127.0.0.1:9082/rffusion/`
-- Healthcheck: `http://127.0.0.1:9082/rffusion/health`
+- Healthcheck: `http://127.0.0.1:9082/rffusion/api/server/runtime-health`
 - SSH: `ssh root@127.0.0.1 -p 2225`
 
 ## Observacoes Operacionais

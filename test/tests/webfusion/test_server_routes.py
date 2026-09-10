@@ -189,7 +189,7 @@ class TestServerUsageMetrics(unittest.TestCase):
 
         self.assertEqual(
             self.routes.server_bp.routes["server_runtime_health"]["path"],
-            "/server/runtime-health",
+            "/api/server/runtime-health",
         )
         self.assertEqual(payload["status"], "healthy")
         self.assertEqual(payload["checked_at"], "2026-06-01T00:00:00Z")

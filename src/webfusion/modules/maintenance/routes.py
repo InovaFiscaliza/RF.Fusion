@@ -41,6 +41,11 @@ from modules.server.usage_metrics import record_page_view
 
 
 maintenance_bp = Blueprint("maintenance", __name__, url_prefix="/maintenance")
+maintenance_api_bp = Blueprint(
+    "maintenance_api",
+    __name__,
+    url_prefix="/api/maintenance",
+)
 
 def _build_queue_filters(source: dict, *, prefix: str, queue_kind: str) -> dict:
     """Normalize one panel's prefixed filter values."""
@@ -382,7 +387,7 @@ def maintenance_dashboard():
     )
 
 
-@maintenance_bp.route("/file-task-hosts", methods=["GET"])
+@maintenance_api_bp.route("/file-task-hosts", methods=["GET"])
 def file_task_hosts():
     """Return the optional host subset that currently has file queue rows."""
     db = get_connection()

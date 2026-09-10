@@ -34,9 +34,12 @@ def load_users_routes():
 
     fake_flask = ModuleType("flask")
     fake_flask.Blueprint = FakeBlueprint
+    fake_flask.Response = Mock
     fake_flask.current_app = SimpleNamespace(
         logger=SimpleNamespace(exception=lambda *args, **kwargs: None),
     )
+    fake_flask.g = SimpleNamespace(webfusion_user={"email": None})
+    fake_flask.jsonify = lambda value: value
     fake_flask.redirect = lambda value: value
     fake_flask.render_template = lambda template, **context: {
         "template": template,

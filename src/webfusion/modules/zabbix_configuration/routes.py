@@ -28,6 +28,11 @@ zabbix_configuration_bp = Blueprint(
     __name__,
     url_prefix="/host-configuration",
 )
+zabbix_configuration_api_bp = Blueprint(
+    "zabbix_configuration_api",
+    __name__,
+    url_prefix="/api/host-configuration",
+)
 
 @zabbix_configuration_bp.route("/", methods=["GET"])
 def configuration_dashboard():
@@ -63,7 +68,7 @@ def configuration_dashboard():
     )
 
 
-@zabbix_configuration_bp.route("/macro", methods=["POST"])
+@zabbix_configuration_api_bp.route("/macro", methods=["POST"])
 def update_macro():
     """Apply one explicit macro change and return to the selected target."""
     target_kind = str(request.form.get("target_kind") or "").strip().lower()

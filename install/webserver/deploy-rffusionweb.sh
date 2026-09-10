@@ -153,7 +153,7 @@ fi
 # ======================================================================
 echo "=== [7/7] Testing exposed services ==="
 
-if curl -fsS "http://127.0.0.1:${HostHTTPPort}${PublicBasePath}/health" >/dev/null; then
+if curl -fsS "http://127.0.0.1:${HostHTTPPort}${PublicBasePath}/api/server/runtime-health" >/dev/null; then
     echo "✅ HTTP ${HostHTTPPort} OK"
 else
     echo "⚠️ HTTP healthcheck failed"

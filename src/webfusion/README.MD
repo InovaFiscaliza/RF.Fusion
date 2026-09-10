@@ -41,14 +41,16 @@ X-Forwarded-Prefix enviado pelo Nginx para gerar URLs públicas corretas sob
 
 Endpoints de verificação:
 
-    interno: http://127.0.0.1:8000/health
-    público: http://<servidor>:9082/rffusion/health
+    interno: http://127.0.0.1:8000/api/users/login
+    público: http://<servidor>:9082/rffusion/api/server/runtime-health
 
 ### Controle de acesso
 
 O controle de acesso usa os cabeçalhos de identidade encaminhados pelo F5:
 `X-User-Name`, `X-User-Email`, `X-User-Job-Title`, `X-User-Department` e
-`X-User-Location`. A identidade é exibida na barra superior. Quando o e-mail
+`X-User-Location`. O endpoint `GET /api/users` devolve esses valores em
+cabeçalhos de resposta, junto de `X-User-Roles` e `X-User-Avatar-Url`, com
+status HTTP 204. A identidade é exibida na barra superior. Quando o e-mail
 é observado, o WebFusion o registra em `WEBFUSION.USERS` ou atualiza os
 atributos já cadastrados para o mesmo e-mail. O e-mail em minúsculas é a chave
 inequívoca da identidade.
@@ -151,7 +153,7 @@ Endpoints relevantes:
 O dashboard /server separa o shell inicial dos painéis de consulta tardia. Ele
 também fornece uma leitura plana para o template Zabbix RFFusion_server:
 
-    /server/zabbix_metrics
+    /api/server/zabbix_metrics
 
 O payload é JSON simples. Valores de memória, repositório e volume são expostos
 em bytes nas chaves correspondentes, para consumo numérico direto pelo Zabbix.
@@ -351,7 +353,7 @@ Para executar somente essa suíte:
 
 Antes de publicar alterações de rota, valide pelo menos:
 
-1. GET /rffusion/health pelo Nginx;
+1. GET /rffusion/api/server/runtime-health pelo Nginx;
 2. carregamento das páginas afetadas sob o prefixo /rffusion/;
 3. uma operação de escrita em ambiente controlado, quando houver;
 4. ausência de segredos no HTML, JSON, logs e mensagens de erro.

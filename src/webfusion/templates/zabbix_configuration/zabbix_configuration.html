@@ -136,7 +136,7 @@
                     </td>
                     <td>
                         {% if macro.accepts_value and not macro.is_protected %}
-                        <form method="post" action="{{ url_for('zabbix_configuration.update_macro') }}" class="zabbix-config-macro-form" data-zabbix-confirm="{{ action_save }}" data-target-label="{{ configuration.title }}">
+                        <form method="post" action="{{ url_for('zabbix_configuration_api.update_macro') }}" class="zabbix-config-macro-form" data-zabbix-confirm="{{ action_save }}" data-target-label="{{ configuration.title }}">
                             <input type="hidden" name="target_kind" value="{{ configuration.kind }}">
                             <input type="hidden" name="target_id" value="{{ configuration.target_id }}">
                             <input type="hidden" name="macro_name" value="{{ macro.name }}">
@@ -164,7 +164,7 @@
                             </button>
                         </form>
                         {% if macro.is_direct_on_target %}
-                        <form method="post" action="{{ url_for('zabbix_configuration.update_macro') }}" class="zabbix-config-restore-form" data-zabbix-confirm="{{ action_restore }}" data-target-label="{{ configuration.title }}">
+                        <form method="post" action="{{ url_for('zabbix_configuration_api.update_macro') }}" class="zabbix-config-restore-form" data-zabbix-confirm="{{ action_restore }}" data-target-label="{{ configuration.title }}">
                             <input type="hidden" name="target_kind" value="{{ configuration.kind }}">
                             <input type="hidden" name="target_id" value="{{ configuration.target_id }}">
                             <input type="hidden" name="macro_name" value="{{ macro.name }}">

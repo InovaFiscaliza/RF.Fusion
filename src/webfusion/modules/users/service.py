@@ -5,6 +5,7 @@ from __future__ import annotations
 from auth.db_users import (
     create_webfusion_user,
     delete_webfusion_user,
+    get_webfusion_user,
     list_user_filter_options,
     list_webfusion_users,
     update_webfusion_user_privileges,
@@ -17,6 +18,25 @@ ROLE_FILTERS = (
     ("developer", "Desenvolvedor"),
     ("none", "Sem privilégios"),
 )
+
+
+def get_current_user_profile(user_email: str) -> dict[str, object] | None:
+    """Return the stored profile for the current proxy identity.
+
+    Args:
+        user_email: Normalized email supplied by the authentication proxy.
+            Type: str.
+
+    Returns:
+        Stored user profile. Type: dict[str, object] | None. The dictionary
+            contains all `USERS` fields plus `NA_ROLE`, `IS_ADMIN`, and
+            `IS_DEVELOPER`; returns `None` when the identity is not registered.
+
+    Raises:
+        ValueError: If `user_email` has an invalid format.
+        Exception: If the database query fails.
+    """
+    return get_webfusion_user(user_email)
 
 
 def get_directory_data(filters: dict[str, str | None]) -> dict[str, object]:
