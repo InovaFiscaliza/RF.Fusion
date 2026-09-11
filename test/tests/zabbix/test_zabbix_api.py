@@ -7,13 +7,13 @@ import unittest
 from pathlib import Path
 
 
-SRC_ROOT = Path("/RFFusion/src")
+SRC_ROOT = Path(__file__).resolve().parents[3] / "src"
 WEBFUSION_ROOT = SRC_ROOT / "webfusion"
 for root in (str(SRC_ROOT), str(WEBFUSION_ROOT)):
     if root not in sys.path:
         sys.path.insert(0, root)
 
-from zabbix_api.client import (  # noqa: E402
+from api.zabbix_api.client import (  # noqa: E402
     API_METHOD_HOST_GET,
     API_METHOD_TEMPLATE_GET,
     API_METHOD_USER_MACRO_CREATE,

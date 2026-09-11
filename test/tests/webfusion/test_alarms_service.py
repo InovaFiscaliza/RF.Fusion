@@ -8,14 +8,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-SRC_ROOT = Path("/RFFusion/src")
+SRC_ROOT = Path(__file__).resolve().parents[3] / "src"
 WEBFUSION_ROOT = SRC_ROOT / "webfusion"
 for root in (str(SRC_ROOT), str(WEBFUSION_ROOT)):
     if root not in sys.path:
         sys.path.insert(0, root)
 
 from modules.alarms import service  # noqa: E402
-from zabbix_api.client import ZabbixApiClient  # noqa: E402
+from api.zabbix_api.client import ZabbixApiClient  # noqa: E402
 
 
 class TestAlarmsService(unittest.TestCase):

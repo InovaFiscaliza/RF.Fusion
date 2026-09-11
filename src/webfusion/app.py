@@ -3,10 +3,9 @@
 This module owns only cross-feature routes:
 
 - the landing page shell
-- the summary-backed station-map APIs used by that page
 - small cross-module helpers
 
-Feature pages and their JSON APIs live in blueprints under ``modules/``. The
+Feature pages and JSON APIs live in blueprints under ``modules/`` and ``api/``. The
 application does not implement queue, catalog, or Zabbix rules directly; those
 rules stay in their feature service modules.
 """
@@ -23,7 +22,7 @@ SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from flask import Flask, Response, g, request, render_template, jsonify
+from flask import Flask, Response, g, request, render_template
 from waitress import serve
 from werkzeug.middleware.proxy_fix import ProxyFix
 from modules.spectrum.routes import spectrum_bp
@@ -36,12 +35,11 @@ from modules.configuration.routes import (
     configuration_bp,
 )
 from modules.alarms.routes import alarms_bp
-from modules.map.service import (
-    get_station_map_points,
-    get_station_map_site_detail,
-)
+from api.map_api.service import get_station_map_dataset
+from api.map_api.routes import map_api_bp
 from modules.server.usage_metrics import record_page_view
 from auth.service import AuthService
+from api.appAnalise_api import appanalise_api_bp
 
 
 app = Flask(__name__)
@@ -65,6 +63,8 @@ app.register_blueprint(users_admin_api_bp)
 app.register_blueprint(configuration_bp)
 app.register_blueprint(configuration_api_bp)
 app.register_blueprint(alarms_bp)
+app.register_blueprint(appanalise_api_bp)
+app.register_blueprint(map_api_bp)
 
 
 @app.before_request
@@ -143,85 +143,13 @@ def index() -> str:
     """
     record_page_view()
     try:
-        initial_map_points = get_station_map_points()
+        initial_map_points = get_station_map_dataset()["points"]
     except Exception:
         app.logger.exception("failed_to_build_initial_station_map")
         initial_map_points = []
 
     return render_template("index.html", initial_map_points=initial_map_points)
 
-
-@app.route("/api/map/stations")
-def map_stations() -> Response:
-    """Return the cached summary-backed station map payload.
-
-    The page intentionally renders before this endpoint resolves, so failures
-    should degrade to an empty map instead of breaking the whole landing page.
-
-    Args:
-        None. Flask supplies optional `start_date` and `end_date` query
-        parameters as strings.
-
-    Returns:
-        JSON response. Type: flask.Response. Its object contains the required
-        key `points` with value list[dict[str, object]], or an empty list when
-        the summary query fails.
-    """
-    start_date = request.args.get("start_date") or None
-    end_date = request.args.get("end_date") or None
-
-    try:
-        return jsonify(
-            {
-                "points": get_station_map_points(
-                    start_date=start_date,
-                    end_date=end_date,
-                )
-            }
-        )
-    except Exception:
-        app.logger.exception("failed_to_build_station_map")
-        # The UI treats an empty dataset as a degraded-but-usable state.
-        return jsonify({"points": []})
-
-
-@app.route("/api/map/stations/<int:site_id>")
-def map_station_detail(site_id: int) -> Response:
-    """Return popup metadata for one map point.
-
-    The popup is loaded on demand after the operator focuses a site, which
-    keeps the initial map payload smaller than embedding every station detail
-    into the first HTML response.
-
-    Args:
-        site_id: Identifier of the selected map site. Type: int.
-
-    Returns:
-        JSON response. Type: flask.Response. The object contains `site_id`,
-        `stations`, `has_online_host`, and `has_known_host`; `stations` is a
-        list[dict[str, object]] and is empty when the detail query fails.
-    """
-    start_date = request.args.get("start_date") or None
-    end_date = request.args.get("end_date") or None
-
-    try:
-        return jsonify(
-            get_station_map_site_detail(
-                site_id,
-                start_date=start_date,
-                end_date=end_date,
-            )
-        )
-    except Exception:
-        app.logger.exception("failed_to_build_station_map_site_detail", extra={"site_id": site_id})
-        return jsonify(
-            {
-                "site_id": site_id,
-                "stations": [],
-                "has_online_host": False,
-                "has_known_host": False,
-            }
-        )
 
 if __name__ == "__main__":
     serve(

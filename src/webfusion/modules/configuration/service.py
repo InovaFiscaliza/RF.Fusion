@@ -12,11 +12,11 @@ import copy
 import time
 from typing import Any
 
-from zabbix_api.client import (
+from api.zabbix_api.client import (
     PROTECTED_MACRO_NAMES,
     ZabbixApiError,
 )
-from zabbix_api.connection import build_client, get_api_url
+from api.zabbix_api.connection import build_client, get_api_url
 
 
 CATALOG_CACHE_SECONDS = 60

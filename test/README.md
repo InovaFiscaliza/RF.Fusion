@@ -146,7 +146,7 @@ Contratos típicos:
 Principais áreas cobertas:
 
 - `modules/host/service.py`
-- `modules/map/service.py`
+- `api/map_api/service.py`
 - `modules/spectrum/service.py`
 - `modules/spectrum/routes.py`
 - `modules/tasks/station_service.py`

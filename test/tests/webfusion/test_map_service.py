@@ -1,4 +1,4 @@
-"""Validation tests for `webfusion.modules.map.service`."""
+"""Validation tests for `webfusion.api.map_api.service`."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-MODULE_PATH = Path("/RFFusion/src/webfusion/modules/map/service.py")
+MODULE_PATH = Path(__file__).resolve().parents[3] / "src/webfusion/api/map_api/service.py"
 
 
 def load_map_service():
@@ -121,7 +121,7 @@ class TestMapService(unittest.TestCase):
         self.assertFalse(filtered["has_online_host"])
         self.assertFalse(filtered["has_known_host"])
 
-    def test_get_station_map_points_rebuilds_snapshot_directly_from_summary(self):
+    def test_get_station_map_dataset_rebuilds_snapshot_directly_from_summary(self):
         points = [{"site_id": 10, "marker_state": self.module.POINT_STATE_OFFLINE_CURRENT}]
         site_details = {
             10: {
@@ -139,9 +139,9 @@ class TestMapService(unittest.TestCase):
             "_build_station_map_dataset_from_summary",
             return_value=(points, site_details),
         ) as build_snapshot:
-            result = self.module.get_station_map_points()
+            result = self.module.get_station_map_dataset()
 
-        self.assertEqual(result, points)
+        self.assertEqual(result, {"points": points, "site_details": list(site_details.values())})
         build_snapshot.assert_called_once_with()
 
     def test_get_station_map_site_detail_rebuilds_detail_directly_from_summary(self):

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-WEBFUSION_ROOT = Path("/RFFusion/src/webfusion")
+WEBFUSION_ROOT = Path(__file__).resolve().parents[3] / "src/webfusion"
 
 
 class TestCurrentUserApi(unittest.TestCase):
@@ -154,7 +154,7 @@ class TestCurrentUserApi(unittest.TestCase):
         for role, headers, expected in scenarios:
             with self.subTest(role=role, headers=headers):
                 with (
-                    patch("app.get_station_map_points", return_value=[]),
+                    patch("app.get_station_map_dataset", return_value={"points": [], "site_details": []}),
                     patch("auth.service.get_access_role", return_value=role),
                 ):
                     response = self.client.get("/", headers=headers)
@@ -250,8 +250,8 @@ class TestCurrentUserApi(unittest.TestCase):
 
     def test_all_json_handlers_are_registered_below_api_root(self):
         json_endpoints = {
-            "map_stations",
-            "map_station_detail",
+            "map_api.map_stations",
+            "map_api.map_station_detail",
             "host.host_zabbix_metrics",
             "host.host_processing_errors",
             "host.host_backup_errors",

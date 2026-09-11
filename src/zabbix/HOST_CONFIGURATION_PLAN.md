@@ -177,7 +177,7 @@ ZABBIX_API_TIMEOUT_SECONDS=10
 ```
 
 Quando não houver variáveis de ambiente, o pacote
-`src/webfusion/zabbix_api` usa como alternativa local o arquivo ignorado
+`src/webfusion/api/zabbix_api` usa como alternativa local o arquivo ignorado
 `src/zabbix/.secret/zabbix_api.env`, desde que ele esteja no volume montado em
 `/RF.Fusion`. O token não deve constar em arquivo versionado, log ou saída de
 erro. A role da conta técnica precisa permitir, no mínimo, `host.get`,

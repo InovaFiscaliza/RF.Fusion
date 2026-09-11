@@ -395,11 +395,22 @@ def _build_station_map_dataset_from_summary():
     return points, site_details
 
 
-def get_station_map_points(start_date=None, end_date=None):
-    """Return map-ready station points for the landing page.
+def get_station_map_dataset(
+    start_date: str | None = None, end_date: str | None = None,
+) -> dict[str, list[dict[str, object]]]:
+    """Build matching map points and details once for every consumer.
 
-    Each request rebuilds the snapshot from the summary tables so the runtime
-    flow stays explicit and free of in-process cache state.
+    Args:
+        start_date: Optional inclusive first day (str | None, YYYY-MM-DD).
+        end_date: Optional inclusive last day (str | None, YYYY-MM-DD).
+
+    Returns:
+        Map dataset (dict[str, list[dict[str, object]]]) with points and
+        site_details arrays in matching site order. Date filters remove sites
+        without observations and recompute both arrays using the same rules.
+
+    Raises:
+        Exception: Database failures propagate to the request boundary.
     """
     start_dt, end_before = _parse_map_date_range(
         start_date=start_date,
@@ -409,6 +420,7 @@ def get_station_map_points(start_date=None, end_date=None):
 
     if start_dt is not None or end_before is not None:
         filtered_points = []
+        filtered_details = []
 
         # Temporal filters run on top of the already-shaped site detail so the
         # overlap rules stay in one place.
@@ -431,10 +443,11 @@ def get_station_map_points(start_date=None, end_date=None):
             point = dict(base_point)
             _apply_site_detail_to_point(point, filtered_detail)
             filtered_points.append(point)
+            filtered_details.append(filtered_detail)
 
-        return filtered_points
+        return {"points": filtered_points, "site_details": filtered_details}
 
-    return points
+    return {"points": points, "site_details": list(site_details.values())}
 
 
 def get_station_map_site_detail(site_id, start_date=None, end_date=None):

@@ -107,7 +107,7 @@ cliente que alcance diretamente o upstream poderia forjar uma identidade.
 | /mnt/reposfi | arquivos disponíveis para download pelo Nginx |
 
 Os módulos que integram o Zabbix usam o pacote
-[zabbix_api](/RFFusion/src/webfusion/zabbix_api), que centraliza a conexão e
+[zabbix_api](/RFFusion/src/webfusion/api/zabbix_api), que centraliza a conexão e
 as chamadas compartilhadas da API.
 As variáveis ZABBIX_API_URL, ZABBIX_API_TOKEN e
 ZABBIX_API_TIMEOUT_SECONDS podem vir do ambiente ou de
@@ -373,6 +373,6 @@ Antes de publicar alterações de rota, valide pelo menos:
 
 - [README.md](/RFFusion/README.md)
 - [install/webserver/README.MD](/RFFusion/install/webserver/README.MD)
-- [src/webfusion/zabbix_api](/RFFusion/src/webfusion/zabbix_api)
+- [src/webfusion/api/zabbix_api](/RFFusion/src/webfusion/api/zabbix_api)
 - [src/zabbix](/RFFusion/src/zabbix)
 - [src/mariadb/scripts/README.md](/RFFusion/src/mariadb/scripts/README.md)

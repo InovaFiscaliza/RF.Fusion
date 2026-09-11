@@ -8,11 +8,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from zabbix_api.client import ZabbixApiClient, ZabbixApiError
+from api.zabbix_api.client import ZabbixApiClient, ZabbixApiError
 
 
 ZABBIX_SECRET_FILE = (
-    Path(__file__).resolve().parents[2] / "zabbix" / ".secret" / "zabbix_api.env"
+    Path(__file__).resolve().parents[3] / "zabbix" / ".secret" / "zabbix_api.env"
 )
 SETTING_NAMES = (
     "ZABBIX_API_URL",
