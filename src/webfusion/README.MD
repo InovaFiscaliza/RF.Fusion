@@ -1,16 +1,16 @@
 # WebFusion
 
-O WebFusion e a interface operacional do RF.Fusion. Ele concentra a consulta
+O WebFusion é a interface operacional do RF.Fusion. Ele concentra a consulta
 dos dados processados, o acompanhamento da infraestrutura, a operação
 controlada de filas e a configuração de estações integradas ao Zabbix.
 
 Este documento descreve apenas este módulo. Para a visão geral da plataforma,
-consulte [README.md](/RFFusion/README.md).
+consulte [README.md](../../README.md).
 
 ## Papel no Sistema
 
-O WebFusion não executa backup, descoberta, processamento ou teste de rede no
-processo HTTP. Ele:
+O WebFusion não executa backup, descoberta, processamento de espectros ou
+testes ICMP/SSH das estações no processo HTTP. Ele:
 
 1. consulta dados operacionais e analíticos para apresentar ao operador;
 2. cria ou ajusta registros persistidos que o appCataloga consumirá;
@@ -19,8 +19,9 @@ processo HTTP. Ele:
 
 Essa separação evita que uma requisição do navegador bloqueie os workers de
 coleta ou processamento. O teste de conectividade, por exemplo, cria uma
-HOST_TASK prioritária e acompanha seu estado por polling. ICMP e SSH são
-executados pelo appCataloga.
+HOST_TASK prioritária e acompanha seu estado por polling. ICMP e SSH das estações são
+executados pelo appCataloga. A verificação da infraestrutura dos containers é
+um fluxo separado, descrito em Panorama do Servidor.
 
 ## Acesso e Runtime
 
@@ -28,21 +29,32 @@ O processo Python usa Flask, Jinja e Waitress. O Nginx do container WebFusion
 fica à frente da aplicação, encaminha as requisições HTTP e pode servir arquivos
 do repositório sem transferi-los pelo processo Python.
 
-    navegador -> Nginx :9082 -> Waitress 127.0.0.1:8000 -> Flask
+    navegador/cliente MATLAB -> host :9082 -> NGINX do container :80 -> Waitress :8000 -> Flask
 
-O prefixo público é configurado pelo Nginx:
+O NGINX remove `/rffusion` antes de encaminhar ao Flask. O `ProxyFix` em
+[app.py](app.py) utiliza `X-Forwarded-Prefix` para gerar os caminhos públicos.
+As URLs de acesso são:
 
-    http://<servidor>:9082/rffusion/
+| Acesso | URL-base |
+|---|---|
+| Público, via F5 | `https://fiscalizacao.anatel.gov.br/rffusion` |
+| Rede interna/VPN, IP | `http://172.16.18.11:9082/rffusion` |
+| Rede interna/VPN, hostname | `http://rhfisnspdex02.anatel.gov.br:9082/rffusion` |
 
-Internamente, a aplicação continua servindo suas rotas a partir de /. O
-ProxyFix em [app.py](/RFFusion/src/webfusion/app.py) usa o cabeçalho
-X-Forwarded-Prefix enviado pelo Nginx para gerar URLs públicas corretas sob
-/rffusion/.
+Salvo indicação contrária, os caminhos `/api/...`, `/spectrum` e `/tasks/...`
+abaixo são relativos a essa base. O prefixo é acrescentado uma única vez.
+O acesso público continua sujeito às políticas do F5; conhecer a URL não
+substitui os requisitos de acesso do ambiente.
+
+O runtime autorizado é o container `rffusion-web`, com Python 3.11 e o
+interpretador `/usr/local/bin/python`. O projeto fica montado em `/RF.Fusion`.
+O container escuta HTTP na porta 80; a porta 9082 pertence ao host.
 
 Endpoints de verificação:
 
-    interno: http://127.0.0.1:8000/api/users
-    público: http://<servidor>:9082/rffusion/api/server/runtime-health
+- `GET /api/users`: identidade encaminhada, resposta 204;
+- `GET /api/server/runtime-health`: estado dos serviços, resposta JSON;
+- `GET /api/map/stations`: pontos do mapa, resposta JSON.
 
 O endpoint `GET /api/users/login` responde com status HTTP 204 e corpo vazio.
 O cabeçalho `X-User-Profile` contém o perfil persistido como um objeto JSON no
@@ -102,12 +114,13 @@ cliente que alcance diretamente o upstream poderia forjar uma identidade.
 |---|---|
 | BPDATA | hosts, HOST_TASK, FILE_TASK e FILE_TASK_HISTORY |
 | RFDATA | espectros, equipamentos, localidades e metadados analíticos |
-| RFFUSION_SUMMARY | mapa, snapshots, erros, volumes e agregações rápidas |
+| RFFUSION_SUMMARY | mapa, snapshots, erros, volumes, métricas de uso e checkpoints |
+| WEBFUSION | usuários observados e perfis de acesso |
 | Zabbix | macros efetivas por template e estação |
 | /mnt/reposfi | arquivos disponíveis para download pelo Nginx |
 
 Os módulos que integram o Zabbix usam o pacote
-[zabbix_api](/RFFusion/src/webfusion/api/zabbix_api), que centraliza a conexão e
+[zabbix_api](api/zabbix_api/README.md), que centraliza a conexão e
 as chamadas compartilhadas da API.
 As variáveis ZABBIX_API_URL, ZABBIX_API_TOKEN e
 ZABBIX_API_TIMEOUT_SECONDS podem vir do ambiente ou de
@@ -118,6 +131,31 @@ Ao atualizar macros SSH suportadas em uma estação, o fluxo tenta sincronizar o
 valor operacional correspondente em BPDATA.HOST depois de a alteração no
 Zabbix ser confirmada. A interface informa quando a alteração no Zabbix foi
 aceita, mas a sincronização operacional não foi concluída.
+
+## APIs compartilhadas e appAnalise
+
+O diretório [api/](api/README.md) concentra os contratos compartilhados:
+
+| Pacote | Finalidade | Documentação |
+|---|---|---|
+| `map_api` | Pontos e detalhes do mesmo mapa usado pela interface | [README](api/map_api/README.md) |
+| `appAnalise_api` | Catálogos, arquivos, contagem, espectros e estatísticas | [README](api/appAnalise_api/README.md) |
+| `zabbix_api` | Cliente Python da API externa JSON-RPC do Zabbix | [README](api/zabbix_api/README.md) |
+
+O appAnalise consulta operações nomeadas; o SQL permanece no WebFusion.
+A base é `/api/appanalise`, sem `/v1`. Filtros podem ser enviados por GET
+ou POST JSON, conforme a operação. As respostas tabulares mantêm `columns`
+e `rows`, inclusive quando o resultado é vazio.
+
+O mapa é compartilhado em `/api/map/stations?include_details=true`.
+Não existe `/api/appanalise/map`, nem endpoints paralelos para suas linhas
+brutas. As consultas de interface em `modules/spectrum` e as do appAnalise
+mantêm contratos próprios; não são URLs intercambiáveis.
+
+O cliente MATLAB pode escolher a base pública ou interna. A integração não
+introduz autenticação própria no cliente nem detecção automática de VPN.
+Os READMEs dos pacotes documentam o contrato HTTP; arquivos MATLAB mantidos
+externamente devem ser conferidos contra esse contrato.
 
 ## Módulos
 
@@ -130,6 +168,7 @@ aceita, mas a sincronização operacional não foi concluída.
 | Tarefas | /tasks/ | criação de solicitações, consulta e intervenção controlada nas filas e no histórico |
 | Usuários | /users/ | consulta, cadastro manual e concessão ou revogação de privilégios |
 | Configurações | /configuration/ | macros Zabbix por template ou estação |
+| Alarmes | /alarms/ | problemas operacionais consultados no Zabbix |
 
 As rotas da tabela são relativas ao prefixo público. Por exemplo, o panorama
 do servidor é acessado em http://<servidor>:9082/rffusion/server.
@@ -153,6 +192,29 @@ Endpoints relevantes:
 - /spectrum/download/<spectrum_id>
 - /spectrum/download-file/<file_id>
 
+### Downloads
+
+Os links diretos usam `/downloads/...`, na raiz do servidor, **fora de
+`/rffusion`**. O NGINX entrega os arquivos de `/mnt/reposfi` por `alias`.
+As rotas Flask de download também podem delegar a transferência ao NGINX por
+`X-Accel-Redirect`, com a localização interna `/_repo_download/`.
+
+A configuração do container usa:
+
+- `WEBFUSION_PUBLIC_DOWNLOAD_PREFIX=/downloads`;
+- `WEBFUSION_ACCEL_REDIRECT_PREFIX=/_repo_download`;
+- `WEBFUSION_ACCEL_REDIRECT_ROOT=/mnt/reposfi`.
+
+Sem a delegação configurada, as rotas Flask conservam o fallback de envio do
+arquivo. Na implantação normal, mantenha o NGINX responsável pela transferência.
+A API appAnalise retorna metadados, inclusive `NA_PATH`; consultar `/files`
+não equivale a baixar os arquivos binários.
+
+A tentativa de selecionar uma rota interna por JavaScript foi removida.
+O endereço usado para abrir a página determina a origem dos links relativos:
+HTTPS pelo acesso público e HTTP pelo acesso interno. Não existe endpoint
+`/api/download-route`, cookie de seleção ou sondagem de VPN no fluxo atual.
+
 ### Panorama do Servidor
 
 O dashboard /server separa o shell inicial dos painéis de consulta tardia. Ele
@@ -166,8 +228,8 @@ em bytes nas chaves correspondentes, para consumo numérico direto pelo Zabbix.
 O card "Saúde dos Containers" é consultado manualmente e não depende de
 BPDATA, RFDATA ou RFFUSION_SUMMARY. A cada clique, o WebFusion verifica o seu
 Nginx, Waitress e endpoint interno; em paralelo, chama por SSH os scripts
-somente-leitura do appCataloga e do MariaDB. Nenhum valor anterior é armazenado
-ou reutilizado: se um container não responder, a interface mostra a falha atual.
+somente-leitura do appCataloga e do MariaDB. O resultado usa um cache curto no processo, descrito abaixo; ele não é
+um histórico persistido de disponibilidade.
 
 Os scripts executados diretamente pelos volumes montados são:
 
@@ -242,6 +304,23 @@ Os deploys dos containers recriam as chaves de host SSH. Por isso, depois de
 reimplantar appCataloga ou MariaDB, gere novamente o arquivo known_hosts e
 copie-o novamente para o WebFusion antes de voltar a consultar o card.
 
+### Métricas de uso
+
+`GET /api/server/usage-metrics` agrega os contadores por mês, ano e total:
+visualizações, consultas de espectro, cliques de download e requisições de
+arquivos observadas no NGINX. Cliques (`download_action_count`) e entregas
+registradas (`nginx_download_count`) são métricas distintas.
+
+A ingestão considera status 200/206 e mantém os contadores e o ponto de leitura
+em `WEBFUSION_USAGE_METRIC_MONTHLY` e `WEBFUSION_USAGE_LOG_CHECKPOINT`, no summary.
+A implementação atual usa uma assinatura SHA-256 do conteúdo já lido para
+preservar o ponto de leitura quando inode/dispositivo mudam após reinícios.
+Linhas incompletas ficam para a próxima passagem.
+
+Consulte [contagem, reconciliação e migração do checkpoint](../../install/webserver/DOWNLOAD_METRICS.md).
+A existência da correção no código não confirma sua ativação em um processo
+antigo: mudanças Python exigem recarregar o WebFusion pelo procedimento de deploy.
+
 ### Consulta às Estações
 
 /host apresenta a situação de uma estação, erros agregados, localização e
@@ -287,37 +366,50 @@ Campos protegidos e valores secretos não são revelados. As alterações exigem
 confirmação na interface e são aplicadas ao Zabbix antes de qualquer tentativa
 de sincronização com o banco operacional.
 
-## Autenticação e Segurança
+## Identidade e permissões
 
-Os módulos de escrita e configuração usam autenticação HTTP Basic leve:
+A autorização das páginas protegidas usa a identidade encaminhada e os perfis
+persistidos descritos em **Controle de acesso**. Não há autenticação HTTP Basic
+nos módulos de tarefas e configuração. As operações de conectividade em `/api/host/.../connectivity-test` ainda
+verificam HTTP Basic no handler de host; são uma exceção ao controle por perfil
+dos blueprints protegidos. Não registre as credenciais operacionais na documentação.
 
-- /tasks/
-- /configuration/
-- operações de teste em /host
-
-Essa proteção é temporária e voltada ao ambiente operacional atual. As
-credenciais não devem ser copiadas para documentação, JavaScript ou URLs. Uma
-evolução futura deve migrar esses módulos para uma autenticação centralizada.
+As APIs compartilhadas de mapa e appAnalise não têm um token próprio nem um
+fluxo de login implementado nesses pacotes. Seu acesso segue o perímetro do
+ambiente e a configuração do proxy. A autenticação técnica do cliente Zabbix
+é uma integração separada, descrita no README desse pacote.
 
 Valores de macros secretas permanecem ocultos. Para alterá-los, o operador
 informa um novo valor, sem recuperar o segredo armazenado no Zabbix.
 
 ## Organização do Código
 
-    src/webfusion/
-    |-- app.py                         aplicação Flask e rotas de infraestrutura
-    |-- db.py                          conexões MariaDB
-    |-- .secret                        configuração local de conexões MariaDB (não versionada)
-    |-- modules/
-    |   |-- map/                       dados do mapa inicial
-    |   |-- spectrum/                  consulta e download de espectros
-    |   |-- server/                    panorama e métricas Zabbix
-    |   |-- host/                      consulta e teste de estações
-    |   |-- task/                      criação e acompanhamento de tarefas
-    |   |-- maintenance/               manutenção de filas e histórico
-    |   +-- configuration/             macros Zabbix e sincronização operacional
-    |-- templates/                     páginas Jinja
-    +-- static/                        CSS, JavaScript, fontes e imagens
+```text
+src/webfusion/
+├── app.py                 montagem Flask e registro dos blueprints
+├── db.py                  fábricas de conexão MariaDB
+├── auth/                  identidade, perfis e persistência de usuários
+├── api/
+│   ├── appAnalise_api/     contrato de consulta para o cliente MATLAB
+│   ├── map_api/            mapa compartilhado
+│   └── zabbix_api/         cliente JSON-RPC externo
+├── modules/
+│   ├── spectrum/          arquivos, filtros e downloads
+│   ├── server/            panorama, métricas de uso e saúde
+│   ├── host/              consulta e teste de estações
+│   ├── tasks/             criação, filas e histórico
+│   ├── users/             administração de usuários e privilégios
+│   ├── configuration/     macros e sincronização operacional
+│   └── alarms/            problemas operacionais
+├── scripts/               verificação do runtime
+├── templates/             páginas Jinja
+└── static/                JavaScript, CSS, fontes e imagens
+```
+
+As APIs específicas da interface permanecem nos módulos correspondentes.
+O diretório `api/` não pretende conter toda rota cujo caminho comece com `/api`.
+O mapa inicial recebe o dataset diretamente do serviço compartilhado, sem
+uma requisição HTTP do Flask para ele próprio.
 
 O padrão de cada feature é:
 
@@ -326,7 +418,7 @@ O padrão de cada feature é:
 3. templates renderizam o shell inicial;
 4. JavaScript carrega detalhes, filtros e tabelas sob demanda.
 
-## Execução Local
+## Configuração e execução no container
 
 ### Configuração local do banco
 
@@ -336,7 +428,7 @@ ignorado pelo Git e deve conter os quatro dicionários `DB_CFG_RFDATA`,
 dicionário requer as chaves `host`, `port`, `user`, `password` e `database`.
 Não versione, publique ou registre os valores desse arquivo.
 
-O entrypoint é [app.py](/RFFusion/src/webfusion/app.py). As variáveis aceitas
+O entrypoint é [app.py](app.py). As variáveis aceitas
 em execução direta são:
 
 - WEBFUSION_HOST, padrão 127.0.0.1
@@ -344,23 +436,42 @@ em execução direta são:
 - WEBFUSION_THREADS, padrão 8
 - WEBFUSION_CHANNEL_TIMEOUT, padrão 300
 
-Exemplo para desenvolvimento, dentro de um ambiente Python com as dependências
-do projeto instaladas:
+Para execução manual de desenvolvimento, somente no webserver e sem outro
+processo ocupando a porta escolhida:
 
-    cd /RFFusion/src/webfusion
-    python app.py
+```bash
+cd /RF.Fusion/src/webfusion
+/usr/local/bin/python app.py
+```
+
+O acesso operacional ao container é por `ssh root@10.88.0.34`; use a credencial
+local conforme as instruções de ambiente, sem copiá-la para comandos ou Git.
+Não instale dependências WebFusion no container appCataloga para executar testes.
 
 Na implantação normal, use o container descrito em
-[install/webserver/README.MD](/RFFusion/install/webserver/README.MD). Não
+[install/webserver/README.MD](../../install/webserver/README.MD). Não
 substitua o Nginx pelo servidor de desenvolvimento Flask em ambiente
 operacional.
 
 ## Validação
 
-Os testes do WebFusion ficam em [test/tests/webfusion](/RFFusion/test/tests/webfusion).
-Para executar somente essa suíte:
+Os testes do WebFusion ficam em [test/tests/webfusion](../../test/tests/webfusion).
+Execute os testes no webserver com o interpretador autorizado. Exemplo de
+verificação das APIs compartilhadas e da montagem da aplicação:
 
-    /opt/conda/envs/appdata/bin/pytest -q /RFFusion/test/tests/webfusion
+```bash
+cd /RF.Fusion
+/usr/local/bin/python -m unittest \
+  test.tests.webfusion.test_appanalise_api \
+  test.tests.webfusion.test_map_api \
+  test.tests.webfusion.test_map_service \
+  test.tests.webfusion.test_app_headers -q
+```
+
+O [índice de APIs](api/README.md) lista as verificações por pacote. Para mudanças
+em contadores, execute `test.tests.webfusion.test_server_routes` separadamente.
+As suítes usam stubs em alguns módulos; os testes unitários não substituem a
+verificação HTTP pelo NGINX nem a integração com o cliente MATLAB.
 
 Antes de publicar alterações de rota, valide pelo menos:
 
@@ -371,8 +482,8 @@ Antes de publicar alterações de rota, valide pelo menos:
 
 ## Referências
 
-- [README.md](/RFFusion/README.md)
-- [install/webserver/README.MD](/RFFusion/install/webserver/README.MD)
-- [src/webfusion/api/zabbix_api](/RFFusion/src/webfusion/api/zabbix_api)
-- [src/zabbix](/RFFusion/src/zabbix)
-- [src/mariadb/scripts/README.md](/RFFusion/src/mariadb/scripts/README.md)
+- [README.md](../../README.md)
+- [install/webserver/README.MD](../../install/webserver/README.MD)
+- [src/webfusion/api/zabbix_api](api/zabbix_api/README.md)
+- [src/zabbix](../zabbix)
+- [src/mariadb/scripts/README.md](../mariadb/scripts/README.md)

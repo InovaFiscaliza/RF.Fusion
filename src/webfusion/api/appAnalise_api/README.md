@@ -1,10 +1,20 @@
 # API de consulta do appAnalise
 
-Biblioteca de leitura do WebFusion que reproduz as consultas de
-[`DBHandler.m`](../../.instructions/DBHandler.m). O appAnalise passa a enviar a
+Biblioteca de leitura do WebFusion que reproduz as consultas do cliente
+MATLAB de referência `DBHandler.m`, mantido no projeto consumidor. O appAnalise passa a enviar a
 operação e seus filtros por HTTP. O SQL permanece no servidor.
 
-Base pública: **`/rffusion/api/appanalise`**.
+Base pública: **`/rffusion/api/appanalise`**, sem `/v1`.
+
+| Acesso | URL-base da API |
+|---|---|
+| F5 | `https://fiscalizacao.anatel.gov.br/rffusion/api/appanalise` |
+| VPN/rede interna, IP | `http://172.16.18.11:9082/rffusion/api/appanalise` |
+| VPN/rede interna, hostname | `http://rhfisnspdex02.anatel.gov.br:9082/rffusion/api/appanalise` |
+
+A escolha da origem é explícita no consumidor. Não há sondagem de VPN nem
+seleção automática de rota. A API responde metadados; binários continuam no
+NGINX em `/downloads/...`. O campo `NA_PATH` não é uma URL de download.
 
 O nginx remove `/rffusion` antes de encaminhar a requisição. Por isso, o
 blueprint Flask usa `/api/appanalise`; não acrescente o prefixo público duas
@@ -187,6 +197,30 @@ para o dataset comum, que já monta os pontos e detalhes. O endpoint
 Consulte o [contrato do mapa](../map_api/README.md) para filtros, campos e datas.
 As regras de marcadores passam a ser as mesmas da interface WebFusion.
 
+## Diagnóstico de HTTP 400
+
+Um status 400 significa que a requisição não passou pela validação. O corpo
+JSON contém `error.message` com o motivo; clientes que mostram apenas
+`BAD REQUEST` podem ocultar esse detalhe. Confira especialmente:
+
+- nomes de campos camelCase, sem campos adicionais da GUI;
+- IDs positivos, datas ISO sem fuso e ausência de `NaN`/`NaT` no JSON;
+- `pageSize` de até 1000 e no máximo 1000 distritos;
+- um objeto JSON diretamente no POST, sem envelope `filters`;
+- ausência de query string junto com um POST JSON.
+
+A contagem ignora paginação no SQL, mas **os campos `page` e `pageSize`, quando
+enviados a `/files/count`, também passam pela validação comum**. Um `pageSize`
+inválido pode causar 400 mesmo quando não afeta a contagem.
+
+Exemplo para visualizar cabeçalhos e mensagem da API:
+
+```bash
+curl -i 'http://rhfisnspdex02.anatel.gov.br:9082/rffusion/api/appanalise/files/count' \
+  -H 'Content-Type: application/json' \
+  --data '{"equipmentId":135,"siteId":85}'
+```
+
 ## Exemplos de consumo
 
 ```bash
@@ -204,15 +238,15 @@ curl 'https://SEU_SERVIDOR/rffusion/api/appanalise/localities' \
 Exemplo MATLAB para uma consulta tabular não vazia:
 
 ```matlab
-baseUrl = 'https://SEU_SERVIDOR/rffusion/api/appanalise';
+baseUrl = 'http://rhfisnspdex02.anatel.gov.br:9082/rffusion/api/appanalise';
 options = weboptions('ContentType', 'json', 'Timeout', 60);
 response = webread([baseUrl '/equipments'], 'stateCode', 'SP', options);
 rows = struct2table(response.rows);
 ```
 
 Para POST, use `webwrite` com um struct de filtros e `MediaType` definido como
-`application/json`. A autenticação exigida pelo proxy do ambiente precisa ser
-incluída nas opções do cliente.
+`application/json`. O exemplo não implementa autenticação. O acesso público depende da frente
+responsável pela integração com o F5.
 
 O exemplo não substitui o adaptador MATLAB: ele ainda precisa tratar tabelas
 vazias usando `columns`, converter campos de data explicitamente e normalizar
@@ -290,6 +324,8 @@ validado separadamente nos testes de `map_api`. Eles não
 substituem a comparação ponta a ponta com o appAnalise em MATLAB.
 
 A implantação requer recarregar o processo WebFusion pelo procedimento do
-ambiente. Não há migração de banco. O arquivo MATLAB de referência foi
-preservado; a migração do cliente e a simplificação do summary são etapas
-posteriores.
+ambiente. Não há migração de banco. A configuração e a evolução do cliente MATLAB pertencem ao projeto
+appAnalise; alterações locais do consumidor não modificam automaticamente este
+contrato HTTP. A simplificação do summary exige revisão de compatibilidade.
+
+Voltar ao [índice das APIs](../README.md) ou ao [WebFusion](../../README.MD).

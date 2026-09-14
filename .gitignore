@@ -108,5 +108,7 @@ src/appCataloga/server_volume/usr/local/bin/appCataloga/METADATA_HOST_SERVER_MIG
 src/appCataloga/server_volume/usr/local/bin/appCataloga/RFFUSION_SUMMARY_REFACTOR_PLAN.md
 src/appCataloga/server_volume/usr/local/bin/appCataloga/appAnalise/DBHandler.m
 src/webfusion/Exemplo PGD/
-src/webfusion/.instructions/
+src/webfusion/.instructions/*
+!src/webfusion/.instructions/WebFusionHandler.m
+!src/webfusion/.instructions/WebFusionHandler.md
 src/appCataloga/server_volume/usr/local/bin/appCataloga/.instructions/AUDITORIA_SITES_GEOGRAPHIC_PATH.md

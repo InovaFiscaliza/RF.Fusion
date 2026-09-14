@@ -2,7 +2,7 @@
 Validation tests for `webfusion.modules.server`.
 
 How to run:
-    /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_server_routes.py -q
+    /usr/local/bin/python -m unittest test.tests.webfusion.test_server_routes -q
 
 What is covered here:
     - `/server` injects the aggregated usage metrics payload
@@ -21,7 +21,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 
-WEBFUSION_ROOT = Path("/RFFusion/src/webfusion")
+WEBFUSION_ROOT = Path(__file__).resolve().parents[3] / "src/webfusion"
 os.environ["WEBFUSION_USAGE_METRICS_BACKEND"] = "memory"
 
 
@@ -146,6 +146,15 @@ class TestServerUsageMetrics(unittest.TestCase):
         cls.routes = load_server_routes()
 
     def setUp(self):
+        # The authorized webserver has a real access.log; tests must not ingest it.
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        environment = patch.dict(os.environ, {
+            "WEBFUSION_USAGE_METRICS_BACKEND": "memory",
+            "WEBFUSION_NGINX_DOWNLOAD_LOG_PATH": str(Path(folder.name) / "missing.log"),
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
         self.usage_metrics.reset_usage_metrics()
         self.routes.request.args = {}
 
@@ -340,6 +349,110 @@ class TestServerUsageMetrics(unittest.TestCase):
 
         self.assertEqual(reconciled, {"2026-07": 2})
         self.assertEqual(snapshot["totals"]["nginx_download_count"], 2)
+
+
+    def test_nginx_restart_keeps_consumed_content_after_inode_change(self):
+        """Replacing the inode with an identical copy must count only new lines."""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "access.log"
+            first = self._download_line("first")
+            second = self._download_line("second")
+            path.write_bytes(first)
+            _, checkpoint = self.usage_metrics._read_nginx_download_counts(str(path), None)
+            replacement = Path(folder) / "replacement.log"
+            replacement.write_bytes(first + second)
+            replacement.replace(path)
+            counts, checkpoint = self.usage_metrics._read_nginx_download_counts(str(path), checkpoint)
+            self.assertEqual(sum(counts.values()), 1)
+            counts, _ = self.usage_metrics._read_nginx_download_counts(str(path), checkpoint)
+            self.assertEqual(counts, {})
+
+    def test_nginx_touch_does_not_recount_unchanged_log(self):
+        """An mtime change without new bytes is not a new download history."""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "access.log"
+            path.write_bytes(self._download_line("first"))
+            _, checkpoint = self.usage_metrics._read_nginx_download_counts(str(path), None)
+            metadata = path.stat()
+            os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1000000))
+            counts, _ = self.usage_metrics._read_nginx_download_counts(str(path), checkpoint)
+            self.assertEqual(counts, {})
+
+    def test_nginx_rotation_to_larger_file_counts_the_new_content(self):
+        """A new log can exceed the prior offset before the next ingestion."""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "access.log"
+            path.write_bytes(self._download_line("old"))
+            _, checkpoint = self.usage_metrics._read_nginx_download_counts(str(path), None)
+            path.write_bytes(self._download_line("new-a") + self._download_line("new-b"))
+            counts, _ = self.usage_metrics._read_nginx_download_counts(str(path), checkpoint)
+            self.assertEqual(sum(counts.values()), 2)
+
+    def test_nginx_partial_utf8_line_is_not_checkpointed(self):
+        """A line completed after the snapshot must be consumed exactly once."""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "access.log"
+            complete = self._download_line("ação")
+            path.write_bytes(complete[:-2])
+            counts, checkpoint = self.usage_metrics._read_nginx_download_counts(str(path), None)
+            self.assertEqual(counts, {})
+            self.assertEqual(checkpoint["last_offset"], 0)
+            with path.open("ab") as stream:
+                stream.write(complete[-2:])
+            counts, checkpoint = self.usage_metrics._read_nginx_download_counts(str(path), checkpoint)
+            self.assertEqual(sum(counts.values()), 1)
+            self.assertEqual(checkpoint["last_offset"], len(complete))
+            counts, _ = self.usage_metrics._read_nginx_download_counts(str(path), checkpoint)
+            self.assertEqual(counts, {})
+
+    def test_nginx_legacy_checkpoint_migrates_without_changing_counts(self):
+        """The deployed device/inode format is upgraded on its next read."""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "access.log"
+            path.write_bytes(self._download_line("first"))
+            stat = path.stat()
+            legacy = dict(file_signature=f"{stat.st_dev}:{stat.st_ino}",
+                          log_path=str(path), last_offset=stat.st_size)
+            counts, checkpoint = self.usage_metrics._read_nginx_download_counts(str(path), legacy)
+            self.assertEqual(counts, {})
+            self.assertTrue(checkpoint["file_signature"].startswith("sha256:"))
+
+    def test_nginx_legacy_restart_migrates_reconciled_month_totals(self):
+        """A restart before the first upgrade can use the reconciled legacy prefix."""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "access.log"
+            first = self._download_line("first")
+            path.write_bytes(first + self._download_line("second"))
+            month = self.usage_metrics._normalize_reference_month("2026-07-01")
+            legacy = dict(file_signature="old:inode", log_path=str(path),
+                          last_offset=len(first), legacy_month_counts={month: 1})
+            counts, checkpoint = self.usage_metrics._read_nginx_download_counts(str(path), legacy)
+            self.assertEqual(sum(counts.values()), 1)
+            self.assertTrue(checkpoint["file_signature"].startswith("sha256:"))
+            legacy["legacy_month_counts"] = {month: 3}
+            with self.assertRaisesRegex(RuntimeError, "needs reconciliation"):
+                self.usage_metrics._read_nginx_download_counts(str(path), legacy)
+
+    def test_nginx_new_process_reuses_persisted_content_checkpoint(self):
+        """Only serialized checkpoint data is needed across process restarts."""
+        import json
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "access.log"
+            path.write_bytes(self._download_line("first"))
+            _, checkpoint = self.usage_metrics._read_nginx_download_counts(str(path), None)
+            checkpoint = json.loads(json.dumps(checkpoint))
+            replacement = Path(folder) / "copy.log"
+            replacement.write_bytes(path.read_bytes())
+            replacement.replace(path)
+            module = importlib.reload(self.usage_metrics)
+            counts, _ = module._read_nginx_download_counts(str(path), checkpoint)
+            self.assertEqual(counts, {})
+
+    @staticmethod
+    def _download_line(name):
+        """Return a complete UTF-8 access-log record for one successful download."""
+        return (f'10.88.0.34 - - [06/Jul/2026:18:06:19 +0000] '
+                f'"GET /downloads/{name}.mat HTTP/1.1" 200 100 "-" "ua"\n').encode("utf-8")
 
 
 if __name__ == "__main__":

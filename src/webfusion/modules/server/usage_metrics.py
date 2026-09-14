@@ -13,11 +13,15 @@ local development.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from collections import defaultdict
 from datetime import date, datetime
 from threading import RLock
+from typing import BinaryIO
+
+from .config import NGINX_CHECKPOINT_HASH_PREFIX, NGINX_CHECKPOINT_READ_BYTES
 
 
 _COUNTER_LOCK = RLock()
@@ -411,7 +415,18 @@ def _lock_checkpoint_for_update(cursor, *, log_path: str) -> dict[str, object]:
         """,
         (_NGINX_DOWNLOAD_LOG_SOURCE,),
     )
-    return cursor.fetchone() or {}
+    checkpoint = cursor.fetchone() or {}
+    signature = str(checkpoint.get("file_signature") or "")
+    if signature and not signature.startswith(NGINX_CHECKPOINT_HASH_PREFIX):
+        cursor.execute(
+            f"SELECT DT_REFERENCE_MONTH, NU_VALUE FROM `{_COUNTER_TABLE}` WHERE NA_METRIC_NAME = %s",
+            (_NGINX_DOWNLOAD_METRIC,),
+        )
+        checkpoint["legacy_month_counts"] = {
+            _normalize_reference_month(row["DT_REFERENCE_MONTH"]): int(row["NU_VALUE"])
+            for row in cursor.fetchall()
+        }
+    return checkpoint
 
 
 def _increment_nginx_months_with_cursor(
@@ -494,7 +509,7 @@ def _save_checkpoint_to_memory(
 
 
 def _build_log_file_signature(stat_result: os.stat_result) -> str:
-    """Return one stable identity string for the current log file."""
+    """Return the legacy device/inode signature for a one-time checkpoint upgrade."""
 
     return f"{stat_result.st_dev}:{stat_result.st_ino}"
 
@@ -538,66 +553,138 @@ def _is_countable_nginx_download(
     )
 
 
+def _hash_log_prefix(handle: BinaryIO, offset: int):
+    """Hash the consumed bytes without relying on filesystem identity.
+
+    Args:
+        handle: Open binary log, repositioned by this function (BinaryIO).
+        offset: Number of previously consumed bytes (int).
+
+    Returns:
+        SHA-256 state positioned at offset, ready to include new lines.
+
+    Raises:
+        RuntimeError: If the log is truncated while its prefix is being read.
+    """
+    handle.seek(0)
+    digest = hashlib.sha256()
+    remaining = offset
+    while remaining:
+        block = handle.read(min(remaining, NGINX_CHECKPOINT_READ_BYTES))
+        if not block:
+            raise RuntimeError("NGINX log changed while validating its checkpoint")
+        digest.update(block)
+        remaining -= len(block)
+    return digest
+
+
+def _legacy_prefix_matches_counts(
+    handle: BinaryIO, offset: int, expected: dict[date, int] | None,
+) -> bool:
+    """Check a reconciled legacy checkpoint when device/inode changed before upgrade.
+
+    Args:
+        handle: Open binary log (BinaryIO).
+        offset: Legacy consumed byte count (int).
+        expected: Persisted monthly download totals, or None if unavailable.
+
+    Returns:
+        True only when the complete prefix has the same monthly counts.
+        This one-time bridge is unavailable for incomplete/rotated histories.
+    """
+    if expected is None:
+        return False
+    handle.seek(0)
+    counts: dict[date, int] = defaultdict(int)
+    while handle.tell() < offset:
+        line = handle.readline(offset - handle.tell())
+        if not line.endswith(b"\n"):
+            return False
+        parsed = _parse_access_log_line(line.decode("utf-8", errors="replace"))
+        if parsed and _is_countable_nginx_download(request_path=parsed[1], request_status=parsed[2]):
+            counts[parsed[0]] += 1
+    return dict(counts) == {month: count for month, count in expected.items() if count}
+
+
 def _read_nginx_download_counts(
     log_path: str,
     checkpoint: dict[str, object] | None,
 ) -> tuple[dict[date, int], dict[str, object] | None]:
-    """Read only new download events from the configured access log."""
+    """Read complete new lines, identifying the consumed prefix by its content.
 
+    Args:
+        log_path: Active NGINX log path (str).
+        checkpoint: Previous offset/signature metadata (dict | None). Legacy
+            checkpoints can include legacy_month_counts for a reconciled upgrade.
+
+    Returns:
+        Monthly increments and next checkpoint (tuple[dict[date, int], dict | None]).
+        Missing logs preserve the existing checkpoint. A changed consumed prefix
+        denotes a new/truncated log; unchanged bytes survive inode/mtime changes.
+
+    Raises:
+        RuntimeError: On concurrent truncation or an ambiguous legacy migration.
+    """
     try:
-        stat_result = os.stat(log_path)
-    except OSError:
+        handle = open(log_path, "rb")
+    except FileNotFoundError:
         return {}, None
 
-    file_signature = _build_log_file_signature(stat_result)
-    previous_signature = str((checkpoint or {}).get("file_signature") or "").strip()
-    previous_path = str((checkpoint or {}).get("log_path") or "").strip()
-    previous_offset = int((checkpoint or {}).get("last_offset") or 0)
-    previous_size = int((checkpoint or {}).get("last_size") or 0)
-    previous_mtime_ns = int((checkpoint or {}).get("last_mtime_ns") or 0)
+    previous = checkpoint or {}
+    signature = str(previous.get("file_signature") or "")
+    offset = int(previous.get("last_offset") or 0)
     start_offset = 0
-
-    if previous_signature == file_signature and previous_path == log_path:
-        if (
-            stat_result.st_size >= previous_offset
-            and stat_result.st_size >= previous_size
-            and (
-                stat_result.st_size > previous_size
-                or stat_result.st_mtime_ns == previous_mtime_ns
-            )
-        ):
-            start_offset = previous_offset
-
     counts_by_month: dict[date, int] = defaultdict(int)
+    with handle:
+        # Stat the opened descriptor: rotation must not mix two different files.
+        initial_stat = os.fstat(handle.fileno())
+        digest = hashlib.sha256()
+        if signature and offset > 0 and initial_stat.st_size >= offset:
+            digest = _hash_log_prefix(handle, offset)
+            content_signature = NGINX_CHECKPOINT_HASH_PREFIX + digest.hexdigest()
+            if signature.startswith(NGINX_CHECKPOINT_HASH_PREFIX):
+                same_content = signature == content_signature
+            else:
+                same_content = (
+                    signature == _build_log_file_signature(initial_stat)
+                    and previous.get("log_path") == log_path
+                ) or _legacy_prefix_matches_counts(
+                    handle, offset, previous.get("legacy_month_counts"),
+                )
+                if not same_content:
+                    # An old checkpoint contains no content evidence. Refuse to
+                    # add its history again; an explicit reconciliation is needed.
+                    raise RuntimeError("Legacy NGINX checkpoint needs reconciliation before migration")
+            if same_content:
+                start_offset = offset
+            else:
+                digest = hashlib.sha256()
 
-    with open(log_path, "r", encoding="utf-8", errors="ignore") as handle:
-        if start_offset > 0:
-            handle.seek(start_offset)
-
-        for line in handle:
-            parsed_line = _parse_access_log_line(line)
-            if parsed_line is None:
-                continue
-
-            reference_month, request_path, request_status = parsed_line
-            if not _is_countable_nginx_download(
-                request_path=request_path,
-                request_status=request_status,
-            ):
-                continue
-
-            counts_by_month[reference_month] += 1
-
+        handle.seek(start_offset)
+        # Bound each pass to a snapshot; appends are processed on the next pass.
+        limit = initial_stat.st_size
+        while handle.tell() < limit:
+            line_start = handle.tell()
+            line = handle.readline(limit - line_start)
+            if not line.endswith(b"\n"):
+                handle.seek(line_start)
+                break
+            digest.update(line)
+            parsed = _parse_access_log_line(line.decode("utf-8", errors="replace"))
+            if parsed and _is_countable_nginx_download(request_path=parsed[1], request_status=parsed[2]):
+                counts_by_month[parsed[0]] += 1
         last_offset = handle.tell()
-        final_stat_result = os.fstat(handle.fileno())
+        final_stat = os.fstat(handle.fileno())
+        if final_stat.st_size < limit:
+            raise RuntimeError("NGINX log was truncated during ingestion")
 
     return dict(counts_by_month), {
         "source_name": _NGINX_DOWNLOAD_LOG_SOURCE,
         "log_path": log_path,
-        "file_signature": file_signature,
-        "last_offset": int(last_offset),
-        "last_size": int(final_stat_result.st_size),
-        "last_mtime_ns": int(final_stat_result.st_mtime_ns),
+        "file_signature": NGINX_CHECKPOINT_HASH_PREFIX + digest.hexdigest(),
+        "last_offset": last_offset,
+        "last_size": int(final_stat.st_size),
+        "last_mtime_ns": int(final_stat.st_mtime_ns),
     }
 
 
@@ -633,6 +720,12 @@ def _sync_nginx_download_metrics_in_memory(log_path: str) -> None:
     """Keep test-mode ingestion behavior aligned with the durable flow."""
 
     checkpoint = _load_checkpoint_from_memory(_NGINX_DOWNLOAD_LOG_SOURCE)
+    if checkpoint:
+        checkpoint["legacy_month_counts"] = {
+            _normalize_reference_month(month): count
+            for (metric, month), count in _MONTHLY_COUNTERS.items()
+            if metric == _NGINX_DOWNLOAD_METRIC
+        }
     counts_by_month, next_checkpoint = _read_nginx_download_counts(
         log_path,
         checkpoint,
