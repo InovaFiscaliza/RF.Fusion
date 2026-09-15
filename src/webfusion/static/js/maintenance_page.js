@@ -686,6 +686,7 @@
         const taskDone = "0";
         const taskPending = "1";
         const taskRunning = "2";
+        const taskFrozen = "-3";
         const targetBackup = "backup";
         const targetProcess = "process";
         const availableStatuses = [taskPending, "-2", "-3"];
@@ -699,13 +700,13 @@
         }
 
         function canPrepareBackup(row) {
-            return row.dataset.activeTask === "0"
+            return (row.dataset.activeTask === "0" || row.dataset.activeTaskStatus === taskFrozen)
                 && row.dataset.discoveryStatus === taskDone
                 && row.dataset.backupStatus !== taskRunning;
         }
 
         function canPrepareProcess(row) {
-            return row.dataset.activeTask === "0"
+            return (row.dataset.activeTask === "0" || row.dataset.activeTaskStatus === taskFrozen)
                 && row.dataset.backupStatus === taskDone
                 && row.dataset.processingStatus !== taskRunning
                 && row.dataset.serverIdentity === "1";
@@ -767,7 +768,7 @@
                     applyActionButton.disabled = true;
                 }
                 if (actionGuidance) {
-                    actionGuidance.textContent = "A seleção não possui uma etapa comum. Separe registros em pontos diferentes do ciclo ou retire itens que já estão na fila.";
+                    actionGuidance.textContent = "A seleção não possui uma etapa comum. Separe registros em pontos diferentes do ciclo ou retire itens com tarefas não congeladas na fila.";
                 }
                 return;
             }

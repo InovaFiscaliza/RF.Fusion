@@ -16,6 +16,9 @@ from datetime import date, datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from pymysql.connections import Connection
+from pymysql.cursors import DictCursor
+
 
 QUEUE_HOST_TASK = "host"
 QUEUE_FILE_TASK = "file"
@@ -916,8 +919,16 @@ def _history_phase_field(task_type: int) -> str:
     return "NU_STATUS_PROCESSING"
 
 
-def _load_history_rows_for_action(db, history_ids: list[int]) -> list[dict[str, Any]]:
-    """Load the FILE_TASK_HISTORY rows targeted by one manual action."""
+def _load_history_rows_for_action(db: Connection, history_ids: list[int]) -> list[dict[str, Any]]:
+    """Lock history and matching queue rows within the caller's transaction.
+
+    Args:
+        db: Operational database connection with an active transaction.
+        history_ids: History IDs selected for manual intervention.
+
+    Returns:
+        Dictionary rows containing history metadata and ACTIVE_TASK_STATUS.
+    """
     if not history_ids:
         return []
 
@@ -948,7 +959,8 @@ def _load_history_rows_for_action(db, history_ids: list[int]) -> list[dict[str, 
             h.NU_STATUS_BACKUP,
             h.NU_STATUS_PROCESSING,
             h.NA_MESSAGE,
-            t.ID_FILE_TASK
+            t.ID_FILE_TASK,
+            t.NU_STATUS AS ACTIVE_TASK_STATUS
         FROM FILE_TASK_HISTORY h
         JOIN HOST host
           ON host.ID_HOST = h.FK_HOST
@@ -957,6 +969,8 @@ def _load_history_rows_for_action(db, history_ids: list[int]) -> list[dict[str, 
          AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
          AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
         WHERE h.ID_HISTORY IN ({placeholders})
+        ORDER BY h.ID_HISTORY
+        FOR UPDATE
         """,
         tuple(history_ids),
     )
@@ -970,7 +984,7 @@ def _validate_history_action(
     target_status: int,
 ) -> str | None:
     """Return the blocking reason for one history operation request."""
-    if row.get("ID_FILE_TASK") is not None:
+    if row.get("ID_FILE_TASK") is not None and row.get("ACTIVE_TASK_STATUS") != TASK_FROZEN:
         return "live_file_task_exists"
 
     if target_stage == HISTORY_TARGET_BACKUP:
@@ -996,21 +1010,58 @@ def _validate_history_action(
     raise ValueError(f"Unsupported history target stage: {target_stage}")
 
 
-def _insert_history_file_task(
-    cursor,
+def _prepare_history_file_task(
+    cursor: DictCursor,
     row: dict[str, Any],
     *,
     task_type: int,
     task_status: int,
     message: str,
 ) -> None:
-    """Insert one FILE_TASK row using durable history metadata as source."""
+    """Create a queue task or reset its frozen row from durable history.
+
+    Args:
+        cursor: Dictionary cursor within the caller's transaction.
+        row: History metadata, including ID_FILE_TASK when a task exists.
+        task_type: Backup or processing stage code.
+        task_status: Validated initial status code.
+        message: Audit message describing the manual action.
+
+    Returns:
+        None. Existing task IDs are preserved.
+
+    Raises:
+        RuntimeError: The queue row changed or the write did not affect one row.
+    """
     server_path = row["NA_SERVER_FILE_PATH"] if task_type == FILE_TASK_PROCESS_TYPE else None
     server_name = row["NA_SERVER_FILE_NAME"] if task_type == FILE_TASK_PROCESS_TYPE else None
     server_extension = row["NA_EXTENSION_SERVER"] if task_type == FILE_TASK_PROCESS_TYPE else None
     server_size = row["VL_FILE_SIZE_KB_SERVER"] if task_type == FILE_TASK_PROCESS_TYPE else None
     server_created = row["DT_FILE_CREATED_SERVER"] if task_type == FILE_TASK_PROCESS_TYPE else None
     server_modified = row["DT_FILE_MODIFIED_SERVER"] if task_type == FILE_TASK_PROCESS_TYPE else None
+
+    if row.get("ID_FILE_TASK") is not None:
+        # Preserve the task identity and reject concurrent state changes.
+        cursor.execute(
+            """
+            UPDATE FILE_TASK
+            SET NU_TYPE = %s, NU_STATUS = %s, NU_PID = NULL,
+                DT_FILE_TASK = NOW(),
+                NA_SERVER_FILE_PATH = %s, NA_SERVER_FILE_NAME = %s,
+                NA_EXTENSION_SERVER = %s, VL_FILE_SIZE_KB_SERVER = %s,
+                DT_FILE_CREATED_SERVER = %s, DT_FILE_MODIFIED_SERVER = %s,
+                NA_MESSAGE = %s, NA_ERROR_CODE = NULL, NA_ERROR_DETAIL = NULL,
+                NU_ERROR_CLASSIFIER_VERSION = NULL
+            WHERE ID_FILE_TASK = %s AND NU_STATUS = %s
+            """,
+            (
+                task_type, task_status, server_path, server_name,
+                server_extension, server_size, server_created, server_modified,
+                message, int(row["ID_FILE_TASK"]), TASK_FROZEN,
+            ),
+        )
+        _assert_single_row(cursor, table="FILE_TASK", task_id=int(row["ID_FILE_TASK"]))
+        return
 
     cursor.execute(
         """
@@ -1531,7 +1582,7 @@ def _apply_history_backup_with_cursor(
     message: str,
 ) -> None:
     """Create one backup task and reset history to the selected status."""
-    _insert_history_file_task(
+    _prepare_history_file_task(
         cursor,
         row,
         task_type=FILE_TASK_BACKUP_TYPE,
@@ -1551,7 +1602,10 @@ def _apply_history_backup_with_cursor(
             VL_FILE_SIZE_KB_SERVER = NULL,
             DT_FILE_CREATED_SERVER = NULL,
             DT_FILE_MODIFIED_SERVER = NULL,
-            NA_MESSAGE = %s
+            NA_MESSAGE = %s,
+            NA_ERROR_CODE = NULL,
+            NA_ERROR_DETAIL = NULL,
+            NU_ERROR_CLASSIFIER_VERSION = NULL
         WHERE ID_HISTORY = %s
         """,
         (
@@ -1577,7 +1631,7 @@ def _apply_history_process_with_cursor(
     backup_at: Any,
 ) -> None:
     """Create one processing task and reset history to the selected status."""
-    _insert_history_file_task(
+    _prepare_history_file_task(
         cursor,
         row,
         task_type=FILE_TASK_PROCESS_TYPE,
@@ -1591,7 +1645,10 @@ def _apply_history_process_with_cursor(
             DT_PROCESSED = NULL,
             NU_STATUS_BACKUP = %s,
             NU_STATUS_PROCESSING = %s,
-            NA_MESSAGE = %s
+            NA_MESSAGE = %s,
+            NA_ERROR_CODE = NULL,
+            NA_ERROR_DETAIL = NULL,
+            NU_ERROR_CLASSIFIER_VERSION = NULL
         WHERE ID_HISTORY = %s
         """,
         (
@@ -1618,13 +1675,13 @@ def _history_action_label(target_stage: str, target_status: int) -> str:
 
 
 def apply_history_action(
-    db,
+    db: Connection,
     history_ids: list[int],
     *,
     target_stage: str,
     target_status: str | int,
 ) -> dict[str, Any]:
-    """Create selected queue tasks from durable history with one target state.
+    """Create or adjust frozen queue tasks from history with one target state.
 
     One transaction covers the selected history rows. Rows blocked by a domain
     rule are reported but never partially recreated.
@@ -1632,9 +1689,6 @@ def apply_history_action(
     target_stage = _require_history_target_stage(target_stage)
     target_status = _require_history_target_status(str(target_status))
     unique_ids = sorted({int(history_id) for history_id in history_ids})
-    rows = _load_history_rows_for_action(db, unique_ids)
-    row_ids = {int(row["ID_HISTORY"]) for row in rows}
-    missing_ids = [history_id for history_id in unique_ids if history_id not in row_ids]
     blocked_rows = []
     updated_count = 0
 
@@ -1649,6 +1703,9 @@ def apply_history_action(
     try:
         # Queue creation and history reset must either both persist or neither does.
         cursor.execute("START TRANSACTION")
+        rows = _load_history_rows_for_action(db, unique_ids)
+        row_ids = {int(row["ID_HISTORY"]) for row in rows}
+        missing_ids = [history_id for history_id in unique_ids if history_id not in row_ids]
 
         for row in rows:
             blocked_reason = _validate_history_action(
@@ -1671,10 +1728,15 @@ def apply_history_action(
                 )
                 continue
 
+            detail = (
+                "frozen task adjusted from FILE_TASK_HISTORY action"
+                if row.get("ID_FILE_TASK") is not None
+                else "created from FILE_TASK_HISTORY action"
+            )
             if target_stage == HISTORY_TARGET_BACKUP:
                 message = _build_file_task_message(
                     task_type=FILE_TASK_BACKUP_TYPE,
-                    detail="created from FILE_TASK_HISTORY action",
+                    detail=detail,
                     path=row.get("NA_HOST_FILE_PATH"),
                     name=row.get("NA_HOST_FILE_NAME"),
                 )
@@ -1687,7 +1749,7 @@ def apply_history_action(
             else:
                 message = _build_file_task_message(
                     task_type=FILE_TASK_PROCESS_TYPE,
-                    detail="created from FILE_TASK_HISTORY action",
+                    detail=detail,
                     path=row.get("NA_SERVER_FILE_PATH"),
                     name=row.get("NA_SERVER_FILE_NAME"),
                 )

@@ -2,7 +2,7 @@
 Validation tests for `webfusion.modules.tasks.service`.
 
 How to run:
-    /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_maintenance_service.py -q
+    /usr/local/bin/python -m pytest /RF.Fusion/test/tests/webfusion/test_maintenance_service.py -q
 
 What is covered here:
     - conservative guardrails for offline hosts and unsupported manual actions
@@ -20,9 +20,10 @@ import sys
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 
-WEBFUSION_ROOT = Path("/RFFusion/src/webfusion")
+WEBFUSION_ROOT = Path(__file__).resolve().parents[3] / "src" / "webfusion"
 
 
 def load_maintenance_service():
@@ -41,6 +42,112 @@ class TestMaintenanceService(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_maintenance_service()
+
+    def frozen_history_row(self) -> dict:
+        """Return metadata for a frozen processing task with a completed backup."""
+        service = self.module
+        return {
+            "ID_HISTORY": 20, "ID_FILE_TASK": 30, "FK_HOST": 201,
+            "NA_HOST_NAME": "host-online", "IS_OFFLINE": 0,
+            "ACTIVE_TASK_STATUS": service.TASK_FROZEN,
+            "NU_STATUS_DISCOVERY": service.TASK_DONE,
+            "NU_STATUS_BACKUP": service.TASK_DONE,
+            "NU_STATUS_PROCESSING": service.TASK_FROZEN,
+            "NA_HOST_FILE_PATH": "/host", "NA_HOST_FILE_NAME": "sample.bin",
+            "NA_SERVER_FILE_PATH": "/repository", "NA_SERVER_FILE_NAME": "sample.bin",
+            "NA_EXTENSION_SERVER": ".bin", "VL_FILE_SIZE_KB_SERVER": 10,
+            "DT_FILE_CREATED_SERVER": None, "DT_FILE_MODIFIED_SERVER": None,
+            "DT_BACKUP": datetime(2026, 9, 1),
+        }
+
+    def test_history_allows_only_frozen_existing_tasks(self) -> None:
+        service = self.module
+        row = self.frozen_history_row()
+        for state in (service.TASK_FROZEN, service.TASK_RUNNING,
+                      service.TASK_PENDING, service.TASK_SUSPENDED, service.TASK_ERROR):
+            with self.subTest(state=state):
+                row["ACTIVE_TASK_STATUS"] = state
+                reason = service._validate_history_action(
+                    row, target_stage=service.HISTORY_TARGET_PROCESS,
+                    target_status=service.TASK_PENDING,
+                )
+                self.assertEqual(reason, None if state == service.TASK_FROZEN else "live_file_task_exists")
+
+    def test_frozen_history_preserves_stage_prerequisites(self) -> None:
+        service = self.module
+        cases = (
+            ({"NU_STATUS_BACKUP": service.TASK_ERROR}, service.HISTORY_TARGET_PROCESS, "backup_not_done"),
+            ({"NA_SERVER_FILE_NAME": None}, service.HISTORY_TARGET_PROCESS, "missing_server_identity"),
+            ({"IS_OFFLINE": 1}, service.HISTORY_TARGET_BACKUP, "host_offline"),
+            ({"NU_STATUS_DISCOVERY": service.TASK_ERROR}, service.HISTORY_TARGET_BACKUP, "discovery_not_done"),
+        )
+        for changes, stage, expected in cases:
+            with self.subTest(changes=changes):
+                self.assertEqual(service._validate_history_action(
+                    self.frozen_history_row() | changes,
+                    target_stage=stage, target_status=service.TASK_PENDING,
+                ), expected)
+
+    def test_history_frozen_transition_is_atomic_and_preserves_task_id(self) -> None:
+        service = self.module
+        row = self.frozen_history_row()
+        for stage in (service.HISTORY_TARGET_BACKUP, service.HISTORY_TARGET_PROCESS):
+            for failure in (None, "queue", "history"):
+                with self.subTest(stage=stage, failure=failure):
+                    events = []
+
+                    class Cursor:
+                        rowcount = 1
+
+                        def execute(self, sql, params=None):
+                            sql = " ".join(sql.split())
+                            events.append((sql, params))
+                            if sql.startswith("UPDATE FILE_TASK_HISTORY"):
+                                self.rowcount = 0 if failure == "history" else 1
+                            elif sql.startswith("UPDATE FILE_TASK"):
+                                self.rowcount = 0 if failure == "queue" else 1
+
+                        def fetchall(self):
+                            return [row]
+
+                    class DB:
+                        def cursor(self):
+                            return Cursor()
+
+                        def commit(self):
+                            events.append(("commit", None))
+
+                        def rollback(self):
+                            events.append(("rollback", None))
+
+                    with patch.object(service, "_publish_summary_scope") as publish:
+                        if failure:
+                            with self.assertRaises(RuntimeError):
+                                service.apply_history_action(DB(), [20], target_stage=stage,
+                                                             target_status=service.TASK_PENDING)
+                            self.assertEqual(events[-1][0], "rollback")
+                            self.assertNotIn(("commit", None), events)
+                            publish.assert_not_called()
+                        else:
+                            result = service.apply_history_action(DB(), [20], target_stage=stage,
+                                                                  target_status=service.TASK_PENDING)
+                            self.assertEqual(result["updated_count"], 1)
+                            self.assertEqual(events[-1][0], "commit")
+                            publish.assert_called_once()
+
+                    self.assertEqual(events[0][0], "START TRANSACTION")
+                    self.assertIn("FOR UPDATE", events[1][0])
+                    self.assertFalse(any(sql.startswith("INSERT") for sql, _ in events))
+                    sql, params = events[2]
+                    self.assertIn("WHERE ID_FILE_TASK = %s AND NU_STATUS = %s", sql)
+                    self.assertEqual(params[-2:], (30, service.TASK_FROZEN))
+                    self.assertEqual(params[1], service.TASK_PENDING)
+                    if stage == service.HISTORY_TARGET_BACKUP:
+                        self.assertEqual(params[2:8], (None,) * 6)
+                    else:
+                        self.assertEqual(params[2:4], ("/repository", "sample.bin"))
+                    if not failure:
+                        self.assertIn("NA_ERROR_CODE = NULL", events[3][0])
 
     def test_format_brazil_datetime_converts_utc_to_brazil_time(self):
         rendered = self.module._format_brazil_datetime(

@@ -345,6 +345,15 @@ fila de arquivos e a recuperação pelo histórico. As consultas são limitadas.
 Uma consulta ao histórico sem filtros é ordenada pelas entradas processadas
 mais recentes, evitando carregamentos integrais da tabela de histórico.
 
+No histórico (`/tasks/history`), tarefas congeladas que ainda existem na fila
+podem ter a etapa (backup ou processamento) e a situação inicial ajustadas
+manualmente, preservando o ID da tarefa. Registros sem tarefa associada geram
+uma nova tarefa. A seleção é validada novamente no servidor: as etapas anteriores
+devem estar concluídas, o processamento exige a identificação do arquivo no
+servidor e o backup em espera exige host online. Tarefas existentes em outros
+estados continuam bloqueadas no histórico. A fila e o histórico são atualizados
+na mesma transação, limpando o erro anterior para a nova tentativa.
+
 As ações disponíveis são validadas no servidor conforme o estágio e a situação
 selecionados. O módulo não substitui a máquina de estados do appCataloga.
 
