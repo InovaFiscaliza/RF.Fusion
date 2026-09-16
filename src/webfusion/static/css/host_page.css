@@ -793,3 +793,65 @@
         text-align: left;
     }
 }
+.host-location-note {
+    color: var(--wf-muted, #52657d);
+    font-size: 0.85rem;
+    margin: 0 0 1.5rem;
+}
+
+.host-location-timeline {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.host-location-visit {
+    position: relative;
+    margin-left: 0.5rem;
+    padding: 0 0 1.25rem 1.75rem;
+    border-left: 2px solid #d5e2f1;
+}
+
+.host-location-visit::before {
+    content: "";
+    position: absolute;
+    left: -0.4375rem;
+    top: 1.3rem;
+    width: 0.75rem;
+    height: 0.75rem;
+    border-radius: 50%;
+    background: #0869c4;
+    box-shadow: 0 0 0 4px #fff;
+}
+
+.host-location-visit:last-child { padding-bottom: 0; }
+
+.host-location-entry {
+    padding: 1.1rem 1.25rem;
+    border: 1px solid #d5e2f1;
+    border-radius: 0.65rem;
+    background: #fff;
+}
+
+.host-location-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+}
+
+.host-location-heading h3 { margin: 0; font-size: 1rem; }
+.host-location-latest {
+    background: #edf5ff;
+    color: #065aaa;
+    border-radius: 1rem;
+    padding: 0.2rem 0.65rem;
+    font-size: 0.75rem;
+}
+
+.host-location-meta { margin: 0.5rem 0 1rem; font-size: 0.85rem; }
+.host-location-dates { display: flex; flex-wrap: wrap; gap: 1rem 3rem; margin: 0; }
+.host-location-dates dt { font-size: 0.8rem; color: #52657d; margin-bottom: 0.25rem; }
+.host-location-dates dd { margin: 0; font-variant-numeric: tabular-nums; }
+.host-location-overlap { margin: 1rem 0 0; color: #865300; font-size: 0.85rem; }
+.host-location-status { padding: 1rem 0; }

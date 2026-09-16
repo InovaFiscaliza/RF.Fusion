@@ -1514,8 +1514,22 @@ def _build_host_yearly_breakdowns(monthly_rows):
     return backup_rows, processing_rows
 
 
-def _get_host_location_history(host_id):
-    """Read one host locality history payload from ``HOST_LOCATION_SUMMARY``."""
+def _get_host_location_history(host_id: int) -> dict:
+    """Read observed visits from the chronological summary.
+
+    Args:
+        host_id: Station identifier (int).
+
+    Returns:
+        dict with equipment_matches (list[dict] containing ID_EQUIPMENT,
+        NA_EQUIPMENT, MATCH_TYPE and MATCH_CONFIDENCE) and location_history
+        (list[dict], newest first, containing NU_VISIT, site/geographic IDs,
+        locality labels, FIRST_SEEN_AT/LAST_SEEN_AT formatted strings,
+        SPECTRUM_COUNT and IS_OVERLAPPING).
+
+    Raises:
+        Exception: Summary database read failure.
+    """
 
     normalized_host_id = int(host_id)
     now = time.monotonic()
@@ -1525,54 +1539,59 @@ def _get_host_location_history(host_id):
         return cached["payload"]
 
     conn = get_connection_summary()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT
-            FK_EQUIPMENT AS ID_EQUIPMENT,
-            NA_EQUIPMENT,
-            NA_MATCH_TYPE AS MATCH_TYPE,
-            VL_MATCH_CONFIDENCE AS MATCH_CONFIDENCE
-        FROM HOST_EQUIPMENT_LINK
-        WHERE FK_HOST = %s
-          AND IS_ACTIVE = 1
-          AND IS_PRIMARY_LINK = 1
-        ORDER BY IS_MANUAL_OVERRIDE DESC, VL_MATCH_CONFIDENCE DESC, NA_EQUIPMENT ASC
-        """,
-        (normalized_host_id,),
-    )
-    equipment_matches = cur.fetchall()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                FK_EQUIPMENT AS ID_EQUIPMENT,
+                NA_EQUIPMENT,
+                NA_MATCH_TYPE AS MATCH_TYPE,
+                VL_MATCH_CONFIDENCE AS MATCH_CONFIDENCE
+            FROM HOST_EQUIPMENT_LINK
+            WHERE FK_HOST = %s
+              AND IS_ACTIVE = 1
+              AND IS_PRIMARY_LINK = 1
+            ORDER BY IS_MANUAL_OVERRIDE DESC, VL_MATCH_CONFIDENCE DESC, NA_EQUIPMENT ASC
+            """,
+            (normalized_host_id,),
+        )
+        equipment_matches = cur.fetchall()
 
-    cur.execute(
-        """
-        SELECT
-            FK_SITE AS ID_SITE,
-            FK_COUNTY AS ID_COUNTY,
-            FK_DISTRICT AS ID_DISTRICT,
-            NA_LOCALITY_LABEL AS LOCALITY_LABEL,
-            NA_COUNTY_NAME AS COUNTY_NAME,
-            NA_STATE_NAME AS STATE_NAME,
-            NA_STATE_CODE AS STATE_CODE,
-            DT_FIRST_SEEN_AT AS FIRST_SEEN_AT,
-            DT_LAST_SEEN_AT AS LAST_SEEN_AT,
-            NU_SPECTRUM_COUNT AS SPECTRUM_COUNT
-        FROM HOST_LOCATION_SUMMARY
-        WHERE FK_HOST = %s
-        ORDER BY
-            IS_CURRENT_LOCATION DESC,
-            COALESCE(DT_LAST_SEEN_AT, DT_FIRST_SEEN_AT) DESC,
-            FK_SITE ASC
-        """,
-        (normalized_host_id,),
-    )
-    location_history = cur.fetchall()
-    conn.close()
+        cur.execute(
+            """
+            SELECT
+                visit.NU_VISIT,
+                visit.FK_SITE AS ID_SITE,
+                location.FK_COUNTY AS ID_COUNTY,
+                location.FK_DISTRICT AS ID_DISTRICT,
+                location.NA_LOCALITY_LABEL AS LOCALITY_LABEL,
+                location.NA_COUNTY_NAME AS COUNTY_NAME,
+                location.NA_STATE_NAME AS STATE_NAME,
+                location.NA_STATE_CODE AS STATE_CODE,
+                DATE_FORMAT(visit.DT_FIRST_SEEN_AT, '%%d/%%m/%%Y %%H:%%i:%%s') AS FIRST_SEEN_AT,
+                DATE_FORMAT(visit.DT_LAST_SEEN_AT, '%%d/%%m/%%Y %%H:%%i:%%s') AS LAST_SEEN_AT,
+                visit.NU_SPECTRUM_COUNT AS SPECTRUM_COUNT,
+                visit.IS_OVERLAPPING
+            FROM HOST_LOCATION_TIMELINE_SUMMARY visit
+            LEFT JOIN HOST_LOCATION_SUMMARY location
+              ON location.FK_HOST = visit.FK_HOST AND location.FK_SITE = visit.FK_SITE
+            WHERE visit.FK_HOST = %s
+            ORDER BY visit.DT_FIRST_SEEN_AT DESC, visit.NU_VISIT DESC
+            """,
+            (normalized_host_id,),
+        )
+        location_history = cur.fetchall()
+    finally:
+        conn.close()
 
     for row in equipment_matches:
         row["ID_EQUIPMENT"] = int(row.get("ID_EQUIPMENT") or 0)
         row["MATCH_CONFIDENCE"] = float(row.get("MATCH_CONFIDENCE") or 0)
 
     for row in location_history:
+        row["NU_VISIT"] = int(row.get("NU_VISIT") or 0)
+        row["IS_OVERLAPPING"] = bool(row.get("IS_OVERLAPPING"))
         row["ID_SITE"] = int(row.get("ID_SITE") or 0)
         row["ID_COUNTY"] = int(row["ID_COUNTY"]) if row.get("ID_COUNTY") is not None else None
         row["ID_DISTRICT"] = int(row["ID_DISTRICT"]) if row.get("ID_DISTRICT") is not None else None

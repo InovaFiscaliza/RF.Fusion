@@ -10,7 +10,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260826-transfer-progress') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260915-location-timeline') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/station_connectivity_test.css', v='20260813-station-test') }}">
 {% endblock %}
 
@@ -403,15 +403,13 @@
         <section class="card background-neutral-0 padding-l border-radius-m host-section-card">
             <div class="host-section-head">
                 <div class="host-section-kicker">Localização</div>
-                <h2 class="host-section-title">Histórico de Localidades</h2>
-                <p class="host-section-copy">Trilhas de site e localidade observadas para a estação dentro do catálogo espectral.</p>
+                <h2 class="host-section-title">Linha do tempo de localidades</h2>
+                <p class="host-section-copy">Passagens pela localidade, da mais recente para a mais antiga. Retornos ao mesmo site aparecem separadamente.</p>
             </div>
-            <div class="annual-breakdown">
-                <table class="stats-table">
-                    <thead><tr><th>Site</th><th>Localidade</th><th>Cidade / UF</th><th>Primeira medição</th><th>Última medição</th><th>Espectros</th></tr></thead>
-                    <tbody id="host-location-history-rows"><tr><td colspan="6" class="summary-card-value-loading">CARREGANDO</td></tr></tbody>
-                </table>
-            </div>
+            <p class="host-location-note">Início e fim correspondem às medições do catálogo, não às datas de chegada e saída. Intervalos sem medições não comprovam permanência no local.</p>
+            <ol id="host-location-history-rows" class="host-location-timeline" aria-label="Passagens por localidade" aria-live="polite">
+                <li class="host-location-status summary-card-value-loading">CARREGANDO</li>
+            </ol>
         </section>
         {% endif %}
     </div>
@@ -420,5 +418,5 @@
 
 {% block extra_js %}
 <script src="{{ url_for('static', filename='js/station_connectivity_test.js', v='20260819-station-test-details') }}"></script>
-<script src="{{ url_for('static', filename='js/host_page.js', v='20260826-activity-transfer-progress') }}"></script>
+<script src="{{ url_for('static', filename='js/host_page.js', v='20260915-location-timeline') }}"></script>
 {% endblock %}

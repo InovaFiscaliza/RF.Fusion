@@ -84,6 +84,9 @@ class FakeSummaryDb:
     def read_host_current_snapshot_signals(self):
         return self.host_current_snapshot_sources.get("signal_rows", [])
 
+    def read_timeline_hosts(self, **kwargs):
+        return []
+
 
 class FakeSummaryLog:
     def __init__(self) -> None:
@@ -98,6 +101,41 @@ class FakeSummaryLog:
 
 
 class SummaryWorkerEngineTests(unittest.TestCase):
+    def test_location_timeline_preserves_returns_and_marks_both_overlaps(self) -> None:
+        db = FakeSummaryDb()
+        visits = [
+            {"FK_SITE": 48, "DT_FIRST_SEEN_AT": datetime(2024, 1, 1),
+             "DT_LAST_SEEN_AT": datetime(2024, 8, 1)},
+            {"FK_SITE": 58, "DT_FIRST_SEEN_AT": datetime(2024, 8, 26),
+             "DT_LAST_SEEN_AT": datetime(2024, 9, 3)},
+            {"FK_SITE": 171, "DT_FIRST_SEEN_AT": datetime(2024, 9, 17),
+             "DT_LAST_SEEN_AT": datetime(2024, 9, 24)},
+            {"FK_SITE": 170, "DT_FIRST_SEEN_AT": datetime(2024, 9, 21),
+             "DT_LAST_SEEN_AT": datetime(2024, 9, 23)},
+            {"FK_SITE": 48, "DT_FIRST_SEEN_AT": datetime(2025, 1, 1),
+             "DT_LAST_SEEN_AT": datetime(2026, 9, 14)},
+        ]
+        db.read_timeline_hosts = lambda **kwargs: [10]
+        db.read_host_location_visits = lambda host_id: visits
+        published = []
+        db.replace_host_location_visits = lambda host_id, rows: published.extend(rows) or len(rows)
+        engine = SummaryRefreshEngine(db=db, logger=FakeSummaryLog())
+        count, _ = engine.refresh_location_timeline(host_ids={10})
+        self.assertEqual(count, 5)
+        self.assertEqual([row["FK_SITE"] for row in published], [48, 58, 171, 170, 48])
+        self.assertEqual([row["IS_OVERLAPPING"] for row in published], [0, 0, 1, 1, 0])
+        self.assertEqual(published[2]["DT_LAST_SEEN_AT"], datetime(2024, 9, 24))
+
+    def test_location_timeline_clears_hosts_without_dated_spectra(self) -> None:
+        db = FakeSummaryDb()
+        db.read_timeline_hosts = lambda **kwargs: [10]
+        db.read_host_location_visits = lambda host_id: []
+        published = []
+        db.replace_host_location_visits = lambda host_id, rows: published.append((host_id, rows)) or 0
+        engine = SummaryRefreshEngine(db=db, logger=FakeSummaryLog())
+        self.assertEqual(engine.refresh_location_timeline(host_ids={10})[0], 0)
+        self.assertEqual(published, [(10, [])])
+
     def test_dirty_scope_merges_all_outbox_rows(self) -> None:
         scope = DirtyScope.from_outbox_rows(
             [
@@ -176,6 +214,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         engine._refresh_site_equipment_obs_summary = lambda **kwargs: call_order.append("SITE_EQUIPMENT_OBS_SUMMARY") or (1, "ok")
         engine._refresh_host_equipment_link = lambda: call_order.append("HOST_EQUIPMENT_LINK") or (1, "ok")
         engine._refresh_host_location_summary = lambda: call_order.append("HOST_LOCATION_SUMMARY") or (1, "ok")
+        engine.refresh_location_timeline = lambda **kwargs: call_order.append("HOST_LOCATION_TIMELINE_SUMMARY") or (1, "ok")
         engine._refresh_map_site_station_summary = lambda: call_order.append("MAP_SITE_STATION_SUMMARY") or (1, "ok")
         engine._refresh_map_site_summary = lambda: call_order.append("MAP_SITE_SUMMARY") or (1, "ok")
         engine._refresh_host_monthly_metric = lambda **kwargs: call_order.append("HOST_MONTHLY_METRIC") or (1, "ok")
@@ -212,6 +251,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
                 "HOST_LOCATION_SUMMARY",
                 "MAP_SITE_STATION_SUMMARY",
                 "MAP_SITE_SUMMARY",
+                "HOST_LOCATION_TIMELINE_SUMMARY",
                 "HOST_MONTHLY_METRIC",
                 "HOST_ERROR_SUMMARY",
                 "SERVER_ERROR_SUMMARY",
@@ -249,6 +289,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         engine._refresh_site_equipment_obs_summary = lambda **kwargs: call_order.append("SITE_EQUIPMENT_OBS_SUMMARY") or (1, "ok")
         engine._refresh_host_equipment_link = lambda: call_order.append("HOST_EQUIPMENT_LINK") or (1, "ok")
         engine._refresh_host_location_summary = lambda: call_order.append("HOST_LOCATION_SUMMARY") or (1, "ok")
+        engine.refresh_location_timeline = lambda **kwargs: call_order.append("HOST_LOCATION_TIMELINE_SUMMARY") or (1, "ok")
         engine._refresh_map_site_station_summary = lambda: call_order.append("MAP_SITE_STATION_SUMMARY") or (1, "ok")
         engine._refresh_map_site_summary = lambda: call_order.append("MAP_SITE_SUMMARY") or (1, "ok")
         engine._refresh_host_monthly_metric = lambda **kwargs: call_order.append("HOST_MONTHLY_METRIC") or (1, "ok")
@@ -259,7 +300,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
 
         engine.refresh_all(reason="test")
 
-        self.assertEqual(len(call_order), 10)
+        self.assertEqual(len(call_order), 11)
         self.assertEqual(call_order[0], "SITE_EQUIPMENT_OBS_SUMMARY")
         self.assertEqual(call_order[-1], "SERVER_CURRENT_SUMMARY")
 

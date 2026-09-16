@@ -959,6 +959,151 @@ class dbHandlerSummary(DBHandlerBase):
         finally:
             self._disconnect()
 
+    def read_timeline_hosts(
+        self, *, host_ids: set[int] | None = None,
+        site_ids: set[int] | None = None, equipment_ids: set[int] | None = None,
+    ) -> list[int]:
+        """Find hosts whose chronological location history must be rebuilt.
+
+        Args:
+            host_ids: Explicit affected host IDs (set[int]) or None.
+            site_ids: Affected current or historical site IDs (set[int]) or None.
+            equipment_ids: Affected linked equipment IDs (set[int]) or None.
+                All three None select every linked or previously published host.
+
+        Returns:
+            Sorted unique host IDs (list[int]), including obsolete histories.
+
+        Raises:
+            Exception: Database read failure.
+        """
+        full_refresh = host_ids is None and site_ids is None and equipment_ids is None
+        params = []
+        clauses = []
+        for column, values in (
+            ("link.FK_HOST", host_ids),
+            ("obs.FK_SITE", site_ids),
+            ("link.FK_EQUIPMENT", equipment_ids),
+        ):
+            if values:
+                clauses.append(f"{column} IN ({','.join(['%s'] * len(values))})")
+                params.extend(sorted(values))
+        link_filter = "1 = 1" if full_refresh else " OR ".join(clauses) or "1 = 0"
+        old_clauses = []
+        for column, values in (("FK_HOST", host_ids), ("FK_SITE", site_ids)):
+            if values:
+                old_clauses.append(f"{column} IN ({','.join(['%s'] * len(values))})")
+                params.extend(sorted(values))
+        old_filter = "1 = 1" if full_refresh else " OR ".join(old_clauses) or "1 = 0"
+        self._connect()
+        try:
+            rows = self._select_raw(
+                f"""
+                SELECT DISTINCT link.FK_HOST
+                FROM HOST_EQUIPMENT_LINK link
+                LEFT JOIN SITE_EQUIPMENT_OBS_SUMMARY obs
+                  ON obs.FK_EQUIPMENT = link.FK_EQUIPMENT
+                WHERE {link_filter}
+                UNION
+                SELECT FK_HOST FROM HOST_LOCATION_TIMELINE_SUMMARY
+                WHERE {old_filter}
+                ORDER BY FK_HOST
+                """, tuple(params),
+            )
+            return sorted({int(row["FK_HOST"]) for row in rows} | set(host_ids or ()))
+        finally:
+            self._disconnect()
+
+    def read_host_location_visits(self, host_id: int) -> list[dict]:
+        """Aggregate consecutive site visits from one host's dated spectra.
+
+        Args:
+            host_id: Host identifier (int); only active primary links are used.
+
+        Returns:
+            Chronologically ordered list[dict] with required keys FK_HOST (int),
+            NU_VISIT (int), FK_SITE (int), DT_FIRST_SEEN_AT (datetime),
+            DT_LAST_SEEN_AT (datetime), NU_SPECTRUM_COUNT (int).
+            Spectra lacking a start time or site are excluded.
+
+        Raises:
+            Exception: Read failure or per-host query timeout.
+        """
+        self._connect()
+        try:
+            return self._select_raw(
+                f"""
+                SET STATEMENT max_statement_time={k.SUMMARY_TIMELINE_QUERY_TIMEOUT_SEC} FOR
+                WITH ordered AS (
+                    SELECT f.ID_SPECTRUM, f.FK_SITE, f.DT_TIME_START,
+                           GREATEST(f.DT_TIME_START, COALESCE(f.DT_TIME_END, f.DT_TIME_START)) AS DT_TIME_END,
+                           LAG(f.FK_SITE) OVER (
+                               ORDER BY f.DT_TIME_START, f.FK_SITE, f.ID_SPECTRUM
+                           ) AS PREVIOUS_SITE
+                    FROM {k.RFM_DATABASE_NAME}.FACT_SPECTRUM f
+                    JOIN HOST_EQUIPMENT_LINK link ON link.FK_EQUIPMENT = f.FK_EQUIPMENT
+                    WHERE link.FK_HOST = %s AND link.IS_ACTIVE = 1
+                      AND link.IS_PRIMARY_LINK = 1
+                      AND f.DT_TIME_START IS NOT NULL AND f.FK_SITE IS NOT NULL
+                ), visits AS (
+                    SELECT *, SUM(CASE WHEN PREVIOUS_SITE = FK_SITE THEN 0 ELSE 1 END)
+                        OVER (ORDER BY DT_TIME_START, FK_SITE, ID_SPECTRUM
+                              ROWS UNBOUNDED PRECEDING) AS NU_VISIT
+                    FROM ordered
+                )
+                SELECT %s AS FK_HOST, NU_VISIT, FK_SITE,
+                       MIN(DT_TIME_START) AS DT_FIRST_SEEN_AT,
+                       MAX(DT_TIME_END) AS DT_LAST_SEEN_AT,
+                       COUNT(*) AS NU_SPECTRUM_COUNT
+                FROM visits GROUP BY NU_VISIT, FK_SITE
+                ORDER BY NU_VISIT
+                """, (host_id, host_id),
+            )
+        finally:
+            self._disconnect()
+
+    def replace_host_location_visits(self, host_id: int, rows: list[dict]) -> int:
+        """Atomically publish one host's complete visit sequence.
+
+        Args:
+            host_id: Host identifier (int).
+            rows: list[dict] from read_host_location_visits, enriched with
+                IS_OVERLAPPING (int) and DT_REFRESHED_AT (datetime).
+                An empty list removes an obsolete history.
+
+        Returns:
+            Number of published visits (int).
+
+        Raises:
+            Exception: Write failure; the previous history is rolled back.
+        """
+        self._connect()
+        try:
+            self.db_connection.start_transaction()
+            self._execute_custom(
+                "DELETE FROM HOST_LOCATION_TIMELINE_SUMMARY WHERE FK_HOST = %s",
+                (host_id,), commit=False,
+            )
+            if rows:
+                columns = ("FK_HOST", "NU_VISIT", "FK_SITE", "DT_FIRST_SEEN_AT",
+                           "DT_LAST_SEEN_AT", "NU_SPECTRUM_COUNT", "IS_OVERLAPPING",
+                           "DT_REFRESHED_AT")
+                sql = (f"INSERT INTO HOST_LOCATION_TIMELINE_SUMMARY ({','.join(columns)}) "
+                       f"VALUES ({','.join(['%s'] * len(columns))})")
+                for offset in range(0, len(rows), k.SUMMARY_WORKER_BATCH_SIZE):
+                    self._execute_many_custom(
+                        sql, [tuple(row[column] for column in columns)
+                              for row in rows[offset:offset + k.SUMMARY_WORKER_BATCH_SIZE]],
+                        commit=False,
+                    )
+            self.db_connection.commit()
+            return len(rows)
+        except Exception:
+            self.db_connection.rollback()
+            raise
+        finally:
+            self._disconnect()
+
     def replace_table_rows(self, table: str, rows: List[Dict[str, Any]]) -> int:
         """Atomically replace all rows in a summary table using a shadow-table swap.
 

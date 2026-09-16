@@ -1,9 +1,10 @@
 /* =====================================================================
    createFusionSummaryDB.sql
-   Canonical RFFUSION_SUMMARY schema — current as of schema v15.
+   Canonical RFFUSION_SUMMARY schema — current as of schema v16.
 
    Changelog
    ---------
+   v16 — host location timeline with separate return visits.
    v1 — initial schema reconciled with the live MariaDB instance.
    v2 — geography keys (FK_COUNTY, FK_DISTRICT) promoted into
         SITE_EQUIPMENT_OBS_SUMMARY, HOST_LOCATION_SUMMARY and
@@ -172,6 +173,20 @@ CREATE TABLE `HOST_LOCATION_SUMMARY` (
   PRIMARY KEY (`FK_HOST`,`FK_SITE`),
   KEY `IX_HOST_LOCATION_CURRENT` (`FK_HOST`,`IS_CURRENT_LOCATION`,`DT_LAST_SEEN_AT`),
   KEY `IX_HOST_LOCATION_SITE` (`FK_SITE`,`DT_LAST_SEEN_AT`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+CREATE TABLE HOST_LOCATION_TIMELINE_SUMMARY (
+  FK_HOST int(11) NOT NULL,
+  NU_VISIT bigint(20) NOT NULL,
+  FK_SITE int(11) NOT NULL,
+  DT_FIRST_SEEN_AT datetime NOT NULL,
+  DT_LAST_SEEN_AT datetime NOT NULL,
+  NU_SPECTRUM_COUNT bigint(20) NOT NULL,
+  IS_OVERLAPPING tinyint(1) NOT NULL DEFAULT 0,
+  DT_REFRESHED_AT datetime NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (FK_HOST, NU_VISIT),
+  KEY IX_HOST_TIMELINE_DATE (FK_HOST, DT_FIRST_SEEN_AT),
+  KEY IX_HOST_TIMELINE_SITE (FK_SITE, FK_HOST)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 CREATE TABLE `MAP_SITE_STATION_SUMMARY` (

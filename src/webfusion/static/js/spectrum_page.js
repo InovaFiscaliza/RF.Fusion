@@ -527,7 +527,20 @@
         }
 
         const shouldHighlightMatches = rows.some((row) => Number(row.IS_MATCH) !== 1);
-        const body = rows.map((row) => {
+        const sorted_rows = [...rows].sort((left, right) => {
+            // HTML collapses whitespace; compare plans as they appear in the table.
+            const left_plan = (left.NA_DESCRIPTION || "").trim().replace(/\s+/g, " ");
+            const right_plan = (right.NA_DESCRIPTION || "").trim().replace(/\s+/g, " ");
+            const plan_order = left_plan.localeCompare(right_plan, "pt-BR", {
+                numeric: true,
+                sensitivity: "base",
+            });
+
+            return plan_order
+                || Number(left.NU_FREQ_START) - Number(right.NU_FREQ_START)
+                || Number(left.NU_FREQ_END) - Number(right.NU_FREQ_END);
+        });
+        const body = sorted_rows.map((row) => {
             const isMatch = shouldHighlightMatches && Number(row.IS_MATCH) === 1;
 
             return `

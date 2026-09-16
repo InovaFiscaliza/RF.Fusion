@@ -500,6 +500,7 @@ class SummaryRefreshEngine:
                 ("SITE_EQUIPMENT_OBS_SUMMARY", self._refresh_site_equipment_obs_summary),
                 ("HOST_EQUIPMENT_LINK", self._refresh_host_equipment_link),
                 ("HOST_LOCATION_SUMMARY", self._refresh_host_location_summary),
+                ("HOST_LOCATION_TIMELINE_SUMMARY", self.refresh_location_timeline),
                 ("MAP_SITE_STATION_SUMMARY", self._refresh_map_site_station_summary),
                 ("MAP_SITE_SUMMARY", self._refresh_map_site_summary),
                 ("HOST_MONTHLY_METRIC", self._refresh_host_monthly_metric),
@@ -614,8 +615,14 @@ class SummaryRefreshEngine:
             return self.refresh_all(reason="outbox_full_reconcile")
 
         refreshed: List[str] = []
+        timeline_host_ids = set(scope.host_ids)
 
         if scope.site_ids or scope.equipment_ids:
+            # Keep former owners when equipment matching changes during this refresh.
+            timeline_host_ids.update(self.db.read_timeline_hosts(
+                host_ids=scope.host_ids, site_ids=scope.site_ids,
+                equipment_ids=scope.equipment_ids,
+            ))
             refreshed.append(
                 self._run_refresh(
                     "SITE_EQUIPMENT_OBS_SUMMARY",
@@ -632,6 +639,15 @@ class SummaryRefreshEngine:
                 ("MAP_SITE_SUMMARY", self._refresh_map_site_summary),
             ):
                 refreshed.append(self._run_refresh(object_name, refresh_fn))
+
+        if scope.site_ids or scope.equipment_ids:
+            refreshed.append(self._run_refresh(
+                "HOST_LOCATION_TIMELINE_SUMMARY",
+                lambda: self.refresh_location_timeline(
+                    host_ids=timeline_host_ids, site_ids=scope.site_ids,
+                    equipment_ids=scope.equipment_ids,
+                ),
+            ))
 
         if scope.host_ids or scope.reference_months:
             refreshed.append(
@@ -1437,6 +1453,45 @@ class SummaryRefreshEngine:
         self.db.replace_table_rows("HOST_LOCATION_SUMMARY", payload_rows)
         watermark = f"rows={len(payload_rows)}"
         return len(payload_rows), watermark
+
+    def refresh_location_timeline(
+        self, *, host_ids: set[int] | None = None,
+        site_ids: set[int] | None = None, equipment_ids: set[int] | None = None,
+    ) -> tuple[int, str]:
+        """Publish observed visits, preserving returns and conflicting intervals.
+
+        Args:
+            host_ids: Affected host IDs (set[int]) or None.
+            site_ids: Affected site IDs (set[int]) or None.
+            equipment_ids: Affected equipment IDs (set[int]) or None.
+                All three None rebuild every linked or previously published host.
+
+        Returns:
+            tuple[int, str]: Published visit count and compact refresh watermark.
+
+        Raises:
+            Exception: Read or publish failure; the failing host stays unchanged.
+        """
+        hosts = self.db.read_timeline_hosts(
+            host_ids=host_ids, site_ids=site_ids, equipment_ids=equipment_ids,
+        )
+        row_count = 0
+        for host_id in hosts:
+            visits = self.db.read_host_location_visits(host_id)
+            active_visits = []
+            refreshed_at = datetime.utcnow()
+            for visit in visits:
+                visit["IS_OVERLAPPING"] = 0
+                visit["DT_REFRESHED_AT"] = refreshed_at
+                active_visits = [previous for previous in active_visits
+                                 if previous["DT_LAST_SEEN_AT"] >= visit["DT_FIRST_SEEN_AT"]]
+                for previous in active_visits:
+                    if previous["FK_SITE"] != visit["FK_SITE"]:
+                        previous["IS_OVERLAPPING"] = 1
+                        visit["IS_OVERLAPPING"] = 1
+                active_visits.append(visit)
+            row_count += self.db.replace_host_location_visits(host_id, visits)
+        return row_count, f"hosts={len(hosts)} visits={row_count}"
 
     def _refresh_map_site_station_summary(self) -> Tuple[int, str]:
         """Rebuild the station-level map-marker table consumed by ``webfusion``.

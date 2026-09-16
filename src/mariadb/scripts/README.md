@@ -68,6 +68,7 @@ Tabelas centrais:
 - `HOST_EQUIPMENT_LINK`
 - `SITE_EQUIPMENT_OBS_SUMMARY`
 - `HOST_LOCATION_SUMMARY`
+- `HOST_LOCATION_TIMELINE_SUMMARY`: passagens consecutivas, incluindo retornos
 - `MAP_SITE_STATION_SUMMARY`
 - `MAP_SITE_SUMMARY`
 - `HOST_MONTHLY_METRIC`
@@ -96,6 +97,46 @@ O fluxo lógico do dado é este:
    usa `RFFUSION_SUMMARY` para mapas, snapshots e métricas agregadas.
 
 ## Scripts de Bootstrap
+
+### Migração da linha do tempo de localidades
+
+Aplicar [migrateHostLocationTimeline.sql](migrateHostLocationTimeline.sql) em
+instâncias existentes, usando o cliente MariaDB com as credenciais operacionais.
+Não executar o bootstrap completo para essa atualização.
+
+```bash
+mariadb RFFUSION_SUMMARY < src/mariadb/scripts/migrateHostLocationTimeline.sql
+```
+
+A tabela antiga `HOST_LOCATION_SUMMARY` mantém uma linha por host/site e continua
+atendendo seus consumidores. A nova tabela mantém uma linha por passagem, com
+início/fim das medições, quantidade de espectros e sinalização de sobreposição
+entre sites. Não representa permanência comprovada nos intervalos sem medições.
+
+Depois da migração, preencher o novo modelo pelo método público
+`SummaryRefreshEngine.refresh_location_timeline()` no container appCataloga.
+Para atualização dirigida, passar `host_ids={ID_HOST}`. Coordenar o preenchimento
+manual com o worker para evitar publicações simultâneas da mesma estação.
+O método percorre uma estação por vez, limita cada consulta a
+`SUMMARY_TIMELINE_QUERY_TIMEOUT_SEC` e publica cada histórico em uma transação.
+Monitorar CPU, memória e swap durante o preenchimento.
+
+Recarregar o worker do SUMMARY e reiniciar `rffusion-web` no host Podman após
+preencher a tabela. Eventos de site/equipamento recompõem as estações afetadas;
+a reconciliação diária recompõe todas. Eventos exclusivamente operacionais de
+host não provocam uma nova leitura dos espectros.
+
+Validação focada:
+
+```bash
+# Container appCataloga
+/opt/conda/envs/appdata/bin/python -m pytest test/tests/workers/test_summary_refresh_engine.py test/tests/db/test_dbhandler_summary.py -q
+# Container webserver, com pytest disponível no ambiente de validação
+/usr/local/bin/python -m pytest /RF.Fusion/test/tests/webfusion/test_host_service.py -k location_history -q
+```
+
+Na revisão visual de `/host`, conferir retornos ao mesmo site como entradas
+separadas, datas em português e avisos apenas quando os registros se sobrepõem.
 
 ### Schemas
 

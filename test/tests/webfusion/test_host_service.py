@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-MODULE_PATH = Path("/RFFusion/src/webfusion/modules/host/service.py")
+MODULE_PATH = Path(__file__).resolve().parents[3] / "src/webfusion/modules/host/service.py"
 
 
 def load_host_service():
@@ -1119,6 +1119,13 @@ class TestHostService(unittest.TestCase):
                 self.closed = True
 
         summary_cursor = FakeCursor()
+        summary_cursor.responses[1][0]["NU_VISIT"] = 3
+        summary_cursor.responses[1][0]["IS_OVERLAPPING"] = 1
+        earlier_visit = dict(summary_cursor.responses[1][0])
+        earlier_visit.update(NU_VISIT=1, IS_OVERLAPPING=0,
+                             FIRST_SEEN_AT="01/01/2024 10:00:00",
+                             LAST_SEEN_AT="02/01/2024 10:00:00")
+        summary_cursor.responses[1].append(earlier_visit)
         summary_connection = FakeConnection(summary_cursor)
 
         self.module._HOST_LOCATION_HISTORY_CACHE.clear()
@@ -1133,14 +1140,17 @@ class TestHostService(unittest.TestCase):
 
         self.assertEqual(len(payload["equipment_matches"]), 1)
         self.assertEqual(payload["equipment_matches"][0]["ID_EQUIPMENT"], 133)
-        self.assertEqual(len(payload["location_history"]), 1)
+        self.assertEqual(len(payload["location_history"]), 2)
+        self.assertEqual([row["NU_VISIT"] for row in payload["location_history"]], [3, 1])
+        self.assertEqual([row["IS_OVERLAPPING"] for row in payload["location_history"]], [True, False])
         self.assertEqual(payload["location_history"][0]["ID_SITE"], 237)
         self.assertEqual(payload["location_history"][0]["ID_COUNTY"], 3205309)
         self.assertEqual(payload["location_history"][0]["ID_DISTRICT"], 181)
         self.assertEqual(payload["location_history"][0]["SPECTRUM_COUNT"], 1925)
         self.assertTrue(summary_connection.closed)
         self.assertEqual(len(summary_cursor.executed), 2)
-        self.assertIn("FROM HOST_LOCATION_SUMMARY", summary_cursor.executed[1][0])
+        self.assertIn("FROM HOST_LOCATION_TIMELINE_SUMMARY", summary_cursor.executed[1][0])
+        self.assertIn("ORDER BY visit.DT_FIRST_SEEN_AT DESC", summary_cursor.executed[1][0])
 
 
 if __name__ == "__main__":

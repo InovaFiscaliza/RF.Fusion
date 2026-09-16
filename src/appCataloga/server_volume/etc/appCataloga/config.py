@@ -70,12 +70,13 @@ APP_ANALISE_CLIENT_NAME     = "Matlab"
 APP_ANALISE_REQUEST_TIMEOUT_SECONDS = 540
 APP_ANALISE_PROCESS_TIMEOUT = 1800
 APP_ANALISE_CONNECT_TIMEOUT = 15
-APP_ANALISE_WORKER_DETAIL   = "worker=APP_ANALISE"
-APP_ANALISE_EMPTY_SPEC_DATA_DETAIL = "handlers:FileReadHandler:EmptySpecData"
-APP_ANALISE_NO_SPECTRAL_DATA_DETAIL = "model:fileReader:CRFSBin:NoSpectralData"
+APP_ANALISE_CWSM_FILENAME_UTC_OFFSET_HOURS  = 3
+
+APP_ANALISE_MULTI_SITE_REPO_SUBDIR          = "appanalise_multi_site"
+APP_ANALISE_WORKER_DETAIL                   = "worker=APP_ANALISE"
+APP_ANALISE_EMPTY_SPEC_DATA_DETAIL          = "handlers:FileReadHandler:EmptySpecData"
+APP_ANALISE_NO_SPECTRAL_DATA_DETAIL         = "model:fileReader:CRFSBin:NoSpectralData"
 APP_ANALISE_NO_READABLE_FILES_IN_ZIP_DETAIL = "model:SpecDataBase:NoReadableFilesInZip"
-APP_ANALISE_CWSM_FILENAME_UTC_OFFSET_HOURS = 3
-APP_ANALISE_MULTI_SITE_REPO_SUBDIR = "appanalise_multi_site"
 #------------------------------------------
 # SSH LIMITS
 #------------------------------------------
@@ -243,11 +244,11 @@ HOST_CONN_AUTH_ERROR = "auth_error"
 
 # Stable operational error codes consumed by host-state persistence and
 # dashboard projections.
-ERROR_CODE_GPS_GNSS_UNAVAILABLE = "GPS_GNSS_UNAVAILABLE"
-HOST_OFFLINE_DESCRIPTION = "ICMP unreachable"
-SSH_FAILURE_CODE_AUTHENTICATION = "AUTHENTICATION"
-SSH_FAILURE_CODE_CONNECTIVITY = "CONNECTIVITY"
-SSH_FAILURE_DESCRIPTION = "SSH failure"
+ERROR_CODE_GPS_GNSS_UNAVAILABLE =       "GPS_GNSS_UNAVAILABLE"
+HOST_OFFLINE_DESCRIPTION =              "ICMP unreachable"
+SSH_FAILURE_CODE_AUTHENTICATION =       "AUTHENTICATION"
+SSH_FAILURE_CODE_CONNECTIVITY =         "CONNECTIVITY"
+SSH_FAILURE_DESCRIPTION =               "SSH failure"
 
 # Log event names for host connectivity checks
 EVENT_HOST_CHECK       = "host_check"
@@ -258,11 +259,12 @@ EVENT_CHECK_CONNECTION = "host_check_connection"
 #------------------------------------------
 CELPLAN_HOST_TAG    = "CWSM"
 CELPLAN_ZIP_TAG     = "_DONE"
+
 #------------------------------------------
 # Garbage Collector Constants
 #------------------------------------------
 GC_BATCH_SIZE = 500
-GC_QUARANTINE_DAYS = 365
+GC_QUARANTINE_DAYS = 60
 # `resolved_files` keeps superseded source/export artifacts only for short-term
 # operator inspection and recovery, so its retention can be shorter than the
 # main trash that still backs FILE_TASK_HISTORY error rows.
@@ -281,6 +283,7 @@ GC_LOOP_SLEEP = 60
 # heavy MariaDB event refresh path.
 SUMMARY_WORKER_CONSUMER_NAME = "rffusion_summary_worker"
 SUMMARY_WORKER_BATCH_SIZE = 500
+SUMMARY_TIMELINE_QUERY_TIMEOUT_SEC = 30
 SUMMARY_REFRESH_LOG_MAX_ROWS = 100
 SUMMARY_SCOPE_HOST = "host"
 SUMMARY_SCOPE_SITE = "site"

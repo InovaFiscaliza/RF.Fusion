@@ -67,7 +67,7 @@
      *
      * The `/host` view is optimized for quick operational checks: current
      * status first, historical locality trail second. This loader preserves
-     * that priority by treating the history table as a progressive enhancement
+     * that priority by treating the timeline as a progressive enhancement
      * instead of a blocking dependency for the whole screen.
      */
     function bindLocationHistoryLoader() {
@@ -77,39 +77,34 @@
 
         let locationLoaded = false;
 
-        /* The backend returns a compact locality-history payload. This renderer
-         * translates it into the existing table shell already present in the
-         * template, handling both normal rows and the explicit "no history"
-         * empty state in one place.
-         */
         function renderLocationHistory(payload) {
-            const locationHistory = Array.isArray(payload.location_history) ? payload.location_history : [];
+            const location_history = Array.isArray(payload.location_history) ? payload.location_history : [];
 
-            if (locationHistory.length === 0) {
-                locationRows.innerHTML = `
-                    <tr>
-                        <td colspan="6">Sem histórico de localidades no catálogo espectral para esta estação.</td>
-                    </tr>
-                `;
+            if (location_history.length === 0) {
+                locationRows.innerHTML = '<li class="host-location-status">Sem passagens com medições datadas no catálogo para esta estação.</li>';
                 return;
             }
 
-            locationRows.innerHTML = locationHistory.map((row) => {
-                const countyState = row.COUNTY_NAME && row.STATE_CODE
-                    ? `${escapeHtml(row.COUNTY_NAME)}/${escapeHtml(row.STATE_CODE)}`
-                    : row.COUNTY_NAME
-                    ? escapeHtml(row.COUNTY_NAME)
-                    : "—";
-
+            locationRows.innerHTML = location_history.map((row, index) => {
+                const county_state = [row.COUNTY_NAME, row.STATE_CODE].filter(Boolean).join("/") || "—";
+                const overlap_note = row.IS_OVERLAPPING
+                    ? '<p class="host-location-overlap">Há medições sobrepostas em outro site neste período. A localização exige revisão.</p>'
+                    : "";
                 return `
-                    <tr>
-                        <td>${escapeHtml(row.ID_SITE)}</td>
-                        <td>${escapeHtml(row.LOCALITY_LABEL || "—")}</td>
-                        <td>${countyState}</td>
-                        <td>${escapeHtml(row.FIRST_SEEN_AT || "—")}</td>
-                        <td>${escapeHtml(row.LAST_SEEN_AT || "—")}</td>
-                        <td>${escapeHtml(row.SPECTRUM_COUNT || 0)}</td>
-                    </tr>
+                    <li class="host-location-visit">
+                        <article class="host-location-entry">
+                            <div class="host-location-heading">
+                                <h3>${escapeHtml(row.LOCALITY_LABEL || `Site ${row.ID_SITE}`)}</h3>
+                                ${index === 0 ? '<span class="host-location-latest">Registro mais recente</span>' : ""}
+                            </div>
+                            <p class="host-location-meta">${escapeHtml(county_state)} · Site ${escapeHtml(row.ID_SITE)} · ${escapeHtml(row.SPECTRUM_COUNT || 0)} espectros</p>
+                            <dl class="host-location-dates">
+                                <div><dt>Início das medições</dt><dd>${escapeHtml(row.FIRST_SEEN_AT || "—")}</dd></div>
+                                <div><dt>Fim das medições</dt><dd>${escapeHtml(row.LAST_SEEN_AT || "—")}</dd></div>
+                            </dl>
+                            ${overlap_note}
+                        </article>
+                    </li>
                 `;
             }).join("");
         }
@@ -126,25 +121,20 @@
                 return;
             }
 
-            locationRows.innerHTML = `
-                <tr>
-                    <td colspan="6" class="summary-card-value-loading">CARREGANDO</td>
-                </tr>
-            `;
+            locationRows.innerHTML = '<li class="host-location-status summary-card-value-loading">CARREGANDO</li>';
 
             try {
                 const response = await fetch(
                     webfusionUrl(`/api/host/${hostId}/locations`)
                 );
+                if (!response.ok) {
+                    throw new Error("Location history request failed");
+                }
                 const payload = await response.json();
                 renderLocationHistory(payload);
                 locationLoaded = true;
             } catch (error) {
-                locationRows.innerHTML = `
-                    <tr>
-                        <td colspan="6">Nao foi possivel carregar o histórico de localidades agora.</td>
-                    </tr>
-                `;
+                locationRows.innerHTML = '<li class="host-location-status">Não foi possível carregar a linha do tempo de localidades agora.</li>';
             }
         }
 
@@ -868,7 +858,7 @@
      * The page has three independent interactive concerns and each one is
      * optional depending on the current server-rendered state:
      * - the online-only toggle,
-     * - the locality history table,
+     * - the locality timeline,
      * - the grouped diagnostic panels.
      *
      * Wiring them here keeps startup readable and makes it obvious that the

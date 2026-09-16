@@ -13,7 +13,9 @@ What is covered here:
 from __future__ import annotations
 
 import sys
+import sqlite3
 import unittest
+from unittest.mock import MagicMock
 from datetime import datetime
 from pathlib import Path
 
@@ -55,6 +57,70 @@ class FakeLog:
 
     def error(self, message: str) -> None:
         self.errors.append(("error", {"message": message}))
+
+
+class LocationTimelineTests(unittest.TestCase):
+    def make_handler(self):
+        handler = object.__new__(db_summary_module.dbHandlerSummary)
+        handler._connect = lambda: None
+        handler._disconnect = lambda: None
+        return handler
+
+    def test_sql_separates_return_visits_and_ignores_inactive_links(self):
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        connection.row_factory = sqlite3.Row
+        connection.executescript('''
+            CREATE TABLE FACT_SPECTRUM (
+                ID_SPECTRUM INTEGER, FK_EQUIPMENT INTEGER, FK_SITE INTEGER,
+                DT_TIME_START TEXT, DT_TIME_END TEXT);
+            CREATE TABLE HOST_EQUIPMENT_LINK (
+                FK_HOST INTEGER, FK_EQUIPMENT INTEGER, IS_ACTIVE INTEGER,
+                IS_PRIMARY_LINK INTEGER);
+            INSERT INTO HOST_EQUIPMENT_LINK VALUES (10, 1, 1, 1), (10, 2, 0, 1);
+            INSERT INTO FACT_SPECTRUM VALUES
+                (1, 1, 48, '2024-01-01', '2024-01-02'),
+                (2, 1, 48, '2024-01-01', '2024-01-03'),
+                (3, 1, 58, '2024-08-26', '2024-09-03'),
+                (4, 1, 171, '2024-09-17', '2024-09-18'),
+                (5, 1, 170, '2024-09-21', '2024-09-23'),
+                (6, 1, 171, '2024-10-01', '2024-12-13'),
+                (7, 1, 48, '2025-01-01', NULL),
+                (8, 2, 99, '2025-02-01', '2025-02-03'),
+                (9, 1, 99, NULL, '2025-03-01');
+        ''')
+        handler = self.make_handler()
+
+        def select(sql, params):
+            sql = sql[sql.index('WITH ordered'):]
+            sql = sql.replace('RFDATA.', '').replace('%s', '?').replace('GREATEST(', 'MAX(')
+            return [dict(row) for row in connection.execute(sql, params)]
+
+        handler._select_raw = select
+        rows = handler.read_host_location_visits(10)
+        self.assertEqual([row['FK_SITE'] for row in rows], [48, 58, 171, 170, 171, 48])
+        self.assertEqual([row['NU_VISIT'] for row in rows], [1, 2, 3, 4, 5, 6])
+        self.assertEqual(rows[0]['NU_SPECTRUM_COUNT'], 2)
+        self.assertEqual(rows[0]['DT_LAST_SEEN_AT'], '2024-01-03')
+        self.assertEqual(rows[-1]['DT_LAST_SEEN_AT'], '2025-01-01')
+
+    def test_publish_rolls_back_delete_when_insert_fails(self):
+        handler = self.make_handler()
+        handler.db_connection = MagicMock(spec=db_base_module.mysql.connector.MySQLConnection)
+        handler._execute_custom = lambda *args, **kwargs: 1
+
+        def fail_insert(*args, **kwargs):
+            raise RuntimeError('insert failed')
+
+        handler._execute_many_custom = fail_insert
+        row = dict.fromkeys(('FK_HOST', 'NU_VISIT', 'FK_SITE', 'DT_FIRST_SEEN_AT',
+                             'DT_LAST_SEEN_AT', 'NU_SPECTRUM_COUNT', 'IS_OVERLAPPING',
+                             'DT_REFRESHED_AT'), 1)
+        with self.assertRaisesRegex(RuntimeError, 'insert failed'):
+            handler.replace_host_location_visits(10, [row])
+        handler.db_connection.start_transaction.assert_called_once()
+        handler.db_connection.rollback.assert_called_once()
+        handler.db_connection.commit.assert_not_called()
 
 
 class SummaryRefreshLogRetentionTests(unittest.TestCase):
