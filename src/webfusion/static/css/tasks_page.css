@@ -5,6 +5,15 @@
     min-width: 0;
 }
 
+/* Visited links must keep the primary button's text contrast. */
+.tasks-page-root a.btn-primary,
+.tasks-page-root a.btn-primary:visited,
+.tasks-page-root a.btn-primary:hover,
+.tasks-page-root a.btn-primary:focus {
+    color: var(--color-neutral-0);
+    text-decoration: none;
+}
+
 .tasks-context-nav {
     display: flex;
     flex-wrap: wrap;

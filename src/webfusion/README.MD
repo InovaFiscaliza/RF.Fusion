@@ -56,7 +56,7 @@ Endpoints de verificação:
 - `GET /api/server/runtime-health`: estado dos serviços, resposta JSON;
 - `GET /api/map/stations`: pontos do mapa, resposta JSON.
 
-O endpoint `GET /api/users/login` responde com status HTTP 204 e corpo vazio.
+O endpoint `GET /api/users/login` responde com status HTTP 200 e corpo vazio.
 O cabeçalho `X-User-Profile` contém o perfil persistido como um objeto JSON no
 mesmo formato retornado no body de `GET /api/users/me`, incluindo `NA_ROLE`,
 `IS_ADMIN` e `IS_DEVELOPER`. Sem identidade ou perfil persistido, o valor do

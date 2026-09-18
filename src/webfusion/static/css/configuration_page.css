@@ -4,8 +4,7 @@
     padding-bottom: 28px;
 }
 
-.zabbix-config-hero,
-.zabbix-config-macro-form {
+.zabbix-config-hero {
     display: flex;
     gap: 16px;
 }
@@ -130,7 +129,7 @@
 
 .zabbix-config-inheritance-section {
     border-top: 1px solid var(--wf-border);
-    background: var(--wf-surface-soft);
+    background: var(--wf-surface);
 }
 
 .zabbix-config-section-head {
@@ -245,44 +244,47 @@
 .zabbix-config-profile-tag,
 .zabbix-config-type-badge {
     display: inline-block;
-    border-radius: 999px;
-    padding: 4px 8px;
-    background: #e8f0fa;
-    color: var(--wf-accent);
+    border-radius: 4px;
+    padding: 3px 7px;
+    background: var(--wf-surface-soft);
+    color: var(--wf-text-soft);
     font-size: 12px;
     font-weight: 700;
 }
 
 .zabbix-config-table-wrap {
     overflow-x: auto;
+    border: 1px solid var(--wf-border);
+    border-radius: 4px;
+    background: var(--wf-surface);
 }
 
 .zabbix-config-table {
     width: 100%;
-    min-width: 1060px;
+    min-width: 960px;
     table-layout: fixed;
     border-collapse: collapse;
     font-size: 13px;
 }
 
 .zabbix-config-column-parameter {
-    width: 17%;
+    width: 25%;
 }
 
 .zabbix-config-column-value {
-    width: 24%;
+    width: auto;
 }
 
 .zabbix-config-column-type {
-    width: 9%;
+    width: 90px;
 }
 
 .zabbix-config-column-origin {
-    width: 16%;
+    width: 18%;
 }
 
 .zabbix-config-column-action {
-    width: 34%;
+    width: 140px;
 }
 
 .zabbix-config-table th {
@@ -292,14 +294,14 @@
     color: var(--wf-text-soft);
     font-size: 12px;
     text-align: left;
-    text-transform: uppercase;
+    font-weight: 600;
 }
 
 .zabbix-config-table td {
     padding: 10px 12px;
     border-bottom: 1px solid var(--wf-border);
     color: var(--wf-text-soft);
-    vertical-align: top;
+    vertical-align: middle;
     overflow-wrap: anywhere;
 }
 
@@ -319,11 +321,6 @@
     font-size: 12px;
 }
 
-.zabbix-config-filter-summary {
-    font-family: inherit;
-    font-weight: 600;
-}
-
 .zabbix-config-macro-name {
     color: var(--wf-text-strong);
     font-family: Consolas, "Liberation Mono", monospace;
@@ -331,8 +328,7 @@
     font-weight: 700;
 }
 
-.zabbix-config-macro-description,
-.zabbix-config-action-hint {
+.zabbix-config-macro-description {
     margin-top: 5px;
     color: var(--wf-text-muted);
     font-size: 12px;
@@ -350,75 +346,140 @@
     line-height: 1.4;
 }
 
-.zabbix-config-origin.is-direct {
-    color: #0f766e;
-    font-weight: 700;
-}
-
 .zabbix-config-macro-form {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: auto auto;
-    column-gap: 0.5rem;
-    row-gap: 0.375rem;
-    align-items: start;
+    margin: 0;
+    min-width: 0;
 }
 
-.zabbix-config-macro-form input {
-    min-width: 0;
+.zabbix-config-macro-form .form-control {
     width: 100%;
+    min-width: 0;
+    height: 36px;
+    border-radius: 4px;
+    border-color: var(--wf-border);
+    box-shadow: none;
+    color: var(--wf-text-strong);
+    font-size: 13px;
+}
+
+.zabbix-config-macro-form .form-control:focus {
+    border-color: var(--wf-accent);
+    outline: 2px solid var(--wf-accent);
+    outline-offset: 1px;
 }
 
 .zabbix-config-expandable-editor {
-    position: relative;
-    min-width: 0;
-    grid-column: 1;
-    grid-row: 1 / span 2;
-}
-
-.zabbix-config-macro-form > .form-control {
-    grid-column: 1;
-    grid-row: 1 / span 2;
-}
-
-.zabbix-config-macro-form .zabbix-config-expandable-editor .zabbix-config-expandable-value {
-    width: 100%;
-    line-height: 1.45;
-}
-
-.zabbix-config-filter-builder-trigger {
-    grid-column: 2;
-    grid-row: 2;
-    justify-self: end;
-    white-space: nowrap;
-}
-
-.zabbix-config-macro-form .btn,
-.zabbix-config-restore-form .btn {
+    display: block;
     min-width: 0;
 }
 
-.zabbix-config-macro-form .btn-primary-action {
-    grid-column: 2;
-    grid-row: 1;
-    justify-self: end;
+.zabbix-config-filter-summary {
+    display: block;
+    font-family: inherit;
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--wf-text-muted);
+    font-weight: 400;
+}
+
+.zabbix-config-row-actions {
+    display: grid;
+    grid-template-columns: repeat(3, 32px);
+    justify-content: end;
+    align-items: center;
+    gap: 4px;
 }
 
 .zabbix-config-restore-form {
+    margin: 0;
+}
+
+/* Row controls deliberately avoid the global pill-shaped button rules. */
+.zabbix-config-icon-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    margin: 0;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--wf-text-soft);
+    box-shadow: none;
+    font-size: 15px;
+    cursor: pointer;
+}
+
+.zabbix-config-icon-action:hover {
+    background: var(--wf-surface-soft);
+    border-color: var(--wf-border);
+    color: var(--wf-accent-dark);
+}
+
+.zabbix-config-icon-action:focus-visible {
+    outline: 2px solid var(--wf-accent);
+    outline-offset: 2px;
+    color: var(--wf-accent-dark);
+}
+
+.zabbix-config-table .zabbix-config-actions-heading {
+    text-align: right;
+}
+
+.zabbix-config-readonly {
     display: flex;
     justify-content: flex-end;
-    margin-top: 7px;
-}
-
-.zabbix-config-locked-form .form-control:disabled,
-.zabbix-config-locked-form .btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.65;
-}
-
-.zabbix-config-locked-form .form-control:disabled {
-    background: #f1f5f9;
+    align-items: center;
+    gap: 6px;
     color: var(--wf-text-muted);
+    font-size: 12px;
+}
+
+.zabbix-config-action-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--wf-border);
+    color: var(--wf-text-muted);
+    font-size: 12px;
+}
+
+.zabbix-config-action-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.zabbix-config-action-legend .fa {
+    width: 16px;
+    text-align: center;
+}
+
+.zabbix-config-page-root .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-width: 0;
+    height: 36px;
+    padding: 0 14px;
+    border-radius: 4px;
+    box-shadow: none;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.zabbix-config-page-root .btn:hover {
+    filter: none;
+}
+
+.zabbix-config-page-root .btn:focus-visible {
+    outline: 2px solid var(--wf-accent);
+    outline-offset: 2px;
 }
 
 .zabbix-config-idle,

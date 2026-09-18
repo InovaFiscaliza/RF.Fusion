@@ -3,7 +3,7 @@
 {% block title %}RF.Fusion - Configurações{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/configuration_page.css', v='20260813-station-action-layout') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/configuration_page.css', v='20260918-compact-macro-actions') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/station_connectivity_test.css', v='20260813-station-test') }}">
 {% endblock %}
 
@@ -89,8 +89,17 @@
         </p>
     </form>
 
+    {% macro icon_action(icon, label, form_id='', target_id='') -%}
+    <button type="{{ 'button' if target_id else 'submit' }}" class="zabbix-config-icon-action"
+            title="{{ label }}" aria-label="{{ label }}"
+            {% if form_id %}form="{{ form_id }}"{% endif %}
+            {% if target_id %}data-filter-builder-target="{{ target_id }}"{% endif %}>
+        <i class="fa {{ icon }}" aria-hidden="true"></i>
+    </button>
+    {%- endmacro %}
+
     {% macro render_macro_table(macros, empty_message) %}
-    <div class="zabbix-config-table-wrap">
+    <div class="zabbix-config-table-wrap" tabindex="0" role="region" aria-label="Parâmetros de configuração">
         <table class="zabbix-config-table">
             <colgroup>
                 <col class="zabbix-config-column-parameter">
@@ -101,17 +110,21 @@
             </colgroup>
             <thead>
                 <tr>
-                    <th>Parâmetro</th>
-                    <th>Valor</th>
-                    <th>Tipo</th>
-                    <th>Origem</th>
-                    <th>Ação</th>
+                    <th scope="col">Parâmetro</th>
+                    <th scope="col">Valor</th>
+                    <th scope="col">Tipo</th>
+                    <th scope="col">Origem</th>
+                    <th scope="col" class="zabbix-config-actions-heading">Ações</th>
                 </tr>
             </thead>
             <tbody>
                 {% for macro in macros %}
                 {% set is_filter_macro = macro.name.endswith('_FILTER}') %}
                 {% set is_expandable_macro = is_filter_macro or macro.name == '{$BACKUP_PATH}' %}
+                {% set can_edit = macro.accepts_value and not macro.is_protected %}
+                {% set edit_id = 'edit-macro-' ~ macro.source_macro_id %}
+                {% set restore_id = 'restore-macro-' ~ macro.source_macro_id %}
+                {% set input_id = 'value-' ~ macro.source_macro_id %}
                 <tr>
                     <td>
                         <div class="zabbix-config-macro-name">{{ macro.name }}</div>
@@ -120,75 +133,61 @@
                         {% endif %}
                     </td>
                     <td>
-                        {% if macro.type == '1' %}
-                        <span class="zabbix-config-secret-value"><i class="fa fa-lock"></i> {{ macro.display_value }}</span>
-                        {% elif is_filter_macro %}
-                        <code class="zabbix-config-filter-summary" data-filter-summary="{{ macro.display_value }}">Filtro configurado</code>
+                        {% if can_edit %}
+                        <form id="{{ edit_id }}" method="post" action="{{ url_for('configuration_api.update_macro') }}" class="zabbix-config-macro-form" data-zabbix-confirm="{{ action_save }}" data-target-label="{{ configuration.title }}">
+                            <input type="hidden" name="target_kind" value="{{ configuration.kind }}">
+                            <input type="hidden" name="target_id" value="{{ configuration.target_id }}">
+                            <input type="hidden" name="macro_name" value="{{ macro.name }}">
+                            <input type="hidden" name="action" value="{{ action_save }}">
+                            <label class="sr-only" for="{{ input_id }}">{{ 'Novo valor protegido de' if macro.type == '1' else 'Valor de' }} {{ macro.name }}</label>
+                            {% if macro.type == '1' %}
+                            <input id="{{ input_id }}" class="form-control" type="password" name="value" placeholder="Novo valor protegido" autocomplete="new-password">
+                            {% elif is_expandable_macro %}
+                            <span class="zabbix-config-expandable-editor{% if is_filter_macro %} zabbix-config-filter-editor{% endif %}">
+                                <input id="{{ input_id }}" class="form-control zabbix-config-expandable-value{% if is_filter_macro %} zabbix-config-filter-value{% endif %}" type="text" name="value" value="{{ macro.editable_value }}" title="{{ macro.editable_value }}" autocomplete="off" spellcheck="false">
+                            </span>
+                            {% else %}
+                            <input id="{{ input_id }}" class="form-control" type="text" name="value" value="{{ macro.editable_value }}" autocomplete="off">
+                            {% endif %}
+                        </form>
+                        {% if is_filter_macro %}
+                        <span class="zabbix-config-filter-summary" data-filter-summary="{{ macro.display_value }}">Filtro configurado</span>
+                        {% endif %}
+                        {% elif macro.type == '1' %}
+                        <span class="zabbix-config-secret-value"><i class="fa fa-lock" aria-hidden="true"></i> {{ macro.display_value }}</span>
                         {% else %}
                         <code>{{ macro.display_value }}</code>
                         {% endif %}
                     </td>
                     <td><span class="zabbix-config-type-badge">{{ macro.type_label }}</span></td>
+                    <td><span class="zabbix-config-origin">{{ macro.source_label }}</span></td>
                     <td>
-                        <span class="zabbix-config-origin {% if macro.is_direct_on_target %}is-direct{% endif %}">
-                            {{ macro.source_label }}
-                        </span>
-                    </td>
-                    <td>
-                        {% if macro.accepts_value and not macro.is_protected %}
-                        <form method="post" action="{{ url_for('configuration_api.update_macro') }}" class="zabbix-config-macro-form" data-zabbix-confirm="{{ action_save }}" data-target-label="{{ configuration.title }}">
-                            <input type="hidden" name="target_kind" value="{{ configuration.kind }}">
-                            <input type="hidden" name="target_id" value="{{ configuration.target_id }}">
-                            <input type="hidden" name="macro_name" value="{{ macro.name }}">
-                            <input type="hidden" name="action" value="{{ action_save }}">
-                            {% if macro.type == '1' %}
-                            <label class="sr-only" for="value-{{ macro.source_macro_id }}">Novo valor de {{ macro.name }}</label>
-                            <input id="value-{{ macro.source_macro_id }}" class="form-control" type="password" name="value" placeholder="Novo valor protegido" autocomplete="new-password">
-                            {% else %}
-                            <label class="sr-only" for="value-{{ macro.source_macro_id }}">Valor de {{ macro.name }}</label>
-                            {% if is_expandable_macro %}
-                            <span class="zabbix-config-expandable-editor{% if is_filter_macro %} zabbix-config-filter-editor{% endif %}">
-                                <input id="value-{{ macro.source_macro_id }}" class="form-control zabbix-config-expandable-value{% if is_filter_macro %} zabbix-config-filter-value{% endif %}" type="text" name="value" value="{{ macro.editable_value }}" title="{{ macro.editable_value }}" autocomplete="off" spellcheck="false">
-                            </span>
-                            {% else %}
-                            <input id="value-{{ macro.source_macro_id }}" class="form-control" type="text" name="value" value="{{ macro.editable_value }}" autocomplete="off">
-                            {% endif %}
-                            {% endif %}
+                        {% if can_edit %}
+                        <div class="zabbix-config-row-actions">
                             {% if is_filter_macro %}
-                            <button type="button" class="btn btn-small btn-secondary-action zabbix-config-filter-builder-trigger" data-filter-builder-target="value-{{ macro.source_macro_id }}">
-                                Montar filtro
-                            </button>
-                            {% endif %}
-                            <button type="submit" class="btn btn-primary btn-small btn-primary-action">
-                                {% if macro.is_direct_on_target %}Salvar{% else %}Sobrescrever{% endif %}
-                            </button>
-                        </form>
-                        {% if macro.is_direct_on_target %}
-                        <form method="post" action="{{ url_for('configuration_api.update_macro') }}" class="zabbix-config-restore-form" data-zabbix-confirm="{{ action_restore }}" data-target-label="{{ configuration.title }}">
-                            <input type="hidden" name="target_kind" value="{{ configuration.kind }}">
-                            <input type="hidden" name="target_id" value="{{ configuration.target_id }}">
-                            <input type="hidden" name="macro_name" value="{{ macro.name }}">
-                            <input type="hidden" name="action" value="{{ action_restore }}">
-                            <button type="submit" class="btn btn-small btn-secondary-action zabbix-config-restore-button">Restaurar herança</button>
-                        </form>
-                        {% else %}
-                        <div class="zabbix-config-action-hint">A estação passará a usar este valor em vez do template.</div>
-                        {% endif %}
-                        {% elif macro.is_protected %}
-                        <div class="zabbix-config-macro-form zabbix-config-locked-form">
-                            <input class="form-control" type="text" value="{{ macro.display_value }}" disabled>
-                            <button type="button" class="btn btn-small btn-secondary-action" disabled>Identificador protegido</button>
+                            {{ icon_action('fa-filter', 'Montar filtro de ' ~ macro.name, target_id=input_id) }}
+                            {% else %}<span aria-hidden="true"></span>{% endif %}
+                            {{ icon_action('fa-floppy-o' if macro.is_direct_on_target else 'fa-pencil-square-o', ('Salvar ' if macro.is_direct_on_target else 'Sobrescrever na estação: ') ~ macro.name, form_id=edit_id) }}
+                            {% if macro.is_direct_on_target %}
+                            <form id="{{ restore_id }}" method="post" action="{{ url_for('configuration_api.update_macro') }}" class="zabbix-config-restore-form" data-zabbix-confirm="{{ action_restore }}" data-target-label="{{ configuration.title }}">
+                                <input type="hidden" name="target_kind" value="{{ configuration.kind }}">
+                                <input type="hidden" name="target_id" value="{{ configuration.target_id }}">
+                                <input type="hidden" name="macro_name" value="{{ macro.name }}">
+                                <input type="hidden" name="action" value="{{ action_restore }}">
+                                {{ icon_action('fa-undo', 'Restaurar herança de ' ~ macro.name, form_id=restore_id) }}
+                            </form>
+                            {% else %}<span aria-hidden="true"></span>{% endif %}
                         </div>
-                        <div class="zabbix-config-action-hint">A chave primária do host é mantida pelo Zabbix.</div>
                         {% else %}
-                        <div class="zabbix-config-action-hint">Alteração controlada pelo cofre do Zabbix.</div>
+                        <span class="zabbix-config-readonly" title="{{ 'Identificador protegido: mantido pelo Zabbix' if macro.is_protected else 'Alteração controlada pelo cofre do Zabbix' }}">
+                            <i class="fa fa-lock" aria-hidden="true"></i>
+                            <span>{{ 'Protegido' if macro.is_protected else 'Cofre' }}</span>
+                        </span>
                         {% endif %}
                     </td>
                 </tr>
                 {% else %}
-                <tr>
-                    <td colspan="5" class="zabbix-config-empty">{{ empty_message }}</td>
-                </tr>
+                <tr><td colspan="5" class="zabbix-config-empty">{{ empty_message }}</td></tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -236,6 +235,12 @@
                 {% endif %}
             </div>
             {% endif %}
+        </div>
+        <div class="zabbix-config-action-legend" aria-label="Legenda das ações">
+            <span><i class="fa fa-floppy-o" aria-hidden="true"></i> Salvar</span>
+            <span><i class="fa fa-pencil-square-o" aria-hidden="true"></i> Sobrescrever</span>
+            <span><i class="fa fa-undo" aria-hidden="true"></i> Restaurar herança</span>
+            <span><i class="fa fa-filter" aria-hidden="true"></i> Montar filtro</span>
         </div>
         {% if configuration.kind == target_kind_host %}
         <div class="zabbix-config-section">
@@ -306,7 +311,7 @@
             <div class="zabbix-filter-builder-head">
                 <div>
                     <h2 id="zabbix-filter-builder-title">Montar filtro</h2>
-                    <p>Defina os critérios da macro. Caminho e extensão continuam definidos separadamente no Zabbix. Aplicar apenas escreve o JSON no campo; a configuração só vai ao Zabbix depois do botão Salvar ou Sobrescrever.</p>
+                    <p>Defina os critérios da macro. Caminho e extensão continuam definidos separadamente no Zabbix. Aplicar apenas preenche o campo; use o ícone de salvar ou sobrescrever na linha para confirmar a alteração no Zabbix.</p>
                 </div>
                 <button type="button" class="zabbix-filter-builder-close" data-filter-builder-cancel aria-label="Fechar construtor de filtro">
                     <i class="fa fa-times"></i>

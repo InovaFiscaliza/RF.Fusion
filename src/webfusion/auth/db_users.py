@@ -1,7 +1,7 @@
 """Persist WebFusion users and access roles in the WEBFUSION database.
 
 This module owns the authentication package SQL for user profiles in `USERS`
-and active access roles in `ADMINS` and `DEVELOPERS`.
+and active access roles in `USER_ROLES`.
 """
 
 from __future__ import annotations
@@ -9,14 +9,72 @@ from __future__ import annotations
 import re
 import pymysql
 from db import get_connection_webfusion
+from auth.config import (
+    ADMIN_ROLE, DEVELOPER_ROLE, USER_ROLES, USER_LIST_LIMIT, USER_ROLE_FILTERS,
+)
 
 
-USER_LIST_LIMIT = 200
 WEBFUSION_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-ADMIN_ROLE_TABLE = "ADMINS"
-DEVELOPER_ROLE_TABLE = "DEVELOPERS"
-WEBFUSION_ROLE_TABLES = frozenset({ADMIN_ROLE_TABLE, DEVELOPER_ROLE_TABLE})
-USER_ROLE_FILTERS = frozenset({"all", "admin", "developer", "none"})
+
+
+def get_profile_image_url(user_email: str) -> str | None:
+    """Read the optional photo URL for a stored identity.
+
+    Args:
+        user_email: Normalized identity email. Type: str.
+
+    Returns:
+        Stored URL. Type: str | None. Returns None for an absent user or photo.
+    """
+    connection = get_connection_webfusion()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT NA_URL_PROFILE_IMG FROM USERS WHERE NA_USER_EMAIL = %s",
+                (user_email,),
+            )
+            row = cursor.fetchone()
+            return row["NA_URL_PROFILE_IMG"] if row else None
+    finally:
+        connection.close()
+
+
+def update_profile_image_url(user_email: str, image_url: str) -> None:
+    """Update only a changed photo URL for an existing user.
+
+    Args:
+        user_email: User email, normalized before the update. Type: str.
+        image_url: Validated local or HTTPS photo URL. Type: str.
+
+    Returns:
+        None. Commits the photo update without changing identity or privileges.
+
+    Raises:
+        ValueError: If the email is invalid or the image URL is empty.
+        LookupError: If the user has not been registered.
+        Exception: If the database operation fails; rolls back the transaction.
+    """
+    user_email = _normalize_webfusion_email(user_email)
+    if not image_url:
+        raise ValueError("Informe uma URL de foto válida.")
+    connection = get_connection_webfusion()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE USERS SET NA_URL_PROFILE_IMG = %s "
+                "WHERE NA_USER_EMAIL = %s AND NOT (NA_URL_PROFILE_IMG <=> %s)",
+                (image_url, user_email, image_url),
+            )
+            if not cursor.rowcount:
+                cursor.execute("SELECT ID_USER FROM USERS WHERE NA_USER_EMAIL = %s", (user_email,))
+                if cursor.fetchone() is None:
+                    raise LookupError("O usuário informado não está cadastrado no WebFusion.")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def get_access_role(user_email: str) -> str | None:
@@ -33,21 +91,11 @@ def get_access_role(user_email: str) -> str | None:
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT 'admin' AS NA_ROLE FROM ADMINS "
-                "WHERE NA_USER_EMAIL = %s AND IS_ACTIVE = 1 "
-                "LIMIT 1",
-                (user_email,),
-            )
-            row = cursor.fetchone()
-            if row:
-                # Admin is the effective role when both roles are active.
-                return row["NA_ROLE"]
-
-            cursor.execute(
-                "SELECT 'developer' AS NA_ROLE FROM DEVELOPERS "
-                "WHERE NA_USER_EMAIL = %s AND IS_ACTIVE = 1 "
-                "LIMIT 1",
-                (user_email,),
+                "SELECT r.NA_ROLE FROM USER_ROLES r "
+                "JOIN USERS u ON u.ID_USER = r.ID_USER "
+                "WHERE u.NA_USER_EMAIL = %s AND r.IS_ACTIVE = 1 "
+                "ORDER BY CASE r.NA_ROLE WHEN %s THEN 0 ELSE 1 END LIMIT 1",
+                (user_email, ADMIN_ROLE),
             )
             row = cursor.fetchone()
             return row["NA_ROLE"] if row else None
@@ -65,7 +113,7 @@ def get_webfusion_user(user_email: str) -> dict[str, object] | None:
     Returns:
         User profile. Type: dict[str, object] | None. When found, the dictionary
             contains `ID_USER`, `NA_USER_NAME`, `NA_USER_EMAIL`,
-            `NA_JOB_TITLE`, `NA_DEPARTMENT`, `NA_LOCATION`, `DT_CREATED_AT`,
+            `NA_JOB_TITLE`, `NA_DEPARTMENT`, `NA_LOCATION`, `NA_URL_PROFILE_IMG`, `DT_CREATED_AT`,
             `DT_UPDATED_AT`, `NA_ROLE`, `IS_ADMIN`, and `IS_DEVELOPER`.
             `NA_ROLE` is `admin`, `developer`, or `None`; admin takes precedence
             when both profiles are active. Returns `None` when no user exists.
@@ -86,29 +134,30 @@ def get_webfusion_user(user_email: str) -> dict[str, object] | None:
                     u.NA_JOB_TITLE,
                     u.NA_DEPARTMENT,
                     u.NA_LOCATION,
+                    u.NA_URL_PROFILE_IMG,
                     u.DT_CREATED_AT,
                     u.DT_UPDATED_AT,
                     CASE
                         WHEN EXISTS(
-                            SELECT 1 FROM ADMINS a
-                            WHERE a.NA_USER_EMAIL = u.NA_USER_EMAIL
+                            SELECT 1 FROM USER_ROLES a
+                            WHERE a.ID_USER = u.ID_USER AND a.NA_ROLE = 'admin'
                               AND a.IS_ACTIVE = 1
                         ) THEN 'admin'
                         WHEN EXISTS(
-                            SELECT 1 FROM DEVELOPERS d
-                            WHERE d.NA_USER_EMAIL = u.NA_USER_EMAIL
+                            SELECT 1 FROM USER_ROLES d
+                            WHERE d.ID_USER = u.ID_USER AND d.NA_ROLE = 'developer'
                               AND d.IS_ACTIVE = 1
                         ) THEN 'developer'
                         ELSE NULL
                     END AS NA_ROLE,
                     EXISTS(
-                        SELECT 1 FROM ADMINS a
-                        WHERE a.NA_USER_EMAIL = u.NA_USER_EMAIL
+                        SELECT 1 FROM USER_ROLES a
+                        WHERE a.ID_USER = u.ID_USER AND a.NA_ROLE = 'admin'
                           AND a.IS_ACTIVE = 1
                     ) AS IS_ADMIN,
                     EXISTS(
-                        SELECT 1 FROM DEVELOPERS d
-                        WHERE d.NA_USER_EMAIL = u.NA_USER_EMAIL
+                        SELECT 1 FROM USER_ROLES d
+                        WHERE d.ID_USER = u.ID_USER AND d.NA_ROLE = 'developer'
                           AND d.IS_ACTIVE = 1
                     ) AS IS_DEVELOPER
                 FROM USERS u
@@ -129,6 +178,7 @@ def register_observed_user(
     job_title: str | None,
     department: str | None,
     location: str | None,
+    profile_image_url: str | None = None,
 ) -> None:
     """Create or refresh an identity observed through the F5 headers.
 
@@ -139,6 +189,7 @@ def register_observed_user(
         job_title: Observed job title. Type: str | None.
         department: Observed department. Type: str | None.
         location: Observed location. Type: str | None.
+        profile_image_url: Validated photo URL, if supplied. Type: str | None.
 
     Returns:
         None. Persists the normalized profile in `USERS` and commits it.
@@ -158,6 +209,7 @@ def register_observed_user(
                 job_title=_normalize_optional_value(job_title),
                 department=_normalize_optional_value(department),
                 location=_normalize_optional_value(location),
+                profile_image_url=profile_image_url,
             )
         connection.commit()
     except Exception:
@@ -189,7 +241,7 @@ def list_webfusion_users(
     Returns:
         Matching directory users. Type: list[dict[str, object]]. Each item has
         the required keys `ID_USER`, `NA_USER_NAME`, `NA_USER_EMAIL`,
-        `NA_JOB_TITLE`, `NA_DEPARTMENT`, `NA_LOCATION`, `DT_CREATED_AT`,
+        `NA_JOB_TITLE`, `NA_DEPARTMENT`, `NA_LOCATION`, `NA_URL_PROFILE_IMG`, `DT_CREATED_AT`,
         `DT_UPDATED_AT`, `IS_ADMIN`, and `IS_DEVELOPER`.
     """
     normalized_email = str(email or "").strip().casefold()
@@ -204,18 +256,19 @@ def list_webfusion_users(
             u.NA_JOB_TITLE,
             u.NA_DEPARTMENT,
             u.NA_LOCATION,
+            u.NA_URL_PROFILE_IMG,
             u.DT_CREATED_AT,
             u.DT_UPDATED_AT,
             EXISTS(
                 SELECT 1
-                FROM ADMINS a
-                WHERE a.NA_USER_EMAIL = u.NA_USER_EMAIL
+                FROM USER_ROLES a
+                WHERE a.ID_USER = u.ID_USER AND a.NA_ROLE = 'admin'
                   AND a.IS_ACTIVE = 1
             ) AS IS_ADMIN,
             EXISTS(
                 SELECT 1
-                FROM DEVELOPERS d
-                WHERE d.NA_USER_EMAIL = u.NA_USER_EMAIL
+                FROM USER_ROLES d
+                WHERE d.ID_USER = u.ID_USER AND d.NA_ROLE = 'developer'
                   AND d.IS_ACTIVE = 1
             ) AS IS_DEVELOPER
         FROM USERS u
@@ -235,9 +288,9 @@ def list_webfusion_users(
         params.append(normalized_department)
 
     role_conditions = {
-        "admin": "EXISTS(SELECT 1 FROM ADMINS a WHERE a.NA_USER_EMAIL = u.NA_USER_EMAIL AND a.IS_ACTIVE = 1)",
-        "developer": "EXISTS(SELECT 1 FROM DEVELOPERS d WHERE d.NA_USER_EMAIL = u.NA_USER_EMAIL AND d.IS_ACTIVE = 1)",
-        "none": "NOT EXISTS(SELECT 1 FROM ADMINS a WHERE a.NA_USER_EMAIL = u.NA_USER_EMAIL AND a.IS_ACTIVE = 1) AND NOT EXISTS(SELECT 1 FROM DEVELOPERS d WHERE d.NA_USER_EMAIL = u.NA_USER_EMAIL AND d.IS_ACTIVE = 1)",
+        "admin": "EXISTS(SELECT 1 FROM USER_ROLES a WHERE a.ID_USER = u.ID_USER AND a.NA_ROLE = 'admin' AND a.IS_ACTIVE = 1)",
+        "developer": "EXISTS(SELECT 1 FROM USER_ROLES d WHERE d.ID_USER = u.ID_USER AND d.NA_ROLE = 'developer' AND d.IS_ACTIVE = 1)",
+        "none": "NOT EXISTS(SELECT 1 FROM USER_ROLES a WHERE a.ID_USER = u.ID_USER AND a.NA_ROLE = 'admin' AND a.IS_ACTIVE = 1) AND NOT EXISTS(SELECT 1 FROM USER_ROLES d WHERE d.ID_USER = u.ID_USER AND d.NA_ROLE = 'developer' AND d.IS_ACTIVE = 1)",
     }
     if normalized_role_filter in role_conditions:
         filters.append(role_conditions[normalized_role_filter])
@@ -349,13 +402,13 @@ def create_webfusion_user(
             _set_webfusion_role(
                 cursor=cursor,
                 user_email=normalized_email,
-                role_table=ADMIN_ROLE_TABLE,
+                role=ADMIN_ROLE,
                 is_active=is_admin,
             )
             _set_webfusion_role(
                 cursor=cursor,
                 user_email=normalized_email,
-                role_table=DEVELOPER_ROLE_TABLE,
+                role=DEVELOPER_ROLE,
                 is_active=is_developer,
             )
         connection.commit()
@@ -401,13 +454,13 @@ def update_webfusion_user_privileges(
             _set_webfusion_role(
                 cursor=cursor,
                 user_email=normalized_email,
-                role_table=ADMIN_ROLE_TABLE,
+                role=ADMIN_ROLE,
                 is_active=is_admin,
             )
             _set_webfusion_role(
                 cursor=cursor,
                 user_email=normalized_email,
-                role_table=DEVELOPER_ROLE_TABLE,
+                role=DEVELOPER_ROLE,
                 is_active=is_developer,
             )
         connection.commit()
@@ -443,12 +496,6 @@ def delete_webfusion_user(*, user_email: str) -> None:
             if cursor.fetchone() is None:
                 raise LookupError("O usuário informado não está cadastrado no WebFusion.")
 
-            for role_table in WEBFUSION_ROLE_TABLES:
-                cursor.execute(
-                    f"DELETE FROM {role_table} WHERE NA_USER_EMAIL = %s",
-                    (normalized_email,),
-                )
-
             cursor.execute(
                 "DELETE FROM USERS WHERE NA_USER_EMAIL = %s",
                 (normalized_email,),
@@ -469,6 +516,7 @@ def _upsert_webfusion_user(
     job_title: str | None,
     department: str | None,
     location: str | None,
+    profile_image_url: str | None = None,
 ) -> None:
     """Store the latest identity attributes for one normalized email.
 
@@ -480,6 +528,8 @@ def _upsert_webfusion_user(
         job_title: Job title to persist. Type: str | None.
         department: Department to persist. Type: str | None.
         location: Location to persist. Type: str | None.
+        profile_image_url: Validated photo URL. Type: str | None. Missing
+            values preserve the stored URL.
 
     Returns:
         None. Inserts the profile or updates its attributes when the email
@@ -487,14 +537,15 @@ def _upsert_webfusion_user(
     """
     cursor.execute(
         "INSERT INTO USERS ("
-        "NA_USER_NAME, NA_USER_EMAIL, NA_JOB_TITLE, NA_DEPARTMENT, NA_LOCATION"
-        ") VALUES (%s, %s, %s, %s, %s) "
+        "NA_USER_NAME, NA_USER_EMAIL, NA_JOB_TITLE, NA_DEPARTMENT, NA_LOCATION, NA_URL_PROFILE_IMG"
+        ") VALUES (%s, %s, %s, %s, %s, %s) "
         "ON DUPLICATE KEY UPDATE "
         "NA_USER_NAME = VALUES(NA_USER_NAME), "
         "NA_JOB_TITLE = VALUES(NA_JOB_TITLE), "
         "NA_DEPARTMENT = VALUES(NA_DEPARTMENT), "
-        "NA_LOCATION = VALUES(NA_LOCATION)",
-        (user_name, user_email, job_title, department, location),
+        "NA_LOCATION = VALUES(NA_LOCATION), "
+        "NA_URL_PROFILE_IMG = COALESCE(VALUES(NA_URL_PROFILE_IMG), NA_URL_PROFILE_IMG)",
+        (user_name, user_email, job_title, department, location, profile_image_url),
     )
 
 
@@ -548,48 +599,37 @@ def _set_webfusion_role(
     *,
     cursor: pymysql.cursors.Cursor,
     user_email: str,
-    role_table: str,
+    role: str,
     is_active: bool,
 ) -> None:
-    """Synchronize one role row with the directory profile.
+    """Set one privilege without duplicating identity attributes.
 
     Args:
-        cursor: Open cursor for a WEBFUSION transaction. Type:
-            pymysql.cursors.Cursor.
-        user_email: Normalized email for the user. Type: str.
-        role_table: Role table to synchronize. Type: str. Must be `ADMINS` or
-            `DEVELOPERS`.
-        is_active: Whether the role must be active. Type: bool.
+        cursor: Open transaction cursor. Type: pymysql.cursors.Cursor.
+        user_email: Normalized email of an existing user. Type: str.
+        role: Either `admin` or `developer`. Type: str.
+        is_active: Whether the privilege is enabled. Type: bool.
 
     Returns:
-        None. Deactivates an existing role or creates and activates it using the
-        current profile attributes in `USERS`.
+        None. Updates a role or inserts an active assignment.
 
     Raises:
-        ValueError: If `role_table` is not an allowed role table.
+        ValueError: If the role is unsupported.
     """
-    if role_table not in WEBFUSION_ROLE_TABLES:
-        raise ValueError("Tabela de privilégio WebFusion não permitida.")
+    if role not in USER_ROLES:
+        raise ValueError("Privilégio WebFusion não permitido.")
 
     if not is_active:
         cursor.execute(
-            f"UPDATE {role_table} SET IS_ACTIVE = 0 WHERE NA_USER_EMAIL = %s",
-            (user_email,),
+            "UPDATE USER_ROLES r JOIN USERS u ON u.ID_USER = r.ID_USER "
+            "SET r.IS_ACTIVE = 0 WHERE u.NA_USER_EMAIL = %s AND r.NA_ROLE = %s",
+            (user_email, role),
         )
         return
 
     cursor.execute(
-        f"INSERT INTO {role_table} ("
-        "NA_USER_NAME, NA_USER_EMAIL, NA_JOB_TITLE, NA_DEPARTMENT, NA_LOCATION, IS_ACTIVE"
-        ") SELECT "
-        "COALESCE(NA_USER_NAME, NA_USER_EMAIL), NA_USER_EMAIL, NA_JOB_TITLE, "
-        "NA_DEPARTMENT, NA_LOCATION, 1 "
-        "FROM USERS WHERE NA_USER_EMAIL = %s "
-        "ON DUPLICATE KEY UPDATE "
-        "NA_USER_NAME = VALUES(NA_USER_NAME), "
-        "NA_JOB_TITLE = VALUES(NA_JOB_TITLE), "
-        "NA_DEPARTMENT = VALUES(NA_DEPARTMENT), "
-        "NA_LOCATION = VALUES(NA_LOCATION), "
-        "IS_ACTIVE = 1",
-        (user_email,),
+        "INSERT INTO USER_ROLES (ID_USER, NA_ROLE, IS_ACTIVE) "
+        "SELECT ID_USER, %s, 1 FROM USERS WHERE NA_USER_EMAIL = %s "
+        "ON DUPLICATE KEY UPDATE IS_ACTIVE = 1",
+        (role, user_email),
     )

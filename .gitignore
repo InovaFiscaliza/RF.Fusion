@@ -100,6 +100,8 @@ _build/
 src/zabbix/.secret/
 src/webfusion/.secret
 src/webfusion/.webserver_ssh.env
+src/webfusion/api/microsoft_api/.env
+src/webfusion/static/img/profiles/
 f2073b.csv
 list.csv
 src/appCataloga/server_volume/usr/local/bin/appCataloga/ARCHITECTURE.md

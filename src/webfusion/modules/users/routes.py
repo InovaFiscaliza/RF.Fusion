@@ -1,6 +1,9 @@
 """Render the restricted WebFusion user-directory administration pages."""
 
 from __future__ import annotations
+from http import HTTPStatus
+from pathlib import Path
+from xml.etree import ElementTree
 from flask import (
     Blueprint,
     Response,
@@ -37,6 +40,33 @@ API_ROLE_NAMES = {
     "developer": "dev",
 }
 USER_PROFILE_HEADER = "X-User-Profile"
+
+
+@users_api_bp.route("/avatar.svg", methods=["GET"])
+def profile_avatar() -> Response:
+    """Render the provided fallback SVG with the current user's initial.
+
+    Args:
+        None. Uses `g.webfusion_user`, containing optional `name` and `email`.
+
+    Returns:
+        SVG response. Type: flask.Response. Identified users receive
+        `profile.svg` with one escaped uppercase initial. Anonymous users
+        receive `profile_out.svg`. Personalized responses are never cached.
+    """
+    identity = g.webfusion_user
+    label = identity["name"] or identity["email"]
+    filename = "profile.svg" if label else "profile_out.svg"
+    root = ElementTree.parse(Path(current_app.static_folder) / "img" / filename).getroot()
+    if label:
+        initial = root.find(".//{http://www.w3.org/2000/svg}text")
+        if initial is None:
+            raise ValueError("O SVG de perfil não contém o elemento da inicial.")
+        initial.text = label.strip()[0].upper()[0]
+    response = Response(ElementTree.tostring(root, encoding="utf-8"), mimetype="image/svg+xml")
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @users_api_bp.route("", methods=["GET"])
@@ -95,7 +125,7 @@ def login_probe() -> Response:
             `g.webfusion_user`.
 
     Returns:
-        Empty response. Type: flask.Response. The status is 204 and the
+        Empty response. Type: flask.Response. The status is 200 and the
         `X-User-Profile` header contains the same JSON object returned by
         `/api/users/me`. The header contains `{}` when no profile is available.
     """
@@ -107,7 +137,7 @@ def login_probe() -> Response:
         except Exception:
             current_app.logger.exception("webfusion_login_profile_lookup_failed")
 
-    response = Response(status=204)
+    response = Response(status=HTTPStatus.OK)
     response.headers[USER_PROFILE_HEADER] = current_app.json.dumps(profile or {})
     response.headers["Cache-Control"] = "no-store"
     return response

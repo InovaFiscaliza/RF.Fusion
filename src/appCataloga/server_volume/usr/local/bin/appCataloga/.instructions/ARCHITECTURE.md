@@ -11,6 +11,45 @@ before implementing the case.
 
 ---
 
+## 0. Identidades e privilégios do WebFusion
+
+O banco `WEBFUSION` mantém os dados pessoais exclusivamente em `USERS`.
+`USER_ROLES` relaciona `ID_USER` a `NA_ROLE` (`admin` ou `developer`), com
+chave primária composta, chave estrangeira para `USERS` e `IS_ACTIVE`.
+Um usuário pode possuir os dois papéis; `admin` mantém precedência no papel
+efetivo. Ausência de vínculo ativo mantém o acesso comum, sem privilégios.
+As tabelas legadas `ADMINS` e `DEVELOPERS` não fazem parte do modelo ativo.
+Após validar a migração e salvar uma cópia para recuperação, elas são removidas.
+O script de migração mantém referências históricas às tabelas de origem e não
+deve ser executado novamente após sua remoção.
+
+O SQL desse domínio permanece em `src/webfusion/auth/db_users.py`.
+`auth/service.py` normaliza a identidade encaminhada pelo proxy confiável.
+`USERS.NA_URL_PROFILE_IMG` armazena uma URL opcional de foto, sem tokens.
+O cabeçalho `X-User-Avatar-Url`, quando presente e válido, atualiza esse campo;
+sua ausência não apaga uma foto já cadastrada. O cabeçalho visual usa a URL
+persistida quando o proxy não envia foto, com ícone substituto se indisponível.
+URLs devem ser HTTPS ou caminhos locais absolutos; credenciais e esquemas
+executáveis não são aceitos. Consultar fotos no Microsoft Graph exige integração
+autenticada própria; não derivar uma URL pública apenas do e-mail.
+
+O conector `src/webfusion/api/microsoft_api` recebe o e-mail de login do Entra
+(UPN), consulta a foto com token do servidor e retorna a URL local versionada
+pelo conteúdo. O conector não executa SQL. `auth/service.py` limita a frequência
+de consulta e solicita a atualização de `NA_URL_PROFILE_IMG` a `auth/db_users.py`
+somente após obter uma foto válida. Ausência de token ou falha do Graph mantém
+a foto armazenada. O token nunca aparece no navegador ou na URL persistida.
+Quando o e-mail recebido não coincidir com o UPN, a integração deve fornecer
+o identificador correto antes de consultar a foto; não assumir equivalência.
+
+O fallback de usuário identificado usa `static/img/profile.svg`, com o texto
+substituído pela inicial do nome (ou e-mail quando não houver nome). A resposta
+SVG personalizada pertence à API de usuários e não pode ser compartilhada
+em cache. Anônimos usam `static/img/profile_out.svg`. Fallbacks não são gravados
+como fotos reais no banco.
+
+---
+
 ## 1. System Overview
 
 appCataloga is a suite of long-running Python daemon processes that manage the

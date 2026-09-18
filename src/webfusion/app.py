@@ -123,6 +123,7 @@ def inject_request_identity() -> dict[str, dict[str, str | None]]:
     """
     identity = getattr(g, "webfusion_user", AUTH_SERVICE.request_identity(request))
     AUTH_SERVICE.record_observed_user(identity, app.logger)
+    AUTH_SERVICE.load_profile_image(identity, app.logger)
     AUTH_SERVICE.load_access_role(identity, app.logger)
     return {"current_user": identity}
 

@@ -13,7 +13,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/AnatelReactiveTheme.AnatelReactiveTheme.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/AnatelReactiveTheme.AnatelReactiveTheme.extra.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/Desempenho_CW.Desempenho.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/webfusion_base.css', v='20260826-rf-fusion-mark') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/webfusion_base.css', v='20260918-profile-avatar') }}">
 
     {% block extra_css %}{% endblock %}
 </head>
@@ -79,7 +79,16 @@
                                 {% endif %}
                             </div>
                             <div class="wf-header-user" title="Usuário conectado">
-                                <i class="fa fa-user" aria-hidden="true"></i>
+                                <span class="wf-header-avatar" aria-hidden="true">
+                                    {% if current_user.name or current_user.email %}
+                                        <img class="wf-header-avatar-fallback" src="{{ url_for('users_api.profile_avatar') }}" alt="" width="32" height="32">
+                                    {% else %}
+                                        <img class="wf-header-avatar-fallback" src="{{ url_for('static', filename='img/profile_out.svg') }}" alt="" width="32" height="32">
+                                    {% endif %}
+                                    {% if current_user.avatar_url %}
+                                        <img src="{{ current_user.avatar_url }}" alt="" width="32" height="32" referrerpolicy="no-referrer" onerror="this.remove()">
+                                    {% endif %}
+                                </span>
                                 <span>{{ current_user.label }}</span>
                             </div>
                         </nav>

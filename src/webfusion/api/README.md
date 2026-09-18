@@ -9,6 +9,7 @@ em [app.py](../app.py); a organização por pacote não altera as URLs públicas
 | [map_api](map_api/README.md) | Mapa comum à interface web e ao appAnalise | GET `/rffusion/api/map/...` |
 | [appAnalise_api](appAnalise_api/README.md) | Catálogos, arquivos, espectros, contagem e estatísticas | `/rffusion/api/appanalise/...` |
 | [zabbix_api](zabbix_api/README.md) | Cliente JSON-RPC de hosts, templates, macros e problemas | Chamadas Python; não registra rotas HTTP |
+| [microsoft_api](microsoft_api/README.md) | Consulta de fotos pelo e-mail de login do Entra | `get_profile_image_url(email)`; retorna URL local |
 
 ## Endereçamento
 

@@ -26,12 +26,23 @@ class TestCurrentUserApi(unittest.TestCase):
 
     def setUp(self):
         self.module.AUTH_SERVICE.observed_user_profiles.clear()
+        self.module.AUTH_SERVICE.photo_refresh_after.clear()
+        from api.microsoft_api import MicrosoftNotConfigured
+        self.graph_lookup = patch("api.microsoft_api.get_profile_image_url", side_effect=MicrosoftNotConfigured())
+        self.graph_mock = self.graph_lookup.start()
+        self.addCleanup(self.graph_lookup.stop)
         self.register_observed_user = patch.object(
             importlib.import_module("auth.service"),
             "register_observed_user",
         )
         self.register_user_mock = self.register_observed_user.start()
         self.addCleanup(self.register_observed_user.stop)
+        self.profile_image_lookup = patch("auth.service.get_profile_image_url", return_value=None)
+        self.profile_image_mock = self.profile_image_lookup.start()
+        self.addCleanup(self.profile_image_lookup.stop)
+        self.role_lookup = patch("auth.service.get_access_role", return_value=None)
+        self.role_lookup.start()
+        self.addCleanup(self.role_lookup.stop)
 
     def tearDown(self):
         self.module.AUTH_SERVICE.observed_user_profiles.clear()
@@ -44,6 +55,7 @@ class TestCurrentUserApi(unittest.TestCase):
             "NA_JOB_TITLE": "Analista",
             "NA_DEPARTMENT": "Fiscalização",
             "NA_LOCATION": "Brasília",
+            "NA_URL_PROFILE_IMG": "https://photos.example.org/maria.jpg",
             "DT_CREATED_AT": "2026-09-01 10:00:00",
             "DT_UPDATED_AT": "2026-09-10 12:00:00",
             "NA_ROLE": "admin",
@@ -58,7 +70,7 @@ class TestCurrentUserApi(unittest.TestCase):
             login_response = self.client.get("/api/users/login", headers=headers)
             current_user_response = self.client.get("/api/users/me", headers=headers)
 
-        self.assertEqual(login_response.status_code, 204)
+        self.assertEqual(login_response.status_code, 200)
         self.assertEqual(login_response.get_data(), b"")
         self.assertEqual(
             self.module.app.json.loads(login_response.headers["X-User-Profile"]),
@@ -69,7 +81,7 @@ class TestCurrentUserApi(unittest.TestCase):
     def test_login_without_proxy_identity_returns_empty_profile_header(self):
         response = self.client.get("/api/users/login")
 
-        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_data(), b"")
         self.assertEqual(response.headers["X-User-Profile"], "{}")
 
@@ -349,7 +361,127 @@ class TestCurrentUserApi(unittest.TestCase):
             job_title="Analista",
             department="Fiscalização",
             location="Brasília",
+            profile_image_url=None,
         )
+
+    def test_proxy_photo_is_persisted_and_rendered_next_to_user_name(self):
+        photo = "https://photos.example.org/maria.jpg"
+        with self.module.app.test_request_context("/", headers={
+            "X-User-Email": "maria@example.org",
+            "X-User-Name": "Maria",
+            "X-User-Avatar-Url": photo,
+        }):
+            self.module.load_request_identity()
+            html = self.module.render_template("base.html")
+
+        self.assertIn(f'src="{photo}"', html)
+        self.assertIn('<span>Maria</span>', html)
+        self.assertEqual(self.register_user_mock.call_args.kwargs["profile_image_url"], photo)
+        self.profile_image_mock.assert_not_called()
+
+    def test_missing_proxy_photo_uses_stored_photo_without_erasing_it(self):
+        photo = "/rffusion/static/photos/maria.jpg"
+        self.profile_image_mock.return_value = photo
+        with self.module.app.test_request_context("/", headers={"X-User-Email": "maria@example.org"}):
+            self.module.load_request_identity()
+            html = self.module.render_template("base.html")
+        self.assertIn(f'src="{photo}"', html)
+        self.assertIsNone(self.register_user_mock.call_args.kwargs["profile_image_url"])
+
+    def test_photo_url_rejects_credentials_and_unsafe_schemes(self):
+        for value in (
+            "javascript:alert(1)", "data:image/svg+xml,anything", "//outside.example/photo",
+            "http://photos.example/photo", "https://user:secret@photos.example/photo",
+            "https://photos.example/photo?access_token=secret", "/photo?token=secret",
+            "/\\outside.example/photo", "https://[invalid/photo",
+        ):
+            with self.subTest(value=value):
+                self.assertIsNone(self.module.AUTH_SERVICE.normalize_profile_image_url(value))
+
+    def test_photo_change_refreshes_observed_profile(self):
+        for photo in ("https://photos.example/one.jpg", "https://photos.example/two.jpg"):
+            with self.module.app.test_request_context("/", headers={
+                "X-User-Email": "maria@example.org", "X-User-Avatar-Url": photo,
+            }):
+                self.module.load_request_identity()
+                self.module.inject_request_identity()
+        self.assertEqual(self.register_user_mock.call_count, 2)
+
+    def test_fallback_svg_uses_name_initial_and_is_not_cached(self):
+        from xml.etree import ElementTree
+        response = self.client.get("/api/users/avatar.svg", headers={
+            "X-User-Name": "Ágata Silva", "X-User-Email": "agata@example.org",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "image/svg+xml")
+        self.assertEqual(response.headers["Cache-Control"], "private, no-store")
+        root = ElementTree.fromstring(response.data)
+        self.assertEqual(root.find(".//{http://www.w3.org/2000/svg}text").text, "Á")
+        self.graph_mock.assert_not_called()
+
+    def test_fallback_svg_escapes_markup_in_initial(self):
+        from xml.etree import ElementTree
+        response = self.client.get("/api/users/avatar.svg", headers={"X-User-Name": "<script>"})
+        root = ElementTree.fromstring(response.data)
+        self.assertEqual(root.find(".//{http://www.w3.org/2000/svg}text").text, "<")
+        self.assertNotIn(b"<script>", response.data)
+
+    def test_fallback_svg_uses_email_initial_without_name(self):
+        from xml.etree import ElementTree
+        response = self.client.get("/api/users/avatar.svg", headers={"X-User-Email": "maria@example.org"})
+        root = ElementTree.fromstring(response.data)
+        self.assertEqual(root.find(".//{http://www.w3.org/2000/svg}text").text, "M")
+
+    def test_anonymous_header_uses_profile_out(self):
+        with self.module.app.test_request_context("/"):
+            self.module.load_request_identity()
+            html = self.module.render_template("base.html")
+        self.assertIn('/static/img/profile_out.svg', html)
+        self.assertNotIn('/api/users/avatar.svg', html)
+        self.graph_mock.assert_not_called()
+
+    def test_graph_photo_change_updates_database_and_current_header(self):
+        self.profile_image_mock.return_value = "/rffusion/static/img/profiles/old.jpg"
+        self.graph_mock.side_effect = None
+        photo = "/rffusion/static/img/profiles/new.jpg"
+        self.graph_mock.return_value = photo
+        with patch("auth.service.update_profile_image_url") as update:
+            with self.module.app.test_request_context("/", headers={"X-User-Email": "maria@example.org"}):
+                self.module.load_request_identity()
+                context = self.module.inject_request_identity()
+                self.assertEqual(context["current_user"]["avatar_url"], photo)
+            update.assert_called_once_with("maria@example.org", photo)
+            self.profile_image_mock.return_value = photo
+            with self.module.app.test_request_context("/", headers={"X-User-Email": "maria@example.org"}):
+                self.module.load_request_identity()
+                self.module.inject_request_identity()
+        self.graph_mock.assert_called_once()
+
+    def test_unchanged_graph_photo_does_not_write_to_database(self):
+        photo = "/rffusion/static/img/profiles/unchanged.jpg"
+        self.profile_image_mock.return_value = photo
+        self.graph_mock.side_effect = None
+        self.graph_mock.return_value = photo
+        with patch("auth.service.update_profile_image_url") as update:
+            with self.module.app.test_request_context("/", headers={"X-User-Email": "maria@example.org"}):
+                self.module.load_request_identity()
+                self.module.inject_request_identity()
+            update.assert_not_called()
+
+    def test_graph_failure_preserves_existing_photo(self):
+        from api.microsoft_api import MicrosoftPhotoError, MicrosoftPhotoNotFound
+        photo = "https://photos.example/existing.jpg"
+        for failure in (MicrosoftPhotoError("Unavailable"), MicrosoftPhotoNotFound()):
+            with self.subTest(failure=type(failure).__name__):
+                self.module.AUTH_SERVICE.photo_refresh_after.clear()
+                self.profile_image_mock.return_value = photo
+                self.graph_mock.side_effect = failure
+                with patch("auth.service.update_profile_image_url") as update:
+                    with self.module.app.test_request_context("/", headers={"X-User-Email": "maria@example.org"}):
+                        self.module.load_request_identity()
+                        context = self.module.inject_request_identity()
+                        self.assertEqual(context["current_user"]["avatar_url"], photo)
+                    update.assert_not_called()
 
     def test_does_not_register_identity_for_api_request(self):
         with self.module.app.test_request_context(

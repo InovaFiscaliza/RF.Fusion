@@ -145,6 +145,9 @@
                         <div class="maintenance-toolbar-title">Tarefas encontradas</div>
                         <div class="maintenance-toolbar-copy">{% if host_task_loaded %}{{ host_task_rows|length }} linha(s) carregadas.{% else %}Consulte quando necessário; esta lista não é carregada automaticamente.{% endif %}</div>
                     </div>
+                    {% if host_task_loaded and host_task_filters.host_id is not none %}
+                    <a href="{{ url_for('host.host', host_id=host_task_filters.host_id) }}" class="btn btn-primary btn-primary-action" data-loading-message="Abrindo acompanhamento da estação...">Acompanhar tarefa no Host</a>
+                    {% endif %}
                 </div>
                 <div class="maintenance-target-action-grid maintenance-host-action-grid">
                     <div class="maintenance-filter-field"><label class="form-label" for="host_task_action">Ação</label><div class="select-shell"><select id="host_task_action" name="action" class="form-control" disabled><option value="">Selecione tarefas primeiro</option>{% for action_key, action_label in action_options.items() %}<option value="{{ action_key }}">{{ action_label }}</option>{% endfor %}</select></div></div>
@@ -160,13 +163,13 @@
                 </div>
                 <div class="maintenance-table-wrap">
                     <table class="maintenance-table">
-                        <thead><tr><th class="maintenance-check-col"><input id="host-task-select-all" type="checkbox" aria-label="Selecionar todas as tarefas do host visíveis" {% if not host_task_loaded %}disabled{% endif %}></th><th>ID</th><th>Host</th><th>Tipo</th><th>Situação</th><th>Offline</th><th>Mensagem</th></tr></thead>
+                        <thead><tr><th class="maintenance-check-col"><input id="host-task-select-all" type="checkbox" aria-label="Selecionar todas as tarefas do host visíveis" {% if not host_task_loaded %}disabled{% endif %}></th><th>ID</th><th>Host</th><th>Tipo</th><th>Situação</th><th>Offline</th><th>Mensagem</th><th>Acompanhamento</th></tr></thead>
                         <tbody>
-                            {% if host_task_query_message %}<tr><td colspan="7" class="maintenance-empty-cell">{{ host_task_query_message }}</td></tr>
-                            {% elif not host_task_loaded %}<tr><td colspan="7" class="maintenance-empty-cell">Carregamento sob demanda desativado por padrão para evitar leitura desnecessária.</td></tr>
+                            {% if host_task_query_message %}<tr><td colspan="8" class="maintenance-empty-cell">{{ host_task_query_message }}</td></tr>
+                            {% elif not host_task_loaded %}<tr><td colspan="8" class="maintenance-empty-cell">Carregamento sob demanda desativado por padrão para evitar leitura desnecessária.</td></tr>
                             {% else %}{% for row in host_task_rows %}
-                            <tr data-host-task-row data-host-id="{{ row.FK_HOST }}" data-task-type="{{ row.NU_TYPE }}" data-host-offline="{{ 1 if row.IS_OFFLINE else 0 }}"><td class="maintenance-check-col"><input type="checkbox" name="selected_ids" value="{{ row.ID_HOST_TASK }}" class="maintenance-host-task-row-checkbox" aria-label="Selecionar tarefa {{ row.ID_HOST_TASK }}"></td><td>{{ row.ID_HOST_TASK }}</td><td><span class="maintenance-host-state {% if row.IS_OFFLINE %}is-offline{% else %}is-online{% endif %}" title="Estação {{ 'offline' if row.IS_OFFLINE else 'online' }}"><span class="maintenance-host-state-dot" aria-hidden="true"></span>{{ row.NA_HOST_NAME }}</span></td><td>{{ row.TYPE_LABEL }}</td><td><div class="maintenance-stage-status"><span class="maintenance-status-pill is-status-{{ row.NU_STATUS }}">{{ row.STATUS_LABEL }}</span><span class="maintenance-stage-date">{{ row.DT_HOST_TASK_DISPLAY }}</span></div></td><td>{{ 'Sim' if row.IS_OFFLINE else 'Não' }}</td><td class="maintenance-message-cell">{{ row.NA_MESSAGE or '-' }}</td></tr>
-                            {% else %}<tr><td colspan="7" class="maintenance-empty-cell">Nenhuma tarefa encontrada com os filtros atuais.</td></tr>{% endfor %}{% endif %}
+                            <tr data-host-task-row data-host-id="{{ row.FK_HOST }}" data-task-type="{{ row.NU_TYPE }}" data-host-offline="{{ 1 if row.IS_OFFLINE else 0 }}"><td class="maintenance-check-col"><input type="checkbox" name="selected_ids" value="{{ row.ID_HOST_TASK }}" class="maintenance-host-task-row-checkbox" aria-label="Selecionar tarefa {{ row.ID_HOST_TASK }}"></td><td>{{ row.ID_HOST_TASK }}</td><td><span class="maintenance-host-state {% if row.IS_OFFLINE %}is-offline{% else %}is-online{% endif %}" title="Estação {{ 'offline' if row.IS_OFFLINE else 'online' }}"><span class="maintenance-host-state-dot" aria-hidden="true"></span>{{ row.NA_HOST_NAME }}</span></td><td>{{ row.TYPE_LABEL }}</td><td><div class="maintenance-stage-status"><span class="maintenance-status-pill is-status-{{ row.NU_STATUS }}">{{ row.STATUS_LABEL }}</span><span class="maintenance-stage-date">{{ row.DT_HOST_TASK_DISPLAY }}</span></div></td><td>{{ 'Sim' if row.IS_OFFLINE else 'Não' }}</td><td class="maintenance-message-cell">{{ row.NA_MESSAGE or '-' }}</td><td><a href="{{ url_for('host.host', host_id=row.FK_HOST) }}" class="btn btn-secondary btn-secondary-action" aria-label="Acompanhar tarefa {{ row.ID_HOST_TASK }} no Host {{ row.NA_HOST_NAME }}" data-loading-message="Abrindo acompanhamento da estação...">Acompanhar no Host</a></td></tr>
+                            {% else %}<tr><td colspan="8" class="maintenance-empty-cell">Nenhuma tarefa encontrada com os filtros atuais.</td></tr>{% endfor %}{% endif %}
                         </tbody>
                     </table>
                 </div>
