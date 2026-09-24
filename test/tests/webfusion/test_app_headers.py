@@ -4,7 +4,7 @@ import importlib
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 WEBFUSION_ROOT = Path(__file__).resolve().parents[3] / "src/webfusion"
@@ -176,6 +176,90 @@ class TestCurrentUserApi(unittest.TestCase):
                     f'data-can-manage-tasks="{expected}"',
                     response.get_data(as_text=True),
                 )
+
+    def test_connectivity_test_rejects_missing_role_and_legacy_credentials(self) -> None:
+        """Deny both operations before opening the operational database."""
+        scenarios = (
+            {},
+            {"X-User-Email": "visitor@example.org"},
+            {"Authorization": "Basic YWRtaW46YWRtaW4="},
+            {
+                "X-User-Email": "visitor@example.org",
+                "Authorization": "Basic YWRtaW46YWRtaW4=",
+            },
+        )
+        routes = (
+            ("POST", "/api/host/18/connectivity-test"),
+            ("GET", "/api/host/18/connectivity-test/41"),
+        )
+        with patch("modules.host.routes.get_connection_bpdata") as connect:
+            for headers in scenarios:
+                for method, url in routes:
+                    with self.subTest(headers=headers, method=method):
+                        response = self.client.open(url, method=method, headers=headers)
+                        self.assertEqual(response.status_code, 403)
+                        self.assertNotIn("WWW-Authenticate", response.headers)
+            connect.assert_not_called()
+
+    def test_connectivity_test_accepts_webfusion_roles_without_basic_auth(self) -> None:
+        """Allow active roles to queue and poll through the real route guards."""
+        row = {
+            "ID_HOST_TASK": 41,
+            "FK_HOST": 18,
+            "NU_STATUS": 1,
+            "NA_HOST_NAME": "Station",
+            "NA_MESSAGE": "Pending",
+            "DT_HOST_TASK": None,
+        }
+        for role in ("admin", "developer"):
+            with self.subTest(role=role):
+                connection = MagicMock()
+                connection.cursor.return_value.fetchone.return_value = row
+                with (
+                    patch("auth.service.get_access_role", return_value=role) as lookup,
+                    patch("modules.host.routes.get_connection_bpdata", return_value=connection),
+                    patch("modules.host.routes.queue_interactive_connectivity_test",
+                          return_value={"task_id": 41, "created": True, "active": True}) as queue,
+                ):
+                    headers = {"X-User-Email": "operator@example.org"}
+                    started = self.client.post("/api/host/18/connectivity-test", headers=headers)
+                    status = self.client.get("/api/host/18/connectivity-test/41", headers=headers)
+
+                self.assertEqual(started.status_code, 202)
+                self.assertEqual(status.status_code, 200)
+                self.assertEqual(started.get_json()["task_id"], 41)
+                self.assertEqual(status.get_json()["task_id"], 41)
+                queue.assert_called_once_with(connection, 18)
+                self.assertEqual(lookup.call_count, 2)
+                self.assertEqual(connection.close.call_count, 2)
+
+    def test_connectivity_test_denies_access_when_role_lookup_fails(self) -> None:
+        """Fail closed when WebFusion cannot resolve the current user's role."""
+        with (
+            patch("auth.service.get_access_role", side_effect=RuntimeError("Unavailable")),
+            patch("modules.host.routes.get_connection_bpdata") as connect,
+        ):
+            for method, url in (
+                ("POST", "/api/host/18/connectivity-test"),
+                ("GET", "/api/host/18/connectivity-test/41"),
+            ):
+                response = self.client.open(
+                    url, method=method, headers={"X-User-Email": "operator@example.org"},
+                )
+                self.assertEqual(response.status_code, 403)
+            connect.assert_not_called()
+
+    def test_host_monitoring_remains_available_without_role_lookup(self) -> None:
+        """Keep ordinary station monitoring outside the privileged operations."""
+        with (
+            patch("auth.service.get_access_role") as lookup,
+            patch("modules.host.routes.get_host_current_activity", return_value=None),
+        ):
+            response = self.client.get(
+                "/api/host/18/activity", headers={"X-User-Email": "visitor@example.org"},
+            )
+        self.assertEqual(response.status_code, 200)
+        lookup.assert_not_called()
 
     def test_current_user_returns_database_profile_without_cache(self):
         profile = {

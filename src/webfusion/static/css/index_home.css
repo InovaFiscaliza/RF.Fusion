@@ -15,15 +15,9 @@
 }
 
 .station-map-toolbar {
-    display: grid;
-    grid-template-columns:
-        minmax(150px, 190px)
-        minmax(260px, 1.35fr)
-        minmax(150px, 190px)
-        minmax(150px, 180px)
-        minmax(150px, 180px)
-        minmax(220px, 260px);
-    gap: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.875rem;
     margin-bottom: 16px;
     align-items: end;
     position: relative;
@@ -32,9 +26,15 @@
 
 .station-map-filter {
     display: flex;
+    flex: 1 1 10rem;
     flex-direction: column;
     gap: 6px;
     min-width: 0;
+    max-width: 100%;
+}
+
+.station-map-toolbar .station-map-filter:nth-child(2) {
+    flex: 1.35 1 17rem;
 }
 
 /* Native selects keep browser behavior, but get a small custom arrow so
@@ -68,6 +68,7 @@
 
 .station-map-filter-head {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
@@ -94,7 +95,7 @@
     box-sizing: border-box;
 }
 
-.station-map-date-input {
+.station-map-filter input.station-map-date-input {
     width: 100%;
     min-height: 42px;
     border-radius: 10px;
@@ -114,12 +115,14 @@
 }
 
 .station-map-filter-period {
+    /* Wrap according to the card width, including font and zoom changes. */
+    flex: 2 1 calc(24ch + 11.5rem);
     min-width: 0;
 }
 
 .station-map-date-range {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(10ch + 3.5rem)), 1fr));
     gap: 0.5rem;
     position: relative;
     min-width: 0;
@@ -167,7 +170,10 @@
     position: absolute;
     inset: 0;
     width: 100%;
+    min-width: 0;
+    max-width: 100%;
     height: 100%;
+    box-sizing: border-box;
     opacity: 0;
     cursor: pointer;
     margin: 0;
@@ -933,30 +939,16 @@
 
 /* On smaller screens the map controls stack vertically and the cards
  * collapse to a single column to preserve tap targets. */
-@media (max-width: 1360px) {
-    .station-map-toolbar {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
-
-    .station-map-toolbar .station-map-filter:nth-child(2),
-    .station-map-filter-period {
-        grid-column: span 2;
-    }
-}
-
 @media (max-width: 880px) {
     .station-map-header {
         flex-direction: column;
         align-items: flex-start;
     }
 
-    .station-map-toolbar {
-        grid-template-columns: 1fr;
-    }
-
+    .station-map-toolbar .station-map-filter,
     .station-map-toolbar .station-map-filter:nth-child(2),
     .station-map-filter-period {
-        grid-column: auto;
+        flex-basis: 100%;
     }
 
     .station-map-date-range {
@@ -972,16 +964,5 @@
         grid-template-columns: 1fr;
         padding-left: 0;
         padding-right: 0;
-    }
-}
-
-@media (max-width: 1120px) {
-    .station-map-toolbar {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .station-map-toolbar .station-map-filter:nth-child(2),
-    .station-map-filter-period {
-        grid-column: span 2;
     }
 }

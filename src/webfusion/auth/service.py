@@ -18,6 +18,7 @@ from flask import Request
 
 from api import microsoft_api
 from auth.config import (
+    ACCESS_RESTRICTED_ENDPOINTS,
     PROFILE_IMAGE_URL_MAX_LENGTH, PROFILE_IMAGE_REFRESH_SECONDS,
     PROFILE_IMAGE_RETRY_SECONDS, PROFILE_IMAGE_CACHE_LIMIT,
 )
@@ -211,18 +212,21 @@ class AuthService:
         with self._photo_refresh_lock:
             self.photo_refresh_after[user_email] = monotonic() + PROFILE_IMAGE_REFRESH_SECONDS
 
-    def is_restricted_blueprint(self, blueprint_name: str) -> bool:
-        """Return whether a blueprint requires an active WebFusion role.
+    def is_restricted_endpoint(self, endpoint: str) -> bool:
+        """Return whether a route requires an active WebFusion role.
 
         Args:
-            blueprint_name: Blueprint name extracted from a Flask endpoint.
-                Type: str.
+            endpoint: Flask endpoint including its blueprint name. Type: str.
 
         Returns:
             Access restriction result. Type: bool. `True` means the request
             must have an active WebFusion role.
         """
-        return blueprint_name in ACCESS_RESTRICTED_BLUEPRINTS
+        blueprint_name = endpoint.partition(".")[0]
+        return (
+            blueprint_name in ACCESS_RESTRICTED_BLUEPRINTS
+            or endpoint in ACCESS_RESTRICTED_ENDPOINTS
+        )
 
     def is_valid_identity_email(self, value: str | None) -> bool:
         """Validate an identity email forwarded by the authentication proxy.

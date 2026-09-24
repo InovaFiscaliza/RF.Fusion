@@ -13,24 +13,17 @@ priorizando `admin`. Os contratos `NA_ROLE`, `IS_ADMIN` e `IS_DEVELOPER` das API
 continuam disponíveis. `/api/users/login` mantém HTTP 200 com corpo vazio e o
 perfil JSON no cabeçalho `X-User-Profile`.
 
-## Migração
+## Criação do banco
 
-Para instalações novas, usar `createWebFusionDB.sql`. Para o banco existente,
-usar `migrateWebFusionUsers.sql` antes de ativar a nova versão do aplicativo.
-Suspender alterações de privilégios durante a transição, pois versões antigas
-ainda escrevem nas tabelas legadas. O DDL é aditivo; as cópias de dados e vínculos
-são transacionais. Executar com um cliente que interrompa ao primeiro erro.
+Para instalações novas, usar [createWebFusionDB.sql](createWebFusionDB.sql).
+O script já contém o modelo completo: `USERS`, a coluna `NA_URL_PROFILE_IMG`,
+`USER_ROLES`, seus índices e a chave estrangeira com exclusão em cascata.
+Não é necessário aplicar migrações depois da criação.
 
-A migração preserva perfis existentes em `USERS`, importa usuários exclusivos
-das tabelas antigas e mantém os estados ativos/inativos e datas dos vínculos.
-Entradas já migradas não são sobrescritas. Não repetir a importação depois de
-iniciar a administração pelo novo modelo: registros legados não refletem mais
-revogações ou exclusões posteriores.
-
-Após validar os vínculos migrados e as dependências, salvar uma cópia das
-tabelas legadas e remover `ADMINS` e `DEVELOPERS`. Retornar ao aplicativo antigo
-após mudanças de privilégios exige reconciliar essas mudanças; a cópia legada
-não é um espelho atualizado.
+Scripts de migração não são mantidos no repositório. O script de criação não
+converte instalações legadas nem importa usuários de `ADMINS` e `DEVELOPERS`.
+Bancos existentes exigem atualização operacional específica, com cópia de
+recuperação e validação dos perfis e privilégios antes de ativar os consumidores.
 
 ### Estado do banco ativo
 
@@ -43,10 +36,8 @@ A cópia SQL anterior à remoção está no container webserver, em
 `/root/webfusion-backups/legacy-roles-before-drop-20260918T165913Z.sql`, com acesso
 restrito ao proprietário. Contém a estrutura e os registros das duas tabelas.
 
-O banco ativo contém somente `USERS` e `USER_ROLES`. Não executar novamente
-`migrateWebFusionUsers.sql` nesse banco: o script atende instalações legadas
-que ainda possuem as tabelas de origem. Seus testes continuam criando essas
-tabelas apenas em um schema isolado para validar a migração histórica.
+O banco ativo contém somente `USERS` e `USER_ROLES`. Os testes usam o script
+de criação em um schema isolado para validar o modelo atual.
 
 ## Foto do usuário
 
@@ -77,7 +68,7 @@ cd /RF.Fusion/test
 RFF_DB_TEST=1 /usr/local/bin/python -m unittest tests.webfusion.test_user_schema
 ```
 
-Os testes de banco devem usar schema isolado e validar: migração de usuários
-exclusivos das tabelas legadas, preservação de vínculos inativos e cumulativos,
+Os testes de banco devem usar schema isolado e validar: criação do schema
+atual, vínculos inativos e cumulativos,
 precedência de administrador, revogação, exclusão em cascata e persistência da
 foto quando o proxy omite o cabeçalho.

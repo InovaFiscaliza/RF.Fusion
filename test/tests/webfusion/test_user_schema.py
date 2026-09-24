@@ -1,4 +1,4 @@
-"""Exercise user migration and permissions against an isolated MariaDB schema."""
+"""Exercise user schema creation and permissions against an isolated MariaDB schema."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ SCRIPTS = ROOT / "src/mariadb/scripts"
 
 @unittest.skipUnless(os.environ.get("RFF_DB_TEST") == "1", "Requires isolated MariaDB integration database")
 class TestUserSchema(unittest.TestCase):
-    """Validate migration and CRUD without writing to the application schema.
+    """Validate schema creation and CRUD without writing to the application schema.
 
     Attributes:
         database: Unique temporary schema name. Type: str.
@@ -92,8 +92,8 @@ class TestUserSchema(unittest.TestCase):
                     cursor.execute(statement)
         self.connection.commit()
 
-    def test_legacy_migration_and_role_lifecycle(self) -> None:
-        """Preserve identity, role state, and photos across migration and CRUD.
+    def test_fresh_schema_and_role_lifecycle(self) -> None:
+        """Validate identity, role state, and photos after schema creation.
 
         Args:
             None.
@@ -102,22 +102,15 @@ class TestUserSchema(unittest.TestCase):
             None.
         """
         schema = (SCRIPTS / "createWebFusionDB.sql").read_text()
-        # Build the legacy layout without importing or mutating production rows.
-        users_ddl = schema[schema.index("CREATE TABLE IF NOT EXISTS `USERS`"):schema.index("CREATE TABLE IF NOT EXISTS `USER_ROLES`")]
-        users_ddl = users_ddl.replace("  `NA_URL_PROFILE_IMG` varchar(2048) DEFAULT NULL,\n", "")
-        self.execute_script(users_ddl)
+        self.execute_script(schema)
         with self.connection.cursor() as cursor:
-            for table in ("ADMINS", "DEVELOPERS"):
-                cursor.execute(f"CREATE TABLE {table} LIKE USERS")
-                cursor.execute(f"ALTER TABLE {table} ADD IS_ACTIVE tinyint NOT NULL DEFAULT 1")
-            cursor.execute("INSERT INTO USERS (NA_USER_NAME, NA_USER_EMAIL) VALUES ('Current name', 'both@example.org')")
-            cursor.execute("INSERT INTO ADMINS (NA_USER_NAME, NA_USER_EMAIL, IS_ACTIVE) VALUES ('Old name', 'both@example.org', 1), ('Inactive', 'inactive@example.org', 0)")
-            cursor.execute("INSERT INTO DEVELOPERS (NA_USER_NAME, NA_USER_EMAIL) VALUES ('Old name', 'both@example.org'), ('Developer only', 'dev@example.org')")
+            cursor.execute("INSERT INTO USERS (NA_USER_NAME, NA_USER_EMAIL) VALUES ('Current name', 'both@example.org'), ('Inactive', 'inactive@example.org'), ('Developer only', 'dev@example.org')")
+            cursor.execute("INSERT INTO USER_ROLES (ID_USER, NA_ROLE, IS_ACTIVE) SELECT ID_USER, 'admin', NA_USER_EMAIL <> 'inactive@example.org' FROM USERS WHERE NA_USER_EMAIL IN ('both@example.org', 'inactive@example.org')")
+            cursor.execute("INSERT INTO USER_ROLES (ID_USER, NA_ROLE) SELECT ID_USER, 'developer' FROM USERS WHERE NA_USER_EMAIL IN ('both@example.org', 'dev@example.org')")
         self.connection.commit()
 
-        migration = (SCRIPTS / "migrateWebFusionUsers.sql").read_text()
-        self.execute_script(migration)
-        self.execute_script(migration)
+        # Reapplying creation must preserve existing identities and role states.
+        self.execute_script(schema)
         both = self.handler.get_webfusion_user("both@example.org")
         self.assertEqual(both["NA_USER_NAME"], "Current name")
         self.assertEqual((both["IS_ADMIN"], both["IS_DEVELOPER"], both["NA_ROLE"]), (1, 1, "admin"))

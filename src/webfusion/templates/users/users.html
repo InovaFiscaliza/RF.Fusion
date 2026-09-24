@@ -3,7 +3,7 @@
 {% block title %}RF.Fusion - Usuários{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/users_page.css', v='20260901-directory-comboboxes-and-confirmation') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/users_page.css', v='20260921-sober-directory') }}">
 {% endblock %}
 
 {% block breadcrumb %}
@@ -43,56 +43,56 @@
                 <h2 id="users-directory-title" class="wf-panel-title">Diretório de usuários</h2>
                 <p class="wf-panel-copy">Os dados recebidos posteriormente pelo F5 atualizam o cadastro correspondente ao e-mail.</p>
             </div>
-            <div class="users-directory-tools">
-                <button type="button" class="btn btn-primary btn-primary-action" id="users-create-button">
-                    <i class="fa fa-user-plus" aria-hidden="true"></i>
-                    Cadastrar usuário
-                </button>
-                <form method="get" class="users-search-form" data-loading-message="Pesquisando usuários...">
-                    <div class="users-filter-field">
-                        <label class="sr-only" for="users-email-filter">Filtrar por usuário</label>
-                        <div class="users-combobox-wrap" data-users-combobox>
-                            <input id="users-email-filter" class="form-control users-combobox" type="search" value="{{ filters.email }}" placeholder="Todos os usuários" autocomplete="off" data-users-combobox-input>
-                            <input type="hidden" name="email" value="{{ filters.email }}" data-users-combobox-value>
-                            <div class="users-combobox-menu" hidden data-users-combobox-menu></div>
-                        </div>
+            <button type="button" class="btn btn-primary btn-primary-action" id="users-create-button">
+                <i class="fa fa-user-plus" aria-hidden="true"></i>
+                Cadastrar usuário
+            </button>
+        </div>
+        <div class="users-directory-tools">
+            <form method="get" class="users-search-form" data-loading-message="Pesquisando usuários...">
+                <div class="users-filter-field">
+                    <label class="sr-only" for="users-email-filter">Filtrar por usuário</label>
+                    <div class="users-combobox-wrap" data-users-combobox>
+                        <input id="users-email-filter" class="form-control users-combobox" type="search" value="{{ filters.email }}" placeholder="Todos os usuários" autocomplete="off" data-users-combobox-input>
+                        <input type="hidden" name="email" value="{{ filters.email }}" data-users-combobox-value>
+                        <div class="users-combobox-menu" hidden data-users-combobox-menu></div>
                     </div>
-                    <div class="users-filter-field">
-                        <label class="sr-only" for="users-job-title-filter">Filtrar por cargo</label>
-                        <div class="users-select-wrap">
-                            <select id="users-job-title-filter" class="form-control users-filter-select" name="job_title">
-                                <option value="">Todos os cargos</option>
-                                {% for option in filter_options.job_titles %}
-                                <option value="{{ option.value }}" {% if filters.job_title == option.value %}selected{% endif %}>{{ option.label }}</option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                    </div>
-                    <div class="users-filter-field">
-                        <label class="sr-only" for="users-department-filter">Filtrar por lotação</label>
-                        <div class="users-select-wrap">
-                            <select id="users-department-filter" class="form-control users-filter-select" name="department">
-                                <option value="">Todas as lotações</option>
-                                {% for option in filter_options.departments %}
-                                <option value="{{ option.value }}" {% if filters.department == option.value %}selected{% endif %}>{{ option.label }}</option>
-                                {% endfor %}
-                            </select>
-                        </div>
-                    </div>
-                    <label class="sr-only" for="users-role-filter">Filtrar por privilégio</label>
+                </div>
+                <div class="users-filter-field">
+                    <label class="sr-only" for="users-job-title-filter">Filtrar por cargo</label>
                     <div class="users-select-wrap">
-                        <select id="users-role-filter" class="form-control users-role-filter" name="role">
-                            {% for value, label in role_filters %}
-                            <option value="{{ value }}" {% if filters.role == value %}selected{% endif %}>{{ label }}</option>
+                        <select id="users-job-title-filter" class="form-control users-filter-select" name="job_title">
+                            <option value="">Todos os cargos</option>
+                            {% for option in filter_options.job_titles %}
+                            <option value="{{ option.value }}" {% if filters.job_title == option.value %}selected{% endif %}>{{ option.label }}</option>
                             {% endfor %}
                         </select>
                     </div>
-                    <button type="submit" class="btn btn-secondary btn-secondary-action">
-                        <i class="fa fa-search" aria-hidden="true"></i>
-                        Pesquisar
-                    </button>
-                </form>
-            </div>
+                </div>
+                <div class="users-filter-field">
+                    <label class="sr-only" for="users-department-filter">Filtrar por lotação</label>
+                    <div class="users-select-wrap">
+                        <select id="users-department-filter" class="form-control users-filter-select" name="department">
+                            <option value="">Todas as lotações</option>
+                            {% for option in filter_options.departments %}
+                            <option value="{{ option.value }}" {% if filters.department == option.value %}selected{% endif %}>{{ option.label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+                <label class="sr-only" for="users-role-filter">Filtrar por privilégio</label>
+                <div class="users-select-wrap">
+                    <select id="users-role-filter" class="form-control users-role-filter" name="role">
+                        {% for value, label in role_filters %}
+                        <option value="{{ value }}" {% if filters.role == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <button type="submit" class="btn btn-secondary btn-secondary-action">
+                    <i class="fa fa-search" aria-hidden="true"></i>
+                    Pesquisar
+                </button>
+            </form>
         </div>
 
         <div class="users-table-wrap">
@@ -128,23 +128,25 @@
                             <div class="users-row-actions">
                                 <button
                                     type="button"
-                                    class="btn btn-small btn-secondary-action users-privileges-button"
+                                    class="users-icon-action users-privileges-button"
+                                    title="Editar privilégios"
+                                    aria-label="Editar privilégios de {{ user.NA_USER_NAME or user.NA_USER_EMAIL }}"
                                     data-user-privileges-name="{{ user.NA_USER_NAME or user.NA_USER_EMAIL }}"
                                     data-user-privileges-email="{{ user.NA_USER_EMAIL }}"
                                     data-user-is-admin="{{ 'true' if user.IS_ADMIN else 'false' }}"
                                     data-user-is-developer="{{ 'true' if user.IS_DEVELOPER else 'false' }}"
                                 >
-                                    <i class="fa fa-shield" aria-hidden="true"></i>
-                                    Gerenciar
+                                    <i class="fa fa-pencil-square-o" aria-hidden="true"></i>
                                 </button>
                                 <button
                                     type="button"
-                                    class="btn btn-small users-delete-button"
+                                    class="users-icon-action users-delete-button"
+                                    title="Excluir usuário"
+                                    aria-label="Excluir usuário {{ user.NA_USER_NAME or user.NA_USER_EMAIL }}"
                                     data-user-delete-name="{{ user.NA_USER_NAME or user.NA_USER_EMAIL }}"
                                     data-user-delete-email="{{ user.NA_USER_EMAIL }}"
                                 >
-                                    <i class="fa fa-trash" aria-hidden="true"></i>
-                                    Excluir
+                                    <i class="fa fa-trash-o" aria-hidden="true"></i>
                                 </button>
                             </div>
                         </td>

@@ -1,5 +1,6 @@
 /* ================================================================
    createWebFusionDB.sql
+   Fresh-install schema. Existing databases require a separate operational update.
    Schema for WebFusion access-control identities.
    ================================================================ */
 

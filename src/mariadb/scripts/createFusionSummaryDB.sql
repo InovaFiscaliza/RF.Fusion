@@ -1,5 +1,6 @@
 /* =====================================================================
    createFusionSummaryDB.sql
+   Fresh-install schema. Existing databases require a separate operational update.
    Canonical RFFUSION_SUMMARY schema — current as of schema v16.
 
    Changelog

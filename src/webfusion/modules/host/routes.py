@@ -11,6 +11,8 @@ once the operator expands the host details. JSON reads do not record page views,
 because monitoring polls are not operator navigation.
 """
 
+from __future__ import annotations
+
 import re
 from datetime import date, datetime
 from decimal import Decimal
@@ -48,9 +50,6 @@ from modules.tasks.station_service import (
 
 host_bp = Blueprint("host", __name__)
 
-HOST_OPERATION_AUTH_USERNAME = "admin"
-HOST_OPERATION_AUTH_PASSWORD = "admin"
-HOST_OPERATION_AUTH_REALM = "RF.Fusion Task"
 HOST_METRICS_SUCCESS_MESSAGE = "Host operational metrics read successfully"
 BYTES_PER_KILOBYTE = 1024
 HOST_ACTIVITY_SUSPENDED = 3
@@ -137,25 +136,6 @@ def _connectivity_test_stage(status: int, message: str) -> str:
     if status in {TASK_DONE, TASK_ERROR}:
         return "persist"
     return "queue"
-
-
-def _host_operation_auth_failed() -> Response:
-    """Trigger the existing lightweight operation-auth challenge."""
-    return Response(
-        "Authentication required.",
-        401,
-        {"WWW-Authenticate": f'Basic realm="{HOST_OPERATION_AUTH_REALM}"'},
-    )
-
-
-def _has_valid_host_operation_credentials() -> bool:
-    """Validate the lightweight credentials used by write-oriented screens."""
-    auth = request.authorization
-    return bool(
-        auth
-        and str(auth.username or "") == HOST_OPERATION_AUTH_USERNAME
-        and str(auth.password or "") == HOST_OPERATION_AUTH_PASSWORD
-    )
 
 
 def _serialize_connectivity_test_row(row: dict) -> dict:
@@ -545,10 +525,17 @@ def processed_file_spectrum_metadata(host_id: int):
 
 
 @host_bp.route("/api/host/<int:host_id>/connectivity-test", methods=["POST"])
-def start_connectivity_test(host_id):
-    """Queue a high-priority connectivity test without performing network I/O."""
-    if not _has_valid_host_operation_credentials():
-        return _host_operation_auth_failed()
+def start_connectivity_test(host_id: int) -> tuple[Response, int]:
+    """Queue a connectivity test after the application authorizes the request.
+
+    Args:
+        host_id: Operational station identifier. Type: int.
+
+    Returns:
+        JSON response and HTTP status. Type: tuple[flask.Response, int].
+        Successful responses contain the queued task and its current state.
+        Failed responses contain an `error` string.
+    """
 
     connection = None
     try:
@@ -591,10 +578,18 @@ def start_connectivity_test(host_id):
     "/api/host/<int:host_id>/connectivity-test/<int:task_id>",
     methods=["GET"],
 )
-def connectivity_test_status(host_id, task_id):
-    """Return one tiny task-status payload for the interactive dialog poller."""
-    if not _has_valid_host_operation_credentials():
-        return _host_operation_auth_failed()
+def connectivity_test_status(host_id: int, task_id: int) -> Response | tuple[Response, int]:
+    """Read a connectivity test after the application authorizes the request.
+
+    Args:
+        host_id: Operational station identifier. Type: int.
+        task_id: Connectivity task identifier. Type: int.
+
+    Returns:
+        Task-state JSON response, or an error response and HTTP status.
+        Type: flask.Response | tuple[flask.Response, int].
+        Failed responses contain an `error` string.
+    """
 
     connection = None
     try:

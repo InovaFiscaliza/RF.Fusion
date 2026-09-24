@@ -76,12 +76,11 @@ def load_request_identity() -> None:
 
     Returns:
         None. Stores a normalized identity in `flask.g.webfusion_user`; for a
-        restricted blueprint, also loads the active access role.
+        restricted endpoint, also loads the active access role.
     """
     identity = AUTH_SERVICE.request_identity(request)
     endpoint = request.endpoint or ""
-    blueprint_name = endpoint.partition(".")[0]
-    if AUTH_SERVICE.is_restricted_blueprint(blueprint_name):
+    if AUTH_SERVICE.is_restricted_endpoint(endpoint):
         AUTH_SERVICE.load_access_role(identity, app.logger)
     g.webfusion_user = identity
 
@@ -99,8 +98,7 @@ def require_restricted_access() -> Response | None:
         so Flask continues the request.
     """
     endpoint = request.endpoint or ""
-    blueprint_name = endpoint.partition(".")[0]
-    if not AUTH_SERVICE.is_restricted_blueprint(blueprint_name):
+    if not AUTH_SERVICE.is_restricted_endpoint(endpoint):
         return None
 
     if g.webfusion_user["role"] is None:

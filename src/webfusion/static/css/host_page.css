@@ -1,7 +1,7 @@
 .host-page-stack {
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: 20px;
 }
 
 .host-section-card {
@@ -510,53 +510,18 @@
     margin-top: 0;
 }
 
-.host-query-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 20px;
-    align-items: end;
+.host-filter-card .online-filter {
+    min-height: 0;
+    padding: 0.625em 0;
+    border: 0;
+    background: transparent;
 }
 
-.host-query-field {
-    flex: 1 1 min(100%, 14rem);
-    min-width: 0;
-}
-
-.host-query-field:first-child {
-    flex: 2 1 min(100%, 28rem);
-}
-
-.host-query-actions-field {
-    flex-basis: min(100%, 24rem);
-}
-
-.host-query-online-field {
-    flex-basis: min(100%, 14rem);
-}
-
-.host-query-actions {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 11.25rem), 1fr));
-    gap: 10px;
-}
-
-.host-query-actions > * {
-    min-width: 0;
-    width: 100%;
-}
-
-/* The institutional theme adds a sibling margin that conflicts with the grid gap. */
-.host-query-actions > .btn + .btn {
-    margin-left: 0;
-}
-
-.online-filter label {
-    display: inline-flex;
-    align-items: center;
+.host-filter-card .online-filter label {
     gap: 8px;
+    color: var(--wf-text-soft);
     font-size: 13px;
-    font-weight: 600;
-    color: #334155;
+    white-space: nowrap;
 }
 
 @media (max-width: 480px) {

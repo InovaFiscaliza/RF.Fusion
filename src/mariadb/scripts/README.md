@@ -4,11 +4,12 @@ Este README concentra a visão arquitetural e operacional dos bancos do
 RF.Fusion neste diretório.
 
 O diretório [src/mariadb/scripts](/RFFusion/src/mariadb/scripts) contém os
-artefatos de bootstrap dos três bancos usados pelo RF.Fusion:
+artefatos de bootstrap dos quatro bancos usados pelo RF.Fusion:
 
 - `BPDATA`: estado operacional e filas
 - `RFDATA`: catálogo analítico de arquivos e espectros
 - `RFFUSION_SUMMARY`: read models materializados para consultas e mapas
+- `WEBFUSION`: cadastro de usuários e vínculos de privilégios
 
 ## Visão Geral
 
@@ -98,22 +99,26 @@ O fluxo lógico do dado é este:
 
 ## Scripts de Bootstrap
 
-### Migração da linha do tempo de localidades
+Os scripts `create*.sql` são a fonte canônica do schema atual para instalações
+novas. Alterações de estrutura devem ser incorporadas diretamente nesses arquivos;
+scripts de migração não são mantidos neste diretório.
 
-Aplicar [migrateHostLocationTimeline.sql](migrateHostLocationTimeline.sql) em
-instâncias existentes, usando o cliente MariaDB com as credenciais operacionais.
-Não executar o bootstrap completo para essa atualização.
+Esses scripts não atualizam bancos existentes. `CREATE TABLE IF NOT EXISTS`
+não adiciona colunas ou índices a tabelas já criadas, e os demais `CREATE TABLE`
+falham quando a tabela existe. Atualizações de instalações existentes devem ser
+planejadas separadamente, com cópia de recuperação e validação dos dados.
 
-```bash
-mariadb RFFUSION_SUMMARY < src/mariadb/scripts/migrateHostLocationTimeline.sql
-```
+### Linha do tempo de localidades
 
-A tabela antiga `HOST_LOCATION_SUMMARY` mantém uma linha por host/site e continua
+`createFusionSummaryDB.sql` já cria `HOST_LOCATION_TIMELINE_SUMMARY` com todos
+os campos e índices necessários.
+
+A tabela `HOST_LOCATION_SUMMARY` mantém uma linha por host/site e continua
 atendendo seus consumidores. A nova tabela mantém uma linha por passagem, com
 início/fim das medições, quantidade de espectros e sinalização de sobreposição
 entre sites. Não representa permanência comprovada nos intervalos sem medições.
 
-Depois da migração, preencher o novo modelo pelo método público
+Depois da criação, preencher o novo modelo pelo método público
 `SummaryRefreshEngine.refresh_location_timeline()` no container appCataloga.
 Para atualização dirigida, passar `host_ids={ID_HOST}`. Coordenar o preenchimento
 manual com o worker para evitar publicações simultâneas da mesma estação.
@@ -146,6 +151,8 @@ separadas, datas em português e avisos apenas quando os registros se sobrepõem
   cria o `RFDATA`
 - [createFusionSummaryDB.sql](/RFFusion/src/mariadb/scripts/createFusionSummaryDB.sql):
   cria o `RFFUSION_SUMMARY`
+- [createWebFusionDB.sql](createWebFusionDB.sql):
+  cria o `WEBFUSION`, com `USERS` e `USER_ROLES`
 
 ### Seeds
 
@@ -167,6 +174,7 @@ A ordem esperada de bootstrap é:
 1. `BPDATA`
 2. `RFDATA`
 3. `RFFUSION_SUMMARY`
+4. `WEBFUSION`
 
 Exemplo manual:
 
@@ -174,10 +182,13 @@ Exemplo manual:
 mysql -u root -p < /RFFusion/src/mariadb/scripts/createProcessingDB.sql
 mysql -u root -p < /RFFusion/src/mariadb/scripts/createMeasureDB.sql
 mysql -u root -p < /RFFusion/src/mariadb/scripts/createFusionSummaryDB.sql
+mysql -u root -p < /RFFusion/src/mariadb/scripts/createWebFusionDB.sql
 ```
 
 Na operação normal, o caminho suportado é o deploy do container MariaDB:
 [install/mariaDB/README.md](/RFFusion/install/mariaDB/README.md).
+O deploy atual carrega os três primeiros schemas; executar a criação de
+`WEBFUSION` separadamente na instalação inicial.
 
 ## Notas Operacionais
 

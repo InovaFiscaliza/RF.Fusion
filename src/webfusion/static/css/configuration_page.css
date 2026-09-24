@@ -1,27 +1,3 @@
-.zabbix-config-page-root {
-    display: grid;
-    gap: 20px;
-    padding-bottom: 28px;
-}
-
-.zabbix-config-hero {
-    display: flex;
-    gap: 16px;
-}
-
-.zabbix-config-hero {
-    align-items: flex-start;
-    justify-content: space-between;
-    flex-wrap: wrap;
-}
-
-.zabbix-config-hero-copy {
-    max-width: none;
-    margin: 0;
-    color: var(--wf-text-soft);
-    line-height: 1.6;
-}
-
 .zabbix-config-hero-note {
     display: flex;
     max-width: none;
@@ -60,36 +36,6 @@
 .zabbix-config-selector {
     width: 100%;
     max-width: none;
-}
-
-.zabbix-config-selector-heading {
-    margin-bottom: 15px;
-}
-
-.zabbix-config-filter-grid {
-    display: grid;
-    grid-template-columns: minmax(220px, 300px) minmax(360px, 1fr) auto;
-    gap: 14px;
-    align-items: end;
-}
-
-.zabbix-config-field {
-    display: grid;
-    min-width: 180px;
-    gap: 6px;
-}
-
-.zabbix-config-target-field {
-    min-width: min(100%, 440px);
-    flex: 1 1 340px;
-}
-
-.zabbix-config-field label {
-    margin: 0;
-}
-
-.zabbix-config-selector-action label {
-    margin: 0 0 6px;
 }
 
 .zabbix-config-selector-help {
@@ -458,30 +404,6 @@
     text-align: center;
 }
 
-.zabbix-config-page-root .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    min-width: 0;
-    height: 36px;
-    padding: 0 14px;
-    border-radius: 4px;
-    box-shadow: none;
-    font-size: 13px;
-    font-weight: 600;
-    white-space: nowrap;
-}
-
-.zabbix-config-page-root .btn:hover {
-    filter: none;
-}
-
-.zabbix-config-page-root .btn:focus-visible {
-    outline: 2px solid var(--wf-accent);
-    outline-offset: 2px;
-}
-
 .zabbix-config-idle,
 .zabbix-config-empty {
     padding: 17px;
@@ -667,16 +589,6 @@
     border: 0;
 }
 
-@media (max-width: 900px) {
-    .zabbix-config-filter-grid {
-        grid-template-columns: minmax(220px, 0.45fr) minmax(300px, 1fr);
-    }
-
-    .zabbix-config-selector-action {
-        grid-column: 1 / -1;
-    }
-}
-
 @media (max-width: 720px) {
     .zabbix-config-detail-head {
         grid-template-columns: 1fr;
@@ -684,18 +596,6 @@
 
     .zabbix-config-hero-note {
         max-width: none;
-    }
-
-    .zabbix-config-filter-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .zabbix-config-selector-action {
-        grid-column: auto;
-    }
-
-    .zabbix-config-selector-action .btn {
-        width: 100%;
     }
 
     .zabbix-config-profile-list {

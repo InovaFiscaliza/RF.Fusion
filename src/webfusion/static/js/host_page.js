@@ -11,6 +11,7 @@
 (function () {
     const root = document.getElementById("host-page-root");
     const hostSelect = document.querySelector("[name='host_id']");
+    const hostTypeSelect = document.getElementById("host-query-type");
     const onlineOnlyCheckbox = document.getElementById("online_only");
     const locationRows = document.getElementById("host-location-history-rows");
     const hostId = root?.dataset.hostId || "";
@@ -20,6 +21,32 @@
 
     if (!root) {
         return;
+    }
+
+    if (hostSelect && hostTypeSelect) {
+        const stationOptions = Array.from(hostSelect.options);
+        const typeOptions = Array.from(hostTypeSelect.options);
+        const requestedType = new URL(window.location.href).searchParams.get("host_type");
+        const selectedStation = hostSelect.selectedOptions[0];
+        const inferredType = typeOptions.find((option) => option.dataset.hostPrefix
+            && selectedStation?.textContent.trim().toUpperCase().startsWith(option.dataset.hostPrefix));
+        hostTypeSelect.value = typeOptions.some((option) => option.value === requestedType)
+            ? requestedType
+            : (inferredType?.value || "");
+
+        function filterStationOptions() {
+            const selectedId = hostSelect.value;
+            const prefix = hostTypeSelect.selectedOptions[0]?.dataset.hostPrefix || "";
+            const visibleOptions = stationOptions.filter((option) => !option.value
+                || option.textContent.trim().toUpperCase().startsWith(prefix));
+            hostSelect.replaceChildren(...visibleOptions);
+            hostSelect.value = visibleOptions.some((option) => option.value === selectedId)
+                ? selectedId
+                : "";
+        }
+
+        hostTypeSelect.addEventListener("change", filterStationOptions);
+        filterStationOptions();
     }
 
     /* All dynamic fragments on this page are rendered as HTML strings before
@@ -54,6 +81,9 @@
         }
 
         url.searchParams.set("online_only", onlineOnlyCheckbox.checked ? "1" : "0");
+        if (hostTypeSelect) {
+            url.searchParams.set("host_type", hostTypeSelect.value);
+        }
 
         if (window.showPageLoadingOverlay) {
             window.showPageLoadingOverlay("Atualizando filtro de estações...");

@@ -3,7 +3,7 @@
 {% block title %}RF.Fusion - Configurações{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/configuration_page.css', v='20260918-compact-macro-actions') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/configuration_page.css', v='20260921-unified-selector') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/station_connectivity_test.css', v='20260813-station-test') }}">
 {% endblock %}
 
@@ -16,11 +16,11 @@
 {% endblock %}
 
 {% block content %}
-<section class="zabbix-config-page-root">
-    <div class="zabbix-config-hero card wf-panel background-neutral-0 padding-l border-radius-m">
+<section class="zabbix-config-page-root wf-selector-page">
+    <div class="wf-page-hero zabbix-config-hero card wf-panel background-neutral-0 padding-l border-radius-m">
         <div>
             <h1 class="wf-screen-title margin-bottom-s">Configurações</h1>
-            <p class="zabbix-config-hero-copy">
+            <p class="wf-page-hero-copy">
                 Consulte e ajuste as macros do Zabbix usadas pelas estações RF.Fusion.
                 A origem de cada valor deixa explícito quando a estação sobrescreve o template.
             </p>
@@ -45,13 +45,13 @@
     </div>
     {% endif %}
 
-    <form method="get" class="card wf-panel background-neutral-0 padding-l border-radius-m zabbix-config-selector" data-loading-message="Consultando configuração no Zabbix...">
-        <div class="zabbix-config-selector-heading">
-            <div class="wf-panel-title">Selecionar configuração</div>
-            <p class="wf-panel-copy">A consulta é feita apenas para o item selecionado.</p>
+    <form method="get" class="card wf-panel background-neutral-0 border-radius-m wf-selector-card zabbix-config-selector" data-loading-message="Consultando configuração no Zabbix...">
+        <div class="wf-selector-heading">
+            <h2 class="wf-panel-title">Selecionar configuração</h2>
+            <p class="wf-selector-copy">Selecione uma estação ou template para consultar suas configurações.</p>
         </div>
-        <div class="zabbix-config-filter-grid">
-            <div class="zabbix-config-field">
+        <div class="wf-selector-fields">
+            <div class="wf-selector-field wf-selector-field--type">
                 <label class="form-label" for="target-kind">Tipo</label>
                 <div class="select-shell">
                     <select id="target-kind" name="target_kind" class="form-control">
@@ -61,7 +61,7 @@
                     </select>
                 </div>
             </div>
-            <div class="zabbix-config-field zabbix-config-target-field">
+            <div class="wf-selector-field">
                 <label class="form-label" for="target-id">Estação ou template</label>
                 <div class="select-shell">
                     <select id="target-id" name="target_id" class="form-control" required>
@@ -79,9 +79,8 @@
                     </select>
                 </div>
             </div>
-            <div class="zabbix-config-selector-action">
-                <label class="form-label">Consulta</label>
-                <button type="submit" class="btn btn-primary btn-primary-action">Consultar configuração</button>
+            <div class="wf-selector-action">
+                <button type="submit" class="btn btn-primary btn-primary-action">Consultar</button>
             </div>
         </div>
         <p class="zabbix-config-selector-help">

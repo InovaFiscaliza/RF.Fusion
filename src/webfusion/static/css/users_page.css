@@ -109,8 +109,8 @@
 }
 
 .users-directory-head {
-    align-items: end;
-    margin-bottom: 16px;
+    align-items: center;
+    margin-bottom: 20px;
 }
 
 .users-directory-tools {
@@ -118,6 +118,7 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     width: 100%;
+    margin-bottom: 20px;
 }
 
 .users-search-form {
@@ -125,7 +126,8 @@
     grid-template-columns: minmax(190px, 1.35fr) repeat(2, minmax(150px, 1fr)) 164px 180px;
     gap: 8px;
     align-items: center;
-    flex: 1 1 900px;
+    flex: 1 1 auto;
+    width: 100%;
     min-width: 0;
 }
 
@@ -218,21 +220,22 @@
 
 .users-table-wrap {
     overflow-x: auto;
-    border: 1px solid var(--wf-border);
+    border-top: 1px solid var(--wf-border);
 }
 
 .users-table {
     width: 100%;
-    min-width: 850px;
+    min-width: 720px;
+    font-size: 13px;
     border-collapse: collapse;
 }
 
 .users-table th,
 .users-table td {
-    padding: 14px 16px;
+    padding: 12px 14px;
     border-bottom: 1px solid var(--wf-border);
     text-align: left;
-    vertical-align: top;
+    vertical-align: middle;
 }
 
 .users-table th {
@@ -242,6 +245,15 @@
     font-weight: var(--font-semi-bold);
     letter-spacing: 0;
     text-transform: uppercase;
+}
+
+.users-table th:last-child {
+    width: 96px;
+    text-align: right;
+}
+
+.users-table tbody tr:hover {
+    background: var(--wf-surface-soft);
 }
 
 .users-table tr:last-child td {
@@ -257,7 +269,8 @@
     display: inline-block;
     max-width: 260px;
     overflow: hidden;
-    color: var(--wf-accent);
+    color: var(--wf-text-soft);
+    font-size: 12px;
     text-decoration: none;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -292,35 +305,53 @@
     line-height: 1.25;
 }
 
-.users-role-badge.is-admin {
-    background: #fff3cd;
-    color: #7a4d00;
-}
-
+.users-role-badge.is-admin,
 .users-role-badge.is-developer {
-    background: #e1f3f8;
-    color: #075d73;
+    background: var(--wf-surface-soft);
+    color: var(--wf-text-soft);
 }
 
 .users-row-actions {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(102px, max-content));
-    gap: 8px;
-    justify-items: start;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
 }
 
-.users-delete-button,
-.users-delete-confirm-button {
-    border: 1px solid #d14343;
-    background: #ffffff;
-    color: #b42318;
+/* Row actions stay compact and independent of global button styling. */
+.users-icon-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--wf-text-soft);
+    box-shadow: none;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.users-icon-action:hover {
+    border-color: var(--wf-border);
+    background: var(--wf-surface-soft);
+    color: var(--wf-accent);
+}
+
+.users-icon-action:focus-visible {
+    outline: 2px solid var(--wf-accent);
+    outline-offset: 2px;
 }
 
 .users-delete-button:hover,
 .users-delete-button:focus-visible {
-    border-color: #b42318;
+    border-color: #d14343;
     background: #fff1f0;
-    color: #8f1d15;
+    color: #b42318;
 }
 
 .users-dialog,
@@ -445,6 +476,7 @@
 }
 
 .users-delete-confirm-button {
+    border: 1px solid #d14343;
     background: #c6362d;
     color: #ffffff;
 }
@@ -513,6 +545,14 @@
     .users-search-form button {
         width: 100%;
         flex: 1 1 100%;
+    }
+
+    .users-directory-head > button {
+        width: 100%;
+    }
+
+    .users-row-actions {
+        justify-content: flex-start;
     }
 
     .users-table {

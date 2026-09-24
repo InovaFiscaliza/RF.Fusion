@@ -427,7 +427,14 @@
 }
 
 .server-usage-metrics-table {
+    min-width: 560px;
     table-layout: fixed;
+}
+
+.server-usage-metrics-table th,
+.server-usage-metrics-table td[colspan] {
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .server-usage-metrics-table th,

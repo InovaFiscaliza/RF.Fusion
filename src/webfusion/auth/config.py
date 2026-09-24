@@ -4,6 +4,10 @@ USER_LIST_LIMIT = 200
 ADMIN_ROLE = "admin"
 DEVELOPER_ROLE = "developer"
 USER_ROLES = frozenset({ADMIN_ROLE, DEVELOPER_ROLE})
+ACCESS_RESTRICTED_ENDPOINTS = frozenset({
+    "host.start_connectivity_test",
+    "host.connectivity_test_status",
+})
 USER_ROLE_FILTERS = frozenset({"all", "admin", "developer", "none"})
 PROFILE_IMAGE_URL_MAX_LENGTH = 2048
 PROFILE_IMAGE_REFRESH_SECONDS = 6 * 60 * 60

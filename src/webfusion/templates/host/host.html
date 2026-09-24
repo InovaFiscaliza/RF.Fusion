@@ -10,13 +10,13 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260915-location-timeline') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/host_page.css', v='20260921-station-types') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/station_connectivity_test.css', v='20260813-station-test') }}">
 {% endblock %}
 
 {% block content %}
-<div id="host-page-root" {% if stats %}data-host-id="{{ stats.ID_HOST }}"{% endif %}>
-    <div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m margin-bottom-l">
+<div id="host-page-root" class="wf-selector-page" {% if stats %}data-host-id="{{ stats.ID_HOST }}"{% endif %}>
+    <div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m">
         <div>
             <h1 class="wf-screen-title margin-bottom-s">Panorama da Estação</h1>
             <p class="wf-page-hero-copy">
@@ -26,19 +26,30 @@
     </div>
 
     <div class="host-page-stack">
-        <section class="card background-neutral-0 padding-l border-radius-m host-section-card">
-            <div class="host-section-head">
-                <div class="host-section-kicker">Filtro</div>
-                <h2 class="host-section-title">Selecionar Estação</h2>
-                <p class="host-section-copy">Consulte uma estação específica sem sair do contexto operacional do catálogo.</p>
+        <section class="card wf-panel background-neutral-0 border-radius-m wf-selector-card host-filter-card" aria-labelledby="host-query-title">
+            <div class="wf-selector-heading">
+                <h2 id="host-query-title" class="wf-panel-title">Selecionar estação</h2>
+                <p class="wf-selector-copy">Selecione uma estação para consultar seu panorama operacional.</p>
             </div>
             <form method="get" data-loading-message="Carregando panorama da estação...">
-                <div class="host-query-grid">
-                    <div class="host-query-field">
-                        <label>Estação</label>
+                <div class="wf-selector-fields">
+                    <div class="wf-selector-field wf-selector-field--type">
+                        <label for="host-query-type">Tipo</label>
                         <div class="select-shell">
-                            <select name="host_id" class="form-control" required>
-                                <option value="">-- selecione --</option>
+                            <select id="host-query-type" name="host_type" class="form-control">
+                                <option value="">Todos os tipos</option>
+                                <option value="rfeye" data-host-prefix="RFEYE">RFEye</option>
+                                <option value="celplan" data-host-prefix="CWSM">Celplan</option>
+                                <option value="ermx" data-host-prefix="ERMX">ERMx</option>
+                                <option value="ums300" data-host-prefix="UMS">UMS300</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="wf-selector-field">
+                        <label for="host-query-select">Estação</label>
+                        <div class="select-shell">
+                            <select id="host-query-select" name="host_id" class="form-control" required>
+                                <option value="">Selecione uma estação</option>
                                 {% for h in hosts %}
                                 <option value="{{ h.ID_HOST }}" {% if h.ID_HOST|string == selected_host %}selected{% endif %}>
                                     {{ h.NA_HOST_NAME }}
@@ -47,21 +58,14 @@
                             </select>
                         </div>
                     </div>
-                    <div class="host-query-field host-query-actions-field">
-                        <label>&nbsp;</label>
-                        <div class="host-query-actions">
-                            <button type="submit" class="btn btn-primary btn-search width-full">Pesquisar</button>
-                            <a class="btn btn-secondary" href="{{ url_for('host.host') }}">Limpar filtros</a>
-                        </div>
+                    <div class="online-filter">
+                        <label for="online_only">
+                            <input type="checkbox" id="online_only" name="online_only" value="1" {% if online_only %}checked{% endif %}>
+                            Apenas online
+                        </label>
                     </div>
-                    <div class="host-query-field host-query-online-field">
-                        <label>&nbsp;</label>
-                        <div class="online-filter">
-                            <label>
-                                <input type="checkbox" id="online_only" name="online_only" value="1" {% if online_only %}checked{% endif %}>
-                                Apenas Online
-                            </label>
-                        </div>
+                    <div class="wf-selector-action host-query-actions">
+                        <button type="submit" class="btn btn-primary btn-search">Consultar</button>
                     </div>
                 </div>
             </form>
@@ -418,5 +422,5 @@
 
 {% block extra_js %}
 <script src="{{ url_for('static', filename='js/station_connectivity_test.js', v='20260819-station-test-details') }}"></script>
-<script src="{{ url_for('static', filename='js/host_page.js', v='20260915-location-timeline') }}"></script>
+<script src="{{ url_for('static', filename='js/host_page.js', v='20260921-station-types') }}"></script>
 {% endblock %}
