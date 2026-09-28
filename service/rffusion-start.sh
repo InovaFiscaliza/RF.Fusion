@@ -171,6 +171,9 @@ start_appcataloga_services
 # 3. webfusion — web UI and dispatcher, depends on both DB and appCataloga.
 start_container "$WEBFUSION_CONTAINER"
 
+# Legacy containers lose manual upload mounts whenever their mount namespace is recreated.
+bash "$(dirname "${RUNTIME_HEALTH_BOOTSTRAP}")/../install/webserver/ensure-upload-mount.sh"
+
 # Restore the restricted SSH health-check credentials after every stack boot.
 # A failure here must not stop containers that are already healthy.
 if bash "${RUNTIME_HEALTH_BOOTSTRAP}"; then

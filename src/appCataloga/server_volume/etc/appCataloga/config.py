@@ -140,6 +140,7 @@ REPO_VOLUME_NAME = "reposfi"
 # Geographic site definition
 #------------------------------------------
 SITE_MATCH_DISTANCE_METERS = 50.0
+SITE_TYPE_FIXED = 1
 SITE_DISTRICT_AUTO_CREATE = False         # Keep district resolution conservative unless explicitly enabled
 #------------------------------------------
 # Nomintim Geocoding parameters

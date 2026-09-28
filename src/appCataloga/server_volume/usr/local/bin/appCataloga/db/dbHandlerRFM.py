@@ -479,11 +479,22 @@ class dbHandlerRFM(DBHandlerBase):
         *,
         force_create_district: bool = False,
     ) -> int:
-        """Insert one row into `DIM_SPECTRUM_SITE`.
+        """Insert a fixed point site for the conventional station flow.
 
         The caller provides the centroid, altitude and already-resolved site
         summary. This method resolves the administrative foreign keys and
-        persists the geometry row.
+        persists the geometry row with the configured fixed site type.
+
+        Args:
+            data (dict): Site summary with longitude, latitude and altitude
+                (float); optional nu_gnss_measurements (int), state, county,
+                district and site_name (str or None).
+            force_create_district (bool): Allow creation of a missing district.
+        Returns:
+            int: Persisted ID_SITE.
+        Raises:
+            ValueError: The input is not a dictionary.
+            Exception: Geography resolution or persistence failed.
         """
 
         if not isinstance(data, dict):
@@ -503,6 +514,7 @@ class dbHandlerRFM(DBHandlerBase):
             self._connect()
 
             insert_data = {
+                "FK_TYPE": k.SITE_TYPE_FIXED,
                 "NU_ALTITUDE": data["altitude"],
                 "NU_GNSS_MEASUREMENTS": data.get("nu_gnss_measurements", 0),
                 "FK_STATE": db_state_id,

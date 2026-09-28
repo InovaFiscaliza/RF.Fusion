@@ -233,9 +233,10 @@ class SiteWriteTests(DbHandlerRfmBaseTests):
         self.assertIn("INSERT INTO DIM_SPECTRUM_SITE", sql)
         self.assertIn("POINT(-46.633308 -23.55052)", sql)
         self.assertNotIn("GEOGRAPHIC_PATH", sql)
+        self.assertIn("FK_TYPE", sql)
         self.assertEqual(
             params,
-            (760.0, 1, 35, 3550308, None, "Roof A"),
+            (1, 760.0, 1, 35, 3550308, None, "Roof A"),
         )
 
     def test_insert_site_rolls_back_and_wraps_error(self) -> None:

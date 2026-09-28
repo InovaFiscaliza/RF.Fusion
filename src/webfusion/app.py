@@ -35,6 +35,7 @@ from modules.configuration.routes import (
     configuration_bp,
 )
 from modules.alarms.routes import alarms_bp
+from modules.upload.routes import upload_bp
 from api.map_api.service import get_station_map_dataset
 from api.map_api.routes import map_api_bp
 from modules.server.usage_metrics import record_page_view
@@ -63,22 +64,25 @@ app.register_blueprint(users_admin_api_bp)
 app.register_blueprint(configuration_bp)
 app.register_blueprint(configuration_api_bp)
 app.register_blueprint(alarms_bp)
+app.register_blueprint(upload_bp)
 app.register_blueprint(appanalise_api_bp)
 app.register_blueprint(map_api_bp)
 
 
 @app.before_request
 def load_request_identity() -> None:
-    """Make the proxy identity available to route guards and base templates.
+    """Register the proxy identity before route guards, APIs, and templates.
 
     Args:
         None. Flask supplies the current request context.
 
     Returns:
-        None. Stores a normalized identity in `flask.g.webfusion_user`; for a
-        restricted endpoint, also loads the active access role.
+        None. Records the normalized profile and stores the identity in
+        `flask.g.webfusion_user`; for a restricted endpoint, also loads the
+        active access role. Registration failures are logged by the service.
     """
     identity = AUTH_SERVICE.request_identity(request)
+    AUTH_SERVICE.record_observed_user(identity, app.logger)
     endpoint = request.endpoint or ""
     if AUTH_SERVICE.is_restricted_endpoint(endpoint):
         AUTH_SERVICE.load_access_role(identity, app.logger)
@@ -120,7 +124,6 @@ def inject_request_identity() -> dict[str, dict[str, str | None]]:
         and `role`.
     """
     identity = getattr(g, "webfusion_user", AUTH_SERVICE.request_identity(request))
-    AUTH_SERVICE.record_observed_user(identity, app.logger)
     AUTH_SERVICE.load_profile_image(identity, app.logger)
     AUTH_SERVICE.load_access_role(identity, app.logger)
     return {"current_user": identity}

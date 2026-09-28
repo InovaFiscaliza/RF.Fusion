@@ -13,6 +13,15 @@ artefatos de bootstrap dos quatro bancos usados pelo RF.Fusion:
 
 ## Visão Geral
 
+A migração [backfillFixedSiteType.sql](backfillFixedSiteType.sql), executada em
+`RFDATA`, preenche `DIM_SPECTRUM_SITE.FK_TYPE = 1` nos sites legados sem tipo.
+Confirme previamente que todos os sites sem classificação pertencem ao fluxo
+fixo convencional e que `DIM_SITE_TYPE.ID_TYPE = 1` corresponde a `Fixed`.
+Ela preserva classificações existentes e pode ser reaplicada nesse contexto.
+Não executá-la indiscriminadamente após introduzir sites móveis sem classificação.
+O fluxo convencional passa a informar o tipo explicitamente no insert;
+não há alteração do default global da coluna.
+
 No desenho atual, os bancos são complementares. Não existe ponte de chave
 estrangeira entre eles. A integração é feita pela aplicação.
 

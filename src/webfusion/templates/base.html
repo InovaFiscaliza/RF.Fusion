@@ -77,6 +77,9 @@
                                     {{ navigation_link('Configurações', 'configuration.configuration_dashboard', request.endpoint and request.endpoint.startswith('configuration.'), 'Abrindo configurações...', 'wf-header-nav-link') }}
                                     {{ navigation_link('Usuários', 'users.user_directory', request.endpoint and request.endpoint.startswith('users.'), 'Abrindo administração de usuários...', 'wf-header-nav-link') }}
                                 {% endif %}
+                                {% if current_user.email %}
+                                    {{ navigation_link('Upload', 'upload.upload_page', request.endpoint == 'upload.upload_page', 'Abrindo upload...', 'wf-header-nav-link') }}
+                                {% endif %}
                             </div>
                             <div class="wf-header-user" title="Usuário conectado">
                                 <span class="wf-header-avatar" aria-hidden="true">
@@ -139,6 +142,9 @@
                     {% if current_user.role %}
                         {{ navigation_link('Usuários', 'users.user_directory', request.endpoint and request.endpoint.startswith('users.'), 'Abrindo administração de usuários...', 'wf-navigation-drawer-link', 'fa-users') }}
                         {{ navigation_link('Configurações', 'configuration.configuration_dashboard', request.endpoint and request.endpoint.startswith('configuration.'), 'Abrindo configurações...', 'wf-navigation-drawer-link', 'fa-sliders') }}
+                    {% endif %}
+                    {% if current_user.email %}
+                        {{ navigation_link('Upload', 'upload.upload_page', request.endpoint == 'upload.upload_page', 'Abrindo upload...', 'wf-navigation-drawer-link', 'fa-cloud-upload') }}
                     {% endif %}
                 </nav>
             </aside>

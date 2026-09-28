@@ -50,6 +50,29 @@ como fotos reais no banco.
 
 ---
 
+## 0.1 Upload de arquivos no WebFusion
+
+O módulo `src/webfusion/modules/upload/` recebe arquivos de usuários com e-mail
+validado pela identidade do proxy existente, sem exigir papel administrativo.
+`routes.py` contém a página e a API; `service.py` valida nomes e grava arquivos;
+`config.py` define destino e limites. Template, CSS e JavaScript seguem o shell
+visual existente. O catálogo de estações reutiliza `modules/host/service.get_all_hosts`,
+incluindo estações offline. Não há SQL próprio, criação de tasks ou processamento automático.
+
+A raiz fixa é `/mnt/reposfi/upload`. A classificação obrigatória define subpastas:
+`fixas/<ID_HOST>`, `drive-test/smp-romes`, `drive-test/espectro` ou `rni`.
+A API valida categorias e o ID da estação no catálogo antes de gravar; não aceita
+caminhos enviados pelo cliente. Apenas subpastas são criadas pelo módulo; a raiz
+continua sob responsabilidade do deploy. A fila conserva a classificação de cada
+arquivo mesmo se os seletores mudarem. Cada requisição envia um arquivo, com
+limite de 512 MiB; o navegador sequencia seleções múltiplas. Nomes são reduzidos
+a nomes seguros, sem caminhos. Criação exclusiva impede sobrescrita, inclusive
+entre requisições concorrentes. Falhas durante a gravação removem o arquivo
+incompleto. Uma interrupção abrupta do processo pode exigir limpeza manual.
+A API exige cabeçalho próprio, sem habilitar CORS, para impedir envio por
+formulários de outras origens. Uploads não são publicados nas rotas de download.
+O deploy mantém o repositório somente leitura e monta apenas `upload` para escrita.
+
 ## 1. System Overview
 
 appCataloga is a suite of long-running Python daemon processes that manage the
@@ -187,6 +210,10 @@ In short:
 **RFDATA:**
 - `FACT_SPECTRUM` — core analytical fact table
 - `DIM_SPECTRUM_SITE` — geographic resolution of measurement locations
+  - O fluxo convencional atual insere sites pontuais fixos com
+    `FK_TYPE = k.SITE_TYPE_FIXED` (`1`, `Fixed`). A migração
+    `backfillFixedSiteType.sql` preenche apenas sites legados sem classificação.
+    Não aplicar esse insert de sites fixos a futuros dados móveis.
 - `DIM_SPECTRUM_EQUIPMENT`, `DIM_SPECTRUM_FILE`, etc. — dimension tables
 
 ### 3.3 DB handler interface contract

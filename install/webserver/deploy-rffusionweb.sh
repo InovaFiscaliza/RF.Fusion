@@ -31,12 +31,28 @@ projectVolume="${repoRoot}"
 # Volume: repositório CIFS (somente leitura)
 # ----------------------------------------------------------------------
 reposVolume="/mnt/reposfi"
+uploadVolume="${reposVolume}/upload"
 
-if [[ ! -d "${reposVolume}" ]]; then
+if ! mountpoint -q "${reposVolume}"; then
     echo "❌ ERROR: reposfi mount not found on host:"
     echo "    ${reposVolume}"
     exit 1
 fi
+
+# Uploads are the only writable area of the repository exposed to WebFusion.
+mkdir -p "${uploadVolume}"
+
+# Fail before replacing the running container if CIFS rejects writes.
+if ! uploadProbe=$(mktemp "${uploadVolume}/.webfusion-deploy.XXXXXX"); then
+    echo "❌ ERROR: Cannot create files in ${uploadVolume}."
+    exit 1
+fi
+if ! printf 'WebFusion upload write check\n' > "${uploadProbe}"; then
+    rm -f -- "${uploadProbe}"
+    echo "❌ ERROR: Cannot write to ${uploadVolume}."
+    exit 1
+fi
+rm -- "${uploadProbe}"
 
 # ----------------------------------------------------------------------
 # Credenciais (root)
@@ -120,6 +136,7 @@ podman run -d \
   -p "${HostSSHPort}:${ContainerSSHPort}" \
   -v "${projectVolume}:/RF.Fusion:Z" \
   -v "${reposVolume}:/mnt/reposfi:ro" \
+  -v "${uploadVolume}:/mnt/reposfi/upload:rw" \
   "${runtimeHealthMounts[@]}" \
   "${ImageName}:latest" >/dev/null
 
@@ -139,6 +156,18 @@ if [[ "${containerStatus}" != "running" ]]; then
 fi
 
 echo "✅ Container is running."
+
+# Verify access as the container user, including rootless UID mapping.
+if ! podman exec "${ContainerName}" /bin/sh -eu -c '
+    cd /
+    probe=$(mktemp /mnt/reposfi/upload/.webfusion-deploy.XXXXXX)
+    trap '\''rm -f -- "$probe"'\'' EXIT
+    printf "WebFusion upload write check\n" > "$probe"
+'; then
+    echo "❌ ERROR: Upload storage is not writable inside ${ContainerName}."
+    exit 1
+fi
+echo "✅ Upload storage is writable inside the container."
 
 # Reinstall health credentials after recreating the WebFusion container.
 # The health panel remains optional when internal services are unavailable.
@@ -167,3 +196,5 @@ echo "Web URL : http://127.0.0.1:${HostHTTPPort}${PublicBasePath}/"
 echo "SSH     : ssh root@127.0.0.1 -p ${HostSSHPort}"
 echo "IP      : ${IPAddress}"
 echo "Volume  : ${projectVolume} -> /RF.Fusion"
+echo "Repository: ${reposVolume} -> /mnt/reposfi (read-only)"
+echo "Upload  : ${uploadVolume} -> /mnt/reposfi/upload (read-write)"

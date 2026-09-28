@@ -364,6 +364,25 @@
 
     {% endif %}
 
+    {% if current_user.email %}
+    <div>
+        <a href="{{ url_for('upload.upload_page') }}" class="module-link" data-loading-message="Abrindo upload...">
+            <div class="card background-neutral-0 padding-l border-radius-m module-card">
+                <div class="display-flex align-items-center gap-m">
+                    <div class="module-icon text-primary">
+                        <i class="fa fa-cloud-upload" aria-hidden="true"></i>
+                    </div>
+                    <div>
+                        <div class="font-semi-bold">Upload</div>
+                        <div class="font-size-s text-neutral-6 margin-top-xs module-description">
+                            Envio de arquivos do computador para o repositório do servidor.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </a>
+    </div>
+    {% endif %}
 </div>
 
 {% endblock %}

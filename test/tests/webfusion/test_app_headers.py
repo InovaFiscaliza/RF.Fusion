@@ -47,6 +47,62 @@ class TestCurrentUserApi(unittest.TestCase):
     def tearDown(self):
         self.module.AUTH_SERVICE.observed_user_profiles.clear()
 
+    def test_first_api_visit_registers_user_before_profile_lookup(self):
+        for path in ("/api/users/me", "/api/users/login"):
+            with self.subTest(path=path):
+                self.module.AUTH_SERVICE.observed_user_profiles.clear()
+                profiles = {}
+                profile = {"ID_USER": 17, "NA_USER_EMAIL": "maria@example.org"}
+                self.register_user_mock.side_effect = lambda **fields: profiles.update(
+                    {fields["user_email"]: profile}
+                )
+                with patch(
+                    "modules.users.routes.service.get_current_user_profile",
+                    side_effect=profiles.get,
+                ):
+                    response = self.client.get(
+                        path, headers={"X-User-Email": "MARIA@example.org"},
+                    )
+
+                self.assertEqual(response.status_code, 200)
+                if path.endswith("/me"):
+                    self.assertEqual(response.get_json(), profile)
+                else:
+                    self.assertEqual(
+                        self.module.app.json.loads(response.headers["X-User-Profile"]),
+                        profile,
+                    )
+
+    def test_restricted_route_registers_identity_without_granting_access(self):
+        response = self.client.get(
+            "/tasks/", headers={"X-User-Email": "visitor@example.org"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.register_user_mock.assert_called_once()
+        self.assertEqual(
+            self.register_user_mock.call_args.kwargs["user_email"], "visitor@example.org",
+        )
+
+    def test_api_does_not_register_missing_or_invalid_identity(self):
+        for headers in ({}, {"X-User-Email": "invalid@"}):
+            with self.subTest(headers=headers):
+                response = self.client.get("/api/users/me", headers=headers)
+                self.assertEqual(response.status_code, 401)
+
+        self.register_user_mock.assert_not_called()
+
+    def test_api_retries_failed_registration_and_caches_success(self):
+        self.register_user_mock.side_effect = [RuntimeError("database unavailable"), None]
+        headers = {"X-User-Email": "maria@example.org"}
+        with patch("modules.users.routes.service.get_current_user_profile", return_value=None):
+            with self.assertLogs(self.module.app.logger, level="ERROR"):
+                self.client.get("/api/users/me", headers=headers)
+            self.client.get("/api/users/me", headers=headers)
+            self.client.get("/api/users/me", headers=headers)
+
+        self.assertEqual(self.register_user_mock.call_count, 2)
+
     def test_login_returns_current_user_profile_in_header_with_empty_body(self):
         profile = {
             "ID_USER": 17,
@@ -567,7 +623,7 @@ class TestCurrentUserApi(unittest.TestCase):
                         self.assertEqual(context["current_user"]["avatar_url"], photo)
                     update.assert_not_called()
 
-    def test_does_not_register_identity_for_api_request(self):
+    def test_registers_identity_for_other_api_requests(self):
         with self.module.app.test_request_context(
             "/api/map/stations",
             headers={
@@ -577,7 +633,14 @@ class TestCurrentUserApi(unittest.TestCase):
         ):
             self.module.load_request_identity()
 
-        self.register_user_mock.assert_not_called()
+        self.register_user_mock.assert_called_once_with(
+            user_name=None,
+            user_email="maria.silva@example.org",
+            job_title=None,
+            department=None,
+            location=None,
+            profile_image_url=None,
+        )
 
     def test_refreshes_identity_when_an_f5_attribute_changes(self):
         headers = {

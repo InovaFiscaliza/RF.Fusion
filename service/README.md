@@ -8,6 +8,7 @@ O servico nao faz deploy de containers. Ele apenas:
 - garante a montagem de `/mnt/reposfi`
 - inicia os containers ja existentes
 - sobe os workers internos do `appCataloga`
+- restaura a escrita em `/mnt/reposfi/upload` no WebFusion, inclusive em containers antigos
 - reconfigura a chave SSH restrita usada pelo painel de saude
 - para o stack em ordem no desligamento
 
@@ -29,7 +30,8 @@ O fluxo atual e:
 4. iniciar `debian12-python`
 5. executar `tool_start_all.sh` dentro do container do `appCataloga`
 6. iniciar `rffusion-web`
-7. garantir a chave SSH de saude e o arquivo `known_hosts` no WebFusion
+7. verificar/restaurar a montagem gravável de `upload` no WebFusion
+8. garantir a chave SSH de saude e o arquivo `known_hosts` no WebFusion
 
 ## Pre-requisitos
 

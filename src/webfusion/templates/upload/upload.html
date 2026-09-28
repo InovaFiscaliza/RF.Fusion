@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}RF.Fusion - Upload{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/upload_page.css', v='20260925-types') }}">
+{% endblock %}
+{% block breadcrumb %}
+<div class="breadcrumb">
+    <a href="{{ url_for('index') }}">Início</a>
+    <span class="breadcrumb-separator">›</span><span>Upload</span>
+</div>
+{% endblock %}
+{% block content %}
+<section class="upload-page" id="upload-page"
+         data-upload-url="{{ url_for('upload.upload_file') }}"
+         data-upload-folder="{{ upload_folder }}"
+         data-max-file-bytes="{{ max_file_bytes }}"
+         data-request-header="{{ request_header }}"
+         data-request-header-value="{{ request_header_value }}">
+    <div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m">
+        <div>
+            <h1 class="wf-screen-title margin-bottom-s">Upload de arquivos</h1>
+            <p class="wf-page-hero-copy">Envie arquivos do seu computador para o repositório do servidor.</p>
+        </div>
+        <button type="button" class="btn btn-primary btn-primary-action" data-select-files>
+            <i class="fa fa-plus" aria-hidden="true"></i> Selecionar arquivos
+        </button>
+    </div>
+    <input type="file" id="upload-input" multiple hidden>
+    <section class="card wf-panel background-neutral-0 padding-l border-radius-m upload-filters" aria-label="Classificação do upload">
+        <div>
+            <label for="upload-category">Tipo de upload</label>
+            <select id="upload-category" required>
+                <option value="">Selecione o tipo de upload</option>
+                <option value="fixas">Estações fixas</option>
+                <option value="drive-test">Drive-test</option>
+                <option value="rni">Radiação Não Ionizante RNI</option>
+            </select>
+        </div>
+        <div id="upload-station-field" hidden>
+            <label for="upload-station">Estação</label>
+            <select id="upload-station" disabled>
+                <option value="">Selecione a estação</option>
+                {% for station in stations %}
+                <option value="{{ station.ID_HOST }}">{{ station.NA_HOST_NAME }} · {{ station.ID_HOST }}</option>
+                {% endfor %}
+            </select>
+            {% if station_error %}<p class="upload-hint" role="alert">{{ station_error }}</p>
+            {% elif not stations %}<p class="upload-hint">Nenhuma estação cadastrada disponível.</p>{% endif %}
+        </div>
+        <div id="upload-drive-field" hidden>
+            <label for="upload-drive-type">Tipo de drive-test</label>
+            <select id="upload-drive-type" disabled>
+                <option value="">Selecione o tipo de drive-test</option>
+                {% for value, label in drive_test_types.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+            </select>
+        </div>
+    </section>
+    <section class="card wf-panel background-neutral-0 padding-l border-radius-m upload-storage">
+        <i class="fa fa-folder-open-o" aria-hidden="true"></i>
+        <div><strong>Pasta de destino</strong><code id="upload-destination">Selecione a classificação acima.</code></div>
+        <span>Até {{ max_file_bytes // (1024 * 1024) }} MiB por arquivo</span>
+    </section>
+    <section id="upload-dropzone" class="upload-dropzone" aria-labelledby="upload-drop-title">
+        <div class="upload-cloud"><i class="fa fa-cloud-upload" aria-hidden="true"></i></div>
+        <h2 id="upload-drop-title">Arraste seus arquivos para cá</h2>
+        <p>Solte um ou vários arquivos nesta página para começar o envio.</p>
+        <button type="button" class="btn btn-secondary btn-secondary-action" data-select-files>Procurar no computador</button>
+        <p class="upload-hint">Os envios começam automaticamente. Arquivos existentes não serão substituídos.</p>
+    </section>
+    <p id="upload-feedback" class="upload-feedback" role="status" aria-live="polite"></p>
+    <section class="card wf-panel background-neutral-0 padding-l border-radius-m" aria-labelledby="upload-queue-title">
+        <div class="upload-queue-head">
+            <div><h2 class="wf-panel-title" id="upload-queue-title">Envios desta sessão</h2>
+                <p class="wf-panel-copy" id="upload-summary">Nenhum arquivo selecionado.</p></div>
+            <button type="button" id="upload-clear" class="btn btn-secondary btn-secondary-action" disabled>Limpar concluídos</button>
+        </div>
+        <p class="upload-empty" id="upload-empty"><i class="fa fa-files-o" aria-hidden="true"></i> Seus arquivos aparecerão aqui.</p>
+        <ul id="upload-list" class="upload-list" aria-label="Fila de arquivos"></ul>
+        <p class="upload-hint">Mantenha esta página aberta até o fim dos envios. Esta lista não é um histórico permanente.</p>
+    </section>
+    <noscript><p>Ative o JavaScript no navegador para enviar arquivos.</p></noscript>
+</section>
+<template id="upload-row-template">
+    <li class="upload-row">
+        <i class="fa fa-file-o upload-file-icon" aria-hidden="true"></i>
+        <div class="upload-file-info"><strong class="upload-file-name"></strong><span class="upload-file-size"></span><span class="upload-file-destination upload-file-size"></span></div>
+        <div class="upload-file-progress">
+            <span class="upload-file-status"></span>
+            <span class="upload-file-rate upload-file-size" title="Taxa média de envio pelo navegador; não inclui o tempo de gravação no servidor." hidden></span>
+            <progress max="100" value="0"></progress>
+        </div>
+        <button type="button" class="btn btn-secondary btn-secondary-action upload-cancel" title="Cancelar envio" aria-label="Cancelar envio">
+            <i class="fa fa-stop" aria-hidden="true"></i>
+        </button>
+    </li>
+</template>
+{% endblock %}
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/upload_page.js', v='20260925-types') }}"></script>
+{% endblock %}
