@@ -454,6 +454,34 @@ class TestCurrentUserApi(unittest.TestCase):
                 "Augusto César Federici Peterle",
             )
 
+    def test_decodes_hexadecimal_utf8_job_title(self) -> None:
+        headers = {
+            "X-User-Email": "adailtonp@example.org",
+            "X-User-Job-Title": "0x41706F696F2054C3A9636E69636F2D41646D696E69737472617469766F",
+        }
+        with self.module.app.test_request_context("/", headers=headers):
+            self.module.load_request_identity()
+            self.assertEqual(
+                self.module.g.webfusion_user["job_title"],
+                "Apoio Técnico-Administrativo",
+            )
+        self.assertEqual(
+            self.register_user_mock.call_args.kwargs["job_title"],
+            "Apoio Técnico-Administrativo",
+        )
+
+    def test_preserves_plain_or_invalid_hexadecimal_headers(self) -> None:
+        for value in ("Apoio Técnico-Administrativo", "Servidor(a)", "0x123", "0xZZ", "0xFF", "0x410042"):
+            with self.subTest(value=value), self.module.app.test_request_context(
+                "/", headers={"X-User-Job-Title": value},
+            ):
+                self.assertEqual(
+                    self.module.AUTH_SERVICE.identity_header_value(
+                        self.module.request, "X-User-Job-Title",
+                    ),
+                    value,
+                )
+
     def test_removes_email_repeated_in_f5_display_name(self):
         headers = {
             "X-User-Name": "Augusto César Federici Peterleaugusto.cesar@example.org",

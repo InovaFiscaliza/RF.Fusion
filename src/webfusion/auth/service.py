@@ -86,12 +86,21 @@ class AuthService:
 
         Returns:
             Normalized header value. Type: str | None. Returns `None` when the
-            header is missing or blank, and repairs UTF-8 text decoded as
-            Latin-1 by WSGI when possible.
+            header is missing or blank. Decodes hexadecimal UTF-8 text from
+            the proxy and repairs UTF-8 text decoded as Latin-1 by WSGI.
+            Malformed hexadecimal values are preserved.
         """
         value = str(request.headers.get(name) or "").strip()
         if not value:
             return None
+
+        if re.fullmatch(r"0[xX](?:[0-9a-fA-F]{2})+", value):
+            try:
+                decoded = bytes.fromhex(value[2:]).decode("utf-8").strip()
+                if decoded and all(character.isprintable() for character in decoded):
+                    return decoded
+            except UnicodeError:
+                pass
 
         try:
             return value.encode("latin-1").decode("utf-8")

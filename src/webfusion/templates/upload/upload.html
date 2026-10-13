@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}RF.Fusion - Upload{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/upload_page.css', v='20260925-types') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/upload_page.css', v='20261006-selects') }}">
 {% endblock %}
 {% block breadcrumb %}
 <div class="breadcrumb">
@@ -29,30 +29,36 @@
     <section class="card wf-panel background-neutral-0 padding-l border-radius-m upload-filters" aria-label="Classificação do upload">
         <div>
             <label for="upload-category">Tipo de upload</label>
-            <select id="upload-category" required>
-                <option value="">Selecione o tipo de upload</option>
-                <option value="fixas">Estações fixas</option>
-                <option value="drive-test">Drive-test</option>
-                <option value="rni">Radiação Não Ionizante RNI</option>
-            </select>
+            <div class="select-shell">
+                <select id="upload-category" class="form-control" required>
+                    <option value="">Selecione o tipo de upload</option>
+                    <option value="fixas">Estações fixas</option>
+                    <option value="drive-test">Drive-test</option>
+                    <option value="rni">Radiação Não Ionizante RNI</option>
+                </select>
+            </div>
         </div>
         <div id="upload-station-field" hidden>
             <label for="upload-station">Estação</label>
-            <select id="upload-station" disabled>
-                <option value="">Selecione a estação</option>
-                {% for station in stations %}
-                <option value="{{ station.ID_HOST }}">{{ station.NA_HOST_NAME }} · {{ station.ID_HOST }}</option>
-                {% endfor %}
-            </select>
+            <div class="select-shell">
+                <select id="upload-station" class="form-control" disabled>
+                    <option value="">Selecione a estação</option>
+                    {% for station in stations %}
+                    <option value="{{ station.ID_HOST }}">{{ station.NA_HOST_NAME }} · {{ station.ID_HOST }}</option>
+                    {% endfor %}
+                </select>
+            </div>
             {% if station_error %}<p class="upload-hint" role="alert">{{ station_error }}</p>
             {% elif not stations %}<p class="upload-hint">Nenhuma estação cadastrada disponível.</p>{% endif %}
         </div>
         <div id="upload-drive-field" hidden>
             <label for="upload-drive-type">Tipo de drive-test</label>
-            <select id="upload-drive-type" disabled>
-                <option value="">Selecione o tipo de drive-test</option>
-                {% for value, label in drive_test_types.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
-            </select>
+            <div class="select-shell">
+                <select id="upload-drive-type" class="form-control" disabled>
+                    <option value="">Selecione o tipo de drive-test</option>
+                    {% for value, label in drive_test_types.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+                </select>
+            </div>
         </div>
     </section>
     <section class="card wf-panel background-neutral-0 padding-l border-radius-m upload-storage">

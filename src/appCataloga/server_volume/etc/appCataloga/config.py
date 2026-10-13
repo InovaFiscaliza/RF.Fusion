@@ -269,7 +269,7 @@ GC_QUARANTINE_DAYS = 60
 # `resolved_files` keeps superseded source/export artifacts only for short-term
 # operator inspection and recovery, so its retention can be shorter than the
 # main trash that still backs FILE_TASK_HISTORY error rows.
-GC_RESOLVED_FILES_QUARANTINE_DAYS = 60
+GC_RESOLVED_FILES_QUARANTINE_DAYS = 7
 GC_IDLE_SLEEP = 60
 # Process one bounded cleanup batch per minute to keep filesystem and database
 # pressure predictable on the production VM.
