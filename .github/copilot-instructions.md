@@ -1,14 +1,9 @@
-This repository has mandatory project instructions.
+# Orientações do GitHub Copilot
 
-Always read and follow:
+Leia e siga [AGENTS.md](../AGENTS.md), entrada geral das instruções do
+repositório. Ele indica as regras comuns, os contratos compartilhados e o
+`AGENTS.md` de cada subprojeto.
 
-- /AGENTS.md
-- /ARCHITECTURE.md
-- /INSTRUCTIONS.md
-
-ARCHITECTURE.md is the authoritative target architecture.
-INSTRUCTIONS.md is the mandatory refactoring guide.
-
-Do not infer architecture from isolated files.
-Do not change business logic during refactoring.
-Do not introduce new modules, task states, DB flows, or error patterns unless they comply with ARCHITECTURE.md.
+Ao trabalhar em testes, deploy ou integrações, consulte também as instruções
+das aplicações afetadas. Não copiar regras para este arquivo; a fonte
+normativa permanece nos documentos indicados pelo `AGENTS.md`.

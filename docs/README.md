@@ -1,3 +1,15 @@
+# Documentação do repositório
+
+As instruções para agentes começam em [AGENTS.md](../AGENTS.md).
+
+- [Regras gerais de manutenção](agents/INSTRUCTIONS.md).
+- [Contratos compartilhados do summary](architecture/SUMMARY.md).
+- [Métricas operacionais e Zabbix](architecture/METRICAS_OPERACIONAIS.md).
+- [Planejamentos e pendências](planejamento/README.md).
+
+Os comandos operacionais abaixo são material de consulta e não substituem as
+restrições de ambiente e autorização dos componentes.
+
 
 # SystemCTL Cheats
 

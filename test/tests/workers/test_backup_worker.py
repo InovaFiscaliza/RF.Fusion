@@ -467,5 +467,25 @@ class BackupFlowTests(unittest.TestCase):
         )
 
 
+class BackupPriorityTests(unittest.TestCase):
+    """Verify that backup activates rotation and current-year preference together."""
+
+    def test_read_next_task_requests_rotating_current_year_backups(self) -> None:
+        db = MagicMock(spec=backup_worker.dbHandlerBKP)
+        db.read_file_task.return_value = None
+        self.assertIsNone(backup_worker._read_next_task(db))
+        db.read_file_task.assert_called_once_with(
+            task_status=backup_worker.k.TASK_PENDING,
+            task_type=backup_worker.k.FILE_TASK_BACKUP_TYPE,
+            check_host_busy=True,
+            check_host_offline=True,
+            lock_host=True,
+            reserve_hosts_for_discovery=True,
+            fair_by_host=True,
+            newest_first=True,
+            prefer_current_year=True,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

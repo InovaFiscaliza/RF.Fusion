@@ -12,19 +12,23 @@ behavior, so the service layer documents those differences explicitly.
 
 Read model strategy
 -------------------
-Every public function tries ``RFFUSION_SUMMARY.SITE_EQUIPMENT_OBS_SUMMARY``
-(the summary read model) first. That table is a materialized view pre-joined
+Geography-only facet queries prefer ``RFFUSION_SUMMARY.SITE_EQUIPMENT_OBS_SUMMARY``
+(the summary read model). That table is a materialized view pre-joined
 with geography and pre-aggregated by (site, equipment). It answers most filter
 queries cheaply because it avoids scanning ``FACT_SPECTRUM``.
 
-When the summary returns nothing — typically because the operator applies date
-or frequency filters that the summary does not track — the service falls back
-to a live ``RFDATA.FACT_SPECTRUM`` query joined with dimension tables. That
+Date, frequency and description predicates require individual spectra, so facet
+queries bypass the summary for those predicates. Missing summary data also falls
+back to a live ``RFDATA.FACT_SPECTRUM`` query joined with dimension tables. That
 path is authoritative but significantly heavier.
 
 The fallback is explicit at each call site on purpose. An engineer debugging
 a slow filter refresh should be able to tell immediately which code path ran
 and why.
+
+The interactive page uses a compact dependent-filter snapshot. Detailed menu
+options probe for one matching spectrum per site/equipment pair, without
+aggregating every spectrum. The full facet API retains its counts and dates.
 
 Caching
 -------
@@ -81,7 +85,7 @@ FILE_FILTER_TEMP_TABLE = "tmp_webfusion_filtered_spectra"
 # cached results from the previous version wrong or incomplete. In-process
 # cache entries are keyed by version so old entries are naturally skipped.
 FILE_RESULT_CACHE_VERSION = 3
-FILTER_OPTION_CACHE_VERSION = 2
+FILTER_OPTION_CACHE_VERSION = 3
 
 # These are intentionally tiny in-process caches. They smooth repeated clicks
 # and back/forward navigation in one worker process, but they are not meant to
@@ -1810,15 +1814,33 @@ def _load_summary_district_rows(
 
 def _load_fact_filter_availability_row(
     *,
-    equipment_id=None,
-    state_id=None,
-    district_id=None,
-    site_id=None,
-    freq_start=None,
-    freq_end=None,
-    description=None,
-):
-    """Load the observed date window for the current non-date filter set."""
+    equipment_id: int | str | None = None,
+    state_id: int | str | None = None,
+    district_id: int | str | None = None,
+    site_id: int | str | None = None,
+    freq_start: float | None = None,
+    freq_end: float | None = None,
+    description: str | None = None,
+) -> dict:
+    """Load observed dates and counts for the current non-date filters.
+
+    Args:
+        equipment_id: Optional equipment ID, as int or str.
+        state_id: Optional state ID, as int or str.
+        district_id: Optional district ID, as int or str.
+        site_id: Optional map site ID, as int or str.
+        freq_start: Optional lower frequency bound in MHz, as float.
+        freq_end: Optional upper frequency bound in MHz, as float.
+        description: Optional plan pattern, as str.
+
+    Returns:
+        A dict with DATE_START and DATE_END (datetime or None),
+        SPECTRUM_COUNT, SITE_COUNT, DISTRICT_COUNT and
+        EQUIPMENT_COUNT (int).
+
+    Raises:
+        Exception: When the fact query fails.
+    """
 
     where_clauses, params = _build_fact_filters(
         equipment_id=equipment_id,
@@ -1834,26 +1856,27 @@ def _load_fact_filter_availability_row(
     where_sql = _build_where_sql(where_clauses)
 
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        f"""
-        SELECT
-            MIN(f.DT_TIME_START) AS DATE_START,
-            MAX(f.DT_TIME_END) AS DATE_END,
-            COUNT(*) AS SPECTRUM_COUNT,
-            COUNT(DISTINCT f.FK_SITE) AS SITE_COUNT,
-            COUNT(DISTINCT s.FK_DISTRICT) AS DISTRICT_COUNT,
-            COUNT(DISTINCT f.FK_EQUIPMENT) AS EQUIPMENT_COUNT
-        FROM FACT_SPECTRUM f
-        JOIN DIM_SPECTRUM_SITE s
-            ON s.ID_SITE = f.FK_SITE
-        {where_sql}
-        """,
-        params,
-    )
-    row = cur.fetchone()
-    conn.close()
-    return row
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            SELECT
+                MIN(f.DT_TIME_START) AS DATE_START,
+                MAX(f.DT_TIME_END) AS DATE_END,
+                COUNT(*) AS SPECTRUM_COUNT,
+                COUNT(DISTINCT f.FK_SITE) AS SITE_COUNT,
+                COUNT(DISTINCT s.FK_DISTRICT) AS DISTRICT_COUNT,
+                COUNT(DISTINCT f.FK_EQUIPMENT) AS EQUIPMENT_COUNT
+            FROM FACT_SPECTRUM f
+            JOIN DIM_SPECTRUM_SITE s
+                ON s.ID_SITE = f.FK_SITE
+            {where_sql}
+            """,
+            params,
+        )
+        return cur.fetchone()
+    finally:
+        conn.close()
 
 
 def _load_summary_filter_availability_row(
@@ -2007,38 +2030,42 @@ def get_spectrum_locality_options(
 
 def get_spectrum_filter_options(
     *,
-    equipment_id=None,
-    state_id=None,
-    district_id=None,
-    site_id=None,
-    start_date=None,
-    end_date=None,
-    freq_start=None,
-    freq_end=None,
-    description=None,
-    include_districts=True,
-    include_availability=True,
-):
-    """Return the dynamic equipment/state/district option sets plus availability.
+    equipment_id: int | str | None = None,
+    state_id: int | str | None = None,
+    district_id: int | str | None = None,
+    site_id: int | str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    freq_start: float | None = None,
+    freq_end: float | None = None,
+    description: str | None = None,
+    include_districts: bool = True,
+    include_availability: bool = True,
+) -> dict:
+    """Return facet options matching the active query and its observed date range.
 
-    Each filter dimension follows the same two-layer strategy:
-      1. Try the summary model first — fast, pre-aggregated, geo-scoped only.
-      2. If the summary returns nothing, fall back to a live FACT_SPECTRUM scan
-         that applies the full filter context including date and frequency.
+    Args:
+        equipment_id: Optional equipment identifier, as int or str.
+        state_id: Optional state identifier, as int or str.
+        district_id: Optional district identifier, as int or str.
+        site_id: Optional map site identifier, as int or str.
+        start_date: Optional ISO start date, as str.
+        end_date: Optional ISO end date, as str.
+        freq_start: Optional lower frequency bound in MHz, as float.
+        freq_end: Optional upper frequency bound in MHz, as float.
+        description: Optional description pattern, as str.
+        include_districts: Whether to load district options, as bool.
+        include_availability: Whether to load the observed range, as bool.
 
-    The summary path is preferred because it avoids scanning the fact table for
-    every dropdown refresh. The fallback is written out explicitly per dimension
-    so a slow request can be traced to the specific fact scan that ran.
+    Returns:
+        A dict with required keys equipments, states and districts (lists of
+        option dicts with ID_* and OPTION_LABEL), and availability (a dict
+        containing DATE_START, DATE_END, their *_DISPLAY strings and counts,
+        or None when no observations match). Each facet excludes its own ID
+        constraint. Availability excludes dates so it can suggest a new range.
 
-    ``include_districts`` and ``include_availability`` can be False to skip
-    the heaviest dimensions when the caller does not need them (e.g., the map
-    panel only needs equipment and state options).
-
-    Returns a dict with keys:
-      - ``equipments``: list of equipment option dicts
-      - ``states``: list of state option dicts
-      - ``districts``: list of district option dicts (empty when skipped)
-      - ``availability``: date/count summary dict, or None when no data found
+    Raises:
+        Exception: When a required fact-table query fails.
     """
 
     cache_key = (
@@ -2065,26 +2092,32 @@ def get_spectrum_filter_options(
     states = []
     districts = []
     availability = None
+    has_detail_filters = bool(
+        start_date or end_date or description
+        or freq_start is not None or freq_end is not None
+    )
+    has_observation_filters = bool(
+        description or freq_start is not None or freq_end is not None
+    )
 
     # --- equipment options ---
-    # Summary is preferred when only geo filters are active.
-    # The fact fallback is used only when an active filter (date, frequency,
-    # description) could exclude equipment that the summary would otherwise show.
-    try:
-        equipments = _finalize_equipment_options(
-            _load_summary_equipment_filter_rows(
-                state_id=state_id,
-                district_id=district_id,
-                site_id=site_id,
+    # Summary rows cannot resolve date, frequency or plan predicates.
+    if not has_detail_filters:
+        try:
+            equipments = _finalize_equipment_options(
+                _load_summary_equipment_filter_rows(
+                    state_id=state_id,
+                    district_id=district_id,
+                    site_id=site_id,
+                )
             )
-        )
-    except Exception:
-        LOGGER.exception(
-            "failed_to_load_summary_spectrum_equipment_filters state_id=%s district_id=%s site_id=%s",
-            state_id,
-            district_id,
-            site_id,
-        )
+        except Exception:
+            LOGGER.exception(
+                "failed_to_load_summary_spectrum_equipment_filters state_id=%s district_id=%s site_id=%s",
+                state_id,
+                district_id,
+                site_id,
+            )
 
     if not equipments:
         if state_id or district_id or site_id or start_date or end_date or description or freq_start is not None or freq_end is not None:
@@ -2106,22 +2139,23 @@ def get_spectrum_filter_options(
             equipments = _finalize_equipment_options(get_equipments())
 
     # --- state options ---
-    # Apply the same summary-first strategy.
-    try:
-        states = _finalize_state_options(
-            _load_summary_state_rows(
-                equipment_id=equipment_id,
-                district_id=district_id,
-                site_id=site_id,
+    # Detail predicates must use the same fact filters across every facet.
+    if not has_detail_filters:
+        try:
+            states = _finalize_state_options(
+                _load_summary_state_rows(
+                    equipment_id=equipment_id,
+                    district_id=district_id,
+                    site_id=site_id,
+                )
             )
-        )
-    except Exception:
-        LOGGER.exception(
-            "failed_to_load_summary_spectrum_state_filters equipment_id=%s district_id=%s site_id=%s",
-            equipment_id,
-            district_id,
-            site_id,
-        )
+        except Exception:
+            LOGGER.exception(
+                "failed_to_load_summary_spectrum_state_filters equipment_id=%s district_id=%s site_id=%s",
+                equipment_id,
+                district_id,
+                site_id,
+            )
 
     if not states:
         states = _finalize_state_options(
@@ -2142,21 +2176,22 @@ def get_spectrum_filter_options(
         # --- district options ---
         # Districts are the most granular geo dimension and the most expensive
         # to scan. The flag avoids this cost for state/equipment-only callers.
-        try:
-            districts = _finalize_district_options(
-                _load_summary_district_rows(
-                    equipment_id=equipment_id,
-                    state_id=state_id,
-                    site_id=site_id,
+        if not has_detail_filters:
+            try:
+                districts = _finalize_district_options(
+                    _load_summary_district_rows(
+                        equipment_id=equipment_id,
+                        state_id=state_id,
+                        site_id=site_id,
+                    )
                 )
-            )
-        except Exception:
-            LOGGER.exception(
-                "failed_to_load_summary_spectrum_district_filters equipment_id=%s state_id=%s site_id=%s",
-                equipment_id,
-                state_id,
-                site_id,
-            )
+            except Exception:
+                LOGGER.exception(
+                    "failed_to_load_summary_spectrum_district_filters equipment_id=%s state_id=%s site_id=%s",
+                    equipment_id,
+                    state_id,
+                    site_id,
+                )
 
         if not districts:
             districts = _finalize_district_options(
@@ -2175,27 +2210,25 @@ def get_spectrum_filter_options(
     availability = None
     if include_availability:
         # --- availability window ---
-        # This gives the date range and aggregate counts for
-        # the current filter state. Used by the UI to set sensible date picker
-        # defaults. The summary path is cheap but does not account for
-        # date/frequency filters; the fact fallback is precise but expensive.
-        try:
-            availability = _finalize_availability_row(
-                _load_summary_filter_availability_row(
-                    equipment_id=equipment_id,
-                    state_id=state_id,
-                    district_id=district_id,
-                    site_id=site_id,
+        # Dates do not constrain their own suggestion; frequency and plan do.
+        if not has_observation_filters:
+            try:
+                availability = _finalize_availability_row(
+                    _load_summary_filter_availability_row(
+                        equipment_id=equipment_id,
+                        state_id=state_id,
+                        district_id=district_id,
+                        site_id=site_id,
+                    )
                 )
-            )
-        except Exception:
-            LOGGER.exception(
-                "failed_to_load_summary_spectrum_availability equipment_id=%s state_id=%s district_id=%s site_id=%s",
-                equipment_id,
-                state_id,
-                district_id,
-                site_id,
-            )
+            except Exception:
+                LOGGER.exception(
+                    "failed_to_load_summary_spectrum_availability equipment_id=%s state_id=%s district_id=%s site_id=%s",
+                    equipment_id,
+                    state_id,
+                    district_id,
+                    site_id,
+                )
 
         if availability is None:
             availability = _finalize_availability_row(
@@ -2218,6 +2251,229 @@ def get_spectrum_filter_options(
     }
     _set_cached_query(cache_key, result)
     return result
+
+
+def _load_selection_matches(
+    *,
+    state_id: int | str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    freq_start: float | None = None,
+    freq_end: float | None = None,
+    description: str | None = None,
+) -> list[dict]:
+    """Find site/equipment pairs with at least one matching spectrum.
+
+    Args:
+        state_id: Optional state ID, as int or str.
+        start_date: Optional inclusive ISO start date, as str.
+        end_date: Optional inclusive ISO end date, as str.
+        freq_start: Optional lower frequency bound in MHz, as float.
+        freq_end: Optional upper frequency bound in MHz, as float.
+        description: Optional plan pattern, as str.
+
+    Returns:
+        A list of dicts with ID_EQUIPMENT (int), NA_EQUIPMENT (str),
+        ID_DISTRICT (int or None), DISTRICT_NAME, COUNTY_NAME and STATE_CODE
+        (str or None), ordered by district label and equipment name.
+
+    Raises:
+        Exception: When the fact query fails.
+    """
+    clauses, params = _build_fact_filters(
+        start_date=start_date,
+        end_date=end_date,
+        freq_start=freq_start,
+        freq_end=freq_end,
+        description=description,
+    )
+    clauses[:0] = ["f.FK_SITE = s.ID_SITE", "f.FK_EQUIPMENT = e.ID_EQUIPMENT"]
+    state_clause = "WHERE s.FK_STATE = %s" if state_id else "WHERE 1 = 1"
+    if state_id:
+        params.insert(0, state_id)
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        # A scalar probe stops at one match instead of materializing every spectrum.
+        cur.execute(
+            f"""
+            SELECT e.ID_EQUIPMENT, e.NA_EQUIPMENT,
+                s.FK_DISTRICT AS ID_DISTRICT, d.NA_DISTRICT AS DISTRICT_NAME,
+                c.NA_COUNTY AS COUNTY_NAME, st.LC_STATE AS STATE_CODE
+            FROM DIM_SPECTRUM_SITE s
+            CROSS JOIN DIM_SPECTRUM_EQUIPMENT e
+            LEFT JOIN DIM_SITE_DISTRICT d ON d.ID_DISTRICT = s.FK_DISTRICT
+            LEFT JOIN DIM_SITE_COUNTY c ON c.ID_COUNTY = s.FK_COUNTY
+            LEFT JOIN DIM_SITE_STATE st ON st.ID_STATE = s.FK_STATE
+            {state_clause}
+              AND (SELECT 1 FROM FACT_SPECTRUM f
+                   {_build_where_sql(clauses)} LIMIT 1) IS NOT NULL
+            ORDER BY d.NA_DISTRICT, c.NA_COUNTY, st.LC_STATE, e.NA_EQUIPMENT
+            """,
+            params,
+        )
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def get_spectrum_selection_options(
+    *,
+    equipment_id: int | str | None = None,
+    state_id: int | str | None = None,
+    district_id: int | str | None = None,
+    site_id: int | str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    freq_start: float | None = None,
+    freq_end: float | None = None,
+    description: str | None = None,
+    include_districts: bool = True,
+    include_availability: bool = True,
+) -> dict:
+    """Return one coherent, compact snapshot for the page's dependent filters.
+
+    Args:
+        equipment_id: Optional equipment ID, as int or str; scopes availability.
+        state_id: Optional state ID, as int or str; scopes districts and equipment.
+        district_id: Optional district ID, as int or str; scopes equipment.
+        site_id: Optional map site ID, as int or str; scopes availability.
+        start_date: Optional inclusive ISO start date, as str; scopes options.
+        end_date: Optional inclusive ISO end date, as str; scopes options.
+        freq_start: Optional lower frequency bound in MHz, as float.
+        freq_end: Optional upper frequency bound in MHz, as float.
+        description: Optional plan pattern, as str.
+        include_districts: Whether to load districts, as bool.
+        include_availability: Whether to load observed dates, as bool.
+
+    Returns:
+        A dict with equipments, states and districts, each a list of dicts
+        containing the corresponding ID_* (int) and OPTION_LABEL (str).
+        States remain global. Districts exclude equipment, district and site;
+        equipment excludes equipment and site. Availability excludes dates,
+        includes all other filters, and contains DATE_START, DATE_END and their
+        *_DISPLAY strings, or None. Per-option counts and dates are omitted.
+
+    Raises:
+        Exception: When a required fact query fails.
+    """
+    cache_key = (
+        "selection_options", FILTER_OPTION_CACHE_VERSION,
+        equipment_id, state_id, district_id, site_id, start_date, end_date,
+        freq_start, freq_end, description, include_districts, include_availability,
+    )
+    cached = _get_cached_query(cache_key)
+    if cached is not None:
+        return cached
+    has_details = bool(start_date or end_date or description
+                       or freq_start is not None or freq_end is not None)
+    # Global states never depend on the current detail predicates.
+    states = get_spectrum_filter_options(include_districts=False, include_availability=False)["states"]
+    equipments = []
+    districts = []
+    needs_matches = has_details
+    load_districts = include_districts and bool(state_id or has_details)
+    if not has_details:
+        try:
+            equipments = _finalize_equipment_options(_load_summary_equipment_filter_rows(
+                state_id=state_id, district_id=district_id,
+            ))
+            if load_districts:
+                districts = _finalize_district_options(_load_summary_district_rows(state_id=state_id))
+            needs_matches = not equipments or (load_districts and not districts)
+        except Exception:
+            LOGGER.exception("failed_to_load_summary_spectrum_selection_options")
+            needs_matches = True
+    if needs_matches:
+        match_key = ("selection_matches", FILTER_OPTION_CACHE_VERSION, state_id,
+                     start_date, end_date, freq_start, freq_end, description)
+        matches = _get_cached_query(match_key)
+        if matches is None:
+            matches = _load_selection_matches(
+                state_id=state_id, start_date=start_date, end_date=end_date,
+                freq_start=freq_start, freq_end=freq_end, description=description,
+            )
+            _set_cached_query(match_key, matches)
+        equipment_rows = {
+            row["ID_EQUIPMENT"]: row for row in matches
+            if not district_id or str(row["ID_DISTRICT"]) == str(district_id)
+        }
+        equipments = sorted(_finalize_equipment_options(equipment_rows.values()),
+                            key=lambda row: row["OPTION_LABEL"].casefold())
+        if load_districts:
+            district_rows = {
+                (row["ID_DISTRICT"], row.get("COUNTY_NAME"), row.get("STATE_CODE")): row
+                for row in matches if row["ID_DISTRICT"] is not None
+            }
+            districts = _finalize_district_options(district_rows.values())
+
+    availability = None
+    if include_availability:
+        availability_key = ("selection_availability", FILTER_OPTION_CACHE_VERSION,
+                            equipment_id, state_id, district_id, site_id,
+                            freq_start, freq_end, description)
+        cached_availability = _get_cached_query(availability_key)
+        if cached_availability is not None:
+            availability = cached_availability["availability"]
+        else:
+            availability = _load_selection_availability(
+                equipment_id=equipment_id, state_id=state_id, district_id=district_id,
+                site_id=site_id, freq_start=freq_start, freq_end=freq_end, description=description,
+            )
+            _set_cached_query(availability_key, {"availability": availability})
+    result = {"availability": availability}
+    for key, rows, id_key in (("equipments", equipments, "ID_EQUIPMENT"),
+                              ("states", states, "ID_STATE"),
+                              ("districts", districts, "ID_DISTRICT")):
+        result[key] = [{id_key: row[id_key], "OPTION_LABEL": row["OPTION_LABEL"]} for row in rows]
+    _set_cached_query(cache_key, result)
+    return result
+
+
+def _load_selection_availability(
+    *,
+    equipment_id: int | str | None = None,
+    state_id: int | str | None = None,
+    district_id: int | str | None = None,
+    site_id: int | str | None = None,
+    freq_start: float | None = None,
+    freq_end: float | None = None,
+    description: str | None = None,
+) -> dict | None:
+    """Load exact observed dates without constraining them by input dates.
+
+    Args:
+        equipment_id: Optional equipment ID, as int or str.
+        state_id: Optional state ID, as int or str.
+        district_id: Optional district ID, as int or str.
+        site_id: Optional map site ID, as int or str.
+        freq_start: Optional lower frequency bound in MHz, as float.
+        freq_end: Optional upper frequency bound in MHz, as float.
+        description: Optional plan pattern, as str.
+
+    Returns:
+        A dict with DATE_START, DATE_END (ISO str) and their *_DISPLAY (str),
+        or None if no observed dates are available.
+
+    Raises:
+        Exception: When the required fact query fails.
+    """
+    availability = None
+    has_observation_filters = bool(description or freq_start is not None or freq_end is not None)
+    geo = dict(equipment_id=equipment_id, state_id=state_id,
+               district_id=district_id, site_id=site_id)
+    if not has_observation_filters:
+        try:
+            availability = _finalize_availability_row(_load_summary_filter_availability_row(**geo))
+        except Exception:
+            LOGGER.exception("failed_to_load_summary_spectrum_selection_availability")
+    if availability is None or not availability["DATE_START"] or not availability["DATE_END"]:
+        availability = _finalize_availability_row(_load_fact_filter_availability_row(
+            **geo, freq_start=freq_start, freq_end=freq_end, description=description,
+        ))
+    if availability and availability["DATE_START"] and availability["DATE_END"]:
+        return {key: value for key, value in availability.items() if key.startswith("DATE_")}
+    return None
 
 
 def get_spectrum_site_option(site_id):

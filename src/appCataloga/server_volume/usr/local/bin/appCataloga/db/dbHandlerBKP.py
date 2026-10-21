@@ -2072,16 +2072,36 @@ class dbHandlerBKP(DBHandlerBase):
         lock_host: bool = False,
         reserve_hosts_for_discovery: bool = False,
         fair_by_host: bool = False,
+        newest_first: bool = False,
+        prefer_current_year: bool = False,
     ) -> Optional[tuple]:
         """
-        Return one file task joined with host metadata.
+        Return one eligible file task joined with host metadata.
 
-        When `lock_host=True`, the method also attempts to atomically claim the
-        host before returning the task to the caller.
+        Args:
+            task_id (int | None): Exact task ID; bypasses queue ordering and filters.
+            task_status (int | None): Queue status, or None for any status.
+            task_type (int | None): Queue type, or None for any type.
+            check_host_busy (bool): Exclude busy hosts and expire cooldowns.
+            check_host_offline (bool): Exclude offline hosts.
+            extension (str | None): Optional host extension filter.
+            lock_host (bool): Claim the host atomically when checking busy hosts.
+            reserve_hosts_for_discovery (bool): Exclude backup hosts reserved for discovery.
+            fair_by_host (bool): Rotate backup hosts using their last backup time.
+            newest_first (bool): Order by source creation date descending, then ID
+                descending. With host rotation, applies within each host's queue.
+                Otherwise applies globally. Missing dates come last.
+            prefer_current_year (bool): With backup host rotation, prioritize hosts
+                with eligible files created in the current database calendar year.
+                Rotate hosts within each year-priority group. Defaults to False.
 
-        The helper supports the two queue-selection refinements used by backup:
-            - discovery reservation windows
-            - host-fair round-robin ordering
+        Returns:
+            tuple[dict, int, int] | None: Joined row, host ID, and task ID;
+                None when no task is eligible or the host claim loses a race.
+                Row keys use FILE_TASK__ and HOST__ prefixes.
+
+        Raises:
+            Exception: Propagates connection, query, or host claim failures.
         """
 
         self._connect()
@@ -2095,6 +2115,14 @@ class dbHandlerBKP(DBHandlerBase):
             not task_id
             and task_type == k.FILE_TASK_BACKUP_TYPE
             and fair_by_host
+        )
+        current_year_priority = (
+            "COALESCE(YEAR(FT.DT_FILE_CREATED_HOST) = YEAR(CURRENT_DATE), 0) DESC, "
+            if fair_backup_mode and prefer_current_year else ""
+        )
+        file_order = (
+            "FT.DT_FILE_CREATED_HOST DESC, FT.ID_FILE_TASK DESC"
+            if newest_first else "FT.ID_FILE_TASK ASC"
         )
         discovery_host_reservation = (
             not task_id
@@ -2141,22 +2169,42 @@ class dbHandlerBKP(DBHandlerBase):
                 )
 
             if fair_backup_mode:
+                # Choose within each host before rotating across eligible hosts.
+                candidate_order = (current_year_priority + file_order).replace(
+                    "FT.", "FT_HOST."
+                )
+                candidate_status = (
+                    f"AND FT_HOST.NU_STATUS = {task_status} "
+                    if task_status is not None else ""
+                )
+                candidate_extension = (
+                    "AND FT_HOST.NA_EXTENSION_HOST = FT.NA_EXTENSION_HOST "
+                    if extension is not None else ""
+                )
                 custom_clauses["#CUSTOM#backup_host_round_robin"] = (
                     "FT.ID_FILE_TASK = ("
-                    "SELECT MIN(FT_HOST.ID_FILE_TASK) FROM FILE_TASK FT_HOST "
+                    "SELECT FT_HOST.ID_FILE_TASK FROM FILE_TASK FT_HOST "
                     "WHERE FT_HOST.FK_HOST = FT.FK_HOST "
-                    f"AND FT_HOST.NU_STATUS = {task_status} "
-                    f"AND FT_HOST.NU_TYPE = {task_type}"
+                    f"{candidate_status}"
+                    f"AND FT_HOST.NU_TYPE = {task_type} "
+                    f"{candidate_extension}"
+                    f"ORDER BY {candidate_order} LIMIT 1"
                     ")"
                 )
 
             where.update(custom_clauses)
 
         if fair_backup_mode:
+            # Current-year files win first; last backup time rotates hosts within each group.
             order_by = (
-                "CASE WHEN H.DT_LAST_BACKUP IS NULL THEN 0 ELSE 1 END ASC, "
-                "H.DT_LAST_BACKUP ASC, FT.ID_FILE_TASK ASC"
+                current_year_priority
+                + "CASE WHEN H.DT_LAST_BACKUP IS NULL THEN 0 ELSE 1 END ASC, "
+                "H.DT_LAST_BACKUP ASC, "
+                + file_order
             )
+        elif newest_first and not task_id:
+            # Server timestamps describe transfers, not the age of the source file.
+            order_by = file_order
         else:
             order_by = "FT.ID_FILE_TASK ASC" if not task_id else None
 

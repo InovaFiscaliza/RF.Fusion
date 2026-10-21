@@ -177,37 +177,37 @@ mas ainda não substitui testes reais de ambiente.
 
 ## Como Executar
 
-O helper padrão é [test_all.sh](/RFFusion/test/test_all.sh). Sem argumentos,
-ele executa:
+Antes de executar, selecione o container pelas [instruções de testes](AGENTS.md).
+O helper [test_all.sh](test_all.sh) usa o Python do appCataloga por padrão e
+não escolhe o container. Sem argumentos ele inclui WebFusion; não executar
+esse modo no container do appCataloga.
 
-```bash
-cd /RFFusion/test
-./test_all.sh
-```
-
-Internamente, isso equivale a executar `pytest tests -q` com o Python do
-ambiente `appdata`.
-
-Também é possível passar argumentos normais do `pytest`:
+Para testes exclusivos do appCataloga, no container autorizado:
 
 ```bash
 cd /RFFusion/test
 ./test_all.sh tests/workers -q
 ./test_all.sh tests/db/test_dbhandler_rfm.py -q
-./test_all.sh tests -k garbage -q
+/opt/conda/envs/appdata/bin/python -m pytest tests/shared tests/stations tests/workers tests/db -q
 ```
 
-Execução direta por área:
+Confira os imports dos testes selecionados: qualquer teste que importar
+WebFusion deve executar no webserver, mesmo que esteja em outra subpasta.
+
+Para WebFusion ou suíte mista, conecte-se ao webserver conforme seu
+[ENVIRONMENT.md](../src/webfusion/.instructions/ENVIRONMENT.md) e execute lá:
 
 ```bash
-/opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/shared -q
-/opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/stations -q
-/opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/workers -q
-/opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/db -q
-/opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion -q
+cd /RF.Fusion/test
+/usr/local/bin/python -m pytest tests/webfusion -q
+/usr/local/bin/python -m pytest tests -q
 ```
 
-Execução de um arquivo específico:
+O comando da suíte completa pressupõe que as dependências de validação dos
+testes selecionados estejam disponíveis nesse container. Não instalar
+pacotes no container do appCataloga para contornar imports de WebFusion.
+
+Para validar apenas o summary no ambiente do appCataloga:
 
 ```bash
 /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/workers/test_appCataloga_summary_database.py -q

@@ -20,6 +20,7 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 import json
+import sqlite3
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -1161,7 +1162,7 @@ class FileTaskSelectionTests(unittest.TestCase):
             captured["where"]["#CUSTOM#host_discovery_reservation"],
         )
         self.assertIn(
-            "SELECT MIN(FT_HOST.ID_FILE_TASK)",
+            "ORDER BY FT_HOST.ID_FILE_TASK ASC LIMIT 1",
             captured["where"]["#CUSTOM#backup_host_round_robin"],
         )
 
@@ -1187,6 +1188,117 @@ class FileTaskSelectionTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertEqual(captured["order_by"], "FT.ID_FILE_TASK ASC")
+
+
+    def make_priority_queue(self) -> tuple:
+        """Build an isolated SQL queue with old, current, future, and undated files.
+
+        Returns:
+            tuple: Handler and SQLite connection; closed automatically after each test.
+        """
+        connection = sqlite3.connect(":memory:")
+        self.addCleanup(connection.close)
+        connection.create_function("YEAR", 1, lambda value: int(value[:4]) if value else None)
+        connection.executescript("""
+            CREATE TABLE HOST (ID_HOST INTEGER, DT_LAST_BACKUP TEXT,
+                               IS_BUSY INTEGER DEFAULT 0, IS_OFFLINE INTEGER DEFAULT 0);
+            CREATE TABLE FILE_TASK (ID_FILE_TASK INTEGER, FK_HOST INTEGER,
+                NU_TYPE INTEGER, NU_STATUS INTEGER, DT_FILE_CREATED_HOST TEXT,
+                NA_EXTENSION_HOST TEXT);
+            INSERT INTO HOST (ID_HOST, DT_LAST_BACKUP) VALUES
+                (1, NULL), (2, '2026-01-02'), (3, '2026-01-01');
+        """)
+        year = datetime.now().year
+        connection.executemany("INSERT INTO FILE_TASK VALUES (?, ?, ?, ?, ?, ?)", [
+            (1, 1, 1, 1, "2014-01-01", ".bin"),
+            (2, 2, 1, 1, "2014-02-01", ".bin"),
+            (3, 3, 1, 1, "2014-03-01", ".bin"),
+            (4, 2, 1, 1, f"{year}-10-01", ".bin"),
+            (5, 3, 1, 1, f"{year}-09-01", ".bin"),
+            (6, 2, 1, 1, f"{year}-10-01", ".bin"),
+            (7, 1, 1, 1, None, ".bin"),
+            (8, 1, 1, 1, f"{year + 1}-01-01", ".bin"),
+        ])
+        handler = self.make_handler()
+
+        def select_queue(**kwargs: object) -> list[dict]:
+            clauses, params = [], []
+            for key, value in kwargs["where"].items():
+                if key.startswith("#CUSTOM#"):
+                    clauses.append(value)
+                else:
+                    clauses.append(f"{key} = ?")
+                    params.append(value)
+            sql = ("SELECT FT.ID_FILE_TASK, FT.FK_HOST FROM FILE_TASK FT "
+                   "JOIN HOST H ON H.ID_HOST = FT.FK_HOST WHERE "
+                   + " AND ".join(clauses))
+            if kwargs["order_by"]:
+                sql += " ORDER BY " + kwargs["order_by"]
+            sql += " LIMIT 1"
+            return [{"FILE_TASK__ID_FILE_TASK": row[0], "HOST__ID_HOST": row[1]}
+                    for row in connection.execute(sql, params)]
+
+        handler._select_custom = select_queue
+        return handler, connection
+
+    def test_backup_current_year_rotates_hosts_before_older_backlog(self) -> None:
+        """Current-year hosts rotate even when another host has never backed up."""
+        handler, connection = self.make_priority_queue()
+        selected = []
+        for step in range(3):
+            result = handler.read_file_task(
+                task_type=1, check_host_busy=False, fair_by_host=True,
+                newest_first=True, prefer_current_year=True,
+            )
+            _, host_id, task_id = result
+            selected.append(task_id)
+            connection.execute("DELETE FROM FILE_TASK WHERE ID_FILE_TASK = ?", (task_id,))
+            connection.execute("UPDATE HOST SET DT_LAST_BACKUP = ? WHERE ID_HOST = ?",
+                               (f"2026-12-{step + 1:02d}", host_id))
+        self.assertEqual(selected, [5, 6, 4])
+        self.assertEqual(handler.read_file_task(
+            task_type=1, check_host_busy=False, fair_by_host=True,
+            newest_first=True, prefer_current_year=True,
+        )[2], 8)
+
+    def test_processing_newest_source_date_wins_over_queue_id(self) -> None:
+        """Processing favors source age globally, including deterministic ties and NULLs."""
+        handler, connection = self.make_priority_queue()
+        connection.execute("UPDATE FILE_TASK SET NU_TYPE = ?",
+                           (db_bkp_module.k.FILE_TASK_PROCESS_TYPE,))
+        selected = []
+        while True:
+            result = handler.read_file_task(
+                task_type=db_bkp_module.k.FILE_TASK_PROCESS_TYPE,
+                check_host_busy=False, newest_first=True,
+            )
+            if result is None:
+                break
+            selected.append(result[2])
+            connection.execute("DELETE FROM FILE_TASK WHERE ID_FILE_TASK = ?", (result[2],))
+        self.assertEqual(selected, [8, 6, 4, 5, 3, 2, 1, 7])
+
+    def test_backup_priority_preserves_host_and_file_eligibility(self) -> None:
+        """Busy/offline hosts and files outside the requested slice stay excluded."""
+        handler, connection = self.make_priority_queue()
+        connection.execute("UPDATE HOST SET IS_OFFLINE = 1 WHERE ID_HOST = 3")
+        connection.execute("UPDATE HOST SET IS_BUSY = 1 WHERE ID_HOST = 1")
+        connection.execute("UPDATE FILE_TASK SET NU_STATUS = 2 WHERE ID_FILE_TASK = 6")
+        connection.execute("UPDATE FILE_TASK SET NA_EXTENSION_HOST = '.zip' WHERE ID_FILE_TASK = 4")
+        result = handler.read_file_task(
+            task_type=1, check_host_busy=True, check_host_offline=True,
+            extension=".bin", fair_by_host=True, newest_first=True,
+            prefer_current_year=True,
+        )
+        self.assertEqual(result[2], 2)
+
+    def test_explicit_task_id_bypasses_priority_ordering(self) -> None:
+        """An explicit task lookup still resolves the requested old file."""
+        handler, _ = self.make_priority_queue()
+        self.assertEqual(handler.read_file_task(
+            task_id=1, check_host_busy=False, fair_by_host=True,
+            newest_first=True, prefer_current_year=True,
+        )[2], 1)
 
 
 class BacklogBudgetTests(unittest.TestCase):

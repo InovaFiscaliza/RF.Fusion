@@ -597,7 +597,20 @@ def _init_db() -> dbHandlerBKP:
         sys.exit(1)
         
 def _read_next_task(db: dbHandlerBKP) -> dict | None:
-    """Read the next pending backup FILE_TASK and normalize worker context."""
+    """Rotate backup hosts, favor current-year files, and normalize worker context.
+
+    Args:
+        db (dbHandlerBKP): Operational queue handler.
+
+    Returns:
+        dict | None: Joined task fields plus host_id, file_task_id, host_uid,
+            host_file_path, host_file_name, input_filename, server_file_path,
+            server_filename, and discovery_snapshot; None when no host is eligible.
+            discovery_snapshot contains extension, size_kb, dt_created, and dt_modified.
+
+    Raises:
+        Exception: Propagates selection or context construction failures.
+    """
     row = db.read_file_task(
         task_status=k.TASK_PENDING,
         task_type=k.FILE_TASK_BACKUP_TYPE,
@@ -606,6 +619,8 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
         lock_host=True,
         reserve_hosts_for_discovery=True,
         fair_by_host=True,
+        newest_first=True,
+        prefer_current_year=True,
     )
     if not row:
         return None

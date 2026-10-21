@@ -44,14 +44,15 @@ USER_PROFILE_HEADER = "X-User-Profile"
 
 @users_api_bp.route("/avatar.svg", methods=["GET"])
 def profile_avatar() -> Response:
-    """Render the provided fallback SVG with the current user's initial.
+    """Render the fallback SVG with the current user's name initials.
 
     Args:
         None. Uses `g.webfusion_user`, containing optional `name` and `email`.
 
     Returns:
         SVG response. Type: flask.Response. Identified users receive
-        `profile.svg` with one escaped uppercase initial. Anonymous users
+        `profile.svg` with uppercase first and last name initials, or one
+        initial for a single name or email fallback. Anonymous users
         receive `profile_out.svg`. Personalized responses are never cached.
     """
     identity = g.webfusion_user
@@ -62,7 +63,11 @@ def profile_avatar() -> Response:
         initial = root.find(".//{http://www.w3.org/2000/svg}text")
         if initial is None:
             raise ValueError("O SVG de perfil não contém o elemento da inicial.")
-        initial.text = label.strip()[0].upper()[0]
+        name_parts = identity["name"].split() if identity["name"] else []
+        if len(name_parts) > 1:
+            initial.text = name_parts[0][0].upper()[0] + name_parts[-1][0].upper()[0]
+        else:
+            initial.text = label.strip()[0].upper()[0]
     response = Response(ElementTree.tostring(root, encoding="utf-8"), mimetype="image/svg+xml")
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"

@@ -77,3 +77,8 @@ nginx -t
 Os testes usam pasta temporária e simulam integrações de identidade. Não gravam
 arquivos no repositório real. Após publicar, validar no navegador a seleção
 múltipla, o arrastar e soltar, a barra de progresso e a gravação no CIFS.
+
+## Evolução planejada
+
+A integração da entrada manual com o appCataloga e o catálogo fixo/móvel está em
+[Planejamento de ingestão e drive-test](../../../../docs/planejamento/PLANEJAMENTO_DRIVE_TEST.md).

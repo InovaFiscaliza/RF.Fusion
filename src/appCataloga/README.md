@@ -107,8 +107,8 @@ Na pratica, o runtime opera sobre tres camadas de dados:
 
 Documentacao de referencia:
 
-- [ARCHITECTURE.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/.instructions/ARCHITECTURE.md)
-- [INSTRUCTIONS.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/.instructions/INSTRUCTIONS.md)
+- [ARCHITECTURE.md](.instructions/ARCHITECTURE.md)
+- [INSTRUCTIONS.md](.instructions/INSTRUCTIONS.md)
 
 ## Modelo Operacional
 
@@ -283,7 +283,9 @@ Os subdiretorios mais importantes do runtime sao:
 - `shared/`: utilitarios comuns
 - `shell/`: scripts operacionais
 - `utils/`: utilitarios administrativos pontuais
-- `.instructions/`: arquitetura, regras e documentos normativos do modulo
+
+As instruções do subprojeto ficam em `src/appCataloga/.instructions/`, fora
+da árvore de runtime; consulte [AGENTS.md](AGENTS.md).
 
 ### Pastas Do Runtime
 
@@ -316,9 +318,6 @@ as pastas mais relevantes sao:
 
 - `utils/`
   - utilitarios administrativos e scripts auxiliares
-
-- `.instructions/`
-  - documentos normativos do modulo, incluindo arquitetura e regras de refatoracao
 
 - `__pycache__/`
   - artefatos de bytecode gerados em runtime; nao fazem parte da arquitetura funcional
@@ -386,4 +385,4 @@ cd /RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shell
 - O `appCataloga` e orientado por filas e estado persistido em banco.
 - `FILE_TASK_HISTORY` e o registro autoritativo do ciclo de vida do arquivo.
 - O runtime toca `BPDATA`, `RFDATA` e `RFFUSION_SUMMARY`, mas com papeis diferentes.
-- A documentacao arquitetural em `.instructions/` deve prevalecer sobre README quando houver conflito.
+- A documentação arquitetural em `src/appCataloga/.instructions/` deve prevalecer sobre README quando houver conflito.

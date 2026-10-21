@@ -2,7 +2,7 @@
 Validation tests for `webfusion.modules.spectrum.service`.
 
 How to run:
-    /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_spectrum_service.py -q
+    /usr/local/bin/python /RF.Fusion/test/tests/webfusion/test_spectrum_service.py -v
 
 What is covered here:
     - frequency filters keep spectra contained within the requested interval
@@ -17,10 +17,12 @@ import importlib.util
 import sys
 import types
 import unittest
+from contextlib import ExitStack
+from unittest.mock import MagicMock, patch
 from pathlib import Path
 
 
-MODULE_PATH = Path("/RFFusion/src/webfusion/modules/spectrum/service.py")
+MODULE_PATH = Path(__file__).resolve().parents[3] / "src/webfusion/modules/spectrum/service.py"
 
 
 def load_spectrum_service():
@@ -56,6 +58,144 @@ class TestSpectrumService(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_spectrum_service()
+
+    def test_selection_snapshot_keeps_hierarchy_and_exact_detail_filters(self) -> None:
+        """Keep broad menus and narrowly scoped availability in one snapshot.
+
+        Returns:
+            None.
+        """
+        rows = [
+            {"ID_EQUIPMENT": 88, "NA_EQUIPMENT": "A", "ID_DISTRICT": 10, "DISTRICT_NAME": "Palmas"},
+            {"ID_EQUIPMENT": 99, "NA_EQUIPMENT": "B", "ID_DISTRICT": 11, "DISTRICT_NAME": "Araguaína"},
+        ]
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.module, "_get_cached_query", return_value=None))
+            stack.enter_context(patch.object(self.module, "_set_cached_query"))
+            global_options = stack.enter_context(patch.object(self.module, "get_spectrum_filter_options", return_value={
+                "states": [{"ID_STATE": 17, "OPTION_LABEL": "TO"}, {"ID_STATE": 35, "OPTION_LABEL": "SP"}],
+            }))
+            matches = stack.enter_context(patch.object(self.module, "_load_selection_matches", return_value=rows))
+            summary = stack.enter_context(patch.object(self.module, "_load_summary_filter_availability_row"))
+            availability = stack.enter_context(patch.object(self.module, "_load_fact_filter_availability_row", return_value={
+                "DATE_START": "2025-01-01", "DATE_END": "2025-12-31",
+            }))
+            result = self.module.get_spectrum_selection_options(
+                equipment_id="88", state_id="17", district_id="10", site_id="42",
+                start_date="2025-02-01", end_date="2025-10-01", freq_start=70, freq_end=110,
+                description="PMRD",
+            )
+        self.assertEqual(result["equipments"], [{"ID_EQUIPMENT": 88, "OPTION_LABEL": "A"}])
+        self.assertEqual([row["ID_DISTRICT"] for row in result["districts"]], [10, 11])
+        self.assertEqual(len(result["states"]), 2)
+        global_options.assert_called_once_with(include_districts=False, include_availability=False)
+        matches.assert_called_once_with(state_id="17", start_date="2025-02-01", end_date="2025-10-01",
+                                        freq_start=70, freq_end=110, description="PMRD")
+        summary.assert_not_called()
+        availability.assert_called_once_with(equipment_id="88", state_id="17", district_id="10",
+                                             site_id="42", freq_start=70, freq_end=110, description="PMRD")
+        self.assertNotIn("SPECTRUM_COUNT", result["availability"])
+
+    def test_selection_probe_stops_at_first_exact_match_and_closes_connection(self) -> None:
+        """Verify bound predicates and cleanup on success and query failure.
+
+        Returns:
+            None.
+        """
+        connection = MagicMock()
+        cursor = connection.cursor.return_value
+        cursor.fetchall.return_value = []
+        with patch.object(self.module, "get_connection", return_value=connection):
+            self.assertEqual(self.module._load_selection_matches(
+                state_id="35", start_date="2025-01-01", end_date="2025-12-31",
+                freq_start=70, freq_end=110, description="PMRD",
+            ), [])
+        sql, params = cursor.execute.call_args.args
+        self.assertIn("LIMIT 1) IS NOT NULL", sql)
+        self.assertNotIn("COUNT(", sql)
+        self.assertIn("f.NU_FREQ_START >= %s", sql)
+        self.assertIn("f.NU_FREQ_END <= %s", sql)
+        self.assertEqual(params, ["35", "2025-01-01", "2025-12-31 23:59:59", 70, 110, "%PMRD%"])
+        connection.close.assert_called_once()
+        connection.reset_mock()
+        cursor.execute.side_effect = RuntimeError("Unavailable")
+        with patch.object(self.module, "get_connection", return_value=connection), self.assertRaises(RuntimeError):
+            self.module._load_selection_matches(state_id="35")
+        connection.close.assert_called_once()
+
+    def test_selection_reuses_only_data_unaffected_by_the_edited_field(self) -> None:
+        """Reuse matches across equipment edits and availability across date edits.
+
+        Returns:
+            None.
+        """
+        self.module._SPECTRUM_QUERY_CACHE.clear()
+        try:
+            with patch.object(self.module, "get_spectrum_filter_options", return_value={"states": []}), \
+                    patch.object(self.module, "_load_selection_matches", return_value=[]) as matches, \
+                    patch.object(self.module, "_load_selection_availability", return_value=None) as availability:
+                self.module.get_spectrum_selection_options(state_id="17", start_date="2025-01-01")
+                self.module.get_spectrum_selection_options(state_id="17", start_date="2025-01-01", equipment_id="88")
+                self.assertEqual(matches.call_count, 1)
+                self.assertEqual(availability.call_count, 2)
+                self.module.get_spectrum_selection_options(state_id="17", start_date="2024-01-01", equipment_id="88")
+                self.assertEqual(matches.call_count, 2)
+                self.assertEqual(availability.call_count, 2)
+        finally:
+            self.module._SPECTRUM_QUERY_CACHE.clear()
+
+    def test_detail_filters_bypass_geography_only_summary_options(self) -> None:
+        """Verify that detail predicates reach every fact facet.
+
+        Returns:
+            None.
+        """
+        for filters in ({"start_date": "2025-01-01"}, {"end_date": "2025-12-31"},
+                        {"freq_start": 100.0}, {"freq_end": 200.0}, {"description": "PMRD"}):
+            with self.subTest(filters=filters), ExitStack() as stack:
+                stack.enter_context(patch.object(self.module, "_get_cached_query", return_value=None))
+                stack.enter_context(patch.object(self.module, "_set_cached_query"))
+                for name in ("_finalize_equipment_options", "_finalize_state_options", "_finalize_district_options", "_finalize_availability_row"):
+                    stack.enter_context(patch.object(self.module, name, side_effect=lambda rows: rows))
+                summaries = {}
+                facts = {}
+                for suffix in ("equipment_filter_rows", "state_rows", "district_rows", "filter_availability_row"):
+                    value = {"DATE_START": "2025-01-01", "DATE_END": "2025-12-31"} if suffix == "filter_availability_row" else [{"OPTION_LABEL": "match"}]
+                    summaries[suffix] = stack.enter_context(patch.object(self.module, "_load_summary_" + suffix, return_value=value))
+                    facts[suffix] = stack.enter_context(patch.object(self.module, "_load_fact_" + suffix, return_value=value))
+                self.module.get_spectrum_filter_options(equipment_id="88", state_id="29", **filters)
+                for suffix in ("equipment_filter_rows", "state_rows", "district_rows"):
+                    summaries[suffix].assert_not_called()
+                    facts[suffix].assert_called_once()
+                    for key, value in filters.items():
+                        self.assertEqual(facts[suffix].call_args.kwargs[key], value)
+                if "freq_start" in filters or "freq_end" in filters or "description" in filters:
+                    summaries["filter_availability_row"].assert_not_called()
+                    facts["filter_availability_row"].assert_called_once()
+                    self.assertNotIn("start_date", facts["filter_availability_row"].call_args.kwargs)
+                else:
+                    summaries["filter_availability_row"].assert_called_once()
+                    facts["filter_availability_row"].assert_not_called()
+
+    def test_geography_only_filters_keep_using_summary(self) -> None:
+        """Keep the inexpensive summary path for geography-only changes.
+
+        Returns:
+            None.
+        """
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.module, "_get_cached_query", return_value=None))
+            stack.enter_context(patch.object(self.module, "_set_cached_query"))
+            for name in ("_finalize_equipment_options", "_finalize_state_options", "_finalize_district_options", "_finalize_availability_row"):
+                stack.enter_context(patch.object(self.module, name, side_effect=lambda rows: rows))
+            summaries = []
+            for suffix in ("equipment_filter_rows", "state_rows", "district_rows", "filter_availability_row"):
+                value = {"DATE_START": "2025-01-01", "DATE_END": "2025-12-31"} if suffix == "filter_availability_row" else [{"OPTION_LABEL": "match"}]
+                summaries.append(stack.enter_context(patch.object(self.module, "_load_summary_" + suffix, return_value=value)))
+                stack.enter_context(patch.object(self.module, "_load_fact_" + suffix, side_effect=AssertionError("Unexpected fact scan")))
+            self.module.get_spectrum_filter_options(equipment_id="88", state_id="29")
+            for summary in summaries:
+                summary.assert_called_once()
 
     def test_build_fact_filters_uses_containment_for_full_frequency_interval(self):
         where_clauses, params = self.module._build_fact_filters(

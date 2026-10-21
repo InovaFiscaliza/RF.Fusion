@@ -11,7 +11,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20260818-pagination-jump-layout') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/spectrum_page.css', v='20261020-filter-visibility') }}">
 {% endblock %}
 
 {% block content %}
@@ -21,8 +21,6 @@
     data-filters-endpoint="{{ url_for('spectrum.spectrum_filters') }}"
     data-file-spectra-endpoint-base="{{ url_for('spectrum.spectrum_file_spectra', file_id=0) | replace('/0/spectra', '') }}"
     data-lightweight-bootstrap="{{ '1' if lightweight_filter_bootstrap else '0' }}"
-    data-initial-availability-start="{{ filter_availability.DATE_START if filter_availability and filter_availability.DATE_START else '' }}"
-    data-initial-availability-end="{{ filter_availability.DATE_END if filter_availability and filter_availability.DATE_END else '' }}"
 >
 
 <div class="wf-page-hero card wf-panel background-neutral-0 padding-l border-radius-m margin-bottom-l">
@@ -46,7 +44,7 @@
             Parâmetros de Pesquisa
         </div>
         <div class="spectrum-query-card-description">
-            Combine contexto geográfico, período e faixa de frequência para localizar arquivos oficiais e inspecionar os espectros internos com menos atrito.
+            Selecione o contexto geográfico para carregar o período disponível. Datas, frequências e descrição são aplicadas ao clicar em Pesquisar.
         </div>
     </div>
 
@@ -55,17 +53,18 @@
         <input type="hidden" name="site_id" value="{{ site_id }}">
         {% endif %}
 
-        {% if site_context and site_id %}
-        <div class="spectrum-query-context-banner">
-            Busca aberta a partir do mapa e limitada ao site {{ site_context.LOCALITY_LABEL or ('site ' ~ site_id) }}.
-            Os filtros de Estado e Distrito foram alinhados com esse ponto, mas a restrição por site continua ativa até você limpar os filtros.
+        {% if site_id %}
+        <div class="spectrum-query-context-banner" id="spectrum-site-context">
+            Busca aberta a partir do mapa e limitada ao site {{ site_context.LOCALITY_LABEL if site_context and site_context.LOCALITY_LABEL else ('site ' ~ site_id) }}.
+            Ao alterar Estado, Distrito ou Estação, a busca deixa de ficar limitada a esse site.
+            <button type="button" id="remove-spectrum-site" class="btn btn-secondary" hidden>Remover restrição por site</button>
         </div>
         {% endif %}
 
         <div class="spectrum-query-grid">
 
             <div class="spectrum-query-field spectrum-query-field--span-3">
-                <label>Estado</label>
+                <label for="state_id">Estado</label>
                 <div class="select-shell">
                     <select name="state_id" id="state_id" class="form-control">
                         <option value="">Todos os estados</option>
@@ -80,12 +79,12 @@
                     </select>
                 </div>
                 <div class="filter-helper-text">
-                    Os estados disponíveis seguem o recorte geográfico ativo entre estação e distrito.
+                    Escolha um estado para filtrar os distritos e as estações. “Todos” amplia a busca para todos os estados.
                 </div>
             </div>
 
             <div class="spectrum-query-field spectrum-query-field--span-3">
-                <label>Distrito</label>
+                <label for="district_id">Distrito</label>
                 <div class="select-shell">
                     <select
                         name="district_id"
@@ -104,12 +103,12 @@
                     </select>
                 </div>
                 <div class="filter-helper-text" id="district-filter-hint">
-                    Os distritos disponíveis seguem o recorte geográfico ativo entre estação e estado.
+                    Os distritos disponíveis seguem o estado selecionado.
                 </div>
             </div>
 
             <div class="spectrum-query-field spectrum-query-field--span-6">
-                <label>Estação / Equipamento</label>
+                <label for="equipment_id">Estação / Equipamento</label>
                 <div class="select-shell">
                     <select name="equipment_id" id="equipment_id" class="form-control">
                         <option value="">Todas as estações</option>
@@ -128,10 +127,6 @@
                 <input type="date"
                        name="start_date"
                        value="{{ start_date or '' }}"
-                       {% if filter_availability and filter_availability.DATE_START and filter_availability.DATE_END %}
-                       min="{{ filter_availability.DATE_START }}"
-                       max="{{ filter_availability.DATE_END }}"
-                       {% endif %}
                        class="form-control">
                 <div class="filter-helper-text" id="period-filter-hint">
                     {% if filter_availability and filter_availability.DATE_START_DISPLAY and filter_availability.DATE_END_DISPLAY %}
@@ -147,10 +142,6 @@
                 <input type="date"
                        name="end_date"
                        value="{{ end_date or '' }}"
-                       {% if filter_availability and filter_availability.DATE_START and filter_availability.DATE_END %}
-                       min="{{ filter_availability.DATE_START }}"
-                       max="{{ filter_availability.DATE_END }}"
-                       {% endif %}
                        class="form-control">
             </div>
 
@@ -206,6 +197,8 @@
 
         </div>
 
+        <p id="spectrum-filter-status" role="status" aria-live="polite"></p>
+        <button type="button" id="retry-spectrum-filters" class="btn btn-secondary" hidden>Tentar atualizar filtros novamente</button>
         <div class="spectrum-query-submit-row">
             <div class="spectrum-query-submit-actions">
                 <a
@@ -396,5 +389,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/spectrum_page.js', v='20260915-detail-sort-whitespace') }}"></script>
+<script src="{{ url_for('static', filename='js/spectrum_page.js', v='20261020-geographic-period') }}"></script>
 {% endblock %}

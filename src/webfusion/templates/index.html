@@ -3,7 +3,7 @@
 {% block title %}RF.Fusion - Página Inicial{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/index_home.css', v='20260924-responsive-toolbar') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/index_home.css', v='20261016-map-theme-control') }}">
 <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -62,7 +62,7 @@
                 <div id="station-map-site-menu" class="station-map-combobox-menu" hidden></div>
             </div>
         </div>
-        <div class="station-map-filter">
+        <div id="station-map-theme-menu" class="station-map-theme-menu" hidden>
             <label class="station-map-field-label" for="station-map-theme-select">Tema do mapa</label>
             <div class="station-map-select-wrap">
                 <select id="station-map-theme-select">
@@ -397,5 +397,5 @@
     crossorigin=""
 ></script>
 <script id="station-map-initial-payload" type="application/json">{{ {'points': initial_map_points}|tojson }}</script>
-<script src="{{ url_for('static', filename='js/index_map_access.js') }}"></script>
+<script src="{{ url_for('static', filename='js/index_map_access.js', v='20261016-map-theme-control') }}"></script>
 {% endblock %}

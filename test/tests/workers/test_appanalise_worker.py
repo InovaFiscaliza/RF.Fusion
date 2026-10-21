@@ -21,7 +21,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -2376,6 +2376,21 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             description="Invalid GPS reading",
             host_file_name="current.zip",
             logger=worker.log,
+        )
+
+
+class ProcessingPriorityTests(unittest.TestCase):
+    """Verify that processing uses global source-date ordering without host rotation."""
+
+    def test_read_next_task_requests_newest_source_file(self) -> None:
+        db = MagicMock(spec=worker.dbHandlerBKP)
+        db.read_file_task.return_value = None
+        self.assertIsNone(worker._read_next_task(db))
+        db.read_file_task.assert_called_once_with(
+            task_type=worker.k.FILE_TASK_PROCESS_TYPE,
+            task_status=worker.k.TASK_PENDING,
+            check_host_busy=False,
+            newest_first=True,
         )
 
 

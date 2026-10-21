@@ -12,6 +12,8 @@ The user experience depends on both layers working together:
   routes below after the page is already on screen
 """
 
+from __future__ import annotations
+
 import os
 import time
 from urllib.parse import quote
@@ -23,6 +25,7 @@ from modules.spectrum.service import (
     get_spectrum_file_data,
     get_equipments,
     get_spectrum_filter_options,
+    get_spectrum_selection_options,
     get_spectrum_locality_options,
     get_spectrum_site_option,
     get_file_by_file_id,
@@ -362,11 +365,17 @@ def _should_use_lightweight_filter_bootstrap(
 
 
 @spectrum_bp.route("/spectrum", methods=["GET"])
-def spectrum():
+def spectrum() -> str:
     """Render the spectrum query page.
 
     The page is spectrum-aware on the filter side, but file-oriented on the
     result side: one matching file per row, with expandable internal spectra.
+
+    Args:
+        None. Optional filters are read from the request query string.
+
+    Returns:
+        Rendered HTML as str, including compact initial filter options.
     """
     record_page_view()
 
@@ -437,16 +446,12 @@ def spectrum():
     )
 
     try:
-        filter_options = get_spectrum_filter_options(
+        # Typed criteria constrain results, not the initial geographic catalogs.
+        filter_options = get_spectrum_selection_options(
             equipment_id=equipment_id,
             state_id=state_id,
             district_id=district_id,
             site_id=site_id,
-            start_date=start_date,
-            end_date=end_date,
-            freq_start=freq_start_value,
-            freq_end=freq_end_value,
-            description=description,
             include_districts=not lightweight_filter_bootstrap,
             include_availability=not lightweight_filter_bootstrap,
         )
@@ -631,8 +636,17 @@ def spectrum():
 
 
 @spectrum_bp.route("/api/spectrum/filters")
-def spectrum_filters():
-    """Return dynamic option sets for the facet-style spectrum filters."""
+def spectrum_filters() -> Response | tuple[Response, int]:
+    """Return full facets or one compact dependent-filter snapshot.
+
+    Args:
+        None. Filters, bootstrap and optional view=selection come from the query.
+
+    Returns:
+        JSON Response with equipments, states, districts and availability;
+        selection view omits per-option counts and dates. A failed request
+        returns a (Response, int) tuple with HTTP status 503.
+    """
 
     equipment_id = _normalize_optional_arg(request.args.get("equipment_id"))
     state_id = _normalize_optional_arg(request.args.get("state_id"))
@@ -675,7 +689,10 @@ def spectrum_filters():
             include_districts = False
             include_availability = False
 
-        payload = get_spectrum_filter_options(
+        load_options = (get_spectrum_selection_options
+                        if request.args.get("view") == "selection"
+                        else get_spectrum_filter_options)
+        payload = load_options(
             equipment_id=equipment_id,
             state_id=state_id,
             district_id=district_id,

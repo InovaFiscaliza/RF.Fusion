@@ -1,59 +1,43 @@
-# AGENTS.md
+# Instruções para agentes — RF.Fusion
 
-## Contexto obrigatorio
+## Leitura obrigatória
 
-Antes de responder, planejar, editar ou refatorar codigo neste repositorio, leia:
+Leia as [regras gerais](docs/agents/INSTRUCTIONS.md) antes de planejar ou alterar
+o repositório. Depois, leia as instruções do escopo envolvido:
 
-1. [ARCHITECTURE.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/.instructions/ARCHITECTURE.md)
-2. [INSTRUCTIONS.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/.instructions/INSTRUCTIONS.md)
-3. [ENVIRONMENT.md](/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/.instructions/ENVIRONMENT.md)
-4. [ENVIRONMENT.md](/RFFusion/src/webfusion/.instructions/ENVIRONMENT.md)
+| Escopo | Entrada |
+|---|---|
+| appCataloga, workers e handlers | [src/appCataloga/AGENTS.md](src/appCataloga/AGENTS.md) |
+| WebFusion, APIs, interface e autenticação | [src/webfusion/AGENTS.md](src/webfusion/AGENTS.md) |
+| Testes e ferramentas da suíte | [test/AGENTS.md](test/AGENTS.md) |
+| Summary e contratos entre aplicações | [docs/architecture/SUMMARY.md](docs/architecture/SUMMARY.md) |
+| Métricas e integração operacional com Zabbix | [docs/architecture/METRICAS_OPERACIONAIS.md](docs/architecture/METRICAS_OPERACIONAIS.md) |
 
-Esses arquivos sao o contexto obrigatorio do projeto.
+Mudanças em `install/`, `service/`, banco ou testes devem consultar também as
+instruções das aplicações afetadas e os READMEs dos componentes envolvidos.
 
-As instrucoes de ambiente definem o container autorizado para executar cada
-aplicacao, seus testes e suas dependencias. Elas prevalecem sobre a conveniencia
-do ambiente local do agente ao escolher comandos de execucao.
+## Autoridade e escopo
 
-Para validacoes do WebFusion no container webserver, use exclusivamente o
-interpretador `/usr/local/bin/python` (Python 3.11, imagem `python:3.11-slim`).
-O projeto está montado em `/RF.Fusion` nesse container; consulte
-`install/webserver` para os caminhos e o runtime de deploy.
+No escopo correspondente, a ordem é: contrato arquitetural (`ARCHITECTURE.md`
+e contratos compartilhados), regras de manutenção (`INSTRUCTIONS.md`), código
+existente. Não inferir arquitetura por arquivos isolados. Se um caso não estiver
+coberto ou houver conflito entre contratos, registrar a decisão arquitetural
+antes de implementar. Um plano ou backlog não autoriza sua execução.
 
-## Ordem de autoridade
+Os documentos `ENVIRONMENT.md` definem os containers, interpretadores e caminhos
+autorizados. A conveniência do ambiente local não altera essas restrições.
 
-Se houver conflito, siga esta ordem:
+## Manutenção das próprias instruções
 
-1. `ARCHITECTURE.md`
-2. `INSTRUCTIONS.md`
-3. Codigo existente
-
-## Regras inegociaveis
-
-- Nao altere logica de negocio sem pedido explicito.
-- Nao invente arquitetura.
-- Nao mova funcoes para novos modulos sem permissao do `ARCHITECTURE.md`.
-- Siga a anatomia dos workers e o loop canonico definidos em `ARCHITECTURE.md` quando a mudanca tocar o runtime do `appCataloga`.
-- Siga as regras de refatoracao definidas em `INSTRUCTIONS.md`.
-- Use constantes de `config.py` em vez de literais magicos.
-- Use `err.capture(...)`, nunca `err.set(...)`.
-- Helpers devem levantar excecoes; nao devem retornar valores sentinela para falha.
-- Tipar handlers de banco com classes concretas.
-- Preserve o comportamento atual do banco e o ciclo de vida das tasks.
-- Comentarios de codigo devem ficar em ingles.
-- Documentacoes Markdown (`*.md`) devem ficar em portugues (PT-BR).
-
-## Formato obrigatorio de resposta para mudancas de codigo
-
-Antes de mudar codigo, explique:
-
-1. Qual regra de `ARCHITECTURE.md` ou `INSTRUCTIONS.md` se aplica.
-2. Quais arquivos serao alterados.
-3. Se a mudanca e arquitetural, apenas de refatoracao ou com impacto comportamental.
-
-Depois da mudanca, informe:
-
-1. O que mudou.
-2. O que nao mudou.
-3. Comandos de validacao ou testes a executar.
-4. Qualquer risco ou ponto de revisao manual.
+- Regras comuns ficam em `docs/agents/`; regras locais, no subprojeto.
+- Contratos entre aplicações ficam em `docs/architecture/`.
+- `AGENTS.md` deve encaminhar às fontes, sem copiar seus contratos.
+- READMEs descrevem componentes. Planos que abrangem várias aplicações ficam em
+  [docs/planejamento/](docs/planejamento/README.md), com situação explícita.
+- Remover tarefas concluídas, diagnósticos vencidos e relatos de revisões dos
+  documentos ativos. Manter apenas contratos vigentes e pendências reais;
+  o histórico fica no Git.
+- Usar links relativos ao repositório; caminhos absolutos ficam restritos a
+  comandos e referências de ambiente que realmente dependam deles.
+- Ao mover documentos, atualizar referências e regras de ignore. Não deixar
+  cópias normativas concorrentes. Histórico de conteúdo removido pertence ao Git.

@@ -35,7 +35,7 @@ introduz outro driver. Todas as operações são consultas; não há endpoint pa
 SQL arbitrário, alteração de tabelas ou manipulação de tasks.
 
 Esta separação aplica a preservação do contrato externo estabelecida em
-`ARCHITECTURE.md`, §15.1.1, e `INSTRUCTIONS.md`, §0.1. As consultas próprias da
+[SUMMARY.md](../../../../docs/architecture/SUMMARY.md). As consultas próprias da
 interface web permanecem independentes porque seus campos e regras já diferem
 das consultas MATLAB. O mapa é compartilhado em `api/map_api`; este pacote
 não contém uma implementação paralela do mapa.

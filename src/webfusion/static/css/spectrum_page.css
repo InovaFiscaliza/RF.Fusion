@@ -1,5 +1,9 @@
 /* ===================== FORM ===================== */
 
+#spectrum-page-root [hidden] {
+    display: none !important;
+}
+
 .spectrum-query-card.padding-l {
     padding: 24px;
 }

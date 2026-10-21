@@ -118,11 +118,25 @@ signal_runtime.install_shutdown_handlers(
 # --- loop helpers ---
 
 def _read_next_task(db_bp: dbHandlerBKP) -> dict | None:
-    """Read the next pending PROCESS FILE_TASK and normalize worker context."""
+    """Read the newest pending source file and normalize processing context.
+
+    Args:
+        db_bp (dbHandlerBKP): Operational queue handler.
+
+    Returns:
+        dict | None: Task IDs, host/server paths and names, timestamps, extension,
+            size, export flag, and source_file_meta for processing;
+            None when no pending task exists. source_file_meta contains file_path,
+            file_name, extension, size_kb, dt_created, dt_modified, and full_path.
+
+    Raises:
+        Exception: Propagates selection or context construction failures.
+    """
     result = db_bp.read_file_task(
         task_type=k.FILE_TASK_PROCESS_TYPE,
         task_status=k.TASK_PENDING,
         check_host_busy=False,
+        newest_first=True,
     )
     if not result:
         return None

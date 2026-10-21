@@ -575,7 +575,7 @@ class TestCurrentUserApi(unittest.TestCase):
                 self.module.inject_request_identity()
         self.assertEqual(self.register_user_mock.call_count, 2)
 
-    def test_fallback_svg_uses_name_initial_and_is_not_cached(self):
+    def test_fallback_svg_uses_name_initials_and_is_not_cached(self):
         from xml.etree import ElementTree
         response = self.client.get("/api/users/avatar.svg", headers={
             "X-User-Name": "Ágata Silva", "X-User-Email": "agata@example.org",
@@ -584,8 +584,16 @@ class TestCurrentUserApi(unittest.TestCase):
         self.assertEqual(response.mimetype, "image/svg+xml")
         self.assertEqual(response.headers["Cache-Control"], "private, no-store")
         root = ElementTree.fromstring(response.data)
-        self.assertEqual(root.find(".//{http://www.w3.org/2000/svg}text").text, "Á")
+        self.assertEqual(root.find(".//{http://www.w3.org/2000/svg}text").text, "ÁS")
         self.graph_mock.assert_not_called()
+
+    def test_fallback_svg_uses_first_and_last_name_or_single_name(self):
+        from xml.etree import ElementTree
+        for name, expected in (("Augusto César Federici Peterle", "AP"), ("Maria", "M")):
+            with self.subTest(name=name):
+                response = self.client.get("/api/users/avatar.svg", headers={"X-User-Name": name})
+                root = ElementTree.fromstring(response.data)
+                self.assertEqual(root.find(".//{http://www.w3.org/2000/svg}text").text, expected)
 
     def test_fallback_svg_escapes_markup_in_initial(self):
         from xml.etree import ElementTree

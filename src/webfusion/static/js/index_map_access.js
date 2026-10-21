@@ -1105,6 +1105,55 @@
     }
 
     /**
+     * Mount the existing theme selector below the home action.
+     * Args: none. Returns: undefined.
+     */
+    function add_map_theme_control() {
+        const zoom_container = map.zoomControl.getContainer();
+        const theme_menu = document.getElementById("station-map-theme-menu");
+        const theme_button = L.DomUtil.create("button", "station-map-theme-button", zoom_container);
+        theme_button.type = "button";
+        theme_button.title = "Trocar tema do mapa";
+        theme_button.setAttribute("aria-label", "Trocar tema do mapa");
+        theme_button.setAttribute("aria-expanded", "false");
+        theme_button.setAttribute("aria-controls", theme_menu.id);
+        theme_button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="m12 3 9 5-9 5-9-5 9-5Z M3 12l9 5 9-5 M3 16l9 5 9-5"></path>
+        </svg>`;
+        zoom_container.appendChild(theme_menu);
+        L.DomEvent.disableClickPropagation(theme_menu);
+        L.DomEvent.disableScrollPropagation(theme_menu);
+
+        const close_menu = () => {
+            theme_menu.hidden = true;
+            theme_button.setAttribute("aria-expanded", "false");
+        };
+        L.DomEvent.on(theme_button, "click", (event) => {
+            L.DomEvent.stop(event);
+            theme_menu.hidden = !theme_menu.hidden;
+            theme_button.setAttribute("aria-expanded", String(!theme_menu.hidden));
+            if (!theme_menu.hidden) themeSelect.focus();
+        });
+        theme_menu.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                event.stopPropagation();
+                close_menu();
+                theme_button.focus();
+            }
+        });
+        themeSelect.addEventListener("change", () => {
+            close_menu();
+            theme_button.focus();
+        });
+        document.addEventListener("click", (event) => {
+            if (!zoom_container.contains(event.target)) close_menu();
+        });
+        zoom_container.addEventListener("focusout", (event) => {
+            if (!zoom_container.contains(event.relatedTarget)) close_menu();
+        });
+    }
+
+    /**
      * Normalize the optional temporal controls into query parameters.
      *
      * Once the manual fields are parsed, ISO lexical order is still safe when
@@ -3322,6 +3371,7 @@
     // Startup restores the shell theme first, then normalizes the temporal
     // controls, then loads the initial summary-backed point dataset.
     addMapHomeControl();
+    add_map_theme_control();
     applyMapTheme(loadSavedMapTheme());
     syncTemporalFields({syncDisplay: true});
 

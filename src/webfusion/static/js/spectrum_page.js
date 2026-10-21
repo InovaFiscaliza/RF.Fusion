@@ -1,8 +1,8 @@
 /* Spectrum page controller
  *
- * This page now combines facet-style filters:
- * - equipment, state, and district constrain each other dynamically
- * - observed period hints follow the current non-date filter set
+ * This page combines geographic filters and explicit search criteria:
+ * - state and district narrow the equipment catalog in one direction
+ * - observed periods follow geography; typed criteria apply only on search
  * - result rows stay file-oriented, with lazy-loaded internal spectra
  */
 (function () {
@@ -18,10 +18,13 @@
     const pageJumpField = document.getElementById("spectrum-page-jump");
     const startDateField = queryForm ? queryForm.elements.start_date : null;
     const endDateField = queryForm ? queryForm.elements.end_date : null;
-    const freqStartField = queryForm ? queryForm.elements.freq_start : null;
-    const freqEndField = queryForm ? queryForm.elements.freq_end : null;
-    const descriptionField = queryForm ? queryForm.elements.description : null;
+    const freq_start_field = queryForm ? queryForm.elements.freq_start : null;
+    const freq_end_field = queryForm ? queryForm.elements.freq_end : null;
     const hiddenSiteField = queryForm ? queryForm.elements.site_id : null;
+    const filter_status = document.getElementById("spectrum-filter-status");
+    const remove_site_button = document.getElementById("remove-spectrum-site");
+    const retry_filters_button = document.getElementById("retry-spectrum-filters");
+    const search_button = queryForm?.querySelector('button[type="submit"]');
 
     if (!root || !queryForm || !equipmentField || !stateField || !districtField) {
         return;
@@ -33,8 +36,6 @@
     const filtersEndpoint = root.dataset.filtersEndpoint || webfusionUrl("/api/spectrum/filters");
     const fileSpectraEndpointBase = root.dataset.fileSpectraEndpointBase || webfusionUrl("/api/spectrum/file");
     const usesLightweightBootstrap = root.dataset.lightweightBootstrap === "1";
-    const initialAvailabilityStart = root.dataset.initialAvailabilityStart || "";
-    const initialAvailabilityEnd = root.dataset.initialAvailabilityEnd || "";
     const filterCache = new Map();
     const detailCache = new Map();
     const selectConfigs = [
@@ -43,7 +44,7 @@
             key: "equipments",
             idKey: "ID_EQUIPMENT",
             labelKey: "OPTION_LABEL",
-            defaultOptionLabel: "Todas as estacoes",
+            defaultOptionLabel: "Todas as estações",
         },
         {
             field: stateField,
@@ -62,12 +63,12 @@
     ];
 
     let filterRequestSerial = 0;
-    let refreshTimer = null;
     let filterAbortController = null;
-    let loadingOverlayTimer = null;
-    let currentAvailabilityStart = initialAvailabilityStart;
-    let currentAvailabilityEnd = initialAvailabilityEnd;
-    let allowAutoDateFill = false;
+    let current_availability;
+    // Dates supplied in a link belong to that search; new geography gets new dates.
+    let automatic_period = Boolean(startDateField && endDateField
+        && !startDateField.value && !endDateField.value);
+    let state_inherited_from_map = Boolean(hiddenSiteField && hiddenSiteField.value && stateField.value);
 
     function escapeHtml(value) {
         return String(value ?? "")
@@ -93,6 +94,22 @@
         appendTrimmedParam(params, "district_id", districtField.value);
         appendTrimmedParam(params, "site_id", hiddenSiteField ? hiddenSiteField.value : "");
         return params;
+    }
+
+    function validate_filter_ranges() {
+        const date_error = startDateField?.value && endDateField?.value
+            && startDateField.value > endDateField.value
+            ? "O período inicial deve ser anterior ou igual ao período final." : "";
+        const frequency_error = freq_start_field?.value && freq_end_field?.value
+            && Number(freq_start_field.value) > Number(freq_end_field.value)
+            ? "A frequência inicial deve ser menor ou igual à frequência final." : "";
+        endDateField?.setCustomValidity(date_error);
+        freq_end_field?.setCustomValidity(frequency_error);
+        if (date_error || frequency_error) {
+            setPeriodHint(date_error || frequency_error);
+            return false;
+        }
+        return true;
     }
 
     function buildDetailQuery() {
@@ -146,6 +163,14 @@
 
     function setFieldRefreshing(field, isRefreshing) {
         field.classList.toggle("is-refreshing", isRefreshing);
+        field.setAttribute("aria-busy", String(isRefreshing));
+    }
+
+    function set_filter_pending(pending) {
+        if (search_button) {
+            search_button.disabled = pending;
+        }
+        queryForm.setAttribute("aria-busy", String(pending));
     }
 
     function setDistrictHint(message) {
@@ -160,74 +185,12 @@
         }
     }
 
-    function hasSiteConstraint() {
-        return Boolean(hiddenSiteField && hiddenSiteField.value);
-    }
-
-    function hasDistrictContext() {
-        return Boolean(stateField.value || equipmentField.value || hasSiteConstraint());
-    }
-
     function hasDateFields() {
         return Boolean(startDateField && endDateField);
     }
 
-    function computeShouldAutoFillDates() {
-        if (!hasDateFields()) {
-            return false;
-        }
-
-        const startValue = startDateField.value || "";
-        const endValue = endDateField.value || "";
-
-        if (!startValue && !endValue) {
-            return true;
-        }
-
-        if (!currentAvailabilityStart || !currentAvailabilityEnd) {
-            return false;
-        }
-
-        return (
-            startValue === currentAvailabilityStart
-            && endValue === currentAvailabilityEnd
-        );
-    }
-
-    function syncAutoDateFillMode() {
-        allowAutoDateFill = computeShouldAutoFillDates();
-    }
-
-    function scheduleLoadingOverlay(message) {
-        if (loadingOverlayTimer) {
-            window.clearTimeout(loadingOverlayTimer);
-        }
-
-        loadingOverlayTimer = window.setTimeout(() => {
-            if (typeof window.showPageLoadingOverlay === "function") {
-                window.showPageLoadingOverlay(message || "Atualizando filtros...");
-            }
-        }, 180);
-    }
-
-    function clearLoadingOverlay() {
-        if (loadingOverlayTimer) {
-            window.clearTimeout(loadingOverlayTimer);
-            loadingOverlayTimer = null;
-        }
-
-        if (typeof window.hidePageLoadingOverlay === "function") {
-            window.hidePageLoadingOverlay();
-        }
-    }
-
     function cancelPendingFilterRefresh() {
         filterRequestSerial += 1;
-
-        if (refreshTimer) {
-            window.clearTimeout(refreshTimer);
-            refreshTimer = null;
-        }
 
         if (filterAbortController) {
             filterAbortController.abort();
@@ -235,62 +198,51 @@
         }
 
         selectConfigs.forEach(({ field }) => setFieldRefreshing(field, false));
-        clearLoadingOverlay();
-    }
-
-    function clearDistrictSelection() {
-        districtField.value = "";
-    }
-
-    function resetDistrictOptionsForMissingContext() {
-        populateSelectOptions(selectConfigs[2], [], "", "");
-        setDistrictHint("Selecione um estado ou uma estacao para carregar os distritos disponiveis.");
+        set_filter_pending(false);
     }
 
     function populateSelectOptions(config, rows, selectedValue, selectedLabel) {
         const { field, idKey, labelKey, defaultOptionLabel } = config;
+        const expected_options = [
+            { value: "", label: defaultOptionLabel },
+            ...rows.map((row) => ({ value: String(row[idKey]), label: String(row[labelKey]) })),
+        ];
+        if (selectedValue && selectedLabel && !expected_options.some((option) => option.value === String(selectedValue))) {
+            expected_options.push({
+                value: String(selectedValue),
+                label: `${selectedLabel.replace(/ — indisponível neste recorte$/, "")} — indisponível neste recorte`,
+            });
+        }
+        // Preserve native menus when an unrelated filter finishes loading.
+        if (field.options.length === expected_options.length && expected_options.every((option, index) => (
+            field.options[index].value === option.value
+            && field.options[index].textContent.trim() === option.label.trim()
+        ))) {
+            const value = selectedValue ? String(selectedValue) : "";
+            if (field.value !== value) {
+                field.value = value;
+            }
+            return;
+        }
         field.innerHTML = "";
 
-        const defaultOption = document.createElement("option");
-        defaultOption.value = "";
-        defaultOption.textContent = defaultOptionLabel;
-        field.appendChild(defaultOption);
-
-        rows.forEach((row) => {
+        expected_options.forEach(({ value, label }) => {
             const option = document.createElement("option");
-            option.value = String(row[idKey]);
-            option.textContent = row[labelKey];
+            option.value = value;
+            option.textContent = label;
             field.appendChild(option);
         });
-
-        const hasSelectedValue = selectedValue
-            && rows.some((row) => String(row[idKey]) === String(selectedValue));
-
-        if (selectedValue && !hasSelectedValue && selectedLabel) {
-            const option = document.createElement("option");
-            option.value = String(selectedValue);
-            option.textContent = selectedLabel;
-            field.appendChild(option);
-        }
 
         field.value = selectedValue ? String(selectedValue) : "";
     }
 
-    function applyAvailability(availability, options = {}) {
-        const { mayAutofill = false } = options;
-
+    function applyAvailability(availability) {
+        current_availability = availability || null;
         if (!availability || !availability.DATE_START || !availability.DATE_END) {
-            if (
-                allowAutoDateFill
-                && startDateField
-                && endDateField
-            ) {
+            if (automatic_period && hasDateFields()) {
                 startDateField.value = "";
                 endDateField.value = "";
             }
-
-            currentAvailabilityStart = "";
-            currentAvailabilityEnd = "";
 
             if (startDateField) {
                 startDateField.removeAttribute("min");
@@ -303,43 +255,28 @@
             }
 
             setPeriodHint(
-                "O periodo observado e sugerido conforme o recorte geografico escolhido."
+                "Nenhum período observado disponível para esta combinação de filtros."
             );
-            syncAutoDateFillMode();
             return;
         }
 
-        currentAvailabilityStart = availability.DATE_START;
-        currentAvailabilityEnd = availability.DATE_END;
-
-        if (startDateField) {
-            startDateField.min = availability.DATE_START;
-            startDateField.max = availability.DATE_END;
-        }
-
-        if (endDateField) {
-            endDateField.min = availability.DATE_START;
-            endDateField.max = availability.DATE_END;
-        }
-
-        setPeriodHint(
-            `Faixa observada para o recorte geografico atual: ${availability.DATE_START_DISPLAY} ate ${availability.DATE_END_DISPLAY}.`
-        );
-
-        if (
-            mayAutofill
-            && allowAutoDateFill
-            && startDateField
-            && endDateField
-        ) {
+        if (automatic_period && hasDateFields()) {
             startDateField.value = availability.DATE_START;
             endDateField.value = availability.DATE_END;
         }
 
-        syncAutoDateFillMode();
+        setPeriodHint(
+            `Faixa observada: ${availability.DATE_START_DISPLAY} até ${availability.DATE_END_DISPLAY}. Você pode pesquisar um período mais amplo.`
+        );
+        if (!automatic_period && hasDateFields() && (
+            (endDateField.value && endDateField.value < availability.DATE_START)
+            || (startDateField.value && startDateField.value > availability.DATE_END)
+        )) {
+            setPeriodHint(`O período informado está fora da faixa observada (${availability.DATE_START_DISPLAY} até ${availability.DATE_END_DISPLAY}). Revise as datas informadas.`);
+        }
     }
 
-    function renderFilterPayload(payload, snapshots, options = {}) {
+    function renderFilterPayload(payload, snapshots) {
         const equipments = Array.isArray(payload.equipments) ? payload.equipments : [];
         const states = Array.isArray(payload.states) ? payload.states : [];
         const districts = Array.isArray(payload.districts) ? payload.districts : [];
@@ -348,8 +285,8 @@
         populateSelectOptions(selectConfigs[1], states, snapshots.state.value, snapshots.state.label);
         populateSelectOptions(selectConfigs[2], districts, snapshots.district.value, snapshots.district.label);
 
-        if (!districts.length && !hasDistrictContext()) {
-            setDistrictHint("Selecione um estado ou uma estacao para carregar os distritos disponiveis.");
+        if (!districts.length && !stateField.value) {
+            setDistrictHint("Selecione um estado para carregar os distritos disponíveis.");
         } else {
             setDistrictHint(
                 districts.length
@@ -358,11 +295,15 @@
             );
         }
 
-        applyAvailability(payload.availability, options);
+        applyAvailability(payload.availability);
+        validate_filter_ranges();
     }
 
     async function refreshFilterOptions(options = {}) {
-        const { force = false, mayAutofill = false, loadingMessage = "" } = options;
+        const { force = false } = options;
+        if (retry_filters_button) {
+            retry_filters_button.hidden = true;
+        }
         const params = buildFilterQuery();
         const cacheKey = params.toString();
         const currentRequest = ++filterRequestSerial;
@@ -372,35 +313,38 @@
             district: getSelectionSnapshot(districtField),
         };
 
+        if (filterAbortController) {
+            filterAbortController.abort();
+            filterAbortController = null;
+        }
+
         if (!force && filterCache.has(cacheKey)) {
-            renderFilterPayload(filterCache.get(cacheKey), snapshots, { mayAutofill });
+            renderFilterPayload(filterCache.get(cacheKey), snapshots);
+            selectConfigs.forEach(({ field }) => setFieldRefreshing(field, false));
+            set_filter_pending(false);
             return;
         }
 
-        if (filterAbortController) {
-            filterAbortController.abort();
-        }
-
         filterAbortController = new AbortController();
+        set_filter_pending(true);
         selectConfigs.forEach(({ field }) => setFieldRefreshing(field, true));
         setDistrictHint("Atualizando distritos observados...");
         setPeriodHint("Atualizando periodo observado...");
-        scheduleLoadingOverlay(loadingMessage || "Atualizando filtros...");
 
         try {
             const requestParams = new URLSearchParams(params);
             if (cacheKey === "") {
-                requestParams.set("bootstrap", "1");
+                // An explicit broadening still needs the global observed period.
+                requestParams.set("bootstrap", "0");
             }
-
-            const response = await fetch(`${filtersEndpoint}?${requestParams.toString()}`, {
+            // The server returns the complete dependent-filter snapshot in one request.
+            requestParams.set("view", "selection");
+            const response = await fetch(`${filtersEndpoint}?${requestParams}`, {
                 signal: filterAbortController.signal,
             });
-
             if (!response.ok) {
                 throw new Error(`filters request failed with status ${response.status}`);
             }
-
             const payload = await response.json();
 
             if (currentRequest !== filterRequestSerial) {
@@ -408,7 +352,7 @@
             }
 
             filterCache.set(cacheKey, payload);
-            renderFilterPayload(payload, snapshots, { mayAutofill });
+            renderFilterPayload(payload, snapshots);
         } catch (error) {
             if (error && error.name === "AbortError") {
                 return;
@@ -420,77 +364,90 @@
 
             setDistrictHint("Nao foi possivel atualizar os distritos agora.");
             setPeriodHint("Nao foi possivel atualizar o periodo observado agora.");
+            if (automatic_period && hasDateFields()) {
+                startDateField.value = "";
+                endDateField.value = "";
+            }
+            if (retry_filters_button) {
+                retry_filters_button.hidden = false;
+            }
         } finally {
             if (currentRequest === filterRequestSerial) {
                 filterAbortController = null;
                 selectConfigs.forEach(({ field }) => setFieldRefreshing(field, false));
-                clearLoadingOverlay();
+                set_filter_pending(false);
             }
         }
     }
 
-    function scheduleFilterRefresh(message, options = {}) {
+    function refresh_geographic_filters(message) {
+        cancelPendingFilterRefresh();
+        // A previous context's dates must not survive a geographic change.
+        automatic_period = true;
+        current_availability = undefined;
+        if (hasDateFields()) {
+            startDateField.value = "";
+            endDateField.value = "";
+        }
+        validate_filter_ranges();
         if (message) {
             setDistrictHint(message);
         }
+        refreshFilterOptions();
+    }
 
-        if (refreshTimer) {
-            window.clearTimeout(refreshTimer);
+    function release_site_constraint() {
+        if (hiddenSiteField && hiddenSiteField.value) {
+            hiddenSiteField.value = "";
+            const banner = document.getElementById("spectrum-site-context");
+            if (banner) {
+                banner.hidden = true;
+            }
         }
+    }
 
-        refreshTimer = window.setTimeout(() => {
-            refreshTimer = null;
-            refreshFilterOptions(options);
-        }, 450);
+    function release_inherited_state() {
+        // A map-derived state must not survive after its narrower filters are cleared.
+        if (state_inherited_from_map && !districtField.value && !equipmentField.value) {
+            stateField.value = "";
+            state_inherited_from_map = false;
+            return true;
+        }
+        return false;
     }
 
     equipmentField.addEventListener("change", () => {
-        if (!hasDistrictContext()) {
-            clearDistrictSelection();
-            resetDistrictOptionsForMissingContext();
-        }
-
-        scheduleFilterRefresh("Filtros geograficos alterados. Atualizando opcoes...", {
-            mayAutofill: true,
-            loadingMessage: "Atualizando filtros geograficos...",
-        });
+        release_site_constraint();
+        const released_state = release_inherited_state();
+        refresh_geographic_filters("Estação alterada. Atualizando período observado...");
+        mark_filters_changed(released_state ? "Estado herdado do mapa removido; a busca agora abrange todos os estados." : "");
     });
 
     stateField.addEventListener("change", () => {
-        clearDistrictSelection();
-
-        if (!hasDistrictContext()) {
-            resetDistrictOptionsForMissingContext();
-        }
-
-        scheduleFilterRefresh("Filtros geograficos alterados. Atualizando opcoes...", {
-            mayAutofill: true,
-            loadingMessage: "Atualizando filtros geograficos...",
-        });
+        state_inherited_from_map = false;
+        release_site_constraint();
+        populateSelectOptions(selectConfigs[2], [], "", "");
+        populateSelectOptions(selectConfigs[0], [], "", "");
+        refresh_geographic_filters("Estado alterado. Atualizando distritos e estações...");
+        mark_filters_changed("Estado alterado; distrito, estação e restrição por site foram removidos.");
     });
 
     districtField.addEventListener("change", () => {
-        scheduleFilterRefresh("Filtros geograficos alterados. Atualizando opcoes...", {
-            mayAutofill: true,
-            loadingMessage: "Atualizando filtros geograficos...",
-        });
+        release_site_constraint();
+        populateSelectOptions(selectConfigs[0], [], "", "");
+        const released_state = release_inherited_state();
+        refresh_geographic_filters("Distrito alterado. Atualizando estações...");
+        mark_filters_changed(released_state
+            ? "Estado herdado do mapa removido; a busca agora abrange todos os estados."
+            : "Distrito alterado; estação e restrição por site foram removidas.");
     });
-
-    [startDateField, endDateField].filter(Boolean).forEach((field) => {
-        field.addEventListener("change", () => {
-            syncAutoDateFillMode();
-        });
-    });
-
-    syncAutoDateFillMode();
 
     if (!usesLightweightBootstrap) {
         refreshFilterOptions({
             force: true,
-            mayAutofill: allowAutoDateFill,
         });
     } else {
-        setDistrictHint("Selecione um estado ou uma estacao para carregar os distritos disponiveis.");
+        setDistrictHint("Selecione um estado para carregar os distritos disponíveis.");
         setPeriodHint(
             "O periodo observado sera carregado quando houver contexto geografico suficiente."
         );
@@ -499,6 +456,59 @@
     if (clearFiltersLink) {
         clearFiltersLink.addEventListener("click", () => {
             cancelPendingFilterRefresh();
+        });
+    }
+
+    function mark_filters_changed(message = "") {
+        if (filter_status) {
+            filter_status.textContent = `${typeof message === "string" && message ? message : "Filtros alterados."} Clique em Pesquisar para atualizar os resultados abaixo.`;
+        }
+    }
+
+    function update_local_period() {
+        if (!validate_filter_ranges()) {
+            return;
+        }
+        // An ongoing context refresh will supply its own availability without losing edits.
+        if (!filterAbortController && current_availability !== undefined) {
+            applyAvailability(current_availability);
+        }
+    }
+
+    queryForm.addEventListener("input", (event) => {
+        mark_filters_changed();
+        const field = event.target;
+        if (field === startDateField || field === endDateField) {
+            automatic_period = false;
+        }
+        if ([startDateField, endDateField, freq_start_field, freq_end_field].includes(field)) {
+            update_local_period();
+        }
+    });
+    queryForm.addEventListener("submit", (event) => {
+        if (!validate_filter_ranges()) {
+            event.preventDefault();
+            return;
+        }
+        if (filterAbortController) {
+            event.preventDefault();
+            mark_filters_changed("Aguarde a atualização dos filtros antes de pesquisar.");
+            return;
+        }
+        cancelPendingFilterRefresh();
+    });
+
+    retry_filters_button?.addEventListener("click", () => {
+        cancelPendingFilterRefresh();
+        refreshFilterOptions({ force: true });
+    });
+
+    if (remove_site_button && hiddenSiteField) {
+        remove_site_button.hidden = false;
+        remove_site_button.addEventListener("click", () => {
+            release_site_constraint();
+            mark_filters_changed();
+            refresh_geographic_filters("Restrição por site removida. Atualizando opções...");
         });
     }
 

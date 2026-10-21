@@ -1,5 +1,7 @@
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/InovaFiscaliza/RF.Fusion)
 
+Orientações para agentes e manutenção: [AGENTS.md](AGENTS.md).
+
 # RF.Fusion
 
 O RF.Fusion e uma plataforma de integracao para monitoramento de espectro.
@@ -56,8 +58,8 @@ O projeto usa tres schemas com responsabilidades diferentes:
 
 Documentacao principal:
 
-- [Scripts e contratos de banco](./src/mariadb/scripts/DB_INTERCONNECTIONS.md)
-- [Schema de resumo](./src/mariadb/scripts/RFFUSION_SUMMARY.md)
+- [Scripts e contratos de banco](./src/mariadb/scripts/README.md)
+- [Contratos do summary](./docs/architecture/SUMMARY.md)
 
 ### webfusion
 

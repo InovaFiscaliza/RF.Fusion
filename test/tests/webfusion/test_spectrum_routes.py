@@ -2,7 +2,7 @@
 Validation tests for `webfusion.modules.spectrum.routes`.
 
 How to run:
-    /opt/conda/envs/appdata/bin/python -m pytest /RFFusion/test/tests/webfusion/test_spectrum_routes.py -q
+    /usr/local/bin/python /RF.Fusion/test/tests/webfusion/test_spectrum_routes.py -v
 
 What is covered here:
     - inverted frequency intervals return a user-facing validation error
@@ -17,9 +17,10 @@ import sys
 import unittest
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 
 
-WEBFUSION_ROOT = Path("/RFFusion/src/webfusion")
+WEBFUSION_ROOT = Path(__file__).resolve().parents[3] / "src/webfusion"
 
 
 def load_spectrum_routes():
@@ -56,6 +57,7 @@ def load_spectrum_routes():
     fake_service.get_spectrum_file_data = lambda *args, **kwargs: ([], 0)
     fake_service.get_equipments = lambda: []
     fake_service.get_spectrum_filter_options = lambda *args, **kwargs: {}
+    fake_service.get_spectrum_selection_options = lambda *args, **kwargs: {}
     fake_service.get_spectrum_locality_options = lambda *args, **kwargs: []
     fake_service.get_spectrum_site_option = lambda *args, **kwargs: None
     fake_service.get_spectrum_site_availability_range = lambda *args, **kwargs: None
@@ -85,6 +87,54 @@ class TestSpectrumRoutes(unittest.TestCase):
         self.assertIsNone(self.module._validate_frequency_bounds(100.0, None))
         self.assertIsNone(self.module._validate_frequency_bounds(100.0, 200.0))
         self.assertIsNone(self.module._validate_frequency_bounds(200.0, 200.0))
+
+    def test_filters_use_compact_snapshot_only_for_selection_view(self) -> None:
+        """Preserve the full API while selecting the page's compact response.
+
+        Returns:
+            None.
+        """
+        for view in ("selection", None):
+            args = {"state_id": "35", "equipment_id": "88", "start_date": "2025-01-01"}
+            if view:
+                args["view"] = view
+            with self.subTest(view=view), patch.object(self.module.request, "args", args), \
+                    patch.object(self.module, "get_spectrum_selection_options", return_value={}) as compact, \
+                    patch.object(self.module, "get_spectrum_filter_options", return_value={}) as full:
+                self.module.spectrum_filters()
+                selected = compact if view else full
+                unused = full if view else compact
+                unused.assert_not_called()
+                selected.assert_called_once()
+                self.assertEqual(selected.call_args.kwargs["state_id"], "35")
+                self.assertEqual(selected.call_args.kwargs["equipment_id"], "88")
+                self.assertEqual(selected.call_args.kwargs["start_date"], "2025-01-01")
+
+    def test_page_typed_criteria_constrain_results_without_rebuilding_catalogs(self) -> None:
+        """Keep typed criteria in results and the rendered form, outside catalogs.
+
+        Returns:
+            None.
+        """
+        args = {"state_id": "35", "start_date": "2026-10-19", "end_date": "2026-10-20",
+                "freq_start": "70", "freq_end": "110", "description": "PMRD"}
+        with patch.object(self.module.request, "args", args), \
+                patch.object(self.module, "record_page_view"), \
+                patch.object(self.module, "record_spectrum_query"), \
+                patch.object(self.module, "get_spectrum_selection_options", return_value={}) as options, \
+                patch.object(self.module, "get_spectrum_file_data", return_value=([], 0)) as files, \
+                patch.object(self.module, "render_template", return_value="HTML") as render:
+            self.assertEqual(self.module.spectrum(), "HTML")
+        options.assert_called_once()
+        for key in ("start_date", "end_date", "freq_start", "freq_end", "description"):
+            self.assertNotIn(key, options.call_args.kwargs)
+        files.assert_called_once()
+        for key in ("state_id", "start_date", "end_date"):
+            self.assertEqual(files.call_args.kwargs[key], args[key])
+            self.assertEqual(render.call_args.kwargs[key], args[key])
+        self.assertEqual(files.call_args.kwargs["freq_start"], 70.0)
+        self.assertEqual(files.call_args.kwargs["freq_end"], 110.0)
+        self.assertEqual(files.call_args.kwargs["description"], "PMRD")
 
     def test_validate_frequency_bounds_rejects_inverted_range(self):
         message = self.module._validate_frequency_bounds(200.0, 100.0)

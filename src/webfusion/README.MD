@@ -7,6 +7,9 @@ controlada de filas e a configuração de estações integradas ao Zabbix.
 Este documento descreve apenas este módulo. Para a visão geral da plataforma,
 consulte [README.md](../../README.md).
 
+Para manutenção por agentes, comece por [AGENTS.md](AGENTS.md), que encaminha
+aos contratos locais e ao ambiente autorizado de execução.
+
 ## Papel no Sistema
 
 O WebFusion não executa backup, descoberta, processamento de espectros ou
