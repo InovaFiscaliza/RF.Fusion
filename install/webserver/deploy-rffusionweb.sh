@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+echo "=== Starting WebFusion deploy ==="
 scriptDir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 runtimeHealthBootstrap="${scriptDir}/../../service/rffusion-runtime-health-bootstrap.sh"
 
@@ -33,6 +34,7 @@ projectVolume="${repoRoot}"
 reposVolume="/mnt/reposfi"
 uploadVolume="${reposVolume}/upload"
 
+echo "Checking mount: ${reposVolume}"
 if ! mountpoint -q "${reposVolume}"; then
     echo "❌ ERROR: reposfi mount not found on host:"
     echo "    ${reposVolume}"
@@ -40,19 +42,24 @@ if ! mountpoint -q "${reposVolume}"; then
 fi
 
 # Uploads are the only writable area of the repository exposed to WebFusion.
+echo "Preparing upload directory: ${uploadVolume}"
 mkdir -p "${uploadVolume}"
 
 # Fail before replacing the running container if CIFS rejects writes.
+echo "Creating upload write probe in: ${uploadVolume}"
 if ! uploadProbe=$(mktemp "${uploadVolume}/.webfusion-deploy.XXXXXX"); then
     echo "❌ ERROR: Cannot create files in ${uploadVolume}."
     exit 1
 fi
+echo "Writing upload probe."
 if ! printf 'WebFusion upload write check\n' > "${uploadProbe}"; then
     rm -f -- "${uploadProbe}"
     echo "❌ ERROR: Cannot write to ${uploadVolume}."
     exit 1
 fi
+echo "Removing upload write probe."
 rm -- "${uploadProbe}"
+echo "Upload write check completed."
 
 # ----------------------------------------------------------------------
 # Credenciais (root)
