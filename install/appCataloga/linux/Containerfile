@@ -84,7 +84,10 @@ RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkg
     sed -i '/- intel/d' /tmp/environment.yml
 
 # Criar ambiente Conda
-RUN conda env create -f /tmp/environment.yml && \
+# pip 22.2.2 propagates PIP_CONSTRAINT to isolated builds. rfpye needs pkg_resources.
+RUN printf 'setuptools==65.5.0\n' > /tmp/pip-build-constraints.txt && \
+    PIP_CONSTRAINT=/tmp/pip-build-constraints.txt conda env create -f /tmp/environment.yml && \
+    rm /tmp/pip-build-constraints.txt && \
     conda clean -afy
 
 # ==============================
