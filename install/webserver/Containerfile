@@ -31,7 +31,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # -------------------------------------------------
 # Dependências Python (Web + SQL)
 # -------------------------------------------------
-RUN pip install --no-cache-dir \
+# Resume incomplete downloads while preserving hash verification.
+RUN /usr/local/bin/python -m pip install --no-cache-dir --timeout 120 --retries 5 "pip==26.2.2"
+
+RUN /usr/local/bin/python -m pip install --no-cache-dir \
+    --timeout 120 --retries 5 --resume-retries 5 \
     flask \
     waitress \
     requests \

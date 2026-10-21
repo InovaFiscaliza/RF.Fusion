@@ -108,6 +108,18 @@ O script:
 6. valida se o container entrou em estado `running` e testa escrita em `upload`
 7. testa o endpoint `/api/server/runtime-health` e a porta SSH publicada
 
+## Downloads de dependências durante o build
+
+O `Containerfile` fixa o pip em `26.2.2` antes de instalar as dependências
+Python. A instalação usa timeout de 120 segundos, cinco tentativas de conexão
+e até cinco tentativas de retomada ou reinício de downloads incompletos.
+A verificação de hashes permanece ativa.
+
+Essa configuração pertence ao Python da imagem e é a mesma nos hosts de dev
+e produção. Se os downloads continuarem incompletos ou com hash divergente,
+verificar a conexão e o proxy ou mirror usado pela VM; não substituir o hash
+esperado pelo hash do arquivo recebido.
+
 ## Volumes Montados
 
 O deploy monta:
