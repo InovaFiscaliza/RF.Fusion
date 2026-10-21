@@ -28,6 +28,15 @@ ContainerSSHPort="22"
 repoRoot="/RFFusion-dev/RF.Fusion"
 projectVolume="${repoRoot}"
 
+# Local database credentials are deliberately excluded from Git.
+webfusionSecretPath="${projectVolume}/src/webfusion/.secret"
+if [[ ! -f "${webfusionSecretPath}" || ! -r "${webfusionSecretPath}" || ! -s "${webfusionSecretPath}" ]]; then
+    echo "❌ ERROR: WebFusion database configuration is missing, unreadable or empty:"
+    echo "    ${webfusionSecretPath}"
+    echo "Provision the local .secret file with this environment's database settings before deploying."
+    exit 1
+fi
+
 # ----------------------------------------------------------------------
 # Volume: repositório CIFS (somente leitura)
 # ----------------------------------------------------------------------

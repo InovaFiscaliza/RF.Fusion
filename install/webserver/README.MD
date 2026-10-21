@@ -62,6 +62,8 @@ O deploy atual assume:
 - repositorio `/mnt/reposfi` montado no host
 - `podman` instalado e funcional
 - rede `podman` previamente existente
+- arquivo local `src/webfusion/.secret`, legível e não vazio, com as credenciais
+  de banco específicas do ambiente
 
 Observacoes importantes:
 
@@ -72,6 +74,16 @@ Observacoes importantes:
   criação e escrita de arquivos nessa subpasta
 
 ## Como Fazer O Deploy
+
+O arquivo `.secret` é ignorado pelo Git e precisa ser provisionado por um meio
+seguro no repositório do host antes do deploy. Ele é um arquivo Python que
+define os dicionários `DB_CFG_RFDATA`, `DB_CFG_BPDATA`,
+`DB_CFG_RFFUSION_SUMMARY` e `DB_CFG_WEBFUSION`, consumidos por
+[db.py](../../src/webfusion/db.py). Cada dicionário contém os parâmetros de
+conexão PyMySQL do banco correspondente, como `host`, `port`, `user`, `password`
+e `database`. As credenciais devem apontar para o ambiente sendo instalado.
+O deploy valida a presença, a leitura e o tamanho do arquivo sem executar nem
+exibir seu conteúdo. Essa validação não comprova a validade das conexões.
 
 Entre no diretorio de deploy:
 
