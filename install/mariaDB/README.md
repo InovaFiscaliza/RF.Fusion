@@ -87,6 +87,23 @@ O script:
 5. valida se o container entrou em estado `running`
 6. executa os scripts SQL de inicializacao do RF.Fusion
 
+## Limites de recursos
+
+O script consulta o host selecionado pelo Podman para adaptar os limites aos
+controladores disponíveis. Os limites desejados são uma CPU, 2 GiB de memória,
+3 GiB no total de memória e swap e 1024 processos.
+
+Em cgroup v2, cada limite é aplicado somente quando seu controlador (`cpu`,
+`memory` ou `pids`) aparece em `podman info`. Em execução sem root com cgroup
+v1, os limites são omitidos; com root e cgroup v1, os limites originais são
+mantidos. Toda omissão gera um aviso explícito, e o container fica sem aquele
+limite. Para aplicar todos os limites, o administrador deve disponibilizar os
+controladores no host antes do deploy.
+
+Na VM dev com apenas `memory pids` delegados, os limites de memória e processos
+são aplicados e o limite de CPU é omitido. Em produção, o mesmo script usa as
+capacidades disponíveis naquele host.
+
 ## Volume Montado
 
 O deploy monta:
