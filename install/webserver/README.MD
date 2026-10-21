@@ -108,6 +108,22 @@ O script:
 6. valida se o container entrou em estado `running` e testa escrita em `upload`
 7. testa o endpoint `/api/server/runtime-health` e a porta SSH publicada
 
+## CIFS e SELinux no deploy
+
+Quando `/mnt/reposfi` é CIFS e o Podman informa SELinux ativo, o deploy adiciona
+`--security-opt label=disable` somente ao container `rffusion-web`. CIFS não
+suporta a troca de rótulos exigida por `:z`/`:Z`. Essa escolha operacional remove
+a separação por rótulos SELinux desse container, inclusive para seus outros
+volumes; as demais proteções do Podman e as permissões do filesystem continuam
+aplicáveis. O script informa essa redução de isolamento durante o deploy.
+
+O SELinux do host e sua política não são alterados. A montagem de `/mnt/reposfi`
+continua somente leitura e apenas `upload` recebe uma montagem gravável. Para
+outros filesystems, ou quando o Podman não usa SELinux, a opção é omitida.
+O comportamento é determinado pelo ambiente, com a mesma opção suportada nos
+Podman 4.9 e 5.8, sem exigir execução do deploy como root. A montagem CIFS deve
+estar disponível no host e permitir escrita pelo usuário do deploy.
+
 ## Downloads de dependências durante o build
 
 O `Containerfile` fixa o pip em `26.2.2` antes de instalar as dependências

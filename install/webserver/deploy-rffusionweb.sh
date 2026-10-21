@@ -116,6 +116,16 @@ echo "✅ Line endings normalized."
 echo "=== [3/7] Using default Podman context ==="
 podman context use default >/dev/null 2>&1 || true
 
+# CIFS cannot be relabeled with :z/:Z. Scope the label exception to this container.
+volumeSecurityArgs=()
+reposFsType="$(findmnt -rn -T "${reposVolume}" -o FSTYPE)"
+selinuxEnabled="$(podman info --format '{{.Host.Security.SELinuxEnabled}}')"
+if [[ "${reposFsType}" == "cifs" && "${selinuxEnabled}" == "true" ]]; then
+    volumeSecurityArgs+=(--security-opt label=disable)
+    echo "WARNING: CIFS volume detected; SELinux label separation is disabled for ${ContainerName} only."
+    echo "Repository remains read-only; only upload is writable. Host SELinux policy is unchanged."
+fi
+
 # ======================================================================
 # 4) Build da imagem
 # ======================================================================
@@ -140,6 +150,7 @@ podman run -d \
   --restart unless-stopped \
   --network "${NetworkName}" \
   --ip "${IPAddress}" \
+  "${volumeSecurityArgs[@]}" \
   -e "ROOT_USER=${ROOT_USER}" \
   -e "ROOT_PASSWORD=${ROOT_PASSWORD}" \
   -e "SSH_PASSWORD=${ROOT_PASSWORD}" \
