@@ -8,8 +8,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 # ==============================
 RUN cat > /etc/apt/sources.list.d/debian.sources <<EOF
 Types: deb
-URIs: http://ftp.de.debian.org/debian
-Suites: bookworm
+URIs: http://deb.debian.org/debian
+Suites: bookworm bookworm-updates
+Components: main contrib non-free
+
+Types: deb
+URIs: http://security.debian.org/debian-security
+Suites: bookworm-security
 Components: main contrib non-free
 EOF
 
