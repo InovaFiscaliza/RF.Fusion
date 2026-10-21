@@ -34,6 +34,38 @@ volumes=(
 echo "=== [1/5] Switching Podman context ==="
 podman context use podman-machine-default-root >/dev/null 2>&1 || true
 
+# Query the selected Podman host before replacing an existing container.
+podmanInfo="$(podman info --format '{{.Host.Security.Rootless}} {{.Host.CgroupsVersion}} {{range .Host.CgroupControllers}}{{.}} {{end}}')"
+read -r rootless cgroupVersion controllers <<< "$podmanInfo"
+echo "Podman: rootless=${rootless}, cgroups=${cgroupVersion}, controllers=${controllers:-none}"
+
+# Rootless resource limits require cgroup v2. Rootful v1 keeps the existing limits.
+if [[ "$cgroupVersion" == "v1" ]]; then
+    if [[ "$rootless" == "true" ]]; then
+        controllers=""
+    else
+        controllers="cpu memory pids"
+    fi
+fi
+
+resourceArgs=()
+if [[ " ${controllers} " == *" cpu "* ]]; then
+    resourceArgs+=(--cpus=2)
+else
+    echo "WARNING: CPU controller unavailable; container will have no CPU limit."
+fi
+if [[ " ${controllers} " == *" memory "* ]]; then
+    resourceArgs+=(--memory=2g --memory-swap=2g)
+else
+    echo "WARNING: Memory controller unavailable; container will have no memory/swap limit."
+fi
+if [[ " ${controllers} " == *" pids "* ]]; then
+    resourceArgs+=(--pids-limit=2048)
+else
+    resourceArgs+=(--pids-limit=-1)
+    echo "WARNING: PIDs controller unavailable; container will have no process limit."
+fi
+
 # =======================================================================
 # 2. Build da imagem
 # =======================================================================
@@ -70,11 +102,7 @@ args=(
     --network "$NetworkName"
     --ip "$IPAddress"
 
-    # === LIMITES DE RECURSOS ===
-    --cpus=2
-    --memory=2g
-    --memory-swap=2g
-    --pids-limit=2048
+    "${resourceArgs[@]}"
 
     --cap-add=NET_RAW
     --cap-add=NET_ADMIN

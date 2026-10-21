@@ -98,6 +98,24 @@ O script:
 5. cria o novo container com volumes e portas
 6. verifica se o container entrou em estado `running`
 
+### Limites de recursos e compatibilidade do host
+
+O mesmo script consulta o host selecionado pelo Podman para adaptar os limites
+aos controladores disponíveis, sem depender da versão do kernel ou do Podman.
+Os limites desejados são duas CPUs, 2 GiB de memória sem swap adicional e
+2048 processos.
+
+Em cgroup v2, cada limite é aplicado somente quando seu controlador (`cpu`,
+`memory` ou `pids`) aparece em `podman info`. Em execução sem root com cgroup
+v1, esses limites são omitidos. Com root e cgroup v1, o script mantém os limites
+originais. Toda omissão gera um aviso explícito; o container fica sem o limite
+correspondente. Para exigir todos os limites, o administrador deve disponibilizar
+os controladores no host antes do deploy.
+
+Na VM dev com apenas `memory pids` delegados, o script mantém os limites de
+memória e processos e avisa que não aplicou o limite de CPU. Na produção, o
+resultado depende dos controladores e do modo de execução daquele host.
+
 ## Volumes Montados
 
 O deploy monta:
