@@ -129,8 +129,10 @@ O deploy monta:
 - `/mnt/reposfi/upload -> /mnt/reposfi/upload:rw`
 
 A montagem de `upload` fica registrada na configuração do novo container e é
-restaurada quando ele reinicia. Os testes de escrita criam arquivos temporários
-com nomes exclusivos e os removem ao concluir. O nginx bloqueia a publicação
+restaurada quando ele reinicia. Os testes de escrita criam diretórios temporários
+exclusivos e escrevem um arquivo novo com `noclobber` (`set -C`). Isso evita
+reabrir um arquivo vazio com `O_TRUNC`, operação que pode bloquear em CIFS.
+O arquivo e o diretório são removidos ao concluir. O nginx bloqueia a publicação
 dessa pasta pelas rotas de download e permite até 513 MiB por requisição na API
 de upload (512 MiB de arquivo mais o envelope multipart).
 
@@ -183,9 +185,9 @@ reaplique o ajuste. O próximo deploy completo usa os volumes persistentes acima
 
     podman exec rffusion-web /bin/sh -eu -c '
         cd /
-        probe=$(mktemp /mnt/reposfi/upload/.teste-escrita.XXXXXX)
-        printf "teste de escrita\n" > "$probe"
-        rm -- "$probe"
+        probe_dir=$(mktemp -d /mnt/reposfi/upload/.teste-escrita.XXXXXX)
+        trap '\''rm -f -- "$probe_dir/probe"; rmdir -- "$probe_dir"'\'' EXIT
+        (set -C; printf "teste de escrita\n" > "$probe_dir/probe")
         echo "Escrita confirmada no WebFusion."
     '
 )

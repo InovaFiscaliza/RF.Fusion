@@ -47,18 +47,22 @@ mkdir -p "${uploadVolume}"
 
 # Fail before replacing the running container if CIFS rejects writes.
 echo "Creating upload write probe in: ${uploadVolume}"
-if ! uploadProbe=$(mktemp "${uploadVolume}/.webfusion-deploy.XXXXXX"); then
-    echo "❌ ERROR: Cannot create files in ${uploadVolume}."
+if ! uploadProbeDir=$(mktemp -d "${uploadVolume}/.webfusion-deploy.XXXXXX"); then
+    echo "❌ ERROR: Cannot create a probe directory in ${uploadVolume}."
     exit 1
 fi
+uploadProbe="${uploadProbeDir}/probe"
+# Create and write once; reopening an empty CIFS file with O_TRUNC can block.
 echo "Writing upload probe."
-if ! printf 'WebFusion upload write check\n' > "${uploadProbe}"; then
+if ! (set -C; printf 'WebFusion upload write check\n' > "${uploadProbe}"); then
     rm -f -- "${uploadProbe}"
+    rmdir -- "${uploadProbeDir}"
     echo "❌ ERROR: Cannot write to ${uploadVolume}."
     exit 1
 fi
 echo "Removing upload write probe."
 rm -- "${uploadProbe}"
+rmdir -- "${uploadProbeDir}"
 echo "Upload write check completed."
 
 # ----------------------------------------------------------------------
@@ -167,9 +171,9 @@ echo "✅ Container is running."
 # Verify access as the container user, including rootless UID mapping.
 if ! podman exec "${ContainerName}" /bin/sh -eu -c '
     cd /
-    probe=$(mktemp /mnt/reposfi/upload/.webfusion-deploy.XXXXXX)
-    trap '\''rm -f -- "$probe"'\'' EXIT
-    printf "WebFusion upload write check\n" > "$probe"
+    probe_dir=$(mktemp -d /mnt/reposfi/upload/.webfusion-deploy.XXXXXX)
+    trap '\''rm -f -- "$probe_dir/probe"; rmdir -- "$probe_dir"'\'' EXIT
+    (set -C; printf "WebFusion upload write check\n" > "$probe_dir/probe")
 '; then
     echo "❌ ERROR: Upload storage is not writable inside ${ContainerName}."
     exit 1

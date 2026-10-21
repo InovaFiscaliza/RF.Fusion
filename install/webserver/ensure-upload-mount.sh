@@ -33,9 +33,9 @@ fi
 # Verify with the container identity, not only namespace-administration privileges.
 podman exec "${containerName}" /bin/sh -eu -c '
     cd /
-    probe=$(mktemp "$1/.webfusion-write-check.XXXXXX")
-    trap '\''rm -f -- "$probe"'\'' EXIT
-    printf "WebFusion upload write check\n" > "$probe"
+    probe_dir=$(mktemp -d "$1/.webfusion-write-check.XXXXXX")
+    trap '\''rm -f -- "$probe_dir/probe"; rmdir -- "$probe_dir"'\'' EXIT
+    (set -C; printf "WebFusion upload write check\n" > "$probe_dir/probe")
     findmnt -T "$1" -o TARGET,VFS-OPTIONS
 ' sh "${uploadFolder}"
 echo "Upload storage is writable inside ${containerName}."
