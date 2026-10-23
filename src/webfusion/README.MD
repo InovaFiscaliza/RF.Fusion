@@ -186,6 +186,11 @@ detalhes são carregados sob demanda por /api/map/stations e
 
 /spectrum oferece filtros geográficos, de período, frequência e descrição. Os
 detalhes de espectro e localidades são carregados depois da página inicial.
+Os filtros selecionam arquivos que contenham ao menos um espectro compatível.
+Os metadados da linha do arquivo (início, fim, faixa de frequência, quantidade,
+estações e localidades) descrevem todos os espectros vinculados ao arquivo,
+inclusive os que ficam fora dos filtros. A ordenação usa esses metadados completos.
+Ao expandir a linha, todos os espectros aparecem e os compatíveis são destacados.
 
 Endpoints relevantes:
 

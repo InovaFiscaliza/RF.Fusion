@@ -171,9 +171,17 @@ página. O cliente deve apresentar somente as primeiras `pageSize` linhas.
 Não se calcula a contagem total implicitamente; use `/files/count` se precisar.
 
 A busca temporal seleciona espectros que se sobrepõem ao período; a busca por
-frequência seleciona espectros contidos nos limites informados. Agregados de
-arquivos são calculados sobre os espectros correspondentes aos filtros.
-`/files/{fileId}/spectra` retorna todos os espectros do arquivo `reposfi`.
+frequência seleciona espectros contidos nos limites informados. Os filtros
+selecionam arquivos `reposfi` com pelo menos um espectro compatível. Após essa
+seleção, início, fim, faixa de frequência, quantidade de espectros, localidades
+e equipamentos são calculados sobre o conteúdo completo de cada arquivo,
+inclusive espectros fora dos filtros. A ordenação usa o início completo do
+arquivo, em ordem decrescente, com ID do arquivo como desempate decrescente.
+Essa regra alinha os metadados entregues ao MATLAB aos apresentados em
+`/spectrum`; substitui a agregação anteriormente limitada aos espectros filtrados,
+preservando os campos HTTP e a paginação existentes.
+`/files/{fileId}/spectra` retorna todos os espectros do arquivo `reposfi`, sem
+aplicar o período ou os demais filtros da busca que encontrou o arquivo.
 
 A consulta de contagem conserva o conjunto de JOINs original, que é menor que
 o da listagem. Dados com referências inconsistentes podem causar divergência

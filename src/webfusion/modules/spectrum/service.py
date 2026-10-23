@@ -66,7 +66,7 @@ ALLOWED_FILE_SORT_FIELDS = {
     "date_start": "ctx.DT_TIME_START",
     "date_end": "ctx.DT_TIME_END",
     "file_name": "repos.NA_FILE",
-    "spectrum_count": "stats.NU_SPECTRA",
+    "spectrum_count": "ctx.NU_SPECTRA",
 }
 
 SPECTRUM_QUERY_CACHE_TTL_SECONDS = 30
@@ -84,7 +84,7 @@ FILE_FILTER_TEMP_TABLE = "tmp_webfusion_filtered_spectra"
 # Bump these integers whenever the query shape changes in a way that would make
 # cached results from the previous version wrong or incomplete. In-process
 # cache entries are keyed by version so old entries are naturally skipped.
-FILE_RESULT_CACHE_VERSION = 3
+FILE_RESULT_CACHE_VERSION = 4
 FILTER_OPTION_CACHE_VERSION = 3
 
 # These are intentionally tiny in-process caches. They smooth repeated clicks
@@ -1161,20 +1161,20 @@ def get_spectrum_data(
 
 
 def get_spectrum_file_data(
-    equipment_id=None,
-    state_id=None,
-    district_id=None,
-    site_id=None,
-    start_date=None,
-    end_date=None,
-    freq_start=None,
-    freq_end=None,
-    description=None,
-    sort_by="date_start",
-    sort_order="DESC",
-    page=1,
-    page_size=50
-):
+    equipment_id: int | str | None = None,
+    state_id: int | str | None = None,
+    district_id: int | str | None = None,
+    site_id: int | str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    freq_start: float | None = None,
+    freq_end: float | None = None,
+    description: str | None = None,
+    sort_by: str = "date_start",
+    sort_order: str = "DESC",
+    page: int | str = 1,
+    page_size: int = 50
+) -> tuple[list[dict], int]:
     """Return paginated file-mode rows plus the total file count.
 
     The only active search semantics are spectrum-aware: filters always apply
@@ -1194,14 +1194,33 @@ def get_spectrum_file_data(
       short TTL, so that minor cache-expiry races between workers do not cause
       unnecessary full re-runs.
 
-    SQL note: the filtered spectra are materialized once in a connection-local
-    temporary table. File identification, context aggregation, and full-file
-    spectrum count then reuse that smaller result instead of each re-reading
-    ``FACT_SPECTRUM``.
+    SQL note: filtered spectra are materialized once in a connection-local
+    temporary table to identify matching files. Metadata is then aggregated
+    over every spectrum linked to those files, independently of search filters.
+
+    Args:
+        equipment_id: Optional equipment ID, as int or str.
+        state_id: Optional state ID, as int or str.
+        district_id: Optional district ID, as int or str.
+        site_id: Optional locality ID, as int or str.
+        start_date: Optional inclusive ISO start date, as str.
+        end_date: Optional inclusive ISO end date, as str.
+        freq_start: Optional lower frequency bound in MHz, as float.
+        freq_end: Optional upper frequency bound in MHz, as float.
+        description: Optional spectrum description pattern, as str.
+        sort_by: Allowed file sort field, as str.
+        sort_order: ASC or DESC, as str.
+        page: One-based page number, as int or str; invalid values use 1.
+        page_size: Maximum rows per page, as int.
 
     Returns:
-        (rows, total): rows is a list of dicts for the requested page;
-        total is the count of matched files (not spectra), used for pagination.
+        Tuple of rows (list of dicts) and total matching files (int). Each row
+        contains file identity/path/name/extension and size, full-file date and
+        frequency bounds, spectrum count, equipment/locality counts and labels,
+        and formatted date, display and detail strings added by postprocessing.
+
+    Raises:
+        Exception: When the database query fails.
     """
     if sort_by not in ALLOWED_FILE_SORT_FIELDS:
         sort_by = "date_start"
@@ -1321,7 +1340,7 @@ def get_spectrum_file_data(
     """
 
     # The search still matches files via filtered spectra, but the UI should
-    # show how many spectra exist in the whole file once that file qualifies.
+    # describe the complete contents of each qualifying file.
     data_query = f"""
         SELECT
             repos.ID_FILE,
@@ -1335,26 +1354,14 @@ def get_spectrum_file_data(
             ctx.NU_FREQ_END,
             ctx.EQUIPMENT_COUNT,
             ctx.EQUIPMENT_LABELS,
-            stats.NU_SPECTRA,
+            ctx.NU_SPECTRA,
             ctx.LOCALITY_COUNT,
             ctx.LOCALITY_LABELS
-        FROM (
-            SELECT DISTINCT
-                repos.ID_FILE,
-                repos.NA_PATH,
-                repos.NA_FILE,
-                repos.NA_EXTENSION,
-                repos.VL_FILE_SIZE_KB
-            FROM {FILE_FILTER_TEMP_TABLE} f
-            JOIN BRIDGE_SPECTRUM_FILE b
-                ON b.FK_SPECTRUM = f.ID_SPECTRUM
-            JOIN DIM_SPECTRUM_FILE repos
-                ON repos.ID_FILE = b.FK_FILE
-            {where_sql}
-        ) repos
+        FROM DIM_SPECTRUM_FILE repos
         JOIN (
             SELECT
                 repos.ID_FILE,
+                COUNT(DISTINCT b.FK_SPECTRUM) AS NU_SPECTRA,
                 MIN(f.DT_TIME_START) AS DT_TIME_START,
                 MAX(f.DT_TIME_END) AS DT_TIME_END,
                 MIN(f.NU_FREQ_START) AS NU_FREQ_START,
@@ -1369,22 +1376,7 @@ def get_spectrum_file_data(
                     DISTINCT {locality_display_sql}
                     ORDER BY {locality_display_sql} SEPARATOR '||'
                 ) AS LOCALITY_LABELS
-            FROM {FILE_FILTER_TEMP_TABLE} f
-            JOIN BRIDGE_SPECTRUM_FILE b
-                ON b.FK_SPECTRUM = f.ID_SPECTRUM
-            JOIN DIM_SPECTRUM_FILE repos
-                ON repos.ID_FILE = b.FK_FILE
-            {summary_join_sql}
-            {where_sql}
-            GROUP BY repos.ID_FILE
-        ) ctx
-            ON ctx.ID_FILE = repos.ID_FILE
-        JOIN (
-            SELECT
-                b.FK_FILE AS ID_FILE,
-                COUNT(DISTINCT b.FK_SPECTRUM) AS NU_SPECTRA
-            FROM BRIDGE_SPECTRUM_FILE b
-            JOIN (
+            FROM (
                 SELECT DISTINCT repos.ID_FILE
                 FROM {FILE_FILTER_TEMP_TABLE} f
                 JOIN BRIDGE_SPECTRUM_FILE b
@@ -1392,11 +1384,15 @@ def get_spectrum_file_data(
                 JOIN DIM_SPECTRUM_FILE repos
                     ON repos.ID_FILE = b.FK_FILE
                 {where_sql}
-            ) matched_files
-                ON matched_files.ID_FILE = b.FK_FILE
-            GROUP BY b.FK_FILE
-        ) stats
-            ON stats.ID_FILE = repos.ID_FILE
+            ) repos
+            JOIN BRIDGE_SPECTRUM_FILE b
+                ON b.FK_FILE = repos.ID_FILE
+            JOIN FACT_SPECTRUM f
+                ON f.ID_SPECTRUM = b.FK_SPECTRUM
+            {summary_join_sql}
+            GROUP BY repos.ID_FILE
+        ) ctx
+            ON ctx.ID_FILE = repos.ID_FILE
         {order_sql}
     """
 

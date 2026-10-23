@@ -148,6 +148,47 @@ class QueryTests(unittest.TestCase):
             self.assertIn(fragment, sql)
         self.assertEqual(sql.count("%s"), len(params))
 
+    def test_file_aggregates_use_complete_contents_after_selecting_matches(self) -> None:
+        """Keep search predicates inside file selection, outside aggregates.
+
+        Args:
+            None.
+
+        Returns:
+            None. Assertions protect complete-file dates, ranges and counts.
+        """
+        query_filters = Filters(
+            equipment_id=12, site_id=8, state_code="PE", district_ids=(4,),
+            start_date=datetime(2026, 9, 30),
+            end_date=datetime(2026, 10, 1, 23, 59, 59),
+            freq_start=400, freq_end=407, description="plan",
+        )
+        self.db.get_spectrum_file_data(query_filters)
+        _, sql, params = self.fetch.call_args.args
+        aggregates, selection = sql.split("JOIN (", 1)
+        selection, grouping = selection.split(
+            ") matched_files ON matched_files.ID_FILE = repos.ID_FILE", 1,
+        )
+        self.assertIn("SELECT DISTINCT repos.ID_FILE", selection)
+        for predicate in (
+            "f.FK_EQUIPMENT = %s", "f.FK_SITE = %s", "st.LC_STATE = %s",
+            "s.FK_DISTRICT IN (%s)", "f.DT_TIME_END >= %s",
+            "f.DT_TIME_START <= %s", "f.NU_FREQ_START >= %s",
+            "f.NU_FREQ_END <= %s", "LIKE UPPER(%s)",
+        ):
+            self.assertIn(predicate, selection)
+            self.assertNotIn(predicate, aggregates + grouping)
+        for aggregate in (
+            "MIN(f.DT_TIME_START)", "MAX(f.DT_TIME_END)",
+            "MIN(f.NU_FREQ_START)", "MAX(f.NU_FREQ_END)",
+            "COUNT(DISTINCT f.ID_SPECTRUM)", "COUNT(DISTINCT s.ID_SITE)",
+            "AS LOCALITY_LABELS", "AS EQUIPMENT_LABELS",
+        ):
+            self.assertIn(aggregate, aggregates)
+        self.assertIn("ORDER BY MIN(f.DT_TIME_START) DESC, repos.ID_FILE DESC", grouping)
+        self.assertEqual(params[0], "reposfi")
+        self.assertEqual(params[-2:], [51, 0])
+
     def test_description_wildcards_and_negative_frequency(self) -> None:
         """Verify description wildcards and negative frequency.
 
@@ -306,6 +347,10 @@ class QueryTests(unittest.TestCase):
         self.assertIn("f.FK_SITE AS ID_SITE", sql)
         self.assertIn("st.LC_STATE AS STATE_CODE", sql)
         self.assertIn("ORDER BY f.DT_TIME_START DESC, f.ID_SPECTRUM DESC", sql)
+        self.assertEqual(sql.count("%s"), 2)
+        self.assertNotIn("f.DT_TIME_END >=", sql)
+        self.assertNotIn("f.DT_TIME_START <=", sql)
+        self.assertNotIn("LIMIT", sql)
 
     def test_fixed_queries_preserve_contracts(self) -> None:
         """Verify fixed queries preserve contracts.

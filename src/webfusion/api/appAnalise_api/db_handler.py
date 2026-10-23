@@ -323,8 +323,10 @@ class AppAnaliseDB:
             filters: All spectrum filters plus page and page_size (Filters).
 
         Returns:
-            Repository file metadata and aggregates over matching spectra
-            (TableResult). Returns up to page_size + 1 rows, in legacy order.
+            Repository file metadata and aggregates over every linked spectrum
+            (TableResult). Filters select files with at least one matching
+            spectrum. Returns up to page_size + 1 rows, ordered by the full
+            file start time descending, then file ID descending.
         """
         where, params = _spectrum_conditions(filters)
         return self._fetch(k.SPECTRUM_SCHEMA, f"""
@@ -338,7 +340,11 @@ class AppAnaliseDB:
                 GROUP_CONCAT(DISTINCT e.NA_EQUIPMENT ORDER BY e.NA_EQUIPMENT
                     SEPARATOR ' | ') AS EQUIPMENT_LABELS
             {FILE_JOINS} {EQUIPMENT_JOIN} {GEO_JOINS}
-            WHERE repos.NA_VOLUME = %s {where}
+            JOIN (
+                SELECT DISTINCT repos.ID_FILE
+                {FILE_JOINS} {EQUIPMENT_JOIN} {GEO_JOINS}
+                WHERE repos.NA_VOLUME = %s {where}
+            ) matched_files ON matched_files.ID_FILE = repos.ID_FILE
             GROUP BY repos.ID_FILE, repos.NA_PATH, repos.NA_FILE,
                 repos.NA_EXTENSION, repos.VL_FILE_SIZE_KB
             ORDER BY MIN(f.DT_TIME_START) DESC, repos.ID_FILE DESC

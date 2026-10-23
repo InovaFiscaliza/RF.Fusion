@@ -327,6 +327,54 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(fake_cursor.executed[1][1], [338, 32])
         self.assertTrue(fake_connection.closed)
 
+    def test_file_metadata_aggregates_all_spectra_after_filtering_files(self) -> None:
+        """Keep file metadata independent from the spectra search interval.
+
+        Returns:
+            None.
+        """
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [{
+            "ID_FILE": 626575,
+            "DT_TIME_START": "2026-09-30 17:44:35",
+            "DT_TIME_END": "2026-10-05 05:44:26",
+            "NU_FREQ_START": 404.99,
+            "NU_FREQ_END": 410.0,
+            "NU_SPECTRA": 9,
+        }]
+        connection = MagicMock()
+        connection.cursor.return_value = cursor
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.module, "get_connection", return_value=connection))
+            stack.enter_context(patch.object(self.module, "_get_cached_query", return_value=None))
+            stack.enter_context(patch.object(self.module, "_set_cached_query"))
+            stack.enter_context(patch.object(self.module, "_set_cached_query_with_ttl"))
+            rows, total = self.module.get_spectrum_file_data(
+                start_date="2026-09-30", end_date="2026-10-01",
+                freq_start=400.0, freq_end=407.0, sort_by="spectrum_count",
+            )
+
+        filter_query, filter_params = cursor.execute.call_args_list[0].args
+        metadata_query, metadata_params = cursor.execute.call_args_list[1].args
+        self.assertIn("fs.DT_TIME_START <= %s", filter_query)
+        self.assertIn("2026-10-01 23:59:59", filter_params)
+        self.assertEqual(metadata_params, ())
+        # Only file selection reads the filtered set. Aggregates must use the
+        # unfiltered fact rows reached through every link of a matching file.
+        self.assertEqual(metadata_query.count(self.module.FILE_FILTER_TEMP_TABLE), 1)
+        self.assertIn("ON b.FK_FILE = repos.ID_FILE", metadata_query)
+        self.assertIn("JOIN FACT_SPECTRUM f", metadata_query)
+        self.assertIn("ON f.ID_SPECTRUM = b.FK_SPECTRUM", metadata_query)
+        self.assertIn("MIN(f.DT_TIME_START)", metadata_query)
+        self.assertIn("MAX(f.DT_TIME_END)", metadata_query)
+        self.assertIn("MAX(f.NU_FREQ_END)", metadata_query)
+        self.assertIn("COUNT(DISTINCT b.FK_SPECTRUM) AS NU_SPECTRA", metadata_query)
+        self.assertIn("ORDER BY ctx.NU_SPECTRA DESC", metadata_query)
+        self.assertEqual(total, 1)
+        self.assertEqual(rows[0]["DT_TIME_END"], "05-10-2026 05:44:26")
+        self.assertEqual(rows[0]["NU_FREQ_END"], 410.0)
+        connection.close.assert_called_once()
+
     def test_get_spectrum_file_data_caches_full_search_results_before_paging(self):
         class FakeCursor:
             def __init__(self):
