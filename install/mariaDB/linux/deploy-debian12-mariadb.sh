@@ -36,6 +36,9 @@ sqlWebFusion="/RFFusion/src/mariadb/scripts/createWebFusionDB.sql"
 repoRoot="/RFFusion-dev/RF.Fusion"
 projectRoot="$(dirname "$(realpath "$0")")"
 
+source "${projectRoot}/../../common/environment.sh"
+rffusion_load_environment "$repoRoot" mariadb
+
 # =======================================================================
 # 1. Contexto
 # =======================================================================
@@ -111,7 +114,7 @@ fi
 
 podman run -d \
   --name "${ContainerName}" \
-  --hostname "${ContainerName}" \
+  "${rffusion_identity_args[@]}" \
   --network "${NetworkName}" \
   --ip "${IPAddress}" \
   "${resourceArgs[@]}" \

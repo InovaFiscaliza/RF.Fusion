@@ -24,6 +24,9 @@ RuntimeHealthPublicKey="${RUNTIME_HEALTH_SSH_PUBLIC_KEY:-}"
 repoRoot="/RFFusion-dev/RF.Fusion"
 projectRoot="$(dirname "$(realpath "$0")")"
 
+source "${projectRoot}/../../common/environment.sh"
+rffusion_load_environment "$repoRoot" appcataloga
+
 # Ajuste importante:
 # /mnt/reposfi NÃO pode ter :Z porque o filesystem não suporta xattrs/SELinux
 volumes=(
@@ -98,7 +101,7 @@ fi
 args=(
     run -d
     --name "$ContainerName"
-    --hostname "$ContainerName"
+    "${rffusion_identity_args[@]}"
     --network "$NetworkName"
     --ip "$IPAddress"
 

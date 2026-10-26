@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+bash /RFFusion/install/common/container-identity.sh
+
 echo "=== [entrypoint] init MariaDB + SSH container ==="
 
 # -------------------------------------------------------------------

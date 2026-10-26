@@ -23,6 +23,16 @@ altamente mockados só para subir percentual de cobertura.
 
 ## Estrutura
 
+### `tests/install/`
+
+Valida a identificação dos ambientes nos deploys e nos prompts dos containers.
+Usa arquivos temporários e um Podman simulado; não cria containers nem inicia
+serviços. Execute no ambiente do appCataloga:
+
+```bash
+/opt/conda/envs/appdata/bin/python -m unittest discover -s test/tests/install -v
+```
+
 ### `tests/shared/`
 
 Testes determinísticos para utilitários compartilhados, como erros, filtros,

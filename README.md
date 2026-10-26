@@ -80,6 +80,7 @@ As pastas mais importantes sao:
 
 ```text
 RF.Fusion/
+├── .env/        # identificacao local de producao ou desenvolvimento
 ├── docs/        # diagramas e material de referencia
 ├── install/     # scripts de deploy dos containers
 ├── service/     # inicializacao automatica via systemd
@@ -88,6 +89,9 @@ RF.Fusion/
 ├── tools/       # utilitarios pontuais
 └── data/        # area de dados do projeto
 ```
+
+Antes do deploy dos containers, preencha a
+[configuração local do ambiente](.env/README.md).
 
 Dentro de `src/`, os subdiretorios principais sao:
 
