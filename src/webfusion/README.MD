@@ -36,6 +36,35 @@ do repositório sem transferi-los pelo processo Python.
 
 O NGINX remove `/rffusion` antes de encaminhar ao Flask. O `ProxyFix` em
 [app.py](app.py) utiliza `X-Forwarded-Prefix` para gerar os caminhos públicos.
+
+O diagrama abaixo acompanha a abertura da página de uma estação. O ID `42`
+é ilustrativo. WSGI é o padrão de comunicação entre o Waitress e a aplicação
+Flask; Jinja monta o HTML no servidor antes de enviá-lo ao navegador.
+
+```mermaid
+sequenceDiagram
+    participant N as Navegador
+    participant X as Nginx
+    participant W as Waitress
+    participant F as Flask
+    participant S as Serviço Python
+
+    N->>X: GET /rffusion/host?host_id=42
+    X->>W: GET /host?host_id=42
+    W->>F: Encaminha pelo padrão WSGI
+    F->>S: Consulta dados da estação 42
+    S-->>F: Dados
+    F-->>W: HTML montado com Jinja
+    W-->>X: Resposta HTTP
+    X-->>N: HTML
+    N->>X: Busca os arquivos CSS e JS
+    X-->>N: Arquivos estáticos
+```
+
+Depois de receber o HTML, o navegador aplica o CSS e executa o JavaScript.
+O JavaScript também pode consultar APIs para atualizar partes da tela sem
+carregar a página inteira novamente.
+
 As URLs de acesso são:
 
 | Acesso | URL-base |
