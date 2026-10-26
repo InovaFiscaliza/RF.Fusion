@@ -580,14 +580,6 @@ def list_file_tasks(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def list_tasks(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
-    """Route one maintenance table request to the chosen queue."""
-    queue_kind = filters["queue_kind"]
-    if queue_kind == QUEUE_FILE_TASK:
-        return list_file_tasks(db, filters)
-    return list_host_tasks(db, filters)
-
-
 def _history_order_by(db) -> str:
     """Use processing recency only after its supporting index is available."""
     cursor = db.cursor()

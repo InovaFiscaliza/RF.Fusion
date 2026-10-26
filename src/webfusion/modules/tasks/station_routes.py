@@ -99,19 +99,6 @@ TASK_ACTIONS = (
 # the form useful before an operator provides a family-specific override.
 
 
-def _safe_int_arg(name):
-    """Parse an optional integer query parameter without breaking the page."""
-    raw_value = request.args.get(name)
-
-    if raw_value in (None, ""):
-        return None
-
-    try:
-        return int(raw_value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _normalize_selected_task_type(raw_value):
     """
     Keep task-type selection pinned to the small set exposed by WebFusion.

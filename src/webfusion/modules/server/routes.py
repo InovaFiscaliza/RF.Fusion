@@ -156,7 +156,7 @@ def server():
 
     search = request.args.get("search") or None
     online_only = request.args.get("online_only", "0") == "1"
-    server_overview = get_server_overview(online_only=online_only, search=search)
+    server_overview = get_server_overview()
     server_summary_metrics_payload = None
 
     record_page_view()
