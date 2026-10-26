@@ -8,7 +8,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[3] / "src/webfusion/modules/host/service.py"
@@ -16,6 +16,9 @@ MODULE_PATH = Path(__file__).resolve().parents[3] / "src/webfusion/modules/host/
 
 def load_host_service():
     """Import the host service with lightweight DB stubs only."""
+    root = str(MODULE_PATH.parents[2])
+    if root not in sys.path:
+        sys.path.insert(0, root)
     stub_db = types.ModuleType("db")
     stub_db.get_connection_bpdata = lambda: None
     stub_db.get_connection_rfdata = lambda: None
@@ -49,18 +52,167 @@ class TestHostService(unittest.TestCase):
     def setUpClass(cls):
         cls.module = load_host_service()
 
-    def test_build_host_list_cache_key_normalizes_inputs(self):
-        self.assertEqual(
-            self.module._build_host_list_cache_key(
-                online_only=True,
-                search="  RFeye002274  ",
-            ),
-            (True, "rfeye002274"),
-        )
-        self.assertEqual(
-            self.module._build_host_list_cache_key(),
-            (False, ""),
-        )
+    def test_current_flags_read_live_host_instead_of_stale_summary_flags(self):
+        operational = MagicMock()
+        summary = MagicMock()
+        operational.cursor.return_value.fetchone.side_effect = [
+            {"IS_BUSY": 1, "IS_OFFLINE": 1},
+            {"IS_BUSY": 0, "IS_OFFLINE": 0},
+        ]
+        summary.cursor.return_value.fetchone.side_effect = [
+            {"IS_BUSY": 0, "IS_OFFLINE": 0, "IS_SSH_FAILURE": 1, "IS_GPS_GNSS_UNAVAILABLE": 1},
+            {"IS_BUSY": 1, "IS_OFFLINE": 1, "IS_SSH_FAILURE": 0, "IS_GPS_GNSS_UNAVAILABLE": 0},
+        ]
+        with patch.object(self.module, "get_connection_bpdata", return_value=operational), patch.object(
+            self.module, "get_connection_summary", return_value=summary,
+        ):
+            first = self.module.get_host_current_flags(73)
+            second = self.module.get_host_current_flags(73)
+
+        self.assertTrue(all(first.values()))
+        self.assertTrue(all(value is False for value in second.values()))
+        self.assertEqual(operational.close.call_count, 2)
+        self.assertEqual(summary.close.call_count, 2)
+
+    def test_missing_summary_does_not_report_healthy_signals(self):
+        operational = MagicMock()
+        summary = MagicMock()
+        operational.cursor.return_value.fetchone.return_value = {"IS_BUSY": 0, "IS_OFFLINE": 1}
+        summary.cursor.return_value.fetchone.return_value = None
+        with patch.object(self.module, "get_connection_bpdata", return_value=operational), patch.object(
+            self.module, "get_connection_summary", return_value=summary,
+        ):
+            flags = self.module.get_host_current_flags(73)
+
+        self.assertFalse(flags["IS_BUSY"])
+        self.assertTrue(flags["IS_OFFLINE"])
+        self.assertIsNone(flags["IS_SSH_FAILURE"])
+        self.assertIsNone(flags["IS_GPS_GNSS_UNAVAILABLE"])
+
+    def test_missing_operational_host_returns_no_flags(self):
+        operational = MagicMock()
+        operational.cursor.return_value.fetchone.return_value = None
+        with patch.object(self.module, "get_connection_bpdata", return_value=operational), patch.object(
+            self.module, "get_connection_summary",
+        ) as summary:
+            self.assertIsNone(self.module.get_host_current_flags(73))
+        operational.close.assert_called_once()
+        summary.assert_not_called()
+
+    def test_current_flags_close_connections_and_propagate_read_failures(self):
+        for failing_source in ("operational", "summary"):
+            with self.subTest(source=failing_source):
+                operational = MagicMock()
+                summary = MagicMock()
+                operational.cursor.return_value.fetchone.return_value = {"IS_BUSY": 0, "IS_OFFLINE": 0}
+                failing = operational if failing_source == "operational" else summary
+                failing.cursor.return_value.execute.side_effect = RuntimeError("read failed")
+                with patch.object(self.module, "get_connection_bpdata", return_value=operational), patch.object(
+                    self.module, "get_connection_summary", return_value=summary,
+                ), self.assertRaises(RuntimeError):
+                    self.module.get_host_current_flags(73)
+                operational.close.assert_called_once()
+                if failing_source == "summary":
+                    summary.close.assert_called_once()
+
+
+    def test_statistics_observe_new_summary_values_on_consecutive_reads(self):
+        with patch.object(self.module, "_get_host_current_snapshot_row", side_effect=[
+            {"ID_HOST": 73, "NU_BACKUP_DONE_FILES_TOTAL": 10},
+            {"ID_HOST": 73, "NU_BACKUP_DONE_FILES_TOTAL": 11},
+        ]), patch.object(self.module, "_get_host_monthly_metric_rows", return_value=[]):
+            first = self.module.get_host_statistics(73)
+            second = self.module.get_host_statistics(73)
+        self.assertEqual(first["BACKUP_DONE_FILES_TOTAL"], 10)
+        self.assertEqual(second["BACKUP_DONE_FILES_TOTAL"], 11)
+
+    def test_server_summary_observes_completed_files_without_waiting_for_ttl(self):
+        with patch.object(self.module, "_get_server_current_summary_row", side_effect=[
+            {"ID_SUMMARY": 1, "NU_BACKUP_DONE_FILES_TOTAL": 10},
+            {"ID_SUMMARY": 1, "NU_BACKUP_DONE_FILES_TOTAL": 11},
+        ]):
+            first = self.module.get_server_summary_metrics()
+            second = self.module.get_server_summary_metrics()
+        self.assertEqual(first["BACKUP_DONE_FILES_TOTAL"], 10)
+        self.assertEqual(second["BACKUP_DONE_FILES_TOTAL"], 11)
+
+    def test_server_overview_reads_host_state_changes_independently_of_table_filters(self):
+        runtime = {"memory": {}, "reposfi": {}, "appanalise": {}}
+        with patch.object(self.module, "_get_server_current_summary_row", side_effect=[
+            {"NU_ONLINE_HOSTS": 9}, {"NU_ONLINE_HOSTS": 10},
+        ]), patch.object(self.module, "_get_runtime_overview", return_value=runtime):
+            self.assertEqual(self.module.get_server_overview()["ONLINE_HOSTS"], 9)
+            self.assertEqual(self.module.get_server_overview(online_only=True, search="Station")["ONLINE_HOSTS"], 10)
+
+    def test_server_diagnostics_observe_resolved_errors_without_waiting_for_ttl(self):
+        for phase in ("backup", "processing"):
+            with self.subTest(phase=phase), patch.object(
+                self.module, "_get_server_error_summary_rows", side_effect=[
+                    [{"ERROR_CODE": "ERROR", "ERROR_SUMMARY": "Failure", "ERROR_COUNT": 2}], [],
+                ],
+            ):
+                read = getattr(self.module, f"get_server_{phase}_error_overview")
+                self.assertEqual(read()["error_total_occurrences"], 2)
+                self.assertEqual(read()["error_total_occurrences"], 0)
+
+    def test_server_table_reads_current_rows_and_preserves_filters(self):
+        with patch.object(self.module, "_get_summary_host_rows", side_effect=[
+            [{"IS_OFFLINE": 0, "IS_BUSY": 1}], [{"IS_OFFLINE": 0, "IS_BUSY": 0}],
+        ]) as read:
+            first = self.module.get_hosts(search="Station", online_only=True)
+            second = self.module.get_hosts(search="Station", online_only=True)
+        self.assertEqual(first[0]["BUSY_LABEL"], "Busy")
+        self.assertEqual(second[0]["BUSY_LABEL"], "Idle")
+        self.assertEqual(read.call_count, 2)
+        read.assert_called_with(search="Station", online_only=True)
+
+    def test_ping_cache_expires_and_cannot_be_mutated_by_callers(self):
+        self.module._APPANALISE_STATUS_CACHE.update(payload=None, expires_at=0.0)
+        with patch.object(self.module.time, "monotonic", return_value=100.0) as clock, patch.object(
+            self.module, "_check_appanalise_status", side_effect=[{"online": False}, {"online": True}],
+        ) as probe:
+            first = self.module._get_cached_appanalise_status()
+            first["online"] = True
+            self.assertFalse(self.module._get_cached_appanalise_status()["online"])
+            self.assertEqual(probe.call_count, 1)
+            clock.return_value = 116.0
+            self.assertTrue(self.module._get_cached_appanalise_status()["online"])
+            self.assertEqual(probe.call_count, 2)
+        self.module._APPANALISE_STATUS_CACHE.update(payload=None, expires_at=0.0)
+
+    def test_memory_and_disk_are_not_frozen_by_the_ping_cache(self):
+        memory = {"total_bytes": 100, "used_bytes": 10, "available_bytes": 90}
+        with patch.object(self.module, "_read_meminfo", side_effect=[memory, {**memory, "used_bytes": 20}]), patch.object(
+            self.module, "_get_reposfi_usage", side_effect=[{"used_bytes": 10}, {"used_bytes": 20}],
+        ), patch.object(self.module, "_get_cached_appanalise_status", return_value={"online": True}):
+            first = self.module._get_runtime_overview()
+            second = self.module._get_runtime_overview()
+        self.assertEqual(first["memory"]["used_bytes"], 10)
+        self.assertEqual(second["memory"]["used_bytes"], 20)
+        self.assertEqual(second["reposfi"]["used_bytes"], 20)
+
+    def test_host_picker_observes_connectivity_changes_on_consecutive_reads(self):
+        connection = MagicMock()
+        connection.cursor.return_value.fetchall.side_effect = [
+            [{"ID_HOST": 73, "NA_HOST_NAME": "Station", "IS_OFFLINE": 1}],
+            [{"ID_HOST": 73, "NA_HOST_NAME": "Station", "IS_OFFLINE": 0}],
+        ]
+        with patch.object(self.module, "get_connection_summary", return_value=connection):
+            first = self.module.get_all_hosts()
+            second = self.module.get_all_hosts()
+        self.assertEqual(first[0]["IS_OFFLINE"], 1)
+        self.assertEqual(second[0]["IS_OFFLINE"], 0)
+
+    def test_host_diagnostics_observe_resolved_errors_on_consecutive_reads(self):
+        for phase in ("backup", "processing"):
+            with self.subTest(phase=phase), patch.object(
+                self.module, "_get_host_error_summary_rows", side_effect=[
+                    [{"ERROR_CODE": "ERROR", "ERROR_SUMMARY": "Failure", "ERROR_COUNT": 2}], [],
+                ],
+            ):
+                read = getattr(self.module, f"get_host_{phase}_error_overview")
+                self.assertEqual(read(73)["error_total_occurrences"], 2)
+                self.assertEqual(read(73)["error_total_occurrences"], 0)
 
     def test_operational_metrics_snapshot_keeps_only_appcataloga_contract(self):
         with patch.object(
@@ -677,8 +829,6 @@ class TestHostService(unittest.TestCase):
         )
         summary_connection = FakeConnection(summary_cursor)
 
-        self.module._SERVER_SUMMARY_CACHE["payload"] = None
-        self.module._SERVER_SUMMARY_CACHE["expires_at"] = 0.0
 
         with patch.object(self.module.time, "monotonic", return_value=100.0):
             with patch.object(
@@ -744,8 +894,6 @@ class TestHostService(unittest.TestCase):
         )
         summary_connection = FakeConnection(summary_cursor)
 
-        self.module._GROUPED_PROCESSING_ERRORS_CACHE["payload"] = None
-        self.module._GROUPED_PROCESSING_ERRORS_CACHE["expires_at"] = 0.0
 
         with patch.object(self.module.time, "monotonic", return_value=100.0):
             with patch.object(
@@ -801,8 +949,6 @@ class TestHostService(unittest.TestCase):
         )
         summary_connection = FakeConnection(summary_cursor)
 
-        self.module._SERVER_OVERVIEW_CACHE["payload"] = None
-        self.module._SERVER_OVERVIEW_CACHE["expires_at"] = 0.0
 
         with patch.object(self.module.time, "monotonic", return_value=100.0):
             with patch.object(
@@ -956,8 +1102,6 @@ class TestHostService(unittest.TestCase):
         )
         monthly_connection = FakeConnection(monthly_cursor)
 
-        self.module._HOST_STATISTICS_CACHE.clear()
-
         with patch.object(self.module.time, "monotonic", return_value=100.0):
             with patch.object(
                 self.module,
@@ -1050,7 +1194,6 @@ class TestHostService(unittest.TestCase):
         )
         summary_connection = FakeConnection(summary_cursor)
 
-        self.module._SERVER_HOST_ROWS_CACHE.clear()
 
         with patch.object(self.module.time, "monotonic", return_value=100.0):
             with patch.object(

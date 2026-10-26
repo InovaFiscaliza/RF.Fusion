@@ -192,7 +192,6 @@
 
         const meta = panel.querySelector(options.metaSelector);
         const rowsContainer = panel.querySelector(options.rowsSelector);
-        let loaded = false;
         let loading = false;
 
         /* The compact meta line above each table gives the operator immediate
@@ -234,11 +233,11 @@
 
         /* The native `<details>` `toggle` event gives us a clean UX contract:
          * only spend backend work when the operator signals interest by
-         * expanding the panel. The `loaded/loading` flags prevent duplicate
-         * requests during fast repeated toggles or double-open scenarios.
+         * expanding the panel. Reopening reads current diagnostics; the
+         * loading guard prevents overlapping requests.
          */
-        panel.addEventListener("toggle", async () => {
-            if (!panel.open || loaded || loading || !rowsContainer) {
+        async function loadDiagnostics() {
+            if (!panel.open || loading || !rowsContainer || document.hidden) {
                 return;
             }
 
@@ -251,11 +250,13 @@
             `;
 
             try {
-                const response = await fetch(options.url(hostId));
+                const response = await fetch(options.url(hostId), { cache: "no-store" });
+                if (!response.ok) {
+                    throw new Error("diagnostics_request_failed");
+                }
                 const payload = await response.json();
                 buildRows(payload.rows || []);
                 setMeta(`${payload.error_group_count || 0} tipos / ${payload.error_total_occurrences || 0} ocorrências`);
-                loaded = true;
             } catch (error) {
                 rowsContainer.innerHTML = `
                     <tr>
@@ -266,7 +267,92 @@
             } finally {
                 loading = false;
             }
+        }
+        panel.addEventListener("toggle", loadDiagnostics);
+        root.addEventListener("host-statistics-refresh", loadDiagnostics);
+    }
+
+    function renderStatistics(statistics) {
+        root.querySelectorAll("[data-host-statistic]").forEach((element) => {
+            const key = element.dataset.hostStatistic;
+            if (!Object.prototype.hasOwnProperty.call(statistics, key)) {
+                return;
+            }
+            const fallback = element.dataset.hostStatisticFallback;
+            const value = statistics[key];
+            const label = fallback !== undefined && !value ? fallback : (value ?? "-");
+            element.textContent = `${label}${element.dataset.hostStatisticSuffix || ""}`;
         });
+        root.querySelectorAll("[data-host-discovery-status]").forEach((element) => {
+            const hasDiscovery = Boolean(statistics.DT_LAST_DISCOVERY_COMPLETED_AT);
+            const hasFiles = hasDiscovery && Number(statistics.NU_LAST_DISCOVERY_FILE_COUNT) > 0;
+            element.textContent = !hasDiscovery ? "Sem discovery registrada"
+                : hasFiles ? "Encontrou arquivos novos" : "Sem arquivos novos na última discovery";
+            element.classList.toggle("status-online", hasFiles);
+            element.classList.toggle("status-idle", !hasFiles);
+        });
+        root.querySelectorAll("[data-host-yearly]").forEach((element) => {
+            const rows = statistics[element.dataset.hostYearly];
+            if (!Array.isArray(rows)) {
+                return;
+            }
+            const columns = element.dataset.hostYearlyColumns.split(",");
+            element.innerHTML = rows.length
+                ? rows.map((row) => `<tr>${columns.map((key) => `<td>${escapeHtml(row[key] ?? 0)}</td>`).join("")}</tr>`).join("")
+                : `<tr><td colspan="${columns.length}">${escapeHtml(element.dataset.hostYearlyEmpty)}</td></tr>`;
+        });
+    }
+
+    function bindStatisticsRefresh() {
+        if (!hostId) {
+            return;
+        }
+        const refreshMilliseconds = 10000;
+        const status = root.querySelector("[data-host-statistics-status]");
+        let timer = null;
+        let loading = false;
+
+        function scheduleRefresh() {
+            window.clearTimeout(timer);
+            timer = document.hidden ? null : window.setTimeout(loadStatistics, refreshMilliseconds);
+        }
+
+        async function loadStatistics() {
+            if (loading || document.hidden) {
+                return;
+            }
+            loading = true;
+            root.dispatchEvent(new Event("host-statistics-refresh"));
+            try {
+                const response = await fetch(webfusionUrl(`/api/host/${hostId}/statistics`), { cache: "no-store" });
+                if (!response.ok) {
+                    throw new Error("statistics_request_failed");
+                }
+                const payload = await response.json();
+                if (!payload.statistics || typeof payload.statistics !== "object") {
+                    throw new Error("statistics_payload_missing");
+                }
+                renderStatistics(payload.statistics);
+                if (status) {
+                    status.textContent = "";
+                }
+            } catch (error) {
+                if (status) {
+                    status.textContent = "Não foi possível atualizar os dados. Exibindo os últimos valores recebidos.";
+                }
+            } finally {
+                loading = false;
+                scheduleRefresh();
+            }
+        }
+
+        document.addEventListener("visibilitychange", () => {
+            window.clearTimeout(timer);
+            if (!document.hidden) {
+                loadStatistics();
+            }
+        });
+        scheduleRefresh();
     }
 
     /* Live activity intentionally has a separate lightweight endpoint from the
@@ -281,7 +367,12 @@
         const timestamp = panel?.querySelector("[data-host-activity-timestamp]");
         const status = panel?.querySelector("[data-host-activity-status]");
         const openButton = panel?.querySelector("[data-host-activity-open]");
-        const operationalBusy = document.querySelector("[data-host-operational-busy]");
+        const operationalFlags = [
+            ["IS_BUSY", document.querySelector("[data-host-operational-busy]"), "Ocupada", "Disponível", "status-busy", "status-idle"],
+            ["IS_OFFLINE", document.querySelector("[data-host-operational-offline]"), "Offline", "Online", "status-offline", "status-online"],
+            ["IS_SSH_FAILURE", document.querySelector("[data-host-operational-ssh]"), "Falha SSH ativa", "SSH disponível", "status-warning", "status-online"],
+            ["IS_GPS_GNSS_UNAVAILABLE", document.querySelector("[data-host-operational-gps]"), "GPS/GNSS indisponível", "GPS/GNSS disponível", "status-warning", "status-online"],
+        ];
 
         if (!hostId || !panel || !title || !message || !timestamp || !status || !openButton) {
             return;
@@ -439,17 +530,18 @@
             element.textContent = activity.status_label || "Em andamento";
         }
 
-        function setOperationalBusy(activity) {
-            if (!operationalBusy) {
-                return;
-            }
-
-            const isBusy = activity
-                ? true
-                : operationalBusy.dataset.hostOperationalBusyInitial === "1";
-            operationalBusy.classList.toggle("status-busy", isBusy);
-            operationalBusy.classList.toggle("status-idle", !isBusy);
-            operationalBusy.textContent = isBusy ? "Ocupada" : "Disponível";
+        function renderOperationalFlags(flags) {
+            // Task presence does not describe the host lock or connectivity.
+            operationalFlags.forEach(([key, element, activeLabel, inactiveLabel, activeClass, inactiveClass]) => {
+                if (!element) {
+                    return;
+                }
+                const value = flags?.[key];
+                const available = typeof value === "boolean";
+                element.classList.remove("status-busy", "status-idle", "status-online", "status-offline", "status-warning");
+                element.classList.add(available ? (value ? activeClass : inactiveClass) : "status-warning");
+                element.textContent = available ? (value ? activeLabel : inactiveLabel) : "Estado indisponível";
+            });
         }
 
         function activityMessage(activity) {
@@ -466,7 +558,6 @@
         function renderCurrentActivity(activity) {
             currentActivity = activity || null;
             setStatusBadge(status, currentActivity);
-            setOperationalBusy(currentActivity);
 
             if (!currentActivity) {
                 title.textContent = "Nenhuma tarefa em andamento";
@@ -713,9 +804,10 @@
         async function fetchCurrentActivity() {
             const response = await fetch(
                 webfusionUrl(`/api/host/${hostId}/activity`),
-                { credentials: "same-origin", headers: { Accept: "application/json" } },
+                { cache: "no-store", credentials: "same-origin", headers: { Accept: "application/json" } },
             );
             const payload = await readJson(response);
+            renderOperationalFlags(payload.flags);
             return payload.activity || null;
         }
 
@@ -723,6 +815,7 @@
             try {
                 renderCurrentActivity(await fetchCurrentActivity());
             } catch (error) {
+                renderOperationalFlags(null);
                 title.textContent = "Atividade indisponível";
                 message.textContent = error.message || "Não foi possível consultar a atividade agora.";
                 timestamp.textContent = "";
@@ -900,6 +993,7 @@
 
     bindLocationHistoryLoader();
     bindCurrentActivity();
+    bindStatisticsRefresh();
 
     bindDiagnosticPanel(document.querySelector("[data-host-error-panel]"), {
         metaSelector: "[data-host-error-meta]",

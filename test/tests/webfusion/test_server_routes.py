@@ -48,7 +48,11 @@ def load_server_routes():
 
             return decorator
 
+        def after_request(self, callback):
+            return callback
+
     fake_flask.Blueprint = FakeBlueprint
+    fake_flask.Response = dict
     fake_flask.current_app = SimpleNamespace(
         logger=SimpleNamespace(
             exception=lambda *args, **kwargs: None,
@@ -169,6 +173,36 @@ class TestServerUsageMetrics(unittest.TestCase):
         self.assertEqual(usage_metrics["totals"]["nginx_download_count"], 0)
         self.assertTrue(usage_metrics["current_year_label"])
         self.assertTrue(usage_metrics["current_month_label"])
+
+    def test_operational_poll_does_not_ingest_logs_or_record_navigation(self):
+        with patch.object(self.routes, "get_usage_metrics_snapshot") as usage, patch.object(
+            self.routes, "record_page_view",
+        ) as navigation:
+            response = self.routes.server_overview()
+        self.assertEqual(response["overview"]["ONLINE_HOSTS"], 7)
+        self.assertEqual(response["summary"]["DISCOVERED_FILES_TOTAL"], 99)
+        usage.assert_not_called()
+        navigation.assert_not_called()
+
+    def test_server_responses_prevent_storage_without_overriding_health_policy(self):
+        response = self.routes.server_overview()
+        self.routes._prevent_display_cache(response)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        health = self.routes.server_runtime_health()
+        self.routes._prevent_display_cache(health)
+        self.assertEqual(health.headers["Cache-Control"], "no-store, max-age=0")
+
+    def test_operational_poll_reports_read_failure(self):
+        with patch.object(self.routes, "get_server_overview", side_effect=RuntimeError("read failed")):
+            response, status = self.routes.server_overview()
+        self.assertEqual(status, 503)
+        self.assertIn("error", response)
+
+    def test_host_table_failure_is_not_reported_as_an_empty_fleet(self):
+        with patch.object(self.routes, "get_hosts", side_effect=RuntimeError("read failed")):
+            response, status = self.routes.server_hosts()
+        self.assertEqual(status, 503)
+        self.assertNotIn("count", response)
 
     def test_download_action_endpoint_counts_ui_clicks(self):
         payload, status_code = self.routes.server_download_action_metric()

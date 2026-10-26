@@ -23,7 +23,9 @@
     data-processing-errors-endpoint="{{ url_for('server.server_processing_errors') }}"
     data-backup-errors-endpoint="{{ url_for('server.server_backup_errors') }}"
     data-usage-metrics-endpoint="{{ url_for('server.server_usage_metrics') }}"
-    data-summary-metrics-endpoint="{{ url_for('server.server_summary_metrics') }}"
+    data-overview-endpoint="{{ url_for('server.server_overview') }}"
+    data-refresh-milliseconds="{{ refresh_milliseconds }}"
+    data-search="{{ search or '' }}"
     data-runtime-health-endpoint="{{ url_for('server.server_runtime_health') }}"
     data-summary-metrics-initial-loaded="{{ '1' if server_summary_metrics else '0' }}"
 >
@@ -46,6 +48,7 @@
             <div class="server-section-head">
                 <div class="server-section-kicker">Visão rápida</div>
                 <h2 class="server-section-title">Panorama das Estações</h2>
+                <p class="server-section-copy" data-server-refresh-status role="status"></p>
                 <p class="server-section-copy">
                     Leitura imediata da frota cadastrada e do estado operacional atual das estações.
                 </p>
@@ -53,19 +56,19 @@
             <div class="summary-grid server-summary-grid server-summary-grid--compact">
                 <div class="summary-card">
                     <div class="summary-card-label">Cadastradas</div>
-                    <div class="summary-card-value">{{ server_overview.TOTAL_HOSTS }}</div>
+                    <div class="summary-card-value" data-server-total="TOTAL_HOSTS">{{ server_overview.TOTAL_HOSTS }}</div>
                 </div>
                 <div class="summary-card">
                     <div class="summary-card-label">Online</div>
-                    <div class="summary-card-value">{{ server_overview.ONLINE_HOSTS }}</div>
+                    <div class="summary-card-value" data-server-total="ONLINE_HOSTS">{{ server_overview.ONLINE_HOSTS }}</div>
                 </div>
                 <div class="summary-card">
                     <div class="summary-card-label">Offline</div>
-                    <div class="summary-card-value">{{ server_overview.OFFLINE_HOSTS }}</div>
+                    <div class="summary-card-value" data-server-total="OFFLINE_HOSTS">{{ server_overview.OFFLINE_HOSTS }}</div>
                 </div>
                 <div class="summary-card">
                     <div class="summary-card-label">Ocupadas</div>
-                    <div class="summary-card-value">{{ server_overview.BUSY_HOSTS }}</div>
+                    <div class="summary-card-value" data-server-total="BUSY_HOSTS">{{ server_overview.BUSY_HOSTS }}</div>
                 </div>
             </div>
         </section>
@@ -220,23 +223,23 @@
             <div class="summary-grid server-summary-grid server-summary-grid--compact">
                 <div class="summary-card">
                     <div class="summary-card-label">Uso de Memória RAM</div>
-                    <div class="summary-card-value">
+                    <div class="summary-card-value" data-server-memory-value>
                         {{ server_overview.SERVER_MEMORY.used_human }}/{{ server_overview.SERVER_MEMORY.total_human }}
                     </div>
-                    <div class="summary-card-note">
+                    <div class="summary-card-note" data-server-memory-note>
                         Disponível {{ server_overview.SERVER_MEMORY.available_human }} | Uso {{ server_overview.SERVER_MEMORY.use_percent }}%
                     </div>
                 </div>
                 <div class="summary-card">
                     <div class="summary-card-label">Repositório Oficial</div>
-                    <div class="summary-card-value">
+                    <div class="summary-card-value" data-server-disk-value>
                         {% if server_overview.REPOSFI_USAGE.mounted %}
                         {{ server_overview.REPOSFI_USAGE.used_human }}/{{ server_overview.REPOSFI_USAGE.total_human }}
                         {% else %}
                         Indisponível
                         {% endif %}
                     </div>
-                    <div class="summary-card-note">
+                    <div class="summary-card-note" data-server-disk-note>
                         {% if server_overview.REPOSFI_USAGE.mounted %}
                         Livre {{ server_overview.REPOSFI_USAGE.free_human }} | Uso {{ server_overview.REPOSFI_USAGE.use_percent }}%
                         {% else %}
@@ -246,14 +249,14 @@
                 </div>
                 <div class="summary-card">
                     <div class="summary-card-label">appAnalise</div>
-                    <div class="summary-card-value {% if server_overview.APP_ANALISE_STATUS.online %}summary-card-value-online{% else %}summary-card-value-offline{% endif %}">
+                    <div class="summary-card-value {% if server_overview.APP_ANALISE_STATUS.online %}summary-card-value-online{% else %}summary-card-value-offline{% endif %}" data-server-appanalise-value>
                         {% if server_overview.APP_ANALISE_STATUS.online %}
                         Online
                         {% else %}
                         Offline
                         {% endif %}
                     </div>
-                    <div class="summary-card-note">
+                    <div class="summary-card-note" data-server-appanalise-note>
                         {{ server_overview.APP_ANALISE_STATUS.host or "-" }}
                         {% if server_overview.APP_ANALISE_STATUS.online %}
                         | ping {{ server_overview.APP_ANALISE_STATUS.latency_ms }} ms
@@ -268,7 +271,7 @@
                     <span>
                         <span class="server-runtime-health-title">Saúde dos Containers</span>
                         <span class="server-runtime-health-copy">
-                            Verificação atual de WebFusion, appCataloga e MariaDB. Esta leitura não consulta o banco e não usa valores anteriores.
+                            Verificação de WebFusion, appCataloga e MariaDB, consultada ao abrir o painel.
                         </span>
                     </span>
                 </summary>
@@ -755,5 +758,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/server_page.js', v='20260826-host-table-filter') }}"></script>
+<script src="{{ url_for('static', filename='js/server_page.js', v='20261026-server-live-metrics') }}"></script>
 {% endblock %}

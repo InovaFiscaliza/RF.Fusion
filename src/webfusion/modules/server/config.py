@@ -1,4 +1,7 @@
-"""Configure stable NGINX download checkpoints without filesystem identifiers."""
+"""Configure server display refresh, bounded probes and NGINX checkpoints."""
 
 NGINX_CHECKPOINT_HASH_PREFIX = "sha256:"
 NGINX_CHECKPOINT_READ_BYTES = 1024 * 1024
+
+APPANALISE_STATUS_CACHE_TTL_SECONDS = 15.0
+SERVER_REFRESH_MILLISECONDS = 10000
