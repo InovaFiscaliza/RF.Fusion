@@ -36,6 +36,35 @@ do repositório sem transferi-los pelo processo Python.
 
 O NGINX remove `/rffusion` antes de encaminhar ao Flask. O `ProxyFix` em
 [app.py](app.py) utiliza `X-Forwarded-Prefix` para gerar os caminhos públicos.
+
+O diagrama abaixo acompanha a abertura da página de uma estação. O ID `42`
+é ilustrativo. WSGI é o padrão de comunicação entre o Waitress e a aplicação
+Flask; Jinja monta o HTML no servidor antes de enviá-lo ao navegador.
+
+```mermaid
+sequenceDiagram
+    participant N as Navegador
+    participant X as Nginx
+    participant W as Waitress
+    participant F as Flask
+    participant S as Serviço Python
+
+    N->>X: GET /rffusion/host?host_id=42
+    X->>W: GET /host?host_id=42
+    W->>F: Encaminha pelo padrão WSGI
+    F->>S: Consulta dados da estação 42
+    S-->>F: Dados
+    F-->>W: HTML montado com Jinja
+    W-->>X: Resposta HTTP
+    X-->>N: HTML
+    N->>X: Busca os arquivos CSS e JS
+    X-->>N: Arquivos estáticos
+```
+
+Depois de receber o HTML, o navegador aplica o CSS e executa o JavaScript.
+O JavaScript também pode consultar APIs para atualizar partes da tela sem
+carregar a página inteira novamente.
+
 As URLs de acesso são:
 
 | Acesso | URL-base |
@@ -233,6 +262,21 @@ também fornece uma leitura plana para o template Zabbix RFFusion_server:
 O payload é JSON simples. Valores de memória, repositório e volume são expostos
 em bytes nas chaves correspondentes, para consumo numérico direto pelo Zabbix.
 
+`GET /api/server/overview` fornece os totais de estações, métricas de arquivos,
+memória, disco e disponibilidade do appAnalise. Cards consultam esse endpoint a
+cada dez segundos enquanto a aba estiver visível, sem ingerir logs de uso nem
+registrar visualizações de página. Falhas preservam os últimos valores e
+exibem aviso; o próximo ciclo tenta novamente.
+
+Totais, tabela de estações e diagnósticos consultam o SUMMARY sem cache de
+exibição. A tabela preserva seus filtros e os painéis detalhados são atualizados
+somente enquanto estiverem abertos. Memória e disco são lidos a cada consulta;
+apenas o ping do appAnalise mantém cache de 15 segundos, separado dos totais.
+Os resultados continuam dependendo da atualização do SUMMARY pelo appCataloga.
+Respostas do servidor não devem ser armazenadas pelo navegador ou por proxies.
+As métricas de uso ficam fora da atualização periódica, pois sua leitura também
+ingere os logs do NGINX.
+
 O card "Saúde dos Containers" é consultado manualmente e não depende de
 BPDATA, RFDATA ou RFFUSION_SUMMARY. A cada clique, o WebFusion verifica o seu
 Nginx, Waitress e endpoint interno; em paralelo, chama por SSH os scripts
@@ -335,6 +379,21 @@ antigo: mudanças Python exigem recarregar o WebFusion pelo procedimento de depl
 histórico. O teste de conectividade cria uma tarefa prioritária e a janela
 acompanha seu progresso sem executar ICMP ou SSH no WebFusion.
 
+- GET /api/host/<host_id>/activity: consulta a atividade e as flags a cada
+  três segundos. `IS_BUSY` e `IS_OFFLINE` vêm diretamente de `BPDATA.HOST`;
+  sinais SSH e GPS/GNSS vêm do snapshot canônico no SUMMARY, sem cache de
+  exibição. Uma tarefa aguardando não implica lock ocupado. Sinais ausentes
+  e falhas de consulta aparecem como estado indisponível.
+- GET /api/host/<host_id>/statistics: cards, marcos operacionais e tabelas
+  anuais consultam o SUMMARY sem cache de exibição. A página atualiza esses
+  valores a cada dez segundos enquanto estiver visível. Falhas preservam os
+  últimos valores e exibem aviso de atualização indisponível.
+- O seletor de estações consulta o SUMMARY a cada solicitação. Diagnósticos de
+  backup e processamento também não têm cache: são consultados ao abrir o painel
+  e a cada ciclo de atualização enquanto ele estiver aberto.
+- A linha do tempo de localidades mantém cache de 120 segundos no serviço e
+  uma leitura por abertura da página, sem atualização periódica. Totais e
+  diagnósticos continuam dependendo da atualização do SUMMARY pelo appCataloga.
 - POST /api/host/<host_id>/connectivity-test
 - GET /api/host/<host_id>/connectivity-test/<task_id>
 

@@ -24,7 +24,6 @@ API_METHOD_USER_MACRO_UPDATE = "usermacro.update"
 
 MACRO_TYPE_TEXT = "0"
 MACRO_TYPE_SECRET = "1"
-MACRO_TYPE_VAULT = "2"
 
 # This macro carries the Zabbix primary key used by appCataloga. It must not
 # become a host-level override through the WebFusion configuration screen.

@@ -9,7 +9,7 @@ This module is where WebFusion reconciles three different kinds of information:
 
 The `/server` and `/host` pages share much of that meaning, so the service code
 stays together here instead of duplicating SQL, caching, and error-grouping
-rules across several files. Runtime probes use short TTL caches; the
+rules across several files. Only ICMP probes and location history use TTL caches; the
 appCataloga-compatible host snapshot intentionally reads the materialized row
 directly so a collector never receives WebFusion display fields.
 """
@@ -20,58 +20,19 @@ import shutil
 import subprocess
 import time
 from datetime import datetime
+from threading import Lock
 
 from db import get_connection_bpdata, get_connection_rfdata, get_connection_summary
+from modules.server.config import APPANALISE_STATUS_CACHE_TTL_SECONDS
 
 
-_RUNTIME_OVERVIEW_CACHE = {
-    "expires_at": 0.0,
-    "payload": None,
-}
-
-_SERVER_OVERVIEW_CACHE = {
-    "expires_at": 0.0,
-    "payload": None,
-}
-
-_SERVER_SUMMARY_CACHE = {
-    "expires_at": 0.0,
-    "payload": None,
-}
-
-_GROUPED_PROCESSING_ERRORS_CACHE = {
-    "expires_at": 0.0,
-    "payload": None,
-}
-
-_GROUPED_BACKUP_ERRORS_CACHE = {
-    "expires_at": 0.0,
-    "payload": None,
-}
-
-_HOST_PROCESSING_ERRORS_CACHE = {}
-_HOST_BACKUP_ERRORS_CACHE = {}
-_HOST_LIST_CACHE = {}
-_SERVER_HOST_ROWS_CACHE = {}
+_APPANALISE_STATUS_CACHE = {"expires_at": 0.0, "payload": None}
+_APPANALISE_STATUS_LOCK = Lock()
 
 _HOST_LOCATION_HISTORY_CACHE = {}
 
-_HOST_STATISTICS_CACHE = {}
 
-# Runtime probes, grouped diagnostics and per-host detail views have different
-# costs and different freshness expectations, so the service keeps them on
-# separate TTL buckets instead of one shared cache.
-RUNTIME_OVERVIEW_CACHE_TTL_SECONDS = 120.0
-SERVER_OVERVIEW_CACHE_TTL_SECONDS = 120.0
-SERVER_SUMMARY_CACHE_TTL_SECONDS = 120.0
-GROUPED_PROCESSING_ERRORS_CACHE_TTL_SECONDS = 120.0
-GROUPED_BACKUP_ERRORS_CACHE_TTL_SECONDS = 120.0
-HOST_PROCESSING_ERRORS_CACHE_TTL_SECONDS = 120.0
-HOST_BACKUP_ERRORS_CACHE_TTL_SECONDS = 120.0
-HOST_LIST_CACHE_TTL_SECONDS = 60.0
-SERVER_HOST_ROWS_CACHE_TTL_SECONDS = 60.0
 HOST_LOCATION_HISTORY_CACHE_TTL_SECONDS = 120.0
-HOST_STATISTICS_CACHE_TTL_SECONDS = 60.0
 
 # These values are the durable BPDATA queue contract shared with appCataloga.
 # They stay named here because this read-only WebFusion view must distinguish
@@ -328,19 +289,6 @@ def _merge_grouped_processing_errors(rows):
         merged.values(),
         key=lambda item: (-item["ERROR_COUNT"], item["ERROR_MESSAGE"]),
     )
-
-
-def _clone_rows(rows):
-    """Return a shallow copy of row dictionaries kept inside TTL caches."""
-
-    return [dict(row) for row in rows]
-
-
-def _build_host_list_cache_key(*, online_only=False, search=None):
-    """Normalize filter inputs used by host-list TTL caches."""
-
-    normalized_search = (search or "").strip().lower()
-    return (bool(online_only), normalized_search)
 
 
 def _format_structured_error_bucket(row, *, default_label):
@@ -710,21 +658,46 @@ def _check_appanalise_status():
     return status
 
 
-def _get_runtime_overview():
-    """Build the small infrastructure snapshot shown in the server page.
+def _get_cached_appanalise_status() -> dict[str, object]:
+    """Reuse only the ICMP probe briefly across dashboard requests.
 
-    These values change more often than the historical SQL aggregates, so they
-    use a separate and shorter cache.
+    Args:
+        None.
+
+    Returns:
+        Copy of the ping status dictionary from _check_appanalise_status.
+        The expiry starts after the probe completes; failures expire normally.
+
+    Raises:
+        Exception: Unexpected probe failure.
     """
+    with _APPANALISE_STATUS_LOCK:
+        now = time.monotonic()
+        if _APPANALISE_STATUS_CACHE["payload"] is not None and _APPANALISE_STATUS_CACHE["expires_at"] > now:
+            return dict(_APPANALISE_STATUS_CACHE["payload"])
+        status = _check_appanalise_status()
+        _APPANALISE_STATUS_CACHE["payload"] = dict(status)
+        _APPANALISE_STATUS_CACHE["expires_at"] = time.monotonic() + APPANALISE_STATUS_CACHE_TTL_SECONDS
+        return status
 
-    now = time.monotonic()
 
-    if _RUNTIME_OVERVIEW_CACHE["payload"] and _RUNTIME_OVERVIEW_CACHE["expires_at"] > now:
-        return _RUNTIME_OVERVIEW_CACHE["payload"]
+def _get_runtime_overview() -> dict[str, object]:
+    """Read memory and disk now while reusing only the short-lived ICMP probe.
+
+    Args:
+        None.
+
+    Returns:
+        Dictionary with memory and reposfi (numeric measurements and human
+        volume labels) and appanalise (ping status dictionary).
+
+    Raises:
+        Exception: Infrastructure read failure.
+    """
 
     memory = _read_meminfo()
     reposfi = _get_reposfi_usage()
-    appanalise = _check_appanalise_status()
+    appanalise = _get_cached_appanalise_status()
 
     payload = {
         "memory": {
@@ -741,9 +714,6 @@ def _get_runtime_overview():
         },
         "appanalise": appanalise,
     }
-
-    _RUNTIME_OVERVIEW_CACHE["payload"] = payload
-    _RUNTIME_OVERVIEW_CACHE["expires_at"] = now + RUNTIME_OVERVIEW_CACHE_TTL_SECONDS
 
     return payload
 
@@ -1239,6 +1209,64 @@ def _read_file_history_activity(
     }
 
 
+def get_host_current_flags(host_id: int) -> dict[str, bool | None] | None:
+    """Read current host flags without the display cache or task inference.
+
+    Args:
+        host_id: Operational host identifier. Type: int.
+
+    Returns:
+        None if HOST does not exist. Otherwise a dictionary with required
+        boolean keys IS_BUSY and IS_OFFLINE from BPDATA.HOST, and required
+        IS_SSH_FAILURE and IS_GPS_GNSS_UNAVAILABLE keys from the canonical
+        summary row. Missing signal values are None, meaning unavailable.
+
+    Raises:
+        Exception: If either database read fails.
+    """
+    connection = get_connection_bpdata()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            "SELECT IS_BUSY, IS_OFFLINE FROM HOST WHERE ID_HOST = %s",
+            (host_id,),
+        )
+        host = cursor.fetchone()
+    finally:
+        connection.close()
+
+    if not host:
+        return None
+
+    connection = get_connection_summary()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            SELECT IS_SSH_FAILURE, IS_GPS_GNSS_UNAVAILABLE
+            FROM HOST_CURRENT_SNAPSHOT
+            WHERE ID_HOST = %s
+            """,
+            (host_id,),
+        )
+        signals = cursor.fetchone() or {}
+    finally:
+        connection.close()
+
+    return {
+        "IS_BUSY": bool(host["IS_BUSY"]),
+        "IS_OFFLINE": bool(host["IS_OFFLINE"]),
+        "IS_SSH_FAILURE": (
+            bool(signals["IS_SSH_FAILURE"])
+            if signals.get("IS_SSH_FAILURE") is not None else None
+        ),
+        "IS_GPS_GNSS_UNAVAILABLE": (
+            bool(signals["IS_GPS_GNSS_UNAVAILABLE"])
+            if signals.get("IS_GPS_GNSS_UNAVAILABLE") is not None else None
+        ),
+    }
+
+
 def get_host_current_activity(host_id: int) -> dict | None:
     """Return one live host task, falling back to its backup queue activity.
 
@@ -1608,20 +1636,22 @@ def _get_host_location_history(host_id: int) -> dict:
     return payload
 
 
-def get_server_processing_error_overview():
+def get_server_processing_error_overview() -> dict[str, object]:
     """Return grouped processing errors for the global dashboard.
 
     The rows come from the summary schema and are then normalized into the more
     stable operator-facing buckets used by the UI.
+
+    Args:
+        None.
+
+    Returns:
+        Dictionary with rows (list of TASK_STATE, ERROR_MESSAGE and ERROR_COUNT
+        dictionaries), error_group_count (int), error_total_occurrences (int).
+
+    Raises:
+        Exception: Summary read failure.
     """
-
-    now = time.monotonic()
-
-    if (
-        _GROUPED_PROCESSING_ERRORS_CACHE["payload"] is not None
-        and _GROUPED_PROCESSING_ERRORS_CACHE["expires_at"] > now
-    ):
-        return _GROUPED_PROCESSING_ERRORS_CACHE["payload"]
 
     rows = _get_server_error_summary_rows("PROCESSING")
 
@@ -1632,28 +1662,25 @@ def get_server_processing_error_overview():
         "error_total_occurrences": sum(row["ERROR_COUNT"] for row in normalized_rows),
     }
 
-    _GROUPED_PROCESSING_ERRORS_CACHE["payload"] = payload
-    _GROUPED_PROCESSING_ERRORS_CACHE["expires_at"] = (
-        now + GROUPED_PROCESSING_ERRORS_CACHE_TTL_SECONDS
-    )
-
     return payload
 
 
-def get_server_backup_error_overview():
+def get_server_backup_error_overview() -> dict[str, object]:
     """Return grouped backup errors for the global dashboard.
 
     The summary schema provides the raw grouped counts; this helper applies the
     same canonicalization layer used by the host-specific views.
+
+    Args:
+        None.
+
+    Returns:
+        Dictionary with rows (list of TASK_STATE, ERROR_MESSAGE and ERROR_COUNT
+        dictionaries), error_group_count (int), error_total_occurrences (int).
+
+    Raises:
+        Exception: Summary read failure.
     """
-
-    now = time.monotonic()
-
-    if (
-        _GROUPED_BACKUP_ERRORS_CACHE["payload"] is not None
-        and _GROUPED_BACKUP_ERRORS_CACHE["expires_at"] > now
-    ):
-        return _GROUPED_BACKUP_ERRORS_CACHE["payload"]
 
     rows = _get_server_error_summary_rows("BACKUP")
 
@@ -1664,25 +1691,26 @@ def get_server_backup_error_overview():
         "error_total_occurrences": sum(row["ERROR_COUNT"] for row in normalized_rows),
     }
 
-    _GROUPED_BACKUP_ERRORS_CACHE["payload"] = payload
-    _GROUPED_BACKUP_ERRORS_CACHE["expires_at"] = (
-        now + GROUPED_BACKUP_ERRORS_CACHE_TTL_SECONDS
-    )
-
     return payload
 
 
-def get_server_summary_metrics():
+def get_server_summary_metrics() -> dict[str, object]:
     """Return the materialized global server summary metrics.
 
     This is the main fast path behind the `/api/server/summary-metrics`
     endpoint and is intentionally sourced from ``RFFUSION_SUMMARY``.
+
+    Args:
+        None.
+
+    Returns:
+        Dictionary with CURRENT_MONTH_LABEL (str), operational count aliases
+        (int) and volume aliases containing GB (float), as displayed by /server.
+
+    Raises:
+        RuntimeError: The singleton summary row is missing.
+        Exception: Summary read failure.
     """
-
-    now = time.monotonic()
-
-    if _SERVER_SUMMARY_CACHE["payload"] and _SERVER_SUMMARY_CACHE["expires_at"] > now:
-        return _SERVER_SUMMARY_CACHE["payload"]
 
     summary_row = _get_server_current_summary_row()
 
@@ -1728,22 +1756,24 @@ def get_server_summary_metrics():
         "PAYLOAD_DELETED_GB_TOTAL": float(summary_row.get("VL_PAYLOAD_DELETED_GB_TOTAL") or 0),
     }
 
-    _SERVER_SUMMARY_CACHE["payload"] = payload
-    _SERVER_SUMMARY_CACHE["expires_at"] = now + SERVER_SUMMARY_CACHE_TTL_SECONDS
     return payload
 
 
-def get_host_processing_error_overview(host_id):
-    """Return grouped processing errors for one host from ``HOST_ERROR_SUMMARY``."""
+def get_host_processing_error_overview(host_id: int) -> dict[str, object]:
+    """Read current grouped processing diagnostics without a display cache.
 
-    cache_key = int(host_id)
-    now = time.monotonic()
-    cached = _HOST_PROCESSING_ERRORS_CACHE.get(cache_key)
+    Args:
+        host_id: Operational station identifier. Type: int.
 
-    if cached and cached["expires_at"] > now:
-        return cached["payload"]
+    Returns:
+        Dictionary with rows (list of TASK_STATE, ERROR_MESSAGE and ERROR_COUNT
+        dictionaries), error_group_count (int) and error_total_occurrences (int).
 
-    rows = _get_host_error_summary_rows(cache_key, "PROCESSING")
+    Raises:
+        Exception: Summary database read failure.
+    """
+
+    rows = _get_host_error_summary_rows(int(host_id), "PROCESSING")
     normalized_rows = _merge_grouped_processing_errors(rows)
     payload = {
         "rows": normalized_rows,
@@ -1751,24 +1781,24 @@ def get_host_processing_error_overview(host_id):
         "error_total_occurrences": sum(row["ERROR_COUNT"] for row in normalized_rows),
     }
 
-    _HOST_PROCESSING_ERRORS_CACHE[cache_key] = {
-        "expires_at": now + HOST_PROCESSING_ERRORS_CACHE_TTL_SECONDS,
-        "payload": payload,
-    }
     return payload
 
 
-def get_host_backup_error_overview(host_id):
-    """Return grouped backup errors for one host from ``HOST_ERROR_SUMMARY``."""
+def get_host_backup_error_overview(host_id: int) -> dict[str, object]:
+    """Read current grouped backup diagnostics without a display cache.
 
-    cache_key = int(host_id)
-    now = time.monotonic()
-    cached = _HOST_BACKUP_ERRORS_CACHE.get(cache_key)
+    Args:
+        host_id: Operational station identifier. Type: int.
 
-    if cached and cached["expires_at"] > now:
-        return cached["payload"]
+    Returns:
+        Dictionary with rows (list of TASK_STATE, ERROR_MESSAGE and ERROR_COUNT
+        dictionaries), error_group_count (int) and error_total_occurrences (int).
 
-    rows = _get_host_error_summary_rows(cache_key, "BACKUP")
+    Raises:
+        Exception: Summary database read failure.
+    """
+
+    rows = _get_host_error_summary_rows(int(host_id), "BACKUP")
     normalized_rows = _merge_grouped_backup_errors(rows)
     payload = {
         "rows": normalized_rows,
@@ -1776,10 +1806,6 @@ def get_host_backup_error_overview(host_id):
         "error_total_occurrences": sum(row["ERROR_COUNT"] for row in normalized_rows),
     }
 
-    _HOST_BACKUP_ERRORS_CACHE[cache_key] = {
-        "expires_at": now + HOST_BACKUP_ERRORS_CACHE_TTL_SECONDS,
-        "payload": payload,
-    }
     return payload
 
 
@@ -1789,22 +1815,24 @@ def get_host_location_history_overview(host_id):
     return _get_host_location_history(host_id)
 
 
-def get_all_hosts(online_only=False, search=None):
+def get_all_hosts(online_only: bool = False, search: str | None = None) -> list[dict[str, object]]:
     """Return the host picker list used by the host page.
 
+    Reads the current summary on each call, including for the upload selector.
     This is intentionally narrower than the server dashboard table because the
     host page mainly needs a quick navigation list, not a full operational grid.
+
+    Args:
+        online_only: Include only online stations. Type: bool.
+        search: Optional station name/address filter. Type: str | None.
+
+    Returns:
+        List of dictionaries with ID_HOST (int), NA_HOST_NAME (str) and
+        IS_OFFLINE (bool-compatible database value).
+
+    Raises:
+        Exception: Summary database read failure.
     """
-
-    cache_key = _build_host_list_cache_key(
-        online_only=online_only,
-        search=search,
-    )
-    now = time.monotonic()
-    cached = _HOST_LIST_CACHE.get(cache_key)
-
-    if cached and cached["expires_at"] > now:
-        return _clone_rows(cached["payload"])
 
     query = """
         SELECT ID_HOST, NA_HOST_NAME, IS_OFFLINE
@@ -1827,68 +1855,60 @@ def get_all_hosts(online_only=False, search=None):
     rows = cur.fetchall()
     conn.close()
 
-    _HOST_LIST_CACHE[cache_key] = {
-        "expires_at": now + HOST_LIST_CACHE_TTL_SECONDS,
-        "payload": _clone_rows(rows),
-    }
     return rows
 
 
-def get_server_overview(online_only=False, search=None):
-    """Return the global dashboard plus the filtered host table.
+def get_server_overview(online_only: bool = False, search: str | None = None) -> dict[str, object]:
+    """Read global station totals and current infrastructure measurements.
 
-    Important behavior:
-        - the summary cards remain global
-        - ``online_only`` and ``search`` affect only ``HOST_ROWS``
-        - grouped processing diagnostics are loaded on demand by the page
+    Args:
+        online_only: Legacy table filter, ignored for global totals. Type: bool.
+        search: Legacy table filter, ignored for global totals. Type: str | None.
 
-    The summary counters come from ``RFFUSION_SUMMARY`` while the runtime probe
-    section is appended afterward from live environment checks. This separation
-    avoids hiding real server totals just because the operator filtered the
-    table for navigation.
+    Returns:
+        Dictionary with CURRENT_MONTH_LABEL (str), TOTAL_HOSTS, ONLINE_HOSTS,
+        OFFLINE_HOSTS, BUSY_HOSTS (int), SERVER_MEMORY, REPOSFI_USAGE and
+        APP_ANALISE_STATUS (infrastructure dictionaries). Historical display
+        placeholders remain None until get_server_summary_metrics is rendered.
+
+    Raises:
+        RuntimeError: The singleton summary is missing.
+        Exception: Summary or infrastructure read failure.
     """
 
-    now = time.monotonic()
+    host_summary = _get_server_current_summary_row()
+    if not host_summary:
+        raise RuntimeError("server_current_summary_missing")
+    current_month_label = host_summary.get("NA_CURRENT_MONTH_LABEL") or datetime.utcnow().strftime("%Y-%m")
+    total_hosts = int(host_summary.get("NU_TOTAL_HOSTS") or 0)
+    online_hosts = int(host_summary.get("NU_ONLINE_HOSTS") or 0)
+    offline_hosts = int(host_summary.get("NU_OFFLINE_HOSTS") or 0)
+    busy_hosts = int(host_summary.get("NU_BUSY_HOSTS") or 0)
 
-    if _SERVER_OVERVIEW_CACHE["payload"] and _SERVER_OVERVIEW_CACHE["expires_at"] > now:
-        overview = dict(_SERVER_OVERVIEW_CACHE["payload"])
-    else:
-        host_summary = _get_server_current_summary_row()
-        current_month_label = host_summary.get("NA_CURRENT_MONTH_LABEL") or datetime.utcnow().strftime("%Y-%m")
-        total_hosts = int(host_summary.get("NU_TOTAL_HOSTS") or 0)
-        online_hosts = int(host_summary.get("NU_ONLINE_HOSTS") or 0)
-        offline_hosts = int(host_summary.get("NU_OFFLINE_HOSTS") or 0)
-        busy_hosts = int(host_summary.get("NU_BUSY_HOSTS") or 0)
+    overview = {
+        "CURRENT_MONTH_LABEL": current_month_label,
+        "TOTAL_HOSTS": total_hosts,
+        "ONLINE_HOSTS": online_hosts,
+        "OFFLINE_HOSTS": offline_hosts,
+        "BUSY_HOSTS": busy_hosts,
+        "BACKUP_DONE_THIS_MONTH": None,
+        "BACKUP_DONE_GB_THIS_MONTH": None,
+        "DISCOVERED_FILES_TOTAL": None,
+        "DISCOVERED_GB_TOTAL": None,
+        "BACKUP_DONE_FILES_TOTAL": None,
+        "BACKUP_DONE_GB_TOTAL": None,
+        "BACKUP_PENDING_FILES_TOTAL": None,
+        "BACKUP_PENDING_GB_TOTAL": None,
+        "BACKUP_ERROR_FILES_TOTAL": None,
+        "BACKUP_ERROR_GB_TOTAL": None,
+        "PROCESSING_DONE_FILES_TOTAL": None,
+        "PROCESSING_DONE_GB_TOTAL": None,
+        "PROCESSING_PENDING_FILES_TOTAL": None,
+        "PROCESSING_PENDING_GB_TOTAL": None,
+        "PROCESSING_ERROR_FILES_TOTAL": None,
+        "PROCESSING_ERROR_GB_TOTAL": None,
+    }
 
-        overview = {
-            "CURRENT_MONTH_LABEL": current_month_label,
-            "TOTAL_HOSTS": total_hosts,
-            "ONLINE_HOSTS": online_hosts,
-            "OFFLINE_HOSTS": offline_hosts,
-            "BUSY_HOSTS": busy_hosts,
-            "BACKUP_DONE_THIS_MONTH": None,
-            "BACKUP_DONE_GB_THIS_MONTH": None,
-            "DISCOVERED_FILES_TOTAL": None,
-            "DISCOVERED_GB_TOTAL": None,
-            "BACKUP_DONE_FILES_TOTAL": None,
-            "BACKUP_DONE_GB_TOTAL": None,
-            "BACKUP_PENDING_FILES_TOTAL": None,
-            "BACKUP_PENDING_GB_TOTAL": None,
-            "BACKUP_ERROR_FILES_TOTAL": None,
-            "BACKUP_ERROR_GB_TOTAL": None,
-            "PROCESSING_DONE_FILES_TOTAL": None,
-            "PROCESSING_DONE_GB_TOTAL": None,
-            "PROCESSING_PENDING_FILES_TOTAL": None,
-            "PROCESSING_PENDING_GB_TOTAL": None,
-            "PROCESSING_ERROR_FILES_TOTAL": None,
-            "PROCESSING_ERROR_GB_TOTAL": None,
-        }
-
-        _SERVER_OVERVIEW_CACHE["payload"] = dict(overview)
-        _SERVER_OVERVIEW_CACHE["expires_at"] = now + SERVER_OVERVIEW_CACHE_TTL_SECONDS
-
-    # Runtime probes are appended after the cached SQL summary because they
-    # age faster than the historical counters and deserve a shorter TTL.
     runtime_overview = _get_runtime_overview()
     overview["SERVER_MEMORY"] = runtime_overview["memory"]
     overview["REPOSFI_USAGE"] = runtime_overview["reposfi"]
@@ -1897,21 +1917,29 @@ def get_server_overview(online_only=False, search=None):
     return overview
 
 
-def get_host_statistics(host_id):
-    """Return the detailed operational picture for one station.
+def get_host_statistics(host_id: int | str) -> dict[str, object] | None:
+    """Read the detailed operational picture without a display cache.
 
     The result mixes:
         - current state and operational totals from ``HOST_CURRENT_SNAPSHOT``
         - annual creation-cohort breakdowns from ``HOST_MONTHLY_METRIC``
+
+    Args:
+        host_id: Station identifier, convertible to int. Type: int | str.
+
+    Returns:
+        None for a missing snapshot; otherwise a dictionary with the snapshot
+        columns, display aliases for counts (int), volumes (float), month and
+        discovery volume labels (str), and BACKUP_YEARLY_BREAKDOWN and
+        PROCESSING_YEARLY_BREAKDOWN (lists of annual count/volume dictionaries
+        as built by _build_host_yearly_breakdowns).
+
+    Raises:
+        ValueError: Invalid host identifier.
+        Exception: Summary database read failure.
     """
 
     normalized_host_id = int(host_id)
-    now = time.monotonic()
-    cached = _HOST_STATISTICS_CACHE.get(normalized_host_id)
-
-    if cached and cached["expires_at"] > now:
-        return dict(cached["payload"])
-
     row = _get_host_current_snapshot_row(normalized_host_id)
 
     if not row:
@@ -1964,31 +1992,29 @@ def get_host_statistics(host_id):
     row["BACKUP_YEARLY_BREAKDOWN"] = backup_yearly_breakdown
     row["PROCESSING_YEARLY_BREAKDOWN"] = processing_yearly_breakdown
 
-    _HOST_STATISTICS_CACHE[normalized_host_id] = {
-        "expires_at": now + HOST_STATISTICS_CACHE_TTL_SECONDS,
-        "payload": dict(row),
-    }
     return row
 
 
-def get_hosts(search=None, online_only=False):
+def get_hosts(search: str | None = None, online_only: bool = False) -> list[dict[str, object]]:
     """Return the filtered host table used by the server dashboard.
 
     Unlike `get_all_hosts()`, this table is meant for richer server-wide
     navigation and therefore carries more operational columns. The data comes
     from the summary snapshot so the server page does not need to reconstruct
     those totals from the live queue tables on every request.
+
+    Args:
+        search: Optional station name/address filter. Type: str | None.
+        online_only: Restrict the table to online stations. Type: bool.
+
+    Returns:
+        Current summary rows (list[dict]) with station identity, flags, dates,
+        operational counts and display STATUS_LABEL, BUSY_LABEL,
+        PENDING_BACKUP_GB and PENDING_BACKUP_MB.
+
+    Raises:
+        Exception: Summary read failure.
     """
-
-    cache_key = _build_host_list_cache_key(
-        online_only=online_only,
-        search=search,
-    )
-    now = time.monotonic()
-    cached = _SERVER_HOST_ROWS_CACHE.get(cache_key)
-
-    if cached and cached["expires_at"] > now:
-        return _clone_rows(cached["payload"])
 
     rows = _get_summary_host_rows(search=search, online_only=online_only)
 
@@ -2007,8 +2033,4 @@ def get_hosts(search=None, online_only=False):
 
         r["PENDING_BACKUP_MB"] = round(pending_backup_gb * 1024, 2)
 
-    _SERVER_HOST_ROWS_CACHE[cache_key] = {
-        "expires_at": now + SERVER_HOST_ROWS_CACHE_TTL_SECONDS,
-        "payload": _clone_rows(rows),
-    }
     return rows

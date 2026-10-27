@@ -9,9 +9,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 
 
-WEBFUSION_ROOT = Path("/RFFusion/src/webfusion")
+WEBFUSION_ROOT = Path(__file__).resolve().parents[3] / "src/webfusion"
 
 
 def load_host_routes():
@@ -35,7 +36,12 @@ def load_host_routes():
     fake_flask.Blueprint = FakeBlueprint
     fake_flask.Response = lambda *args, **kwargs: None
     fake_flask.current_app = SimpleNamespace(logger=SimpleNamespace(exception=lambda *args, **kwargs: None))
-    fake_flask.jsonify = lambda payload: payload
+    class JsonResponse(dict):
+        def __init__(self, payload):
+            super().__init__(payload)
+            self.headers = {}
+
+    fake_flask.jsonify = JsonResponse
     fake_flask.render_template = lambda *args, **kwargs: None
     fake_flask.request = SimpleNamespace(authorization=None, args={})
 
@@ -49,6 +55,7 @@ def load_host_routes():
     fake_service.get_host_activity_detail = lambda host_id, source, task_id, file_path=None, file_name=None: None
     fake_service.get_host_backup_error_overview = lambda host_id: {}
     fake_service.get_host_current_activity = lambda host_id: None
+    fake_service.get_host_current_flags = lambda host_id: None
     fake_service.get_host_location_history_overview = lambda host_id: {}
     fake_service.get_host_operational_metrics_snapshot = lambda host_id: {}
     fake_service.get_host_processing_error_overview = lambda host_id: {}
@@ -144,6 +151,43 @@ class TestHostActivityRoutePayload(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_host_routes()
+
+    def test_activity_poll_reports_released_lock_even_with_a_waiting_task(self):
+        activity = {
+            "source": "host-task", "task_id": 41, "host_id": 18,
+            "task_type": 2, "status": 1, "updated_at": None,
+        }
+        flags = {
+            "IS_BUSY": False, "IS_OFFLINE": False,
+            "IS_SSH_FAILURE": False, "IS_GPS_GNSS_UNAVAILABLE": True,
+        }
+        with patch.object(self.module, "get_host_current_activity", return_value=activity), patch.object(
+            self.module, "get_host_current_flags", return_value=flags,
+        ):
+            response = self.module.host_current_activity(18)
+
+        self.assertEqual(response["activity"]["status"], 1)
+        self.assertEqual(response["flags"], flags)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    def test_activity_poll_keeps_lock_state_without_a_visible_task(self):
+        with patch.object(self.module, "get_host_current_activity", return_value=None), patch.object(
+            self.module, "get_host_current_flags", return_value={"IS_BUSY": True},
+        ):
+            response = self.module.host_current_activity(18)
+
+        self.assertIsNone(response["activity"])
+        self.assertTrue(response["flags"]["IS_BUSY"])
+
+    def test_flags_read_failure_is_not_returned_as_success(self):
+        with patch.object(self.module, "get_host_current_activity", return_value=None), patch.object(
+            self.module, "get_host_current_flags", side_effect=RuntimeError("read failed"),
+        ):
+            response, status = self.module.host_current_activity(18)
+
+        self.assertEqual(status, 503)
+        self.assertIn("error", response)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
 
     def test_discovery_activity_keeps_worker_result_and_timestamp(self):
         payload = self.module._serialize_host_activity(
@@ -321,6 +365,48 @@ class TestHostActivityRoutePayload(unittest.TestCase):
             payload["message"],
             "Backup concluído para capture_20260826.zip.",
         )
+
+
+class TestHostStatisticsRoutes(unittest.TestCase):
+    """Protect current statistics and diagnostic failure responses."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_host_routes()
+
+    def test_statistics_preserve_display_timestamps_and_numeric_volumes(self):
+        with patch.object(self.module, "get_host_statistics", return_value={
+            "DT_LAST_BACKUP": datetime(2026, 10, 26, 12, 30),
+            "VL_BACKUP_DONE_GB_TOTAL": Decimal("1.25"),
+            "BACKUP_YEARLY_BREAKDOWN": [{"REFERENCE_YEAR": 2026, "BACKUP_DONE_FILES": 12}],
+        }):
+            response = self.module.host_statistics(73)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(response["statistics"]["DT_LAST_BACKUP"], "2026-10-26 12:30:00")
+        self.assertEqual(response["statistics"]["VL_BACKUP_DONE_GB_TOTAL"], 1.25)
+        self.assertEqual(response["statistics"]["BACKUP_YEARLY_BREAKDOWN"][0]["BACKUP_DONE_FILES"], 12)
+
+    def test_statistics_distinguish_missing_snapshot_and_failed_read(self):
+        with patch.object(self.module, "get_host_statistics", return_value=None):
+            response, code = self.module.host_statistics(73)
+        self.assertEqual(code, 404)
+        self.assertIn("error", response)
+        with patch.object(self.module, "get_host_statistics", side_effect=RuntimeError("read failed")):
+            response, code = self.module.host_statistics(73)
+        self.assertEqual(code, 503)
+        self.assertIn("error", response)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    def test_diagnostic_read_failures_do_not_claim_zero_errors(self):
+        for phase in ("backup", "processing"):
+            with self.subTest(phase=phase), patch.object(
+                self.module, f"get_host_{phase}_error_overview", side_effect=RuntimeError("read failed"),
+            ):
+                response, code = getattr(self.module, f"host_{phase}_errors")(73)
+                self.assertEqual(code, 503)
+                self.assertIn("error", response)
+                self.assertNotIn("error_total_occurrences", response)
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
 
 
 class TestHostZabbixMetricsRoute(unittest.TestCase):

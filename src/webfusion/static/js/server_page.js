@@ -6,7 +6,7 @@
  * - the immediate "Apenas Online na Tabela" toggle behavior
  * - lazy loading of grouped processing and backup diagnostics
  * - lazy loading of the station table
- * - on-demand loading of heavy server summary metrics
+ * - visible-page refresh of operational cards and open panels
  */
 (function () {
     const root = document.getElementById("server-page-root");
@@ -77,7 +77,7 @@
     const processingErrorsEndpoint  = root.dataset.processingErrorsEndpoint || "";
     const backupErrorsEndpoint      = root.dataset.backupErrorsEndpoint || "";
     const usageMetricsEndpoint      = root.dataset.usageMetricsEndpoint || "";
-    const summaryMetricsEndpoint    = root.dataset.summaryMetricsEndpoint || "";
+    const overviewEndpoint = root.dataset.overviewEndpoint || "";
     const runtimeHealthEndpoint     = root.dataset.runtimeHealthEndpoint || "";
     let currentOnlineOnly           = root.dataset.onlineOnly === "1";
     const hasInitialSummaryMetrics  = root.dataset.summaryMetricsInitialLoaded === "1";
@@ -297,34 +297,16 @@
         }).join("");
     }
 
-    /* Diagnostics are secondary detail views, so they load only when the panel
-     * is expanded for the first time.
-     *
-     * This binder encapsulates the full lazy-panel lifecycle:
-     * - show a loading state inside the table body,
-     * - fetch the grouped breakdown once,
-     * - update the compact meta summary above the table,
-     * - preserve a readable failure state if the request breaks.
-     *
-     * The main dashboard remains useful without these panels, so they should
-     * never delay the first paint of the server overview.
-     */
+    /* Read diagnostics only while their panel is open and visible. */
     function bindDiagnosticPanel(panelElement, metaElement, bodyElement, endpoint, options) {
         if (!panelElement || !metaElement || !bodyElement || !endpoint) {
             return;
         }
 
         let loading = false;
-        let loaded = false;
 
-        /* The diagnostic panels are one-shot by design.
-         *
-         * Once a grouped breakdown has been loaded for the current page view,
-         * reopening the `<details>` panel should feel instant rather than
-         * issuing a new request every time.
-         */
         async function loadPanel() {
-            if (loading || loaded) {
+            if (loading || !panelElement.open || document.hidden) {
                 return;
             }
 
@@ -333,7 +315,7 @@
             setMessageRow(bodyElement, options.loadingMessage);
 
             try {
-                const response = await fetch(endpoint);
+                const response = await fetch(endpoint, { cache: "no-store" });
 
                 if (!response.ok) {
                     throw new Error("request_failed");
@@ -342,7 +324,6 @@
                 const payload = await response.json();
                 renderRows(bodyElement, payload.rows || [], options.emptyMessage);
                 metaElement.textContent = `${payload.error_group_count || 0} tipos / ${payload.error_total_occurrences || 0} ocorrências`;
-                loaded = true;
             } catch (error) {
                 setMessageRow(bodyElement, options.failureMessage);
                 metaElement.textContent = "Falha ao carregar";
@@ -352,10 +333,14 @@
         }
 
         panelElement.addEventListener("toggle", function () {
-            if (panelElement.open) {
+            root.addEventListener("server-metrics-refresh", loadPanel);
+
+        if (panelElement.open) {
                 loadPanel();
             }
         });
+
+        root.addEventListener("server-metrics-refresh", loadPanel);
 
         if (panelElement.open) {
             loadPanel();
@@ -428,9 +413,7 @@
         }
     }
 
-    /* Container health is intentionally an explicit, uncached operation.
-     * Infrastructure state is useful only when it represents the current
-     * moment, so the page never persists or reuses an older response. */
+    /* Container checks remain on demand and keep their short server cache. */
     function runtimeHealthStatusLabel(status) {
         const labels = {
             healthy: "Disponível",
@@ -585,14 +568,14 @@
             return;
         }
 
-        let loaded = false;
+        let hasRendered = false;
         let activeRequest = null;
 
         /* The table request sends only the visible table filter. This keeps
          * server-wide dashboard values independent from this local navigation.
          */
         async function loadPanel(force = false) {
-            if (loaded && !force) {
+            if (!hostTablePanel.open || document.hidden || (activeRequest && !force)) {
                 return;
             }
 
@@ -604,14 +587,15 @@
             const requestController = new AbortController();
             activeRequest = requestController;
             hostTableMeta.textContent = "Carregando...";
-            hostTableBody.innerHTML = `
-                <tr>
-                    <td colspan="10">Carregando tabela de estações...</td>
-                </tr>
-            `;
+            if (!hasRendered || force) {
+                hostTableBody.innerHTML = `<tr><td colspan="10">Carregando tabela de estações...</td></tr>`;
+            }
 
             try {
                 const params = new URLSearchParams();
+                if (root.dataset.search) {
+                    params.set("search", root.dataset.search);
+                }
                 if (requestedOnlineOnly) {
                     params.set("online_only", "1");
                 }
@@ -619,7 +603,7 @@
                 const endpoint = queryString
                     ? `${hostTableEndpointBase}?${queryString}`
                     : hostTableEndpointBase;
-                const response = await fetch(endpoint, { signal: requestController.signal });
+                const response = await fetch(endpoint, { signal: requestController.signal, cache: "no-store" });
 
                 if (!response.ok) {
                     throw new Error("request_failed");
@@ -631,9 +615,9 @@
                 }
                 renderHostRows(payload.rows || []);
                 hostTableMeta.textContent = formatStationCountLabel(payload.count);
-                loaded = true;
+                hasRendered = true;
             } catch (error) {
-                if (error.name === "AbortError") {
+                if (error.name === "AbortError" || activeRequest !== requestController) {
                     return;
                 }
                 hostTableBody.innerHTML = `
@@ -650,8 +634,10 @@
         }
 
         refreshHostTable = function () {
-            // A closed table must also forget stale rows before its next opening.
-            loaded = false;
+            if (activeRequest) {
+                activeRequest.abort();
+                activeRequest = null;
+            }
             if (hostTablePanel.open) {
                 loadPanel(true);
             }
@@ -665,19 +651,13 @@
             }
         });
 
+        root.addEventListener("server-metrics-refresh", () => loadPanel());
         if (hostTablePanel.open) {
             loadPanel();
         }
     }
 
-    /* Summary metrics are intentionally fetched after the first HTML paint
-     * because this is one of the heaviest dashboards in WebFusion.
-     *
-     * The cards are rendered server-side in a "loading" state first, and this
-     * renderer upgrades them once the heavy consolidated metrics arrive. That
-     * preserves layout stability while still keeping the first contentful
-     * paint fast enough for the rest of the page to feel alive.
-     */
+    /* Keep the file-metric bindings identical for initial and periodic data. */
     function renderSummaryMetrics(payload) {
         function setSummaryValue(element, text) {
             if (!element) {
@@ -855,42 +835,101 @@
         });
     }
 
-    /* Summary metrics degrade to zeros instead of a hard failure banner.
-     *
-     * This dashboard is still usable if the heavy consolidated endpoint is
-     * temporarily unavailable, so the page chooses resilience over loud error
-     * chrome in the summary cards themselves.
-     */
-    async function loadSummaryMetrics() {
-        if (!summaryMetricsEndpoint) {
+    function renderOverview(overview) {
+        root.querySelectorAll("[data-server-total]").forEach((element) => {
+            element.textContent = String(overview[element.dataset.serverTotal] ?? 0);
+        });
+        function setText(selector, value) {
+            const element = root.querySelector(selector);
+            if (element) {
+                element.textContent = value;
+            }
+            return element;
+        }
+        const memory = overview.SERVER_MEMORY;
+        const disk = overview.REPOSFI_USAGE;
+        const appanalise = overview.APP_ANALISE_STATUS;
+        setText("[data-server-memory-value]", `${memory.used_human}/${memory.total_human}`);
+        setText("[data-server-memory-note]", `Disponível ${memory.available_human} | Uso ${memory.use_percent}%`);
+        setText("[data-server-disk-value]", disk.mounted ? `${disk.used_human}/${disk.total_human}` : "Indisponível");
+        setText("[data-server-disk-note]", disk.mounted
+            ? `Livre ${disk.free_human} | Uso ${disk.use_percent}%`
+            : `Montagem ${disk.path} indisponível`);
+        const badge = setText("[data-server-appanalise-value]", appanalise.online ? "Online" : "Offline");
+        if (badge) {
+            badge.classList.toggle("summary-card-value-online", Boolean(appanalise.online));
+            badge.classList.toggle("summary-card-value-offline", !appanalise.online);
+        }
+        setText("[data-server-appanalise-note]", `${appanalise.host || "-"}${appanalise.online
+            ? ` | ping ${appanalise.latency_ms} ms` : appanalise.error ? ` | ${appanalise.error}` : ""}`);
+    }
+
+    function bindServerRefresh() {
+        if (!overviewEndpoint) {
             return;
         }
+        const refreshMilliseconds = Number(root.dataset.refreshMilliseconds);
+        if (!Number.isFinite(refreshMilliseconds) || refreshMilliseconds <= 0) {
+            return;
+        }
+        const status = root.querySelector("[data-server-refresh-status]");
+        let timer = null;
+        let loading = false;
+        let hasMetrics = hasInitialSummaryMetrics;
 
-        try {
-            const response = await fetch(summaryMetricsEndpoint);
+        function scheduleRefresh() {
+            window.clearTimeout(timer);
+            timer = document.hidden ? null : window.setTimeout(loadDashboard, refreshMilliseconds);
+        }
 
-            if (!response.ok) {
-                throw new Error("request_failed");
+        async function loadDashboard() {
+            if (loading || document.hidden) {
+                return;
             }
-
-            const payload = await response.json();
-            renderSummaryMetrics(payload);
-        } catch (error) {
-            if (!hasInitialSummaryMetrics) {
-                renderSummaryMetricsUnavailable();
+            loading = true;
+            root.dispatchEvent(new Event("server-metrics-refresh"));
+            try {
+                const response = await fetch(overviewEndpoint, { cache: "no-store" });
+                if (!response.ok) {
+                    throw new Error("overview_request_failed");
+                }
+                const payload = await response.json();
+                if (!payload.overview || !payload.summary) {
+                    throw new Error("overview_payload_missing");
+                }
+                renderOverview(payload.overview);
+                renderSummaryMetrics(payload.summary);
+                hasMetrics = true;
+                if (status) {
+                    status.textContent = "";
+                }
+            } catch (error) {
+                if (!hasMetrics) {
+                    renderSummaryMetricsUnavailable();
+                }
+                if (status) {
+                    status.textContent = "Não foi possível atualizar os dados. Exibindo os últimos valores recebidos.";
+                }
+            } finally {
+                loading = false;
+                scheduleRefresh();
             }
+        }
+
+        document.addEventListener("visibilitychange", () => {
+            window.clearTimeout(timer);
+            if (!document.hidden) {
+                loadDashboard();
+            }
+        });
+        if (hasMetrics) {
+            scheduleRefresh();
+        } else {
+            loadDashboard();
         }
     }
 
-    /* Bootstrap sequence
-     *
-     * The page starts with the heavy summary metrics because those cards live
-     * in the top fold and define the dashboard at a glance. The grouped error
-     * panels and the host table remain lazy and are only activated when the
-     * operator opens them.
-     */
-    loadSummaryMetrics();
-
+    /* Detailed panels stay lazy; operational refresh excludes usage and SSH checks. */
     bindDiagnosticPanel(processingPanel, processingMeta, processingBody, processingErrorsEndpoint, {
         loadingMessage: "Carregando erros agrupados...",
         emptyMessage: "Nenhum erro de processamento agrupado no histórico global.",
@@ -906,4 +945,5 @@
     bindUsageMetricsPanel();
     bindRuntimeHealthPanel();
     bindHostTablePanel();
+    bindServerRefresh();
 })();

@@ -114,6 +114,12 @@ src/webfusion/.instructions/*
 !src/webfusion/.instructions/WebFusionHandler.m
 !src/webfusion/.instructions/WebFusionHandler.md
 
+# Track only the instructions and template inside the root environment folder.
+!/.env/
+/.env/*
+!/.env/README.md
+!/.env/runtime.env.example
+
 # Stack de IA
 # Claude Code: configuração local do desenvolvedor, não compartilhada com o time.
 .claude/settings.local.json

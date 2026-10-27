@@ -123,11 +123,11 @@ execução de WebFusion no container do appCataloga.
 | Afirmação | Confiança | Onde foi comprovada | Comando | Alcance | Verificado em |
 |---|---|---|---|---|---|
 | Registro explícito | medido | `src/webfusion/app.py:56`, 14 registros | `rg -n '^app.register_blueprint\(' src/webfusion/app.py \| wc -l` → 14 | bootstrap | 2026-10-27 |
-| Identidade e autorização em hooks diferentes | medido | `src/webfusion/app.py:72,93`, dois hooks | `rg -n '^@app.before_request' src/webfusion/app.py \| wc -l` → 2 | bootstrap; corpo dos hooks lido integralmente | 2026-10-27 |
-| Persistência não é só handler | medido | SQL ativo em serviços, rotas e handlers | `rg -l -g '*.py' '(cursor\|cur)\.execute\(' src/webfusion/modules src/webfusion/api src/webfusion/auth \| wc -l` → 11 | inventário de arquivos; não mede equivalência de queries | 2026-10-27 |
+| Identidade e autorização em hooks diferentes | medido | `src/webfusion/app.py:72,92`, dois hooks | `rg -n '^@app.before_request' src/webfusion/app.py \| wc -l` → 2 | bootstrap; corpo dos hooks lido integralmente | 2026-10-27 |
+| Persistência não é só handler | medido | SQL ativo em serviços, rotas e handlers | `rg -l -g '*.py' '(cursor\|cur)\.execute\(' src/webfusion/modules src/webfusion/api src/webfusion/auth \| wc -l` → 10 | inventário de arquivos; não mede equivalência de queries | 2026-10-27 |
 | Shell de páginas | medido | 11 templates estendem a base | `rg -l -g '*.html' '^\{% extends "base.html" %\}' src/webfusion/templates \| wc -l` → 11 | templates com essa declaração literal | 2026-10-27 |
 | Permissão e variantes de erro | inferido | leitura integral de app.py, auth/service.py, auth/config.py e seis rotas exemplares | conferir o corpo dos hooks e o endpoint da tarefa; teste no webserver confirma comportamento | componentes nomeados, não todos os endpoints | 2026-10-27 |
-| Divergência de persistência frente ao contrato | medido | `modules/host/routes.py:277,544`, `api/map_api/service.py:74` e arquitetura local | leitura dos pontos SQL e da seção Separação de responsabilidades | trechos nomeados; não autoriza relaxar o contrato | 2026-10-27 |
+| Divergência de persistência frente ao contrato | medido | `modules/host/routes.py:278,620`, `api/map_api/service.py:74` e arquitetura local | leitura dos pontos SQL e da seção Separação de responsabilidades | trechos nomeados; não autoriza relaxar o contrato | 2026-10-27 |
 
 ## Descartado
 

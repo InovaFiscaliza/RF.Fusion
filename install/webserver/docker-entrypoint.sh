@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+bash /RF.Fusion/install/common/container-identity.sh
+
 echo "=== [entrypoint] RF.Fusion Web container starting ==="
 
 # -------------------------------------------------

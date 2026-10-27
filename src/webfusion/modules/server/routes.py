@@ -1,13 +1,15 @@
 """Routes for the server-wide operational dashboard.
 
-The server page mixes one server-rendered dashboard shell with several lazy
-JSON endpoints. The initial route stays fast, while the heavier panels are only
-computed when the operator actually opens them.
+The initial dashboard and its periodic operational reads share the summary
+services. Detailed panels load only while open; usage ingestion and container
+checks remain separate from the periodic dashboard endpoint.
 """
 
 from datetime import datetime
 
-from flask import Blueprint, current_app, jsonify, render_template, request
+from flask import Blueprint, Response, current_app, jsonify, render_template, request
+
+from modules.server.config import SERVER_REFRESH_MILLISECONDS
 
 from modules.host.service import (
     get_hosts,
@@ -26,6 +28,20 @@ from modules.server.runtime_health import get_runtime_health_snapshot
 
 server_bp = Blueprint("server", __name__)
 BYTES_PER_GIB = 1024 * 1024 * 1024
+
+
+@server_bp.after_request
+def _prevent_display_cache(response: Response) -> Response:
+    """Prevent browser and proxy storage of server dashboard responses.
+
+    Args:
+        response: Response produced by a server route. Type: Response.
+
+    Returns:
+        Same response with Cache-Control set unless the route set it already.
+    """
+    response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 
 def _runtime_health_json(payload: dict[str, object]):
@@ -140,7 +156,7 @@ def server():
 
     search = request.args.get("search") or None
     online_only = request.args.get("online_only", "0") == "1"
-    server_overview = get_server_overview(online_only=online_only, search=search)
+    server_overview = get_server_overview()
     server_summary_metrics_payload = None
 
     record_page_view()
@@ -158,7 +174,30 @@ def server():
         usage_metrics=usage_metrics,
         online_only=online_only,
         search=search,
+        refresh_milliseconds=SERVER_REFRESH_MILLISECONDS,
     )
+
+
+@server_bp.route("/api/server/overview", methods=["GET"])
+def server_overview() -> Response | tuple[Response, int]:
+    """Read the operational dashboard without usage-log ingestion.
+
+    Args:
+        None. Table filters do not affect the global dashboard.
+
+    Returns:
+        JSON containing overview (global host totals and infrastructure
+        dictionaries) and summary (file counts, volumes and reference month).
+        Returns error (str) with HTTP 503 if either read fails.
+    """
+    try:
+        return jsonify({
+            "overview": get_server_overview(),
+            "summary": get_server_summary_metrics(),
+        })
+    except Exception:
+        current_app.logger.exception("failed_to_build_server_overview")
+        return jsonify({"error": "failed_to_build_server_overview"}), 503
 
 
 @server_bp.route("/api/server/zabbix_metrics", methods=["GET"])
@@ -289,11 +328,18 @@ def server_download_action_metric():
 
 
 @server_bp.route("/api/server/hosts", methods=["GET"])
-def server_hosts():
+def server_hosts() -> Response | tuple[Response, int]:
     """Return the filtered station table only when the panel is expanded.
 
     This endpoint exists so navigation filters can affect only the host table,
     without changing the meaning of the server-wide summary cards.
+
+    Args:
+        None. Reads optional search and online_only query parameters.
+
+    Returns:
+        JSON containing rows (list of station dictionaries) and count (int),
+        or error (str) with HTTP 503 on a read failure.
     """
 
     search = request.args.get("search") or None
@@ -313,9 +359,4 @@ def server_hosts():
             search,
             online_only,
         )
-        return jsonify(
-            {
-                "rows": [],
-                "count": 0,
-            }
-        )
+        return jsonify({"error": "failed_to_build_server_hosts_table"}), 503

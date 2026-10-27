@@ -26,6 +26,7 @@ from modules.host.service import (
     get_host_activity_detail,
     get_host_backup_error_overview,
     get_host_current_activity,
+    get_host_current_flags,
     get_host_location_history_overview,
     get_host_operational_metrics_snapshot,
     get_host_processing_error_overview,
@@ -296,11 +297,20 @@ def _read_connectivity_test_row(cursor, host_id: int, task_id: int) -> dict | No
 
 
 @host_bp.route("/host", methods=["GET"])
-def host():
+def host() -> Response:
     """Render the host page with an optional station detail panel.
 
     The left-hand selector/list is always available. When ``host_id`` is
     provided, the page also loads the historical summaries for that station.
+
+    Args:
+        None. Reads optional host_id, search and online_only query parameters.
+
+    Returns:
+        HTML response with current host statistics and no browser storage.
+
+    Raises:
+        Exception: Summary read or page rendering failure.
     """
 
     host_id = request.args.get("host_id")
@@ -314,14 +324,16 @@ def host():
         stats = get_host_statistics(host_id)
 
     record_page_view()
-    return render_template(
+    response = current_app.make_response(render_template(
         "host/host.html",
         hosts=hosts,
         stats=stats,
         selected_host=host_id,
         online_only=online_only,
         search=search,
-    )
+    ))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @host_bp.route("/api/host/<int:host_id>/zabbix_metrics", methods=["GET"])
@@ -356,43 +368,91 @@ def host_zabbix_metrics(host_id: int):
 
 
 @host_bp.route("/api/host/<int:host_id>/processing-errors", methods=["GET"])
-def host_processing_errors(host_id):
-    """Return grouped processing errors for one host on demand."""
+def host_processing_errors(host_id: int) -> Response | tuple[Response, int]:
+    """Read current processing diagnostics.
+
+    Args:
+        host_id: Operational station identifier. Type: int.
+
+    Returns:
+        Uncached JSON with rows (list of grouped diagnostic dictionaries),
+        error_group_count (int), error_total_occurrences (int), or error (str)
+        and HTTP 503 on failure.
+    """
 
     try:
-        return jsonify(get_host_processing_error_overview(host_id))
+        response = jsonify(get_host_processing_error_overview(host_id))
+        response.headers["Cache-Control"] = "no-store"
+        return response
     except Exception:
         current_app.logger.exception(
             "failed_to_build_host_processing_errors host_id=%s",
             host_id,
         )
-        return jsonify(
-            {
-                "rows": [],
-                "error_group_count": 0,
-                "error_total_occurrences": 0,
-            }
-        )
+        response = jsonify({"error": "Não foi possível consultar os diagnósticos de processamento."})
+        response.headers["Cache-Control"] = "no-store"
+        return response, 503
 
 
 @host_bp.route("/api/host/<int:host_id>/backup-errors", methods=["GET"])
-def host_backup_errors(host_id):
-    """Return grouped backup errors for one host on demand."""
+def host_backup_errors(host_id: int) -> Response | tuple[Response, int]:
+    """Read current backup diagnostics.
+
+    Args:
+        host_id: Operational station identifier. Type: int.
+
+    Returns:
+        Uncached JSON with rows (list of grouped diagnostic dictionaries),
+        error_group_count (int), error_total_occurrences (int), or error (str)
+        and HTTP 503 on failure.
+    """
 
     try:
-        return jsonify(get_host_backup_error_overview(host_id))
+        response = jsonify(get_host_backup_error_overview(host_id))
+        response.headers["Cache-Control"] = "no-store"
+        return response
     except Exception:
         current_app.logger.exception(
             "failed_to_build_host_backup_errors host_id=%s",
             host_id,
         )
-        return jsonify(
-            {
-                "rows": [],
-                "error_group_count": 0,
-                "error_total_occurrences": 0,
-            }
-        )
+        response = jsonify({"error": "Não foi possível consultar os diagnósticos de backup."})
+        response.headers["Cache-Control"] = "no-store"
+        return response, 503
+
+
+@host_bp.route("/api/host/<int:host_id>/statistics", methods=["GET"])
+def host_statistics(host_id: int) -> Response | tuple[Response, int]:
+    """Return fresh display statistics for the selected station.
+
+    Args:
+        host_id: Operational station identifier. Type: int.
+
+    Returns:
+        Uncached JSON with statistics (dict matching get_host_statistics,
+        datetime values formatted as strings and decimal values as numbers).
+        Returns error (str) with HTTP 404 for a missing snapshot or HTTP 503
+        on database failure.
+    """
+    try:
+        statistics = get_host_statistics(host_id)
+        if statistics is None:
+            response = jsonify({"error": "Estatísticas da estação indisponíveis."})
+            response.headers["Cache-Control"] = "no-store"
+            return response, 404
+        payload = {
+            key: _format_activity_timestamp(value) if isinstance(value, datetime)
+            else float(value) if isinstance(value, Decimal) else value
+            for key, value in statistics.items()
+        }
+        response = jsonify({"statistics": payload})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception:
+        current_app.logger.exception("failed_to_read_host_statistics host_id=%s", host_id)
+        response = jsonify({"error": "Não foi possível consultar as estatísticas da estação."})
+        response.headers["Cache-Control"] = "no-store"
+        return response, 503
 
 
 @host_bp.route("/api/host/<int:host_id>/locations", methods=["GET"])
@@ -415,21 +475,37 @@ def host_locations(host_id):
 
 
 @host_bp.route("/api/host/<int:host_id>/activity", methods=["GET"])
-def host_current_activity(host_id: int):
-    """Return the one task that currently represents work on a station."""
+def host_current_activity(host_id: int) -> Response | tuple[Response, int]:
+    """Return live activity and independently measured operational flags.
+
+    Args:
+        host_id: Operational station identifier. Type: int.
+
+    Returns:
+        Uncached JSON response with activity (serialized task or None) and
+        flags (IS_BUSY, IS_OFFLINE, IS_SSH_FAILURE and
+        IS_GPS_GNSS_UNAVAILABLE as bool or None; None for a missing host).
+        Returns a response and HTTP 503 on read failure.
+    """
     try:
         activity = get_host_current_activity(host_id)
-        return jsonify(
+        flags = get_host_current_flags(host_id)
+        response = jsonify(
             {
                 "activity": _serialize_host_activity(activity) if activity else None,
+                "flags": flags,
             }
         )
+        response.headers["Cache-Control"] = "no-store"
+        return response
     except Exception:
         current_app.logger.exception(
             "failed_to_read_host_current_activity host_id=%s",
             host_id,
         )
-        return jsonify({"error": "Não foi possível consultar a atividade atual da estação."}), 503
+        response = jsonify({"error": "Não foi possível consultar a atividade atual da estação."})
+        response.headers["Cache-Control"] = "no-store"
+        return response, 503
 
 
 @host_bp.route(

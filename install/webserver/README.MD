@@ -56,6 +56,11 @@ Depois do deploy, o ambiente entrega:
 
 ## Pre-requisitos No Host
 
+Preencha a [configuração local de ambiente](../../.env/README.md) antes do
+deploy. Ela identifica produção ou desenvolvimento no hostname, nas labels,
+no prompt Bash e no log de inicialização, conforme o
+[contrato compartilhado](../../docs/architecture/AMBIENTES.md).
+
 O deploy atual assume:
 
 - repositorio do projeto em `/RFFusion-dev/RF.Fusion`

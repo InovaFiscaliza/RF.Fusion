@@ -46,6 +46,13 @@ Esses scripts criam, respectivamente:
 
 ## Pre-requisitos No Host
 
+Preencha a [configuração local de ambiente](../../.env/README.md) antes do
+deploy. Ela identifica produção ou desenvolvimento no hostname, nas labels,
+no prompt Bash e no log de inicialização, conforme o
+[contrato compartilhado](../../docs/architecture/AMBIENTES.md).
+Não recrie um banco de produção somente para aplicar essa identificação:
+o procedimento atual não reutiliza explicitamente o volume de dados anterior.
+
 O deploy atual assume:
 
 - repositorio do projeto em `/RFFusion-dev/RF.Fusion`

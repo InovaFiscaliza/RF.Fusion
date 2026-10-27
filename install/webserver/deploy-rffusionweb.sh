@@ -28,6 +28,9 @@ ContainerSSHPort="22"
 repoRoot="/RFFusion-dev/RF.Fusion"
 projectVolume="${repoRoot}"
 
+source "${scriptDir}/../common/environment.sh"
+rffusion_load_environment "$repoRoot" webfusion
+
 # Local database credentials are deliberately excluded from Git.
 webfusionSecretPath="${projectVolume}/src/webfusion/.secret"
 if [[ ! -f "${webfusionSecretPath}" || ! -r "${webfusionSecretPath}" || ! -s "${webfusionSecretPath}" ]]; then
@@ -155,7 +158,7 @@ podman rm -f "${ContainerName}" >/dev/null 2>&1 || true
 
 podman run -d \
   --name "${ContainerName}" \
-  --hostname "${ContainerName}" \
+  "${rffusion_identity_args[@]}" \
   --restart unless-stopped \
   --network "${NetworkName}" \
   --ip "${IPAddress}" \

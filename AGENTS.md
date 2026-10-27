@@ -32,6 +32,7 @@ o repositório. Depois, leia as instruções do escopo envolvido:
 | appCataloga, workers e handlers | [src/appCataloga/AGENTS.md](src/appCataloga/AGENTS.md) |
 | WebFusion, APIs, interface e autenticação | [src/webfusion/AGENTS.md](src/webfusion/AGENTS.md) |
 | Testes e ferramentas da suíte | [test/AGENTS.md](test/AGENTS.md) |
+| Configuração de ambiente e identidade dos containers | [docs/architecture/AMBIENTES.md](docs/architecture/AMBIENTES.md) |
 | Summary e contratos entre aplicações | [docs/architecture/SUMMARY.md](docs/architecture/SUMMARY.md) |
 | Métricas e integração operacional com Zabbix | [docs/architecture/METRICAS_OPERACIONAIS.md](docs/architecture/METRICAS_OPERACIONAIS.md) |
 

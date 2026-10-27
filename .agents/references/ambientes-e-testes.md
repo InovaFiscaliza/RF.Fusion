@@ -9,12 +9,28 @@ Os caminhos e acessos autorizados são definidos nos documentos
 Consulte ao preparar validação, investigar dependência ausente ou selecionar
 uma suíte que cobre mais de uma aplicação.
 
+## Identidade do ambiente e configuração local
+
+O [contrato de ambientes](../../docs/architecture/AMBIENTES.md) define a
+identificação dos containers. A configuração local fica em `.env/runtime.env`,
+fora do Git; o [README da configuração](../../.env/README.md) descreve seu
+preenchimento. O loader compartilhado lê `RFFUSION_ENV` sem executar o arquivo
+como shell. Os deploys validam a configuração antes de comandos Podman, e os
+entrypoints instalam a identidade visual pelo helper comum.
+
+Essa identidade não seleciona conexões nem substitui credenciais ou as
+restrições de execução dos `ENVIRONMENT.md`. Não deduza produção/desenvolvimento
+pelo IP, branch ou montagem. Alterar o arquivo local não atualiza a identidade
+de containers existentes; ativação é uma operação de deploy separada, com
+preservação de dados especialmente relevante para o MariaDB.
+
 ## Escolher pelo import, não pela pasta
 
 | Trabalho | Ambiente | Atenção |
 |---|---|---|
 | appCataloga exclusivo | container `debian12-python`; Python do ambiente `appdata` | o Python de sistema que roda ferramentas da stack não é o runtime do aplicativo |
 | WebFusion, importação, compilação ou testes mistos | webserver por SSH | runtime `/usr/local/bin/python`, código montado em `/RF.Fusion` |
+| Configuração de identidade e scripts de instalação | Python `appdata`, para `test/tests/install` | os testes usam Bash, árvores temporárias e Podman simulado, sem deploy real |
 | SQL/locks MariaDB | banco isolado explicitamente selecionado | doubles não comprovam a semântica real de SQL e locks |
 | Scripts Zabbix | ambiente conforme o componente importado | `test/tests/zabbix/test_zabbix_api.py` importa o cliente do WebFusion |
 
@@ -38,7 +54,8 @@ define raízes absolutas em `/RFFusion`; o contrato WebFusion define
 mostra as duas raízes do helper e a montagem diferente no contrato. Confirme
 os helpers e caminhos do conjunto selecionado antes de
 prometer uma execução mista. A leitura de `_support.py` comprova o literal,
-não uma adequação já instalada no container remoto.
+não uma adequação versionada da suíte. Ajustar `sys.path` num ensaio focado
+não corrige os caminhos de todos os testes.
 
 ## Construir e selecionar testes
 
@@ -58,6 +75,12 @@ não uma adequação já instalada no container remoto.
 6. Selecione o menor grupo que cobre a mudança e execute no ambiente autorizado.
    Os comandos existentes ficam no [README da suíte](../../test/README.md).
    Registre o comando real, quantidade de testes, resultado e limitações.
+
+Para identidade dos containers, selecione `test/tests/install/test_environment.py`.
+Esse grupo cobre o loader, a recusa de configuração inválida antes do Podman e
+os arquivos/prompt gerados numa raiz temporária. O comando de descoberta está
+no README da suíte; não execute deploys ou entrypoints reais para validar
+documentação.
 
 **Alerta — estilo de teste:** os arquivos `test_*.py` importam `unittest`.
 Ao propor fixtures ou outro padrão para testes novos, compare a unidade
@@ -87,6 +110,7 @@ teste na imagem de produção por conveniência.
 | `test/tests/workers/test_appcataloga_runtime_health.py` | subprocesso isolado com executável simulado e temporário | teste do script de health em `tests/workers/` |
 | `test/tests/webfusion/test_upload.py` | cliente Flask, identidade substituída e armazenamento temporário | teste de rota do módulo em `tests/webfusion/` |
 | `test/tests/zabbix/test_zabbix_api.py` | cliente externo com chamadas simuladas, apesar da localização da pasta | teste que importa `api.zabbix_api.client` |
+| `test/tests/install/test_environment.py` | configuração dos componentes, Bash e identidade com filesystem temporário | teste do loader e do helper em `tests/install/` |
 
 ## Evidências
 
@@ -95,8 +119,10 @@ produto foi executada como parte desta investigação.
 
 | Afirmação | Confiança | Onde foi comprovada | Comando | Alcance | Verificado em |
 |---|---|---|---|---|---|
-| unittest nos testes automatizados | medido | 78 linhas de import em 47 de 47 arquivos; `pytest.ini` configura a descoberta | `rg -n -g 'test_*.py' '^import unittest\|^from unittest' test/tests \| wc -l` → 78; `rg -l -g 'test_*.py' '^import unittest\|^from unittest' test/tests \| wc -l` → 47 | `test/tests` | 2026-10-27 |
+| unittest nos testes automatizados | medido | 80 linhas de import em 48 de 48 arquivos; `pytest.ini` configura a descoberta | `rg -n -g 'test_*.py' '^import unittest\|^from unittest' test/tests \| wc -l` → 80; `rg -l -g 'test_*.py' '^import unittest\|^from unittest' test/tests \| wc -l` → 48 | `test/tests` | 2026-10-27 |
 | Nenhum arquivo comparável sem o import | medido | zero contraexemplos | `rg --files-without-match -g 'test_*.py' '^import unittest\|^from unittest' test/tests` → vazio | `test/tests` | 2026-10-27 |
 | Helper não escolhe container | medido | `test/test_all.sh:5,10,13` | leitura integral do helper, `test/AGENTS.md` e dos dois ENVIRONMENTs | helper da suíte | 2026-10-27 |
 | Colisão de nomes de pacote | medido | `test/tests/_support.py:74` documenta e implementa binding temporário | leitura integral de `_support.py` | testes que usam o helper | 2026-10-27 |
-| Paths da suíte mista | lacuna | `_support.py:19,20` e ENVIRONMENT WebFusion; nenhuma execução remota | `rg -n '^APP_ROOT\|^CONFIG_ROOT\|/RF.Fusion' test/tests/_support.py src/webfusion/.instructions/ENVIRONMENT.md` mostra as duas raízes do helper e a montagem diferente | conjunto misto precisa de verificação própria | 2026-10-27 |
+| Paths da suíte mista | lacuna | `_support.py:19,20` e ENVIRONMENT WebFusion; caminhos versionados distintos | `rg -n '^APP_ROOT\|^CONFIG_ROOT\|/RF.Fusion' test/tests/_support.py src/webfusion/.instructions/ENVIRONMENT.md` mostra as duas raízes do helper e a montagem diferente | conjunto misto precisa de verificação própria; ensaio com path ajustado não adequa toda a suíte | 2026-10-27 |
+| Loader comum nos deploys | medido | três deploys chamam a validação antes de comandos Podman; `install/common/environment.sh` valida o arquivo sem executá-lo | `rg -l -g 'deploy*.sh' '^rffusion_load_environment ' install \| wc -l` → 3; leitura do loader e dos três pontos de chamada | appCataloga, WebFusion e MariaDB | 2026-10-27 |
+| Identidade nos entrypoints | medido | três entrypoints chamam o helper antes dos serviços | `rg -l -g '*entrypoint.sh' '^bash /RF[.]?Fusion/install/common/container-identity[.]sh$' install \| wc -l` → 3; leitura de `install/common/container-identity.sh` | entrypoints dos três containers; não comprova ativação em containers existentes | 2026-10-27 |

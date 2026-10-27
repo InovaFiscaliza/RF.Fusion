@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+bash /RFFusion/install/common/container-identity.sh
+
 echo "=== [entrypoint] init ==="
 
 # 1) Runtime dir do SSHD (precisa existir a cada start)
