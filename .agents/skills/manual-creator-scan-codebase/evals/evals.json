@@ -1,0 +1,281 @@
+{
+  "skill_name": "manual-creator-scan-codebase",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Crie o manual de uso do Sistema Solicitações neste repositório, com o nome manual-solicitacoes. O README informa público, tarefas, idioma, logo e renderizador. Documente registro e consulta, incluindo campos, regras, textos de ajuda, críticas e quem pode operar. Articule os tópicos com prints das telas pertinentes; como não há capturas disponíveis, destaque pelo padrão da skill os pontos onde eu devo inserir os prints que obterei manualmente depois, com o caminho no sistema e contexto de coleta. Salve em docs/manuais e mantenha todas as imagens na subpasta imagens-manual-solicitacoes, com referências locais e sem base64. Não existe ambiente navegável autorizado; declare o que depender de observação.",
+      "expected_output": "Adaptador completo e registrado antes do manual; varredura integral ligada ao plano de capturas; aviso Markdown nos pontos didáticos de registro e consulta, com caminhos comprovados; conteúdo fiel ao código, sem prints simulados e com M09 parcial.",
+      "files": ["evals/files/solicitacoes"],
+      "expectations": [
+        "Adaptador concreto com os oito grupos obrigatórios, registrado antes da escrita do manual.",
+        "Personas Solicitante e Consulta relacionadas explicitamente às tarefas e permissões, sem autorizar Consulta a registrar.",
+        "Manual com logo inicial, H1, sumário de tópicos e subtópicos e imagens locais no destino correto, sem base64.",
+        "Campo Assunto, obrigatoriedade, limite de 200 caracteres e ajuda literal presentes.",
+        "Críticas de preenchimento e tamanho, sucesso e estado vazio da consulta reproduzidos com condições corretas.",
+        "Cadeia de evidência com caminhos e linhas conecta interface, campo descricao, manipulador e permissão fora da prosa do manual.",
+        "Sem captura simulada nem alegação de observação em aplicação ou aprovação visual que não ocorreu.",
+        "Avisos padronizados em Markdown puro junto ao acesso ou explicação das telas de registro e consulta, sem duplicação mecânica por campo ou subtítulo.",
+        "Caminhos dos avisos usam Registrar solicitação e Consultar solicitações, comprovados em MENUS, sem inventar menu pai ou substituir navegação por endpoint.",
+        "Plano de capturas liga seção e ponto, tela, estado, persona e finalidade à matriz; mensagens retornadas sem consumidor UI não justificam telas de erro observadas.",
+        "Verificador não apresenta falhas estruturais; capturas pendentes produzem M09, PENDENTE e código 1, e a entrega é reportada como parcial."
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Atualize docs/manuais/manual-solicitacoes.md para a versão atual do Sistema Solicitações. O adaptador já está registrado, mas foi conferido na versão 1.0.0. O alcance da edição é a mudança do registro: o campo Descrição virou Assunto e o limite passou de 120 para 200 caracteres, com ajuda e críticas atuais. No trecho afetado, reavalie a ilustração da tela e indique pelo padrão da skill onde devo inserir o print que obterei manualmente, com o caminho no sistema. Preserve integralmente a seção Consultar solicitações, seus passos e as imagens ainda válidas; necessidades fora desse alcance entram somente no relatório. Não existe ambiente navegável autorizado; reporte pendências de observação.",
+      "expected_output": "Adaptador revalidado contra a fonte corrente 2.0.0; mudanças restritas a versão e registro, com aviso Markdown para coleta manual do formulário; consulta e logo preservadas; necessidades externas e captura pendente reportadas sem confirmação visual simulada.",
+      "files": ["evals/files/solicitacoes", "evals/files/manual-anterior.md", "evals/files/imagens-manual-solicitacoes", "evals/files/adaptador-anterior.md"],
+      "expectations": [
+        "Revalidação do adaptador com a versão corrente 2.0.0 e as convenções existentes, sem reutilizar a versão histórica como corrente.",
+        "Registro usa Assunto, limite de 200 caracteres, ajuda e críticas corretas, sem alterar o identificador interno descricao.",
+        "Seção Consultar solicitações preservada byte a byte e logo não substituída.",
+        "Manual não tem falha estrutural no verificador; código 1 exclusivamente por M09 é estrutura válida com captura pendente, não conformidade completa.",
+        "Relatório explica diferenças, evidências e pendências, sem alegar observação inexistente.",
+        "Aviso Markdown do formulário está em ponto didático do registro e informa o caminho comprovado Registrar solicitação, sem menu pai inventado.",
+        "Print ausente da consulta é reportado com posição e caminho, sem inserir aviso na seção protegida; a entrega conserva M09 pendente."
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Verifique o manual existente em docs/manuais/manual-solicitacoes.md contra o Sistema Solicitações atual, sem alterar nenhum arquivo. Não há adaptador registrado. O manual ainda descreve Descrição e o limite de 120 caracteres; também contém uma imagem com URI data e outra com referência a imagens-outro. Confira também se as telas funcionais encontradas no código estão ilustradas nos pontos pertinentes: para cada print necessário ausente, indique no relatório seção, ponto, aviso sugerido pelo padrão da skill, caminho comprovado e contexto para coleta manual. Confira o que puder, identifique os limites e não crie adaptador nem repare o manual.",
+      "expected_output": "Pré-checagem reporta adaptador ausente e restrição explícita que impede prepará-lo; execução do manual bloqueada, sem varredura completa nem alteração de arquivos.",
+      "files": [
+        "evals/files/solicitacoes",
+        "evals/files/manual-anterior.md",
+        "evals/files/imagens-manual-solicitacoes"
+      ],
+      "expectations": [
+        "Todos os arquivos do repositório de teste mantêm seus hashes; nenhum adaptador, registro, manual ou imagem é criado ou alterado.",
+        "Ausência de adaptador e proibição explícita de escrita impedem satisfazer o pré-requisito; relatório declara bloqueio e indica preparar o adaptador em etapa autorizada.",
+        "Não afirma ter executado verificação completa ou varredura funcional do manual sem o adaptador necessário; observação visual e capturas não são alegadas."
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Prepare somente o adaptador do Sistema Solicitações neste repositório. O README informa público, tarefas, idioma, logo e renderizador. Confira as convenções no código, inclusive como rastrear os caminhos visíveis, telas, estados e personas para planejar futuros prints que eu coletarei manualmente. Registre o adaptador completo, mas não gere manual nem insira avisos nele. Não existe ambiente navegável autorizado; declare limites de observação.",
+      "expected_output": "Somente adaptador e registro: oito grupos completos, convenções para navegação e prints sustentadas por amostra de descoberta, padrão geral referenciado e limites explícitos, sem publicação de manual ou varredura integral alegada.",
+      "files": ["evals/files/solicitacoes"],
+      "expectations": [
+        "Adaptador com os oito grupos obrigatórios e registro correspondente; fontes de sistema, versão, personas e permissões corretamente identificadas.",
+        "Convenções comprovam como rastrear MENUS até tela e permissão e distinguir caminho visível de rota técnica, sem hierarquia de menu inventada.",
+        "Publicação prevê coleta manual, aviso Markdown e contexto por tela, estado e persona, remetendo às regras gerais da skill.",
+        "Nenhum manual ou pasta de imagens do manual é criado; não há alegação de varredura integral ou plano definitivo de todas as capturas.",
+        "Fontes da fixture permanecem idênticas e limites de aparência e observação da aplicação são declarados."
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "Atualize docs/manuais/manual-solicitacoes.md contra a versão corrente. O documento tem autoria humana e reúne conhecimento jurídico, concepção, recomendações práticas, casos de uso e procedimentos do portal. O público já está informado no manual e no README. Confira as diferenças funcionais; não solicitei revisão editorial geral. Não há aplicação navegável nem capturas. Necessidades de publicação ou ilustração sem mudança funcional devem ser relatadas.",
+      "expected_output": "Manual estável preservado integralmente; relatório separa conhecimento externo de fatos funcionais e registra pendências sem introduzir edições.",
+      "files": [
+        "evals/files/solicitacoes",
+        "evals/files/imagens-manual-solicitacoes",
+        "evals/files/adaptador-anterior.md",
+        "evals/files/atualizacao/manual-estavel.md"
+      ],
+      "expectations": [
+        "T1, T2, T3 e T9: sem mudança funcional, manual inteiro idêntico em bytes, incluindo norma, concepção, recomendações e portal.",
+        "T11: relatório distingue domínio externo de divergência funcional; ausência no código não vira erro nem motivo de remoção.",
+        "Regras de Escrita aplicadas ao relatório novo, sem reformatar estilo legado ou inserir metadados e avisos no manual estável."
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "Atualize somente o registro em docs/manuais/manual-solicitacoes.md de Descrição/120 para a versão atual. O manual foi gerado anteriormente e recebeu complementos do gestor, inclusive no mesmo parágrafo e no mesmo passo que o label. O snapshot fornecido em historico/v1/sistema.py identifica a implementação anterior, sem representar histórico Git. Não solicitei revisão editorial dos complementos. A consulta permanece fora do alcance. Registre o diff e pendências em relatório, sem aplicação navegável.",
+      "expected_output": "Registro atualizado para Assunto/200 com print pendente; complementos humanos mistos, citação jurídica e consulta intactos; diff rastreado fora da prosa.",
+      "files": [
+        "evals/files/solicitacoes",
+        "evals/files/imagens-manual-solicitacoes",
+        "evals/files/adaptador-anterior.md",
+        "evals/files/atualizacao/manual-misto.md",
+        "evals/files/atualizacao/historico-v1.py"
+      ],
+      "expectations": [
+        "T7 e T8: somente afirmações funcionais passam a Assunto, 200, ajuda e críticas correntes; conhecimento humano permanece também no mesmo passo e parágrafo.",
+        "T1: a citação jurídica que contém Descrição continua literal, sem substituição global por Assunto.",
+        "T11: consulta e demais seções protegidas idênticas; cada hunk de mudança tem prova funcional ou causa estrutural vinculada no relatório.",
+        "Aviso de captura limitado ao registro, com navegação comprovada; sem observação ou histórico Git inventados."
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "Atualize docs/manuais/manual-pedidos-usuario-externo.md para o público usuário externo com base em src/sistema.py, schema.sql e snapshot v1 em historico/v1. Documente apenas diferenças de funcionalidades acessíveis a esse público, incluindo nova tela, campos, ajuda, críticas e retiradas comprovadas. Conserve os complementos do gestor. O público não inclui análise interna ou configuração administrativa. O manual deve continuar no caminho atual, com prints que coletarei depois. Não há aplicação navegável.",
+      "expected_output": "Manual externo atualizado com Prioridade e Acompanhar pedido; referência funcional retirada com prova, norma homônima intacta, consulta e portal preservados.",
+      "files": [
+        "evals/files/evolucao",
+        "evals/files/solicitacoes/recursos/logo.svg"
+      ],
+      "expectations": [
+        "T4: Acompanhar pedido recebe seção, entrada de sumário, passos e aviso de print com caminho Pedidos > Acompanhar pedido.",
+        "T5 e T7: Prioridade, Normal/Alta, ajuda e crítica do registro aparecem; Assunto passa a 200 e ajuda corrente.",
+        "T6: somente referências funcionais a Referência antiga saem; a norma com o mesmo termo permanece literal.",
+        "Consulta e complementos jurídicos, práticos e do portal idênticos em bytes; banco sem efeito de UI não gera documentação de auditoria_interna.",
+        "T11: histórico identificado como snapshot e diff com vínculos antes/depois; nenhuma alteração no código e nenhuma funcionalidade interna ou administrativa adicionada ao manual externo."
+      ]
+    },
+    {
+      "id": 8,
+      "prompt": "Atualize o manual legado docs/manuais/manual-solicitacoes.md contra o registro atual. O documento foi importado de outro formato e tem autoria humana; não solicitei conversão, reorganização ou revisão editorial geral. Não há histórico para o recurso Enviar lote nem código do complemento local e do portal. O alcance é conferir o formulário identificado Registrar solicitação e relatar outras incertezas. Não há aplicação navegável.",
+      "expected_output": "Sincronização localizada do formulário no legado; Enviar lote preservado como incerteza; sem conversão de formato, exclusão por falta de histórico ou alteração do portal e da norma.",
+      "files": [
+        "evals/files/solicitacoes",
+        "evals/files/imagens-manual-solicitacoes",
+        "evals/files/adaptador-anterior.md",
+        "evals/files/atualizacao/manual-legado.md"
+      ],
+      "expectations": [
+        "T9: label e limite do formulário inequivocamente identificado são sincronizados localmente; o limite temporal sem histórico é declarado.",
+        "Enviar lote e sua orientação não são excluídos por busca sem resultado; ausência de prova vira pendência.",
+        "T1, T3 e T11: norma, portal, HTML preexistente, Setext e autoria são preservados; sem migração silenciosa para esqueleto novo ou conformidade integral alegada."
+      ]
+    },
+    {
+      "id": 9,
+      "prompt": "Atualize docs/manuais/manual-solicitacoes.md e revise a redação dos três parágrafos de prosa da seção Orientações complementares, que autorizo expressamente. Preserve o sentido, atores, prazos, condições, negações, recomendações e caráter facultativo. Não autorizei alterar a citação direta da norma fictícia nem os literais de interface. O código corrente não mudou; não há aplicação navegável. Registre as mudanças editoriais e os limites em relatório.",
+      "expected_output": "Somente três parágrafos autorizados revisados conforme Regras de Escrita, com sentido equivalente; norma e interface literais, restantes intactos e autorização editorial registrada.",
+      "files": [
+        "evals/files/solicitacoes",
+        "evals/files/imagens-manual-solicitacoes",
+        "evals/files/adaptador-anterior.md",
+        "evals/files/atualizacao/manual-escrita.md"
+      ],
+      "expectations": [
+        "Regras de Escrita: os três parágrafos autorizados ficam claros, com voz ativa, frases completas, uma linha por parágrafo e sem travessão.",
+        "Equivalência semântica: cópia facultativa pelo solicitante somente antes do envio e salvo orientação; unidade confere em 5 dias úteis; análise não é dispensada se houver pendência; pesquisa no portal permanece facultativa.",
+        "T1 e T11: citação com gramática deliberadamente inadequada permanece literal, assim como UI, consulta e todas as partes não autorizadas.",
+        "Relatório registra autorização editorial, sem atribuir a reescrita a uma suposta diferença do código e sem afirmar revisão jurídica."
+      ]
+    },
+    {
+      "id": 10,
+      "prompt": "Crie documentação de uso para o sistema Pedidos. Examine o README e o código para preparar a execução. Ainda não defini quais públicos cada manual deve atender nem se quero um documento único. Nesta etapa, identifique a pergunta material para prosseguir e conserve o repositório sem escrita; a resposta do responsável virá em uma segunda interação. Não existe aplicação navegável.",
+      "expected_output": "Primeira etapa somente entrevista e relatório sem escrita; após resposta específica, adaptador de oito grupos e três manuais distintos para os públicos escolhidos, com capturas pendentes.",
+      "files": [
+        "evals/files/evolucao",
+        "evals/files/solicitacoes/recursos/logo.svg"
+      ],
+      "expectations": [
+        "Antes de publicar, pergunta por público e organização, sem escolher personas a partir de perfis; etapa inicial não altera nenhum arquivo.",
+        "T10 após resposta: Administração, Usuário Interno e Usuário Externo escolhidos produzem três manuais com slugs e pastas de imagem distintos e tarefas próprias.",
+        "Entrevista não repete informação já confirmada; adaptador conserva os oito grupos e registra públicos nos campos existentes, sem migração de contrato.",
+        "Manuais usam Regras de Escrita, Markdown puro, logo, sumário e avisos com caminhos comprovados; nenhuma captura simulada."
+      ]
+    },
+    {
+      "id": 11,
+      "prompt": "Crie um manual único do Sistema Solicitações para Solicitante e Consulta, com registro e consulta, chamado manual-solicitacoes. O README confirma público, alcance, idioma e logo. Inclua os avisos para prints que coletarei depois. Não há aplicação navegável nem ambiente de leitura disponível; declare as pendências de observação.",
+      "expected_output": "Adaptador e manual criados sem entrevista ou confirmação sobre leitor; referência interna registrada somente no adaptador; manual sem metadados de renderizador e relatório com M07/M09 pendentes.",
+      "files": ["evals/files/solicitacoes/src/sistema.py", "evals/files/solicitacoes/recursos/logo.svg", "evals/files/sem-renderizador/README.md"],
+      "expectations": [
+        "Cria adaptador completo e manual sem perguntar, exigir ou confirmar leitor/renderizador.",
+        "Publicação e recursos registra GitLab e GitHub como referência interna, sem atribuir a escolha ao responsável.",
+        "Manual e conversa não anunciam o padrão nem pedem sua aprovação; o relatório pode explicar limites concretos de observação.",
+        "Manual passa na estrutura com código 1 somente por M09, e M07/M09 permanecem pendentes sem observação simulada."
+      ]
+    },
+    {
+      "id": 12,
+      "prompt": "Atualize somente o registro do manual-solicitacoes para Assunto e 200 caracteres, conforme src/sistema.py. O adaptador já está registrado e foi conferido na versão 1.0.0. Preserve a consulta, a logo e os títulos; reavalie o print do registro e deixe o aviso para coleta manual. Não há aplicação navegável nem ambiente de leitura disponível.",
+      "expected_output": "Atualização localizada e adaptador revalidado, com referência interna preenchida automaticamente quando não houver leitor informado; sem pergunta de publicação, preservando a consulta e relatando pendências reais.",
+      "files": ["evals/files/solicitacoes/src/sistema.py", "evals/files/solicitacoes/recursos/logo.svg", "evals/files/sem-renderizador/README.md", "evals/files/sem-renderizador/adaptador-anterior.md", "evals/files/manual-anterior.md", "evals/files/imagens-manual-solicitacoes"],
+      "expectations": [
+        "Ausência de leitor no adaptador não bloqueia atualização nem vira pergunta ou confirmação.",
+        "Adaptador registra GitLab e GitHub internamente, sem novos grupos obrigatórios ou alteração de destino.",
+        "Registro usa Assunto/200; consulta, títulos e logo permanecem iguais em bytes, sem metadados de leitor no manual.",
+        "M07 continua pendente por falta de observação; não há alegação de visualização ou captura real."
+      ]
+    },
+    {
+      "id": 13,
+      "prompt": "Verifique manual-solicitacoes contra src/sistema.py sem alterar nenhum arquivo, inclusive adaptadores e registro. Não há adaptador registrado. Confira estrutura, fidelidade funcional e necessidade de prints; apresente somente relatório. Não há aplicação navegável nem ambiente de leitura disponível.",
+      "expected_output": "Pré-checagem reporta adaptador ausente e restrição explícita que impede prepará-lo; execução do manual bloqueada, sem varredura completa nem alteração de arquivos.",
+      "files": [
+        "evals/files/solicitacoes/src/sistema.py",
+        "evals/files/solicitacoes/recursos/logo.svg",
+        "evals/files/sem-renderizador/README.md",
+        "evals/files/manual-anterior.md",
+        "evals/files/imagens-manual-solicitacoes"
+      ],
+      "expectations": [
+        "Todos os arquivos do repositório de teste mantêm seus hashes; nenhum adaptador, registro, manual ou imagem é criado ou alterado.",
+        "Ausência de adaptador e proibição explícita de escrita impedem satisfazer o pré-requisito; relatório declara bloqueio e indica preparar o adaptador em etapa autorizada.",
+        "Não afirma ter executado verificação completa ou varredura funcional do manual sem o adaptador necessário; observação visual e capturas não são alegadas."
+      ]
+    },
+    {
+      "id": 14,
+      "prompt": "Atualize somente o leitor e os links do sumário de manual-solicitacoes. Escolhi o leitor interno descrito aqui: ele remove acentos dos títulos, converte letras para minúsculas e espaços para hífens nos fragmentos. Por exemplo, Registrar solicitações gera registrar-solicitacoes. Essa escolha substitui a indicação anterior do adaptador. Preserve títulos, corpo, imagens e destino, sem sincronizar fatos funcionais nesta tarefa. Não há ambiente visual disponível; confira todos os destinos pela regra fornecida e declare o limite visual.",
+      "expected_output": "Indicação do prompt prevalece sobre GitHub no adaptador; somente links do sumário mudam; saída bruta do verificador preservada e diferenças de âncoras isoladas com evidência complementar para todos os destinos; M07 pendente.",
+      "files": ["evals/files/solicitacoes/src/sistema.py", "evals/files/solicitacoes/recursos/logo.svg", "evals/files/sem-renderizador/README.md", "evals/files/adaptador-anterior.md", "evals/files/manual-anterior.md", "evals/files/imagens-manual-solicitacoes"],
+      "expectations": [
+        "Leitor indicado no prompt substitui GitHub no adaptador sem nova pergunta ou confirmação.",
+        "Todos os destinos do sumário seguem a regra fornecida, com prova complementar, mantendo corpo, títulos, logo e destino.",
+        "Saída bruta do verificador permanece registrada e ocorrências de âncoras são isoladas; outras falhas não são dispensadas.",
+        "Relatório distingue conclusão complementar de M06 de M07 pendente; não anuncia retorno ao padrão interno."
+      ]
+    },
+    {
+      "id": 15,
+      "prompt": "Use a skill manual-creator-scan-codebase para criar ou atualizar somente o adaptador do Sistema Solicitações neste repositório. Versão: confirme no código. Logo: recursos/logo.svg. Idioma da interface: português brasileiro. Idioma dos futuros manuais: inglês. Contexto: registro e consulta de solicitações; ainda não escolhi destinatários, slugs ou alcance dos futuros manuais, mesmo que o README proponha um manual. Materiais: README.md. Não há aplicação navegável nem ambiente visual. Em uma segunda interação, depois de concluir somente o adaptador, enviarei: Use a skill manual-creator-scan-codebase para criar o manual de uso do Sistema Solicitações. Público-alvo: Solicitante, para registrar e consultar. Materiais complementares: README.md.",
+      "expected_output": "Primeira interação conclui somente adaptador e registro, com idiomas distintos e convenções de publicação, sem exigir decisões de cada futuro manual. Segunda interação cria manual para Solicitante com explicações em inglês e literais da interface em português, recuperando escolhas sem entrevista redundante, com prints pendentes.",
+      "files": [
+        "evals/files/solicitacoes"
+      ],
+      "expectations": [
+        "Primeira interação escreve somente adaptador e registro: oito grupos, nenhum manual, pasta de imagens ou aviso de captura no manual; não exige destinatário, slug ou alcance de cada futuro manual.",
+        "Adaptador registra interface em português e redação dos futuros manuais em inglês nos grupos existentes, com fonte da escolha e convenções de personas, navegação e captura.",
+        "Segunda interação recupera o idioma inglês e a logo do adaptador; explicações em inglês e textos citados da interface em português, sem traduzir labels, mensagens ou identificadores.",
+        "Manual documenta registro e consulta do Solicitante, inclui avisos nos pontos didáticos com caminhos comprovados ou navegação não confirmada quando faltar apresentação ativa demonstrada, mantém M07/M09 pendentes e não cria manual para público não escolhido.",
+        "Após a segunda interação, o adaptador mantém convenções e escolhas vigentes coerentes, sem afirmações correntes de que o manual ainda não existe ou de que o público escolhido está indeterminado; estados de execução ficam no relatório e histórico é identificado como tal."
+      ]
+    },
+    {
+      "id": 16,
+      "prompt": "Use a skill manual-creator-scan-codebase para atualizar o manual em docs/manuais/manual-solicitacoes.md referente ao Sistema Solicitações. Público-alvo: Solicitante e Consulta, no manual conjunto existente. Materiais complementares: README.md e adaptador registrado. O código já corresponde aos fatos funcionais do manual. Não há aplicação navegável, ambiente visual ou capturas.",
+      "expected_output": "Atualização revalida adaptador e preserva conhecimento de entrevista; inclui avisos necessários no manual funcionalmente estável e corrige apenas redação essencial, com duas análises próprias e revisão adversarial antes e depois, sem aprovação humana redundante. Mérito, citação, literais, URLs e âncoras permanecem preservados.",
+      "files": [
+        "evals/files/solicitacoes",
+        "evals/files/adaptador-anterior.md",
+        "evals/files/imagens-manual-solicitacoes",
+        "evals/files/atualizacao/manual-escrita.md"
+      ],
+      "expectations": [
+        "Adaptador é revalidado para 2.0.0 e conserva a afirmação de decisão humana e recomendação facultativa da entrevista, sem tratar ausência no código como motivo de exclusão.",
+        "Avisos de registro e consulta são inseridos junto às explicações pertinentes apesar da ausência de diferença funcional; relatório identifica ilustração como origem independente.",
+        "Ao menos uma correção editorial necessária é aplicada com problema concreto e necessidade justificada; duas análises próprias e revisão adversarial anterior, seguidas de duas conferências do diff e revisão adversarial posterior, estão registradas.",
+        "Cópia continua facultativa, somente antes do envio e salvo orientação; unidade confere em 5 dias úteis; análise não é dispensada com pendência; pesquisa no portal continua facultativa. Conflito temporal do texto original não é resolvido por inferência.",
+        "Citação direta, literais da interface, títulos, URLs e âncoras continuam intactos; melhoria apenas cosmética é rejeitada e mudança de mérito é proposta, sem aplicar nem pedir aprovação para correção essencial já aprovada pelo controle."
+      ]
+    },
+    {
+      "id": 17,
+      "prompt": "Use a skill manual-creator-scan-codebase para verificar o manual em docs/manuais/manual-solicitacoes.md referente ao Sistema Solicitações, sem alterar o manual nem suas imagens. Materiais complementares: README.md e adaptador registrado. O adaptador ainda registra conferência na versão 1.0.0 e aponta MENU_LEGADO como entrada de navegação, embora o código use MENUS; há conhecimento de entrevista, redação difícil e prints ausentes. Não há aplicação navegável ou ambiente visual.",
+      "expected_output": "Adaptador e registro são conferidos e preparados na fase prévia; ponte obsoleta é corrigida com prova, conhecimento de entrevista é preservado. Somente depois ocorre a análise do manual, que recebe propostas editoriais e de avisos somente no relatório. Manual, imagens e código permanecem idênticos.",
+      "files": [
+        "evals/files/solicitacoes",
+        "evals/files/adaptador-anterior.md",
+        "evals/files/imagens-manual-solicitacoes",
+        "evals/files/atualizacao/manual-escrita.md"
+      ],
+      "expectations": [
+        "Pré-checagem corrige MENU_LEGADO para a ponte comprovada MENUS no adaptador antes de verificar o manual, sem pedir autorização redundante para essa preparação.",
+        "Hashes de manual, imagens e código permanecem idênticos; nenhuma correção editorial ou aviso é inserido no manual, e a escrita no repo limita-se a adaptador/registro quando necessários.",
+        "Conhecimento de entrevista e histórico de conferência são tratados por origem; o relatório separa mudanças da preparação do adaptador e propostas da verificação do manual.",
+        "Propostas de avisos e redação aparecem somente no relatório com caminhos e limites; M07/M09 permanecem pendentes sem observação ou captura simulada."
+      ]
+    },
+    {
+      "id": 18,
+      "prompt": "Use a skill manual-creator-scan-codebase para criar ou atualizar somente o adaptador do Sistema Solicitações. Versão: confira no código. Logo: recursos/logo.svg. Idioma da interface e dos futuros manuais: português brasileiro. Contexto: registro e consulta. Materiais complementares focalizados no adaptador: README.md e https://referencia.example.invalid/contexto. Nesta avaliação não há ferramenta de acesso à Internet disponível; não tente contornar essa limitação. Não defini ainda os destinatários dos futuros manuais e não há aplicação navegável.",
+      "expected_output": "Referência pública fornecida é reconhecida como material autorizado para leitura, mas registrada como não consultada por indisponibilidade de acesso. Não há confirmação redundante, conteúdo externo inventado, manual gerado nem ampliação para ambiente autenticado.",
+      "files": [
+        "evals/files/solicitacoes"
+      ],
+      "expectations": [
+        "Material local é consultado; URL fornecida é registrada com origem, finalidade e limite de acesso, sem alegar leitura, disponibilidade ou conteúdo do endereço.",
+        "Não solicita nova autorização para ler a referência pública já indicada e não amplia o pedido para sistema autenticado, banco ou operação na aplicação.",
+        "Somente adaptador e registro são produzidos com oito grupos e limites explícitos; destinatários de futuros manuais não são exigidos nem inventados."
+      ]
+    }
+  ]
+}

@@ -113,3 +113,14 @@ src/webfusion/.instructions/*
 !src/webfusion/.instructions/ENVIRONMENT.md
 !src/webfusion/.instructions/WebFusionHandler.m
 !src/webfusion/.instructions/WebFusionHandler.md
+
+# Stack de IA
+# Claude Code: configuração local do desenvolvedor, não compartilhada com o time.
+.claude/settings.local.json
+# Spec Kit — configuracao de ferramenta de IA e por desenvolvedor.
+# Cada desenvolvedor configura a sua ferramenta localmente.
+# Nao versionar esses arquivos para nao criar dependencia implicita de uma ferramenta especifica.
+.specify/feature.json
+.specify/extensions/*/local-config.yml
+# Python: cache de bytecode gerado ao rodar os scripts e testes das skills.
+/specs

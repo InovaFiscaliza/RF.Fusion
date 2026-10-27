@@ -1,0 +1,6 @@
+{
+    "extraKnownMarketplaces": {
+        "stack-ai-rffusion": { "source": { "source": "directory", "path": "." } }
+    },
+    "enabledPlugins": { "stack-ai@stack-ai-rffusion": true }
+}
