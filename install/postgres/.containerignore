@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+secrets/
+*.key
+*.pem
+*.log
+*.log.*
+__pycache__/
+*.py[cod]
+results/
+coverage/
+.venv/
+tests/
+README.md

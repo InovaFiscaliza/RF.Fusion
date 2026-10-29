@@ -1,0 +1,48 @@
+FROM debian:12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 \
+    PGDATA=/var/lib/postgresql/data \
+    PATH=/usr/lib/postgresql/18/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+RUN set -eux; \
+    groupadd --system --gid 999 postgres; \
+    useradd --system --uid 999 --gid postgres --home-dir /var/lib/postgresql postgres; \
+    printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d; \
+    chmod 755 /usr/sbin/policy-rc.d; \
+    mkdir -p /etc/postgresql-common; \
+    printf 'create_main_cluster = false\n' > /etc/postgresql-common/createcluster.conf; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
+    mkdir -p /usr/share/keyrings; \
+    curl --fail --show-error --location https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+      -o /tmp/pgdg.asc; \
+    gpg --batch --dearmor --output /usr/share/keyrings/postgresql-pgdg.gpg /tmp/pgdg.asc; \
+    rm /tmp/pgdg.asc; \
+    printf 'deb [signed-by=/usr/share/keyrings/postgresql-pgdg.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main\n' \
+      > /etc/apt/sources.list.d/pgdg.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends postgresql-18 postgresql-client-18 \
+      postgresql-18-postgis-3 postgresql-18-postgis-3-scripts openssh-server tini util-linux; \
+    dpkg-query -W postgresql-18 postgresql-18-postgis-3; \
+    apt-get clean; \
+    mkdir -p /var/run/postgresql /run/sshd /srv/app_volume; \
+    find /etc/ssh -maxdepth 1 -type f -name 'ssh_host_*' -delete
+
+COPY config/ /usr/local/share/rffusion-postgres/config/
+COPY linux/ /usr/local/share/rffusion-postgres/linux/
+COPY sql/ /usr/local/share/rffusion-postgres/sql/
+COPY data/ /usr/local/share/rffusion-postgres/data/
+COPY snapshot.sha256 /usr/local/share/rffusion-postgres/snapshot.sha256
+
+RUN set -eux; \
+    chmod 755 /usr/local/share/rffusion-postgres/linux/*.sh; \
+    for s in docker-entrypoint bootstrap healthcheck verify; do \
+      ln -s "/usr/local/share/rffusion-postgres/linux/$s.sh" "/usr/local/bin/$s.sh"; \
+    done; \
+    cd /usr/local/share/rffusion-postgres; \
+    sha256sum --strict --check snapshot.sha256
+
+EXPOSE 5432 2828
+VOLUME ["/var/lib/postgresql/data", "/srv/app_volume"]
+HEALTHCHECK --interval=10s --timeout=8s --start-period=120s --retries=12 CMD ["/usr/local/bin/healthcheck.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
