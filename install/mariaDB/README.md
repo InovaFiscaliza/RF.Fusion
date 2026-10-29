@@ -115,7 +115,7 @@ capacidades disponíveis naquele host.
 
 O deploy monta:
 
-- `/RFFusion-dev/RF.Fusion -> /RFFusion:Z`
+- `/RFFusion-dev/RF.Fusion -> /RFFusion:z`
 
 Esse volume e necessario porque os scripts SQL sao executados a partir do
 repositorio montado dentro do container.

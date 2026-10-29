@@ -157,7 +157,7 @@ esperado pelo hash do arquivo recebido.
 
 O deploy monta:
 
-- `/RFFusion-dev/RF.Fusion -> /RF.Fusion:Z`
+- `/RFFusion-dev/RF.Fusion -> /RF.Fusion:z`
 - `/mnt/reposfi -> /mnt/reposfi:ro`
 - `/mnt/reposfi/upload -> /mnt/reposfi/upload:rw`
 

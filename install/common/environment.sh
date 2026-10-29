@@ -2,14 +2,14 @@
 # Load deployment identity without executing the local configuration file.
 
 rffusion_load_environment() {
-    # Args: repository root and component (appcataloga, webfusion or mariadb).
+    # Args: repository root and component (appcataloga, webfusion, mariadb or postgres).
     # Sets rffusion_identity_args for podman run; returns 1 on invalid input.
     local repo_root="$1" component="$2"
     local config_path="${repo_root}/.env/runtime.env"
     local line environment_value="" suffix
 
     case "$component" in
-        appcataloga|webfusion|mariadb) ;;
+        appcataloga|webfusion|mariadb|postgres) ;;
         *) printf 'ERROR: Unknown RF.Fusion component.\n' >&2; return 1 ;;
     esac
 

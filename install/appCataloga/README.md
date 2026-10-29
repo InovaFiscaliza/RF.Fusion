@@ -125,12 +125,12 @@ resultado depende dos controladores e do modo de execução daquele host.
 
 O deploy monta:
 
-- `/RFFusion-dev/RF.Fusion -> /RFFusion:Z`
+- `/RFFusion-dev/RF.Fusion -> /RFFusion:z`
 - `/mnt/reposfi -> /mnt/reposfi`
 
 Observacao:
 
-- `/mnt/reposfi` nao usa `:Z` porque esse filesystem nao suporta o ajuste esperado pelo script
+- `/mnt/reposfi` nao usa `:z` ou `:Z` porque esse filesystem nao suporta o ajuste esperado pelo script
 
 ## Acesso Ao Container
 

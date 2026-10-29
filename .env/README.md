@@ -1,6 +1,6 @@
 # Configuração local do ambiente
 
-Esta pasta identifica se os três containers do RF.Fusion pertencem à produção
+Esta pasta identifica se os containers do RF.Fusion pertencem à produção
 ou ao desenvolvimento. Preencha a configuração separadamente em cada host,
 no repositório usado pelos scripts de deploy.
 
@@ -43,6 +43,7 @@ não reutilize automaticamente a configuração da VM de origem.
 | appCataloga | `debian12-python` | `appcataloga-prod` | `appcataloga-dev` |
 | WebFusion | `rffusion-web` | `webfusion-prod` | `webfusion-dev` |
 | MariaDB | `debian12-mariadb` | `mariadb-prod` | `mariadb-dev` |
+| PostgreSQL | `rffusion-postgres` | `postgres-prod` | `postgres-dev` |
 
 Ao entrar por SSH ou abrir Bash com `podman exec -it`, o prompt mostra
 `[PRODUÇÃO]` em vermelho ou `[DEV]` em verde, seguido do usuário, hostname e
@@ -57,9 +58,10 @@ As labels do Podman e os logs de inicialização também identificam o ambiente.
 bash -c 'source install/common/environment.sh; rffusion_load_environment "$PWD" appcataloga'
 bash -c 'source install/common/environment.sh; rffusion_load_environment "$PWD" webfusion'
 bash -c 'source install/common/environment.sh; rffusion_load_environment "$PWD" mariadb'
+bash -c 'source install/common/environment.sh; rffusion_load_environment "$PWD" postgres'
 ```
 
-Os três deploys usam essa validação antes de executar comandos Podman ou
+Os deploys usam essa validação antes de executar comandos Podman ou
 modificar containers. Eles leem o arquivo a partir de `repoRoot`, definido
 nos respectivos scripts, que deve apontar para este repositório no host.
 
@@ -73,7 +75,8 @@ atualiza essa identidade.
 Os procedimentos de deploy estão nos READMEs de
 [appCataloga](../install/appCataloga/README.md),
 [WebFusion](../install/webserver/README.MD) e
-[MariaDB](../install/mariaDB/README.md).
+[MariaDB](../install/mariaDB/README.md) e
+[PostgreSQL](../install/postgres/README.md).
 
 **Não execute o deploy do MariaDB apenas para aplicar esta identificação em
 produção.** O deploy atual remove o container anterior e não reutiliza

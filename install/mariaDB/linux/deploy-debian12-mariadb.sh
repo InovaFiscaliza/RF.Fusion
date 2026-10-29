@@ -128,7 +128,7 @@ podman run -d \
   "${runtimeHealthArgs[@]}" \
   -p "${HostSSHPort}:2828" \
   -p "${HostDBPort}:3306" \
-  -v "${repoRoot}:/RFFusion:Z" \
+  -v "${repoRoot}:/RFFusion:z" \
   "${ImageName}:latest"
 
 sleep 8

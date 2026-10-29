@@ -12,7 +12,7 @@ case "${RFFUSION_ENV:-}" in
     *) printf 'ERROR: Missing or invalid RFFUSION_ENV.\n' >&2; exit 1 ;;
 esac
 case "${RFFUSION_COMPONENT:-}" in
-    appcataloga|webfusion|mariadb) ;;
+    appcataloga|webfusion|mariadb|postgres) ;;
     *) printf 'ERROR: Missing or invalid RFFUSION_COMPONENT.\n' >&2; exit 1 ;;
 esac
 

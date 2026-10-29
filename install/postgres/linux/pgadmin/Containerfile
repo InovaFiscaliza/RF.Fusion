@@ -1,0 +1,10 @@
+FROM docker.io/dpage/pgadmin4:9.18
+
+USER root
+RUN apk add --no-cache openssh-server tini \
+    && mkdir -p /run/sshd
+COPY docker-entrypoint.sh /usr/local/bin/rffusion-pgadmin-entrypoint.sh
+RUN chmod 755 /usr/local/bin/rffusion-pgadmin-entrypoint.sh
+
+EXPOSE 2222 8080
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/rffusion-pgadmin-entrypoint.sh"]

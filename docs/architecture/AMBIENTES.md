@@ -2,8 +2,8 @@
 
 ## Escopo
 
-Este contrato define a identificação de produção e desenvolvimento dos três
-containers: appCataloga, WebFusion e MariaDB. A configuração pertence ao host
+Este contrato define a identificação de produção e desenvolvimento dos
+containers: appCataloga, WebFusion, MariaDB e PostgreSQL. A configuração pertence ao host
 do deploy e fica em `.env/runtime.env`, fora do Git. O procedimento de
 preenchimento está no [README da configuração](../../.env/README.md).
 
@@ -20,7 +20,7 @@ preenchimento está no [README da configuração](../../.env/README.md).
 ## Identidade dos containers
 
 Os nomes dos containers usados pelo Podman e pelo serviço permanecem
-`debian12-python`, `rffusion-web` e `debian12-mariadb`.
+`debian12-python`, `rffusion-web`, `debian12-mariadb` e `rffusion-postgres`.
 O deploy define hostname, variáveis e labels a partir do ambiente validado:
 
 | Componente | Produção | Desenvolvimento |
@@ -28,9 +28,10 @@ O deploy define hostname, variáveis e labels a partir do ambiente validado:
 | appCataloga | `appcataloga-prod` | `appcataloga-dev` |
 | WebFusion | `webfusion-prod` | `webfusion-dev` |
 | MariaDB | `mariadb-prod` | `mariadb-dev` |
+| PostgreSQL | `postgres-prod` | `postgres-dev` |
 
 As variáveis `RFFUSION_ENV` e `RFFUSION_COMPONENT` identificam o container.
-Os componentes são `appcataloga`, `webfusion` e `mariadb`. As labels
+Os componentes são `appcataloga`, `webfusion`, `mariadb` e `postgres`. As labels
 `io.rffusion.environment` e `io.rffusion.component` reproduzem esses valores.
 
 Os entrypoints executam `install/common/container-identity.sh` pelo repositório
@@ -49,3 +50,13 @@ componente, com atenção à persistência do MariaDB.
 A identificação não altera portas, IPs, conexões, permissões, schemas ou tarefas.
 Credenciais e destinos de banco, Zabbix e compartilhamento continuam nos
 mecanismos próprios de cada componente. Esta pasta não substitui esses arquivos.
+
+## Repositório compartilhado e SELinux
+
+Os deploys que montam o mesmo repositório do host em appCataloga, MariaDB,
+WebFusion e PostgreSQL usam `:z` nessa montagem, para permitir acesso
+compartilhado pelo SELinux. Montagens de outros diretórios seguem seus próprios
+contratos e capacidades do filesystem. A alteração no script não modifica
+containers existentes nem corrige, por si só, etiquetas já aplicadas no host.
+Antes de recriar containers ou reetiquetar arquivos, verifique os caminhos
+reais, os impactos operacionais e a persistência dos dados.

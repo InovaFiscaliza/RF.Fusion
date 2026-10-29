@@ -28,9 +28,9 @@ source "${projectRoot}/../../common/environment.sh"
 rffusion_load_environment "$repoRoot" appcataloga
 
 # Ajuste importante:
-# /mnt/reposfi NÃO pode ter :Z porque o filesystem não suporta xattrs/SELinux
+# /mnt/reposfi cannot use :z or :Z because its filesystem lacks SELinux xattrs.
 volumes=(
-  "${repoRoot}:/RFFusion:Z"
+  "${repoRoot}:/RFFusion:z"
   "/mnt/reposfi:/mnt/reposfi"
 )
 

@@ -168,7 +168,7 @@ podman run -d \
   -e "SSH_PASSWORD=${ROOT_PASSWORD}" \
   -p "${HostHTTPPort}:${ContainerHTTPPort}" \
   -p "${HostSSHPort}:${ContainerSSHPort}" \
-  -v "${projectVolume}:/RF.Fusion:Z" \
+  -v "${projectVolume}:/RF.Fusion:z" \
   -v "${reposVolume}:/mnt/reposfi:ro" \
   -v "${uploadVolume}:/mnt/reposfi/upload:rw" \
   "${runtimeHealthMounts[@]}" \
