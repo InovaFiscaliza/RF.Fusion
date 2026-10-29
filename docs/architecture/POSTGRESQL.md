@@ -2,10 +2,14 @@
 
 O PostgreSQL é uma instalação paralela, não uma migração nem substituição dos
 bancos MariaDB. Para manter as consultas que relacionam os modelos, os quatro
-bancos lógicos são schemas `bpdata`, `rfdata`, `rffusion_summary` e `webfusion`
-dentro de um único banco PostgreSQL. Seus nomes não são delimitados por aspas e
-são armazenados em minúsculas, como os nomes de tabelas e colunas. A conexão só
-acessa um banco por vez no PostgreSQL.
+bancos lógicos são schemas `"BPDATA"`, `"RFDATA"`, `"RFFUSION_SUMMARY"` e
+`"WEBFUSION"` dentro de um único banco PostgreSQL. Schemas, tabelas, views e
+colunas usam identificadores delimitados por aspas duplas para preservar as
+maiúsculas. Consultas e referências devem usar a mesma caixa e as aspas duplas.
+O banco de conexão continua sendo `postgres`; a conexão só acessa um banco por
+vez no PostgreSQL. Funções auxiliares, índices e triggers mantêm seus nomes
+técnicos existentes. Instalações anteriores em minúsculas não são renomeadas
+automaticamente; o deploy reconhece ambas as convenções e não mistura modelos.
 
 Os scripts de criação devem preservar tabelas, colunas e granularidade dos
 contratos existentes. Tipos, índices, ordenação, geografia e regras de

@@ -3,7 +3,10 @@
 Os scripts criam os modelos de `src/mariadb/scripts` para uma instalação nova
 em PostgreSQL 17. A decisão de usar quatro schemas dentro de um único banco e os
 limites da instalação paralela estão no [contrato](../../../docs/architecture/POSTGRESQL.md).
-Os nomes SQL sem aspas são armazenados em minúsculas. O deploy do container
+Schemas, tabelas, views e colunas usam aspas duplas para preservar maiúsculas,
+por exemplo `SELECT "ID_HOST" FROM "BPDATA"."HOST"`. O banco de conexão continua
+sendo `postgres`. Funções auxiliares, índices e triggers mantêm os nomes técnicos
+existentes. O deploy do container
 [PostgreSQL](../../../install/postgres/README.md) executa o bootstrap apenas
 quando nenhum dos quatro schemas existe.
 
@@ -22,7 +25,11 @@ psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 --single-transaction -f /RFFu
 psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 --single-transaction -f /RFFusion/src/postgres/scripts/createWebFusionDB.sql
 ```
 
-Os scripts não atualizam instalações existentes nem migram dados. Os cinco CSVs
+Os scripts não atualizam instalações existentes nem migram dados. Recriar apenas
+o pod preserva os volumes e, portanto, os nomes em minúsculas já existentes.
+A alteração de caixa em uma instalação existente exige migração própria ou uma
+nova instalação em banco vazio, com preservação prévia dos dados necessários.
+Os cinco CSVs
 são cópias dos arquivos do MariaDB; a carga ajusta as sequências após inserir IDs.
 O backfill [backfillFixedSiteType.sql](backfillFixedSiteType.sql) só deve ser
 executado quando os sites sem classificação forem comprovadamente fixos e o tipo
@@ -39,7 +46,10 @@ verifica processo e consulta local; não está integrado ao WebFusion.
   não reproduzem automaticamente o FULLTEXT MariaDB. Os índices de prefixo usam
   `left` e exigem consultas correspondentes para serem aproveitados.
 - Para comportar caminhos longos, as identidades de arquivo usam índices únicos
-  SHA-256 de caminho e nome. Uma colisão, embora improvável, rejeitaria registros
+  SHA-256 de caminho e nome. A função `"BPDATA".file_identity_sha256(text)` fixa
+  UTF-8 e declara `IMMUTABLE`, pois a codificação do banco é fixa e o resultado
+  depende apenas do texto. Isso permite criar os índices sem usar diretamente
+  `convert_to`, classificada como `STABLE` pelo PostgreSQL. Uma colisão, embora improvável, rejeitaria registros
   distintos. Comparações usam as regras do PostgreSQL, não as collations MariaDB;
   verifique duplicatas, caixa e acentos antes de migrar dados.
 - Datas `DT_UPDATED_AT` usam triggers; índices e funções foram adaptados para

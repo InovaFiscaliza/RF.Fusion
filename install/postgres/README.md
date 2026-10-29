@@ -36,7 +36,10 @@ install/postgres/linux/deploy-postgres.sh
 O deploy recusa substituir um pod ou container existente. Ele espera o servidor
 PostgreSQL responder por TCP e, se nenhum dos quatro schemas do projeto existir,
 executa os scripts SQL e carrega os CSVs em uma única transação. Se qualquer
-schema já existir, a carga é ignorada e requer revisão manual. Falhas preservam
+schema já existir, em maiúsculas ou na convenção anterior em minúsculas, a carga
+é ignorada e requer revisão manual. Novas instalações preservam maiúsculas em
+schemas, tabelas e colunas usando aspas duplas. A recriação do pod com os mesmos
+volumes não altera os nomes de uma instalação existente. Falhas preservam
 pod e volumes para diagnóstico; confira `podman logs rffusion-postgres`.
 Em seguida, o deploy cria o container pgAdmin; confira também
 `podman logs rffusion-pgadmin` e abra `http://IP_DA_VM:9084`.

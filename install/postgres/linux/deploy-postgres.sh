@@ -78,7 +78,7 @@ if [[ "$ready" != true ]]; then
     exit 1
 fi
 
-existingSchemas="$(podman exec -u postgres "$containerName" psql -X -U postgres -d postgres -Atq -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM pg_namespace WHERE nspname IN ('bpdata','rfdata','rffusion_summary','webfusion')")"
+existingSchemas="$(podman exec -u postgres "$containerName" psql -X -U postgres -d postgres -Atq -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM pg_namespace WHERE nspname IN ('bpdata','rfdata','rffusion_summary','webfusion','BPDATA','RFDATA','RFFUSION_SUMMARY','WEBFUSION')")"
 if [[ "$existingSchemas" != 0 ]]; then
     echo "WARNING: Existing project schemas detected; bootstrap was skipped. Review them before use."
 else
