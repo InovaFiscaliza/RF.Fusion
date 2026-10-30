@@ -73,10 +73,9 @@ O deploy atual assume:
 Observacoes importantes:
 
 - o caminho `/RFFusion-dev/RF.Fusion` esta hardcoded em `deploy-rffusionweb.sh`
-- o volume `/mnt/reposfi` é montado em modo somente leitura, com uma montagem
-  adicional gravável apenas em `/mnt/reposfi/upload`
+- o volume `/mnt/reposfi` é montado com leitura e escrita, incluindo `upload`
 - o usuário do deploy e a conta do compartilhamento CIFS precisam permitir
-  criação e escrita de arquivos nessa subpasta
+  criação, leitura e escrita de arquivos no repositório
 
 ## Como Fazer O Deploy
 
@@ -117,12 +116,12 @@ para ajustar a montagem de uma instância em funcionamento.
 
 O script:
 
-1. valida os caminhos, a montagem do repositório e a escrita em `upload` no host
+1. valida os caminhos, a montagem e a leitura/escrita na raiz do repositório e em `upload` no host
 2. normaliza line endings de arquivos `.sh`
 3. recompila a imagem `rffusion-web`
 4. remove o container anterior, se existir
 5. cria um novo container com rede, portas e volumes
-6. valida se o container entrou em estado `running` e testa escrita em `upload`
+6. valida se o container entrou em estado `running` e testa leitura/escrita na raiz do repositório e em `upload`
 7. testa o endpoint `/api/server/runtime-health` e a porta SSH publicada
 
 ## CIFS e SELinux no deploy
@@ -135,7 +134,7 @@ volumes; as demais proteções do Podman e as permissões do filesystem continua
 aplicáveis. O script informa essa redução de isolamento durante o deploy.
 
 O SELinux do host e sua política não são alterados. A montagem de `/mnt/reposfi`
-continua somente leitura e apenas `upload` recebe uma montagem gravável. Para
+permite leitura e escrita, incluindo `upload`. Para
 outros filesystems, ou quando o Podman não usa SELinux, a opção é omitida.
 O comportamento é determinado pelo ambiente, com a mesma opção suportada nos
 Podman 4.9 e 5.8, sem exigir execução do deploy como root. A montagem CIFS deve
@@ -157,22 +156,31 @@ esperado pelo hash do arquivo recebido.
 
 O deploy monta:
 
-- `/RFFusion-dev/RF.Fusion -> /RF.Fusion:Z`
-- `/mnt/reposfi -> /mnt/reposfi:ro`
-- `/mnt/reposfi/upload -> /mnt/reposfi/upload:rw`
+- `/RFFusion-dev/RF.Fusion -> /RF.Fusion:z`
+- `/mnt/reposfi -> /mnt/reposfi:rw`
 
-A montagem de `upload` fica registrada na configuração do novo container e é
-restaurada quando ele reinicia. Os testes de escrita criam diretórios temporários
+O projeto usa `:z` para compartilhar o rótulo SELinux com outros containers que
+acessam o mesmo diretório. Evitar `:Z` nesse volume compartilhado, pois aplica um
+rótulo privado que pode impedir o acesso dos demais containers.
+
+A montagem gravável do repositório fica registrada na configuração do novo
+container e é restaurada quando ele reinicia. Os testes de leitura e escrita na
+raiz e em `upload` criam diretórios temporários
 exclusivos e escrevem um arquivo novo com `noclobber` (`set -C`). Isso evita
 reabrir um arquivo vazio com `O_TRUNC`, operação que pode bloquear em CIFS.
-O arquivo e o diretório são removidos ao concluir. O nginx bloqueia a publicação
-dessa pasta pelas rotas de download e permite até 513 MiB por requisição na API
+O conteúdo gravado é lido para conferência, e o arquivo e o diretório são removidos
+ao concluir. O nginx bloqueia a publicação de `upload` pelas rotas de download
+e permite até 513 MiB por requisição na API
 de upload (512 MiB de arquivo mais o envelope multipart).
 
-## Ajuste temporário sem recriar o container
+## Compatibilidade com containers antigos
 
-Para restaurar a escrita no container já iniciado, execute na VM como o usuário
-proprietário dos containers:
+Os helpers abaixo restauram escrita somente em `upload` para containers antigos
+com o repositório montado como somente leitura. Para permitir leitura e escrita
+em todo `/mnt/reposfi` de forma persistente, use o deploy atualizado.
+
+Para restaurar a escrita em `upload` no container já iniciado, execute na VM
+como o usuário proprietário dos containers:
 
 ```bash
 bash /RFFusion-dev/RF.Fusion/install/webserver/ensure-upload-mount.sh

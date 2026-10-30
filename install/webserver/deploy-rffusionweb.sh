@@ -41,7 +41,7 @@ if [[ ! -f "${webfusionSecretPath}" || ! -r "${webfusionSecretPath}" || ! -s "${
 fi
 
 # ----------------------------------------------------------------------
-# Volume: repositório CIFS (somente leitura)
+# Volume: repositório CIFS (leitura e escrita)
 # ----------------------------------------------------------------------
 reposVolume="/mnt/reposfi"
 uploadVolume="${reposVolume}/upload"
@@ -53,29 +53,30 @@ if ! mountpoint -q "${reposVolume}"; then
     exit 1
 fi
 
-# Uploads are the only writable area of the repository exposed to WebFusion.
+# Keep the upload root available within the writable repository.
 echo "Preparing upload directory: ${uploadVolume}"
 mkdir -p "${uploadVolume}"
 
 # Fail before replacing the running container if CIFS rejects writes.
-echo "Creating upload write probe in: ${uploadVolume}"
-if ! uploadProbeDir=$(mktemp -d "${uploadVolume}/.webfusion-deploy.XXXXXX"); then
-    echo "❌ ERROR: Cannot create a probe directory in ${uploadVolume}."
-    exit 1
-fi
-uploadProbe="${uploadProbeDir}/probe"
-# Create and write once; reopening an empty CIFS file with O_TRUNC can block.
-echo "Writing upload probe."
-if ! (set -C; printf 'WebFusion upload write check\n' > "${uploadProbe}"); then
-    rm -f -- "${uploadProbe}"
-    rmdir -- "${uploadProbeDir}"
-    echo "❌ ERROR: Cannot write to ${uploadVolume}."
-    exit 1
-fi
-echo "Removing upload write probe."
-rm -- "${uploadProbe}"
-rmdir -- "${uploadProbeDir}"
-echo "Upload write check completed."
+for storageVolume in "${reposVolume}" "${uploadVolume}"; do
+    echo "Creating storage read/write probe in: ${storageVolume}"
+    if ! storageProbeDir=$(mktemp -d "${storageVolume}/.webfusion-deploy.XXXXXX"); then
+        echo "❌ ERROR: Cannot create a probe directory in ${storageVolume}."
+        exit 1
+    fi
+    storageProbe="${storageProbeDir}/probe"
+    # Create and write once; reopening an empty CIFS file with O_TRUNC can block.
+    if ! (set -C; printf 'WebFusion storage read/write check\n' > "${storageProbe}") ||
+        [[ "$(cat "${storageProbe}")" != "WebFusion storage read/write check" ]]; then
+        rm -f -- "${storageProbe}"
+        rmdir -- "${storageProbeDir}"
+        echo "❌ ERROR: Cannot read/write in ${storageVolume}."
+        exit 1
+    fi
+    rm -- "${storageProbe}"
+    rmdir -- "${storageProbeDir}"
+    echo "Storage read/write check completed."
+done
 
 # ----------------------------------------------------------------------
 # Credenciais (root)
@@ -135,7 +136,7 @@ selinuxEnabled="$(podman info --format '{{.Host.Security.SELinuxEnabled}}')"
 if [[ "${reposFsType}" == "cifs" && "${selinuxEnabled}" == "true" ]]; then
     volumeSecurityArgs+=(--security-opt label=disable)
     echo "WARNING: CIFS volume detected; SELinux label separation is disabled for ${ContainerName} only."
-    echo "Repository remains read-only; only upload is writable. Host SELinux policy is unchanged."
+    echo "Repository is mounted read-write. Host SELinux policy is unchanged."
 fi
 
 # ======================================================================
@@ -168,9 +169,8 @@ podman run -d \
   -e "SSH_PASSWORD=${ROOT_PASSWORD}" \
   -p "${HostHTTPPort}:${ContainerHTTPPort}" \
   -p "${HostSSHPort}:${ContainerSSHPort}" \
-  -v "${projectVolume}:/RF.Fusion:Z" \
-  -v "${reposVolume}:/mnt/reposfi:ro" \
-  -v "${uploadVolume}:/mnt/reposfi/upload:rw" \
+  -v "${projectVolume}:/RF.Fusion:z" \
+  -v "${reposVolume}:/mnt/reposfi:rw" \
   "${runtimeHealthMounts[@]}" \
   "${ImageName}:latest" >/dev/null
 
@@ -192,16 +192,19 @@ fi
 echo "✅ Container is running."
 
 # Verify access as the container user, including rootless UID mapping.
-if ! podman exec "${ContainerName}" /bin/sh -eu -c '
-    cd /
-    probe_dir=$(mktemp -d /mnt/reposfi/upload/.webfusion-deploy.XXXXXX)
-    trap '\''rm -f -- "$probe_dir/probe"; rmdir -- "$probe_dir"'\'' EXIT
-    (set -C; printf "WebFusion upload write check\n" > "$probe_dir/probe")
-'; then
-    echo "❌ ERROR: Upload storage is not writable inside ${ContainerName}."
-    exit 1
-fi
-echo "✅ Upload storage is writable inside the container."
+for storageVolume in "${reposVolume}" "${uploadVolume}"; do
+    if ! podman exec "${ContainerName}" /bin/sh -eu -c '
+        cd /
+        probe_dir=$(mktemp -d "$1/.webfusion-deploy.XXXXXX")
+        trap '\''rm -f -- "$probe_dir/probe"; rmdir -- "$probe_dir"'\'' EXIT
+        (set -C; printf "WebFusion storage read/write check\n" > "$probe_dir/probe")
+        [ "$(cat "$probe_dir/probe")" = "WebFusion storage read/write check" ]
+    ' sh "${storageVolume}"; then
+        echo "❌ ERROR: Storage is not readable/writable inside ${ContainerName}: ${storageVolume}."
+        exit 1
+    fi
+    echo "✅ Storage is readable/writable inside the container: ${storageVolume}."
+done
 
 # Reinstall health credentials after recreating the WebFusion container.
 # The health panel remains optional when internal services are unavailable.
@@ -230,5 +233,5 @@ echo "Web URL : http://127.0.0.1:${HostHTTPPort}${PublicBasePath}/"
 echo "SSH     : ssh root@127.0.0.1 -p ${HostSSHPort}"
 echo "IP      : ${IPAddress}"
 echo "Volume  : ${projectVolume} -> /RF.Fusion"
-echo "Repository: ${reposVolume} -> /mnt/reposfi (read-only)"
+echo "Repository: ${reposVolume} -> /mnt/reposfi (read-write)"
 echo "Upload  : ${uploadVolume} -> /mnt/reposfi/upload (read-write)"

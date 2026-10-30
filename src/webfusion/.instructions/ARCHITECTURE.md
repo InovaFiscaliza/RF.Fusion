@@ -64,7 +64,14 @@ entre requisições concorrentes. Falhas durante a gravação removem o arquivo
 incompleto. Uma interrupção abrupta do processo pode exigir limpeza manual.
 A API exige cabeçalho próprio, sem habilitar CORS, para impedir envio por
 formulários de outras origens. Uploads não são publicados nas rotas de download.
-O deploy mantém o repositório somente leitura e monta apenas `upload` para escrita.
+O deploy monta `/mnt/reposfi` com leitura e escrita, incluindo `upload`, conforme
+as permissões do compartilhamento no host. O módulo de upload continua restrito
+à raiz `/mnt/reposfi/upload`.
+
+Os seletores de classificação usam menus HTML acessíveis, renderizados pelo
+JavaScript da página, para não depender do popup nativo do navegador. Os
+elementos `select` mantêm os valores e eventos de classificação existentes e
+ficam visíveis como fallback até a inicialização dos menus.
 
 
 ## Separação de responsabilidades

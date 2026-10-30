@@ -13,8 +13,139 @@
     const driveType = document.getElementById("upload-drive-type");
     const limit = Number(root.dataset.maxFileBytes);
     const entries = [];
+    const selectControls = new Map();
     let active = false;
     let dragDepth = 0;
+
+    function enhanceSelect(select) {
+        // Preserve the native select as the classification model and no-script fallback.
+        const shell = select.parentElement;
+        const label = document.querySelector(`label[for="${select.id}"]`);
+        const trigger = document.createElement("button");
+        trigger.type = "button";
+        trigger.id = `${select.id}-trigger`;
+        trigger.className = "form-control upload-select-trigger";
+        trigger.setAttribute("role", "combobox");
+        trigger.setAttribute("aria-haspopup", "listbox");
+        trigger.setAttribute("aria-expanded", "false");
+        const menu = document.createElement("ul");
+        menu.id = `${select.id}-options`;
+        menu.className = "upload-select-options";
+        menu.setAttribute("role", "listbox");
+        menu.hidden = true;
+        trigger.setAttribute("aria-controls", menu.id);
+        label.id = `${select.id}-label`;
+        trigger.setAttribute("aria-labelledby", `${label.id} ${trigger.id}`);
+        menu.setAttribute("aria-labelledby", label.id);
+        const options = Array.from(select.options);
+        let activeIndex = select.selectedIndex;
+        let search = "";
+        let lastTyped = 0;
+
+        function activate(index, scroll = false) {
+            activeIndex = index;
+            Array.from(menu.children).forEach((item, i) => item.classList.toggle("is-active", i === index));
+            const item = menu.children[index];
+            if (item) {
+                trigger.setAttribute("aria-activedescendant", item.id);
+                if (scroll) item.scrollIntoView({ block: "nearest" });
+            }
+        }
+
+        function close() {
+            menu.hidden = true;
+            trigger.setAttribute("aria-expanded", "false");
+            trigger.removeAttribute("aria-activedescendant");
+            search = "";
+        }
+
+        function open() {
+            if (trigger.disabled) return;
+            selectControls.forEach(control => control.close());
+            menu.hidden = false;
+            trigger.setAttribute("aria-expanded", "true");
+            activate(select.selectedIndex, true);
+        }
+
+        function choose(index) {
+            if (!options[index] || options[index].disabled || select.disabled) return;
+            select.selectedIndex = index;
+            close();
+            select.dispatchEvent(new Event("change", { bubbles: true }));
+            trigger.focus();
+        }
+
+        function sync() {
+            trigger.textContent = select.selectedOptions[0]?.textContent || "";
+            trigger.disabled = select.disabled;
+            trigger.setAttribute("aria-required", String(select.required));
+            Array.from(menu.children).forEach((item, index) => {
+                item.setAttribute("aria-selected", String(index === select.selectedIndex));
+            });
+            close();
+        }
+
+        options.forEach((option, index) => {
+            const item = document.createElement("li");
+            item.id = `${select.id}-option-${index}`;
+            item.setAttribute("role", "option");
+            item.setAttribute("aria-disabled", String(option.disabled));
+            item.textContent = option.textContent;
+            item.addEventListener("pointerdown", event => event.preventDefault());
+            item.addEventListener("pointermove", () => {
+                if (!option.disabled) activate(index);
+            });
+            item.addEventListener("click", () => choose(index));
+            menu.append(item);
+        });
+        trigger.addEventListener("click", () => { if (menu.hidden) open(); else close(); });
+        trigger.addEventListener("keydown", event => {
+            const key = event.key;
+            if (key === "Tab" || key === "Escape") {
+                close();
+                if (key === "Escape") event.preventDefault();
+                return;
+            }
+            if (["Enter", " "].includes(key)) {
+                event.preventDefault();
+                if (menu.hidden) open(); else choose(activeIndex);
+                return;
+            }
+            if (["ArrowDown", "ArrowUp", "Home", "End"].includes(key)) {
+                event.preventDefault();
+                const wasClosed = menu.hidden;
+                if (wasClosed) open();
+                const enabled = options.map((option, i) => option.disabled ? -1 : i).filter(i => i >= 0);
+                let position = enabled.indexOf(activeIndex);
+                if (key === "Home") position = 0;
+                else if (key === "End") position = enabled.length - 1;
+                else if (!wasClosed) position += key === "ArrowDown" ? 1 : -1;
+                activate(enabled[Math.max(0, Math.min(position, enabled.length - 1))], true);
+                return;
+            }
+            if (key.length !== 1 || event.ctrlKey || event.metaKey || event.altKey) return;
+            event.preventDefault();
+            if (menu.hidden) open();
+            const now = performance.now();
+            search = now - lastTyped > 700 ? key : search + key;
+            lastTyped = now;
+            const index = options.findIndex(option => !option.disabled &&
+                option.textContent.trim().toLocaleLowerCase("pt-BR").startsWith(search.toLocaleLowerCase("pt-BR")));
+            if (index >= 0) activate(index, true);
+        });
+        shell.addEventListener("focusout", event => {
+            if (!shell.contains(event.relatedTarget)) close();
+        });
+        document.addEventListener("pointerdown", event => {
+            if (!shell.contains(event.target)) close();
+        });
+        shell.append(trigger, menu);
+        shell.classList.add("upload-select");
+        label.htmlFor = trigger.id;
+        select.hidden = true;
+        sync();
+        selectControls.set(select, { sync, close });
+    }
 
     function classification() {
         const value = { category: category.value, station: "", drive_type: "", folder: "" };
@@ -43,7 +174,9 @@
         document.getElementById("upload-destination").textContent = selected.folder
             ? `${root.dataset.uploadFolder}/${selected.folder}` : "Selecione a classificação acima.";
         root.querySelectorAll("[data-select-files]").forEach(button => { button.disabled = !selected.folder; });
+        selectControls.forEach(control => control.sync());
     }
+    [category, station, driveType].forEach(enhanceSelect);
     [category, station, driveType].forEach(select => select.addEventListener("change", updateClassification));
     updateClassification();
 
@@ -152,7 +285,7 @@
         const destination = classification();
         if (!destination.folder) {
             feedback.textContent = "Selecione o tipo de upload e complete a classificação antes de enviar arquivos.";
-            category.focus();
+            document.getElementById(`${category.id}-trigger`).focus();
             return;
         }
         for (const file of files) {

@@ -4,6 +4,8 @@ Página: `/rffusion/upload`. O usuário precisa estar identificado pelo proxy
 existente (e-mail válido); os papéis `admin` e `developer` não são obrigatórios.
 
 Escolha o tipo de upload e complete o segundo filtro, quando necessário.
+Os seletores abrem menus na própria página, com navegação por setas, Home/End,
+busca pelo início do texto, Enter para confirmar e Escape para fechar.
 Selecione vários arquivos ou arraste-os para a página. O envio começa
 automaticamente, em sequência, com progresso e resultado por arquivo. A lista
 mostra somente os envios da página aberta. Não há envio de pastas nem retomada
@@ -34,10 +36,11 @@ automática depois de fechar a página.
 
 ## Preparação do ambiente
 
-O deploy em `install/webserver/deploy-rffusionweb.sh` cria a pasta no host,
-mantém `/mnt/reposfi` somente leitura e monta a subpasta `upload` para escrita.
-Uma instância já criada pode receber um ajuste temporário sem recriação, conforme
-o procedimento rootless em [README do deploy](../../../../install/webserver/README.MD).
+O deploy em `install/webserver/deploy-rffusionweb.sh` cria a pasta no host e monta
+`/mnt/reposfi` com leitura e escrita, incluindo a subpasta `upload`.
+Containers antigos com montagem somente leitura podem receber um ajuste
+temporário de escrita apenas em `upload`, conforme o procedimento rootless em
+[README do deploy](../../../../install/webserver/README.MD).
 O próximo deploy registra a montagem na configuração do container, preservando-a
 nos reinícios. O compartilhamento CIFS e suas credenciais também precisam permitir
 escrita nessa pasta. A aplicação não cria um destino alternativo.
@@ -47,6 +50,14 @@ na API de upload, incluindo o envelope multipart, e bloqueia downloads da pasta.
 O proxy externo de autenticação também precisa aceitar esse tamanho e a duração
 da transferência. O limite padrão de corpo do Waitress comporta esse envio.
 Publicar envolve atualizar o código, a configuração nginx e a montagem juntos.
+
+O template usa nomes de assets versionados no caminho, pois o cache intermediário
+pode entregar versões antigas quando a versão muda apenas na query string.
+`upload_page_20261030.js` e `upload_page_20261030_theme.css` são links simbólicos
+para as fontes `upload_page.js` e `upload_page.css`, sem duplicar o conteúdo.
+O alias anterior de CSS permanece para compatibilidade com páginas já abertas. Em uma
+nova publicação desses assets, trocar os nomes versionados e as referências no
+template. Reiniciar o WebFusion para invalidar os templates compilados em memória.
 
 ## Contrato da API
 
