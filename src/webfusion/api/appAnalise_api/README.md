@@ -26,12 +26,15 @@ vezes. O registro está em `src/webfusion/app.py`.
 - `filters.py`: filtros tipados e validação de valores recebidos.
 - `db_handler.py`: classe `AppAnaliseDB`, consultas SQL parametrizadas e
   fechamento das conexões, usando as fábricas existentes de `webfusion/db.py`.
-- `service.py`: serialização das respostas tabulares.
+- `service.py`: paginação sobre índices reutilizáveis, contagem e serialização.
+- `file_cache.py`: cache limitado por validade, memória e quantidade de entradas;
+  coordena construções concorrentes sem compartilhar recursos de banco.
 - `config.py`: prefixo, limites e constantes do contrato.
 
 As rotas e serviços chamam somente métodos públicos do handler. O módulo não
 abre conexões no import, não compartilha conexões entre requisições e não
-introduz outro driver. Todas as operações são consultas; não há endpoint para
+introduz outro driver. As operações não alteram dados persistentes do catálogo;
+a seleção de arquivos usa uma tabela temporária exclusiva da conexão. Não há endpoint para
 SQL arbitrário, alteração de tabelas ou manipulação de tasks.
 
 Esta separação aplica a preservação do contrato externo estabelecida em
@@ -282,8 +285,44 @@ genérica. Exemplo:
 
 Exceções durante o atendimento do blueprint retornam JSON. Erros de roteamento
 404/405 continuam usando o tratamento padrão do Flask. Detalhes de exceções são
-registrados no servidor e não enviados ao cliente. Não há cache de resultados
-na biblioteca nem truncamento silencioso das consultas não paginadas.
+registrados no servidor e não enviados ao cliente. Não há truncamento silencioso
+das consultas não paginadas.
+
+## Reutilização de buscas e concorrência
+
+O contrato MATLAB não exige alterações: continuam os mesmos caminhos, filtros,
+aliases e até `pageSize + 1` linhas por página. A API reutiliza por filtro um
+índice imutável de IDs de arquivos, ordenados pelo início completo do arquivo e
+pelo ID, ambos decrescentes. `page` e `pageSize` não entram na chave; listas de
+distritos são normalizadas para desconsiderar ordem e repetições.
+
+A seleção materializa os IDs dos espectros compatíveis em tabela temporária
+InnoDB. O cálculo das datas usa o conteúdo completo dos arquivos selecionados.
+A conexão é fechada também em falhas, removendo a tabela temporária. Os IDs
+ordenados são lidos com cursor sem buffer de linhas. Cada página consulta apenas
+os metadados completos de seus IDs, incluindo a linha de antecipação. O índice
+não armazena metadados ou binários.
+
+Índices e contagens têm validade fixa de 300 segundos, com até 16 entradas e
+64 MiB de valores retidos por processo. O descarte é LRU; entradas vencidas são
+removidas ao acessar o cache. Resultados maiores que o limite atendem sem
+truncamento, mas não são retidos. Esses limites não incluem buffers temporários
+do banco, respostas JSON ou os resultados das construções ainda em andamento.
+Os valores de configuração ficam em `config.py`.
+
+Requisições simultâneas da mesma chave compartilham uma construção e recebem o
+mesmo resultado ou falha. Há no máximo uma construção por processo; entradas
+prontas continuam disponíveis durante esse trabalho. Não se compartilham conexões
+ou cursores entre threads. Falhas não são armazenadas como resultado vazio.
+Cada processo mantém seu próprio cache, sem invalidação por escritas no catálogo.
+
+A contagem conserva sua consulta e chave próprias, sem usar o tamanho do índice:
+os JOINs da contagem e da listagem têm diferenças legadas. Índices e contagens
+podem refletir dados de até cinco minutos; metadados da página são consultados
+no momento da requisição. Expiração, descarte ou exclusão de arquivos podem
+mudar a composição das páginas. Não há snapshot transacional entre requisições
+HTTP independentes. A busca inicial ainda precisa percorrer os dados compatíveis;
+a melhoria elimina a repetição desse trabalho em cada página.
 
 ## Implementação Python e otimizações
 
@@ -305,16 +344,17 @@ No acesso ao banco:
   que agrupava arquivos antes de contar.
 - O filtro de distrito usa o site já relacionado à consulta. Na contagem, os
   JOINs de site/estado só entram quando os filtros correspondentes exigem.
+- A listagem materializa a seleção, calcula o início completo dos arquivos e
+  reutiliza o índice ordenado entre páginas antes de agregar rótulos, faixas e contagens.
+  Essas agregações mais caras ficam restritas aos `pageSize + 1` arquivos da
+  página. A seleção e o cálculo das datas conservam os mesmos JOINs obrigatórios
+  de equipamento e site. A ordem explícita dos JOINs parte dos arquivos
+  selecionados, evitando uma nova leitura global dos espectros na agregação.
 
-Essas mudanças preservam as respostas e os fallbacks documentados. Planos
-`EXPLAIN` verificam a estrutura de execução; ganhos de latência dependem dos
-filtros, índices e volume real. Não foram criados índices ou caches adicionais.
-
-Na comparação dos planos em 11/09/2026, a contagem deixou de materializar
-`<derived2>`; com filtro de distrito, o plano também deixou de indicar
-`Using temporary; Using filesort`. No fallback de equipamentos sem filtros,
-o plano passou de `Distinct` com tabela temporária para `FirstMatch(e)`.
-Essas observações descrevem os planos avaliados, não um benchmark de latência.
+Essas mudanças preservam campos, filtros e fallbacks documentados, com a validade
+dos índices e contagens descrita acima. Ganhos de latência dependem dos filtros,
+índices, volume real e presença de uma entrada válida no cache. Não há novos
+índices ou tabelas persistentes.
 
 ## Validação e implantação
 
@@ -327,7 +367,8 @@ cd /RF.Fusion
 ```
 
 Os testes isolam o acesso ao banco e cobrem filtros, fallbacks, parâmetros SQL,
-fechamento de conexões, serialização, paginação, rotas e erros. O mapa é
+fechamento de conexões, serialização, paginação, rotas, expiração, limites de
+cache, concorrência e recuperação após falhas. O mapa é
 validado separadamente nos testes de `map_api`. Eles não
 substituem a comparação ponta a ponta com o appAnalise em MATLAB.
 

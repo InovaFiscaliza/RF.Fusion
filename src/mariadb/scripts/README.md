@@ -108,6 +108,27 @@ O fluxo lógico do dado é este:
 
 ## Scripts de Bootstrap
 
+### Reconciliação operacional de ID de host
+
+[reconcileHostIdentity.sql](reconcileHostIdentity.sql) transfere um host para
+um ID Zabbix ainda ausente, conforme o [contrato](../../../docs/architecture/SUMMARY.md).
+Confirme a identidade física e faça backup restrito das linhas afetadas antes
+da execução. Pare o consumidor do Summary, confirme que o host está livre e
+que o Zabbix passou a enviar o novo ID. Não execute com `mysql --force`.
+
+Na mesma sessão MariaDB, defina `@old_host_id`, `@new_host_id` e
+`@expected_host_name`; execute `SOURCE` para o arquivo. A primeira execução,
+com `@apply_host_rekey=0`, valida as escritas e desfaz a transação. Confira as
+contagens e repita com `@apply_host_rekey=1` para efetivar. Destino existente,
+host ocupado, tarefas em execução ou conflito de unicidade abortam com rollback.
+Após o commit, valide a ausência de referências antigas e a conservação das
+contagens, retome o consumidor e aguarde o processamento dos dois escopos de
+host publicados no outbox. Preserve as identidades e os fatos do RFDATA.
+
+O script exige tabelas InnoDB e o schema canônico de filas do BPDATA; revise
+novas referências lógicas ao host antes de utilizá-lo em um schema diferente.
+Não é uma migração automática nem uma fusão de cadastros duplicados.
+
 Os scripts `create*.sql` são a fonte canônica do schema atual para instalações
 novas. Alterações de estrutura devem ser incorporadas diretamente nesses arquivos;
 scripts de migração não são mantidos neste diretório.

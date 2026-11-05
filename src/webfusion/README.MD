@@ -375,6 +375,20 @@ antigo: mudanças Python exigem recarregar o WebFusion pelo procedimento de depl
 
 ### Consulta às Estações
 
+Os seletores simples de Estações, criação de Tarefas e Configurações abrem
+menus HTML na própria página. Suportam setas, Home/End, busca pelo início do
+texto, Enter para confirmar e Escape para fechar. Opções dinâmicas e validação
+obrigatória continuam vinculadas aos campos originais dos formulários. Sem
+JavaScript, os seletores nativos permanecem disponíveis.
+
+A regressão de interface fica em `test_shared_select_browser.py`. No container
+webserver, com Playwright e Chromium disponíveis no ambiente de validação:
+
+```bash
+cd /RF.Fusion
+/usr/local/bin/python -m unittest discover -s test/tests/webfusion -p test_shared_select_browser.py -v
+```
+
 /host apresenta a situação de uma estação, erros agregados, localização e
 histórico. O teste de conectividade cria uma tarefa prioritária e a janela
 acompanha seu progresso sem executar ICMP ou SSH no WebFusion.

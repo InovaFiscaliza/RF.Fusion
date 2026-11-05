@@ -119,75 +119,64 @@ class QueryTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
         self.fetch.return_value = TableResult([], [])
 
-    def test_file_filters_bind_values_and_preserve_lookahead(self) -> None:
-        """Verify file filters bind values and preserve lookahead.
+    def test_file_metadata_uses_all_spectra_for_selected_ids(self) -> None:
+        """Preserve full-file aggregates independently of the original filters.
 
         Args:
             None.
 
         Returns:
-            None. Assertions fail when the contract changes.
+            None. Checks bound IDs, complete joins and all public aggregates.
         """
-        description = "O'Brien'; DROP TABLE HOST; --"
-        filters = Filters(equipment_id=12, site_id=8, district_ids=(1, 2),
-                          state_code="SP", start_date=datetime(2026, 9, 1),
-                          end_date=datetime(2026, 9, 11, 23, 59, 59),
-                          freq_start=100, freq_end=200, description=description,
-                          page=3, page_size=50)
-        self.db.get_spectrum_file_data(filters)
+        self.fetch.return_value = TableResult(["ID_FILE"], [{"ID_FILE": 20}, {"ID_FILE": 10}])
+        result = self.db.get_spectrum_files_by_ids((10, 20))
         schema, sql, params = self.fetch.call_args.args
         self.assertEqual(schema, "spectrum")
-        self.assertNotIn(description, sql)
-        self.assertEqual(params, ["reposfi", 12, 8, "SP", 1, 2,
-                                 filters.start_date, filters.end_date,
-                                 100, 200, f"%{description}%", 51, 100])
-        for fragment in ("f.DT_TIME_END >= %s", "f.DT_TIME_START <= %s",
-                         "f.NU_FREQ_START >= %s", "f.NU_FREQ_END <= %s",
-                         "COUNT(DISTINCT f.ID_SPECTRUM)", "MIN(f.DT_TIME_START) DESC",
-                         "repos.ID_FILE DESC", "LIMIT %s OFFSET %s"):
-            self.assertIn(fragment, sql)
-        self.assertEqual(sql.count("%s"), len(params))
-
-    def test_file_aggregates_use_complete_contents_after_selecting_matches(self) -> None:
-        """Keep search predicates inside file selection, outside aggregates.
-
-        Args:
-            None.
-
-        Returns:
-            None. Assertions protect complete-file dates, ranges and counts.
-        """
-        query_filters = Filters(
-            equipment_id=12, site_id=8, state_code="PE", district_ids=(4,),
-            start_date=datetime(2026, 9, 30),
-            end_date=datetime(2026, 10, 1, 23, 59, 59),
-            freq_start=400, freq_end=407, description="plan",
-        )
-        self.db.get_spectrum_file_data(query_filters)
-        _, sql, params = self.fetch.call_args.args
-        aggregates, selection = sql.split("JOIN (", 1)
-        selection, grouping = selection.split(
-            ") matched_files ON matched_files.ID_FILE = repos.ID_FILE", 1,
-        )
-        self.assertIn("SELECT DISTINCT repos.ID_FILE", selection)
-        for predicate in (
-            "f.FK_EQUIPMENT = %s", "f.FK_SITE = %s", "st.LC_STATE = %s",
-            "s.FK_DISTRICT IN (%s)", "f.DT_TIME_END >= %s",
-            "f.DT_TIME_START <= %s", "f.NU_FREQ_START >= %s",
-            "f.NU_FREQ_END <= %s", "LIKE UPPER(%s)",
-        ):
-            self.assertIn(predicate, selection)
-            self.assertNotIn(predicate, aggregates + grouping)
+        self.assertEqual(params, [10, 20])
+        self.assertIn("WHERE repos.ID_FILE IN (%s, %s)", sql)
+        self.assertNotIn("LIMIT", sql)
         for aggregate in (
             "MIN(f.DT_TIME_START)", "MAX(f.DT_TIME_END)",
             "MIN(f.NU_FREQ_START)", "MAX(f.NU_FREQ_END)",
             "COUNT(DISTINCT f.ID_SPECTRUM)", "COUNT(DISTINCT s.ID_SITE)",
             "AS LOCALITY_LABELS", "AS EQUIPMENT_LABELS",
         ):
-            self.assertIn(aggregate, aggregates)
-        self.assertIn("ORDER BY MIN(f.DT_TIME_START) DESC, repos.ID_FILE DESC", grouping)
-        self.assertEqual(params[0], "reposfi")
-        self.assertEqual(params[-2:], [51, 0])
+            self.assertIn(aggregate, sql)
+        self.assertEqual([row["ID_FILE"] for row in result.rows], [10, 20])
+
+    def test_direct_file_page_preserves_offset_and_lookahead(self) -> None:
+        """Slice the ordered index with the existing extra-row contract.
+
+        Args:
+            None.
+
+        Returns:
+            None. Checks arbitrary page sizes, offsets and empty pages.
+        """
+        for page, size, expected in ((1, 2, (0, 1, 2)), (2, 2, (2, 3, 4)),
+                                     (3, 2, (4,)), (4, 2, ())):
+            with patch.object(self.db, "get_spectrum_file_index", return_value=tuple(range(5))), \
+                    patch.object(self.db, "get_spectrum_files_by_ids") as metadata:
+                self.db.get_spectrum_file_data(Filters(page=page, page_size=size))
+                metadata.assert_called_once_with(expected)
+
+    def test_empty_file_page_retains_columns_without_query(self) -> None:
+        """Return the public empty-table schema without SQL for empty IDs.
+
+        Args:
+            None.
+
+        Returns:
+            None. Checks empty-page compatibility and absence of database work.
+        """
+        result = self.db.get_spectrum_files_by_ids(())
+        self.assertEqual(result.rows, [])
+        self.assertEqual(result.columns, [
+            "ID_FILE", "NA_PATH", "NA_FILE", "NA_EXTENSION", "VL_FILE_SIZE_KB",
+            "DT_TIME_START", "DT_TIME_END", "NU_FREQ_START", "NU_FREQ_END",
+            "NU_SPECTRA", "LOCALITY_COUNT", "LOCALITY_LABELS", "EQUIPMENT_LABELS",
+        ])
+        self.fetch.assert_not_called()
 
     def test_description_wildcards_and_negative_frequency(self) -> None:
         """Verify description wildcards and negative frequency.
@@ -199,10 +188,9 @@ class QueryTests(unittest.TestCase):
             None. Assertions fail when the contract changes.
         """
         for description, expected in (("abc", "%abc%"), ("a_c", "a_c"), ("a%", "a%")):
-            self.db.get_spectrum_file_data(Filters(description=description, freq_start=-1))
-            _, sql, params = self.fetch.call_args.args
+            sql, params = database._spectrum_conditions(Filters(description=description, freq_start=-1))
             self.assertNotIn("f.NU_FREQ_START >=", sql)
-            self.assertEqual(params[-3], expected)
+            self.assertEqual(params[-1], expected)
 
     def test_equipment_fallback_preserves_legacy_district_exception(self) -> None:
         """Verify equipment fallback preserves legacy district exception.
@@ -545,6 +533,247 @@ class SerializationTests(unittest.TestCase):
             service.json_value(object())
 
 
+class FileIndexTests(unittest.TestCase):
+    """Protect filter materialization, full-file ordering and resource cleanup."""
+
+    def test_index_materializes_filters_and_streams_complete_order(self) -> None:
+        """Check bound filters and complete dates. Args: None. Returns: None."""
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.__iter__.return_value = iter([{"ID_FILE": 30}, {"ID_FILE": 10}])
+        query = Filters(equipment_id=12, site_id=8, district_ids=(1, 2), state_code="SP",
+                        start_date=datetime(2026, 9, 1), end_date=datetime(2026, 9, 30),
+                        freq_start=100, freq_end=200, description="O'Brien", page=9, page_size=1000)
+        with patch.object(database, "get_connection_rfdata", return_value=connection):
+            self.assertEqual(database.AppAnaliseDB().get_spectrum_file_index(query), (30, 10))
+        materialize, order = cursor.execute.call_args_list
+        filter_sql, values = materialize.args
+        order_sql, volume = order.args
+        self.assertIn("CREATE TEMPORARY TABLE", filter_sql)
+        self.assertIn("PRIMARY KEY (ID_SPECTRUM)", filter_sql)
+        self.assertNotIn("O'Brien", filter_sql)
+        self.assertEqual(values, [12, 8, "SP", 1, 2, query.start_date, query.end_date,
+                                  100, 200, "%O'Brien%"])
+        self.assertEqual(volume, ["reposfi"])
+        for predicate in ("f.FK_EQUIPMENT = %s", "f.FK_SITE = %s", "st.LC_STATE = %s",
+                          "s.FK_DISTRICT IN (%s, %s)", "f.DT_TIME_END >= %s",
+                          "f.DT_TIME_START <= %s", "f.NU_FREQ_START >= %s",
+                          "f.NU_FREQ_END <= %s", "LIKE UPPER(%s)"):
+            self.assertIn(predicate, filter_sql)
+            self.assertNotIn(predicate, order_sql)
+        self.assertIn("b.FK_FILE = matched_files.ID_FILE", order_sql)
+        self.assertIn("f.ID_SPECTRUM = b.FK_SPECTRUM", order_sql)
+        self.assertIn("e.ID_EQUIPMENT = f.FK_EQUIPMENT", order_sql)
+        self.assertIn("s.ID_SITE = f.FK_SITE", order_sql)
+        self.assertIn("ORDER BY MIN(f.DT_TIME_START) DESC, matched_files.ID_FILE DESC", order_sql)
+        self.assertNotIn("LIMIT", order_sql)
+        cursor.fetchall.assert_not_called()
+        connection.close.assert_called_once()
+
+    def test_index_releases_connection_after_each_failure_stage(self) -> None:
+        """Release temporary resources on failures. Args: None. Returns: None."""
+        for stage in ("materialize", "order", "stream"):
+            with self.subTest(stage=stage):
+                connection = MagicMock()
+                cursor = connection.cursor.return_value.__enter__.return_value
+                failure = RuntimeError(stage)
+                if stage == "stream":
+                    cursor.__iter__.side_effect = failure
+                else:
+                    cursor.execute.side_effect = [failure] if stage == "materialize" else [None, failure]
+                with patch.object(database, "get_connection_rfdata", return_value=connection):
+                    with self.assertRaisesRegex(RuntimeError, stage):
+                        database.AppAnaliseDB().get_spectrum_file_index(Filters())
+                connection.close.assert_called_once()
+                connection.cursor.return_value.__exit__.assert_called_once()
+
+
+class FileServiceTests(unittest.TestCase):
+    """Check cross-page reuse without merging count and listing contracts."""
+
+    def setUp(self) -> None:
+        """Isolate process-cache state. Args: None. Returns: None."""
+        self.db = MagicMock(spec=database.AppAnaliseDB)
+        cache_patch = patch.object(service, "_FILE_QUERY_CACHE", service.FileQueryCache())
+        cache_patch.start()
+        self.addCleanup(cache_patch.stop)
+        self.db.get_spectrum_files_by_ids.side_effect = lambda ids: TableResult(
+            ["ID_FILE"], [{"ID_FILE": value} for value in ids],
+        )
+
+    def test_pages_and_sizes_share_index_but_filters_do_not(self) -> None:
+        """Reuse normalized filters across pages. Args: None. Returns: None."""
+        self.db.get_spectrum_file_index.return_value = (30, 20, 10, 5, 1)
+        first = service.get_file_page(Filters(district_ids=(2, 1, 2), page_size=2), self.db)
+        second = service.get_file_page(Filters(district_ids=(1, 2), page=2, page_size=2), self.db)
+        other_size = service.get_file_page(Filters(district_ids=(2, 1), page=2, page_size=3), self.db)
+        self.assertEqual([r["ID_FILE"] for r in first.rows], [30, 20, 10])
+        self.assertEqual([r["ID_FILE"] for r in second.rows], [10, 5, 1])
+        self.assertEqual([r["ID_FILE"] for r in other_size.rows], [5, 1])
+        self.db.get_spectrum_file_index.assert_called_once_with(
+            Filters(district_ids=(1, 2), page=1, page_size=1),
+        )
+        service.get_file_page(Filters(state_code="SP", page_size=2), self.db)
+        self.assertEqual(self.db.get_spectrum_file_index.call_count, 2)
+
+    def test_count_uses_independent_join_scope_and_cache(self) -> None:
+        """Preserve legitimate count/list differences. Args: None. Returns: None."""
+        self.db.get_spectrum_file_data_count.return_value = 9
+        self.db.get_spectrum_file_index.return_value = (2, 1)
+        service.get_file_page(Filters(), self.db)
+        self.assertEqual(service.get_file_count(Filters(page=2, page_size=1000), self.db), 9)
+        self.assertEqual(service.get_file_count(Filters(page_size=1), self.db), 9)
+        self.db.get_spectrum_file_data_count.assert_called_once_with(Filters(page_size=1))
+
+    def test_metadata_failure_does_not_become_empty_or_poison_index(self) -> None:
+        """Retry failed metadata with the valid index. Args: None. Returns: None."""
+        self.db.get_spectrum_file_index.return_value = (2, 1)
+        self.db.get_spectrum_files_by_ids.side_effect = [RuntimeError("metadata"), TableResult([], [])]
+        with self.assertRaisesRegex(RuntimeError, "metadata"):
+            service.get_file_page(Filters(), self.db)
+        service.get_file_page(Filters(), self.db)
+        self.assertEqual(self.db.get_spectrum_file_index.call_count, 1)
+        self.assertEqual(self.db.get_spectrum_files_by_ids.call_count, 2)
+
+    def test_reused_index_does_not_freeze_page_metadata(self) -> None:
+        """Fetch current metadata on repeated pages. Args: None. Returns: None."""
+        self.db.get_spectrum_file_index.return_value = (2,)
+        self.db.get_spectrum_files_by_ids.side_effect = [
+            TableResult(["ID_FILE", "NU_SPECTRA"], [{"ID_FILE": 2, "NU_SPECTRA": 1}]),
+            TableResult(["ID_FILE", "NU_SPECTRA"], [{"ID_FILE": 2, "NU_SPECTRA": 3}]),
+        ]
+        first = service.get_file_page(Filters(), self.db)
+        second = service.get_file_page(Filters(), self.db)
+        self.assertEqual(first.rows[0]["NU_SPECTRA"], 1)
+        self.assertEqual(second.rows[0]["NU_SPECTRA"], 3)
+        self.db.get_spectrum_file_index.assert_called_once()
+
+
+class FileCacheTests(unittest.TestCase):
+    """Exercise expiry, memory limits and concurrent success/failure recovery."""
+
+    def test_expiry_starts_when_load_finishes_and_empty_results_are_cached(self) -> None:
+        """Expire fixed lifetimes after loading. Args: None. Returns: None."""
+        cache = service.FileQueryCache()
+        with patch("time.monotonic", return_value=10) as clock:
+            def load():
+                """Advance a fake long build. Args: None. Returns: tuple[int, ...]."""
+                clock.return_value = 1000
+                return ()
+            loader = MagicMock(side_effect=load)
+            key = ("index", Filters())
+            self.assertEqual(cache.get_or_load(key, loader), ())
+            clock.return_value = 1000 + routes.k.FILE_QUERY_CACHE_TTL_SECONDS - 1
+            self.assertEqual(cache.get_or_load(key, loader), ())
+            loader.assert_called_once()
+            clock.return_value += 1
+            cache.get_or_load(key, loader)
+            self.assertEqual(loader.call_count, 2)
+
+    def test_entry_limit_evicts_least_recently_used(self) -> None:
+        """Retain recently accessed entries. Args: None. Returns: None."""
+        cache = service.FileQueryCache()
+        loaders = [MagicMock(return_value=i) for i in range(3)]
+        keys = [("count", Filters(equipment_id=i + 1)) for i in range(3)]
+        with patch.object(routes.k, "FILE_QUERY_CACHE_MAX_ENTRIES", 2):
+            for i in (0, 1, 0, 2, 0, 1):
+                cache.get_or_load(keys[i], loaders[i])
+        self.assertEqual([loader.call_count for loader in loaders], [1, 2, 1])
+
+    def test_byte_limit_evicts_and_oversized_values_are_never_truncated(self) -> None:
+        """Bound retained values independently of entries. Args: None. Returns: None."""
+        cache = service.FileQueryCache()
+        loaders = [MagicMock(return_value=i) for i in range(3)]
+        keys = [("count", Filters(equipment_id=i + 1)) for i in range(3)]
+        with patch.object(routes.k, "FILE_QUERY_CACHE_MAX_BYTES", 2 * sys.getsizeof(0)):
+            for i in (0, 1, 2, 0):
+                cache.get_or_load(keys[i], loaders[i])
+            self.assertLessEqual(cache._bytes, 2 * sys.getsizeof(0))
+        self.assertEqual(loaders[0].call_count, 2)
+        full = tuple(range(100))
+        large = MagicMock(return_value=full)
+        with patch.object(routes.k, "FILE_QUERY_CACHE_MAX_BYTES", 1):
+            for _ in range(2):
+                self.assertEqual(cache.get_or_load(("index", Filters()), large), full)
+        self.assertEqual(large.call_count, 2)
+
+    def test_same_key_shares_result_or_failure_and_retries(self) -> None:
+        """Release all waiters after success or failure. Args: None. Returns: None."""
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event, Lock
+
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                cache = service.FileQueryCache()
+                key = ("index", Filters())
+                entered, release, joined = Event(), Event(), Event()
+                error = RuntimeError("database unavailable")
+                counter_lock = Lock()
+                waiting = [0]
+                def load():
+                    """Block one build for its waiters. Args: None. Returns: tuple[int, ...]."""
+                    entered.set()
+                    if not release.wait(3):
+                        raise TimeoutError("test did not release build")
+                    if fail:
+                        raise error
+                    return (3, 2, 1)
+                loader = MagicMock(side_effect=load)
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    owner = pool.submit(cache.get_or_load, key, loader)
+                    try:
+                        self.assertTrue(entered.wait(3))
+                        pending = cache._pending[key]
+                        result = pending.result
+                        def wait_for_owner():
+                            """Track joining the same build. Args: None. Returns: tuple[int, ...]."""
+                            with counter_lock:
+                                waiting[0] += 1
+                                if waiting[0] == 3:
+                                    joined.set()
+                            return result(timeout=3)
+                        with patch.object(pending, "result", side_effect=wait_for_owner):
+                            waiters = [pool.submit(cache.get_or_load, key, loader) for _ in range(3)]
+                            self.assertTrue(joined.wait(3))
+                            release.set()
+                            for future in [owner, *waiters]:
+                                if fail:
+                                    with self.assertRaises(RuntimeError) as raised:
+                                        future.result(timeout=3)
+                                    self.assertIs(raised.exception, error)
+                                else:
+                                    self.assertEqual(future.result(timeout=3), (3, 2, 1))
+                    finally:
+                        release.set()
+                loader.assert_called_once()
+                self.assertEqual(cache.get_or_load(key, lambda: (3, 2, 1)), (3, 2, 1))
+
+    def test_ready_hits_are_available_while_another_key_builds(self) -> None:
+        """Do not block cache hits on database work. Args: None. Returns: None."""
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+
+        cache = service.FileQueryCache()
+        ready = ("count", Filters())
+        cache.get_or_load(ready, lambda: 10)
+        entered, release = Event(), Event()
+        def load():
+            """Block an unrelated build. Args: None. Returns: tuple[int, ...]."""
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError("test did not release build")
+            return (1,)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            building = pool.submit(cache.get_or_load, ("index", Filters()), load)
+            try:
+                self.assertTrue(entered.wait(3))
+                hit = pool.submit(cache.get_or_load, ready, lambda: 20)
+                self.assertEqual(hit.result(timeout=1), 10)
+            finally:
+                release.set()
+            self.assertEqual(building.result(timeout=3), (1,))
+
+
 class RouteTests(unittest.TestCase):
     """Check the public REST mapping, envelopes and error boundaries."""
 
@@ -557,6 +786,9 @@ class RouteTests(unittest.TestCase):
         Returns:
             None. Assertions fail when the contract changes.
         """
+        patcher = patch.object(service, "_FILE_QUERY_CACHE", service.FileQueryCache())
+        patcher.start()
+        self.addCleanup(patcher.stop)
         app = Flask(__name__)
         app.register_blueprint(routes.appanalise_api_bp)
         app.logger.disabled = True
@@ -604,10 +836,11 @@ class RouteTests(unittest.TestCase):
         for path, method in (("/equipments", "get_spectrum_equipments"),
                              ("/states", "get_spectrum_states"),
                              ("/localities", "get_spectrum_localities"),
-                             ("/files", "get_spectrum_file_data"),
+                             ("/files", "get_spectrum_file_index"),
                              ("/files/count", "get_spectrum_file_data_count")):
             mocked = getattr(self.db, method)
-            mocked.return_value = 0 if path.endswith("count") else TableResult([], [])
+            mocked.return_value = 0 if path.endswith("count") else (() if path == "/files" else TableResult([], []))
+            self.db.get_spectrum_files_by_ids.return_value = TableResult([], [])
             get_response = self.client.get(PREFIX + path + "?equipmentId=12&districtId=1&districtId=2")
             first = mocked.call_args
             post_response = self.client.post(PREFIX + path, json={"equipmentId": 12, "districtId": [1, 2]})
@@ -624,7 +857,8 @@ class RouteTests(unittest.TestCase):
         Returns:
             None. Assertions fail when the contract changes.
         """
-        self.db.get_spectrum_file_data.return_value = TableResult(["ID_FILE"], [{"ID_FILE": 1}, {"ID_FILE": 2}])
+        self.db.get_spectrum_file_index.return_value = (1, 2)
+        self.db.get_spectrum_files_by_ids.return_value = TableResult(["ID_FILE"], [{"ID_FILE": 1}, {"ID_FILE": 2}])
         response = self.client.get(PREFIX + "/files?pageSize=1")
         self.assertEqual(len(response.json["rows"]), 2)
         self.assertEqual(response.json["pagination"], {"page": 1, "page_size": 1, "has_more": True})
@@ -640,6 +874,18 @@ class RouteTests(unittest.TestCase):
         """
         self.db.get_spectrum_file_data_count.return_value = 7
         self.assertEqual(self.client.get(PREFIX + "/files/count").json, {"count": 7})
+
+    def test_failed_index_returns_json_and_next_request_can_retry(self) -> None:
+        """Propagate a failed build through HTTP. Args: None. Returns: None."""
+        self.db.get_spectrum_file_index.side_effect = [RuntimeError("private SQL details"), (1,)]
+        self.db.get_spectrum_files_by_ids.return_value = TableResult(["ID_FILE"], [{"ID_FILE": 1}])
+        failed = self.client.post(PREFIX + "/files", json={"stateCode": "SP"})
+        self.assertEqual(failed.status_code, 500)
+        self.assertEqual(failed.json["error"]["code"], "query_failed")
+        self.assertNotIn("private SQL", failed.get_data(as_text=True))
+        retried = self.client.post(PREFIX + "/files", json={"stateCode": "SP"})
+        self.assertEqual(retried.status_code, 200)
+        self.assertEqual(retried.json["rows"], [{"ID_FILE": 1}])
 
     def test_bad_inputs_never_query(self) -> None:
         """Verify bad inputs never query.

@@ -6,7 +6,7 @@ from werkzeug.exceptions import BadRequest, HTTPException, UnsupportedMediaType
 from . import config as k
 from .db_handler import AppAnaliseDB
 from .filters import Filters, parse_filters
-from .service import table_payload
+from .service import get_file_count, get_file_page, table_payload
 
 
 appanalise_api_bp = Blueprint("appanalise_api", __name__, url_prefix=k.API_PREFIX)
@@ -163,7 +163,7 @@ def files() -> Response:
         entries for direct compatibility with the MATLAB query.
     """
     filters = _request_filters()
-    result = AppAnaliseDB().get_spectrum_file_data(filters)
+    result = get_file_page(filters, AppAnaliseDB())
     payload = table_payload(result)
     payload["pagination"] = {
         "page": filters.page, "page_size": filters.page_size,
@@ -182,7 +182,7 @@ def file_count() -> Response:
     Returns:
         JSON object with count (int), the number of matching files (Response).
     """
-    return jsonify({"count": AppAnaliseDB().get_spectrum_file_data_count(_request_filters())})
+    return jsonify({"count": get_file_count(_request_filters(), AppAnaliseDB())})
 
 
 @appanalise_api_bp.get("/files/<int(min=1):file_id>/spectra")
