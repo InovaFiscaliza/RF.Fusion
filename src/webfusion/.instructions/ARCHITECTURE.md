@@ -69,20 +69,23 @@ as permissões do compartilhamento no host. O módulo de upload continua restrit
 à raiz `/mnt/reposfi/upload`.
 
 Os seletores de classificação usam menus HTML acessíveis, renderizados pelo
-JavaScript da página, para não depender do popup nativo do navegador. Os
+componente comum do shell, para não depender do popup nativo do navegador. Os
 elementos `select` mantêm os valores e eventos de classificação existentes e
 ficam visíveis como fallback até a inicialização dos menus.
 
 
 ## Separação de responsabilidades
 
-Os seletores simples em `/host`, `/tasks/create` e `/configuration` usam o
-componente compartilhado `static/js/wf_select_20261105.js`, com estilos em
-`static/css/wf_select_20261105.css`. O menu HTML evita depender da renderização
-do popup nativo. O `select` original preserva nomes, valores, validação e eventos
-dos formulários, e fica disponível como fallback sem JavaScript. O componente
-acompanha opções reconstruídas, visibilidade e desabilitação pelos controladores
-das páginas. Listas de seleção múltipla mantêm seu comportamento próprio.
+Todos os seletores simples usam o componente do shell em
+`static/js/base_page.js` e os estilos de `static/css/webfusion_base.css`.
+Os controladores das páginas mantêm os catálogos, filtros e regras de negócio;
+o shell mantém a interação e a apresentação dos menus HTML. O `select`
+original preserva nomes, valores, validação e eventos dos formulários e fica
+visível como fallback sem JavaScript. O componente acompanha inserções de
+campos, opções reconstruídas, visibilidade e desabilitação. Listas de seleção
+múltipla mantêm a interação própria e usam os estilos comuns de formulário.
+Campos de busca do mapa e de Usuários compartilham a aparência dos menus,
+preservando seus modelos de pesquisa especializados.
 
 - Rotas tratam HTTP; serviços orquestram regras; handlers de banco concentram SQL.
 - Reutilizar as fábricas de conexão de `db.py` e os contratos dos módulos existentes.

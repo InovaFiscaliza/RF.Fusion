@@ -4,7 +4,8 @@ Página: `/rffusion/upload`. O usuário precisa estar identificado pelo proxy
 existente (e-mail válido); os papéis `admin` e `developer` não são obrigatórios.
 
 Escolha o tipo de upload e complete o segundo filtro, quando necessário.
-Os seletores abrem menus na própria página, com navegação por setas, Home/End,
+Os seletores usam o componente comum de `base_page.js` e `webfusion_base.css`,
+com menus na própria página, navegação por setas, Home/End,
 busca pelo início do texto, Enter para confirmar e Escape para fechar.
 Selecione vários arquivos ou arraste-os para a página. O envio começa
 automaticamente, em sequência, com progresso e resultado por arquivo. A lista
@@ -51,13 +52,13 @@ O proxy externo de autenticação também precisa aceitar esse tamanho e a dura�
 da transferência. O limite padrão de corpo do Waitress comporta esse envio.
 Publicar envolve atualizar o código, a configuração nginx e a montagem juntos.
 
-O template usa nomes de assets versionados no caminho, pois o cache intermediário
-pode entregar versões antigas quando a versão muda apenas na query string.
-`upload_page_20261030.js` e `upload_page_20261030_theme.css` são links simbólicos
-para as fontes `upload_page.js` e `upload_page.css`, sem duplicar o conteúdo.
-O alias anterior de CSS permanece para compatibilidade com páginas já abertas. Em uma
-nova publicação desses assets, trocar os nomes versionados e as referências no
-template. Reiniciar o WebFusion para invalidar os templates compilados em memória.
+O template carrega `upload_page.js` e `upload_page.css` pelos nomes estáveis,
+com revisão no parâmetro `v` da URL. Os seletores pertencem aos assets comuns
+do shell; o CSS local organiza apenas o layout da página e o JavaScript local
+cuida da classificação, da fila e das transferências. Não há aliases datados.
+Após publicar, invalidar o cache intermediário dos assets alterados e reiniciar
+o WebFusion para invalidar templates em memória. Páginas antigas devem ser
+recarregadas para usar os nomes estáveis.
 
 ## Contrato da API
 
@@ -82,11 +83,15 @@ No container webserver, com o projeto em `/RF.Fusion`:
 ```bash
 cd /RF.Fusion
 /usr/local/bin/python -m unittest discover -s test/tests/webfusion -p test_upload.py -v
+# Com Playwright e Chromium no ambiente de validação:
+/usr/local/bin/python -m unittest discover -s test/tests/webfusion -p test_shared_select_browser.py -v
 nginx -t
 ```
 
-Os testes usam pasta temporária e simulam integrações de identidade. Não gravam
-arquivos no repositório real. Após publicar, validar no navegador a seleção
+Os testes de backend usam pasta temporária e simulam integrações de identidade.
+Os testes de navegador exercitam a classificação, a fila sequencial, o destino
+capturado por arquivo, o cancelamento, a retomada e o layout móvel com requisições
+interceptadas. Não gravam arquivos no repositório real. Após publicar, validar no navegador a seleção
 múltipla, o arrastar e soltar, a barra de progresso e a gravação no CIFS.
 
 ## Evolução planejada

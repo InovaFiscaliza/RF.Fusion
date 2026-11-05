@@ -55,9 +55,9 @@ class SharedSelectBrowserTests(unittest.TestCase):
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.page.route("**/*", lambda route: route.fulfill(content_type="text/html", body=PAGE))
         self.page.goto("http://select.test/host")
-        for name in ["AnatelReactiveTheme.AnatelReactiveTheme.css", "webfusion_base.css", "wf_select_20261105.css"]:
+        for name in ["AnatelReactiveTheme.AnatelReactiveTheme.css", "webfusion_base.css"]:
             self.page.add_style_tag(path=str(STATIC / "css" / name))
-        for name in ["host_page.js", "configuration_page.js", "wf_select_20261105.js"]:
+        for name in ["host_page.js", "configuration_page.js", "base_page.js"]:
             self.page.add_script_tag(path=str(STATIC / "js" / name))
 
     def tearDown(self) -> None:
@@ -117,7 +117,7 @@ class SharedSelectBrowserTests(unittest.TestCase):
         self.page.keyboard.press("Escape")
         self.assertEqual(trigger.get_attribute("aria-expanded"), "false")
         self.assertEqual(self.page.locator("select[multiple]").get_attribute("aria-hidden"), None)
-        self.assertEqual(self.page.locator("#map").get_attribute("aria-hidden"), None)
+        self.assertEqual(self.page.locator("#map").get_attribute("aria-hidden"), "true")
 
     def test_menu_alignment_at_desktop_and_mobile_widths(self) -> None:
         """Menus seguem a largura do campo com texto longo e zoom. Returns: None."""
@@ -163,3 +163,189 @@ class SharedSelectBrowserTests(unittest.TestCase):
         self.page.locator("#station-trigger").click()
         self.assertLessEqual(self.page.locator("#station-trigger").bounding_box()["width"], 390)
         self.assertFalse(self.page.evaluate("document.querySelector('#station-options').scrollWidth > document.querySelector('#station-options').clientWidth"))
+
+    def test_new_fields_without_module_wrapper_are_enhanced_once(self) -> None:
+        """Campos dinâmicos recebem um menu único sem opt-in da página. Returns: None."""
+        self.page.evaluate("""() => {
+            const form = document.createElement('form');
+            form.id = 'dynamic';
+            form.innerHTML = '<label>Ordenação<select name="sort"><option value="name">Nome</option><option value="date">Data</option></select></label>';
+            document.body.append(form);
+        }""")
+        trigger = self.page.locator("#dynamic [role=combobox]")
+        trigger.click()
+        self.page.locator("#dynamic [role=option]").get_by_text("Data", exact=True).click()
+        self.assertEqual(self.page.evaluate("new FormData(document.querySelector('#dynamic')).get('sort')"), "date")
+        self.assertEqual(self.page.locator("#dynamic [role=combobox]").count(), 1)
+        self.page.locator("#map-trigger").click()
+        self.assertTrue(self.page.locator("#map-options").is_visible())
+
+    def test_shell_waits_for_page_controller_initialization(self) -> None:
+        """O shell lê o valor definido pelo controlador carregado depois. Returns: None."""
+        source = (STATIC / "js/base_page.js").read_text()
+        html = '''<!doctype html><meta charset="utf-8">
+        <label for="initial">Ordenação</label><select id="initial">
+        <option value="name">Nome</option><option value="date">Data</option></select>
+        <script src="/static/js/base_page.js"></script>
+        <script>document.querySelector('#initial').value = 'date';</script>'''
+        self.page.route("**/init-fixture", lambda route: route.fulfill(content_type="text/html", body=html))
+        self.page.route("**/static/js/base_page.js", lambda route: route.fulfill(content_type="application/javascript", body=source))
+        self.page.goto("http://select.test/init-fixture")
+        self.assertEqual(self.page.locator("#initial-trigger").inner_text(), "Data")
+        self.assertEqual(self.page.locator("#initial-trigger").count(), 1)
+
+    def test_dialog_menu_escapes_panel_clipping_and_keeps_modal_open(self) -> None:
+        """Menus em diálogos escapam do recorte e preservam o foco. Returns: None."""
+        self.page.evaluate("""() => {
+            const dialog = document.createElement('dialog');
+            dialog.id = 'modal';
+            dialog.innerHTML = '<div style="height:70px;overflow:hidden"><label for="modal-select">Etapa</label><select id="modal-select"><option>Um</option><option>Dois</option><option>Três</option></select></div>';
+            document.body.append(dialog);
+            dialog.showModal();
+        }""")
+        self.page.locator("#modal-select-trigger").click()
+        self.page.locator("#modal-select-options").get_by_role("option", name="Três").click()
+        self.assertEqual(self.page.locator("#modal-select").input_value(), "Três")
+        self.page.locator("#modal-select-trigger").click()
+        self.page.keyboard.press("Escape")
+        self.assertTrue(self.page.evaluate("document.querySelector('#modal').open"))
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "modal-select-trigger")
+
+    def test_optgroup_disabled_and_duplicate_values(self) -> None:
+        """Grupos desabilitados e opções com valores iguais mantêm a semântica. Returns: None."""
+        self.page.evaluate("""() => {
+            const select = document.querySelector('#map');
+            select.innerHTML = '<optgroup disabled label="Bloqueados"><option value="x">Bloqueado</option></optgroup><optgroup hidden label="Ocultos"><option>Oculto</option></optgroup><option value="same">Primeiro</option><option value="same" label="Segundo">Outro texto</option>';
+            select.selectedIndex = 2;
+        }""")
+        self.page.locator("#map-trigger").click()
+        self.assertEqual(self.page.locator("#map-options [role=option]").all_text_contents(), ["Bloqueado", "Primeiro", "Segundo"])
+        self.page.keyboard.press("End")
+        self.page.keyboard.press("Enter")
+        self.assertEqual(self.page.locator("#map-trigger").inner_text(), "Segundo")
+        self.assertEqual(self.page.evaluate("document.querySelector('#map').selectedIndex"), 3)
+
+    def _open_upload_page(self) -> None:
+        """Carrega o template e os assets reais do upload sem serviços externos. Returns: None."""
+        from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader
+
+        environment = Environment(loader=ChoiceLoader([
+            DictLoader({"base.html": '<!doctype html><meta charset="utf-8">{% block content %}{% endblock %}'}),
+            FileSystemLoader(STATIC.parent / "templates"),
+        ]))
+        environment.globals["url_for"] = lambda endpoint, **kwargs: f"/{endpoint}"
+        html = environment.get_template("upload/upload.html").render(
+            max_file_bytes=512 * 1024 * 1024, upload_folder="/upload", request_header="X-Upload",
+            request_header_value="1", stations=[{"ID_HOST": 1, "NA_HOST_NAME": "CWSM1"}],
+            drive_test_types={"smp-romes": "SMP ROMES", "espectro": "Espectro"},
+        )
+        self.page.route("**/upload-fixture", lambda route: route.fulfill(content_type="text/html", body=html))
+        self.page.goto("http://select.test/upload-fixture")
+        for name in ["AnatelReactiveTheme.AnatelReactiveTheme.css", "webfusion_base.css", "upload_page.css"]:
+            self.page.add_style_tag(path=str(STATIC / "css" / name))
+        for name in ["upload_page.js", "base_page.js"]:
+            self.page.add_script_tag(path=str(STATIC / "js" / name))
+
+    def test_upload_template_uses_shell_for_classification(self) -> None:
+        """O upload real usa os menus comuns sem alterar a classificação. Returns: None."""
+        self._open_upload_page()
+        self.page.locator("#upload-category-trigger").click()
+        self.page.locator("#upload-category-options").get_by_role("option", name="Estações fixas").click()
+        self.page.locator("#upload-station-trigger").click()
+        self.page.locator("#upload-station-options").get_by_role("option", name="CWSM1").click()
+        self.assertEqual(self.page.locator("#upload-destination").inner_text(), "/upload/fixas/1")
+        self.assertFalse(self.page.locator("[data-select-files]").first.is_disabled())
+        self.assertEqual(self.page.locator(".upload-select-trigger").count(), 0)
+
+    def test_upload_queue_preserves_destination_and_runs_sequentially(self) -> None:
+        """Cada arquivo retém o destino original até concluir a fila. Returns: None."""
+        self._open_upload_page()
+        requests = []
+        self.page.route("**/upload.upload_file", lambda route: requests.append(route))
+        self.page.select_option("#upload-category", "fixas")
+        self.page.select_option("#upload-station", "1")
+        self.page.locator("#upload-input").set_input_files([
+            {"name": "one.bin", "mimeType": "application/octet-stream", "buffer": b"one"},
+            {"name": "two.bin", "mimeType": "application/octet-stream", "buffer": b"two"},
+        ])
+        self.page.wait_for_function("document.querySelectorAll('[data-state=uploading]').length === 1")
+        self.assertEqual(self.page.locator("[data-state=pending]").count(), 1)
+        self.assertEqual(len(requests), 1)
+        self.page.select_option("#upload-category", "rni")
+        requests[0].fulfill(status=201, json={"name": "one.bin"})
+        self.page.wait_for_function("document.querySelectorAll('[data-state=done]').length === 1")
+        self.page.wait_for_function("document.querySelectorAll('[data-state=uploading]').length === 1")
+        self.assertEqual(len(requests), 2)
+        body = requests[1].request.post_data_buffer.decode()
+        self.assertIn('name="category"\r\n\r\nfixas', body)
+        self.assertIn('name="station"\r\n\r\n1', body)
+        self.assertEqual(self.page.locator(".upload-file-destination").all_text_contents(),
+                         ["/upload/fixas/1", "/upload/fixas/1"])
+        requests[1].fulfill(status=201, json={"name": "two.bin"})
+        self.page.wait_for_function("document.querySelectorAll('[data-state=done]').length === 2")
+        self.page.locator("#upload-clear").click()
+        self.assertEqual(self.page.locator(".upload-row").count(), 0)
+        self.assertTrue(self.page.locator("#upload-empty").is_visible())
+
+    def test_upload_pending_cancel_restart_and_failure(self) -> None:
+        """Cancelar e retomar mantém a fila e apresenta falhas do servidor. Returns: None."""
+        self._open_upload_page()
+        requests = []
+        self.page.route("**/upload.upload_file", lambda route: requests.append(route))
+        self.page.select_option("#upload-category", "rni")
+        self.page.locator("#upload-input").set_input_files([
+            {"name": "one.bin", "mimeType": "application/octet-stream", "buffer": b"one"},
+            {"name": "two.bin", "mimeType": "application/octet-stream", "buffer": b"two"},
+        ])
+        self.page.locator(".upload-row").nth(1).locator(".upload-cancel").click()
+        self.assertEqual(self.page.locator("[data-state=cancelled]").count(), 1)
+        requests[0].fulfill(status=201, json={"name": "one.bin"})
+        self.page.wait_for_function("document.querySelector('#upload-feedback').textContent.startsWith('Fila finalizada')")
+        self.assertEqual(len(requests), 1)
+        self.page.locator(".upload-row").nth(1).locator(".upload-cancel").click()
+        self.page.wait_for_function("document.querySelectorAll('[data-state=uploading]').length === 1")
+        self.assertEqual(len(requests), 2)
+        requests[1].fulfill(status=409, json={"error": "Arquivo já existe"})
+        self.page.wait_for_function("document.querySelectorAll('[data-state=error]').length === 1")
+        row = self.page.locator("[data-state=error]")
+        self.assertEqual(row.locator(".upload-file-status").inner_text(), "Arquivo já existe")
+        self.assertFalse(row.locator("progress").is_visible())
+        self.assertFalse(row.locator(".upload-cancel").is_visible())
+
+    def test_upload_missing_classification_focuses_common_combobox(self) -> None:
+        """Arquivos sem destino focam o seletor pelo contrato comum. Returns: None."""
+        self._open_upload_page()
+        self.page.locator("#upload-input").set_input_files([
+            {"name": "one.bin", "mimeType": "application/octet-stream", "buffer": b"one"},
+        ])
+        self.assertEqual(self.page.locator(".upload-row").count(), 0)
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "upload-category-trigger")
+
+    def test_upload_layout_stays_inside_mobile_viewport(self) -> None:
+        """A classificação e a fila cabem em janela estreita. Returns: None."""
+        self._open_upload_page()
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.page.select_option("#upload-category", "fixas")
+        self.page.select_option("#upload-station", "1")
+        self.assertFalse(self.page.evaluate("document.documentElement.scrollWidth > innerWidth"))
+        self.page.locator("#upload-station-trigger").click()
+        self.assertTrue(self.page.locator("#upload-station-options").is_visible())
+
+    def test_searchable_user_menu_shares_visual_style(self) -> None:
+        """Busca de usuários preserva seus valores usando o visual comum. Returns: None."""
+        self.page.evaluate("""() => {
+            document.body.insertAdjacentHTML('beforeend', '<script type="application/json" id="users-filter-options">{"users":[{"value":"ana@example.test","label":"Ana Silva"}]}</script><div class="select-shell wf-combobox" data-users-combobox><input id="users-email-filter" type="search" class="form-control wf-select-input" data-users-combobox-input><input type="hidden" data-users-combobox-value><div class="wf-select-menu" hidden data-users-combobox-menu></div></div>');
+        }""")
+        self.page.add_style_tag(path=str(STATIC / "css/users_page.css"))
+        self.page.add_script_tag(path=str(STATIC / "js/users_page.js"))
+        self.page.locator("#users-email-filter").fill("Ana")
+        menu = self.page.locator("[data-users-combobox-menu]")
+        self.assertTrue(menu.is_visible())
+        menu.get_by_role("button", name="Ana Silva").click()
+        self.assertEqual(self.page.locator("[data-users-combobox-value]").input_value(), "ana@example.test")
+        self.assertFalse(menu.is_visible())
+        for attribute in ["borderRadius", "fontSize", "padding", "backgroundColor"]:
+            self.assertEqual(
+                self.page.locator("#station-options").evaluate("(el, key) => getComputedStyle(el)[key]", attribute),
+                menu.evaluate("(el, key) => getComputedStyle(el)[key]", attribute),
+            )

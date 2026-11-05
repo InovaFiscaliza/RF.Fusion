@@ -37,27 +37,6 @@
     flex: 1.35 1 17rem;
 }
 
-/* Native selects keep browser behavior, but get a small custom arrow so
- * the map controls share one visual language with the custom combobox. */
-.station-map-select-wrap {
-    position: relative;
-    min-width: 0;
-}
-
-.station-map-select-wrap::after {
-    content: "";
-    position: absolute;
-    right: 14px;
-    top: 50%;
-    width: 10px;
-    height: 10px;
-    border-right: 2px solid #475569;
-    border-bottom: 2px solid #475569;
-    transform: translateY(-70%) rotate(45deg);
-    pointer-events: none;
-    opacity: 0.9;
-}
-
 .station-map-field-label {
     font-size: 12px;
     font-weight: 700;
@@ -72,27 +51,6 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-}
-
-.station-map-filter select {
-    width: 100%;
-    min-height: 42px;
-    border-radius: 10px;
-    padding: 0 40px 0 12px;
-    font-size: 13px;
-    appearance: none;
-    -webkit-appearance: none;
-    -moz-appearance: none;
-    cursor: pointer;
-}
-
-.station-map-filter input[type="text"] {
-    width: 100%;
-    min-height: 42px;
-    border-radius: 10px;
-    padding: 0 12px;
-    font-size: 13px;
-    box-sizing: border-box;
 }
 
 .station-map-filter input.station-map-date-input {
@@ -188,80 +146,6 @@
     width: 100%;
     height: 100%;
     cursor: pointer;
-}
-
-/* The station control behaves like a searchable combobox backed by
- * `index_map_access.js`, so the template provides only the shell and dropdown. */
-.station-map-combobox-wrap {
-    position: relative;
-    z-index: 20;
-    min-width: 0;
-}
-
-.station-map-combobox-wrap::after {
-    content: "";
-    position: absolute;
-    right: 14px;
-    top: 50%;
-    width: 10px;
-    height: 10px;
-    border-right: 2px solid #475569;
-    border-bottom: 2px solid #475569;
-    transform: translateY(-70%) rotate(45deg);
-    pointer-events: none;
-    opacity: 0.9;
-}
-
-.station-map-combobox {
-    padding-right: 38px !important;
-}
-
-.station-map-combobox::placeholder {
-    color: #64748b;
-}
-
-.station-map-combobox-menu {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: calc(100% + 6px);
-    z-index: 30;
-    max-height: 320px;
-    overflow-y: auto;
-    border: 1px solid #cbd5e1;
-    border-radius: 12px;
-    background: #ffffff;
-    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
-}
-
-.station-map-combobox-menu[hidden] {
-    display: none;
-}
-
-.station-map-combobox-option,
-.station-map-combobox-empty {
-    width: 100%;
-    display: block;
-    padding: 11px 12px;
-    border: 0;
-    background: transparent;
-    text-align: left;
-    font-size: 13px;
-    color: #1e293b;
-}
-
-.station-map-combobox-option {
-    cursor: pointer;
-}
-
-.station-map-combobox-option:hover,
-.station-map-combobox-option.is-active {
-    background: #eff6ff;
-    color: #1d4ed8;
-}
-
-.station-map-combobox-empty {
-    color: #64748b;
 }
 
 .station-map-meta {
@@ -482,20 +366,6 @@
     font-size: 10px;
     line-height: 1.4;
     font-weight: 600;
-}
-
-.station-map-theme-menu select {
-    width: 100%;
-    min-height: 30px;
-    padding: 4px 28px 4px 8px;
-    font-family: inherit;
-    font-size: 12px;
-    line-height: 1.4;
-    border: 1px solid #cbd5e1;
-    border-radius: 4px;
-    background: #fff;
-    color: #334155;
-    appearance: none;
 }
 
 /* -------------------------------------------------------------

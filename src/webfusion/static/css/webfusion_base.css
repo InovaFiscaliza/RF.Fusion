@@ -602,6 +602,147 @@ textarea:focus {
     padding-right: 40px;
 }
 
+/* Shared combobox appearance for every WebFusion module. */
+.select-shell.wf-select,
+.select-shell.wf-combobox {
+    min-width: 0;
+}
+
+.wf-select > select.wf-select-model {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.wf-select > .wf-select-trigger,
+.wf-combobox > .wf-select-input {
+    width: 100%;
+    min-width: 0;
+    height: auto;
+    min-height: 38px;
+    padding: 8px 40px 8px 12px;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    font-weight: 400;
+    cursor: pointer;
+}
+
+.wf-select-trigger:disabled {
+    opacity: .6;
+    cursor: not-allowed;
+}
+
+.select-shell.wf-select::after {
+    top: 19px;
+}
+
+.wf-select.is-open {
+    z-index: 30;
+}
+
+.wf-select-menu {
+    position: absolute;
+    z-index: 30;
+    max-height: min(280px, 40vh);
+    box-sizing: border-box;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    margin: 0;
+    padding: 4px;
+    list-style: none;
+    border: 1px solid var(--wf-border-strong);
+    border-radius: 8px;
+    background: var(--wf-surface);
+    color: var(--wf-text-strong);
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.4;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, .16);
+}
+
+.wf-select-menu[hidden],
+.wf-select-error[hidden] {
+    display: none !important;
+}
+
+.wf-select-menu.opens-up {
+    top: auto;
+    bottom: calc(100% + 4px);
+}
+
+.wf-select-menu[popover] {
+    position: fixed;
+    inset: auto;
+    margin: 0;
+}
+
+.wf-select-menu [role="option"],
+.wf-select-menu .wf-select-option,
+.wf-select-menu .wf-select-empty {
+    display: block;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    margin: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    white-space: normal;
+    padding: 8px;
+    border-radius: 4px;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+
+.wf-select-menu [aria-selected="true"],
+.wf-select-menu .is-active,
+.wf-select-menu .wf-select-option:hover,
+.wf-select-menu .wf-select-option:focus-visible {
+    background: var(--color-blue-lightest);
+    color: var(--wf-text-strong);
+}
+
+.wf-select-menu [aria-disabled="true"] {
+    opacity: .6;
+    cursor: not-allowed;
+}
+
+.wf-select-error {
+    display: block;
+    margin-top: 6px;
+    color: var(--color-error, #b91c1c);
+    font-size: 13px;
+}
+
+.wf-select-menu .wf-select-empty {
+    color: var(--wf-text-muted);
+    cursor: default;
+}
+
+.wf-select-trigger[hidden] {
+    display: none !important;
+}
+
+.wf-combobox {
+    position: relative;
+    z-index: 30;
+}
+
+.wf-combobox > .wf-select-input {
+    cursor: text;
+}
+
 .online-filter {
     display: flex;
     align-items: center;

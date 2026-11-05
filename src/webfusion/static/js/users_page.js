@@ -107,14 +107,14 @@
             }).slice(0, 100);
 
             if (visibleOptions.length === 0) {
-                menu.innerHTML = '<div class="users-combobox-empty">Nenhuma opção encontrada.</div>';
+                menu.innerHTML = '<div class="wf-select-empty">Nenhuma opção encontrada.</div>';
                 return;
             }
 
             menu.replaceChildren(...visibleOptions.map(function (option) {
                 const button = document.createElement("button");
                 button.type = "button";
-                button.className = "users-combobox-option";
+                button.className = "wf-select-option";
                 button.textContent = String(option.label || "");
                 button.dataset.value = String(option.value || "");
                 button.dataset.label = String(option.label || "");

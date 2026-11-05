@@ -3,7 +3,7 @@
 {% block title %}RF.Fusion - Página Inicial{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/index_home.css', v='20261016-map-theme-control') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/index_home.css', v='20261105-combobox') }}">
 <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -45,18 +45,18 @@
         </div>
         <div class="station-map-filter">
             <label class="station-map-field-label" for="station-map-site-filter">Estação</label>
-            <div class="station-map-combobox-wrap">
+            <div class="select-shell wf-combobox">
                 {# This is not a native select. The JS turns it into a
                    searchable combobox so users can find a point by station or
                    geography without downloading a massive option list first. #}
                 <input
                     type="text"
                     id="station-map-site-filter"
-                    class="station-map-combobox"
+                    class="form-control wf-select-input"
                     placeholder="Todas as estações"
                     autocomplete="off"
                 >
-                <div id="station-map-site-menu" class="station-map-combobox-menu" hidden></div>
+                <div id="station-map-site-menu" class="wf-select-menu" hidden></div>
             </div>
         </div>
         <div id="station-map-theme-menu" class="station-map-theme-menu" hidden>
@@ -394,5 +394,5 @@
     crossorigin=""
 ></script>
 <script id="station-map-initial-payload" type="application/json">{{ {'points': initial_map_points}|tojson }}</script>
-<script src="{{ url_for('static', filename='js/index_map_access.js', v='20261016-map-theme-control') }}"></script>
+<script src="{{ url_for('static', filename='js/index_map_access.js', v='20261105-combobox') }}"></script>
 {% endblock %}

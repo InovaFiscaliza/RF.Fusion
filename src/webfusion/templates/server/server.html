@@ -10,7 +10,7 @@
 {% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/server_page.css', v='20260922-mobile-usage-tables') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/server_page.css', v='20261105-station-table-responsive') }}">
 {% endblock %}
 
 {% block content %}
@@ -697,7 +697,7 @@
             <div class="server-section-kicker">Navegação</div>
             <h2 class="server-section-title">Tabela de Estações</h2>
             <p class="server-section-copy">
-                Use este bloco para aprofundar a leitura por estação sem alterar o significado dos totais globais exibidos acima.
+                Consulte as pendências e as transferências de cada estação.
             </p>
         </div>
         <details class="details-panel" id="server-host-table-panel">
@@ -708,7 +708,7 @@
             <div class="details-panel-body">
                 <div class="table-panel-toolbar">
                     <p class="server-toolbar-caption">
-                        O filtro abaixo afeta apenas esta listagem de estações.
+                        Contagens em arquivos; volumes em GB. Deslize para ver todas as colunas.
                     </p>
                     <div class="table-panel-actions">
                         <div class="online-filter section-online-filter">
@@ -720,25 +720,26 @@
                                     value="1"
                                     {% if online_only %}checked{% endif %}
                                 >
-                                Apenas Online na Tabela
+                                Apenas online
                             </label>
                         </div>
                     </div>
                 </div>
-                <div class="annual-breakdown">
-                    <table class="stats-table">
+                <div class="annual-breakdown server-host-table-scroll" role="region" aria-label="Tabela de estações com rolagem" tabindex="0">
+                    <table class="stats-table server-host-table">
+                        <caption class="wf-visually-hidden">Pendências, transferências do mês e erros por estação.</caption>
                         <thead>
                             <tr>
-                                <th>Estação</th>
-                                <th>Conexão</th>
-                                <th>Ocupação</th>
-                                <th>Último check</th>
-                                <th>Backups pendentes</th>
-                                <th>Erros de backup</th>
-                                <th>Processamentos pendentes</th>
-                                <th>Erros de processamento</th>
-                                <th>Volume pendente (GB)</th>
-                                <th>Ação</th>
+                                <th scope="col" class="server-host-identity">Estação</th>
+                                <th scope="col" class="server-host-number" title="Quantidade de arquivos com backup pendente">Backup pend.<small>arquivos</small></th>
+                                <th scope="col" class="server-host-number" title="Volume dos arquivos com backup pendente, em GB">Vol. backup<small>pendente · GB</small></th>
+                                <th scope="col" class="server-host-number" title="Quantidade de arquivos transferidos no mês, pela data de conclusão do backup">Backup mês<small>arquivos</small></th>
+                                <th scope="col" class="server-host-number" title="Volume transferido no mês, em GB, pela data de conclusão do backup">Transferido<small>no mês · GB</small></th>
+                                <th scope="col" class="server-host-number" title="Quantidade de arquivos com processamento pendente">Proc. pend.<small>arquivos</small></th>
+                                <th scope="col" class="server-host-number" title="Volume dos arquivos com processamento pendente, em GB">Vol. proc.<small>pendente · GB</small></th>
+                                <th scope="col" class="server-host-number" title="Quantidade de arquivos atualmente em erro de backup">Erros backup<small>arquivos</small></th>
+                                <th scope="col" class="server-host-number" title="Quantidade de arquivos atualmente em erro de processamento">Erros proc.<small>arquivos</small></th>
+                                <th scope="col">Situação</th>
                             </tr>
                         </thead>
                         <tbody id="server-host-table-body">
@@ -758,5 +759,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/server_page.js', v='20261026-server-live-metrics') }}"></script>
+<script src="{{ url_for('static', filename='js/server_page.js', v='20261105-station-table-responsive') }}"></script>
 {% endblock %}
