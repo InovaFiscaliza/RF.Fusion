@@ -3,7 +3,7 @@
 {% block title %}RF.Fusion - Usuários{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/users_page.css', v='20260921-sober-directory') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/users_page.css', v='20261105-combobox') }}">
 {% endblock %}
 
 {% block breadcrumb %}
@@ -52,10 +52,10 @@
             <form method="get" class="users-search-form" data-loading-message="Pesquisando usuários...">
                 <div class="users-filter-field">
                     <label class="sr-only" for="users-email-filter">Filtrar por usuário</label>
-                    <div class="users-combobox-wrap" data-users-combobox>
-                        <input id="users-email-filter" class="form-control users-combobox" type="search" value="{{ filters.email }}" placeholder="Todos os usuários" autocomplete="off" data-users-combobox-input>
+                    <div class="select-shell wf-combobox" data-users-combobox>
+                        <input id="users-email-filter" class="form-control wf-select-input" type="search" value="{{ filters.email }}" placeholder="Todos os usuários" autocomplete="off" data-users-combobox-input>
                         <input type="hidden" name="email" value="{{ filters.email }}" data-users-combobox-value>
-                        <div class="users-combobox-menu" hidden data-users-combobox-menu></div>
+                        <div class="wf-select-menu" hidden data-users-combobox-menu></div>
                     </div>
                 </div>
                 <div class="users-filter-field">
@@ -290,5 +290,5 @@
 
 {% block extra_js %}
 <script id="users-filter-options" type="application/json">{{ filter_options | tojson }}</script>
-<script src="{{ url_for('static', filename='js/users_page.js', v='20260901-directory-comboboxes-and-confirmation') }}"></script>
+<script src="{{ url_for('static', filename='js/users_page.js', v='20261105-combobox') }}"></script>
 {% endblock %}

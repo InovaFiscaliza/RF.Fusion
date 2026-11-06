@@ -4,6 +4,9 @@ Página: `/rffusion/upload`. O usuário precisa estar identificado pelo proxy
 existente (e-mail válido); os papéis `admin` e `developer` não são obrigatórios.
 
 Escolha o tipo de upload e complete o segundo filtro, quando necessário.
+Os seletores usam o componente comum de `base_page.js` e `webfusion_base.css`,
+com menus na própria página, navegação por setas, Home/End,
+busca pelo início do texto, Enter para confirmar e Escape para fechar.
 Selecione vários arquivos ou arraste-os para a página. O envio começa
 automaticamente, em sequência, com progresso e resultado por arquivo. A lista
 mostra somente os envios da página aberta. Não há envio de pastas nem retomada
@@ -34,10 +37,11 @@ automática depois de fechar a página.
 
 ## Preparação do ambiente
 
-O deploy em `install/webserver/deploy-rffusionweb.sh` cria a pasta no host,
-mantém `/mnt/reposfi` somente leitura e monta a subpasta `upload` para escrita.
-Uma instância já criada pode receber um ajuste temporário sem recriação, conforme
-o procedimento rootless em [README do deploy](../../../../install/webserver/README.MD).
+O deploy em `install/webserver/deploy-rffusionweb.sh` cria a pasta no host e monta
+`/mnt/reposfi` com leitura e escrita, incluindo a subpasta `upload`.
+Containers antigos com montagem somente leitura podem receber um ajuste
+temporário de escrita apenas em `upload`, conforme o procedimento rootless em
+[README do deploy](../../../../install/webserver/README.MD).
 O próximo deploy registra a montagem na configuração do container, preservando-a
 nos reinícios. O compartilhamento CIFS e suas credenciais também precisam permitir
 escrita nessa pasta. A aplicação não cria um destino alternativo.
@@ -47,6 +51,14 @@ na API de upload, incluindo o envelope multipart, e bloqueia downloads da pasta.
 O proxy externo de autenticação também precisa aceitar esse tamanho e a duração
 da transferência. O limite padrão de corpo do Waitress comporta esse envio.
 Publicar envolve atualizar o código, a configuração nginx e a montagem juntos.
+
+O template carrega `upload_page.js` e `upload_page.css` pelos nomes estáveis,
+com revisão no parâmetro `v` da URL. Os seletores pertencem aos assets comuns
+do shell; o CSS local organiza apenas o layout da página e o JavaScript local
+cuida da classificação, da fila e das transferências. Não há aliases datados.
+Após publicar, invalidar o cache intermediário dos assets alterados e reiniciar
+o WebFusion para invalidar templates em memória. Páginas antigas devem ser
+recarregadas para usar os nomes estáveis.
 
 ## Contrato da API
 
@@ -71,11 +83,15 @@ No container webserver, com o projeto em `/RF.Fusion`:
 ```bash
 cd /RF.Fusion
 /usr/local/bin/python -m unittest discover -s test/tests/webfusion -p test_upload.py -v
+# Com Playwright e Chromium no ambiente de validação:
+/usr/local/bin/python -m unittest discover -s test/tests/webfusion -p test_shared_select_browser.py -v
 nginx -t
 ```
 
-Os testes usam pasta temporária e simulam integrações de identidade. Não gravam
-arquivos no repositório real. Após publicar, validar no navegador a seleção
+Os testes de backend usam pasta temporária e simulam integrações de identidade.
+Os testes de navegador exercitam a classificação, a fila sequencial, o destino
+capturado por arquivo, o cancelamento, a retomada e o layout móvel com requisições
+interceptadas. Não gravam arquivos no repositório real. Após publicar, validar no navegador a seleção
 múltipla, o arrastar e soltar, a barra de progresso e a gravação no CIFS.
 
 ## Evolução planejada

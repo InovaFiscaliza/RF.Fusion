@@ -12,7 +12,7 @@ except ImportError:
 
 
 ROOT = Path(__file__).resolve().parents[3]
-PAGE = """<!doctype html><html lang="pt-BR"><body>
+PAGE = """<!doctype html><html lang="pt-BR"><meta charset="utf-8"><body>
 <div id="spectrum-page-root" data-lightweight-bootstrap="0"
  data-filters-endpoint="/api/spectrum/filters"></div>
 <form id="spectrum-query-form">
@@ -64,7 +64,19 @@ class SpectrumFilterBrowserTests(unittest.TestCase):
         self.page.route("**/spectrum", lambda route: route.fulfill(content_type="text/html", body=PAGE))
         self.page.goto("http://spectrum.test/spectrum")
         self.page.add_script_tag(path=str(ROOT / "src/webfusion/static/js/spectrum_page.js"))
+        for name in ["webfusion_base.css", "spectrum_page.css"]:
+            self.page.add_style_tag(path=str(ROOT / "src/webfusion/static/css" / name))
+        self.page.add_script_tag(path=str(ROOT / "src/webfusion/static/js/base_page.js"))
         self.wait_ready()
+
+    def test_shared_combobox_updates_dependent_catalogs(self) -> None:
+        """Selecionar pelo menu comum atualiza os filtros dependentes. Returns: None."""
+        self.page.locator("#state_id-trigger").click()
+        self.page.locator("#state_id-options").get_by_role("option", name="SP", exact=True).click()
+        self.wait_ready()
+        self.assertEqual(self.page.locator("#state_id-trigger").inner_text(), "SP")
+        self.page.locator("#district_id-trigger").click()
+        self.assertEqual(self.page.locator("#district_id-options [role=option]").all_text_contents(), ["Todos os distritos", "São Paulo"])
 
     def tearDown(self) -> None:
         self.browser.close()

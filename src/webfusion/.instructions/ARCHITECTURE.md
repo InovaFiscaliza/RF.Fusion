@@ -64,10 +64,28 @@ entre requisições concorrentes. Falhas durante a gravação removem o arquivo
 incompleto. Uma interrupção abrupta do processo pode exigir limpeza manual.
 A API exige cabeçalho próprio, sem habilitar CORS, para impedir envio por
 formulários de outras origens. Uploads não são publicados nas rotas de download.
-O deploy mantém o repositório somente leitura e monta apenas `upload` para escrita.
+O deploy monta `/mnt/reposfi` com leitura e escrita, incluindo `upload`, conforme
+as permissões do compartilhamento no host. O módulo de upload continua restrito
+à raiz `/mnt/reposfi/upload`.
+
+Os seletores de classificação usam menus HTML acessíveis, renderizados pelo
+componente comum do shell, para não depender do popup nativo do navegador. Os
+elementos `select` mantêm os valores e eventos de classificação existentes e
+ficam visíveis como fallback até a inicialização dos menus.
 
 
 ## Separação de responsabilidades
+
+Todos os seletores simples usam o componente do shell em
+`static/js/base_page.js` e os estilos de `static/css/webfusion_base.css`.
+Os controladores das páginas mantêm os catálogos, filtros e regras de negócio;
+o shell mantém a interação e a apresentação dos menus HTML. O `select`
+original preserva nomes, valores, validação e eventos dos formulários e fica
+visível como fallback sem JavaScript. O componente acompanha inserções de
+campos, opções reconstruídas, visibilidade e desabilitação. Listas de seleção
+múltipla mantêm a interação própria e usam os estilos comuns de formulário.
+Campos de busca do mapa e de Usuários compartilham a aparência dos menus,
+preservando seus modelos de pesquisa especializados.
 
 - Rotas tratam HTTP; serviços orquestram regras; handlers de banco concentram SQL.
 - Reutilizar as fábricas de conexão de `db.py` e os contratos dos módulos existentes.
@@ -79,3 +97,41 @@ O deploy mantém o repositório somente leitura e monta apenas `upload` para esc
   [contrato compartilhado](../../../docs/architecture/SUMMARY.md).
 - As métricas operacionais e a divisão de responsabilidades com o Zabbix estão em
   [METRICAS_OPERACIONAIS.md](../../../docs/architecture/METRICAS_OPERACIONAIS.md).
+
+## Consultas paginadas do appAnalise
+
+A API mantém integralmente o contrato HTTP do consumidor MATLAB, incluindo
+filtros, aliases, ordenação pelo início completo do arquivo e a linha adicional
+de paginação. A otimização não depende de tokens, parâmetros ou alterações no
+cliente. Não reutilizar diretamente as consultas de `/spectrum`: suas fontes
+geográficas, rótulos e regras de consistência têm diferenças intencionais.
+
+O handler de banco materializa os IDs dos espectros compatíveis em tabela
+temporária InnoDB, exclusiva da conexão. A partir deles, calcula uma única vez
+os IDs dos arquivos ordenados pelo conteúdo completo, com os JOINs obrigatórios
+existentes. A conexão é fechada também em falhas, removendo a tabela temporária.
+Metadados completos são consultados somente para os IDs da página solicitada.
+Não há tabelas persistentes, novos índices ou conexões compartilhadas.
+
+`api/appAnalise_api/service.py` coordena um cache de índices de arquivos e de
+contagens por filtros, independente da paginação. O estado pertence a uma
+instância de cache por processo, em `file_cache.py`; os limites pertencem a
+`config.py`. Validade de 300 segundos, até 16 entradas e até 64 MiB de valores
+retidos. Entradas vencidas são removidas e o limite usa descarte LRU. Valores
+maiores que o limite atendem a requisição sem truncamento, mas não são retidos.
+O cache contém IDs imutáveis e inteiros de contagem, sem conexões ou cursores.
+O envio de metadados não é armazenado nesse cache.
+
+Requisições concorrentes da mesma chave aguardam uma única construção e recebem
+o mesmo resultado ou falha. No máximo uma construção ocorre por processo; o
+bloqueio não impede o uso de entradas prontas nem consultas de metadados.
+Exceções nunca viram resultados vazios nem entradas válidas. O cache usa relógio
+monotônico, não é compartilhado entre processos e não é invalidado por escritas
+no catálogo. Índices e contagens podem refletir dados de até cinco minutos;
+metadados da página refletem a consulta atual. Após expiração ou descarte, uma
+nova seleção pode mudar a composição das páginas: não há snapshot transacional
+entre requisições HTTP independentes.
+
+A contagem preserva seu conjunto de JOINs próprio. Não derivá-la do tamanho do
+índice da listagem: referências inconsistentes podem produzir resultados
+diferentes, conforme o contrato vigente.

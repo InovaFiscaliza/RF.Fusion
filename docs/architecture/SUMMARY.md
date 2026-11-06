@@ -55,5 +55,27 @@ Não substitui nem altera a granularidade de `HOST_LOCATION_SUMMARY`.
 
 ## Métricas e operação
 
+### Reconciliação da identidade de uma estação recadastrada
+
+`BPDATA.HOST.ID_HOST` acompanha o identificador do Zabbix. Quando a mesma
+estação recebe outro ID, a reconciliação operacional deve preservar a identidade
+física e o histórico: criar o destino copiando o cadastro, transferir as FKs
+das filas e do histórico e remover a origem na mesma transação InnoDB, sem
+desabilitar integridade referencial. O destino deve estar ausente; fusão de dois
+cadastros existentes exige análise própria de duplicidades.
+
+O consumidor do Summary deve estar parado e seu lock singleton adquirido pela
+operação; o lock de snapshot também deve ser respeitado. A estação deve estar
+livre, sem tarefas em execução. Transferir todas as referências `ID_HOST` e
+`FK_HOST` das tabelas do Summary, incluindo overrides e tabelas shadow, e
+republicar os escopos de host antigo e novo no outbox. Agregados sem identidade
+de host conservam seus valores, pois a troca não altera fatos nem cardinalidade.
+
+`RFDATA.DIM_SPECTRUM_EQUIPMENT.ID_EQUIPMENT` é uma identidade independente do
+Zabbix. Preservar essa chave, seus espectros e arquivos; o vínculo é transferido
+em `HOST_EQUIPMENT_LINK`. Uma troca de ID de host não autoriza renumerar o
+equipamento ou modificar caminhos de arquivos. O procedimento SQL e suas
+precondições estão no [README dos bancos](../../src/mariadb/scripts/README.md).
+
 O contrato de métricas, sinais, unidades e responsabilidade do Zabbix está em
 [METRICAS_OPERACIONAIS.md](METRICAS_OPERACIONAIS.md).

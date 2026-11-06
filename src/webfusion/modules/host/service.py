@@ -815,11 +815,25 @@ def _get_server_current_summary_row():
     return row
 
 
-def _get_summary_host_rows(search=None, online_only=False):
+def _get_summary_host_rows(search: str | None = None, online_only: bool = False) -> list[dict[str, object]]:
     """Read the server host table from ``HOST_CURRENT_SNAPSHOT``.
 
     This keeps the global dashboard table aligned with the same materialized
     snapshot used by the server-wide cards.
+
+    Args:
+        search: Optional station name/address filter (str | None).
+        online_only: Restrict results to online stations (bool).
+
+    Returns:
+        list[dict[str, object]]: Snapshot rows with identity, flags, dates,
+        current pending/error counts, PENDING_BACKUP_GB,
+        VL_PROCESSING_PENDING_GB_CURRENT (numeric GB), and monthly transfer
+        fields NU_BACKUP_DONE_THIS_MONTH (integer count) and
+        VL_BACKUP_DONE_GB_THIS_MONTH (numeric GB), based on DT_BACKUP.
+
+    Raises:
+        Exception: Summary connection or query failure.
     """
 
     conn = get_connection_summary()
@@ -837,10 +851,13 @@ def _get_summary_host_rows(search=None, online_only=False):
             DT_LAST_DISCOVERY,
             DT_LAST_BACKUP,
             DT_LAST_PROCESSING,
+            NU_BACKUP_DONE_THIS_MONTH,
+            VL_BACKUP_DONE_GB_THIS_MONTH,
             NU_BACKUP_PENDING_FILES_CURRENT,
             NU_BACKUP_ERROR_FILES_CURRENT,
             NU_PROCESSING_PENDING_FILES_CURRENT,
             NU_PROCESSING_ERROR_FILES_CURRENT,
+            VL_PROCESSING_PENDING_GB_CURRENT,
             VL_BACKUP_PENDING_GB_CURRENT AS PENDING_BACKUP_GB
         FROM HOST_CURRENT_SNAPSHOT
     """

@@ -273,6 +273,16 @@ exibição. A tabela preserva seus filtros e os painéis detalhados são atualiz
 somente enquanto estiverem abertos. Memória e disco são lidos a cada consulta;
 apenas o ping do appAnalise mantém cache de 15 segundos, separado dos totais.
 Os resultados continuam dependendo da atualização do SUMMARY pelo appCataloga.
+A tabela de estações inclui o volume em GB e a quantidade de arquivos
+transferidos no mês, lidos de `VL_BACKUP_DONE_GB_THIS_MONTH` e
+`NU_BACKUP_DONE_THIS_MONTH` em `HOST_CURRENT_SNAPSHOT`. O recorte considera a
+conclusão do backup (`DT_BACKUP`), conforme o snapshot operacional.
+A listagem usa o visual padrão das tabelas, com cabeçalho único e o nome da
+estação fixo na rolagem horizontal. No desktop, o cabeçalho também fica fixo
+na rolagem vertical interna. No celular, a rolagem vertical acompanha a página.
+O nome da estação abre seu panorama; conexão, ocupação e última verificação
+aparecem na coluna Situação. O volume de processamento pendente vem de
+`VL_PROCESSING_PENDING_GB_CURRENT`, sem recalcular filas na consulta.
 Respostas do servidor não devem ser armazenadas pelo navegador ou por proxies.
 As métricas de uso ficam fora da atualização periódica, pois sua leitura também
 ingere os logs do NGINX.
@@ -374,6 +384,28 @@ A existência da correção no código não confirma sua ativação em um proces
 antigo: mudanças Python exigem recarregar o WebFusion pelo procedimento de deploy.
 
 ### Consulta às Estações
+
+Os seletores simples de todas as páginas abrem
+menus HTML na própria página. Suportam setas, Home/End, busca pelo início do
+texto, Enter para confirmar e Escape para fechar. Opções dinâmicas e validação
+obrigatória continuam vinculadas aos campos originais dos formulários. Sem
+JavaScript, os seletores nativos permanecem disponíveis.
+
+A regressão de interface fica em `test_shared_select_browser.py`. No container
+webserver, com Playwright e Chromium disponíveis no ambiente de validação:
+
+```bash
+cd /RF.Fusion
+/usr/local/bin/python -m unittest discover -s test/tests/webfusion -p test_shared_select_browser.py -v
+```
+
+A interação pertence a `static/js/base_page.js` e os estilos a
+`static/css/webfusion_base.css`. O shell inicializa também campos inseridos
+posteriormente. Os campos de busca do mapa e de Usuários usam a mesma aparência,
+com suas pesquisas especializadas mantidas nos controladores das páginas. O
+upload utiliza o componente comum, sem uma implementação própria de menu.
+Os templates carregam as fontes pelos nomes estáveis. A revisão do asset fica
+no parâmetro `v` da URL, sem gerar novos arquivos ou aliases por data.
 
 /host apresenta a situação de uma estação, erros agregados, localização e
 histórico. O teste de conectividade cria uma tarefa prioritária e a janela

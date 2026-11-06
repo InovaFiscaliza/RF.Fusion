@@ -1694,6 +1694,7 @@
         }
 
         if (zoom === 6) {
+            
             return 96;
         }
 
@@ -2864,7 +2865,7 @@
         ).slice(0, 120);
 
         if (visibleOptions.length === 0) {
-            siteMenu.innerHTML = '<div class="station-map-combobox-empty">Nenhuma estação encontrada para esse filtro.</div>';
+            siteMenu.innerHTML = '<div class="wf-select-empty">Nenhuma estação encontrada para esse filtro.</div>';
             return;
         }
 
@@ -2873,7 +2874,7 @@
             return `
                 <button
                     type="button"
-                    class="station-map-combobox-option${isActive ? " is-active" : ""}"
+                    class="wf-select-option${isActive ? " is-active" : ""}"
                     data-site-option="${option.site_id}"
                 >
                     ${escapeHtml(option.label)}
@@ -3272,7 +3273,7 @@
     // Clicking outside the combobox shell should dismiss the menu, matching
     // the behavior users expect from a native dropdown.
     document.addEventListener("click", (event) => {
-        if (!event.target.closest(".station-map-combobox-wrap")) {
+        if (!siteFilter.parentElement.contains(event.target)) {
             closeSiteMenu();
         }
     });

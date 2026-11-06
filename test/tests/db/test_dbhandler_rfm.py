@@ -170,7 +170,7 @@ class SiteLookupTests(DbHandlerRfmBaseTests):
                 "ID_SITE": 13,
                 "LONGITUDE": -43.174108,
                 "LATITUDE": -22.901971,
-                "DISTANCE": 50.1,
+                "DISTANCE": 70.1,
             }
         ]
 
@@ -190,7 +190,7 @@ class SiteLookupTests(DbHandlerRfmBaseTests):
                 "ID_SITE": 14,
                 "LONGITUDE": -43.174108,
                 "LATITUDE": -22.901971,
-                "DISTANCE": 49.9,
+                "DISTANCE": 69.9,
             }
         ]
 

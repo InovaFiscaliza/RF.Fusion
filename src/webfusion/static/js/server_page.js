@@ -239,12 +239,27 @@
         `).join("");
     }
 
-    /* The host table is a navigational surface, not just a report.
-     *
-     * Each row combines status badges, queue counts and a deep link into the
-     * `/host` detail page. Rendering the full row HTML in one place keeps that
-     * contract obvious and preserves the currently selected online/offline
-     * filter when the user drills into a station.
+    /**
+     * Format station counts and volumes without exposing invalid numeric text.
+     * @param {number|string|null|undefined} value Summary metric, defaulting to zero.
+     * @param {boolean} volume Use two decimal places for GB when true.
+     * @returns {string} Localized numeric label, or a dash for invalid input.
+     */
+    function formatHostMetric(value, volume = false) {
+        const number = Number(value ?? 0);
+        if (!Number.isFinite(number)) {
+            return "-";
+        }
+        return number.toLocaleString("pt-BR", {
+            minimumFractionDigits: volume ? 2 : 0,
+            maximumFractionDigits: volume ? 2 : 0,
+        });
+    }
+
+    /**
+     * Render summary metrics and station links while preserving the online filter.
+     * @param {object[]} rows Station identities, flags, dates and numeric summary fields.
+     * @returns {void}
      */
     function renderHostRows(rows) {
         if (!hostTableBody) {
@@ -274,23 +289,27 @@
 
             return `
                 <tr>
-                    <td>${escapeHtml(row.NA_HOST_NAME || "-")}</td>
-                    <td>${connectionBadge}</td>
-                    <td>${busyBadge}</td>
-                    <td>${escapeHtml(row.DT_LAST_CHECK || "-")}</td>
-                    <td>${escapeHtml(row.NU_BACKUP_PENDING_FILES_CURRENT || 0)}</td>
-                    <td>${escapeHtml(row.NU_BACKUP_ERROR_FILES_CURRENT || 0)}</td>
-                    <td>${escapeHtml(row.NU_PROCESSING_PENDING_FILES_CURRENT || 0)}</td>
-                    <td>${escapeHtml(row.NU_PROCESSING_ERROR_FILES_CURRENT || 0)}</td>
-                    <td>${escapeHtml(row.PENDING_BACKUP_GB || 0)}</td>
-                    <td>
+                    <th scope="row" class="server-host-identity">
                         <a
                             class="link-action"
                             href="${escapeHtml(hostUrl.toString())}"
+                            title="${escapeHtml(row.NA_HOST_NAME || "-")}"
                             data-loading-message="Carregando panorama da estação..."
                         >
-                            Abrir
+                            ${escapeHtml(row.NA_HOST_NAME || "-")}
                         </a>
+                    </th>
+                    <td class="server-host-number">${formatHostMetric(row.NU_BACKUP_PENDING_FILES_CURRENT)}</td>
+                    <td class="server-host-number">${formatHostMetric(row.PENDING_BACKUP_GB, true)}</td>
+                    <td class="server-host-number">${formatHostMetric(row.NU_BACKUP_DONE_THIS_MONTH)}</td>
+                    <td class="server-host-number">${formatHostMetric(row.VL_BACKUP_DONE_GB_THIS_MONTH, true)}</td>
+                    <td class="server-host-number">${formatHostMetric(row.NU_PROCESSING_PENDING_FILES_CURRENT)}</td>
+                    <td class="server-host-number">${formatHostMetric(row.VL_PROCESSING_PENDING_GB_CURRENT, true)}</td>
+                    <td class="server-host-number">${formatHostMetric(row.NU_BACKUP_ERROR_FILES_CURRENT)}</td>
+                    <td class="server-host-number">${formatHostMetric(row.NU_PROCESSING_ERROR_FILES_CURRENT)}</td>
+                    <td class="server-host-context">
+                        <span class="server-host-status">${connectionBadge}${busyBadge}</span>
+                        <span class="server-host-check" title="Última verificação">${escapeHtml(row.DT_LAST_CHECK || "-")}</span>
                     </td>
                 </tr>
             `;

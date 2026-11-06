@@ -6,6 +6,8 @@ the compatibility boundary for the external client, including empty fallbacks.
 
 from dataclasses import dataclass, replace
 
+from pymysql.cursors import SSDictCursor
+
 from db import get_connection_bpdata, get_connection_rfdata, get_connection_summary
 
 from . import config as k
@@ -317,20 +319,86 @@ class AppAnaliseDB:
         """, params)
 
     def get_spectrum_file_data(self, filters: Filters) -> TableResult:
-        """Read matching files with the legacy extra pagination row.
+        """Read an uncached page using the same index and metadata stages.
 
         Args:
-            filters: All spectrum filters plus page and page_size (Filters).
+            filters: Spectrum filters plus page and page_size (Filters).
 
         Returns:
-            Repository file metadata and aggregates over every linked spectrum
-            (TableResult). Filters select files with at least one matching
-            spectrum. Returns up to page_size + 1 rows, ordered by the full
-            file start time descending, then file ID descending.
+            Complete metadata with up to page_size + 1 rows (TableResult).
+            HTTP services reuse the index; direct callers rebuild it per call.
+        """
+        file_ids = self.get_spectrum_file_index(filters)
+        offset = (filters.page - 1) * filters.page_size
+        return self.get_spectrum_files_by_ids(file_ids[offset:offset + filters.page_size + 1])
+
+    def get_spectrum_file_index(self, filters: Filters) -> tuple[int, ...]:
+        """Select matching file IDs ordered by complete-file start and ID.
+
+        Args:
+            filters: Spectrum search values (Filters); pagination is ignored.
+
+        Returns:
+            All matching IDs in descending full-file start/ID order
+            (tuple[int, ...]). Streams IDs without retaining database row dicts.
+
+        Raises:
+            Exception: Database failures propagate after closing the connection
+                and its temporary table. No persistent catalog data is changed.
         """
         where, params = _spectrum_conditions(filters)
-        return self._fetch(k.SPECTRUM_SCHEMA, f"""
-            SELECT repos.ID_FILE, repos.NA_PATH, repos.NA_FILE, repos.NA_EXTENSION,
+        connection = get_connection_rfdata()
+        try:
+            with connection.cursor(SSDictCursor) as cursor:
+                # Evaluate spectrum filters once, independently of file joins.
+                # The table and cursor belong exclusively to this connection.
+                cursor.execute(f"""
+                    CREATE TEMPORARY TABLE {k.FILE_FILTER_TEMP_TABLE}
+                    (PRIMARY KEY (ID_SPECTRUM)) ENGINE=InnoDB AS
+                    SELECT f.ID_SPECTRUM
+                    FROM RFDATA.FACT_SPECTRUM f {EQUIPMENT_JOIN} {GEO_JOINS}
+                    WHERE 1 = 1 {where}
+                """, params)
+                cursor.execute(f"""
+                    SELECT STRAIGHT_JOIN matched_files.ID_FILE
+                    FROM (
+                        SELECT DISTINCT repos.ID_FILE
+                        FROM {k.FILE_FILTER_TEMP_TABLE} filtered
+                        JOIN RFDATA.BRIDGE_SPECTRUM_FILE bf
+                            ON bf.FK_SPECTRUM = filtered.ID_SPECTRUM
+                        JOIN RFDATA.DIM_SPECTRUM_FILE repos ON repos.ID_FILE = bf.FK_FILE
+                        WHERE repos.NA_VOLUME = %s
+                    ) matched_files
+                    JOIN RFDATA.BRIDGE_SPECTRUM_FILE b ON b.FK_FILE = matched_files.ID_FILE
+                    JOIN RFDATA.FACT_SPECTRUM f ON f.ID_SPECTRUM = b.FK_SPECTRUM
+                    {EQUIPMENT_JOIN}
+                    JOIN RFDATA.DIM_SPECTRUM_SITE s ON s.ID_SITE = f.FK_SITE
+                    GROUP BY matched_files.ID_FILE
+                    ORDER BY MIN(f.DT_TIME_START) DESC, matched_files.ID_FILE DESC
+                """, [k.REPOSITORY_VOLUME])
+                return tuple(row["ID_FILE"] for row in cursor)
+        finally:
+            connection.close()
+
+    def get_spectrum_files_by_ids(self, file_ids: tuple[int, ...]) -> TableResult:
+        """Read complete metadata for a bounded, already ordered file page.
+
+        Args:
+            file_ids: Ordered IDs selected by the service or direct page
+                method, including the lookahead row (tuple[int, ...]).
+
+        Returns:
+            Complete metadata in the supplied index order (TableResult).
+            Missing files are omitted. Empty IDs retain columns without SQL.
+
+        Raises:
+            Exception: Database failures propagate; no empty success fallback.
+        """
+        if not file_ids:
+            return TableResult(list(k.FILE_COLUMNS), [])
+        placeholders = ", ".join(["%s"] * len(file_ids))
+        result = self._fetch(k.SPECTRUM_SCHEMA, f"""
+            SELECT STRAIGHT_JOIN repos.ID_FILE, repos.NA_PATH, repos.NA_FILE, repos.NA_EXTENSION,
                 repos.VL_FILE_SIZE_KB, MIN(f.DT_TIME_START) AS DT_TIME_START,
                 MAX(f.DT_TIME_END) AS DT_TIME_END, MIN(f.NU_FREQ_START) AS NU_FREQ_START,
                 MAX(f.NU_FREQ_END) AS NU_FREQ_END, COUNT(DISTINCT f.ID_SPECTRUM) AS NU_SPECTRA,
@@ -339,18 +407,17 @@ class AppAnaliseDB:
                     SEPARATOR ' | ') AS LOCALITY_LABELS,
                 GROUP_CONCAT(DISTINCT e.NA_EQUIPMENT ORDER BY e.NA_EQUIPMENT
                     SEPARATOR ' | ') AS EQUIPMENT_LABELS
-            {FILE_JOINS} {EQUIPMENT_JOIN} {GEO_JOINS}
-            JOIN (
-                SELECT DISTINCT repos.ID_FILE
-                {FILE_JOINS} {EQUIPMENT_JOIN} {GEO_JOINS}
-                WHERE repos.NA_VOLUME = %s {where}
-            ) matched_files ON matched_files.ID_FILE = repos.ID_FILE
+            FROM RFDATA.DIM_SPECTRUM_FILE repos
+            JOIN RFDATA.BRIDGE_SPECTRUM_FILE b ON b.FK_FILE = repos.ID_FILE
+            JOIN RFDATA.FACT_SPECTRUM f ON f.ID_SPECTRUM = b.FK_SPECTRUM
+            {EQUIPMENT_JOIN} {GEO_JOINS}
+            WHERE repos.ID_FILE IN ({placeholders})
             GROUP BY repos.ID_FILE, repos.NA_PATH, repos.NA_FILE,
                 repos.NA_EXTENSION, repos.VL_FILE_SIZE_KB
-            ORDER BY MIN(f.DT_TIME_START) DESC, repos.ID_FILE DESC
-            LIMIT %s OFFSET %s
-        """, [k.REPOSITORY_VOLUME, *params, filters.page_size + 1,
-              (filters.page - 1) * filters.page_size])
+        """, list(file_ids))
+        positions = {file_id: index for index, file_id in enumerate(file_ids)}
+        result.rows.sort(key=lambda row: positions[row["ID_FILE"]])
+        return result
 
     def get_spectra_by_file_id(self, file_id: int) -> TableResult:
         """Read all spectra linked to one reposfi file, without search filters.
