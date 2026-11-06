@@ -73,11 +73,11 @@ class FakeDB:
         self.host_task_updates.append(kwargs)
         return {"success": True, "rows_affected": 1, "updated_fields": kwargs}
 
-    def queue_host_task(self, **kwargs):
+    def host_task_enqueue(self, **kwargs):
         self.queued_tasks.append(kwargs)
         return {"HOST_TASK__ID_HOST_TASK": 99}
 
-    def request_host_summary_refresh(self, **kwargs):
+    def host_request_summary_refresh(self, **kwargs):
         pass
 
 

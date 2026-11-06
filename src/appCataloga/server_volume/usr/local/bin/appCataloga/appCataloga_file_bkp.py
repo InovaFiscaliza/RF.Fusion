@@ -172,7 +172,7 @@ def _finalize_success(
     )
 
     # First write the immutable history snapshot of the completed transfer.
-    db.file_history_update(
+    db.file_task_history_update(
         task_type=k.FILE_TASK_BACKUP_TYPE,
         host_id=host_id,
         host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
@@ -269,7 +269,7 @@ def _finalize_error(
             )
 
         try:
-            deleted_history = db.file_history_delete(
+            deleted_history = db.file_task_history_delete(
                 host_id=host_id,
                 host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
                 host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
@@ -362,7 +362,7 @@ def _finalize_error(
 
         # FILE_TASK_HISTORY mirrors the same backup-stage error so audit
         # queries and operational queue state do not diverge.
-        db.file_history_update(
+        db.file_task_history_update(
             task_type=k.FILE_TASK_BACKUP_TYPE,
             host_id=host_id,
             host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
@@ -378,7 +378,7 @@ def _finalize_error(
         # Fatal bootstrap failures ask host_check to reconcile host state out
         # of band so this worker can close the FILE_TASK deterministically.
         if err.stage in {k.STAGE_AUTH, k.STAGE_CONNECT, k.STAGE_SSH}:
-            db.queue_host_task(
+            db.host_task_enqueue(
                 host_id=host_id,
                 task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
                 task_status=k.TASK_PENDING,
@@ -430,7 +430,7 @@ def _cleanup(
     if host_id is None:
         return
 
-    # Single release point for the host claimed by read_file_task(..., lock_host=True).
+    # Single release point for the host claimed by file_task_read(..., lock_host=True).
     host_runtime.release_locked_host(
         db,
         host_id,
@@ -440,7 +440,7 @@ def _cleanup(
     # The summary invalidation is deferred until repository I/O is complete.
     if not err.triggered and file_was_transferred:
         try:
-            db.request_host_summary_refresh(
+            db.host_request_summary_refresh(
                 host_id=host_id,
                 reason="backup_completed",
             )
@@ -611,7 +611,7 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
     Raises:
         Exception: Propagates selection or context construction failures.
     """
-    row = db.read_file_task(
+    row = db.file_task_read(
         task_status=k.TASK_PENDING,
         task_type=k.FILE_TASK_BACKUP_TYPE,
         check_host_busy=True,

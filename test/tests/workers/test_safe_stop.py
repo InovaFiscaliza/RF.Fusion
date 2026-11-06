@@ -110,7 +110,7 @@ class FakeDB:
     def file_task_suspend_by_host(self, host_id: int) -> None:
         self.suspended_hosts.append(("file_task", host_id))
 
-    def file_history_suspend_by_host(self, host_id: int) -> None:
+    def file_task_history_suspend_by_host(self, host_id: int) -> None:
         self.suspended_hosts.append(("file_history", host_id))
 
 

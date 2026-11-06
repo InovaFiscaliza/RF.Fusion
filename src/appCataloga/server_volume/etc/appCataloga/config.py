@@ -54,6 +54,7 @@ SUMMARY_DATABASE_NAME   = "RFFUSION_SUMMARY"
 DB_USER_NAME            = secret["DB_USER_NAME"]
 DB_PASSWORD             = secret["DB_PASSWORD"]
 DB_LOG_CONNECTION_LIFECYCLE = False   # Log connect/close/reconnect lifecycle only when explicitly debugging DB sessions
+DB_BATCH_SIZE = 1000  # Parameter rows per PostgreSQL executemany chunk
 SUMMARY_HOST_SNAPSHOT_LOCK_NAME = "RFFUSION_SUMMARY_HOST_CURRENT_SNAPSHOT"
 SUMMARY_HOST_SNAPSHOT_LOCK_TIMEOUT_SEC = 5
 # =================================================
@@ -189,6 +190,11 @@ HOST_TASK_CHECK_CONNECTION_TYPE     = 4         # Create a Host Connectivity Che
 HOST_TASK_BACKLOG_CONTROL_TYPE      = 5         # Promote discovery backlog into backup
 HOST_TASK_BACKLOG_ROLLBACK_TYPE     = 6         # Return backup-pending backlog to discovery
 HOST_TASK_INTERACTIVE_CHECK_TYPE    = 7         # Run an operator-requested connectivity test
+HOST_TASK_CONNECTIVITY_TYPES = (
+    HOST_TASK_CHECK_TYPE,
+    HOST_TASK_PROCESSING_TYPE,
+    HOST_TASK_CHECK_CONNECTION_TYPE,
+)
 FILE_TASK_BACKUP_TYPE               = 1         # Create a backup task
 FILE_TASK_PROCESS_TYPE              = 2         # Process a backup task already stored on the server
 FILE_TASK_DISCOVERY                 = 3         # Create a discovery task to get file metadata

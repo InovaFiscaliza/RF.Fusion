@@ -7,7 +7,6 @@ How to run:
 What is covered here:
     - `HOST` locks in transient SFTP cooldown (`NU_PID = 0`) are preserved by
       the normal safe-release path
-    - the janitor preserves recent cooldowns and releases only expired ones
     - expired cooldown release updates the expected HOST fields
     - FILE history/task timestamps remain caller-owned instead of being filled
       implicitly inside the handler
@@ -83,59 +82,6 @@ class HostCooldownTests(unittest.TestCase):
 
         self.assertEqual(updates, [])
 
-    def test_host_cleanup_stale_locks_preserves_recent_sftp_cooldown(self) -> None:
-        """Recent cooldowns must not be released by the janitor prematurely."""
-
-        handler = self.make_handler()
-        released = []
-        queued = []
-        handler._select_raw = lambda *args, **kwargs: [
-            {
-                "ID_HOST": 11,
-                "NA_HOST_NAME": "station-a",
-                "DT_BUSY": datetime.now(),
-                "NU_PID": 0,
-                "FILE_RUNNING": 0,
-                "HOST_PROCESSING_RUNNING": 0,
-            }
-        ]
-        handler.host_update = lambda **kwargs: released.append(kwargs)
-        handler.queue_host_task = lambda **kwargs: queued.append(kwargs)
-
-        handler.host_cleanup_stale_locks(threshold_seconds=999)
-
-        self.assertEqual(released, [])
-        self.assertEqual(queued, [])
-
-    def test_host_cleanup_stale_locks_releases_expired_sftp_cooldown(self) -> None:
-        """Expired cooldowns must be reopened so backup/discovery can retry."""
-
-        handler = self.make_handler()
-        released = []
-        queued = []
-        handler._select_raw = lambda *args, **kwargs: [
-            {
-                "ID_HOST": 12,
-                "NA_HOST_NAME": "station-b",
-                "DT_BUSY": datetime.now()
-                - timedelta(seconds=db_bkp_module.k.SFTP_BUSY_COOLDOWN_SECONDS + 5),
-                "NU_PID": 0,
-                "FILE_RUNNING": 0,
-                "HOST_PROCESSING_RUNNING": 0,
-            }
-        ]
-        handler.host_update = lambda **kwargs: released.append(kwargs)
-        handler.queue_host_task = lambda **kwargs: queued.append(kwargs)
-
-        handler.host_cleanup_stale_locks(threshold_seconds=999)
-
-        self.assertEqual(
-            released,
-            [{"host_id": 12, "IS_BUSY": False, "NU_PID": 0}],
-        )
-        self.assertEqual(len(queued), 1)
-        self.assertEqual(queued[0]["host_id"], 12)
-
     def test_release_expired_transient_busy_cooldowns_updates_expected_fields(self) -> None:
         """Expired cooldown release must reset BUSY state and clear DT_BUSY."""
 
@@ -165,70 +111,6 @@ class HostCooldownTests(unittest.TestCase):
         self.assertEqual(captured["where"]["NU_PID"], 0)
         self.assertEqual(captured["commit"], True)
         self.assertIn("DT_BUSY__lt", captured["where"])
-
-    def test_host_task_cleanup_stale_operational_tasks_normalizes_pending_without_timestamp(self) -> None:
-        """Pending operational HOST_TASK without DT_HOST_TASK should get a janitor timestamp."""
-
-        handler = self.make_handler()
-        updates = []
-        handler._select_raw = lambda *args, **kwargs: [
-            {
-                "ID_HOST_TASK": 41,
-                "FK_HOST": 14,
-                "NU_TYPE": db_bkp_module.k.HOST_TASK_PROCESSING_TYPE,
-                "NU_STATUS": db_bkp_module.k.TASK_PENDING,
-                "DT_HOST_TASK": None,
-                "NU_PID": None,
-                "IS_BUSY": False,
-                "HOST_OWNER_PID": 0,
-            }
-        ]
-        handler.host_task_update = lambda **kwargs: updates.append(kwargs)
-        handler.host_update = lambda **kwargs: None
-
-        handler.host_task_cleanup_stale_operational_tasks(stale_after_seconds=30)
-
-        self.assertEqual(len(updates), 1)
-        self.assertEqual(updates[0]["task_id"], 41)
-        self.assertIsInstance(updates[0]["DT_HOST_TASK"], datetime)
-        self.assertIn("timestamp normalized by janitor", updates[0]["NA_MESSAGE"])
-
-    def test_host_task_cleanup_stale_operational_tasks_recovers_stale_running_and_releases_host(self) -> None:
-        """Stale RUNNING operational HOST_TASK should return to PENDING and free stale host lock."""
-
-        handler = self.make_handler()
-        task_updates = []
-        host_updates = []
-        handler._select_raw = lambda *args, **kwargs: [
-            {
-                "ID_HOST_TASK": 42,
-                "FK_HOST": 15,
-                "NU_TYPE": db_bkp_module.k.HOST_TASK_PROCESSING_TYPE,
-                "NU_STATUS": db_bkp_module.k.TASK_RUNNING,
-                "DT_HOST_TASK": datetime.now() - timedelta(seconds=301),
-                "NU_PID": 999001,
-                "IS_BUSY": True,
-                "HOST_OWNER_PID": 999001,
-            }
-        ]
-        handler.host_task_update = lambda **kwargs: task_updates.append(kwargs)
-        handler.host_update = lambda **kwargs: host_updates.append(kwargs)
-        original_pid_exists = db_bkp_module.tools.pid_exists
-        db_bkp_module.tools.pid_exists = lambda pid: False
-        try:
-            handler.host_task_cleanup_stale_operational_tasks(stale_after_seconds=300)
-        finally:
-            db_bkp_module.tools.pid_exists = original_pid_exists
-
-        self.assertEqual(len(task_updates), 1)
-        self.assertEqual(task_updates[0]["task_id"], 42)
-        self.assertEqual(task_updates[0]["NU_STATUS"], db_bkp_module.k.TASK_PENDING)
-        self.assertIn("TASK_PID_STALE", task_updates[0]["NA_MESSAGE"])
-        self.assertEqual(
-            host_updates,
-            [{"host_id": 15, "IS_BUSY": False, "NU_PID": db_bkp_module.k.HOST_UNLOCKED_PID}],
-        )
-
 
 class HostConnectivityListTests(unittest.TestCase):
     """Validate the HOST snapshot read used by the maintenance sweep."""
@@ -302,7 +184,7 @@ class HostSummaryRefreshRequestTests(unittest.TestCase):
             {"host_id": host_id, **kwargs}
         )
 
-        handler.request_host_summary_refresh(88, reason="processing_completed")
+        handler.host_request_summary_refresh(88, reason="processing_completed")
 
         self.assertEqual(
             summary_scopes,
@@ -342,7 +224,7 @@ class FileTimestampOwnershipTests(unittest.TestCase):
 
         handler._update_row = fake_update_row
 
-        handler.file_history_update(
+        handler.file_task_history_update(
             task_type=db_bkp_module.k.FILE_TASK_BACKUP_TYPE,
             history_id=99,
             NU_STATUS_BACKUP=db_bkp_module.k.TASK_DONE,
@@ -429,7 +311,7 @@ class FileDiscoveryDedupTests(unittest.TestCase):
             self._Meta("/mnt/internal/data/a", "same.bin", 123),
         ]
 
-        result = handler.filter_existing_file_batch(
+        result = handler.file_task_history_filter_existing_batch(
             host_id=99,
             batch=batch,
             batch_size=1000,
@@ -458,7 +340,7 @@ class FileDiscoveryDedupTests(unittest.TestCase):
             self._Meta("/mnt/internal/data/b", "same.bin", 123),
         ]
 
-        result = handler.filter_existing_file_batch(
+        result = handler.file_task_history_filter_existing_batch(
             host_id=99,
             batch=batch,
             batch_size=1000,
@@ -483,7 +365,7 @@ class FileDiscoveryDedupTests(unittest.TestCase):
             self._Meta("/mnt/internal/data/a", "same.bin", 456),
         ]
 
-        result = handler.filter_existing_file_batch(
+        result = handler.file_task_history_filter_existing_batch(
             host_id=99,
             batch=batch,
             batch_size=1000,
@@ -493,7 +375,7 @@ class FileDiscoveryDedupTests(unittest.TestCase):
         self.assertEqual(result[0].VL_FILE_SIZE_KB, 456)
 
 
-class BackupQueueReconcileTests(unittest.TestCase):
+class StructuredErrorFieldsTests(unittest.TestCase):
     """Validate one-shot reconciliation of pending backup rows already on server."""
 
     def make_handler(self):
@@ -514,322 +396,6 @@ class BackupQueueReconcileTests(unittest.TestCase):
         )()
         handler.in_transaction = False
         return handler
-
-    def test_file_task_list_pending_backup_with_server_artifact_filters_backup_queue(self) -> None:
-        """Only pending BACKUP rows with repository artifacts should be listed."""
-
-        handler = self.make_handler()
-        captured = {}
-
-        def fake_select_raw(sql, params):
-            captured["sql"] = sql
-            captured["params"] = params
-            return []
-
-        handler._select_raw = fake_select_raw
-
-        rows = handler.file_task_list_pending_backup_with_server_artifact(
-            limit=25,
-            host_id=88,
-        )
-
-        self.assertEqual(rows, [])
-        self.assertIn("t.NU_TYPE = %s", captured["sql"])
-        self.assertIn("t.NU_STATUS = %s", captured["sql"])
-        self.assertIn("h.NA_SERVER_FILE_PATH IS NOT NULL", captured["sql"])
-        self.assertIn("h.NA_SERVER_FILE_NAME IS NOT NULL", captured["sql"])
-        self.assertIn("AND t.FK_HOST = %s", captured["sql"])
-        self.assertEqual(
-            captured["params"],
-            (
-                db_bkp_module.k.FILE_TASK_BACKUP_TYPE,
-                db_bkp_module.k.TASK_PENDING,
-                88,
-                25,
-            ),
-        )
-
-    def test_file_history_list_inconsistent_server_artifacts_lists_non_running_rows(self) -> None:
-        """Reconciliation scan must include stale history or queue rows only."""
-
-        handler = self.make_handler()
-        captured = {}
-
-        def fake_select_raw(sql, params):
-            captured["sql"] = sql
-            captured["params"] = params
-            return []
-
-        handler._select_raw = fake_select_raw
-
-        rows = handler.file_history_list_inconsistent_server_artifacts(
-            limit=40,
-            host_id=55,
-        )
-
-        self.assertEqual(rows, [])
-        self.assertIn("LEFT JOIN FILE_TASK t", captured["sql"])
-        self.assertIn("NOT EXISTS", captured["sql"])
-        self.assertIn("t_running.NU_STATUS = %s", captured["sql"])
-        self.assertIn("h.DT_PROCESSED IS NULL", captured["sql"])
-        self.assertIn("AND h.FK_HOST = %s", captured["sql"])
-        self.assertEqual(
-            captured["params"],
-            (
-                db_bkp_module.k.TASK_RUNNING,
-                db_bkp_module.k.TASK_DONE,
-                db_bkp_module.k.TASK_DONE,
-                55,
-                40,
-            ),
-        )
-
-    def test_file_history_list_processed_artifact_reconcile_candidates_joins_dim(self) -> None:
-        """Processed reconciliation must read only artifacts already in DIM."""
-
-        handler = self.make_handler()
-        captured = {}
-
-        def fake_select_raw(sql, params):
-            captured["sql"] = sql
-            captured["params"] = params
-            return []
-
-        handler._select_raw = fake_select_raw
-
-        rows = handler.file_history_list_processed_artifact_reconcile_candidates(
-            limit=30,
-            host_id=12,
-            after_history_id=900,
-        )
-
-        self.assertEqual(rows, [])
-        self.assertIn(f"JOIN {db_bkp_module.k.RFM_DATABASE_NAME}.DIM_SPECTRUM_FILE d", captured["sql"])
-        self.assertIn("d.NA_VOLUME = %s", captured["sql"])
-        self.assertIn("h.ID_HISTORY > %s", captured["sql"])
-        self.assertEqual(
-            captured["params"],
-            (
-                db_bkp_module.k.REPO_VOLUME_NAME.lower(),
-                db_bkp_module.k.TASK_RUNNING,
-                db_bkp_module.k.TASK_DONE,
-                db_bkp_module.k.TASK_DONE,
-                12,
-                900,
-                30,
-            ),
-        )
-
-    def test_file_history_list_queue_reconcile_candidates_excludes_dim(self) -> None:
-        """Queue reconciliation must skip artifacts already proven in DIM."""
-
-        handler = self.make_handler()
-        captured = {}
-
-        def fake_select_raw(sql, params):
-            captured["sql"] = sql
-            captured["params"] = params
-            return []
-
-        handler._select_raw = fake_select_raw
-
-        rows = handler.file_history_list_queue_reconcile_candidates(
-            limit=35,
-            host_id=13,
-            after_history_id=901,
-        )
-
-        self.assertEqual(rows, [])
-        self.assertIn("JOIN FILE_TASK t", captured["sql"])
-        self.assertIn(f"FROM {db_bkp_module.k.RFM_DATABASE_NAME}.DIM_SPECTRUM_FILE d", captured["sql"])
-        self.assertIn("t.NU_TYPE <> %s", captured["sql"])
-        self.assertIn("h.DT_PROCESSED IS NOT NULL", captured["sql"])
-        self.assertEqual(
-            captured["params"],
-            (
-                db_bkp_module.k.TASK_RUNNING,
-                db_bkp_module.k.REPO_VOLUME_NAME.lower(),
-                db_bkp_module.k.FILE_TASK_PROCESS_TYPE,
-                db_bkp_module.k.TASK_PENDING,
-                db_bkp_module.k.TASK_DONE,
-                db_bkp_module.k.TASK_PENDING,
-                13,
-                901,
-                35,
-            ),
-        )
-
-    def test_file_task_promote_pending_backup_to_processing_updates_queue_and_history(self) -> None:
-        """Promotion must move the queue row to PROCESS and mark backup done."""
-
-        handler = self.make_handler()
-        calls = []
-        task_updates = []
-        history_updates = []
-
-        handler.begin_transaction = lambda: calls.append("begin")
-        handler.commit = lambda: calls.append("commit")
-        handler.rollback = lambda: calls.append("rollback")
-        handler.file_task_update = lambda **kwargs: task_updates.append(kwargs) or {
-            "rows_affected": 1
-        }
-        handler.file_history_update = lambda **kwargs: history_updates.append(kwargs) or {
-            "rows_affected": 1
-        }
-
-        reconciled_at = datetime(2026, 6, 19, 12, 0, 0)
-        candidate = {
-            "ID_FILE_TASK": 501,
-            "FK_HOST": 77,
-            "NA_HOST_FILE_PATH": "/mnt/internal/data",
-            "NA_HOST_FILE_NAME": "sample.bin",
-            "NA_SERVER_FILE_PATH": "/mnt/reposfi/tmp/RFEYE001",
-            "NA_SERVER_FILE_NAME": "p-123--sample.bin",
-            "NA_EXTENSION_SERVER": ".bin",
-            "VL_FILE_SIZE_KB_SERVER": 42,
-            "DT_FILE_CREATED_SERVER": datetime(2026, 6, 18, 10, 0, 0),
-            "DT_FILE_MODIFIED_SERVER": datetime(2026, 6, 18, 10, 0, 0),
-            "DT_BACKUP": None,
-        }
-
-        result = handler.file_task_promote_pending_backup_to_processing(
-            candidate=candidate,
-            reconciled_at=reconciled_at,
-        )
-
-        self.assertEqual(calls, ["begin", "commit"])
-        self.assertEqual(result["task_id"], 501)
-        self.assertEqual(result["host_id"], 77)
-        self.assertEqual(task_updates[0]["task_id"], 501)
-        self.assertEqual(task_updates[0]["NU_TYPE"], db_bkp_module.k.FILE_TASK_PROCESS_TYPE)
-        self.assertEqual(task_updates[0]["NU_STATUS"], db_bkp_module.k.TASK_PENDING)
-        self.assertEqual(task_updates[0]["NA_SERVER_FILE_NAME"], "p-123--sample.bin")
-        self.assertEqual(history_updates[0]["host_id"], 77)
-        self.assertEqual(history_updates[0]["NU_STATUS_BACKUP"], db_bkp_module.k.TASK_DONE)
-        self.assertEqual(
-            history_updates[0]["NU_STATUS_PROCESSING"],
-            db_bkp_module.k.TASK_PENDING,
-        )
-        self.assertNotIn("DT_PROCESSED", history_updates[0])
-        self.assertEqual(history_updates[0]["DT_BACKUP"], reconciled_at)
-
-    def test_file_task_promote_server_artifact_to_processing_accepts_discovery_row(self) -> None:
-        """Repair may jump a rediscovered row straight to PROCESS/PENDING."""
-
-        handler = self.make_handler()
-        calls = []
-        task_updates = []
-        history_updates = []
-
-        handler.begin_transaction = lambda: calls.append("begin")
-        handler.commit = lambda: calls.append("commit")
-        handler.rollback = lambda: calls.append("rollback")
-        handler.file_task_update = lambda **kwargs: task_updates.append(kwargs) or {
-            "rows_affected": 1
-        }
-        handler.file_history_update = lambda **kwargs: history_updates.append(kwargs) or {
-            "rows_affected": 1
-        }
-
-        candidate = {
-            "ID_FILE_TASK": 900,
-            "FK_HOST": 88,
-            "NA_HOST_FILE_PATH": "/mnt/internal/data",
-            "NA_HOST_FILE_NAME": "regressed.bin",
-            "NA_SERVER_FILE_PATH": "/mnt/reposfi/tmp/RFEYE900",
-            "NA_SERVER_FILE_NAME": "p-900--regressed.bin",
-            "NA_EXTENSION_SERVER": ".bin",
-            "VL_FILE_SIZE_KB_SERVER": 99,
-            "DT_FILE_CREATED_SERVER": datetime(2026, 6, 10, 10, 0, 0),
-            "DT_FILE_MODIFIED_SERVER": datetime(2026, 6, 10, 10, 0, 0),
-            "DT_BACKUP": datetime(2026, 6, 10, 10, 0, 0),
-            "FILE_TASK_STATUS": db_bkp_module.k.TASK_DONE,
-        }
-
-        handler.file_task_promote_server_artifact_to_processing(
-            candidate=candidate,
-            reconciled_at=datetime(2026, 6, 19, 12, 0, 0),
-        )
-
-        self.assertEqual(calls, ["begin", "commit"])
-        self.assertEqual(task_updates[0]["expected_status"], db_bkp_module.k.TASK_DONE)
-        self.assertEqual(task_updates[0]["NU_TYPE"], db_bkp_module.k.FILE_TASK_PROCESS_TYPE)
-        self.assertEqual(history_updates[0]["NU_STATUS_BACKUP"], db_bkp_module.k.TASK_DONE)
-        self.assertEqual(
-            history_updates[0]["NU_STATUS_PROCESSING"],
-            db_bkp_module.k.TASK_PENDING,
-        )
-
-    def test_file_task_promote_pending_backup_to_processing_rolls_back_on_failure(self) -> None:
-        """Any failed promotion step must roll the transaction back."""
-
-        handler = self.make_handler()
-        calls = []
-
-        handler.begin_transaction = lambda: calls.append("begin")
-        handler.commit = lambda: calls.append("commit")
-        handler.rollback = lambda: calls.append("rollback")
-        handler.file_task_update = lambda **kwargs: {"rows_affected": 0}
-        handler.file_history_update = lambda **kwargs: {"rows_affected": 1}
-
-        candidate = {
-            "ID_FILE_TASK": 502,
-            "FK_HOST": 78,
-            "NA_HOST_FILE_PATH": "/mnt/internal/data",
-            "NA_HOST_FILE_NAME": "sample.bin",
-            "NA_SERVER_FILE_PATH": "/mnt/reposfi/tmp/RFEYE002",
-            "NA_SERVER_FILE_NAME": "p-456--sample.bin",
-            "NA_EXTENSION_SERVER": ".bin",
-            "VL_FILE_SIZE_KB_SERVER": 84,
-            "DT_FILE_CREATED_SERVER": datetime(2026, 6, 18, 10, 0, 0),
-            "DT_FILE_MODIFIED_SERVER": datetime(2026, 6, 18, 10, 0, 0),
-            "DT_BACKUP": None,
-        }
-
-        with self.assertRaises(RuntimeError):
-            handler.file_task_promote_pending_backup_to_processing(
-                candidate=candidate,
-                reconciled_at=datetime(2026, 6, 19, 12, 0, 0),
-            )
-
-        self.assertEqual(calls, ["begin", "rollback"])
-
-    def test_file_history_list_processing_retry_candidates_by_error_detail_filters_missing_queue(self) -> None:
-        """Retry candidates must target errored history rows without live queue."""
-
-        handler = self.make_handler()
-        captured = {}
-
-        def fake_select(sql, params):
-            captured["sql"] = sql
-            captured["params"] = params
-            return []
-
-        handler._connect = lambda: None
-        handler._disconnect = lambda: None
-        handler._select_raw = fake_select
-
-        handler.file_history_list_processing_retry_candidates_by_error_detail(
-            error_detail=db_bkp_module.k.APP_ANALISE_NO_READABLE_FILES_IN_ZIP_DETAIL,
-            limit=25,
-            host_id=901,
-            after_history_id=40,
-        )
-
-        self.assertIn("LEFT JOIN FILE_TASK t", captured["sql"])
-        self.assertIn("h.NA_ERROR_DETAIL = %s", captured["sql"])
-        self.assertIn("h.NU_STATUS_PROCESSING = %s", captured["sql"])
-        self.assertIn("t.ID_FILE_TASK IS NULL", captured["sql"])
-        self.assertEqual(
-            captured["params"],
-            (
-                db_bkp_module.k.APP_ANALISE_NO_READABLE_FILES_IN_ZIP_DETAIL,
-                db_bkp_module.k.TASK_ERROR,
-                901,
-                40,
-                25,
-            ),
-        )
 
     def test_merge_structured_error_fields_keeps_compact_error_payload(self) -> None:
         """Operational rows retain only the concise message, code and detail."""
@@ -858,133 +424,6 @@ class BackupQueueReconcileTests(unittest.TestCase):
         self.assertNotIn("NA_ERROR_STAGE", payload)
         self.assertNotIn("NA_ERROR_SUMMARY", payload)
 
-    def test_file_history_recreate_processing_task_upserts_queue_and_resets_history(self) -> None:
-        """Recreation must restore PROCESS/PENDING atomically."""
-
-        handler = self.make_handler()
-        calls = []
-        upserts = []
-        history_updates = []
-        summaries = []
-
-        handler.begin_transaction = lambda: calls.append("begin")
-        handler.commit = lambda: calls.append("commit")
-        handler.rollback = lambda: calls.append("rollback")
-        handler._upsert_row = lambda **kwargs: upserts.append(kwargs) or 1
-        handler.file_history_update = lambda **kwargs: history_updates.append(kwargs) or {
-            "rows_affected": 1
-        }
-        handler._summary_publish_host_scope = (
-            lambda host_id, reason: summaries.append((host_id, reason))
-        )
-
-        recreated_at = datetime(2026, 7, 2, 12, 0, 0)
-        candidate = {
-            "ID_HISTORY": 700,
-            "FK_HOST": 55,
-            "NA_HOST_FILE_PATH": "/mnt/internal/data",
-            "NA_HOST_FILE_NAME": "sample.zip",
-            "NA_EXTENSION_HOST": ".zip",
-            "VL_FILE_SIZE_KB_HOST": 12,
-            "DT_FILE_CREATED_HOST": datetime(2026, 6, 10, 10, 0, 0),
-            "DT_FILE_MODIFIED_HOST": datetime(2026, 6, 10, 10, 0, 0),
-            "NA_SERVER_FILE_PATH": "/mnt/reposfi/trash",
-            "NA_SERVER_FILE_NAME": "sample.zip",
-            "NA_EXTENSION_SERVER": ".zip",
-            "VL_FILE_SIZE_KB_SERVER": 12,
-            "DT_FILE_CREATED_SERVER": datetime(2026, 6, 10, 10, 0, 0),
-            "DT_FILE_MODIFIED_SERVER": datetime(2026, 6, 10, 10, 0, 0),
-            "DT_BACKUP": None,
-        }
-
-        result = handler.file_history_recreate_processing_task(
-            candidate=candidate,
-            recreated_at=recreated_at,
-        )
-
-        self.assertEqual(calls, ["begin", "commit"])
-        self.assertEqual(result["history_id"], 700)
-        self.assertEqual(result["host_id"], 55)
-        self.assertEqual(upserts[0]["table"], "FILE_TASK")
-        self.assertEqual(upserts[0]["data"]["NU_TYPE"], db_bkp_module.k.FILE_TASK_PROCESS_TYPE)
-        self.assertEqual(upserts[0]["data"]["NU_STATUS"], db_bkp_module.k.TASK_PENDING)
-        self.assertEqual(upserts[0]["data"]["NA_SERVER_FILE_NAME"], "sample.zip")
-        self.assertEqual(history_updates[0]["history_id"], 700)
-        self.assertEqual(history_updates[0]["NU_STATUS_BACKUP"], db_bkp_module.k.TASK_DONE)
-        self.assertEqual(
-            history_updates[0]["NU_STATUS_PROCESSING"],
-            db_bkp_module.k.TASK_PENDING,
-        )
-        self.assertNotIn("DT_PROCESSED", history_updates[0])
-        self.assertEqual(history_updates[0]["DT_BACKUP"], recreated_at)
-        self.assertEqual(
-            summaries,
-            [(55, "file_history_recreate_processing_task")],
-        )
-
-    def test_file_history_reconcile_processed_artifact_restores_done_and_deletes_queue(self) -> None:
-        """Processed DIM evidence must restore DONE state and clear live queue."""
-
-        handler = self.make_handler()
-        calls = []
-        history_updates = []
-        deleted_tasks = []
-
-        handler.begin_transaction = lambda: calls.append("begin")
-        handler.commit = lambda: calls.append("commit")
-        handler.rollback = lambda: calls.append("rollback")
-        handler.file_history_update = lambda **kwargs: history_updates.append(kwargs) or {
-            "rows_affected": 1
-        }
-        handler.file_task_delete = lambda task_id: deleted_tasks.append(task_id) or 1
-
-        candidate = {
-            "ID_HISTORY": 1200,
-            "ID_FILE_TASK": 300,
-            "FK_HOST": 66,
-            "NA_HOST_FILE_PATH": "/mnt/internal/data",
-            "NA_HOST_FILE_NAME": "processed.bin",
-            "NA_SERVER_FILE_PATH": "/mnt/reposfi/2026/PE/x",
-            "NA_SERVER_FILE_NAME": "p-1200--processed.bin",
-            "NA_EXTENSION_SERVER": ".bin",
-            "VL_FILE_SIZE_KB_SERVER": 123,
-            "DT_FILE_CREATED_SERVER": datetime(2026, 6, 5, 8, 0, 0),
-            "DT_FILE_MODIFIED_SERVER": datetime(2026, 6, 5, 8, 0, 0),
-            "DT_BACKUP": None,
-            "DT_PROCESSED": None,
-        }
-        repository_artifact = {
-            "na_path": "/mnt/reposfi/2026/PE/x",
-            "na_file": "p-1200--processed.bin",
-            "NA_EXTENSION": ".bin",
-            "VL_FILE_SIZE_KB": 123,
-            "DT_FILE_CREATED": datetime(2026, 6, 5, 8, 0, 0),
-            "DT_FILE_MODIFIED": datetime(2026, 6, 5, 8, 0, 0),
-            "DT_FILE_LOGGED": datetime(2026, 6, 5, 8, 30, 0),
-        }
-
-        result = handler.file_history_reconcile_processed_artifact(
-            candidate=candidate,
-            repository_artifact=repository_artifact,
-            reconciled_at=datetime(2026, 6, 19, 12, 0, 0),
-        )
-
-        self.assertEqual(calls, ["begin", "commit"])
-        self.assertEqual(result["history_id"], 1200)
-        self.assertEqual(result["deleted_task_rows"], 1)
-        self.assertEqual(deleted_tasks, [300])
-        self.assertEqual(history_updates[0]["history_id"], 1200)
-        self.assertEqual(history_updates[0]["NU_STATUS_BACKUP"], db_bkp_module.k.TASK_DONE)
-        self.assertEqual(
-            history_updates[0]["NU_STATUS_PROCESSING"],
-            db_bkp_module.k.TASK_DONE,
-        )
-        self.assertEqual(
-            history_updates[0]["DT_PROCESSED"],
-            repository_artifact["DT_FILE_LOGGED"],
-        )
-
-
 class GarbageCollectorQueryTests(unittest.TestCase):
     """Validate the history query that feeds payload garbage collection."""
 
@@ -1011,7 +450,7 @@ class GarbageCollectorQueryTests(unittest.TestCase):
 
         handler._select_rows = fake_select_rows
 
-        rows = handler.file_history_get_gc_candidates(
+        rows = handler.file_task_history_list_gc_candidates(
             batch_size=25,
             quarantine_days=365,
         )
@@ -1033,80 +472,6 @@ class GarbageCollectorQueryTests(unittest.TestCase):
             captured["cols"],
             ["ID_HISTORY", "NA_SERVER_FILE_PATH", "NA_SERVER_FILE_NAME"],
         )
-
-    def test_file_history_list_zip_error_server_restore_candidates_filters_zip_processing_errors(self) -> None:
-        """Restoration query must target `.zip` history rows in processing error."""
-
-        handler = self.make_handler()
-        captured = {}
-
-        def fake_select(sql, params):
-            captured["sql"] = sql
-            captured["params"] = params
-            return []
-
-        handler._disconnect = lambda: None
-        handler._select_raw = fake_select
-
-        rows = handler.file_history_list_zip_error_server_restore_candidates(
-            limit=40,
-            host_id=901,
-            after_history_id=300,
-        )
-
-        self.assertEqual(rows, [])
-        self.assertIn("LOWER(COALESCE(h.NA_EXTENSION_HOST, '')) = '.zip'", captured["sql"])
-        self.assertIn("h.NU_STATUS_PROCESSING = %s", captured["sql"])
-        self.assertEqual(
-            captured["params"],
-            (
-                db_bkp_module.k.TASK_ERROR,
-                901,
-                300,
-                40,
-            ),
-        )
-
-    def test_file_history_restore_server_artifact_metadata_updates_server_columns(self) -> None:
-        """Restoration helper must forward only the recovered server metadata."""
-
-        handler = self.make_handler()
-        updates = []
-
-        handler.file_history_update = lambda **kwargs: updates.append(kwargs) or {
-            "rows_affected": 1
-        }
-
-        artifact = {
-            "file_path": "/mnt/reposfi/trash/resolved_files",
-            "file_name": "sample.zip",
-            "extension": ".zip",
-            "size_kb": 44,
-            "dt_created": datetime(2026, 7, 3, 10, 0, 0),
-            "dt_modified": datetime(2026, 7, 3, 10, 1, 0),
-        }
-
-        result = handler.file_history_restore_server_artifact_metadata(
-            history_id=777,
-            repository_artifact=artifact,
-        )
-
-        self.assertEqual(result["rows_affected"], 1)
-        self.assertEqual(
-            updates,
-            [
-                {
-                    "history_id": 777,
-                    "NA_SERVER_FILE_PATH": "/mnt/reposfi/trash/resolved_files",
-                    "NA_SERVER_FILE_NAME": "sample.zip",
-                    "NA_EXTENSION_SERVER": ".zip",
-                    "VL_FILE_SIZE_KB_SERVER": 44,
-                    "DT_FILE_CREATED_SERVER": datetime(2026, 7, 3, 10, 0, 0),
-                    "DT_FILE_MODIFIED_SERVER": datetime(2026, 7, 3, 10, 1, 0),
-                }
-            ],
-        )
-
 
 class FileTaskSelectionTests(unittest.TestCase):
     """Validate backup FILE_TASK selection rules for priority and host fairness."""
@@ -1135,7 +500,7 @@ class FileTaskSelectionTests(unittest.TestCase):
 
         handler._select_custom = fake_select_custom
 
-        result = handler.read_file_task(
+        result = handler.file_task_read(
             task_status=db_bkp_module.k.TASK_PENDING,
             task_type=db_bkp_module.k.FILE_TASK_BACKUP_TYPE,
             check_host_busy=True,
@@ -1178,7 +543,7 @@ class FileTaskSelectionTests(unittest.TestCase):
 
         handler._select_custom = fake_select_custom
 
-        result = handler.read_file_task(
+        result = handler.file_task_read(
             task_status=db_bkp_module.k.TASK_PENDING,
             task_type=db_bkp_module.k.FILE_TASK_BACKUP_TYPE,
             check_host_busy=True,
@@ -1246,7 +611,7 @@ class FileTaskSelectionTests(unittest.TestCase):
         handler, connection = self.make_priority_queue()
         selected = []
         for step in range(3):
-            result = handler.read_file_task(
+            result = handler.file_task_read(
                 task_type=1, check_host_busy=False, fair_by_host=True,
                 newest_first=True, prefer_current_year=True,
             )
@@ -1256,7 +621,7 @@ class FileTaskSelectionTests(unittest.TestCase):
             connection.execute("UPDATE HOST SET DT_LAST_BACKUP = ? WHERE ID_HOST = ?",
                                (f"2026-12-{step + 1:02d}", host_id))
         self.assertEqual(selected, [5, 6, 4])
-        self.assertEqual(handler.read_file_task(
+        self.assertEqual(handler.file_task_read(
             task_type=1, check_host_busy=False, fair_by_host=True,
             newest_first=True, prefer_current_year=True,
         )[2], 8)
@@ -1268,7 +633,7 @@ class FileTaskSelectionTests(unittest.TestCase):
                            (db_bkp_module.k.FILE_TASK_PROCESS_TYPE,))
         selected = []
         while True:
-            result = handler.read_file_task(
+            result = handler.file_task_read(
                 task_type=db_bkp_module.k.FILE_TASK_PROCESS_TYPE,
                 check_host_busy=False, newest_first=True,
             )
@@ -1285,7 +650,7 @@ class FileTaskSelectionTests(unittest.TestCase):
         connection.execute("UPDATE HOST SET IS_BUSY = 1 WHERE ID_HOST = 1")
         connection.execute("UPDATE FILE_TASK SET NU_STATUS = 2 WHERE ID_FILE_TASK = 6")
         connection.execute("UPDATE FILE_TASK SET NA_EXTENSION_HOST = '.zip' WHERE ID_FILE_TASK = 4")
-        result = handler.read_file_task(
+        result = handler.file_task_read(
             task_type=1, check_host_busy=True, check_host_offline=True,
             extension=".bin", fair_by_host=True, newest_first=True,
             prefer_current_year=True,
@@ -1295,79 +660,10 @@ class FileTaskSelectionTests(unittest.TestCase):
     def test_explicit_task_id_bypasses_priority_ordering(self) -> None:
         """An explicit task lookup still resolves the requested old file."""
         handler, _ = self.make_priority_queue()
-        self.assertEqual(handler.read_file_task(
+        self.assertEqual(handler.file_task_read(
             task_id=1, check_host_busy=False, fair_by_host=True,
             newest_first=True, prefer_current_year=True,
         )[2], 1)
-
-
-class BacklogBudgetTests(unittest.TestCase):
-    """Validate budget-limited backlog promotion without a real database."""
-
-    def make_handler(self):
-        handler = object.__new__(db_bkp_module.dbHandlerBKP)
-        handler.log = FakeLog()
-        handler.database = "BPDATA_TEST"
-        handler._connect = lambda: None
-        handler._disconnect = lambda: None
-        handler._summary_publish_host_scope = lambda *args, **kwargs: None
-        handler.db_connection = type(
-            "FakeConnection",
-            (),
-            {"rollback": lambda self: None},
-        )()
-        return handler
-
-    def test_update_backlog_by_filter_respects_max_total_gb_prefix_selection(self) -> None:
-        handler = self.make_handler()
-        captured = {}
-
-        handler._select_rows = lambda **kwargs: [
-            {"ID_FILE_TASK": 101, "VL_FILE_SIZE_KB_HOST": 20480},
-            {"ID_FILE_TASK": 102, "VL_FILE_SIZE_KB_HOST": 15360},
-            {"ID_FILE_TASK": 103, "VL_FILE_SIZE_KB_HOST": 10240},
-        ]
-
-        def fake_update_row(*, table, data, where, commit, extra_sql=""):
-            captured["table"] = table
-            captured["data"] = data
-            captured["where"] = where
-            captured["commit"] = commit
-            captured["extra_sql"] = extra_sql
-            return 1
-
-        handler._update_row = fake_update_row
-
-        summary = handler.update_backlog_by_filter(
-            host_id=33,
-            task_filter={
-                "mode": "RANGE",
-                "start_date": "2025-01-01",
-                "end_date": "2025-12-31",
-                "file_path": "/mnt/internal",
-                "extension": ".zip",
-                "max_total_gb": 0.03,
-                "sort_order": "newest_first",
-            },
-            search_type=db_bkp_module.k.FILE_TASK_DISCOVERY,
-            search_status=db_bkp_module.k.TASK_DONE,
-            new_type=db_bkp_module.k.FILE_TASK_BACKUP_TYPE,
-            new_status=db_bkp_module.k.TASK_PENDING,
-        )
-
-        self.assertEqual(summary["rows_updated"], 1)
-        self.assertEqual(summary["moved_to_backup"], 1)
-        self.assertEqual(summary["selected_total_kb"], 20480)
-        self.assertEqual(captured["table"], "FILE_TASK")
-        self.assertEqual(captured["where"]["FK_HOST"], 33)
-        self.assertEqual(captured["where"]["ID_FILE_TASK__in"], [101])
-        self.assertEqual(captured["where"]["NU_TYPE"], db_bkp_module.k.FILE_TASK_DISCOVERY)
-        self.assertEqual(captured["where"]["NU_STATUS"], db_bkp_module.k.TASK_DONE)
-        self.assertEqual(captured["commit"], True)
-        self.assertEqual(captured["extra_sql"], "")
-        self.assertFalse(
-            any(key.startswith("#CUSTOM#") for key in captured["where"])
-        )
 
 
 class HostTaskQueueTests(unittest.TestCase):
@@ -1379,7 +675,7 @@ class HostTaskQueueTests(unittest.TestCase):
         handler = object.__new__(db_bkp_module.dbHandlerBKP)
         handler.log = FakeLog()
         handler.database = "BPDATA_TEST"
-        handler.request_host_summary_refresh = lambda host_id, **kwargs: None
+        handler.host_request_summary_refresh = lambda host_id, **kwargs: None
         handler.host_read_status = lambda host_id: {"ID_HOST": host_id}
         return handler
 
@@ -1403,11 +699,11 @@ class HostTaskQueueTests(unittest.TestCase):
                 }
             ]
 
-        handler.check_host_task = fake_check_host_task
+        handler.host_task_list = fake_check_host_task
         handler.host_task_create = lambda **kwargs: created.append(kwargs)
         handler.host_task_update = lambda **kwargs: updated.append(kwargs)
 
-        result = handler.queue_host_task(
+        result = handler.host_task_enqueue(
             host_id=55,
             task_type=db_bkp_module.k.HOST_TASK_CHECK_TYPE,
             task_status=db_bkp_module.k.TASK_PENDING,
@@ -1433,7 +729,7 @@ class HostTaskQueueTests(unittest.TestCase):
         created = []
         updated = []
 
-        handler.check_host_task = lambda **kwargs: [
+        handler.host_task_list = lambda **kwargs: [
             {
                 "HOST_TASK__ID_HOST_TASK": 102,
                 "HOST_TASK__NU_TYPE": db_bkp_module.k.HOST_TASK_CHECK_TYPE,
@@ -1444,7 +740,7 @@ class HostTaskQueueTests(unittest.TestCase):
         handler.host_task_create = lambda **kwargs: created.append(kwargs)
         handler.host_task_update = lambda **kwargs: updated.append(kwargs)
 
-        handler.queue_host_task(
+        handler.host_task_enqueue(
             host_id=56,
             task_type=db_bkp_module.k.HOST_TASK_CHECK_TYPE,
             task_status=db_bkp_module.k.TASK_PENDING,
@@ -1464,7 +760,7 @@ class HostTaskQueueTests(unittest.TestCase):
         created = []
         updated = []
 
-        handler.check_host_task = lambda **kwargs: [
+        handler.host_task_list = lambda **kwargs: [
             {
                 "HOST_TASK__ID_HOST_TASK": 104,
                 "HOST_TASK__NU_TYPE": db_bkp_module.k.HOST_TASK_CHECK_CONNECTION_TYPE,
@@ -1475,7 +771,7 @@ class HostTaskQueueTests(unittest.TestCase):
         handler.host_task_create = lambda **kwargs: created.append(kwargs)
         handler.host_task_update = lambda **kwargs: updated.append(kwargs)
 
-        handler.queue_host_task(
+        handler.host_task_enqueue(
             host_id=59,
             task_type=db_bkp_module.k.HOST_TASK_CHECK_CONNECTION_TYPE,
             task_status=db_bkp_module.k.TASK_PENDING,
@@ -1493,7 +789,7 @@ class HostTaskQueueTests(unittest.TestCase):
         created = []
         updated = []
 
-        handler.check_host_task = lambda **kwargs: [
+        handler.host_task_list = lambda **kwargs: [
             {
                 "HOST_TASK__ID_HOST_TASK": 103,
                 "HOST_TASK__NU_TYPE": db_bkp_module.k.HOST_TASK_CHECK_TYPE,
@@ -1504,7 +800,7 @@ class HostTaskQueueTests(unittest.TestCase):
         handler.host_task_create = lambda **kwargs: created.append(kwargs)
         handler.host_task_update = lambda **kwargs: updated.append(kwargs)
 
-        handler.queue_host_task(
+        handler.host_task_enqueue(
             host_id=57,
             task_type=db_bkp_module.k.HOST_TASK_CHECK_TYPE,
             task_status=db_bkp_module.k.TASK_PENDING,
@@ -1525,7 +821,7 @@ class HostTaskQueueTests(unittest.TestCase):
         created = []
         updated = []
 
-        handler.check_host_task = lambda **kwargs: [
+        handler.host_task_list = lambda **kwargs: [
             {
                 "HOST_TASK__ID_HOST_TASK": 201,
                 "HOST_TASK__NU_TYPE": db_bkp_module.k.HOST_TASK_PROCESSING_TYPE,
@@ -1542,7 +838,7 @@ class HostTaskQueueTests(unittest.TestCase):
         handler.host_task_create = lambda **kwargs: created.append(kwargs)
         handler.host_task_update = lambda **kwargs: updated.append(kwargs)
 
-        handler.queue_host_task(
+        handler.host_task_enqueue(
             host_id=58,
             task_type=db_bkp_module.k.HOST_TASK_PROCESSING_TYPE,
             task_status=db_bkp_module.k.TASK_PENDING,

@@ -253,7 +253,7 @@ def persist_auth_error(
 
     db.host_task_suspend_by_host(task["host_id"])
     db.file_task_suspend_by_host(task["host_id"])
-    db.file_history_suspend_by_host(task["host_id"])
+    db.file_task_history_suspend_by_host(task["host_id"])
 
     logger.event(
         "host_auth_error_suspended",

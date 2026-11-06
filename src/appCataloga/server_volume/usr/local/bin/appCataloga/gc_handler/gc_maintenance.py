@@ -174,7 +174,7 @@ def collect_gc_candidates(
 
     One channel is backed by `FILE_TASK_HISTORY`. The other is filesystem-only.
     """
-    history_rows = db_bp.file_history_get_gc_candidates(
+    history_rows = db_bp.file_task_history_list_gc_candidates(
         batch_size=k.GC_BATCH_SIZE,
         quarantine_days=k.GC_QUARANTINE_DAYS,
     )
@@ -234,7 +234,7 @@ def delete_history_artifacts(
             continue
 
         if _delete_file(file_path, logger=logger):
-            db_bp.file_history_update(
+            db_bp.file_task_history_update(
                 history_id=row["ID_HISTORY"],
                 IS_PAYLOAD_DELETED=1,
                 DT_PAYLOAD_DELETED=datetime.now(),

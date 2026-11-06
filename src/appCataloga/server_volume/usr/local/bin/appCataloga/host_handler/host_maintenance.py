@@ -22,7 +22,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
+
+import config as k
+from shared import tools
 
 from host_handler import host_connectivity
 
@@ -538,6 +541,242 @@ def run_host_check_all_batch(
     return checked
 
 
+def cleanup_stale_host_locks(
+    db: dbHandlerBKP,
+    *,
+    log: logger_type,
+    threshold_seconds: int,
+) -> None:
+    """Recover abandoned host reservations and request a new connection check.
+
+    Args:
+        db (dbHandlerBKP): Operational persistence session.
+        log (logger_type): Maintenance logger for per-host failures and long locks.
+        threshold_seconds (int): Busy age after which a dead owner can be reclaimed;
+            the no-task grace and transient SFTP cooldown retain their own limits.
+
+    Returns:
+        None. Preserve live owners and recent cooldowns. Release an eligible
+        reservation only when its observed PID and timestamp still match, then
+        enqueue a connection check. A failed host does not stop the remaining sweep.
+
+    Raises:
+        psycopg.Error: If reading the maintenance snapshot fails. Per-host write
+            failures are logged and the sweep continues.
+    """
+    now = datetime.utcnow()
+    rows = db.host_list_busy_with_task_state(
+        task_status=k.TASK_RUNNING,
+        host_task_type=k.HOST_TASK_PROCESSING_TYPE,
+    )
+    for row in rows:
+        host_id = cast(int, row["ID_HOST"])
+        busy_since = cast(datetime | None, row["DT_BUSY"])
+        pid = cast(int | None, row["NU_PID"])
+        file_running = row["FILE_RUNNING"]
+        host_processing_running = row["HOST_PROCESSING_RUNNING"]
+        if busy_since is None:
+            elapsed = float("inf")
+        else:
+            elapsed = (now - busy_since).total_seconds()
+        release = False
+        if (
+            pid == k.HOST_TRANSIENT_BUSY_PID
+            and elapsed <= k.SFTP_BUSY_COOLDOWN_SECONDS
+        ):
+            continue
+        if pid == k.HOST_TRANSIENT_BUSY_PID:
+            release = True
+        elif not file_running and (not host_processing_running):
+            release = elapsed > k.HOST_CLEANUP_NO_TASK_GRACE_SEC
+        elif elapsed > threshold_seconds and (
+            pid in (None, k.HOST_UNLOCKED_PID) or not tools.pid_exists(pid)
+        ):
+            release = True
+        elif elapsed > threshold_seconds:
+            log.warning_event(
+                "db_long_running_lock",
+                operation="host_cleanup_stale_locks",
+                table="HOST",
+                host_id=host_id,
+                owner_pid=pid,
+                busy_for_sec=round(elapsed, 1),
+            )
+        if not release:
+            continue
+        try:
+            if not db.host_release_reservation(
+                host_id=host_id,
+                owner_pid=pid,
+                busy_since=busy_since,
+            ):
+                continue
+        except Exception as e:
+            log.error_event(
+                "db_update_failed",
+                operation="host_cleanup_stale_locks",
+                table="HOST",
+                host_id=host_id,
+                error=type(e).__name__,
+            )
+            continue
+        try:
+            db.host_task_enqueue(
+                host_id=host_id,
+                task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
+                task_status=k.TASK_PENDING,
+                filter_dict=k.NONE_FILTER,
+            )
+        except Exception as e:
+            log.error_event(
+                "db_insert_failed",
+                operation="host_cleanup_queue_connection_check",
+                table="HOST_TASK",
+                host_id=host_id,
+                error=type(e).__name__,
+            )
+
+
+def cleanup_stale_operational_tasks(
+    db: dbHandlerBKP,
+    *,
+    log: logger_type,
+    stale_after_seconds: int,
+) -> None:
+    """Recover stale host tasks using process liveness and host ownership.
+
+    Args:
+        db (dbHandlerBKP): Operational persistence session.
+        log (logger_type): Maintenance logger for isolated per-task failures.
+        stale_after_seconds (int): Minimum RUNNING age before owner checks;
+            missing timestamps count as stale. PENDING timestamps are normalized.
+
+    Returns:
+        None. Requeue eligible stale tasks and release only stale host owners,
+        comparing the reservation's observed PID and timestamp before release.
+        Active matching owners are preserved, including long-running tasks.
+
+    Raises:
+        psycopg.Error: If reading tasks and host state fails. Individual recovery
+            failures are logged without aborting the remaining sweep.
+    """
+    now = datetime.utcnow()
+    task_types = (
+        k.HOST_TASK_CHECK_TYPE,
+        k.HOST_TASK_PROCESSING_TYPE,
+        k.HOST_TASK_CHECK_CONNECTION_TYPE,
+        k.HOST_TASK_BACKLOG_CONTROL_TYPE,
+        k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+        k.HOST_TASK_INTERACTIVE_CHECK_TYPE,
+    )
+    rows = db.host_task_list_with_host_state(
+        task_types=task_types,
+        task_statuses=(k.TASK_PENDING, k.TASK_RUNNING),
+    )
+    for row in rows:
+        task_id = cast(int, row["ID_HOST_TASK"])
+        host_id = cast(int, row["FK_HOST"])
+        status = row["NU_STATUS"]
+        task_started_at = cast(datetime | None, row["DT_HOST_TASK"])
+        task_pid = cast(int | None, row["NU_PID"])
+        host_is_busy = bool(row["IS_BUSY"])
+        host_owner_pid = cast(int | None, row["HOST_OWNER_PID"])
+        if status == k.TASK_PENDING and task_started_at is None:
+            try:
+                db.host_task_update(
+                    task_id=task_id,
+                    DT_HOST_TASK=now,
+                    NA_MESSAGE="Operational HOST_TASK timestamp normalized by janitor for reservation TTL control",
+                )
+            except Exception as e:
+                log.error_event(
+                    "db_update_failed",
+                    operation="host_task_cleanup_normalize_pending",
+                    table="HOST_TASK",
+                    task_id=task_id,
+                    host_id=host_id,
+                    error=type(e).__name__,
+                )
+            continue
+        if status != k.TASK_RUNNING:
+            continue
+        elapsed = (
+            float("inf")
+            if task_started_at is None
+            else (now - task_started_at).total_seconds()
+        )
+        if elapsed <= stale_after_seconds:
+            continue
+        task_pid_alive = bool(task_pid) and tools.pid_exists(task_pid)
+        host_owner_alive = bool(host_owner_pid) and tools.pid_exists(
+            host_owner_pid
+        )
+        if host_is_busy and task_pid_alive and (host_owner_pid == task_pid):
+            continue
+        reasons = []
+        if not host_is_busy:
+            reasons.append("HOST_NOT_BUSY")
+        if task_pid in (None, k.HOST_UNLOCKED_PID):
+            reasons.append("TASK_PID_MISSING")
+        elif not task_pid_alive:
+            reasons.append("TASK_PID_STALE")
+        if host_is_busy and host_owner_pid not in (None, k.HOST_UNLOCKED_PID):
+            if not host_owner_alive:
+                reasons.append("HOST_PID_STALE")
+            elif (
+                task_pid not in (None, k.HOST_UNLOCKED_PID)
+                and host_owner_pid != task_pid
+            ):
+                reasons.append("HOST_PID_MISMATCH")
+        elif host_is_busy:
+            reasons.append("HOST_PID_MISSING")
+        if not reasons:
+            reasons.append("STALE_RUNNING_TTL_EXPIRED")
+        try:
+            db.host_task_update(
+                task_id=task_id,
+                NU_STATUS=k.TASK_PENDING,
+                DT_HOST_TASK=now,
+                NA_MESSAGE=f"Stale operational HOST_TASK recovered by janitor ({', '.join(reasons)})",
+            )
+        except Exception as e:
+            log.error_event(
+                "db_update_failed",
+                operation="host_task_cleanup_recover_running",
+                table="HOST_TASK",
+                task_id=task_id,
+                host_id=host_id,
+                error=type(e).__name__,
+            )
+            continue
+        should_release_host = host_is_busy and (
+            host_owner_pid in (None, k.HOST_UNLOCKED_PID)
+            or not host_owner_alive
+            or (
+                task_pid not in (None, k.HOST_UNLOCKED_PID)
+                and host_owner_pid == task_pid
+                and (not task_pid_alive)
+            )
+        )
+        if not should_release_host:
+            continue
+        try:
+            db.host_release_reservation(
+                host_id=host_id,
+                owner_pid=host_owner_pid,
+                busy_since=cast(datetime | None, row["DT_BUSY"]),
+            )
+        except Exception as e:
+            log.error_event(
+                "db_update_failed",
+                operation="host_task_cleanup_release_host_lock",
+                table="HOST",
+                task_id=task_id,
+                host_id=host_id,
+                error=type(e).__name__,
+            )
+
+
 def run_periodic_host_cleanup(
     *,
     db: dbHandlerBKP,
@@ -554,12 +793,22 @@ def run_periodic_host_cleanup(
 
     Each step is logged and isolated so one cleanup failure does not hide the
     other or abort the rest of the maintenance loop.
+
+    Args:
+        db (dbHandlerBKP): Operational persistence session.
+        log (logger_type): Maintenance logger for each isolated failure.
+        task_stale_after_sec (int): RUNNING task age before owner checks.
+        host_busy_timeout_sec (int): BUSY age before stale-owner recovery.
+
+    Returns:
+        None. Run task recovery before host-lock recovery; log failures and
+        continue to the independent step.
     """
     try:
         # Step 1: recover HOST_TASK rows that were left pending or running by
         # crashed workers so the queue does not stall indefinitely.
-        db.host_task_cleanup_stale_operational_tasks(
-            stale_after_seconds=task_stale_after_sec
+        cleanup_stale_operational_tasks(
+            db=db, log=log, stale_after_seconds=task_stale_after_sec
         )
     except Exception as e:
         log.error_event(
@@ -572,8 +821,8 @@ def run_periodic_host_cleanup(
     try:
         # Step 2: release HOST.IS_BUSY locks whose owner process no longer
         # exists, then let orchestration reconcile safely afterwards.
-        db.host_cleanup_stale_locks(
-            threshold_seconds=host_busy_timeout_sec
+        cleanup_stale_host_locks(
+            db=db, log=log, threshold_seconds=host_busy_timeout_sec
         )
     except Exception as e:
         log.error_event(

@@ -92,19 +92,19 @@ class FakeTaskDB:
         self.file_task_updates.append(kwargs)
         return {"success": True, "rows_affected": 1, "updated_fields": kwargs}
 
-    def file_history_update(self, **kwargs):
+    def file_task_history_update(self, **kwargs):
         self.file_history_updates.append(kwargs)
 
-    def queue_host_task(self, **kwargs):
+    def host_task_enqueue(self, **kwargs):
         self.queued_tasks.append(kwargs)
 
-    def request_host_summary_refresh(self, **_kwargs):
+    def host_request_summary_refresh(self, **_kwargs):
         return None
 
     def file_task_delete(self, *_args, **_kwargs):
         return True
 
-    def file_history_delete(self, **_kwargs):
+    def file_task_history_delete(self, **_kwargs):
         return True
 
 
@@ -472,9 +472,9 @@ class BackupPriorityTests(unittest.TestCase):
 
     def test_read_next_task_requests_rotating_current_year_backups(self) -> None:
         db = MagicMock(spec=backup_worker.dbHandlerBKP)
-        db.read_file_task.return_value = None
+        db.file_task_read.return_value = None
         self.assertIsNone(backup_worker._read_next_task(db))
-        db.read_file_task.assert_called_once_with(
+        db.file_task_read.assert_called_once_with(
             task_status=backup_worker.k.TASK_PENDING,
             task_type=backup_worker.k.FILE_TASK_BACKUP_TYPE,
             check_host_busy=True,

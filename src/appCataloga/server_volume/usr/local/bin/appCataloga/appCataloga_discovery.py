@@ -140,8 +140,8 @@ def _stream_discovery_batches(
         host_id=task["host_id"],
         hostname=task["hostname"],
         filter_obj=host_filter,
-        callBackCheckFile=db.filter_existing_file_batch,
-        callBackGetLastDBDate=db.get_last_discovery,
+        callBackCheckFile=db.file_task_history_filter_existing_batch,
+        callBackGetLastDBDate=db.host_read_last_discovery,
         batch_size=k.DISCOVERY_BATCH_SIZE,
     ):
         db.file_task_create(
@@ -150,7 +150,7 @@ def _stream_discovery_batches(
             task_type=k.FILE_TASK_DISCOVERY,
             task_status=k.TASK_DONE,
         )
-        db.file_history_create(
+        db.file_task_history_create(
             host_id=task["host_id"],
             file_metadata=batch,
             task_type=k.FILE_TASK_DISCOVERY,
@@ -193,7 +193,7 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
     )
 
     queue_started_at = time.monotonic()
-    db.queue_host_task(
+    db.host_task_enqueue(
         host_id=task["host_id"],
         task_type=k.HOST_TASK_BACKLOG_CONTROL_TYPE,
         task_status=k.TASK_PENDING,
@@ -291,7 +291,7 @@ def _finalize_success(
         )
     if processed > 0:
         try:
-            db.request_host_summary_refresh(
+            db.host_request_summary_refresh(
                 host_id=task["host_id"],
                 reason="discovery_completed",
             )
@@ -377,7 +377,7 @@ def _finalize_error(
     # AUTH joins the same path so credential problems pass through too.
     if err.stage in {k.STAGE_AUTH, k.STAGE_CONNECT, k.STAGE_SSH}:
         try:
-            db.queue_host_task(
+            db.host_task_enqueue(
                 host_id=task["host_id"],
                 task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
                 task_status=k.TASK_PENDING,

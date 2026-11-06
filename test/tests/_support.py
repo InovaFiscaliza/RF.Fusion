@@ -12,8 +12,11 @@ from __future__ import annotations
 import importlib.util
 import importlib
 import sys
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from types import ModuleType
+from unittest.mock import patch
 
 
 APP_ROOT = Path("/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga")
@@ -71,6 +74,52 @@ def load_module_from_path(module_name: str, path: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_test_config() -> ModuleType:
+    """Load central constants without reading the runtime credential file.
+
+    Args:
+        None.
+
+    Returns:
+        ModuleType: Actual appCataloga configuration with synthetic database
+        credentials. The module is not registered globally as config.
+    """
+    with patch(
+        "runpy.run_path",
+        return_value={"DB_USER_NAME": "unit-test", "DB_PASSWORD": "unit-test"},
+    ):
+        return load_module_from_path(
+            "appcataloga_test_config", str(CONFIG_ROOT / "config.py")
+        )
+
+
+@contextmanager
+def bind_test_config() -> Generator[ModuleType, None, None]:
+    """Bind synthetic configuration without unloading imported native dependencies.
+
+    Snapshotting all of sys.modules can remove newly loaded extension modules
+    that cannot be initialized twice. Restore only the configuration binding;
+    never read the runtime credential file to import a database handler in tests.
+
+    Args:
+        None.
+
+    Returns:
+        Generator[ModuleType, None, None]: Context yielding application constants
+        with synthetic credentials, then restoring the prior config binding.
+    """
+    previous = sys.modules.get("config")
+    config = load_test_config()
+    sys.modules["config"] = config
+    try:
+        yield config
+    finally:
+        if previous is None:
+            sys.modules.pop("config", None)
+        else:
+            sys.modules["config"] = previous
 
 
 @contextmanager

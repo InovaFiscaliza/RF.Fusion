@@ -11,8 +11,8 @@ HOST_TASK rows:
     - background oldest-first ICMP sweep for stale HOST snapshots
 
 Queue-driven HOST_TASK processing stays in `appCataloga_host_check.py`. This
-daemon intentionally does not create new HOST_TASK rows; it resolves recurring
-checks directly to avoid mixing scheduler work with queue work.
+daemon resolves recurring probes directly. Recovering an abandoned reservation
+may enqueue a connection-check HOST_TASK so queue-driven work can resume safely.
 """
 
 from __future__ import annotations

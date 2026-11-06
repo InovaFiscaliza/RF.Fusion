@@ -1,4 +1,1 @@
-"""Database handler package for appCataloga runtime domains."""
-
-from .dbHandlerBase import DBHandlerBase
-__all__ = ["DBHandlerBase"]
+"""PostgreSQL persistence primitives for appCataloga domain handlers."""

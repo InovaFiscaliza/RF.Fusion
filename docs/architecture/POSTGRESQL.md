@@ -1,7 +1,11 @@
 # Contrato inicial PostgreSQL
 
-O PostgreSQL é uma instalação paralela, não uma migração nem substituição dos
-bancos MariaDB. Para manter as consultas que relacionam os modelos, os quatro
+O PostgreSQL permanece uma instalação paralela aos bancos MariaDB em produção.
+A adaptação do código inclui a base `DbHandler` e o handler operacional
+`dbHandlerBKP` do appCataloga, conforme seu
+[contrato de migração](../../src/appCataloga/.instructions/ARCHITECTURE.md#23-base-postgresql-e-migração-por-lotes).
+Isso ainda não integra workers ou consumidores existentes. Para manter as
+consultas que relacionam os modelos, os quatro
 bancos lógicos são schemas `"BPDATA"`, `"RFDATA"`, `"RFFUSION_SUMMARY"` e
 `"WEBFUSION"` dentro de um único banco PostgreSQL. Schemas, tabelas, views e
 colunas usam identificadores delimitados por aspas duplas para preservar as

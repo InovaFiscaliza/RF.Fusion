@@ -5,6 +5,18 @@ vigentes continuam nas instruções dos subprojetos e em `docs/architecture/`.
 Cada proposta exige definição de escopo, atualização arquitetural e validação
 antes de implementação. Remover itens concluídos; o histórico fica no Git.
 
+## Migração para PostgreSQL
+
+[Planejamento da migração para PostgreSQL](PLANEJAMENTO_POSTGRESQL.md).
+
+Situação: Fase 1 iniciada pela base PostgreSQL do appCataloga; demais lotes
+pendentes de execução. Divide o trabalho em
+compatibilidade e organização da camada de dados (Fase 1), seguida de migração
+de dados, taxonomia e revisão do SUMMARY e seus consumidores (Fase 2).
+Envolve appCataloga, WebFusion, API appAnalise e integração operacional, com
+MATLAB como consumidor da API e DBeaver para debug. Inclui prova de conceito de
+acesso sem senha nas aplicações ao final da Fase 1.
+
 ## Ingestão manual e drive-test
 
 [Planejamento da ingestão convencional, manual e de drive-test](PLANEJAMENTO_DRIVE_TEST.md).

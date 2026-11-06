@@ -192,7 +192,7 @@ def _queue_host_task(
 ) -> dict[str, Any]:
     """Queue the HOST_TASK requested by the gateway client."""
     try:
-        return db.queue_host_task(
+        return db.host_task_enqueue(
             host_id=host_id,
             task_type=task_type,
             task_status=k.TASK_PENDING,

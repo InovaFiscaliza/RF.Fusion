@@ -228,7 +228,7 @@ def cleanup_hosts_and_tasks() -> None:
             )
             db.host_task_suspend_by_host(host_id)
             db.file_task_suspend_by_host(host_id)
-            db.file_history_suspend_by_host(host_id)
+            db.file_task_history_suspend_by_host(host_id)
 
         log.entry(
             f"[CLEANUP] Reasserted OFFLINE suspension invariants for "

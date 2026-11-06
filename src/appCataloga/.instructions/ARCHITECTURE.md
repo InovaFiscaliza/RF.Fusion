@@ -59,10 +59,12 @@ legados sem classificação. Não aplicar o insert de sites fixos a dados móvei
 
 ### 2.2 Acesso e transações
 
-- Somente handlers de banco importam `mysql.connector` e abrem conexões
-  MariaDB/MySQL com `mysql.connector.connect(...)`. Não introduzir outro driver.
+- A camada PostgreSQL usa Psycopg 3, conforme a seção 2.3. O código MariaDB
+  movido para `db/backup/` é referência da migração, sem integração automática
+  com a nova base. Não misturar drivers em uma mesma operação.
 - Chamadores usam métodos públicos de handlers concretamente tipados.
-  `_select_rows`, `_insert_row`, `_select_raw`, `_connect` e similares são internos.
+  `_select_row`, `_select_batch`, `_insert_row`, `_select_raw` e similares são protegidos para
+  implementação dos handlers específicos, sem uso direto pelo domínio.
   Uma consulta nova exige método público com nome da operação de domínio.
 - Escritas relacionadas em duas ou mais tabelas usam `begin_transaction()`,
   `commit()` e `rollback()` em falha, preservando o resultado atômico.
@@ -71,6 +73,186 @@ legados sem classificação. Não aplicar o insert de sites fixos a dados móvei
 - Locks MariaDB são vinculados à conexão. Um lock mantido durante o processo
   exige preservar a conexão proprietária até a liberação.
 
+### 2.3 Base PostgreSQL e migração por lotes
+
+`db/dbHandlerBase.py` define `DbHandler`, com Psycopg 3.3.8. A migração começa
+pela base; os handlers de domínio e seus chamadores serão convertidos em lotes
+próprios. A existência da base não torna os workers executáveis em PostgreSQL.
+
+A API pública de ciclo de vida é `connect()`, `close()`, `begin_transaction()`,
+`commit()`, `rollback()` e a propriedade `in_transaction`. `connect()` pode ser
+chamado no início do processo para validar a sessão; operações de banco também
+o chamam sob demanda. Retorna a sessão administrada pelo handler, sem transferir
+sua propriedade nem autorizar SQL ou controle transacional direto nos chamadores.
+Os métodos de CRUD e execução com `_` são protegidos para subclasses. Construtores
+SQL, validações, gerenciamento de cursor e relato de falhas são detalhes internos
+da base, sem contrato de uso externo. No arquivo, manter a API pública primeiro,
+seguida das operações de persistência e dos detalhes de implementação.
+
+A validação de tipos ocorre nas fronteiras que recebem dados externos.
+Métodos internos e protegidos confiam nas assinaturas tipadas, sem repetir
+`isinstance` para cada parâmetro. Mantêm verificações semânticas de nomes,
+campos permitidos, duplicação, operadores, limites e estado transacional.
+Valores de filtros tipados como `object` exigem validação de formato conforme
+o operador, sem enfraquecer os demais contratos para `Any`.
+
+A interface protegida de persistência tem pares `_select_row`/`_select_batch`,
+`_insert_row`/`_insert_batch`, `_update_row`/`_update_batch`,
+`_upsert_row`/`_upsert_batch` e `_delete_row`/`_delete_batch`.
+As assinaturas usam `table` primeiro, depois `data` nas escritas e `where`
+quando houver seleção de registros. INSERT/UPSERT individuais recebem um
+mapeamento em `data`; suas variantes em lote recebem uma sequência de
+mapeamentos com o mesmo nome. UPDATE em lote recebe um único mapeamento de
+atribuições aplicado ao conjunto filtrado. Opções são nomeadas após `*`:
+`columns` para projeção, `skip_duplicates` para INSERT com `ON CONFLICT DO NOTHING`
+e `conflict_columns` para o alvo de conflito do UPSERT.
+`batch_size` controla apenas os blocos de INSERT/UPSERT em lote. SELECT usa
+`limit`; UPDATE/DELETE em lote executam uma instrução para o conjunto filtrado.
+Leitura, atualização e exclusão `row` exigem todos os campos de
+`PRIMARY_KEY_<TABELA>`, declarada na subclasse como uma tupla ordenada de nomes
+e correspondente à chave primária real no PostgreSQL. Não aceitam filtros de
+intervalo, chave incompleta ou valores nulos como identificação de uma linha.
+Essa declaração não é descoberta de schema; sua correspondência com as
+constraints pertence à migração e aos testes de integração do handler.
+
+SELECT em lote aceita filtros e retorna uma lista. INSERT e UPSERT em lote
+recebem linhas com o mesmo conjunto de colunas e preservam atomicidade entre
+todos os blocos. UPDATE em lote aplica os mesmos valores ao conjunto filtrado;
+DELETE em lote remove o conjunto filtrado. Ambos exigem filtros explícitos.
+INSERT em lote retorna contagem; IDs gerados são obtidos por `RETURNING` na
+operação individual, sem inferência por sequência.
+
+`_execute` e `_execute_batch` centralizam execução parametrizada, cursores e
+atomicidade dos lotes, incluindo SQL específico dos handlers. `_select_raw`
+atende JOINs e agregações. `_build_insert_query` compartilha a construção do
+INSERT entre as operações individuais, em lote e UPSERT. `_upsert_row` delega
+a `_upsert_batch` com uma linha; a cláusula de conflito é construída no próprio
+método de lote. A execução isolada de UPSERT individual também usa a transação
+do executor de lotes; uma transação já existente permanece sob controle do
+chamador. `_prepare_batch_values` valida a homogeneidade e alinha valores às colunas.
+Cada operação resolve a tabela e valida as colunas antes da composição do INSERT.
+O construtor recebe o identificador qualificado da tabela e a sequência de colunas
+já validadas e retorna apenas a instrução com placeholders. Os valores são
+alinhados separadamente, sem executar SQL, abrir cursores ou resolver transações
+durante a construção. Nas operações por chave primária, manter a validação dos
+nomes da chave como colunas literais antes da interpretação de operadores no
+filtro da operação de conjunto. Essas verificações têm responsabilidades distintas.
+
+- A conexão recebe `conninfo` explícito, incluindo `dbname`, sem usar as
+  credenciais MariaDB da configuração central para conectar. Padrões de execução,
+  como `DB_BATCH_SIZE`, pertencem ao `config.py` central, importado como `k`.
+  Seu mecanismo atual de leitura de `.secret` permanece até a revisão prevista
+  de autenticação. Não registrar conninfo, SQL, parâmetros nem
+  mensagens de erro que possam conter dados sensíveis. Não criar arquivos de
+  credenciais. A avaliação de `peer` permanece no final da Fase 1.
+- O schema é explícito e separado do banco de conexão; identificadores usam
+  `psycopg.sql.Identifier`. Resultados são dicionários com a caixa preservada.
+  Tabelas e campos são autorizados pelas declarações dos handlers; não há regex
+  adicional para nomes. Cada nome é delimitado como um identificador literal,
+  sem interpretar aliases, expressões ou pontos como fragmentos SQL.
+- O logger recebido tem o tipo `shared.logging_utils.log`; a camada de banco
+  não redefine sua interface. Ela informa apenas contexto e classificação de
+  falhas SQL, sem duplicar formatação, destinos ou políticas do logger.
+- A própria base concentra os métodos internos de validação de nomes e campos,
+  construção de filtros, ordenação e UPSERT. Não há módulo separado de SQL genérico.
+- Handlers específicos declaram `VALID_FIELDS_<TABELA>` como conjuntos de nomes
+  (`set[str]`); coleções imutáveis também são aceitas, sem obrigatoriedade.
+  A base rejeita tabelas e campos não declarados; a autorização de escrita por
+  operação continua nos métodos públicos do domínio e nos privilégios SQL.
+  Essas declarações representam o contrato suportado pelo handler, não um cache
+  do catálogo PostgreSQL. Atualizá-las junto das migrações que alterem esse contrato;
+  não descobrir e liberar novas colunas automaticamente.
+- CRUD genérico é interno. JOINs e expressões especiais usam SQL PostgreSQL
+  explícito nos handlers específicos, por consultas `Composable` de confiança
+  e valores parametrizados. Não portar o parser de JOINs ou `#CUSTOM#` legado.
+- Cada operação isolada usa autocommit; operações em lote são atômicas.
+  `begin_transaction`, `commit` e `rollback` controlam transações explícitas.
+  Operações internas nunca encerram a transação do chamador. CRUD e executores
+  não recebem argumento `commit`: o estado estabelecido por `begin_transaction()`
+  define a participação na transação. Sem transação explícita, uma escrita
+  individual usa autocommit e um lote cria sua própria transação atômica.
+- Falhas SQL propagam. Uma transação abortada exige rollback; não recuperar
+  silenciosamente a sessão. Não reconectar nem repetir SQL automaticamente:
+  perda de sessão pode invalidar locks e tornar o resultado do commit incerto.
+- A base não publica invalidações nem conhece SUMMARY. A publicação BKP segue
+  a seção 2.4; a publicação RFM será definida antes da conversão desse handler.
+- IDs são obtidos por `RETURNING`, sem inferir intervalos de sequências.
+  Contagens de UPSERT seguem PostgreSQL, sem o código MariaDB de duas linhas
+  afetadas para uma atualização.
+
+Conservar o conteúdo de `db/backup/` nesta etapa, conforme solicitado para a
+migração. Ele não é uma segunda implementação suportada pelo runtime novo.
+
+### 2.4 Handler BKP PostgreSQL
+
+`db/dbHandlerBKP.py` implementa o domínio operacional sobre `DbHandler`.
+O argumento `database` do construtor identifica o schema, preservando o nome
+usado pelos chamadores; `conninfo` é obrigatório e seleciona o banco PostgreSQL.
+Não usar configuração ou credenciais MariaDB como fallback. A conexão dos
+workers será adaptada em lote próprio; a criação deste handler não os ativa.
+
+- Métodos públicos usam entidade, ação e qualificação: `host_*`, `host_task_*`,
+  `file_task_*` e `file_task_history_*`. `list` retorna coleções; `read` seleciona
+  um registro. Exemplos: `host_task_list`, `host_task_enqueue`, `file_task_read`,
+  `file_task_list_for_backlog` e `file_task_history_filter_existing_batch`.
+  Renomear os chamadores junto da implementação, sem aliases concorrentes.
+  Refresh operacional usa `host_request_summary_refresh`, sem criar tarefas
+  para recalcular estatísticas no cadastro de hosts.
+- Organizar o handler em blocos HOST, HOST_TASK, FILE_TASK e FILE_TASK_HISTORY.
+  Cada bloco reúne métodos públicos e helpers específicos da entidade; suporte
+  compartilhado entre entidades e publicação do Summary ficam no final. Essa
+  organização é própria do BKP; a ordem da base continua definida na seção 2.3.
+- Janitors pertencem a `host_handler/host_maintenance.py`: esse domínio verifica
+  PIDs, aplica TTLs, decide recuperação e solicita novas checagens. O BKP fornece
+  snapshots e a liberação condicional por PID/timestamp observado, sem executar
+  o ciclo de manutenção. Tipos e estados consultados são argumentos explícitos.
+- O worker `appCataloga_backlog_management.py` interpreta os filtros, define a
+  ordenação e escolhe o prefixo que cabe no orçamento. Ele controla a transação
+  entre leitura com lock, escrita e publicação. O BKP recebe filtros, dados e
+  opções tipadas já preparados; não instancia `Filter` nem decide volume ou
+  transições de backlog. Não repetir a publicação depois do commit.
+- Usar o CRUD da base nas operações que ele representa. Passar seus argumentos
+  por nome e preparar dados e filtros em variáveis antes da chamada. SQL
+  específico fica restrito a JOINs, agregações, expressões de atualização,
+  relógio do banco e conflitos por expressão; valores continuam parametrizados.
+  A base oferece `trim_ne` (TRIM seguido de desigualdade), `ilike`, ordenação
+  com `NULLS FIRST`/`NULLS LAST` e `for_update=True` em SELECT de conjunto.
+  O lock de leitura exige transação explícita e dura até seu commit ou rollback.
+- Preservar as chaves `HOST__*`, `HOST_TASK__*` e `FILE_TASK__*` dos selects
+  com JOIN, a tupla de seleção de arquivos e os dicionários de atualização.
+  `FILTER` usa JSON nativo na persistência; a seleção de host tasks fornece
+  também `host_filter` normalizado.
+- As quatro tabelas declaram campos e chave primária. Flags continuam `smallint`
+  conforme o schema existente; gravar 0/1 e comparar inteiros no SQL.
+- A identidade natural de arquivos corresponde aos índices únicos existentes:
+  host e SHA-256 do caminho/nome. O UPSERT específico usa essas expressões em
+  `ON CONFLICT`; a base genérica continua limitada a colunas de conflito.
+  Timestamps fornecidos pelo chamador são preservados no conflito.
+- Operações compostas abrem uma transação quando isoladas e participam daquela
+  já aberta pelo chamador. Nunca finalizam uma transação externa. Erros propagam;
+  os janitors do domínio podem registrar falhas individuais e continuar os demais itens.
+- Seleção seguida de reserva usa atualização condicional de `HOST.IS_BUSY`,
+  respeitando PID, cooldown e elegibilidade. Claims de tasks continuam usando
+  estado esperado; a seleção não finaliza a task em nome do entrypoint.
+  A composição das seleções só aceita templates SQL controlados e identificadores
+  delimitados. Valores de filtro, inclusive extensão, seguem separados por binding.
+  Opções de prioridade nunca são tratadas como fragmentos SQL recebidos do chamador.
+- Retomadas de HOST_TASK e FILE_TASK mantêm seus filtros visíveis nos respectivos
+  métodos, sem um dispatcher que escolha regras de negócio pelo nome da tabela.
+  Tipos de host tasks dependentes de conectividade usam
+  `config.HOST_TASK_CONNECTIVITY_TYPES`.
+- O BKP publica escopos host/mês diretamente no outbox PostgreSQL. O UPSERT
+  renova também `ID_OUTBOX` em conflitos para preservar a leitura por checkpoint.
+  Em transação externa, a publicação usa savepoint, participa do mesmo commit e
+  pode falhar sem abortar as escritas operacionais. Falhas de publicação geram
+  aviso sanitizado; a reconciliação periódica permanece a recuperação prevista.
+- Filtros de backlog são traduzidos para predicados parametrizados; não executar
+  `extra_sql` ou expressões SQL recebidas por kwargs. Respeitar os filtros
+  originais também na gravação do prefixo selecionado pelo worker.
+- Imports de compatibilidade de `shared/__init__.py` são resolvidos sob demanda.
+  Importar utilitários de shared não carrega domínio, entrypoints ou handlers
+  analíticos ainda não migrados. Os nomes de compatibilidade são preservados.
+
 ## 3. Categorias de processo
 
 | Categoria | Arquivos | Controle |
@@ -78,7 +260,7 @@ legados sem classificação. Não aplicar o insert de sites fixos a dados móvei
 | Gateway | `appCataloga.py` | Selector TCP; despacha requisições para filas, sem claim |
 | Task worker | `appCataloga_host_check.py`, `appCataloga_discovery.py`, `appCataloga_backlog_management.py`, `appCataloga_file_bkp.py`, `appCataloga_file_bin_process_appAnalise.py` | Lê, faz claim e finaliza uma task |
 | Manutenção | `appCataloga_host_maintenance.py`, `appCataloga_garbage_collector.py`, `appCataloga_summary_database.py` | Temporizador ou cursor/checkpoint, sem claim de task |
-| Utilitários | `utils/bootstrap_paths.py`, `utils/safe_stop.py` e ferramentas de reparo | Execução pontual; não são daemons |
+| Utilitários | `utils/bootstrap_paths.py`, `utils/safe_stop.py` | Suporte aos entrypoints e parada segura; não são daemons |
 
 A anatomia e as assinaturas de fila abaixo valem apenas para task workers.
 Gateway e manutenção preservam os contratos gerais de início, sinais e parada,
@@ -161,7 +343,8 @@ Invariantes:
 | Contexto e bootstrap de sessão SSH | `host_handler/host_context.py` |
 | Lock BUSY e estado operacional | `host_handler/host_runtime.py` |
 | SSH/SFTP e transferência | `host_handler/host_ssh_utils.py` |
-| Probes de manutenção | `host_handler/host_maintenance.py` |
+| Probes e políticas dos janitors | `host_handler/host_maintenance.py` |
+| Filtros, orçamento e transições de backlog | `appCataloga_backlog_management.py` |
 | Processamento e persistência analítica appAnalise | `appAnalise/processing_bin.py` |
 | Parsing de payload | `appAnalise/payload_parser.py` |
 | Conexão com serviço appAnalise | `appAnalise/appAnalise_connection.py` |
@@ -172,7 +355,8 @@ Invariantes:
 | Erros, logs, metadados, filtros e geocoding | `shared/errors.py`, `logging_utils.py`, `file_metadata.py`, `filter.py`, `geolocation_utils.py` |
 | Constantes compartilhadas sem configuração | `shared/constants.py` |
 | Configuração e constantes do aplicativo | `config.py` |
-| SQL por banco | `db/dbHandlerBKP.py`, `dbHandlerRFM.py`, `dbHandlerSummary.py` |
+| SQL operacional PostgreSQL | `db/dbHandlerBKP.py` |
+| SQL analítico e Summary (referência MariaDB; conversão pendente) | `db/backup/dbHandlerRFM.py`, `dbHandlerSummary.py` |
 | Conexão e SQL genérico | `db/dbHandlerBase.py` |
 
 Uma nova extração de módulo exige decisão arquitetural explícita.

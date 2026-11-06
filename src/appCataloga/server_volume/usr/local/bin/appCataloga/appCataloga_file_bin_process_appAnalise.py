@@ -132,7 +132,7 @@ def _read_next_task(db_bp: dbHandlerBKP) -> dict | None:
     Raises:
         Exception: Propagates selection or context construction failures.
     """
-    result = db_bp.read_file_task(
+    result = db_bp.file_task_read(
         task_type=k.FILE_TASK_PROCESS_TYPE,
         task_status=k.TASK_PENDING,
         check_host_busy=False,
@@ -308,7 +308,7 @@ def _finalize_success(
     try:
         db_bp.begin_transaction()
         try:
-            history_result = db_bp.file_history_update(
+            history_result = db_bp.file_task_history_update(
                 host_id=task["host_id"],
                 task_type=k.FILE_TASK_PROCESS_TYPE,
                 host_file_name=task["host_file_name"],
@@ -368,7 +368,7 @@ def _finalize_success(
             )
 
     try:
-        db_bp.request_host_summary_refresh(
+        db_bp.host_request_summary_refresh(
             host_id=task["host_id"],
             reason="processing_completed",
         )
@@ -412,7 +412,7 @@ def _finalize_freeze(
             NA_MESSAGE=message,
             **structured,
         )
-        db_bp.file_history_update(
+        db_bp.file_task_history_update(
             task_type=k.FILE_TASK_PROCESS_TYPE,
             host_id=task["host_id"],
             host_file_path=task["host_path"],
@@ -443,7 +443,7 @@ def _finalize_freeze(
         )
 
     try:
-        db_bp.request_host_summary_refresh(
+        db_bp.host_request_summary_refresh(
             host_id=task["host_id"],
             reason="processing_frozen",
         )
@@ -495,7 +495,7 @@ def _write_task_error(
     structured = _error_fields(err, message)
     db_bp.begin_transaction()
     try:
-        history_result = db_bp.file_history_update(
+        history_result = db_bp.file_task_history_update(
             host_id=task["host_id"],
             task_type=k.FILE_TASK_PROCESS_TYPE,
             host_file_name=task["host_file_name"],
@@ -545,7 +545,7 @@ def _write_task_error(
         )
 
     try:
-        db_bp.request_host_summary_refresh(
+        db_bp.host_request_summary_refresh(
             host_id=task["host_id"],
             reason="processing_error",
         )

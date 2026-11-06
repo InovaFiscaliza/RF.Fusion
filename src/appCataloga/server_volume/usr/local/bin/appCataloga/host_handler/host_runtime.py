@@ -221,7 +221,7 @@ def run_update_statistics(
     potentially expensive aggregation in its own loop.
     """
     started_at = time.monotonic()
-    db.request_host_summary_refresh(
+    db.host_request_summary_refresh(
         host_id=task["host_id"],
         reason="legacy_host_statistics_task",
     )

@@ -139,7 +139,7 @@ class FakeDbBkp:
         self.task_deletes.append(kwargs)
         return self.delete_rows_affected
 
-    def file_history_update(self, **kwargs):
+    def file_task_history_update(self, **kwargs):
         self.history_updates.append(kwargs)
         return {
             "success": True,
@@ -152,7 +152,7 @@ class FakeDbBkp:
             raise self.host_update_error
         self.host_updates.append(kwargs)
 
-    def request_host_summary_refresh(self, **kwargs) -> None:
+    def host_request_summary_refresh(self, **kwargs) -> None:
         self.statistics_updates.append(kwargs)
 
 
@@ -1475,7 +1475,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         class FakeDbBkpMain(FakeDbBkp):
             last_instance = None
 
-            def read_file_task(self, **kwargs):
+            def file_task_read(self, **kwargs):
                 if getattr(self, "_read_once", False):
                     return None
                 self._read_once = True
@@ -1543,7 +1543,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 self._read_once = False
                 FakeDbBkpMain.last_instance = self
 
-            def read_file_task(self, **kwargs):
+            def file_task_read(self, **kwargs):
                 if self._read_once:
                     return None
                 self._read_once = True
@@ -1643,7 +1643,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                     super().__init__()
                     self._read_once = False
 
-                def read_file_task(self, **kwargs):
+                def file_task_read(self, **kwargs):
                     if self._read_once:
                         return None
                     self._read_once = True
@@ -1710,7 +1710,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 self._read_once = False
                 FakeDbBkpMain.last_instance = self
 
-            def read_file_task(self, **kwargs):
+            def file_task_read(self, **kwargs):
                 if self._read_once:
                     return None
                 self._read_once = True
@@ -1824,7 +1824,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 self._read_once = False
                 FakeDbBkpMain.last_instance = self
 
-            def read_file_task(self, **kwargs):
+            def file_task_read(self, **kwargs):
                 if self._read_once:
                     return None
                 self._read_once = True
@@ -2156,7 +2156,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             def raise_statistics_refresh(**_kwargs) -> None:
                 raise RuntimeError("summary locked")
 
-            db_bp.request_host_summary_refresh = raise_statistics_refresh
+            db_bp.host_request_summary_refresh = raise_statistics_refresh
 
             task = {
                 "file_task_id": 102,
@@ -2259,7 +2259,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         def raise_statistics_refresh(**_kwargs) -> None:
             raise RuntimeError("summary locked")
 
-        db_bp.request_host_summary_refresh = raise_statistics_refresh
+        db_bp.host_request_summary_refresh = raise_statistics_refresh
 
         with patch.object(worker, "log", fake_log):
             with patch.object(worker.host_runtime, "record_gps_gnss_available") as record_signal:
@@ -2384,9 +2384,9 @@ class ProcessingPriorityTests(unittest.TestCase):
 
     def test_read_next_task_requests_newest_source_file(self) -> None:
         db = MagicMock(spec=worker.dbHandlerBKP)
-        db.read_file_task.return_value = None
+        db.file_task_read.return_value = None
         self.assertIsNone(worker._read_next_task(db))
-        db.read_file_task.assert_called_once_with(
+        db.file_task_read.assert_called_once_with(
             task_type=worker.k.FILE_TASK_PROCESS_TYPE,
             task_status=worker.k.TASK_PENDING,
             check_host_busy=False,

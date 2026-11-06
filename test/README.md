@@ -50,6 +50,28 @@ refresh do summary.
 
 ### `tests/db/`
 
+Durante a migração PostgreSQL, `DbHandler` e `dbHandlerBKP` possuem suítes
+independentes dos handlers MariaDB movidos para `db/backup/`:
+
+```bash
+/opt/conda/envs/appdata/bin/python -m unittest discover -s test/tests/db -p 'test_dbhandler_*postgres*.py' -v
+/opt/conda/envs/appdata/bin/python -m unittest discover -s test/tests/workers -p 'test_backlog_management_worker.py' -v
+/opt/conda/envs/appdata/bin/python -m unittest discover -s test/tests/workers -p 'test_host_maintenance_postgres.py' -v
+```
+
+Os testes unitários verificam composição SQL, validação, sessões e transações
+com doubles do driver. A integração real é selecionada explicitamente por
+`RFFUSION_TEST_PG_CONNINFO`, com banco descartável `rffusion_test_*`, conforme
+o [README da nova base](../src/appCataloga/server_volume/usr/local/bin/appCataloga/db/README.md#validação).
+Sem essa configuração, a integração é ignorada. A suíte legada abaixo depende
+da conversão dos módulos movidos e não valida automaticamente a nova base.
+O BKP verifica ainda JSON, flags `smallint`, índices de identidade, claims,
+cooldown, persistência de backlog e isolamento do outbox. As políticas de
+orçamento e recuperação de tasks/locks são validadas nas suítes dos workers,
+usando métodos públicos do handler e sem executar probes de rede.
+Sua integração usa o DDL operacional em schemas aleatórios e fixtures isoladas
+de outbox. A análise local de binding não substitui execução PostgreSQL.
+
 Testes de comportamento dos handlers de banco:
 
 - `dbHandlerBKP`

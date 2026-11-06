@@ -31,6 +31,8 @@ import os
 import sys
 import time
 from datetime import datetime
+from collections.abc import Mapping
+from typing import cast
 
 from utils.bootstrap_paths import bootstrap_app_paths
 
@@ -38,8 +40,9 @@ from utils.bootstrap_paths import bootstrap_app_paths
 PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 from db.dbHandlerBKP import dbHandlerBKP
+from db.dbHandlerBase import DbRow
 from server_handler import signal_runtime, sleep as runtime_sleep
-from shared import errors, logging_utils
+from shared import errors, filter, logging_utils, tools
 import config as k
 
 
@@ -135,16 +138,158 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     return False
 
 
-def _promote_backlog(db: dbHandlerBKP, task: dict) -> dict:
+def _update_backlog(
+    db: dbHandlerBKP,
+    *,
+    logger: logging_utils.log,
+    host_id: int,
+    task_filter: Mapping[str, object],
+    search_type: int,
+    search_status: int | list[int],
+    new_type: int,
+    new_status: int,
+) -> dict[str, int]:
+    """Choose a backlog slice and persist its transition in one transaction.
+
+    Args:
+        db (dbHandlerBKP): Operational persistence session.
+        logger (logging_utils.log): Filter diagnostics and transaction-failure logger.
+        host_id (int): Host whose existing queue may be moved.
+        task_filter (Mapping[str, object]): ALL/FILE/RANGE/LAST filter, optional
+            extension, ordering, and max_total_gb. NONE/REDISCOVERY select nothing.
+        search_type (int): Queue type required before the transition.
+        search_status (int | list[int]): Required current state or allowed states.
+        new_type (int): Queue type assigned to the selected rows.
+        new_status (int): Queue state assigned to the selected rows.
+
+    Returns:
+        dict[str, int]: rows_updated, moved_to_backup, moved_to_discovery, and
+        selected_total_kb. A bounded promotion stops at the first file that
+        exceeds the budget, preserving the ordered prefix. Zero selections do
+        not write or publish. Caller-owned transactions remain caller-owned.
+
+    Raises:
+        ValueError: If prepared predicates, ordering, or limits are invalid.
+        psycopg.Error: If locking, persistence, or a self-owned commit fails.
     """
-    Promote the selected discovery slice into backup work.
+    result = {
+        "rows_updated": 0,
+        "moved_to_backup": 0,
+        "moved_to_discovery": 0,
+        "selected_total_kb": 0,
+    }
+    parsed = filter.Filter(dict(task_filter), log=logger)
+    metadata = parsed.evaluate_database(host_id, search_type, search_status)
+    where_conditions = cast(DbRow | None, metadata.get("where"))
+    if not where_conditions:
+        return result
+    budget = cast(int | None, metadata.get("max_total_kb"))
+    limit = cast(int | None, metadata.get("limit"))
+    bounded = limit is not None or (
+        new_type == k.FILE_TASK_BACKUP_TYPE and budget is not None
+    )
+    owns_transaction = not db.in_transaction
+    if owns_transaction:
+        db.begin_transaction()
+    try:
+        selected: list[int] = []
+        if bounded:
+            direction = (
+                "ASC"
+                if parsed.data.get("sort_order")
+                == filter.Filter.SORT_OLDEST_FIRST
+                and parsed.data["mode"] != filter.Filter.MODE_LAST
+                else "DESC"
+            )
+            null_order = "NULLS FIRST" if direction == "ASC" else "NULLS LAST"
+            order_by = (
+                ("DT_FILE_CREATED_HOST", f"{direction} {null_order}"),
+                ("ID_FILE_TASK", direction),
+            )
+            if limit is not None and limit < 1:
+                raise ValueError("Backlog limit must be positive.")
+            candidates = db.file_task_list_for_backlog(
+                where=where_conditions,
+                order_by=order_by,
+                limit=limit,
+            )
+            for row in candidates:
+                size = max(0, cast(int, row["VL_FILE_SIZE_KB_HOST"]) or 0)
+                if new_type == k.FILE_TASK_BACKUP_TYPE and budget is not None:
+                    if result["selected_total_kb"] + size > budget:
+                        break
+                    result["selected_total_kb"] += size
+                selected.append(cast(int, row["ID_FILE_TASK"]))
+            where_conditions = {
+                **where_conditions,
+                "ID_FILE_TASK__in": selected,
+            }
+        if not bounded or selected:
+            data = {
+                "NU_TYPE": new_type,
+                "NU_STATUS": new_status,
+                "DT_FILE_TASK": datetime.utcnow(),
+                **errors.persisted_error_fields_from_handler(
+                    clear_when_empty=True
+                ),
+            }
+            prefix = tools.compose_message(
+                new_type, new_status, prefix_only=True
+            )
+            affected = db.file_task_update_backlog(
+                data=data,
+                where=where_conditions,
+                message_prefix=prefix,
+            )
+            result["rows_updated"] = affected
+            if new_type == k.FILE_TASK_BACKUP_TYPE:
+                result["moved_to_backup"] = affected
+            elif new_type == k.FILE_TASK_DISCOVERY:
+                result["moved_to_discovery"] = affected
+            if affected:
+                db.host_request_summary_refresh(
+                    host_id=host_id, reason="backlog_transition"
+                )
+    except Exception:
+        if owns_transaction:
+            try:
+                db.rollback()
+            except Exception as rollback_error:
+                logger.error_event(
+                    "db_rollback_failed",
+                    operation="backlog_transition",
+                    error=type(rollback_error).__name__,
+                )
+        raise
+    # A failed commit may already be durable; do not replay or roll it back blindly.
+    if owns_transaction:
+        db.commit()
+    return result
+
+
+def _promote_backlog(db: dbHandlerBKP, task: DbRow) -> dict[str, int]:
+    """Promote the selected discovery slice into backup work.
 
     Discovery already created the rows.
     This worker only changes which subset becomes backup work.
+
+    Args:
+        db (dbHandlerBKP): Operational persistence session.
+        task (DbRow): Worker context with host_id (int) and host_filter (mapping).
+
+    Returns:
+        dict[str, int]: rows_updated, moved_to_backup, moved_to_discovery,
+        and selected_total_kb for the committed or caller-owned transition.
+
+    Raises:
+        ValueError: If prepared predicates, ordering, or limits are invalid.
+        psycopg.Error: If locking, writing, or committing fails.
     """
-    return db.update_backlog_by_filter(
-        host_id=task["host_id"],
-        task_filter=task["host_filter"],
+    return _update_backlog(
+        db=db,
+        logger=log,
+        host_id=cast(int, task["host_id"]),
+        task_filter=cast(Mapping[str, object], task["host_filter"]),
         search_type=k.FILE_TASK_DISCOVERY,
         search_status=k.TASK_DONE,
         new_type=k.FILE_TASK_BACKUP_TYPE,
@@ -175,21 +320,35 @@ def _cancel_pending_backlog_promotions(
     )
 
 
-def _rollback_backlog(db: dbHandlerBKP, task: dict) -> dict:
-    """
-    Roll back pending backup work into the discovery queue.
+def _rollback_backlog(db: dbHandlerBKP, task: DbRow) -> dict[str, int]:
+    """Roll back pending backup work into the discovery queue.
 
     Rollback is stronger than queued promotion for the same host.
     STOP should win before any new backup work is recreated.
+
+    Args:
+        db (dbHandlerBKP): Operational persistence session.
+        task (DbRow): Worker context with host_id (int), host_filter (mapping),
+            and now (datetime) used when canceling pending promotion requests.
+
+    Returns:
+        dict[str, int]: rows_updated, moved_to_backup, moved_to_discovery,
+        and selected_total_kb for the committed or caller-owned transition.
+
+    Raises:
+        ValueError: If prepared predicates, ordering, or limits are invalid.
+        psycopg.Error: If cancellation, locking, writing, or committing fails.
     """
     _cancel_pending_backlog_promotions(
         db,
-        host_id=task["host_id"],
-        now=task["now"],
+        host_id=cast(int, task["host_id"]),
+        now=cast(datetime, task["now"]),
     )
-    return db.update_backlog_by_filter(
-        host_id=task["host_id"],
-        task_filter=task["host_filter"],
+    return _update_backlog(
+        db=db,
+        logger=log,
+        host_id=cast(int, task["host_id"]),
+        task_filter=cast(Mapping[str, object], task["host_filter"]),
         search_type=k.FILE_TASK_BACKUP_TYPE,
         search_status=k.TASK_PENDING,
         new_type=k.FILE_TASK_DISCOVERY,
@@ -197,7 +356,7 @@ def _rollback_backlog(db: dbHandlerBKP, task: dict) -> dict:
     )
 
 
-def _do_work(db: dbHandlerBKP, task: dict) -> dict:
+def _do_work(db: dbHandlerBKP, task: DbRow) -> DbRow:
     """
     Execute one backlog transition and return a small action summary.
 
@@ -206,6 +365,20 @@ def _do_work(db: dbHandlerBKP, task: dict) -> dict:
         - source type/status
         - target type/status
         - the pre-step that cancels pending promotion when STOP wins
+
+    Args:
+        db (dbHandlerBKP): Operational persistence session.
+        task (DbRow): Worker context containing task_id, task_type, host_id (ints),
+            host_filter (mapping), and now (datetime) for rollback cancellation.
+
+    Returns:
+        DbRow: action (promote/rollback), rows_updated, moved_to_backup,
+        moved_to_discovery, and selected_total_kb (integers). Phase timing is
+        logged here; main measures the duration used for finalization.
+
+    Raises:
+        ValueError: If task_type or prepared persistence arguments are invalid.
+        psycopg.Error: If the requested transition fails.
     """
     # The entrypoint measures the full `_do_work()` duration for `task_done`.
     # This function measures only the completed domain phase.
@@ -221,14 +394,9 @@ def _do_work(db: dbHandlerBKP, task: dict) -> dict:
             action = "rollback"
 
         case _:
-            raise ValueError(f"Unsupported backlog task type: {task['task_type']}")
-
-    # Only real row movement invalidates the derived host snapshot.
-    if result.get("rows_updated", 0) > 0:
-        db.request_host_summary_refresh(
-            host_id=task["host_id"],
-            reason="backlog_transition",
-        )
+            raise ValueError(
+                f"Unsupported backlog task type: {task['task_type']}"
+            )
 
     outcome = {
         "action": action,

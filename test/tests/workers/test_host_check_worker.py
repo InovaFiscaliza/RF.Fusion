@@ -96,7 +96,7 @@ class FakeDB:
     def host_task_update(self, **kwargs):
         self.host_task_updates.append(kwargs)
 
-    def queue_host_task(self, **kwargs):
+    def host_task_enqueue(self, **kwargs):
         self.queued_tasks.append(kwargs)
 
     def host_task_resume_by_host(self, host_id):
@@ -105,7 +105,7 @@ class FakeDB:
     def file_task_resume_by_host(self, host_id):
         self.resumed_hosts.append(("file_task", host_id))
 
-    def file_history_resume_by_host(self, host_id):
+    def file_task_history_resume_by_host(self, host_id):
         self.resumed_hosts.append(("file_history", host_id))
 
     def host_task_suspend_by_host(self, host_id):
@@ -114,7 +114,7 @@ class FakeDB:
     def file_task_suspend_by_host(self, host_id):
         self.suspended_hosts.append(("file_task", host_id))
 
-    def file_history_suspend_by_host(self, host_id):
+    def file_task_history_suspend_by_host(self, host_id):
         self.suspended_hosts.append(("file_history", host_id))
 
 

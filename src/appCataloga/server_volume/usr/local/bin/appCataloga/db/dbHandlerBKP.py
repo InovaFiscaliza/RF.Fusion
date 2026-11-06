@@ -1,57 +1,57 @@
+"""Persist operational hosts, queues, history, and Summary invalidations.
 
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-BKP-domain database handler for host and file orchestration.
-
-`dbHandlerBKP` owns the operational side of appCataloga: host registration,
-host-level tasks, per-file tasks, immutable file history, backlog promotion,
-and stale-lock recovery. It sits on top of `DBHandlerBase`, which provides the
-generic SQL and connection helpers.
+Keep PostgreSQL statements and workflow persistence in this handler. Workers
+still own task claims and finalization; this module does not transfer files or
+run discovery. The MariaDB implementation remains unchanged in backup/.
 """
 
 from __future__ import annotations
 
-import os
-import sys
-from typing import Any, Dict, List, Optional, Tuple, Union
-from datetime import datetime, timedelta
+from collections.abc import Generator, Mapping, Sequence
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
 import json
+import os
+from typing import TYPE_CHECKING, cast
 
-# =================================================
-# PROJECT ROOT (shared/, db/, stations/)
-# =================================================
-PROJECT_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..")
-)
+import psycopg
+from psycopg import sql
+from psycopg.pq import TransactionStatus
+from psycopg.types.json import Json
 
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
-# =================================================
-# Project imports
-# =================================================
 import config as k
-from .dbHandlerBase import DBHandlerBase
-from shared import errors, filter, constants, tools
+from .dbHandlerBase import DbHandler, DbRow
+from shared import constants, errors, tools
 from shared.file_metadata import FileMetadata
 
+if TYPE_CHECKING:
+    from shared import logging_utils
 
-class dbHandlerBKP(DBHandlerBase):
+
+class dbHandlerBKP(DbHandler):
+
+    """Own PostgreSQL persistence for the operational BKP domain.
+
+    Preserve queue selection, host reservation, file identities, and lifecycle
+    timestamps while delegating session management to DbHandler. Compound writes
+    own a transaction only when the caller has not already opened one. Summary
+    publication participates in that transaction through an isolated savepoint.
+
+    Attributes:
+        schema (str): Operational schema selected by the database argument.
+        log (logging_utils.log): Shared logger supplied by the caller.
+        reuse_connection (bool): Retain sessions between worker iterations;
+            defaults to True. Session and transaction state belong to DbHandler.
+        VALID_FIELDS_HOST (set[str]): Supported host columns.
+        VALID_FIELDS_HOST_TASK (set[str]): Supported host-task columns.
+        VALID_FIELDS_FILE_TASK (set[str]): Supported live file-task columns.
+        VALID_FIELDS_FILE_TASK_HISTORY (set[str]): Supported lifecycle columns.
+        PRIMARY_KEY_HOST (tuple[str, ...]): Host primary-key declaration.
+        PRIMARY_KEY_HOST_TASK (tuple[str, ...]): Host-task primary key.
+        PRIMARY_KEY_FILE_TASK (tuple[str, ...]): File-task primary key.
+        PRIMARY_KEY_FILE_TASK_HISTORY (tuple[str, ...]): File-history primary key.
     """
-    BKP-domain handler for hosts, host tasks, file tasks, and file history.
 
-    Scope:
-        - `HOST`: operational identity, access data, and counters
-        - `HOST_TASK`: host-level orchestration and maintenance work
-        - `FILE_TASK`: live per-file queue rows
-        - `FILE_TASK_HISTORY`: durable per-file audit trail
-
-    The class stays at the BKP-domain boundary and relies on
-    `DBHandlerBase` for the generic SQL primitives.
-    """
-    # Table field definitions used both for validation and for automatic
-    # column expansion in `DBHandlerBase._select_custom()`.
     VALID_FIELDS_HOST = {
         # PRIMARY KEYS & BASIC INFO
         "ID_HOST",
@@ -77,6 +77,20 @@ class dbHandlerBKP(DBHandlerBase):
         "NU_HOST_CHECK_ERROR",
     }
 
+    PRIMARY_KEY_HOST = ("ID_HOST",)
+
+    VALID_FIELDS_HOST_TASK = {
+        "ID_HOST_TASK",
+        "FK_HOST",
+        "NU_TYPE",
+        "DT_HOST_TASK",
+        "NU_STATUS",
+        "NU_PID",
+        "FILTER",
+        "NA_MESSAGE",
+    }
+
+    PRIMARY_KEY_HOST_TASK = ("ID_HOST_TASK",)
 
     VALID_FIELDS_FILE_TASK = {
         "ID_FILE_TASK",
@@ -103,16 +117,7 @@ class dbHandlerBKP(DBHandlerBase):
         "NU_ERROR_CLASSIFIER_VERSION",
     }
 
-    VALID_FIELDS_HOST_TASK = {
-        "ID_HOST_TASK",
-        "FK_HOST",
-        "NU_TYPE",
-        "DT_HOST_TASK",
-        "NU_STATUS",
-        "NU_PID",
-        "FILTER",
-        "NA_MESSAGE",
-    }
+    PRIMARY_KEY_FILE_TASK = ("ID_FILE_TASK",)
 
     VALID_FIELDS_FILE_TASK_HISTORY = {
         "ID_HISTORY",
@@ -142,601 +147,154 @@ class dbHandlerBKP(DBHandlerBase):
         "IS_PAYLOAD_DELETED",
         "DT_PAYLOAD_DELETED",
     }
-    
-    # ======================================================================
-    # Initialization
-    # ======================================================================
+
+    PRIMARY_KEY_FILE_TASK_HISTORY = ("ID_HISTORY",)
+
     def __init__(
         self,
         database: str,
-        log: Any,
+        log: logging_utils.log,
         reuse_connection: bool = True,
-    ):
-        """Initialize the BKP handler with the target logical database and logger.
-
-        Args:
-            database (str): Logical database key. Resolved via `config.DB` mapping.
-            log (Any): Logger implementing `.entry()`, `.warning()`, `.error()`.
-            reuse_connection (bool, optional): Keep one live DB session for
-                long-lived workers. Defaults to True.
-
-        Raises:
-            Exception: If initialization logic needs to validate inputs.
-        """
-        super().__init__(
-            database=database,
-            log=log,
-            reuse_connection=reuse_connection,
-        )
-        self.in_transaction: bool = False
-
-    def begin_transaction(self) -> None:
-        """Start an explicit transaction for multi-step BKP state changes."""
-        self.in_transaction = True
-        self._connect()
-        self.db_connection.autocommit = False
-
-    def commit(self) -> None:
-        """Commit the active managed transaction, if one exists."""
-        if not self.in_transaction:
-            return
-
-        try:
-            self.db_connection.commit()
-        finally:
-            self.db_connection.autocommit = True
-            self.in_transaction = False
-
-    def rollback(self) -> None:
-        """Roll back the active managed transaction, if one exists."""
-        if not self.in_transaction:
-            return
-
-        try:
-            self.db_connection.rollback()
-        finally:
-            self.db_connection.autocommit = True
-            self.in_transaction = False
-
-    def _merge_structured_error_fields(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Keep compact error keys synchronized with `NA_MESSAGE`.
-
-        Operational rows keep a concise message, one stable error code and the
-        useful diagnostic detail. Domain, stage and duplicate summary fields
-        are derived by read models when they are still needed.
-        """
-        normalized = dict(payload)
-        legacy_fields = (
-            "NA_ERROR_DOMAIN",
-            "NA_ERROR_STAGE",
-            "NA_ERROR_SUMMARY",
-        )
-
-        for field in legacy_fields:
-            normalized.pop(field, None)
-
-        if "NA_MESSAGE" in normalized:
-            explicit_detail = normalized.get("NA_ERROR_DETAIL")
-            compact_payload = errors.build_operational_error_payload(
-                normalized.get("NA_MESSAGE")
-            )
-            if compact_payload.get("NA_ERROR_DETAIL") is None and explicit_detail:
-                compact_payload["NA_ERROR_DETAIL"] = explicit_detail
-            normalized.update(compact_payload)
-            return normalized
-
-        if "NA_MESSAGE__expr" in normalized:
-            normalized.update(
-                errors.persisted_error_fields_from_handler(clear_when_empty=True)
-            )
-            return normalized
-
-        return normalized
-
-    def _summary_publish_host_scope(
-        self,
-        host_id: Optional[int],
         *,
-        reference_months: Optional[List[Any]] = None,
-        full_reconcile: bool = False,
-        reason: Optional[str] = None,
+        conninfo: str,
     ) -> None:
-        """Publish one host/month invalidation scope for the summary worker."""
-        if host_id is None and not full_reconcile:
-            return
-        if not hasattr(self.log, "warning"):
-            return
-
-        try:
-            self.summary_enqueue_refresh(
-                host_ids=[host_id] if host_id is not None else None,
-                reference_months=reference_months,
-                full_reconcile=full_reconcile,
-                reason=reason,
-                source_handler=self.__class__.__name__,
-                commit=not getattr(self, "in_transaction", False),
-            )
-        except Exception as exc:
-            self._log_db_warning(
-                "summary_scope_publish_failed",
-                operation="summary_publish_host_scope",
-                host_id=host_id,
-                reason=reason,
-                error=repr(exc),
-                full_reconcile=full_reconcile,
-            )
-
-    def _summary_lookup_host_task_host(self, task_id: int) -> Optional[int]:
-        """Resolve `HOST_TASK.FK_HOST` before publishing a dirty scope."""
-        if getattr(self, "cursor", None) is None:
-            return None
-        rows = self._select_rows(
-            table="HOST_TASK",
-            where={"ID_HOST_TASK": task_id},
-            cols=["FK_HOST"],
-            limit=1,
-        )
-        if not rows:
-            return None
-        value = rows[0].get("FK_HOST")
-        return int(value) if value is not None else None
-
-    def _summary_lookup_file_task_host(self, task_id: int) -> Optional[int]:
-        """Resolve `FILE_TASK.FK_HOST` before delete/update invalidation."""
-        if getattr(self, "cursor", None) is None:
-            return None
-        rows = self._select_rows(
-            table="FILE_TASK",
-            where={"ID_FILE_TASK": task_id},
-            cols=["FK_HOST"],
-            limit=1,
-        )
-        if not rows:
-            return None
-        value = rows[0].get("FK_HOST")
-        return int(value) if value is not None else None
-
-    def _summary_lookup_file_history_scope(
-        self,
-        *,
-        history_id: Optional[int] = None,
-        host_id: Optional[int] = None,
-        host_file_path: Optional[str] = None,
-        host_file_name: Optional[str] = None,
-    ) -> tuple[Optional[int], List[str]]:
-        """Resolve host/month scope from one `FILE_TASK_HISTORY` identity."""
-        if getattr(self, "cursor", None) is None:
-            return host_id, []
-        where: Dict[str, Any]
-        if history_id is not None:
-            where = {"ID_HISTORY": history_id}
-        elif (
-            host_id is not None
-            and host_file_path is not None
-            and host_file_name is not None
-        ):
-            where = {
-                "FK_HOST": host_id,
-                "NA_HOST_FILE_PATH": host_file_path,
-                "NA_HOST_FILE_NAME": host_file_name,
-            }
-        else:
-            return None, []
-
-        rows = self._select_rows(
-            table="FILE_TASK_HISTORY",
-            where=where,
-            cols=["FK_HOST", "DT_FILE_CREATED_HOST"],
-            limit=1,
-        )
-        if not rows:
-            return host_id, []
-
-        row = rows[0]
-        resolved_host_id = row.get("FK_HOST")
-        month = self._normalize_summary_reference_month(
-            row.get("DT_FILE_CREATED_HOST")
-        )
-        return (
-            int(resolved_host_id) if resolved_host_id is not None else host_id,
-            [month] if month is not None else [],
-        )
-
-    # ======================================================================
-    # HOST OPERATIONS
-    # ======================================================================
-    
-    def host_upsert(self, **kwargs) -> None:
-        """
-        Create or refresh a `HOST` row with safe UPSERT semantics.
-
-        This helper is intentionally conservative: it writes only the columns
-        explicitly provided by the caller. Operational fields such as
-        `IS_OFFLINE` must not be reset implicitly during routine access-data
-        refreshes performed by the TCP entrypoint.
-
-        MariaDB schema defaults remain responsible for first-insert
-        initialization when the caller omits a column.
-        """
-
-        try:
-            self._connect()
-
-            # ------------------------------------------------------------------
-            # Validation
-            # ------------------------------------------------------------------
-            valid_fields = self.VALID_FIELDS_HOST
-            if valid_fields is None:
-                raise ValueError("VALID_FIELDS_HOST not defined in DB handler.")
-
-            for key in kwargs.keys():
-                if key not in valid_fields:
-                    raise ValueError(f"Invalid field '{key}' for HOST table.")
-
-            # The caller decides exactly which fields should be refreshed.
-            # This avoids resetting operational state like `IS_OFFLINE` every
-            # time a new request arrives for an existing host.
-            data = dict(kwargs)
-
-            # ------------------------------------------------------------------
-            # Perform UPSERT
-            # ------------------------------------------------------------------
-            self._upsert_row(
-                table="HOST",
-                data=data,
-                unique_keys="ID_HOST",   # ensure this is your PK
-                commit=True
-            )
-
-            self._summary_publish_host_scope(
-                data.get("ID_HOST"),
-                reason="host_upsert",
-            )
-
-        except Exception as e:
-            self._log_db_error(
-                "db_update_failed",
-                operation="host_upsert",
-                table="HOST",
-                error=repr(e),
-            )
-            raise
-
-        finally:
-            self._disconnect()
-    
-    def host_read_status(self, host_id: int) -> Dict[str, Any]:
-        """
-        Read the full operational snapshot of a host.
-
-        The column list is derived from `VALID_FIELDS_HOST` so the method stays
-        aligned with the schema contract used elsewhere in the handler.
+        """Configure one operational schema without opening a database session.
 
         Args:
-            host_id (int): `HOST.ID_HOST`.
+            database (str): Case-sensitive PostgreSQL schema, normally BPDATA.
+                The established argument name is retained for domain callers.
+            log (logging_utils.log): Shared operational logger.
+            reuse_connection (bool): Retain an idle session between operations.
+            conninfo (str): Explicit libpq settings including dbname. No MariaDB
+                credential or configuration fallback is used.
 
         Returns:
-            Dict[str, Any]: Dictionary containing all available columns for the host.
-                Includes a derived field `status` (1 if found, else 0).
+            None.
 
         Raises:
-            ValueError: If `valid_fields` for the HOST table are undefined.
-            mysql.connector.Error: On SELECT failure.
+            TypeError: If schema or connection settings have an invalid type.
+            ValueError: If required connection settings or the schema are missing.
         """
-        self._connect()
-        try:
-            # Read the full HOST contract instead of maintaining a second
-            # handwritten column list just for the status endpoint.
-            valid_fields = self.VALID_FIELDS_HOST
-            if not valid_fields:
-                raise ValueError("Valid fields for HOST table not defined in handler.")
-
-            rows = self._select_rows(
-                table="HOST",
-                where={"ID_HOST": host_id},
-                limit=1,
-                cols=list(valid_fields),
-            )
-
-            if not rows:
-                return {"status": 0}
-
-            row = rows[0]
-
-            # Frontends and lightweight scripts consume this snapshot more
-            # easily when all datetime fields are converted consistently.
-            for key, val in row.items():
-                if key.startswith("DT_") and val:
-                    try:
-                        row[key] = int(val.timestamp())
-                    except Exception:
-                        pass  # Keep as-is if conversion fails
-
-            row["status"] = 1
-            return row
-
-        finally:
-            self._disconnect()
-
-    def host_list_for_connectivity_check(self) -> List[Dict[str, Any]]:
-        """
-        Return lightweight host rows ordered by the oldest connectivity snapshot.
-
-        The background connectivity sweep reads the whole HOST table in memory
-        because the dataset is small and the logic benefits from simple
-        oldest-first scheduling.
-
-        Offline hosts must stay in this snapshot too. The maintenance daemon is
-        responsible for reconciling them back to online after recovery.
-        Online hosts are ordered first so stale false-positive "online" states
-        are corrected quickly even when many offline hosts are waiting on the
-        slower recovery probe path.
-        """
-        self._connect()
-        try:
-            return self._select_rows(
-                table="HOST",
-                where={
-                    "#CUSTOM#HOST_ADDRESS": (
-                        "NA_HOST_ADDRESS IS NOT NULL "
-                        "AND TRIM(NA_HOST_ADDRESS) <> ''"
-                    ),
-                },
-                order_by=(
-                    "IS_OFFLINE ASC, "
-                    "DT_LAST_CHECK IS NULL DESC, DT_LAST_CHECK ASC, ID_HOST ASC"
-                ),
-                cols=[
-                    "ID_HOST",
-                    "NA_HOST_NAME",
-                    "NA_HOST_ADDRESS",
-                    "NA_HOST_PORT",
-                    "NA_HOST_USER",
-                    "NA_HOST_PASSWORD",
-                    "IS_BUSY",
-                    "IS_OFFLINE",
-                    "DT_LAST_CHECK",
-                ],
-            )
-        finally:
-            self._disconnect()
-
-    def host_list_for_cwsm_zip_reconciliation(
-        self,
-        host_ids: List[int],
-    ) -> List[Dict[str, Any]]:
-        """Return the host rows needed by the one-shot CWSM ZIP reconciler."""
-
-        if not host_ids:
-            return []
-
-        self._connect()
-        try:
-            placeholders = ", ".join(["%s"] * len(host_ids))
-            sql = f"""
-                SELECT
-                    ID_HOST,
-                    NA_HOST_NAME,
-                    NA_HOST_ADDRESS,
-                    NA_HOST_PORT,
-                    NA_HOST_USER,
-                    NA_HOST_PASSWORD,
-                    IS_BUSY,
-                    IS_OFFLINE,
-                    DT_LAST_CHECK
-                FROM HOST
-                WHERE ID_HOST IN ({placeholders})
-                ORDER BY ID_HOST ASC
-            """
-            return self._select_raw(sql, tuple(host_ids))
-        finally:
-            self._disconnect()
-
-    def get_last_discovery(self, host_id: int) -> Optional[datetime]:
-        """Return the last successful discovery timestamp recorded for a host."""
-
-        self._connect()
-        try:
-            rows = self._select_rows(
-                table="HOST",
-                where={"ID_HOST": host_id},
-                cols=["DT_LAST_DISCOVERY"],
-                limit=1,
-            )
-        except Exception as e:
-            self._log_db_error(
-                "db_select_failed",
-                operation="get_last_discovery",
-                table="HOST",
-                host_id=host_id,
-                error=repr(e),
-            )
-            return None
-
-        if not rows:
-            return None
-
-        dt = rows[0].get("DT_LAST_DISCOVERY")
-        return dt if dt else None
-
-    def file_history_list_cwsm_zip_reconciliation_candidates(
-        self,
-        host_id: Optional[int] = None,
-        include_offline: bool = False,
-    ) -> List[Dict[str, Any]]:
-        """
-        Return CWSM `.mat` history rows that still miss host-side `.zip` metadata.
-
-        This helper exists only for one-shot operational reconciliation after
-        the host/server metadata split. Runtime workers should not depend on it.
-        """
-
-        self._connect()
-        try:
-            sql = """
-                SELECT
-                    h.ID_HISTORY,
-                    h.FK_HOST,
-                    h.NA_HOST_FILE_PATH,
-                    h.NA_HOST_FILE_NAME,
-                    h.NA_SERVER_FILE_PATH,
-                    h.NA_SERVER_FILE_NAME,
-                    h.NA_EXTENSION_HOST,
-                    h.NA_EXTENSION_SERVER,
-                    h.VL_FILE_SIZE_KB_HOST,
-                    h.VL_FILE_SIZE_KB_SERVER,
-                    h.DT_FILE_CREATED_HOST,
-                    h.DT_FILE_CREATED_SERVER,
-                    h.DT_FILE_MODIFIED_HOST,
-                    h.DT_FILE_MODIFIED_SERVER
-                FROM FILE_TASK_HISTORY h
-                JOIN HOST host
-                  ON host.ID_HOST = h.FK_HOST
-                WHERE h.NA_SERVER_FILE_NAME LIKE '%.mat'
-                  AND (
-                      h.NA_EXTENSION_HOST IS NULL
-                      OR h.VL_FILE_SIZE_KB_HOST IS NULL
-                      OR h.DT_FILE_CREATED_HOST IS NULL
-                      OR h.DT_FILE_MODIFIED_HOST IS NULL
-                  )
-                  AND host.NA_HOST_NAME LIKE 'CWSM%'
-            """
-
-            if not include_offline:
-                sql += " AND host.IS_OFFLINE = 0"
-
-            params: list[Any] = []
-            if host_id is not None:
-                sql += " AND h.FK_HOST = %s"
-                params.append(host_id)
-
-            sql += " ORDER BY h.FK_HOST ASC, h.ID_HISTORY ASC"
-            return self._select_raw(sql, tuple(params))
-
-        finally:
-            self._disconnect()
-
-    def file_history_list_zip_error_server_restore_candidates(
-        self,
-        *,
-        limit: int = 1000,
-        host_id: Optional[int] = None,
-        after_history_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        Return errored `.zip` history rows eligible for server-artifact repair.
-
-        This one-shot operational helper targets rows whose original source was
-        a `.zip` and whose processing ended in `ERROR`. Callers must still
-        verify that a trustworthy repository artifact exists before updating
-        the server-side metadata columns.
-        """
-        self._connect()
-        try:
-            sql = """
-                SELECT
-                    h.ID_HISTORY,
-                    h.FK_HOST,
-                    host.NA_HOST_NAME,
-                    h.NA_HOST_FILE_PATH,
-                    h.NA_HOST_FILE_NAME,
-                    h.NA_SERVER_FILE_PATH,
-                    h.NA_SERVER_FILE_NAME,
-                    h.NA_EXTENSION_HOST,
-                    h.VL_FILE_SIZE_KB_HOST,
-                    h.DT_FILE_CREATED_HOST,
-                    h.DT_FILE_MODIFIED_HOST,
-                    h.NA_EXTENSION_SERVER,
-                    h.VL_FILE_SIZE_KB_SERVER,
-                    h.DT_FILE_CREATED_SERVER,
-                    h.DT_FILE_MODIFIED_SERVER,
-                    h.NU_STATUS_PROCESSING
-                FROM FILE_TASK_HISTORY h
-                JOIN HOST host
-                  ON host.ID_HOST = h.FK_HOST
-                WHERE LOWER(COALESCE(h.NA_EXTENSION_HOST, '')) = '.zip'
-                  AND h.NU_STATUS_PROCESSING = %s
-            """
-            params: List[Any] = [k.TASK_ERROR]
-
-            if host_id is not None:
-                sql += " AND h.FK_HOST = %s"
-                params.append(host_id)
-
-            if after_history_id is not None:
-                sql += " AND h.ID_HISTORY > %s"
-                params.append(after_history_id)
-
-            sql += " ORDER BY h.ID_HISTORY ASC LIMIT %s"
-            params.append(limit)
-
-            return self._select_raw(sql, tuple(params))
-        finally:
-            self._disconnect()
-
-    def file_history_restore_server_artifact_metadata(
-        self,
-        *,
-        history_id: int,
-        repository_artifact: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """
-        Restore server-side artifact metadata for one `FILE_TASK_HISTORY` row.
-
-        Callers must provide a repository artifact already validated on the
-        filesystem. This helper only persists the recovered metadata.
-        """
-        if history_id <= 0:
-            raise ValueError("history_id must be a positive int")
-
-        required_keys = {
-            "file_path",
-            "file_name",
-            "extension",
-            "size_kb",
-            "dt_created",
-            "dt_modified",
-        }
-        missing = sorted(required_keys.difference(repository_artifact))
-        if missing:
-            raise ValueError(
-                "repository_artifact missing required keys: "
-                + ", ".join(missing)
-            )
-
-        return self.file_history_update(
-            history_id=history_id,
-            NA_SERVER_FILE_PATH=repository_artifact["file_path"],
-            NA_SERVER_FILE_NAME=repository_artifact["file_name"],
-            NA_EXTENSION_SERVER=repository_artifact["extension"],
-            VL_FILE_SIZE_KB_SERVER=repository_artifact["size_kb"],
-            DT_FILE_CREATED_SERVER=repository_artifact["dt_created"],
-            DT_FILE_MODIFIED_SERVER=repository_artifact["dt_modified"],
+        super().__init__(
+            database, log, conninfo=conninfo, reuse_connection=reuse_connection
         )
 
-    
+    # --- HOST ---
+
+    def host_upsert(self, **kwargs: object) -> None:
+        """Create or refresh the supplied host fields by its explicit ID_HOST.
+
+        Omitted columns remain unchanged on conflict. Convert operational flags
+        to the existing smallint representation and invalidate the host snapshot.
+
+        Args:
+            **kwargs (object): Nonempty VALID_FIELDS_HOST column/value pairs;
+                ID_HOST is required. IS_BUSY and IS_OFFLINE accept 0/1 or booleans.
+
+        Returns:
+            None.
+
+        Raises:
+            ValueError: If fields or the required host identity are invalid.
+            psycopg.Error: If the host write fails.
+        """
+        payload = self._host_storage_fields(kwargs)
+        with self._unit_of_work():
+            self._upsert_row(table="HOST", data=payload, conflict_columns=("ID_HOST",))
+            self._summary_publish_host_scope(
+                cast(int, payload["ID_HOST"]), reason="host_upsert"
+            )
+
+    def host_read_status(self, host_id: int) -> DbRow:
+        """Read host state and expose timestamps as UTC epoch seconds.
+
+        Args:
+            host_id (int): Explicit host primary key.
+
+        Returns:
+            DbRow: All supported host columns plus status=1, or only status=0
+            when the host does not exist. Datetimes become integer epoch seconds.
+
+        Raises:
+            psycopg.Error: If reading the host fails.
+        """
+        where_conditions = {"ID_HOST": host_id}
+        row = self._select_row(table="HOST", where=where_conditions)
+        if row is None:
+            return {"status": 0}
+        for name, value in row.items():
+            if name.startswith("DT_") and isinstance(value, datetime):
+                row[name] = int(value.replace(tzinfo=timezone.utc).timestamp())
+        row["status"] = 1
+        return row
+
+    def host_list_for_connectivity_check(self) -> list[DbRow]:
+        """List addressable hosts without excluding offline or busy stations.
+
+        Args:
+            None.
+
+        Returns:
+            list[DbRow]: Access credentials, flags, and last-check timestamp,
+            ordered by online state, never-checked first, oldest check, and ID.
+
+        Raises:
+            psycopg.Error: If reading the connectivity snapshot fails.
+        """
+        where_conditions = {"NA_HOST_ADDRESS__ne": None, "NA_HOST_ADDRESS__trim_ne": ""}
+        columns = (
+            "ID_HOST",
+            "NA_HOST_NAME",
+            "NA_HOST_ADDRESS",
+            "NA_HOST_PORT",
+            "NA_HOST_USER",
+            "NA_HOST_PASSWORD",
+            "IS_BUSY",
+            "IS_OFFLINE",
+            "DT_LAST_CHECK",
+        )
+        order_by = (
+            ("IS_OFFLINE", "ASC NULLS FIRST"),
+            ("DT_LAST_CHECK", "ASC NULLS FIRST"),
+            ("ID_HOST", "ASC"),
+        )
+        return self._select_batch(
+            table="HOST", where=where_conditions, columns=columns, order_by=order_by
+        )
+
+    def host_read_last_discovery(self, host_id: int) -> datetime | None:
+        """Read the technical discovery watermark without masking database errors.
+
+        Args:
+            host_id (int): Host primary key.
+
+        Returns:
+            datetime | None: Stored UTC watermark, or None for a missing host
+            or an unset watermark.
+
+        Raises:
+            psycopg.Error: If reading the watermark fails.
+        """
+        where_conditions = {"ID_HOST": host_id}
+        columns = ("DT_LAST_DISCOVERY",)
+        row = self._select_row(table="HOST", where=where_conditions, columns=columns)
+        return cast(datetime | None, row["DT_LAST_DISCOVERY"]) if row else None
+
     def host_release_by_pid(self, pid: int) -> None:
-        """
-        Release all `HOST` locks owned by the given PID.
+        """Release the busy flag of hosts still associated with one process.
 
-        This helper is intentionally idempotent and is mainly used during
-        worker shutdown and crash recovery.
-        """
-        self._connect()
-        self._update_row(
-            table="HOST",
-            data={
-                "IS_BUSY": False,
-                "NU_PID": k.HOST_UNLOCKED_PID,
-            },
-            where={
-                "NU_PID": pid,
-            },
-        )
-        
-        self._disconnect()
+        Args:
+            pid (int): Process identity to match in NU_PID.
 
+        Returns:
+            None. Matching hosts become free and use HOST_UNLOCKED_PID.
+
+        Raises:
+            psycopg.Error: If the conditional release fails.
+        """
+        data = {"IS_BUSY": 0, "NU_PID": k.HOST_UNLOCKED_PID}
+        where_conditions = {"NU_PID": pid}
+        self._update_batch(table="HOST", data=data, where=where_conditions)
 
     def host_update(
         self,
@@ -744,213 +302,113 @@ class dbHandlerBKP(DBHandlerBase):
         reset: bool = False,
         check_busy_timeout: bool = False,
         busy_timeout_seconds: int = k.HOST_BUSY_TIMEOUT,
-        **kwargs
+        **kwargs: object,
     ) -> None:
+        """Update operational host state while preserving established counter deltas.
+
+        Plain positive/negative numbers are deltas unless reset=True; zero is an
+        assignment. Flags and timestamps are always assignments. INC/DEC tuples
+        request explicit arithmetic. None retains its established no-change meaning.
+        A timeout release clears DT_BUSY and uses the unlocked PID.
+
+        Args:
+            host_id (int): Host primary key.
+            reset (bool): Assign numeric values instead of treating them as deltas.
+            check_busy_timeout (bool): Check the current busy age before updating.
+            busy_timeout_seconds (int): Maximum busy age for the optional check.
+            **kwargs (object): Supported host columns and values; numeric columns
+                may receive ("INC" | "DEC", int | float).
+
+        Returns:
+            None. Empty effective updates perform no write.
+
+        Raises:
+            ValueError: If a field, flag, or arithmetic instruction is invalid.
+            psycopg.Error: If reading or updating host state fails.
         """
-        Update a host row with optional arithmetic semantics.
-
-        By default, numeric values are treated as deltas. This keeps counter
-        maintenance concise at call sites. Pass `reset=True` to switch to
-        direct assignment semantics. Explicit arithmetic tuples
-        `("INC", x)` / `("DEC", x)` are also supported.
-
-        Important:
-            Passing `NU_HOST_CHECK_ERROR=1` with the default `reset=False`
-            increments the stored counter by one; it does not assign the
-            literal value `1`. Callers that already computed the absolute
-            target value must use `reset=True`.
-        """
-        self._connect()
-
-        # Optional stale-lock recovery can piggyback on the same update call.
-        if check_busy_timeout:
-            row = self._select_rows(
-                table="HOST",
-                where={"ID_HOST": host_id},
-                cols=["IS_BUSY", "DT_BUSY"],
-                limit=1
-            )
-
-            if row:
-                row = row[0]
-                if row["IS_BUSY"] and row["DT_BUSY"]:
-                    elapsed = (datetime.now() - row["DT_BUSY"]).total_seconds()
-                    if elapsed > busy_timeout_seconds:
-                        kwargs["IS_BUSY"] = False
-                        kwargs["DT_BUSY"] = None
-                        kwargs["NU_PID"]  = k.HOST_UNLOCKED_PID
-
-        if not kwargs:
-            self._log_db_warning(
-                "db_invalid_input",
-                operation="host_update",
-                table="HOST",
-                host_id=host_id,
-                error="No fields provided for host_update.",
-            )
-            return
-
-        for key in kwargs.keys():
-            if key not in self.VALID_FIELDS_HOST:
-                raise ValueError(f"Invalid field '{key}' for HOST table update.")
-
-        # Split the update into direct assignments and arithmetic fragments so
-        # we can preserve the legacy "increment by default" behavior safely.
-        arithmetic_updates = []
-        direct_updates = {}
-
-        for field, value in kwargs.items():
-
-            if value is None:
-                continue
-
-            if isinstance(value, tuple) and len(value) == 2:
-                cmd, num = value
-
-                if cmd == "INC":
-                    arithmetic_updates.append(f"{field} = {field} + %s")
-                    arithmetic_updates.append(("PARAM", num))
-                    continue
-
-                if cmd == "DEC":
-                    arithmetic_updates.append(f"{field} = {field} - %s")
-                    arithmetic_updates.append(("PARAM", num))
-                    continue
-
-                # Unknown tuple commands fall back to direct assignment.
-                direct_updates[field] = value
-                continue
-
-            if reset or isinstance(value, (bool, datetime)):
-                direct_updates[field] = value
-                continue
-
-            if isinstance(value, (int, float)):
-                if reset:
-                    direct_updates[field] = value
-                elif value > 0:
-                    arithmetic_updates.append(f"{field} = {field} + {value}")
-                elif value < 0:
-                    arithmetic_updates.append(f"{field} = {field} - {abs(value)}")
-                else:
-                    direct_updates[field] = 0
-                continue
-
-            direct_updates[field] = value
-
-        try:
-            if direct_updates:
-                self._update_row(
-                    table="HOST",
-                    data=direct_updates,
-                    where={"ID_HOST": host_id},
-                    commit=False,
+        if kwargs:
+            self._validate_fields(tuple(kwargs), self.VALID_FIELDS_HOST)
+        with self._unit_of_work():
+            clear_busy = False
+            if check_busy_timeout:
+                where_conditions = {"ID_HOST": host_id}
+                columns = ("IS_BUSY", "DT_BUSY")
+                row = self._select_row(
+                    table="HOST", where=where_conditions, columns=columns
                 )
+                clear_busy = bool(
+                    row
+                    and row["IS_BUSY"]
+                    and row["DT_BUSY"]
+                    and (
+                        datetime.utcnow() - cast(datetime, row["DT_BUSY"])
+                    ).total_seconds()
+                    > busy_timeout_seconds
+                )
+            payload = self._host_storage_fields(kwargs)
+            if clear_busy:
+                payload.update(IS_BUSY=0, DT_BUSY=None, NU_PID=k.HOST_UNLOCKED_PID)
+            assignments: list[sql.Composable] = []
+            params: list[object] = []
+            data: DbRow = {}
+            for name, value in payload.items():
+                if value is None and not (clear_busy and name == "DT_BUSY"):
+                    continue
+                column = sql.Identifier(name)
+                if isinstance(value, tuple):
+                    if (
+                        len(value) != 2
+                        or value[0] not in ("INC", "DEC")
+                        or not isinstance(value[1], (int, float))
+                    ):
+                        raise ValueError(
+                            "Arithmetic updates require (INC or DEC, number)."
+                        )
+                    symbol = sql.SQL("+" if value[0] == "INC" else "-")
+                    assignments.append(
+                        sql.SQL("{} = {} {} %s").format(column, column, symbol)
+                    )
+                    params.append(value[1])
+                elif (
+                    not reset
+                    and name not in ("IS_BUSY", "IS_OFFLINE")
+                    and isinstance(value, (int, float))
+                    and value != 0
+                ):
+                    assignments.append(sql.SQL("{} = {} + %s").format(column, column))
+                    params.append(value)
+                else:
+                    data[name] = value
+            if not assignments and not data:
+                return
+            where_conditions = {"ID_HOST": host_id}
+            if assignments:
+                # Arithmetic must execute in SQL to avoid lost concurrent increments.
+                for name, value in data.items():
+                    assignments.append(sql.SQL("{} = %s").format(sql.Identifier(name)))
+                    params.append(value)
+                query = sql.SQL('UPDATE {} SET {} WHERE "ID_HOST" = %s').format(
+                    sql.Identifier(self.schema, "HOST"), sql.SQL(", ").join(assignments)
+                )
+                self._execute(query=query, params=(*params, host_id))
+            else:
+                self._update_row(table="HOST", data=data, where=where_conditions)
+            self._summary_publish_host_scope(host_id, reason="host_update")
 
-            # Arithmetic updates stay explicit SQL because `_update_row`
-            # intentionally models assignments, not expressions.
-            if arithmetic_updates:
-                set_parts = []
-                params = []
+    def host_request_summary_refresh(self, host_id: int, *, reason: str) -> None:
+        """Invalidate one host's derived models without scheduling a statistics task.
 
-                for item in arithmetic_updates:
-                    if isinstance(item, tuple) and item[0] == "PARAM":
-                        params.append(item[1])
-                    else:
-                        set_parts.append(item)
+        Args:
+            host_id (int): Host whose derived data may be stale.
+            reason (str): Short operational reason stored in the outbox.
 
-                sql = f"UPDATE HOST SET {', '.join(set_parts)} WHERE ID_HOST = %s"
-                params.append(host_id)
-
-                self.cursor.execute(sql, tuple(params))
-
-            if not self.in_transaction:
-                self.db_connection.commit()
-            self._summary_publish_host_scope(
-                host_id,
-                reason="host_update",
-            )
-            self._disconnect()
-        except Exception as e:
-            self.db_connection.rollback()
-            self._log_db_error(
-                "db_update_failed",
-                operation="host_update",
-                table="HOST",
-                host_id=host_id,
-                error=repr(e),
-            )
-            self._disconnect()
-            raise
-
-    
-    
-    def request_host_summary_refresh(self, host_id: int, *, reason: str) -> None:
-        """Publish one host scope after an operational state transition.
-
-        ``HOST_CURRENT_SNAPSHOT`` owns derived counters and volumes. This
-        method replaces the former ``BPDATA.HOST`` statistics recalculation,
-        keeping the transactional host table limited to runtime controls.
+        Returns:
+            None. Publication failures are logged for periodic reconciliation.
         """
         self._summary_publish_host_scope(host_id, reason=reason)
 
-    def _update_host_phase_markers_from_history(
-        self,
-        *,
-        host_id: Optional[int],
-        history_update: Dict[str, Any],
-    ) -> None:
-        """Advance operational host timestamps after a durable phase success.
-
-        ``DT_LAST_BACKUP`` remains the fairness key for backup scheduling and
-        ``DT_LAST_PROCESSING`` remains operational context. Both markers must
-        advance monotonically, even when a reconciliation updates an older
-        history row after newer work already completed.
-        """
-        if host_id is None:
-            return
-
-        assignments: List[str] = []
-        params: List[Any] = []
-
-        if (
-            history_update.get("NU_STATUS_BACKUP") == k.TASK_DONE
-            and history_update.get("DT_BACKUP") is not None
-        ):
-            assignments.append(
-                "DT_LAST_BACKUP = CASE "
-                "WHEN DT_LAST_BACKUP IS NULL OR DT_LAST_BACKUP < %s THEN %s "
-                "ELSE DT_LAST_BACKUP END"
-            )
-            params.extend([history_update["DT_BACKUP"], history_update["DT_BACKUP"]])
-
-        if (
-            history_update.get("NU_STATUS_PROCESSING") == k.TASK_DONE
-            and history_update.get("DT_PROCESSED") is not None
-        ):
-            assignments.append(
-                "DT_LAST_PROCESSING = CASE "
-                "WHEN DT_LAST_PROCESSING IS NULL OR DT_LAST_PROCESSING < %s THEN %s "
-                "ELSE DT_LAST_PROCESSING END"
-            )
-            params.extend([
-                history_update["DT_PROCESSED"],
-                history_update["DT_PROCESSED"],
-            ])
-
-        if not assignments:
-            return
-
-        params.append(host_id)
-        self.cursor.execute(
-            f"UPDATE HOST SET {', '.join(assignments)} WHERE ID_HOST = %s",
-            tuple(params),
-        )
-            
-            
-    def host_release_safe(self, host_id: int, current_pid: int):
-        """
-        Release a host lock only when it is safe to do so.
+    def host_release_safe(self, host_id: int, current_pid: int) -> None:
+        """Release a host lock only when it is safe to do so.
 
         Decision order:
             1. already free -> no-op
@@ -958,577 +416,555 @@ class dbHandlerBKP(DBHandlerBase):
             3. owned by current worker -> release
             4. stale PID -> release
             5. active foreign owner -> preserve
-        """
-
-        host_read = self.host_read_status(host_id=host_id)
-
-        if not host_read:
-            self._log_db_warning(
-                "db_invalid_input",
-                operation="host_release_safe",
-                table="HOST",
-                host_id=host_id,
-                error="Host not found.",
-            )
-            return
-
-        is_busy = host_read.get("IS_BUSY")
-        pid = host_read.get("NU_PID")
-
-        if not is_busy:
-            return
-
-        # `HOST_TRANSIENT_BUSY_PID` means "temporarily quarantined after a
-        # transient SFTP bootstrap error", not "free to release right now".
-        if pid == k.HOST_TRANSIENT_BUSY_PID:
-            return
-
-        if pid == current_pid:
-            self.host_update(
-                host_id=host_id,
-                IS_BUSY=False,
-                NU_PID=k.HOST_UNLOCKED_PID,
-            )
-            return
-
-        # Stale ownership is safe to recover because no live process can still
-        # legitimately hold the lock.
-        if not tools.pid_exists(pid):
-            self.host_update(
-                host_id=host_id,
-                IS_BUSY=False,
-                NU_PID=k.HOST_UNLOCKED_PID,
-            )
-            return
-
-    def host_start_transient_busy_cooldown(
-        self,
-        host_id: int,
-        *,
-        owner_pid: Optional[int] = None,
-        cooldown_seconds: int = k.SFTP_BUSY_COOLDOWN_SECONDS,
-    ) -> bool:
-        """
-        Convert a worker-owned HOST lock into a short transient cooldown.
-
-        This is used only after SSH/SFTP bootstrap errors such as
-        `NoValidConnectionsError`. The host remains BUSY for a few seconds so
-        discovery and backup do not ping-pong on the same remote endpoint.
 
         Args:
-            host_id (int):
-                Target HOST identifier.
-            owner_pid (Optional[int]):
-                PID expected to own the current BUSY lock. Defaults to the
-                current process PID.
-            cooldown_seconds (int):
-                Cooldown duration used for observability only. The actual
-                release is driven by `DT_BUSY`.
+            host_id (int): Parent host identity.
+            current_pid (int): PID permitted to release its own reservation.
 
         Returns:
-            bool: True when the lock was successfully converted to cooldown.
+            None. Preserve free hosts, active foreign owners, and transient cooldowns.
+
+        Raises:
+            ValueError: If required identity, metadata, or limits are invalid.
+            psycopg.Error: If the requested persistence operation fails.
         """
-
-        owner_pid = owner_pid or os.getpid()
-        self._connect()
-
-        try:
-            affected = self._update_row(
-                table="HOST",
-                data={
-                    "IS_BUSY": True,
-                    "DT_BUSY": datetime.now(),
-                    "NU_PID": k.HOST_TRANSIENT_BUSY_PID,
-                },
-                where={
-                    "ID_HOST": host_id,
-                    "IS_BUSY": True,
-                    "NU_PID": owner_pid,
-                },
-                commit=True,
-            )
-
-            if affected == 1:
-                return True
-
-            self._log_db_warning(
-                "db_update_no_match",
-                operation="host_start_transient_busy_cooldown",
-                table="HOST",
+        where_conditions = {"ID_HOST": host_id}
+        columns = ("IS_BUSY", "NU_PID", "DT_BUSY")
+        row = self._select_row(table="HOST", where=where_conditions, columns=columns)
+        if not row or not row["IS_BUSY"] or row["NU_PID"] == k.HOST_TRANSIENT_BUSY_PID:
+            return
+        pid = cast(int | None, row["NU_PID"])
+        if (
+            pid == current_pid
+            or pid in (None, k.HOST_UNLOCKED_PID)
+            or not tools.pid_exists(pid)
+        ):
+            self.host_release_reservation(
                 host_id=host_id,
-                error="Host lock ownership changed before cooldown start.",
-            )
-            return False
-
-        finally:
-            self._disconnect()
-
-    def _release_expired_transient_busy_cooldowns(
-        self,
-        cooldown_seconds: int = k.SFTP_BUSY_COOLDOWN_SECONDS,
-    ) -> int:
-        """
-        Release HOST rows whose transient SFTP cooldown window already expired.
-
-        The method assumes an open DB connection and is intentionally called
-        inline by the task-selection methods so successful hosts can be retried
-        immediately after the short cooldown window ends.
-        """
-
-        threshold_time = datetime.now() - timedelta(seconds=cooldown_seconds)
-
-        affected = self._update_row(
-            table="HOST",
-            data={
-                "IS_BUSY": False,
-                "DT_BUSY": None,
-                "NU_PID": k.HOST_UNLOCKED_PID,
-            },
-            where={
-                "IS_BUSY": True,
-                "NU_PID": k.HOST_TRANSIENT_BUSY_PID,
-                "DT_BUSY__lt": threshold_time,
-            },
-            commit=True,
-        )
-
-        return affected
-
-    def host_cleanup_stale_locks(self, threshold_seconds: int) -> None:
-        """
-        Release `HOST` rows that are stuck in BUSY state.
-
-        This janitor focuses on BUSY hosts that no longer have matching live
-        work. The two main recovery paths are:
-            - no running file/processing work remains after a grace window
-            - BUSY timeout elapsed and the owner PID is stale
-
-        Recovered hosts are released and scheduled for a connection check so
-        the orchestration layer can reconcile state safely.
-        """
-        now = datetime.now()
-        self._connect()
-        try:
-            rows = self._select_raw("""
-                SELECT
-                    H.ID_HOST,
-                    H.NA_HOST_NAME,
-                    H.DT_BUSY,
-                    H.NU_PID,
-                    EXISTS(
-                        SELECT 1
-                        FROM FILE_TASK FT
-                        WHERE FT.FK_HOST = H.ID_HOST
-                        AND FT.NU_STATUS = %s
-                    ) AS FILE_RUNNING,
-                    EXISTS(
-                        SELECT 1
-                        FROM HOST_TASK HT
-                        WHERE HT.FK_HOST = H.ID_HOST
-                        AND HT.NU_STATUS = %s
-                        AND HT.NU_TYPE = %s
-                    ) AS HOST_PROCESSING_RUNNING
-                FROM HOST H
-                WHERE H.IS_BUSY = TRUE
-            """, (
-                k.TASK_RUNNING,
-                k.TASK_RUNNING,
-                k.HOST_TASK_PROCESSING_TYPE,
-            ))
-        finally:
-            self._disconnect()
-
-        if not rows:
-            return
-
-        for row in rows:
-
-            host_id = row["ID_HOST"]
-            host_name = row["NA_HOST_NAME"]
-            busy_since = row["DT_BUSY"]
-            pid = row["NU_PID"]
-
-            file_running = row["FILE_RUNNING"]
-            host_processing_running = row["HOST_PROCESSING_RUNNING"]
-
-            if busy_since is None:
-                elapsed = float("inf")
-            else:
-                elapsed = (now - busy_since).total_seconds()
-
-            release = False
-            reason = None
-
-            # `HOST_TRANSIENT_BUSY_PID` is a short transient SFTP quarantine,
-            # not a stale worker lock. Preserve it only for the configured
-            # cooldown window.
-            if pid == k.HOST_TRANSIENT_BUSY_PID and elapsed <= k.SFTP_BUSY_COOLDOWN_SECONDS:
-                continue
-
-            if pid == k.HOST_TRANSIENT_BUSY_PID:
-                release = True
-                reason = "SFTP_BUSY_COOLDOWN_EXPIRED"
-
-            elif (
-                not file_running
-                and not host_processing_running
-                and elapsed > k.HOST_CLEANUP_NO_TASK_GRACE_SEC
-            ):
-                release = True
-                reason = "NO_RUNNING_TASKS"
-
-            elif not file_running and not host_processing_running:
-                pass
-
-            elif elapsed > threshold_seconds and (
-                pid in (None, k.HOST_UNLOCKED_PID) or not tools.pid_exists(pid)
-            ):
-                release = True
-                reason = "BUSY_TIMEOUT_STALE_PID"
-
-            elif elapsed > threshold_seconds:
-                self._log_db_warning(
-                    "db_long_running_lock",
-                    operation="host_cleanup_stale_locks",
-                    table="HOST",
-                    host_id=host_id,
-                    owner_pid=pid,
-                    busy_for_sec=round(elapsed, 1),
-                )
-
-            if not release:
-                continue
-
-            try:
-                self.host_update(
-                    host_id=host_id,
-                    IS_BUSY=False,
-                    NU_PID=k.HOST_UNLOCKED_PID
-                )
-            except Exception as e:
-                self._log_db_error(
-                    "db_update_failed",
-                    operation="host_cleanup_stale_locks",
-                    table="HOST",
-                    host_id=host_id,
-                    error=repr(e),
-                )
-                continue
-
-            # A recovered host should go back through connectivity validation
-            # before new host-dependent work is claimed.
-            try:
-                self._connect()
-                self.queue_host_task(
-                    host_id=host_id,
-                    task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
-                    task_status=k.TASK_PENDING,
-                    filter_dict=k.NONE_FILTER,
-                )
-                self._disconnect()
-
-            except Exception as e:
-                self._disconnect()
-                self._log_db_error(
-                    "db_insert_failed",
-                    operation="host_cleanup_queue_connection_check",
-                    table="HOST_TASK",
-                    host_id=host_id,
-                    error=repr(e),
-                )
-
-    def host_task_cleanup_stale_operational_tasks(
-        self,
-        stale_after_seconds: int,
-    ) -> None:
-        """
-        Recover stale queue-owned HOST_TASK rows without forcing SSH preemption.
-
-        This janitor focuses on HOST_TASK state itself:
-            - PENDING rows with missing `DT_HOST_TASK` get normalized so the
-              discovery reservation TTL can expire deterministically.
-            - RUNNING rows older than `stale_after_seconds` are reset to
-              PENDING when execution ownership no longer matches reality
-              (host unlocked, stale PID, or mismatched host/task owner).
-
-        Host release remains conservative: only obviously stale host locks are
-        cleared here. DB-only backlog tasks are also recovered by this janitor,
-        but they never claim `HOST.IS_BUSY` in the first place.
-        """
-        now = datetime.now()
-        operational_types = (
-            k.HOST_TASK_CHECK_TYPE,
-            k.HOST_TASK_PROCESSING_TYPE,
-            k.HOST_TASK_CHECK_CONNECTION_TYPE,
-            k.HOST_TASK_BACKLOG_CONTROL_TYPE,
-            k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
-            k.HOST_TASK_INTERACTIVE_CHECK_TYPE,
-        )
-
-        self._connect()
-        try:
-            rows = self._select_raw("""
-                SELECT
-                    HT.ID_HOST_TASK,
-                    HT.FK_HOST,
-                    HT.NU_TYPE,
-                    HT.NU_STATUS,
-                    HT.DT_HOST_TASK,
-                    HT.NU_PID,
-                    H.IS_BUSY,
-                    H.NU_PID AS HOST_OWNER_PID
-                FROM HOST_TASK HT
-                JOIN HOST H ON H.ID_HOST = HT.FK_HOST
-                WHERE HT.NU_TYPE IN (%s, %s, %s, %s, %s)
-                  AND HT.NU_STATUS IN (%s, %s)
-            """, (
-                *operational_types,
-                k.TASK_PENDING,
-                k.TASK_RUNNING,
-            ))
-        finally:
-            self._disconnect()
-
-        if not rows:
-            return
-
-        for row in rows:
-            task_id = row["ID_HOST_TASK"]
-            host_id = row["FK_HOST"]
-            task_type = row["NU_TYPE"]
-            status = row["NU_STATUS"]
-            task_started_at = row["DT_HOST_TASK"]
-            task_pid = row["NU_PID"]
-            host_is_busy = bool(row["IS_BUSY"])
-            host_owner_pid = row["HOST_OWNER_PID"]
-
-            # Legacy PENDING rows without timestamps would otherwise never age
-            # out of reservation logic deterministically.
-            if status == k.TASK_PENDING and task_started_at is None:
-                try:
-                    self.host_task_update(
-                        task_id=task_id,
-                        DT_HOST_TASK=now,
-                        NA_MESSAGE=(
-                            "Operational HOST_TASK timestamp normalized by janitor "
-                            "for reservation TTL control"
-                        ),
-                    )
-                except Exception as e:
-                    self._log_db_error(
-                        "db_update_failed",
-                        operation="host_task_cleanup_normalize_pending",
-                        table="HOST_TASK",
-                        task_id=task_id,
-                        host_id=host_id,
-                        error=repr(e),
-                    )
-                continue
-
-            if status != k.TASK_RUNNING:
-                continue
-
-            elapsed = (
-                float("inf")
-                if task_started_at is None
-                else (now - task_started_at).total_seconds()
+                owner_pid=pid,
+                busy_since=cast(datetime | None, row["DT_BUSY"]),
             )
 
-            if elapsed <= stale_after_seconds:
-                continue
+    def host_list_busy_with_task_state(
+        self, *, task_status: int, host_task_type: int
+    ) -> list[DbRow]:
+        """Read busy hosts with existence flags for the requested running work.
 
-            task_pid_alive = bool(task_pid) and tools.pid_exists(task_pid)
-            host_owner_alive = bool(host_owner_pid) and tools.pid_exists(host_owner_pid)
-
-            # Legitimate long-running execution still owns both the task and
-            # the host with the same live PID.
-            if (
-                host_is_busy
-                and task_pid_alive
-                and host_owner_pid == task_pid
-            ):
-                continue
-
-            reasons = []
-            if not host_is_busy:
-                reasons.append("HOST_NOT_BUSY")
-            if task_pid in (None, k.HOST_UNLOCKED_PID):
-                reasons.append("TASK_PID_MISSING")
-            elif not task_pid_alive:
-                reasons.append("TASK_PID_STALE")
-            if host_is_busy and host_owner_pid not in (None, k.HOST_UNLOCKED_PID):
-                if not host_owner_alive:
-                    reasons.append("HOST_PID_STALE")
-                elif task_pid not in (None, k.HOST_UNLOCKED_PID) and host_owner_pid != task_pid:
-                    reasons.append("HOST_PID_MISMATCH")
-            elif host_is_busy:
-                reasons.append("HOST_PID_MISSING")
-
-            if not reasons:
-                reasons.append("STALE_RUNNING_TTL_EXPIRED")
-
-            try:
-                self.host_task_update(
-                    task_id=task_id,
-                    NU_STATUS=k.TASK_PENDING,
-                    DT_HOST_TASK=now,
-                    NA_MESSAGE=(
-                        "Stale operational HOST_TASK recovered by janitor "
-                        f"({', '.join(reasons)})"
-                    ),
-                )
-            except Exception as e:
-                self._log_db_error(
-                    "db_update_failed",
-                    operation="host_task_cleanup_recover_running",
-                    table="HOST_TASK",
-                    task_id=task_id,
-                    host_id=host_id,
-                    error=repr(e),
-                )
-                continue
-
-            should_release_host = (
-                host_is_busy
-                and (
-                    host_owner_pid in (None, k.HOST_UNLOCKED_PID)
-                    or not host_owner_alive
-                    or (
-                        task_pid not in (None, k.HOST_UNLOCKED_PID)
-                        and host_owner_pid == task_pid
-                        and not task_pid_alive
-                    )
-                )
-            )
-
-            if not should_release_host:
-                continue
-
-            try:
-                self.host_update(
-                    host_id=host_id,
-                    IS_BUSY=False,
-                    NU_PID=k.HOST_UNLOCKED_PID,
-                )
-            except Exception as e:
-                self._log_db_error(
-                    "db_update_failed",
-                    operation="host_task_cleanup_release_host_lock",
-                    table="HOST",
-                    task_id=task_id,
-                    host_id=host_id,
-                    error=repr(e),
-                )
-        
-    # ======================================================================
-    # HOST_TASK OPERATIONS
-    # ======================================================================
-    def check_host_task(self, **kwargs) -> list[dict]:
-        """
-        Query HOST_TASK using dynamic filters.
-
-        This helper is intentionally generic. Callers are responsible for
-        deciding whether they care about active rows, terminal rows, or both.
+        Args:
+            task_status (int): State matched in FILE_TASK and HOST_TASK.
+            host_task_type (int): HOST_TASK type included in the existence check.
 
         Returns:
-            list[dict]: Matching HOST_TASK rows (may be empty).
+            list[DbRow]: ID_HOST, DT_BUSY, NU_PID, FILE_RUNNING,
+            and HOST_PROCESSING_RUNNING. Timestamps and nullable PIDs are native
+            database values; existence flags are booleans. No liveness checks,
+            timeout decisions, or writes are performed.
+
+        Raises:
+            psycopg.Error: If the maintenance snapshot cannot be read.
         """
+        return self._select_raw(
+            query=sql.SQL(
+                """
+                SELECT
+                    H."ID_HOST",
+                    H."DT_BUSY",
+                    H."NU_PID",
+                    EXISTS(
+                        SELECT 1
+                        FROM {schema}."FILE_TASK" FT
+                        WHERE FT."FK_HOST" = H."ID_HOST"
+                        AND FT."NU_STATUS" = %s
+                    ) AS "FILE_RUNNING",
+                    EXISTS(
+                        SELECT 1
+                        FROM {schema}."HOST_TASK" HT
+                        WHERE HT."FK_HOST" = H."ID_HOST"
+                        AND HT."NU_STATUS" = %s
+                        AND HT."NU_TYPE" = %s
+                    ) AS "HOST_PROCESSING_RUNNING"
+                FROM {schema}."HOST" H
+                WHERE H."IS_BUSY" = 1
+            """
+            ).format(
+                schema=sql.Identifier(self.schema),
+            ),
+            params=(task_status, task_status, host_task_type),
+        )
 
-        valid_fields = self.VALID_FIELDS_HOST_TASK
-        where_clause = {}
+    def _host_storage_fields(self, data: Mapping[str, object]) -> DbRow:
+        """Normalize only host flags while retaining the remaining update values.
 
-        for key, value in kwargs.items():
+        Args:
+            data (Mapping[str, object]): Host values already authorized by the
+                caller or subsequently checked by the CRUD builder.
 
-            if key not in valid_fields:
-                raise ValueError(
-                    f"Invalid field in check_host_task(): '{key}'"
+        Returns:
+            DbRow: Copy with non-null IS_BUSY/IS_OFFLINE represented as integers.
+
+        Raises:
+            ValueError: If a supplied operational flag is invalid.
+        """
+        return {
+            name: self._storage_flag(value)
+            if name in ("IS_BUSY", "IS_OFFLINE") and value is not None
+            else value
+            for name, value in data.items()
+        }
+
+    def _host_release_expired_cooldowns(
+        self, cooldown_seconds: int = k.SFTP_BUSY_COOLDOWN_SECONDS
+    ) -> int:
+        """Release only expired reservations owned by the transient-cooldown sentinel.
+
+        Args:
+            cooldown_seconds (int): Minimum busy age before release.
+
+        Returns:
+            int: Released host count; unrelated active worker reservations are preserved.
+
+        Raises:
+            psycopg.Error: If the conditional release fails.
+        """
+        data = {"IS_BUSY": 0, "DT_BUSY": None, "NU_PID": k.HOST_UNLOCKED_PID}
+        where_conditions = {
+            "IS_BUSY": 1,
+            "NU_PID": k.HOST_TRANSIENT_BUSY_PID,
+            "DT_BUSY__lt": datetime.utcnow() - timedelta(seconds=cooldown_seconds),
+        }
+        return self._update_batch(
+            table="HOST",
+            data=data,
+            where=where_conditions,
+        )
+
+    def host_release_reservation(
+        self, host_id: int, owner_pid: int | None, busy_since: datetime | None
+    ) -> bool:
+        """Release only the reservation inspected by a safe-release or janitor pass.
+
+        Args:
+            host_id (int): Host primary key.
+            owner_pid (int | None): Owner observed during the eligibility check.
+            busy_since (datetime | None): Observed reservation timestamp; compare
+                both fields so a newer reservation cannot be released by stale data.
+
+        Returns:
+            bool: True when that exact reservation was released; False when the
+            host changed after selection. A successful release invalidates its snapshot.
+
+        Raises:
+            psycopg.Error: If the conditional update fails.
+        """
+        with self._unit_of_work():
+            data = {"IS_BUSY": 0, "NU_PID": k.HOST_UNLOCKED_PID}
+            where_conditions = {
+                "ID_HOST": host_id,
+                "IS_BUSY": 1,
+                "NU_PID": owner_pid,
+                "DT_BUSY": busy_since,
+            }
+            affected = self._update_batch(
+                table="HOST",
+                data=data,
+                where=where_conditions,
+            )
+            if affected:
+                self._summary_publish_host_scope(
+                    host_id, reason="host_reservation_released"
+                )
+            return affected == 1
+
+    def _host_reserve(self, host_id: int, require_online: bool) -> bool:
+        """Acquire a free host through one conditional update without a blind commit.
+
+        Args:
+            host_id (int): Candidate host primary key.
+            require_online (bool): Also require IS_OFFLINE=0 when reserving.
+
+        Returns:
+            bool: True only for one matched free host; False is an expected race loss.
+
+        Raises:
+            psycopg.Error: If reservation SQL fails.
+        """
+        where_conditions: DbRow = {"ID_HOST": host_id, "IS_BUSY": 0}
+        if require_online:
+            where_conditions["IS_OFFLINE"] = 0
+        data = {"IS_BUSY": 1, "DT_BUSY": datetime.utcnow(), "NU_PID": os.getpid()}
+        return (
+            self._update_batch(
+                table="HOST",
+                data=data,
+                where=where_conditions,
+            )
+            == 1
+        )
+
+    def _host_update_phase_markers_from_history(
+        self, *, host_id: int, history_update: Mapping[str, object]
+    ) -> None:
+        """Advance dated successful phase markers without overwriting newer history.
+
+        Args:
+            host_id (int): Parent host primary key.
+            history_update (Mapping[str, object]): Explicit phase statuses and
+                completion timestamps supplied to the history update.
+
+        Returns:
+            None. Only DONE phases with a non-null completion timestamp advance.
+
+        Raises:
+            psycopg.Error: If updating the parent's markers fails.
+        """
+        assignments: list[sql.Composable] = []
+        params: list[object] = []
+        for phase, source, target in (
+            ("NU_STATUS_BACKUP", "DT_BACKUP", "DT_LAST_BACKUP"),
+            ("NU_STATUS_PROCESSING", "DT_PROCESSED", "DT_LAST_PROCESSING"),
+        ):
+            if (
+                history_update.get(phase) == k.TASK_DONE
+                and history_update.get(source) is not None
+            ):
+                column = sql.Identifier(target)
+                assignments.append(
+                    sql.SQL(
+                        "{} = CASE WHEN {} IS NULL OR {} < %s THEN %s ELSE {} END"
+                    ).format(column, column, column, column)
+                )
+                params.extend((history_update[source], history_update[source]))
+        if assignments:
+            self._execute(
+                query=sql.SQL('UPDATE {} SET {} WHERE "ID_HOST" = %s').format(
+                    sql.Identifier(self.schema, "HOST"), sql.SQL(", ").join(assignments)
+                ),
+                params=(*params, host_id),
+            )
+
+    # --- HOST_TASK ---
+
+    def host_task_list(self, **kwargs: object) -> list[DbRow]:
+        """Read host tasks with exact or membership filters and stable legacy keys.
+
+        Args:
+            **kwargs (object): Supported HOST_TASK columns mapped to a scalar
+                equality value or a list/tuple/set of allowed values.
+
+        Returns:
+            list[DbRow]: Rows keyed as HOST_TASK__COLUMN, newest task ID first.
+
+        Raises:
+            ValueError: If a requested field is unsupported.
+            psycopg.Error: If task lookup fails.
+        """
+        if kwargs:
+            self._validate_fields(tuple(kwargs), self.VALID_FIELDS_HOST_TASK)
+        where_conditions = {
+            f"{name}__in"
+            if isinstance(value, (list, tuple, set))
+            else name: tuple(value)
+            if isinstance(value, (list, tuple, set))
+            else value
+            for name, value in kwargs.items()
+        }
+        order_by = (("ID_HOST_TASK", "DESC"),)
+        rows = self._select_batch(
+            table="HOST_TASK", where=where_conditions, order_by=order_by
+        )
+        return [
+            {f"HOST_TASK__{name}": value for name, value in row.items()} for row in rows
+        ]
+
+    def host_task_create(self, **kwargs: object) -> int:
+        """Insert a host task with canonical JSON and return its generated identity.
+
+        Args:
+            **kwargs (object): Supported HOST_TASK fields. Defaults are PENDING,
+                the current UTC timestamp, a neutral FILTER, and an initial message.
+
+        Returns:
+            int: ID_HOST_TASK obtained with RETURNING, without sequence inference.
+
+        Raises:
+            ValueError: If fields or the JSON filter are invalid.
+            psycopg.Error: If task creation fails.
+        """
+        if kwargs:
+            self._validate_fields(tuple(kwargs), self.VALID_FIELDS_HOST_TASK)
+        payload = dict(kwargs)
+        payload.setdefault("DT_HOST_TASK", datetime.utcnow())
+        payload.setdefault("NU_STATUS", k.TASK_PENDING)
+        payload.setdefault(
+            "NA_MESSAGE",
+            f"New HOST_TASK created for host {payload.get('FK_HOST', 'UNKNOWN')}",
+        )
+        payload["FILTER"] = Json(
+            json.loads(self._host_task_serialize_filter(payload.get("FILTER")))
+        )
+        with self._unit_of_work():
+            row = self._insert_row(
+                table="HOST_TASK", data=payload, returning=("ID_HOST_TASK",)
+            )
+            if row is None:
+                raise RuntimeError("HOST_TASK insert returned no identity.")
+            self._summary_publish_host_scope(
+                cast(int | None, payload.get("FK_HOST")), reason="host_task_create"
+            )
+            return cast(int, row["ID_HOST_TASK"])
+
+    def host_task_read(
+        self,
+        task_id: int | None = None,
+        task_status: int | None = k.TASK_PENDING,
+        task_type: int | list[int] | None = None,
+        check_host_busy: bool = False,
+        check_host_offline: bool = False,
+        lock_host: bool = False,
+    ) -> DbRow | None:
+        """Select one host task and optionally reserve its currently available host.
+
+        Args:
+            task_id (int | None): Explicit ID bypassing queue eligibility filters.
+            task_status (int | None): Required queue status when no ID is given.
+            task_type (int | list[int] | None): Optional task type or type set.
+            check_host_busy (bool): Require a free host and expire old cooldowns.
+            check_host_offline (bool): Require an online host.
+            lock_host (bool): Reserve the host when check_host_busy is also True.
+
+        Returns:
+            DbRow | None: HOST_TASK__* and HOST__* fields plus decoded host_filter,
+            or None when no candidate exists or its host reservation was lost.
+            This method does not claim the task's NU_STATUS.
+
+        Raises:
+            psycopg.Error: If selection or conditional host reservation fails.
+        """
+        if check_host_busy:
+            self._host_release_expired_cooldowns()
+        conditions: list[sql.Composable] = []
+        params: list[object] = []
+        if task_id:
+            conditions.append(sql.SQL('t."ID_HOST_TASK" = %s'))
+            params.append(task_id)
+        else:
+            conditions.append(
+                sql.SQL(
+                    't."NU_STATUS" IS NULL'
+                    if task_status is None
+                    else 't."NU_STATUS" = %s'
+                )
+            )
+            if task_status is not None:
+                params.append(task_status)
+            if isinstance(task_type, list):
+                conditions.append(sql.SQL('t."NU_TYPE" = ANY(%s::smallint[])'))
+                params.append(task_type)
+            elif task_type is not None:
+                conditions.append(sql.SQL('t."NU_TYPE" = %s'))
+                params.append(task_type)
+            if check_host_busy:
+                conditions.append(sql.SQL('h."IS_BUSY" = 0'))
+            if check_host_offline:
+                conditions.append(sql.SQL('h."IS_OFFLINE" = 0'))
+        row = self._select_task_with_host(
+            table="HOST_TASK",
+            conditions=conditions,
+            params=params,
+            order_by=sql.SQL('t."DT_HOST_TASK" ASC NULLS FIRST, t."ID_HOST_TASK" ASC'),
+        )
+        if row is None or (
+            lock_host
+            and check_host_busy
+            and not self._host_reserve(
+                cast(int, row["HOST__ID_HOST"]), check_host_offline
+            )
+        ):
+            return None
+        raw = row.get("HOST_TASK__FILTER")
+        try:
+            decoded = (
+                json.loads(raw) if isinstance(raw, (str, bytes, bytearray)) else raw
+            )
+        except (ValueError, UnicodeDecodeError):
+            decoded = None
+        row["host_filter"] = decoded if isinstance(decoded, dict) else {}
+        return row
+
+    def host_task_update(
+        self,
+        task_id: int | None = None,
+        where_dict: Mapping[str, object] | None = None,
+        expected_status: int | None = None,
+        **kwargs: object,
+    ) -> DbRow:
+        """Update host tasks, optionally using a status comparison for a safe claim.
+
+        Args:
+            task_id (int | None): Task primary key when where_dict is absent.
+            where_dict (Mapping[str, object] | None): Explicit supported filters;
+                copied before adding expected_status so caller data is not mutated.
+            expected_status (int | None): Required current NU_STATUS.
+            **kwargs (object): Supported replacements. FILTER is canonical JSON;
+                PENDING clears NU_PID and RUNNING defaults it to the logger PID.
+
+        Returns:
+            DbRow: success, rows_affected, and updated_fields. A lost status claim
+            returns success=True and rows_affected=0; empty updates return False.
+
+        Raises:
+            ValueError: If identity, fields, filters, or JSON are invalid.
+            psycopg.Error: If task update fails.
+        """
+        if task_id is None and not where_dict:
+            raise ValueError(
+                "host_task_update requires task_id or nonempty where_dict."
+            )
+        payload = dict(kwargs)
+        if not payload:
+            return {"success": False, "rows_affected": 0, "updated_fields": {}}
+        self._validate_fields(tuple(payload), self.VALID_FIELDS_HOST_TASK)
+        if payload.get("NU_STATUS") == k.TASK_PENDING:
+            payload["NU_PID"] = None
+        elif payload.get("NU_STATUS") == k.TASK_RUNNING:
+            payload.setdefault("NU_PID", self.log.pid)
+        if "NA_MESSAGE" in payload:
+            payload["NA_MESSAGE"] = errors.canonicalize_persisted_error_message(
+                cast(str | None, payload["NA_MESSAGE"])
+            )
+        storage = dict(payload)
+        if "FILTER" in payload:
+            payload["FILTER"] = self._host_task_serialize_filter(payload["FILTER"])
+            storage["FILTER"] = Json(json.loads(cast(str, payload["FILTER"])))
+        where_conditions = dict(where_dict) if where_dict else {"ID_HOST_TASK": task_id}
+        if expected_status is not None:
+            where_conditions["NU_STATUS"] = expected_status
+        with self._unit_of_work():
+            affected = self._update_batch(
+                table="HOST_TASK", data=storage, where=where_conditions
+            )
+            host_id = cast(int | None, where_conditions.get("FK_HOST"))
+            if affected and task_id is not None:
+                host_id = self._task_read_host_id(table="HOST_TASK", task_id=task_id)
+            if affected:
+                self._summary_publish_host_scope(host_id, reason="host_task_update")
+            return {
+                "success": True,
+                "rows_affected": affected,
+                "updated_fields": payload,
+            }
+
+    def host_task_suspend_by_host(self, host_id: int) -> None:
+        """Suspend host-dependent pending/running host tasks after connectivity loss.
+
+        Args:
+            host_id (int): Host whose CHECK, PROCESSING, and CONNECTION tasks depend
+                on connectivity. Statistics and backlog task types are excluded.
+
+        Returns:
+            None. Affected tasks use SUSPENDED and keep their existing identity.
+
+        Raises:
+            psycopg.Error: If task suspension fails.
+        """
+        with self._unit_of_work():
+            data = {
+                "NU_STATUS": k.TASK_SUSPENDED,
+                "NA_MESSAGE": "Host unreachable. Tasks suspended automatically.",
+            }
+            where_conditions = {
+                "FK_HOST": host_id,
+                "NU_STATUS__in": (k.TASK_PENDING, k.TASK_RUNNING),
+                "NU_TYPE__in": k.HOST_TASK_CONNECTIVITY_TYPES,
+            }
+            affected = self._update_batch(
+                table="HOST_TASK",
+                data=data,
+                where=where_conditions,
+            )
+            if affected:
+                self._summary_publish_host_scope(
+                    host_id, reason="host_task_suspend_by_host"
                 )
 
-            if isinstance(value, (list, tuple, set)):
-                where_clause[key] = ("IN", list(value))
-            else:
-                where_clause[key] = value
+    def host_task_resume_by_host(
+        self, host_id: int, busy_timeout_seconds: int = k.HOST_BUSY_TIMEOUT
+    ) -> None:
+        """Resume eligible host tasks without changing their type or reviving FROZEN.
 
-        rows = self._select_custom(
-            table="HOST_TASK ht",
-            where=where_clause,
-            order_by="ht.ID_HOST_TASK DESC",
+        Args:
+            host_id (int): Recovered host identity.
+            busy_timeout_seconds (int): Minimum age for reclaiming RUNNING tasks.
+
+        Returns:
+            None. SUSPENDED, ERROR, and stale RUNNING host-dependent tasks become
+            PENDING and clear NU_PID. Statistics tasks remain untouched.
+
+        Raises:
+            psycopg.Error: If any part of the resumption fails.
+        """
+        base = {"FK_HOST": host_id, "NU_TYPE__in": k.HOST_TASK_CONNECTIVITY_TYPES}
+        conditions = (
+            {"NU_STATUS": k.TASK_SUSPENDED},
+            {"NU_STATUS": k.TASK_ERROR},
+            {
+                "NU_STATUS": k.TASK_RUNNING,
+                "DT_HOST_TASK__lt": datetime.utcnow()
+                - timedelta(seconds=busy_timeout_seconds),
+            },
         )
+        data = {
+            "NU_STATUS": k.TASK_PENDING,
+            "NU_PID": None,
+            "NA_MESSAGE": "Host reachable again — task resumed automatically",
+        }
+        with self._unit_of_work():
+            affected = 0
+            for condition in conditions:
+                where_conditions = {**base, **condition}
+                affected += self._update_batch(
+                    table="HOST_TASK", data=data, where=where_conditions
+                )
+            if affected:
+                self._summary_publish_host_scope(
+                    host_id, reason="host_task_resume_by_host"
+                )
 
-        return rows or []
+    def host_task_list_with_host_state(
+        self, *, task_types: Sequence[int], task_statuses: Sequence[int]
+    ) -> list[DbRow]:
+        """Read selected host tasks and their host reservation in one snapshot.
 
-    def _serialize_host_task_filter(self, filter_value: Any) -> str:
+        Args:
+            task_types (Sequence[int]): Task types to include; empty matches none.
+            task_statuses (Sequence[int]): Task states to include; empty matches none.
+
+        Returns:
+            list[DbRow]: ID_HOST_TASK, FK_HOST, NU_STATUS, DT_HOST_TASK,
+            NU_PID, IS_BUSY, HOST_OWNER_PID, and DT_BUSY. Nullable timestamps and
+            PIDs retain their database values. Recovery decisions belong to the caller.
+
+        Raises:
+            psycopg.Error: If reading tasks and host reservations fails.
         """
-        Normalize and serialize a HOST_TASK filter for DB persistence.
+        query = sql.SQL(
+            """
+            SELECT HT."ID_HOST_TASK", HT."FK_HOST", HT."NU_STATUS",
+                   HT."DT_HOST_TASK", HT."NU_PID", H."IS_BUSY",
+                   H."NU_PID" AS "HOST_OWNER_PID", H."DT_BUSY"
+            FROM {schema}."HOST_TASK" HT
+            JOIN {schema}."HOST" H ON H."ID_HOST" = HT."FK_HOST"
+            WHERE HT."NU_TYPE" = ANY(%s::smallint[])
+              AND HT."NU_STATUS" = ANY(%s::smallint[])
+            """
+        ).format(schema=sql.Identifier(self.schema))
+        params = (list(task_types), list(task_statuses))
+        return self._select_raw(query=query, params=params)
 
-        The operational queue treats FILTER as durable state, so inserts and
-        updates must store it canonically to avoid accidental churn caused by
-        JSON key ordering differences.
-        """
-        if filter_value is None:
-            normalized = dict(k.NONE_FILTER)
-        elif isinstance(filter_value, (bytes, bytearray)):
-            normalized = json.loads(filter_value.decode("utf-8"))
-        elif isinstance(filter_value, dict):
-            normalized = dict(filter_value)
-        elif isinstance(filter_value, str):
-            try:
-                normalized = json.loads(filter_value)
-            except json.JSONDecodeError:
-                raise ValueError("FILTER must be a valid JSON string or dict.")
-        else:
-            normalized = filter_value
-
-        return json.dumps(normalized, sort_keys=True, ensure_ascii=False)
-
-    def _find_reusable_singleton_host_task(
-        self,
-        tasks: list[dict],
-    ) -> tuple[Optional[dict], int]:
-        """
-        Pick the best reusable row for the singleton-per-type HOST_TASK contract.
-
-        Preference order:
-            1. PENDING task
-            2. RUNNING task
-            3. Otherwise the newest terminal row
-        """
-        if not tasks:
-            return None, 0
-
-        pending = next(
-            (
-                task
-                for task in tasks
-                if task.get("HOST_TASK__NU_STATUS") == k.TASK_PENDING
-            ),
-            None,
-        )
-        if pending:
-            return pending, len(tasks)
-
-        running = next(
-            (
-                task
-                for task in tasks
-                if task.get("HOST_TASK__NU_STATUS") == k.TASK_RUNNING
-            ),
-            None,
-        )
-        if running:
-            return running, len(tasks)
-
-        return tasks[0], len(tasks)
-
-    def queue_host_task(
-        self,
-        host_id: int,
-        task_type: int,
-        task_status: int,
-        filter_dict: dict,
-    ) -> dict:
-        """
-        Deterministically enqueue or refresh the singleton HOST_TASK row for one type.
+    def host_task_enqueue(
+        self, host_id: int, task_type: int, task_status: int, filter_dict: DbRow
+    ) -> DbRow:
+        """Deterministically enqueue or refresh the singleton HOST_TASK row for one type.
 
         Queue contract:
             - one durable row per `FK_HOST + NU_TYPE`
@@ -1538,2808 +974,1322 @@ class dbHandlerBKP(DBHandlerBase):
 
         The summary outbox is invalidated after the queue mutation. Derived
         counters are never recalculated into ``BPDATA.HOST``.
+
+        Args:
+            host_id (int): Parent host identity.
+            task_type (int): Singleton task type within the host.
+            task_status (int): Target state for a new or reusable non-running task.
+            filter_dict (dict[str, object]): Canonical shared filter payload.
+
+        Returns:
+            DbRow: Current host status. Existing RUNNING tasks are preserved without replacement.
+
+        Raises:
+            ValueError: If required identity, metadata, or limits are invalid.
+            psycopg.Error: If the requested persistence operation fails.
         """
-        tasks = self.check_host_task(
-            FK_HOST=host_id,
-            NU_TYPE=task_type,
-        )
-
-        existing, match_count = self._find_reusable_singleton_host_task(tasks)
-
+        tasks = self.host_task_list(FK_HOST=host_id, NU_TYPE=task_type)
+        existing = self._host_task_find_reusable(tasks)
+        match_count = len(tasks)
         if match_count > 1:
-            self._log_db_warning(
+            self.log.warning_event(
                 "db_duplicate_singleton_rows",
-                operation="queue_host_task",
+                operation="host_task_enqueue",
                 table="HOST_TASK",
                 host_id=host_id,
                 task_type=task_type,
                 matches=match_count,
             )
-
         if existing:
             status = existing["HOST_TASK__NU_STATUS"]
-
-            # RUNNING task → preserve the live execution context. A new request
-            # should not rewrite the filter of an in-flight worker.
             if status == k.TASK_RUNNING:
-                self._log_db_warning(
+                self.log.warning_event(
                     "db_running_singleton_preserved",
-                    operation="queue_host_task",
+                    operation="host_task_enqueue",
                     table="HOST_TASK",
                     host_id=host_id,
                     task_id=existing["HOST_TASK__ID_HOST_TASK"],
                     task_type=task_type,
                 )
-
-            # PENDING task or terminal row -> refresh in place and keep the
-            # singleton-per-type identity stable.
             else:
                 self.host_task_update(
                     task_id=existing["HOST_TASK__ID_HOST_TASK"],
                     FILTER=filter_dict,
                     NU_TYPE=task_type,
                     NU_STATUS=task_status,
-                    DT_HOST_TASK=datetime.now(),
-                    NA_MESSAGE=(
-                        "HOST_TASK refreshed by queue_host_task "
-                        f"(type={task_type}, previous status={status})"
-                    ),
+                    DT_HOST_TASK=datetime.utcnow(),
+                    NA_MESSAGE=f"HOST_TASK refreshed by host_task_enqueue (type={task_type}, previous status={status})",
                 )
-
         else:
-            # No row exists yet for this exact type → create the singleton.
             self.host_task_create(
                 NU_TYPE=task_type,
                 NU_STATUS=task_status,
                 FK_HOST=host_id,
                 FILTER=filter_dict,
             )
-
-        self.request_host_summary_refresh(
-            host_id,
-            reason="queue_host_task",
-        )
+        self.host_request_summary_refresh(host_id, reason="host_task_enqueue")
         return self.host_read_status(host_id)
 
-    
-    def host_task_create(self, **kwargs) -> int:
-        """
-        Create a new `HOST_TASK` row and return its generated ID.
-
-        The payload is validated against `VALID_FIELDS_HOST_TASK`, normalized,
-        and written with sensible defaults for timestamp, status, filter, and
-        message when callers omit them.
-        """
-        self._connect()
-        try:
-            valid_fields = getattr(self, "VALID_FIELDS_HOST_TASK", None)
-            if not valid_fields:
-                raise ValueError("VALID_FIELDS_HOST_TASK not defined in handler.")
-
-            payload = {}
-            for key, val in kwargs.items():
-                if key not in valid_fields:
-                    raise ValueError(f"Invalid field '{key}' for HOST_TASK table.")
-                payload[key] = val
-
-            if "DT_HOST_TASK" not in payload:
-                payload["DT_HOST_TASK"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            if "NU_STATUS" not in payload:
-                payload["NU_STATUS"] = k.TASK_PENDING
-
-            payload["FILTER"] = self._serialize_host_task_filter(
-                payload.get("FILTER")
-            )
-
-            if "NA_MESSAGE" not in payload:
-                host_id = payload.get("FK_HOST", "UNKNOWN")
-                payload["NA_MESSAGE"] = f"New HOST_TASK created for host {host_id}"
-
-            task_id = self._insert_row(
-                table="HOST_TASK",
-                data=payload,
-                commit=True
-            )
-
-            self._summary_publish_host_scope(
-                payload.get("FK_HOST"),
-                reason="host_task_create",
-            )
-            return int(task_id or 0)
-
-        except Exception as e:
-            self.db_connection.rollback()
-            self._log_db_error(
-                "db_insert_failed",
-                operation="host_task_create",
-                table="HOST_TASK",
-                host_id=payload.get("FK_HOST") if "payload" in locals() else None,
-                error=repr(e),
-            )
-            raise
-
-        finally:
-            self._disconnect()
-
-    def host_task_statistics_create(
-        self,
-        host_id: int,
-        *,
-        log_if_active: bool = True,
-    ) -> int:
-        """Publish a compatibility refresh request without creating a task.
-
-        The former statistics task recalculated legacy counters in
-        ``BPDATA.HOST``. The summary worker now owns those calculations. This
-        temporary public shim keeps external callers safe while producers are
-        migrated to :meth:`request_host_summary_refresh`.
-        """
-        self.request_host_summary_refresh(
-            host_id,
-            reason="legacy_host_task_statistics_create",
-        )
-        return 0
-
-
-    def host_task_read(
-        self,
-        task_id: Optional[int] = None,
-        task_status: Optional[int] = k.TASK_PENDING,
-        task_type: Optional[Union[int, List[int]]] = None,
-        check_host_busy: bool = False,
-        check_host_offline: bool = False,
-        lock_host: bool = False,
-    ) -> Optional[tuple]:
-        """
-        Return one host task joined with its host metadata.
-
-        This is the main polling helper used by workers that consume
-        `HOST_TASK` entries.
-
-        When `lock_host=True`, the method also attempts to atomically claim the
-        host before returning the task to the caller.
-
-        `check_host_offline=True` is opt-in because only host-dependent
-        consumers such as discovery or connectivity checks should skip hosts
-        already marked offline.
-        """
-
-        self._connect()
-        try:
-            if check_host_busy:
-                self._release_expired_transient_busy_cooldowns()
-
-            where = {}
-
-            if task_id:
-                where["HT.ID_HOST_TASK"] = task_id
-
-            else:
-                where["HT.NU_STATUS"] = task_status
-
-                if task_type is not None:
-                    if isinstance(task_type, list):
-                        where["HT.NU_TYPE"] = ("IN", task_type)
-                    else:
-                        where["HT.NU_TYPE"] = task_type
-
-                if check_host_busy:
-                    where["H.IS_BUSY"] = False
-
-                if check_host_offline:
-                    where["H.IS_OFFLINE"] = False
-
-            rows = self._select_custom(
-                table="HOST_TASK HT",
-                joins=["JOIN HOST H ON H.ID_HOST = HT.FK_HOST"],
-                where=where,
-                order_by="HT.DT_HOST_TASK ASC",
-                limit=1,
-            )
-
-            if not rows:
-                return None
-
-            row = rows[0]
-
-            host_id = row["HOST__ID_HOST"]
-
-            # Atomically claim the host after the read so two workers cannot
-            # race on the same task selection.
-            if lock_host and check_host_busy:
-                lock_query = """
-                    UPDATE HOST
-                    SET
-                        IS_BUSY = 1,
-                        DT_BUSY = NOW(),
-                        NU_PID = %s
-                    WHERE
-                        ID_HOST = %s
-                        AND IS_BUSY = 0
-                """
-                lock_params = [os.getpid(), host_id]
-
-                # A host that flipped offline after SELECT should not be
-                # claimed by the lock step.
-                if check_host_offline:
-                    lock_query += " AND IS_OFFLINE = 0"
-
-                self.cursor.execute(lock_query, lock_params)
-
-                if self.cursor.rowcount == 0:
-                    return None
-
-                self.db_connection.commit()
-
-            # Consumers expect a parsed filter payload alongside the raw row.
-            raw = row.get("HOST_TASK__FILTER") or "{}"
-            try:
-                row["host_filter"] = json.loads(raw)
-            except:
-                row["host_filter"] = {}
-
-            return row
-
-
-        finally:
-            self._disconnect()
-
-
-    def host_task_update(
-        self,
-        task_id: Optional[int] = None,
-        where_dict: Optional[Dict[str, Any]] = None,
-        expected_status: Optional[int] = None,
-        **kwargs,
-    ) -> Dict[str, Any]:
-        """
-        Update `HOST_TASK` rows safely with validation and optional status guard.
-
-        Callers may target a specific row by `task_id` or provide a broader
-        `where_dict`. When `expected_status` is set, the update behaves like a
-        lightweight optimistic lock.
-        """
-
-        if task_id is None and not where_dict:
-            raise ValueError("host_task_update() requires either 'task_id' or 'where_dict' argument.")
-
-        valid_fields = getattr(self, "VALID_FIELDS_HOST_TASK", set())
-        set_dict: Dict[str, Any] = {}
-
-        for key, value in kwargs.items():
-            if key in valid_fields:
-                set_dict[key] = value
-            else:
-                self._log_db_warning(
-                    "db_invalid_input",
-                    operation="host_task_update",
-                    table="HOST_TASK",
-                    error=f"Ignored invalid field '{key}'.",
-                )
-
-        # Pending rows should not keep ownership PIDs; running rows should.
-        if "NU_STATUS" in set_dict:
-            status = set_dict["NU_STATUS"]
-            if status == k.TASK_PENDING:
-                set_dict["NU_PID"] = None
-            elif status == k.TASK_RUNNING and "NU_PID" not in set_dict:
-                set_dict["NU_PID"] = getattr(self.log, "pid", None)
-
-        if "FILTER" in set_dict:
-            set_dict["FILTER"] = self._serialize_host_task_filter(set_dict["FILTER"])
-
-        if "NA_MESSAGE" in set_dict:
-            set_dict["NA_MESSAGE"] = errors.canonicalize_persisted_error_message(
-                set_dict.get("NA_MESSAGE")
-            )
-
-        if not set_dict:
-            self._log_db_warning(
-                "db_invalid_input",
-                operation="host_task_update",
-                table="HOST_TASK",
-                error="No valid fields for update.",
-            )
-            return {"success": False, "rows_affected": 0, "updated_fields": {}}
-
-        where = where_dict if where_dict else {"ID_HOST_TASK": task_id}
-
-        if expected_status is not None:
-            where["NU_STATUS"] = expected_status
-
-        try:
-            rows_affected = self._update_row(
-                table="HOST_TASK",
-                data=set_dict,
-                where=where,
-                commit=True,
-            )
-
-            if rows_affected == 0:
-                self._log_db_warning(
-                    "db_update_no_match",
-                    operation="host_task_update",
-                    table="HOST_TASK",
-                    task_id=task_id,
-                    where_mode="task_id" if task_id is not None else "where_dict",
-                )
-
-            host_scope_id = None
-            if task_id is not None:
-                host_scope_id = self._summary_lookup_host_task_host(task_id)
-            elif where_dict and "FK_HOST" in where_dict:
-                host_scope_id = where_dict.get("FK_HOST")
-
-            self._summary_publish_host_scope(
-                host_scope_id,
-                reason="host_task_update",
-            )
-
-            return {"success": True, "rows_affected": rows_affected, "updated_fields": set_dict}
-
-        except Exception as e:
-            self.db_connection.rollback()
-            self._log_db_error(
-                "db_update_failed",
-                operation="host_task_update",
-                table="HOST_TASK",
-                task_id=task_id,
-                error=repr(e),
-            )
-            raise
-
-            
-    def host_task_suspend_by_host(self, host_id: int) -> None:
-        """
-        Suspend host-dependent HOST_TASK entries for a specific host.
-
-        Only connectivity/operational tasks are suspended here. Statistics
-        updates are DB-only maintenance work and intentionally remain outside
-        host online/offline churn.
+    @staticmethod
+    def _host_task_serialize_filter(filter_value: object) -> str:
+        """Canonicalize the JSON object used by host-task scheduling and responses.
 
         Args:
-            host_id (int): Unique identifier (ID_HOST) of the host whose tasks
-                should be suspended.
+            filter_value (object): Dict, JSON object text/bytes, or None for NONE_FILTER.
 
         Returns:
-            None
+            str: JSON object text with sorted keys and preserved Unicode.
 
         Raises:
-            Exception: Propagates any database access or SQL execution errors.
+            ValueError: If decoding fails or the JSON value is not an object.
         """
+        if filter_value is None:
+            normalized = dict(k.NONE_FILTER)
+        elif isinstance(filter_value, dict):
+            normalized = filter_value
+        elif isinstance(filter_value, (str, bytes, bytearray)):
+            try:
+                normalized = json.loads(filter_value)
+            except (ValueError, UnicodeDecodeError) as error:
+                raise ValueError("FILTER must contain a valid JSON object.") from None
+        else:
+            raise ValueError("FILTER must contain a JSON object.")
+        if not isinstance(normalized, dict):
+            raise ValueError("FILTER must contain a JSON object.")
         try:
-            affected = 0
-            host_dependent_types = (
-                k.HOST_TASK_CHECK_TYPE,
-                k.HOST_TASK_PROCESSING_TYPE,
-                k.HOST_TASK_CHECK_CONNECTION_TYPE,
-            )
+            return json.dumps(normalized, sort_keys=True, ensure_ascii=False)
+        except (TypeError, ValueError):
+            raise ValueError("FILTER must contain JSON-serializable values.") from None
 
-            for status in (k.TASK_PENDING, k.TASK_RUNNING):
-                affected += self._update_row(
-                    table="HOST_TASK",
-                    data={
-                        "NU_STATUS": k.TASK_SUSPENDED,
-                        "NA_MESSAGE": "Host unreachable. Tasks suspended automatically.",
-                    },
-                    where={
-                        "FK_HOST": host_id,
-                        "NU_STATUS": status,
-                        "NU_TYPE__in": host_dependent_types,
-                    },
-                    commit=True
-                )
+    def _host_task_find_reusable(self, tasks: Sequence[DbRow]) -> DbRow | None:
+        """Pick the best reusable row for the singleton-per-type HOST_TASK contract.
 
-            if affected:
-                self._summary_publish_host_scope(
-                    host_id,
-                    reason="host_task_suspend_by_host",
-                )
-        except Exception as e:
-            self._log_db_error(
-                "db_update_failed",
-                operation="host_task_suspend_by_host",
-                table="HOST_TASK",
-                host_id=host_id,
-                error=repr(e),
-            )
+        Preference order:
+            1. PENDING task
+            2. RUNNING task
+            3. Otherwise the newest terminal row
 
+        Args:
+            tasks (Sequence[DbRow]): Newest-first rows keyed with HOST_TASK__ prefixes.
 
-    def host_task_resume_by_host(
-        self,
-        host_id: int,
-        busy_timeout_seconds: int = k.HOST_BUSY_TIMEOUT
-    ) -> None:
+        Returns:
+            DbRow | None: First PENDING row, then first RUNNING row, then the
+            newest terminal row. None means there is no reusable task.
         """
-        Resume host-dependent suspended, errored, or stale HOST_TASK entries.
+        for status in (k.TASK_PENDING, k.TASK_RUNNING):
+            for task in tasks:
+                if task.get("HOST_TASK__NU_STATUS") == status:
+                    return task
+        return tasks[0] if tasks else None
 
-        Tasks are reactivated under three conditions:
-            1. NU_STATUS = TASK_SUSPENDED → host became reachable again.
-            2. NU_STATUS = TASK_ERROR     → retry.
-            3. NU_STATUS = TASK_RUNNING   → considered stale if DT_HOST_TASK is older
-            than (now - busy_timeout_seconds), assuming the worker crashed.
+    # --- FILE_TASK ---
 
-        Statistics HOST_TASK rows are intentionally excluded because they do
-        not depend on host connectivity and should keep their own lifecycle.
-
-        Statistics tasks are intentionally excluded because they do not depend
-        on host connectivity and keep their own lifecycle.
-        """
-        try:
-            total_resumed = 0
-            threshold_time = datetime.now() - timedelta(seconds=busy_timeout_seconds)
-            host_dependent_types = (
-                k.HOST_TASK_CHECK_TYPE,
-                k.HOST_TASK_PROCESSING_TYPE,
-                k.HOST_TASK_CHECK_CONNECTION_TYPE,
-            )
-
-            # -----------------------------------------------------------------
-            # 1. Reactivate suspended tasks
-            # -----------------------------------------------------------------
-            resumed_suspended = self._update_row(
-                table="HOST_TASK",
-                data={
-                    "NU_STATUS": k.TASK_PENDING,
-                    "NU_PID": None,
-                    "NA_MESSAGE": (
-                        "Host reachable again — suspended task resumed automatically"
-                    ),
-                },
-                where={
-                    "FK_HOST": host_id,
-                    "NU_STATUS": k.TASK_SUSPENDED,
-                    "NU_TYPE__in": host_dependent_types,
-                },
-                commit=True,
-            )
-
-            # -----------------------------------------------------------------
-            # 2. Reactivate tasks previously marked as error
-            # -----------------------------------------------------------------
-            resumed_error = self._update_row(
-                table="HOST_TASK",
-                data={
-                    "NU_STATUS": k.TASK_PENDING,
-                    "NU_PID": None,
-                    "NA_MESSAGE": (
-                        "Host reachable again — previously failed task resubmitted"
-                    ),
-                },
-                where={
-                    "FK_HOST": host_id,
-                    "NU_STATUS": k.TASK_ERROR,
-                    "NU_TYPE__in": host_dependent_types,
-                },
-                commit=True,
-            )
-
-            # -----------------------------------------------------------------
-            # 3. Reactivate stale tasks stuck in TASK_RUNNING past timeout
-            # -----------------------------------------------------------------
-            resumed_stale_running = self._update_row(
-                table="HOST_TASK",
-                data={
-                    "NU_STATUS": k.TASK_PENDING,
-                    "NU_PID": None,
-                    "NA_MESSAGE": (
-                        f"Detected stale running task (> {busy_timeout_seconds}s) — "
-                        f"resubmitted automatically"
-                    ),
-                },
-                where={
-                    "FK_HOST": host_id,
-                    "NU_STATUS": k.TASK_RUNNING,
-                    "DT_HOST_TASK__lt": threshold_time,
-                    "NU_TYPE__in": host_dependent_types,
-                },
-                commit=True,
-            )
-
-            # -----------------------------------------------------------------
-            # Result logging
-            # -----------------------------------------------------------------
-            total_resumed = resumed_suspended + resumed_error + resumed_stale_running
-
-            if total_resumed > 0:
-                self._summary_publish_host_scope(
-                    host_id,
-                    reason="host_task_resume_by_host",
-                )
-
-        except Exception as e:
-            self._log_db_error(
-                "db_update_failed",
-                operation="host_task_resume_by_host",
-                table="HOST_TASK",
-                host_id=host_id,
-                error=repr(e),
-            )
-
-
-    # ======================================================================
-    # FILE_TASK OPERATIONS
-    # ======================================================================
-    def read_file_task(
+    def file_task_read(
         self,
-        task_id: Optional[int] = None,
-        task_status: Optional[int] = k.TASK_PENDING,
-        task_type: Optional[int] = None,
+        task_id: int | None = None,
+        task_status: int | None = k.TASK_PENDING,
+        task_type: int | None = None,
         check_host_busy: bool = True,
         check_host_offline: bool = False,
-        extension: Optional[str] = None,
+        extension: str | None = None,
         lock_host: bool = False,
         reserve_hosts_for_discovery: bool = False,
         fair_by_host: bool = False,
         newest_first: bool = False,
         prefer_current_year: bool = False,
-    ) -> Optional[tuple]:
-        """
-        Return one eligible file task joined with host metadata.
+    ) -> tuple[DbRow, int, int] | None:
+        """Select one eligible file task while preserving backup scheduling policy.
+
+        Respect discovery reservations and optionally rotate backup hosts by their
+        last backup marker. Current-year preference and source-date ordering use
+        explicit PostgreSQL NULL ordering. Host reservation is conditional; task
+        claims remain the worker's responsibility through expected_status.
 
         Args:
-            task_id (int | None): Exact task ID; bypasses queue ordering and filters.
-            task_status (int | None): Queue status, or None for any status.
-            task_type (int | None): Queue type, or None for any type.
-            check_host_busy (bool): Exclude busy hosts and expire cooldowns.
-            check_host_offline (bool): Exclude offline hosts.
-            extension (str | None): Optional host extension filter.
-            lock_host (bool): Claim the host atomically when checking busy hosts.
-            reserve_hosts_for_discovery (bool): Exclude backup hosts reserved for discovery.
-            fair_by_host (bool): Rotate backup hosts using their last backup time.
-            newest_first (bool): Order by source creation date descending, then ID
-                descending. With host rotation, applies within each host's queue.
-                Otherwise applies globally. Missing dates come last.
-            prefer_current_year (bool): With backup host rotation, prioritize hosts
-                with eligible files created in the current database calendar year.
-                Rotate hosts within each year-priority group. Defaults to False.
+            task_id (int | None): Explicit task ID bypassing queue filters/order.
+            task_status (int | None): Queue state, or None for all states.
+            task_type (int | None): Queue type, or None for all types.
+            check_host_busy (bool): Require a free host and expire cooldowns.
+            check_host_offline (bool): Require an online host.
+            extension (str | None): Exact source extension filter.
+            lock_host (bool): Reserve the host if busy checking is enabled.
+            reserve_hosts_for_discovery (bool): Keep reserved discovery hosts out
+                of backup selection until the configured reservation TTL expires.
+            fair_by_host (bool): Select one candidate per backup host, then rotate
+                hosts by DT_LAST_BACKUP, including never-backed-up hosts first.
+            newest_first (bool): Prefer newest source date and task ID.
+            prefer_current_year (bool): Prefer current-year files in fair backup mode.
 
         Returns:
-            tuple[dict, int, int] | None: Joined row, host ID, and task ID;
-                None when no task is eligible or the host claim loses a race.
-                Row keys use FILE_TASK__ and HOST__ prefixes.
+            tuple[DbRow, int, int] | None: Prefixed task/host fields, host ID, and
+            task ID, or None when no eligible candidate can reserve its host.
 
         Raises:
-            Exception: Propagates connection, query, or host claim failures.
+            psycopg.Error: If selection or conditional reservation fails.
         """
-
-        self._connect()
-
         if check_host_busy:
-            self._release_expired_transient_busy_cooldowns()
-
-        where = {}
-        custom_clauses = {}
-        fair_backup_mode = (
-            not task_id
-            and task_type == k.FILE_TASK_BACKUP_TYPE
-            and fair_by_host
+            self._host_release_expired_cooldowns()
+        conditions: list[sql.Composable] = []
+        params: list[object] = []
+        fair_backup = (
+            not task_id and task_type == k.FILE_TASK_BACKUP_TYPE and fair_by_host
         )
-        current_year_priority = (
-            "COALESCE(YEAR(FT.DT_FILE_CREATED_HOST) = YEAR(CURRENT_DATE), 0) DESC, "
-            if fair_backup_mode and prefer_current_year else ""
-        )
-        file_order = (
-            "FT.DT_FILE_CREATED_HOST DESC, FT.ID_FILE_TASK DESC"
-            if newest_first else "FT.ID_FILE_TASK ASC"
-        )
-        discovery_host_reservation = (
-            not task_id
-            and task_type == k.FILE_TASK_BACKUP_TYPE
-            and reserve_hosts_for_discovery
-        )
-
+        current_year = fair_backup and prefer_current_year
         if task_id:
-            where["FT.ID_FILE_TASK"] = task_id
-
+            conditions.append(sql.SQL('t."ID_FILE_TASK" = %s'))
+            params.append(task_id)
         else:
-            if task_status is not None:
-                where["FT.NU_STATUS"] = task_status
-
-            if task_type is not None:
-                where["FT.NU_TYPE"] = task_type
-
-            if extension is not None:
-                where["FT.NA_EXTENSION_HOST"] = extension
-
+            for name, value in (
+                ("NU_STATUS", task_status),
+                ("NU_TYPE", task_type),
+                ("NA_EXTENSION_HOST", extension),
+            ):
+                if value is not None:
+                    conditions.append(sql.SQL("t.{} = %s").format(sql.Identifier(name)))
+                    params.append(value)
             if check_host_busy:
-                where["H.IS_BUSY"] = False
-
+                conditions.append(sql.SQL('h."IS_BUSY" = 0'))
             if check_host_offline:
-                where["H.IS_OFFLINE"] = False
-
-            if discovery_host_reservation:
-                custom_clauses["#CUSTOM#host_discovery_reservation"] = (
-                    "NOT EXISTS ("
-                    "SELECT 1 FROM HOST_TASK HT_BLOCK "
-                    "WHERE HT_BLOCK.FK_HOST = FT.FK_HOST "
-                    f"AND HT_BLOCK.NU_TYPE IN ({k.HOST_TASK_CHECK_TYPE}, {k.HOST_TASK_PROCESSING_TYPE}) "
-                    "AND ("
-                    f"HT_BLOCK.NU_STATUS = {k.TASK_RUNNING} "
-                    "OR ("
-                    f"HT_BLOCK.NU_STATUS = {k.TASK_PENDING} "
-                    "AND ("
-                    "HT_BLOCK.DT_HOST_TASK IS NULL "
-                    f"OR HT_BLOCK.DT_HOST_TASK >= DATE_SUB(NOW(), INTERVAL {k.DISCOVERY_RESERVATION_TTL_SEC} SECOND)"
-                    ")"
-                    ")"
-                    ")"
-                    ")"
+                conditions.append(sql.SQL('h."IS_OFFLINE" = 0'))
+            if task_type == k.FILE_TASK_BACKUP_TYPE and reserve_hosts_for_discovery:
+                conditions.append(
+                    sql.SQL(
+                        """
+                        NOT EXISTS (
+                            SELECT 1 FROM {} reservation
+                            WHERE reservation."FK_HOST" = t."FK_HOST"
+                              AND reservation."NU_TYPE" IN (%s, %s)
+                              AND (
+                                  reservation."NU_STATUS" = %s OR (
+                                      reservation."NU_STATUS" = %s AND (
+                                          reservation."DT_HOST_TASK" IS NULL OR
+                                          reservation."DT_HOST_TASK" >=
+                                              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+                                              - %s * INTERVAL '1 second'
+                                      )
+                                  )
+                              )
+                        )
+                    """
+                    ).format(sql.Identifier(self.schema, "HOST_TASK"))
                 )
-
-            if fair_backup_mode:
-                # Choose within each host before rotating across eligible hosts.
-                candidate_order = (current_year_priority + file_order).replace(
-                    "FT.", "FT_HOST."
+                params.extend(
+                    (
+                        k.HOST_TASK_CHECK_TYPE,
+                        k.HOST_TASK_PROCESSING_TYPE,
+                        k.TASK_RUNNING,
+                        k.TASK_PENDING,
+                        k.DISCOVERY_RESERVATION_TTL_SEC,
+                    )
                 )
-                candidate_status = (
-                    f"AND FT_HOST.NU_STATUS = {task_status} "
-                    if task_status is not None else ""
+            if fair_backup:
+                conditions.append(
+                    sql.SQL(
+                        """
+                        t."ID_FILE_TASK" = (
+                            SELECT candidate."ID_FILE_TASK" FROM {} candidate
+                            WHERE candidate."FK_HOST" = t."FK_HOST"
+                              AND candidate."NU_TYPE" = t."NU_TYPE"
+                              AND (%s OR candidate."NU_STATUS" = t."NU_STATUS")
+                              AND (%s OR candidate."NA_EXTENSION_HOST" = t."NA_EXTENSION_HOST")
+                            ORDER BY {} LIMIT 1
+                        )
+                    """
+                    ).format(
+                        sql.Identifier(self.schema, "FILE_TASK"),
+                        self._file_task_build_order_by(
+                            "candidate", newest_first, current_year
+                        ),
+                    )
                 )
-                candidate_extension = (
-                    "AND FT_HOST.NA_EXTENSION_HOST = FT.NA_EXTENSION_HOST "
-                    if extension is not None else ""
-                )
-                custom_clauses["#CUSTOM#backup_host_round_robin"] = (
-                    "FT.ID_FILE_TASK = ("
-                    "SELECT FT_HOST.ID_FILE_TASK FROM FILE_TASK FT_HOST "
-                    "WHERE FT_HOST.FK_HOST = FT.FK_HOST "
-                    f"{candidate_status}"
-                    f"AND FT_HOST.NU_TYPE = {task_type} "
-                    f"{candidate_extension}"
-                    f"ORDER BY {candidate_order} LIMIT 1"
-                    ")"
-                )
-
-            where.update(custom_clauses)
-
-        if fair_backup_mode:
-            # Current-year files win first; last backup time rotates hosts within each group.
-            order_by = (
-                current_year_priority
-                + "CASE WHEN H.DT_LAST_BACKUP IS NULL THEN 0 ELSE 1 END ASC, "
-                "H.DT_LAST_BACKUP ASC, "
-                + file_order
-            )
-        elif newest_first and not task_id:
-            # Server timestamps describe transfers, not the age of the source file.
-            order_by = file_order
+                params.extend((task_status is None, extension is None))
+        file_order = self._file_task_build_order_by("t", newest_first, False)
+        if fair_backup:
+            parts = [sql.SQL('h."DT_LAST_BACKUP" ASC NULLS FIRST')]
+            if current_year:
+                # The year bucket must precede host rotation, as in the original scheduler.
+                parts.insert(0, self._file_task_build_current_year_order("t"))
+            order = sql.SQL(", ").join((*parts, file_order))
         else:
-            order_by = "FT.ID_FILE_TASK ASC" if not task_id else None
-
-        rows = self._select_custom(
-            table="FILE_TASK FT",
-            joins=["JOIN HOST H ON H.ID_HOST = FT.FK_HOST"],
-            where=where,
-            order_by=order_by,
-            limit=1,
+            order = (
+                file_order
+                if newest_first and not task_id
+                else sql.SQL('t."ID_FILE_TASK" ASC')
+            )
+        row = self._select_task_with_host(
+            table="FILE_TASK", conditions=conditions, params=params, order_by=order
         )
-
-        if not rows:
-            self._disconnect()
+        if row is None:
             return None
+        host_id = cast(int, row["HOST__ID_HOST"])
+        if (
+            lock_host
+            and check_host_busy
+            and not self._host_reserve(host_id, check_host_offline)
+        ):
+            return None
+        return row, host_id, cast(int, row["FILE_TASK__ID_FILE_TASK"])
 
-        row = rows[0]
-
-        file_task_id = row["FILE_TASK__ID_FILE_TASK"]
-        host_id = row["HOST__ID_HOST"]
-
-        # Optional atomic host claim prevents a second worker from racing the
-        # selected task after the read step.
-        if lock_host and check_host_busy:
-            lock_query = """
-                UPDATE HOST
-                SET
-                    IS_BUSY = 1,
-                    DT_BUSY = NOW(),
-                    NU_PID = %s
-                WHERE
-                    ID_HOST = %s
-                    AND IS_BUSY = 0
-            """
-            lock_params = [os.getpid(), host_id]
-
-            # Backup can opt into the same offline guard so a host already
-            # marked unreachable is not locked and retried needlessly.
-            if check_host_offline:
-                lock_query += " AND IS_OFFLINE = 0"
-
-            self.cursor.execute(lock_query, lock_params)
-
-            if self.cursor.rowcount == 0:
-                self._disconnect()
-                return None
-
-            self.db_connection.commit()
-
-        self._disconnect()
-
-        return row, host_id, file_task_id
-
-
-    # -------------------------- Public APIs --------------------------------
     def file_task_create(
         self,
         host_id: int,
         task_type: int,
         task_status: int,
-        file_metadata: list,
+        file_metadata: Sequence[FileMetadata],
     ) -> int:
-        """
-        Create or refresh `FILE_TASK` rows from `FileMetadata` objects.
+        """Upsert homogeneous source-file records into the live queue atomically.
 
-        The method accepts one or many `FileMetadata` objects and uses UPSERT
-        semantics so repeated discovery/backlog promotion refreshes the same
-        logical queue row instead of inserting duplicates.
-        """
+        Args:
+            host_id (int): Parent host ID.
+            task_type (int): Queue type assigned to each supplied artifact.
+            task_status (int): Queue state assigned to each supplied artifact.
+            file_metadata (Sequence[FileMetadata]): Source metadata; empty input
+                returns zero without opening a connection.
 
+        Returns:
+            int: PostgreSQL inserted/updated row count across all chunks.
+
+        Raises:
+            psycopg.Error: If a queue write fails; standalone batches roll back.
+        """
         if not file_metadata:
             return 0
-
-        self._connect()
-        processed = 0
-
-        try:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            rows: list[dict] = []
-
-            for file in file_metadata:
-                row = {
+        now = datetime.utcnow()
+        rows = [
+            self._merge_structured_error_fields(
+                {
+                    **self._file_metadata_payload(file),
                     "FK_HOST": host_id,
-                    "NA_HOST_FILE_PATH": file.NA_PATH,
-                    "NA_HOST_FILE_NAME": file.NA_FILE,
-                    "NA_EXTENSION_HOST": file.NA_EXTENSION,
-                    "VL_FILE_SIZE_KB_HOST": file.VL_FILE_SIZE_KB,
-                    "DT_FILE_CREATED_HOST": file.DT_FILE_CREATED,
-                    "DT_FILE_MODIFIED_HOST": file.DT_FILE_MODIFIED,
-                    "NU_PID": os.getpid(),
                     "NU_TYPE": task_type,
                     "NU_STATUS": task_status,
+                    "NU_PID": os.getpid(),
                     "DT_FILE_TASK": now,
                     "NA_MESSAGE": tools.compose_message(
-                        task_type=task_type,
-                        task_status=task_status,
-                        path=file.NA_PATH,
-                        name=file.NA_FILE,
+                        task_type, task_status, file.NA_PATH, file.NA_FILE
                     ),
                 }
-                rows.append(self._merge_structured_error_fields(row))
-
-            if len(rows) == 1:
-                # FILE_TASK keeps one live row per host-path artifact.
-                # Size decides rediscovery, but not queue identity.
-                self._upsert_row(
-                    table="FILE_TASK",
-                    data=rows[0],
-                    unique_keys=["FK_HOST", "NA_HOST_FILE_PATH","NA_HOST_FILE_NAME"],
-                    commit=False,
-                    touch_field="DT_FILE_TASK",
-                    log_each=False,
-                )
-                processed = 1
-
-            else:
-                processed = self._upsert_batch(
-                    table="FILE_TASK",
-                    rows=rows,
-                    unique_keys=["FK_HOST", "NA_HOST_FILE_PATH","NA_HOST_FILE_NAME"],
-                    touch_field="DT_FILE_TASK",
-                    batch_size=1000,
-                    commit=False,
-                )
-
-            self.db_connection.commit()
-
-            self._summary_publish_host_scope(
-                host_id,
-                reason="file_task_create",
             )
-
-            return processed
-
-        except Exception as e:
-            self.db_connection.rollback()
-            self._log_db_error(
-                "db_execute_failed",
-                operation="file_task_create",
-                table="FILE_TASK",
-                host_id=host_id,
-                error=repr(e),
-            )
-            raise
-
-        finally:
-            self._disconnect()
-
+            for file in file_metadata
+        ]
+        with self._unit_of_work():
+            count = self._file_upsert_batch(table="FILE_TASK", data=rows)
+            self._summary_publish_host_scope(host_id, reason="file_task_create")
+            return count
 
     def file_task_update(
         self,
         *,
-        task_id: Optional[int] = None,
-        host_id: Optional[int] = None,
-        host_file_path: Optional[str] = None,
-        host_file_name: Optional[str] = None,
-        server_file_name: Optional[str] = None,
-        expected_status: Optional[int] = None,
+        task_id: int | None = None,
+        host_id: int | None = None,
+        host_file_path: str | None = None,
+        host_file_name: str | None = None,
+        server_file_name: str | None = None,
+        expected_status: int | None = None,
         publish_summary: bool = True,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
+        **kwargs: object,
+    ) -> DbRow:
+        """Update identified file tasks with optional optimistic state matching.
+
+        Args:
+            task_id (int | None): Explicit queue primary key.
+            host_id (int | None): Host used with a source identity or server name.
+            host_file_path (str | None): Source path, paired with source filename.
+            host_file_name (str | None): Source filename, paired with source path.
+            server_file_name (str | None): Alternate name identity within a host.
+            expected_status (int | None): Required current state for a safe claim.
+            publish_summary (bool): Publish a host invalidation after a matched write.
+            **kwargs (object): Supported replacement fields. None stores SQL NULL;
+                PENDING/RUNNING set NU_PID only when it was not supplied explicitly.
+
+        Returns:
+            DbRow: success, rows_affected, updated_fields, and where_used; empty
+            updates return success=False with zero affected rows. No timestamps
+            are injected into update data.
+
+        Raises:
+            ValueError: If fields or the identity strategy are invalid.
+            psycopg.Error: If the conditional update fails.
         """
-        Update a `FILE_TASK` row using deterministic identification rules.
-
-        Identification strategies (exactly one required):
-
-            1) task_id (ID_FILE_TASK)
-            2) (host_id, host_file_path, host_file_name)
-            3) (host_id, server_file_name)
-
-        Optional optimistic lock:
-            `expected_status` restricts the update to rows still in the
-            caller-expected lifecycle state.
-
-        Update semantics:
-            - Field omitted  -> not updated
-            - Field=None     -> not updated
-            - Field=value    -> updated
-
-        Timestamp ownership:
-            `DT_FILE_TASK` is caller-owned. This method never injects implicit
-            task timestamps, so workers and maintenance scripts must pass the
-            transition time explicitly when they want that audit field updated.
-        """
-
-        self._connect()
-
-        # -------------------------------------------------
-        # Validate update fields
-        # -------------------------------------------------
         if not kwargs:
-            self._log_db_warning(
-                "db_invalid_input",
-                operation="file_task_update",
-                table="FILE_TASK",
-                error="No fields provided for file_task_update.",
-            )
-            self._disconnect()
-            return {
-                "success": False,
-                "rows_affected": 0,
-                "updated_fields": {},
-            }
-
-        valid_fields = getattr(self, "VALID_FIELDS_FILE_TASK", set())
-
-        for key in kwargs.keys():
-            if key not in valid_fields:
-                raise ValueError(f"Invalid field '{key}' for FILE_TASK table update.")
-
-        # Mirror HOST_TASK semantics: pending rows should not advertise worker
-        # ownership, while running rows should.
-        if "NU_STATUS" in kwargs:
-            status = kwargs["NU_STATUS"]
-            if status == k.TASK_PENDING and "NU_PID" not in kwargs:
-                kwargs["NU_PID"] = None
-            elif status == k.TASK_RUNNING and "NU_PID" not in kwargs:
-                kwargs["NU_PID"] = getattr(self.log, "pid", None)
-
-        kwargs = self._merge_structured_error_fields(kwargs)
-
-        # -------------------------------------------------
-        # Build deterministic WHERE clause
-        # -------------------------------------------------
-        where_dict: Dict[str, Any] = {}
-
-        # OPTION 1 — Primary Key
-        if task_id is not None:
-            where_dict = {"ID_FILE_TASK": task_id}
-
-        # OPTION 2 — Unique host composite key
-        elif (
-            host_id is not None
-            and host_file_path is not None
-            and host_file_name is not None
-        ):
-            where_dict = {
-                "FK_HOST": host_id,
-                "NA_HOST_FILE_PATH": host_file_path,
-                "NA_HOST_FILE_NAME": host_file_name,
-            }
-
-        # OPTION 3 — Post-backup unique key
-        elif (
-            host_id is not None
-            and server_file_name is not None
-        ):
-            where_dict = {
-                "FK_HOST": host_id,
-                "NA_SERVER_FILE_NAME": server_file_name,
-            }
-
-        else:
-            raise ValueError(
-                "Invalid identification strategy for FILE_TASK update. "
-                "Use one of:\n"
-                "1) task_id\n"
-                "2) (host_id, host_file_path, host_file_name)\n"
-                "3) (host_id, server_file_name)"
-            )
-
-        # -------------------------------------------------
-        # Optional optimistic lock
-        # -------------------------------------------------
+            return {"success": False, "rows_affected": 0, "updated_fields": {}}
+        self._validate_fields(tuple(kwargs), self.VALID_FIELDS_FILE_TASK)
+        payload = self._merge_structured_error_fields(kwargs)
+        if payload.get("NU_STATUS") == k.TASK_PENDING:
+            payload.setdefault("NU_PID", None)
+        elif payload.get("NU_STATUS") == k.TASK_RUNNING:
+            payload.setdefault("NU_PID", self.log.pid)
+        where_conditions = self._file_identity_filter(
+            "ID_FILE_TASK",
+            task_id,
+            host_id,
+            host_file_path,
+            host_file_name,
+            server_file_name,
+        )
         if expected_status is not None:
-            where_dict["NU_STATUS"] = expected_status
-
-        # -------------------------------------------------
-        # Execute UPDATE
-        # -------------------------------------------------
-        try:
-            affected = self._update_row(
-                table="FILE_TASK",
-                data=kwargs,
-                where=where_dict,
-                commit=not getattr(self, "in_transaction", False),
+            where_conditions["NU_STATUS"] = expected_status
+        with self._unit_of_work():
+            affected = self._update_batch(
+                table="FILE_TASK", data=payload, where=where_conditions
             )
-
-            if affected != 1:
-                self._log_db_warning(
-                    "db_update_no_match",
-                    operation="file_task_update",
-                    table="FILE_TASK",
-                    task_id=task_id,
-                    rows_affected=affected,
+            if affected and publish_summary:
+                scope = (
+                    host_id
+                    if host_id is not None
+                    else self._task_read_host_id(
+                        table="FILE_TASK", task_id=cast(int, task_id)
+                    )
                 )
-
-            if publish_summary:
-                host_scope_id = host_id
-                if host_scope_id is None and task_id is not None:
-                    host_scope_id = self._summary_lookup_file_task_host(task_id)
-
-                self._summary_publish_host_scope(
-                    host_scope_id,
-                    reason="file_task_update",
-                )
-
+                self._summary_publish_host_scope(scope, reason="file_task_update")
             return {
                 "success": True,
                 "rows_affected": affected,
-                "updated_fields": kwargs,
-                "where_used": where_dict,
+                "updated_fields": payload,
+                "where_used": where_conditions,
             }
-
-        except Exception as e:
-            self.db_connection.rollback()
-            self._log_db_error(
-                "db_update_failed",
-                operation="file_task_update",
-                table="FILE_TASK",
-                task_id=task_id,
-                error=repr(e),
-            )
-            raise
-
-        finally:
-            self._disconnect()
-
 
     def file_task_delete(self, task_id: int) -> int:
-        """Delete a `FILE_TASK` by primary key and return the row count."""
-        self._connect()
-        try:
-            host_scope_id = self._summary_lookup_file_task_host(task_id)
-            where = {"ID_FILE_TASK": task_id}
-            deleted_rows = self._delete_row(
-                "FILE_TASK",
-                where=where,
-                commit=not getattr(self, "in_transaction", False),
-            )
-            if deleted_rows:
-                self._summary_publish_host_scope(
-                    host_scope_id,
-                    reason="file_task_delete",
-                )
-            return deleted_rows
-        finally:
-            self._disconnect()
-
-    def file_task_list_pending_backup_with_server_artifact(
-        self,
-        *,
-        limit: int = 1000,
-        host_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        Return pending BACKUP queue rows whose history already has a server artifact.
-
-        These rows are operationally inconsistent: backup is still queued even
-        though `FILE_TASK_HISTORY` already points to a repository file. The
-        reconciler can promote them directly to PROCESS.
-        """
-        self._connect()
-        try:
-            sql = """
-                SELECT
-                    t.ID_FILE_TASK,
-                    t.FK_HOST,
-                    host.NA_HOST_NAME,
-                    t.NA_HOST_FILE_PATH,
-                    t.NA_HOST_FILE_NAME,
-                    h.NA_SERVER_FILE_PATH,
-                    h.NA_SERVER_FILE_NAME,
-                    h.NA_EXTENSION_SERVER,
-                    h.VL_FILE_SIZE_KB_SERVER,
-                    h.DT_FILE_CREATED_SERVER,
-                    h.DT_FILE_MODIFIED_SERVER,
-                    h.DT_BACKUP,
-                    h.DT_PROCESSED,
-                    h.NU_STATUS_BACKUP,
-                    h.NU_STATUS_PROCESSING
-                FROM FILE_TASK t
-                JOIN FILE_TASK_HISTORY h
-                  ON h.FK_HOST = t.FK_HOST
-                 AND h.NA_HOST_FILE_PATH = t.NA_HOST_FILE_PATH
-                 AND h.NA_HOST_FILE_NAME = t.NA_HOST_FILE_NAME
-                JOIN HOST host
-                  ON host.ID_HOST = t.FK_HOST
-                WHERE t.NU_TYPE = %s
-                  AND t.NU_STATUS = %s
-                  AND h.NA_SERVER_FILE_PATH IS NOT NULL
-                  AND TRIM(h.NA_SERVER_FILE_PATH) <> ''
-                  AND h.NA_SERVER_FILE_NAME IS NOT NULL
-                  AND TRIM(h.NA_SERVER_FILE_NAME) <> ''
-            """
-            params: List[Any] = [
-                k.FILE_TASK_BACKUP_TYPE,
-                k.TASK_PENDING,
-            ]
-
-            if host_id is not None:
-                sql += " AND t.FK_HOST = %s"
-                params.append(host_id)
-
-            sql += " ORDER BY t.FK_HOST ASC, t.ID_FILE_TASK ASC LIMIT %s"
-            params.append(limit)
-
-            return self._select_raw(sql, tuple(params))
-        finally:
-            self._disconnect()
-
-    def file_history_list_inconsistent_server_artifacts(
-        self,
-        *,
-        limit: int = 1000,
-        host_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        Return history rows whose server artifact exists but state is inconsistent.
-
-        A row is considered inconsistent when it already points to a repository
-        artifact and at least one of these is true:
-            - processing/backup status is not `DONE`
-            - backup/processing timestamp is missing
-            - a non-running `FILE_TASK` still exists for the same source file
-        """
-        self._connect()
-        try:
-            sql = """
-                SELECT
-                    h.ID_HISTORY,
-                    h.FK_HOST,
-                    host.NA_HOST_NAME,
-                    h.NA_HOST_FILE_PATH,
-                    h.NA_HOST_FILE_NAME,
-                    h.NA_SERVER_FILE_PATH,
-                    h.NA_SERVER_FILE_NAME,
-                    h.NA_EXTENSION_SERVER,
-                    h.VL_FILE_SIZE_KB_SERVER,
-                    h.DT_FILE_CREATED_SERVER,
-                    h.DT_FILE_MODIFIED_SERVER,
-                    h.DT_BACKUP,
-                    h.DT_PROCESSED,
-                    h.NU_STATUS_BACKUP,
-                    h.NU_STATUS_PROCESSING,
-                    t.ID_FILE_TASK,
-                    t.NU_TYPE AS FILE_TASK_TYPE,
-                    t.NU_STATUS AS FILE_TASK_STATUS
-                FROM FILE_TASK_HISTORY h
-                JOIN HOST host
-                  ON host.ID_HOST = h.FK_HOST
-                LEFT JOIN FILE_TASK t USE INDEX (idx_file_task_identity)
-                  ON t.FK_HOST = h.FK_HOST
-                 AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
-                 AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
-                WHERE h.NA_SERVER_FILE_PATH IS NOT NULL
-                  AND TRIM(h.NA_SERVER_FILE_PATH) <> ''
-                  AND h.NA_SERVER_FILE_NAME IS NOT NULL
-                  AND TRIM(h.NA_SERVER_FILE_NAME) <> ''
-                  AND NOT EXISTS (
-                        SELECT 1
-                        FROM FILE_TASK t_running
-                        WHERE t_running.FK_HOST = h.FK_HOST
-                          AND t_running.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
-                          AND t_running.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
-                          AND t_running.NU_STATUS = %s
-                  )
-                  AND (
-                        t.ID_FILE_TASK IS NOT NULL
-                        OR h.NU_STATUS_BACKUP <> %s
-                        OR h.NU_STATUS_PROCESSING <> %s
-                        OR h.DT_BACKUP IS NULL
-                        OR h.DT_PROCESSED IS NULL
-                  )
-            """
-            params: List[Any] = [
-                k.TASK_RUNNING,
-                k.TASK_DONE,
-                k.TASK_DONE,
-            ]
-
-            if host_id is not None:
-                sql += " AND h.FK_HOST = %s"
-                params.append(host_id)
-
-            sql += " ORDER BY h.FK_HOST ASC, h.ID_HISTORY ASC LIMIT %s"
-            params.append(limit)
-
-            return self._select_raw(sql, tuple(params))
-        finally:
-            self._disconnect()
-
-    def file_history_list_processed_artifact_reconcile_candidates(
-        self,
-        *,
-        limit: int = 1000,
-        host_id: Optional[int] = None,
-        after_history_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        Return inconsistent history rows already proven by `DIM_SPECTRUM_FILE`.
-
-        These rows are safe to restore directly to backup/process `DONE`
-        because the repository artifact already exists in analytical storage.
-        """
-        self._connect()
-        try:
-            sql = f"""
-                SELECT
-                    h.ID_HISTORY,
-                    h.FK_HOST,
-                    host.NA_HOST_NAME,
-                    h.NA_HOST_FILE_PATH,
-                    h.NA_HOST_FILE_NAME,
-                    h.NA_SERVER_FILE_PATH,
-                    h.NA_SERVER_FILE_NAME,
-                    h.NA_EXTENSION_SERVER,
-                    h.VL_FILE_SIZE_KB_SERVER,
-                    h.DT_FILE_CREATED_SERVER,
-                    h.DT_FILE_MODIFIED_SERVER,
-                    h.DT_BACKUP,
-                    h.DT_PROCESSED,
-                    h.NU_STATUS_BACKUP,
-                    h.NU_STATUS_PROCESSING,
-                    (
-                        SELECT t.ID_FILE_TASK
-                        FROM FILE_TASK t USE INDEX (idx_file_task_identity)
-                        WHERE t.FK_HOST = h.FK_HOST
-                          AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
-                          AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
-                        LIMIT 1
-                    ) AS ID_FILE_TASK,
-                    (
-                        SELECT t.NU_TYPE
-                        FROM FILE_TASK t USE INDEX (idx_file_task_identity)
-                        WHERE t.FK_HOST = h.FK_HOST
-                          AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
-                          AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
-                        LIMIT 1
-                    ) AS FILE_TASK_TYPE,
-                    (
-                        SELECT t.NU_STATUS
-                        FROM FILE_TASK t USE INDEX (idx_file_task_identity)
-                        WHERE t.FK_HOST = h.FK_HOST
-                          AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
-                          AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
-                        LIMIT 1
-                    ) AS FILE_TASK_STATUS,
-                    d.NA_PATH AS na_path,
-                    d.NA_FILE AS na_file,
-                    d.NA_EXTENSION AS NA_EXTENSION,
-                    d.VL_FILE_SIZE_KB AS VL_FILE_SIZE_KB,
-                    d.DT_FILE_CREATED AS DT_FILE_CREATED,
-                    d.DT_FILE_MODIFIED AS DT_FILE_MODIFIED,
-                    d.DT_FILE_LOGGED AS DT_FILE_LOGGED
-                FROM FILE_TASK_HISTORY h
-                JOIN HOST host
-                  ON host.ID_HOST = h.FK_HOST
-                JOIN {k.RFM_DATABASE_NAME}.DIM_SPECTRUM_FILE d
-                  ON d.NA_VOLUME = %s
-                 AND d.NA_PATH = h.NA_SERVER_FILE_PATH
-                 AND d.NA_FILE = h.NA_SERVER_FILE_NAME
-                WHERE h.NA_SERVER_FILE_PATH IS NOT NULL
-                  AND TRIM(h.NA_SERVER_FILE_PATH) <> ''
-                  AND h.NA_SERVER_FILE_NAME IS NOT NULL
-                  AND TRIM(h.NA_SERVER_FILE_NAME) <> ''
-                  AND NOT EXISTS (
-                        SELECT 1
-                        FROM FILE_TASK t_running
-                        WHERE t_running.FK_HOST = h.FK_HOST
-                          AND t_running.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
-                          AND t_running.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
-                          AND t_running.NU_STATUS = %s
-                  )
-                  AND (
-                        EXISTS (
-                            SELECT 1
-                            FROM FILE_TASK t_any USE INDEX (idx_file_task_identity)
-                            WHERE t_any.FK_HOST = h.FK_HOST
-                              AND t_any.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
-                              AND t_any.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
-                        )
-                        OR h.NU_STATUS_BACKUP <> %s
-                        OR h.NU_STATUS_PROCESSING <> %s
-                        OR h.DT_BACKUP IS NULL
-                        OR h.DT_PROCESSED IS NULL
-                  )
-            """
-            params: List[Any] = [
-                k.REPO_VOLUME_NAME.lower(),
-                k.TASK_RUNNING,
-                k.TASK_DONE,
-                k.TASK_DONE,
-            ]
-
-            if host_id is not None:
-                sql += " AND h.FK_HOST = %s"
-                params.append(host_id)
-
-            if after_history_id is not None:
-                sql += " AND h.ID_HISTORY > %s"
-                params.append(after_history_id)
-
-            sql += " ORDER BY h.ID_HISTORY ASC LIMIT %s"
-            params.append(limit)
-
-            return self._select_raw(sql, tuple(params))
-        finally:
-            self._disconnect()
-
-    def file_history_list_queue_reconcile_candidates(
-        self,
-        *,
-        limit: int = 1000,
-        host_id: Optional[int] = None,
-        after_history_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        Return queued server-artifact rows that still need PROCESS reconciliation.
-
-        This batch excludes artifacts already present in `DIM_SPECTRUM_FILE`.
-        It selects only queue/history combinations that are not already aligned
-        with the expected PROCESS/PENDING state.
-        """
-        self._connect()
-        try:
-            sql = f"""
-                SELECT
-                    h.ID_HISTORY,
-                    h.FK_HOST,
-                    host.NA_HOST_NAME,
-                    h.NA_HOST_FILE_PATH,
-                    h.NA_HOST_FILE_NAME,
-                    h.NA_SERVER_FILE_PATH,
-                    h.NA_SERVER_FILE_NAME,
-                    h.NA_EXTENSION_SERVER,
-                    h.VL_FILE_SIZE_KB_SERVER,
-                    h.DT_FILE_CREATED_SERVER,
-                    h.DT_FILE_MODIFIED_SERVER,
-                    h.DT_BACKUP,
-                    h.DT_PROCESSED,
-                    h.NU_STATUS_BACKUP,
-                    h.NU_STATUS_PROCESSING,
-                    t.ID_FILE_TASK,
-                    t.NU_TYPE AS FILE_TASK_TYPE,
-                    t.NU_STATUS AS FILE_TASK_STATUS
-                FROM FILE_TASK_HISTORY h
-                JOIN HOST host
-                  ON host.ID_HOST = h.FK_HOST
-                JOIN FILE_TASK t USE INDEX (idx_file_task_identity)
-                  ON t.FK_HOST = h.FK_HOST
-                 AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
-                 AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
-                WHERE h.NA_SERVER_FILE_PATH IS NOT NULL
-                  AND TRIM(h.NA_SERVER_FILE_PATH) <> ''
-                  AND h.NA_SERVER_FILE_NAME IS NOT NULL
-                  AND TRIM(h.NA_SERVER_FILE_NAME) <> ''
-                  AND t.NU_STATUS <> %s
-                  AND NOT EXISTS (
-                        SELECT 1
-                        FROM {k.RFM_DATABASE_NAME}.DIM_SPECTRUM_FILE d
-                        WHERE d.NA_VOLUME = %s
-                          AND d.NA_PATH = h.NA_SERVER_FILE_PATH
-                          AND d.NA_FILE = h.NA_SERVER_FILE_NAME
-                  )
-                  AND (
-                        t.NU_TYPE <> %s
-                        OR t.NU_STATUS <> %s
-                        OR h.NU_STATUS_BACKUP <> %s
-                        OR h.NU_STATUS_PROCESSING <> %s
-                        OR h.DT_BACKUP IS NULL
-                        OR h.DT_PROCESSED IS NOT NULL
-                        OR t.NA_SERVER_FILE_PATH IS NULL
-                        OR TRIM(t.NA_SERVER_FILE_PATH) = ''
-                        OR t.NA_SERVER_FILE_NAME IS NULL
-                        OR TRIM(t.NA_SERVER_FILE_NAME) = ''
-                  )
-            """
-            params: List[Any] = [
-                k.TASK_RUNNING,
-                k.REPO_VOLUME_NAME.lower(),
-                k.FILE_TASK_PROCESS_TYPE,
-                k.TASK_PENDING,
-                k.TASK_DONE,
-                k.TASK_PENDING,
-            ]
-
-            if host_id is not None:
-                sql += " AND h.FK_HOST = %s"
-                params.append(host_id)
-
-            if after_history_id is not None:
-                sql += " AND h.ID_HISTORY > %s"
-                params.append(after_history_id)
-
-            sql += " ORDER BY h.ID_HISTORY ASC LIMIT %s"
-            params.append(limit)
-
-            return self._select_raw(sql, tuple(params))
-        finally:
-            self._disconnect()
-
-    def file_history_list_processing_retry_candidates_by_error_detail(
-        self,
-        *,
-        error_detail: str,
-        limit: int = 1000,
-        host_id: Optional[int] = None,
-        after_history_id: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        Return history rows eligible for PROCESS queue recreation by detail.
-
-        This repair path is intentionally conservative: it only returns rows
-        that currently have no live `FILE_TASK` for the same host artifact.
-        Callers must still validate that the referenced server payload exists.
-        """
-        if not error_detail or not str(error_detail).strip():
-            raise ValueError("error_detail must be a non-empty string")
-
-        self._connect()
-        try:
-            sql = """
-                SELECT
-                    h.ID_HISTORY,
-                    h.FK_HOST,
-                    host.NA_HOST_NAME,
-                    h.NA_HOST_FILE_PATH,
-                    h.NA_HOST_FILE_NAME,
-                    h.NA_SERVER_FILE_PATH,
-                    h.NA_SERVER_FILE_NAME,
-                    h.NA_EXTENSION_HOST,
-                    h.VL_FILE_SIZE_KB_HOST,
-                    h.DT_FILE_CREATED_HOST,
-                    h.DT_FILE_MODIFIED_HOST,
-                    h.NA_EXTENSION_SERVER,
-                    h.VL_FILE_SIZE_KB_SERVER,
-                    h.DT_FILE_CREATED_SERVER,
-                    h.DT_FILE_MODIFIED_SERVER,
-                    h.DT_BACKUP,
-                    h.DT_PROCESSED,
-                    h.NU_STATUS_BACKUP,
-                    h.NU_STATUS_PROCESSING,
-                    h.NA_ERROR_DETAIL
-                FROM FILE_TASK_HISTORY h
-                JOIN HOST host
-                  ON host.ID_HOST = h.FK_HOST
-                LEFT JOIN FILE_TASK t USE INDEX (idx_file_task_identity)
-                  ON t.FK_HOST = h.FK_HOST
-                 AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
-                 AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
-                WHERE h.NA_ERROR_DETAIL = %s
-                  AND h.NU_STATUS_PROCESSING = %s
-                  AND h.NA_SERVER_FILE_PATH IS NOT NULL
-                  AND TRIM(h.NA_SERVER_FILE_PATH) <> ''
-                  AND h.NA_SERVER_FILE_NAME IS NOT NULL
-                  AND TRIM(h.NA_SERVER_FILE_NAME) <> ''
-                  AND t.ID_FILE_TASK IS NULL
-            """
-            params: List[Any] = [
-                error_detail,
-                k.TASK_ERROR,
-            ]
-
-            if host_id is not None:
-                sql += " AND h.FK_HOST = %s"
-                params.append(host_id)
-
-            if after_history_id is not None:
-                sql += " AND h.ID_HISTORY > %s"
-                params.append(after_history_id)
-
-            sql += " ORDER BY h.ID_HISTORY ASC LIMIT %s"
-            params.append(limit)
-
-            return self._select_raw(sql, tuple(params))
-        finally:
-            self._disconnect()
-
-    def file_history_recreate_processing_task(
-        self,
-        *,
-        candidate: Dict[str, Any],
-        recreated_at: datetime,
-    ) -> Dict[str, Any]:
-        """
-        Recreate one missing PROCESS queue row directly from history metadata.
-
-        The queue row is restored as PROCESS/PENDING and the durable history is
-        moved back to PROCESS/PENDING in the same transaction.
-        """
-        history_id = candidate.get("ID_HISTORY")
-        if history_id is None:
-            raise ValueError("candidate must include ID_HISTORY")
-
-        host_id = candidate.get("FK_HOST")
-        host_file_path = candidate.get("NA_HOST_FILE_PATH")
-        host_file_name = candidate.get("NA_HOST_FILE_NAME")
-        server_file_path = candidate.get("NA_SERVER_FILE_PATH")
-        server_file_name = candidate.get("NA_SERVER_FILE_NAME")
-
-        if host_id is None:
-            raise ValueError("candidate must include FK_HOST")
-        if not host_file_path or not host_file_name:
-            raise ValueError("candidate must include host file identity")
-        if not server_file_path or not server_file_name:
-            raise ValueError("candidate must include server file identity")
-
-        detail = "recreated from FILE_TASK_HISTORY retry candidate"
-        message = tools.compose_message(
-            task_type=k.FILE_TASK_PROCESS_TYPE,
-            task_status=k.TASK_PENDING,
-            path=server_file_path,
-            name=server_file_name,
-            detail=detail,
-        )
-        task_payload = self._merge_structured_error_fields({
-            "FK_HOST": int(host_id),
-            "NA_HOST_FILE_PATH": host_file_path,
-            "NA_HOST_FILE_NAME": host_file_name,
-            "NA_EXTENSION_HOST": candidate.get("NA_EXTENSION_HOST"),
-            "VL_FILE_SIZE_KB_HOST": candidate.get("VL_FILE_SIZE_KB_HOST"),
-            "DT_FILE_CREATED_HOST": candidate.get("DT_FILE_CREATED_HOST"),
-            "DT_FILE_MODIFIED_HOST": candidate.get("DT_FILE_MODIFIED_HOST"),
-            "NU_PID": None,
-            "NU_TYPE": k.FILE_TASK_PROCESS_TYPE,
-            "NU_STATUS": k.TASK_PENDING,
-            "DT_FILE_TASK": recreated_at,
-            "NA_SERVER_FILE_PATH": server_file_path,
-            "NA_SERVER_FILE_NAME": server_file_name,
-            "NA_EXTENSION_SERVER": candidate.get("NA_EXTENSION_SERVER"),
-            "VL_FILE_SIZE_KB_SERVER": candidate.get("VL_FILE_SIZE_KB_SERVER"),
-            "DT_FILE_CREATED_SERVER": candidate.get("DT_FILE_CREATED_SERVER"),
-            "DT_FILE_MODIFIED_SERVER": candidate.get("DT_FILE_MODIFIED_SERVER"),
-            "NA_MESSAGE": message,
-        })
-        backup_at = candidate.get("DT_BACKUP") or recreated_at
-
-        self.begin_transaction()
-        try:
-            task_rows = self._upsert_row(
-                table="FILE_TASK",
-                data=task_payload,
-                unique_keys=["FK_HOST", "NA_HOST_FILE_PATH", "NA_HOST_FILE_NAME"],
-                commit=False,
-                touch_field="DT_FILE_TASK",
-                log_each=False,
-            )
-            if task_rows not in (1, 2):
-                raise RuntimeError(
-                    "FILE_TASK recreation affected "
-                    f"{task_rows} rows "
-                    f"(expected 1 or 2 for history_id={history_id})"
-                )
-
-            history_result = self.file_history_update(
-                history_id=int(history_id),
-                DT_BACKUP=backup_at,
-                NA_SERVER_FILE_PATH=server_file_path,
-                NA_SERVER_FILE_NAME=server_file_name,
-                NA_EXTENSION_SERVER=candidate.get("NA_EXTENSION_SERVER"),
-                VL_FILE_SIZE_KB_SERVER=candidate.get("VL_FILE_SIZE_KB_SERVER"),
-                DT_FILE_CREATED_SERVER=candidate.get("DT_FILE_CREATED_SERVER"),
-                DT_FILE_MODIFIED_SERVER=candidate.get("DT_FILE_MODIFIED_SERVER"),
-                NU_STATUS_BACKUP=k.TASK_DONE,
-                NU_STATUS_PROCESSING=k.TASK_PENDING,
-                NA_MESSAGE=message,
-            )
-            if history_result.get("rows_affected") != 1:
-                raise RuntimeError(
-                    "FILE_TASK_HISTORY recreation affected "
-                    f"{history_result.get('rows_affected')} rows "
-                    f"(expected 1 for history_id={history_id})"
-                )
-
-            self.commit()
-            self._summary_publish_host_scope(
-                int(host_id),
-                reason="file_history_recreate_processing_task",
-            )
-            return {
-                "history_id": int(history_id),
-                "host_id": int(host_id),
-                "task_rows_affected": task_rows,
-                "history_rows_affected": history_result["rows_affected"],
-            }
-        except Exception:
-            self.rollback()
-            raise
-
-    def file_task_promote_server_artifact_to_processing(
-        self,
-        *,
-        candidate: Dict[str, Any],
-        reconciled_at: datetime,
-    ) -> Dict[str, Any]:
-        """
-        Promote one queued server artifact directly to PROCESS/PENDING.
-
-        This repair path is used when discovery or backlog recreated a queue
-        row even though `FILE_TASK_HISTORY` already proves the payload reached
-        the repository. The row may currently be a discovery or backup task.
-        """
-        task_id = candidate.get("ID_FILE_TASK")
-        if task_id is None:
-            raise ValueError("candidate must include ID_FILE_TASK")
-
-        detail = "reconciled queued artifact already present on server"
-        message = tools.compose_message(
-            task_type=k.FILE_TASK_PROCESS_TYPE,
-            task_status=k.TASK_PENDING,
-            path=candidate["NA_SERVER_FILE_PATH"],
-            name=candidate["NA_SERVER_FILE_NAME"],
-            detail=detail,
-        )
-        structured = errors.persisted_error_fields_from_handler(message=message)
-        backup_at = candidate.get("DT_BACKUP") or reconciled_at
-        expected_status = candidate.get("FILE_TASK_STATUS", k.TASK_PENDING)
-
-        self.begin_transaction()
-        try:
-            task_result = self.file_task_update(
-                task_id=int(task_id),
-                expected_status=expected_status,
-                NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
-                NU_STATUS=k.TASK_PENDING,
-                NU_PID=None,
-                DT_FILE_TASK=reconciled_at,
-                NA_SERVER_FILE_PATH=candidate["NA_SERVER_FILE_PATH"],
-                NA_SERVER_FILE_NAME=candidate["NA_SERVER_FILE_NAME"],
-                NA_EXTENSION_SERVER=candidate.get("NA_EXTENSION_SERVER"),
-                VL_FILE_SIZE_KB_SERVER=candidate.get("VL_FILE_SIZE_KB_SERVER"),
-                DT_FILE_CREATED_SERVER=candidate.get("DT_FILE_CREATED_SERVER"),
-                DT_FILE_MODIFIED_SERVER=candidate.get("DT_FILE_MODIFIED_SERVER"),
-                NA_MESSAGE=message,
-                **structured,
-            )
-            if task_result.get("rows_affected") != 1:
-                raise RuntimeError(
-                    "Queued artifact promotion affected "
-                    f"{task_result.get('rows_affected')} rows "
-                    f"(expected 1 for task_id={task_id})"
-                )
-
-            history_result = self.file_history_update(
-                task_type=k.FILE_TASK_PROCESS_TYPE,
-                host_id=int(candidate["FK_HOST"]),
-                host_file_path=candidate["NA_HOST_FILE_PATH"],
-                host_file_name=candidate["NA_HOST_FILE_NAME"],
-                DT_BACKUP=backup_at,
-                NA_SERVER_FILE_PATH=candidate["NA_SERVER_FILE_PATH"],
-                NA_SERVER_FILE_NAME=candidate["NA_SERVER_FILE_NAME"],
-                NA_EXTENSION_SERVER=candidate.get("NA_EXTENSION_SERVER"),
-                VL_FILE_SIZE_KB_SERVER=candidate.get("VL_FILE_SIZE_KB_SERVER"),
-                DT_FILE_CREATED_SERVER=candidate.get("DT_FILE_CREATED_SERVER"),
-                DT_FILE_MODIFIED_SERVER=candidate.get("DT_FILE_MODIFIED_SERVER"),
-                NU_STATUS_BACKUP=k.TASK_DONE,
-                NU_STATUS_PROCESSING=k.TASK_PENDING,
-                NA_MESSAGE=message,
-                **structured,
-            )
-            if history_result.get("rows_affected") != 1:
-                raise RuntimeError(
-                    "FILE_TASK_HISTORY promotion affected "
-                    f"{history_result.get('rows_affected')} rows "
-                    f"(expected 1 for host={candidate['FK_HOST']}, "
-                    f"path={candidate['NA_HOST_FILE_PATH']}, "
-                    f"name={candidate['NA_HOST_FILE_NAME']})"
-                )
-
-            self.commit()
-            return {
-                "task_rows_affected": task_result["rows_affected"],
-                "history_rows_affected": history_result["rows_affected"],
-                "task_id": int(task_id),
-                "host_id": int(candidate["FK_HOST"]),
-            }
-        except Exception:
-            self.rollback()
-            raise
-
-    def file_task_promote_pending_backup_to_processing(
-        self,
-        *,
-        candidate: Dict[str, Any],
-        reconciled_at: datetime,
-    ) -> Dict[str, Any]:
-        """
-        Promote one pending BACKUP queue row to PROCESS using history metadata.
-
-        This is a one-shot operational recovery path for rows resurrected by
-        discovery after the payload had already reached the repository.
-        """
-        queue_candidate = dict(candidate)
-        queue_candidate["FILE_TASK_STATUS"] = k.TASK_PENDING
-        return self.file_task_promote_server_artifact_to_processing(
-            candidate=queue_candidate,
-            reconciled_at=reconciled_at,
-        )
-
-    def file_history_reconcile_processed_artifact(
-        self,
-        *,
-        candidate: Dict[str, Any],
-        repository_artifact: Dict[str, Any],
-        reconciled_at: datetime,
-    ) -> Dict[str, Any]:
-        """
-        Restore DONE state when `DIM_SPECTRUM_FILE` proves processing succeeded.
-
-        `DIM_SPECTRUM_FILE` is treated as the durable success signal for the
-        repository artifact. This repair path updates `FILE_TASK_HISTORY` back
-        to backup/process DONE and removes any stale live queue row.
-        """
-        history_id = candidate.get("ID_HISTORY")
-        if history_id is None:
-            raise ValueError("candidate must include ID_HISTORY")
-
-        def _prefer_value(*values: Any) -> Any:
-            """Return the first value that is not `None`."""
-            for value in values:
-                if value is not None:
-                    return value
-            return None
-
-        server_path = repository_artifact.get("na_path") or candidate["NA_SERVER_FILE_PATH"]
-        server_name = repository_artifact.get("na_file") or candidate["NA_SERVER_FILE_NAME"]
-        server_extension = _prefer_value(
-            repository_artifact.get("NA_EXTENSION"),
-            candidate.get("NA_EXTENSION_SERVER"),
-        )
-        server_size_kb = _prefer_value(
-            repository_artifact.get("VL_FILE_SIZE_KB"),
-            candidate.get("VL_FILE_SIZE_KB_SERVER"),
-        )
-        server_created = _prefer_value(
-            repository_artifact.get("DT_FILE_CREATED"),
-            candidate.get("DT_FILE_CREATED_SERVER"),
-        )
-        server_modified = _prefer_value(
-            repository_artifact.get("DT_FILE_MODIFIED"),
-            candidate.get("DT_FILE_MODIFIED_SERVER"),
-        )
-        backup_at = _prefer_value(
-            candidate.get("DT_BACKUP"),
-            candidate.get("DT_FILE_CREATED_SERVER"),
-            repository_artifact.get("DT_FILE_CREATED"),
-            repository_artifact.get("DT_FILE_LOGGED"),
-            reconciled_at,
-        )
-        processed_at = _prefer_value(
-            candidate.get("DT_PROCESSED"),
-            repository_artifact.get("DT_FILE_LOGGED"),
-            candidate.get("DT_FILE_MODIFIED_SERVER"),
-            repository_artifact.get("DT_FILE_MODIFIED"),
-            backup_at,
-        )
-        detail = "reconciled from DIM_SPECTRUM_FILE"
-        message = tools.compose_message(
-            task_type=k.FILE_TASK_PROCESS_TYPE,
-            task_status=k.TASK_DONE,
-            path=server_path,
-            name=server_name,
-            detail=detail,
-        )
-        structured = errors.persisted_error_fields_from_handler(message=message)
-
-        self.begin_transaction()
-        try:
-            history_result = self.file_history_update(
-                history_id=int(history_id),
-                DT_BACKUP=backup_at,
-                DT_PROCESSED=processed_at,
-                NA_SERVER_FILE_PATH=server_path,
-                NA_SERVER_FILE_NAME=server_name,
-                NA_EXTENSION_SERVER=server_extension,
-                VL_FILE_SIZE_KB_SERVER=server_size_kb,
-                DT_FILE_CREATED_SERVER=server_created,
-                DT_FILE_MODIFIED_SERVER=server_modified,
-                NU_STATUS_BACKUP=k.TASK_DONE,
-                NU_STATUS_PROCESSING=k.TASK_DONE,
-                NA_MESSAGE=message,
-                **structured,
-            )
-            if history_result.get("rows_affected") not in (0, 1):
-                raise RuntimeError(
-                    "Processed FILE_TASK_HISTORY reconciliation affected "
-                    f"{history_result.get('rows_affected')} rows "
-                    f"(expected 0 or 1 for history_id={history_id})"
-                )
-
-            task_id = candidate.get("ID_FILE_TASK")
-            deleted_rows = 0
-            if task_id is not None:
-                deleted_rows = self.file_task_delete(task_id=int(task_id))
-                if deleted_rows != 1:
-                    raise RuntimeError(
-                        "Processed FILE_TASK reconciliation deleted "
-                        f"{deleted_rows} rows "
-                        f"(expected 1 for task_id={task_id})"
-                    )
-
-            self.commit()
-            return {
-                "history_rows_affected": history_result["rows_affected"],
-                "deleted_task_rows": deleted_rows,
-                "history_id": int(history_id),
-                "task_id": int(task_id) if task_id is not None else None,
-                "host_id": int(candidate["FK_HOST"]),
-            }
-        except Exception:
-            self.rollback()
-            raise
-
-
-    def file_history_delete(
-        self,
-        *,
-        history_id: Optional[int] = None,
-        host_id: Optional[int] = None,
-        host_file_path: Optional[str] = None,
-        host_file_name: Optional[str] = None,
-    ) -> int:
-        """Delete a `FILE_TASK_HISTORY` row using a deterministic identity.
-
-        Supported identification strategies:
-            1) `history_id`
-            2) (`host_id`, `host_file_path`, `host_file_name`)
-
-        Used mainly by backup cleanup when a discovered file vanished from the
-        remote host and must not remain resumable in history.
-
-        Returns:
-            int: Number of deleted rows.
-        """
-        self._connect()
-        try:
-            host_scope_id, reference_months = self._summary_lookup_file_history_scope(
-                history_id=history_id,
-                host_id=host_id,
-                host_file_path=host_file_path,
-                host_file_name=host_file_name,
-            )
-
-            if history_id is not None:
-                where = {"ID_HISTORY": history_id}
-            elif (
-                host_id is not None
-                and host_file_path is not None
-                and host_file_name is not None
-            ):
-                where = {
-                    "FK_HOST": host_id,
-                    "NA_HOST_FILE_PATH": host_file_path,
-                    "NA_HOST_FILE_NAME": host_file_name,
-                }
-            else:
-                raise ValueError(
-                    "Invalid identification strategy for FILE_TASK_HISTORY delete. "
-                    "Use either history_id or (host_id, host_file_path, host_file_name)."
-                )
-
-            deleted_rows = self._delete_row("FILE_TASK_HISTORY", where=where, commit=True)
-            if deleted_rows:
-                self._summary_publish_host_scope(
-                    host_scope_id,
-                    reference_months=reference_months,
-                    reason="file_history_delete",
-                )
-            return deleted_rows
-        finally:
-            self._disconnect()
-            
-    
-    def file_task_suspend_by_host(self, host_id: int, reason: str = None) -> None:
-        """
-        Suspend host-dependent file tasks for a host.
-
-        Only DISCOVERY and BACKUP tasks are suspended, since PROCESS tasks
-        operate exclusively on files already stored on the server and do
-        not depend on host connectivity.
-        """
-
-        try:
-            message = (
-                reason
-                or "Host unreachable — HOST-dependent file task suspended by host_check service"
-            )
-
-            affected = 0
-
-            for status in (k.TASK_PENDING, k.TASK_RUNNING):
-                affected += self._update_row(
-                    table="FILE_TASK",
-                    data=self._merge_structured_error_fields({
-                        "NU_STATUS": k.TASK_SUSPENDED,
-                        "NA_MESSAGE": message,
-                    }),
-                    where={
-                        "FK_HOST": host_id,
-                        "NU_STATUS": status,
-                        "NU_TYPE__in": (
-                            k.FILE_TASK_DISCOVERY,
-                            k.FILE_TASK_BACKUP_TYPE,
-                        ),
-                    },
-                    commit=True,
-                )
-
-            if affected:
-                self._summary_publish_host_scope(
-                    host_id,
-                    reason="file_task_suspend_by_host",
-                )
-
-        except Exception as e:
-            self._log_db_error(
-                "db_update_failed",
-                operation="file_task_suspend_by_host",
-                table="FILE_TASK",
-                host_id=host_id,
-                error=repr(e),
-            )
-
- 
-
-    def file_task_resume_by_host(
-        self,
-        host_id: int,
-        busy_timeout_seconds: int = k.HOST_BUSY_TIMEOUT
-    ) -> None:
-        """
-        Resume suspended, errored, or stale host-dependent file tasks.
-
-        Tasks are reactivated under three conditions:
-            1. NU_STATUS = TASK_SUSPENDED → host became reachable again.
-            2. NU_STATUS = TASK_ERROR     → retry.
-            3. NU_STATUS = TASK_RUNNING   → considered stale if DT_FILE_TASK is older than
-            (now - busy_timeout_seconds), assuming the worker crashed or was interrupted.
+        """Delete one live queue row and invalidate its host when a row existed.
 
         Args:
-            host_id (int):
-                Host identifier (FK_HOST) whose file-level tasks should be resumed.
-            busy_timeout_seconds (int):
-                Maximum allowed time (in seconds) for a running task before it is
-                considered stale. Defaults to k.HOST_BUSY_TIMEOUT.
+            task_id (int): Queue primary key.
 
         Returns:
-            None
+            int: Deleted row count, zero or one.
+
+        Raises:
+            psycopg.Error: If deletion fails. Caller transactions remain caller-owned.
         """
-        try:
-            total_resumed = 0
-            threshold_time = datetime.now() - timedelta(seconds=busy_timeout_seconds)
+        with self._unit_of_work():
+            host_id = self._task_read_host_id(table="FILE_TASK", task_id=task_id)
+            where_conditions = {"ID_FILE_TASK": task_id}
+            affected = self._delete_row(table="FILE_TASK", where=where_conditions)
+            if affected:
+                self._summary_publish_host_scope(host_id, reason="file_task_delete")
+            return affected
 
-            # -----------------------------------------------------------------
-            # 1. Reactivate suspended file tasks
-            # -----------------------------------------------------------------
-            resumed_suspended = self._update_row(
-                table="FILE_TASK",
-                data=self._merge_structured_error_fields({
-                    "NU_STATUS": k.TASK_PENDING,
-                    "NU_PID": None,
-                    "NA_MESSAGE": (
-                        "Host reachable again — suspended file task resumed automatically"
-                    ),
-                }),
-                where={
-                    "FK_HOST": host_id,
-                    "NU_STATUS": k.TASK_SUSPENDED,
-                },
-                commit=True,
-            )
-
-            # -----------------------------------------------------------------
-            # 2) Reactivate ERROR tasks (DISCOVERY and BACKUP only)
-            # -----------------------------------------------------------------
-            resumed_error = self._update_row(
-                table="FILE_TASK",
-                data=self._merge_structured_error_fields({
-                    "NU_STATUS": k.TASK_PENDING,
-                    "NU_PID": None,
-                    "NA_MESSAGE": (
-                        "Host reachable again — previously failed file task resubmitted"
-                    ),
-                }),
-                where={
-                    "FK_HOST": host_id,
-                    "NU_STATUS": k.TASK_ERROR,
-                    "NU_TYPE__in": (
-                        k.FILE_TASK_DISCOVERY,
-                        k.FILE_TASK_BACKUP_TYPE,
-                    ),
-                },
-                commit=True,
-            )
-
-            # -----------------------------------------------------------------
-            # 3. Reactivate stale running file tasks (> busy_timeout_seconds)
-            # -----------------------------------------------------------------
-            resumed_stale_running = self._update_row(
-                table="FILE_TASK",
-                data=self._merge_structured_error_fields({
-                    "NU_STATUS": k.TASK_PENDING,
-                    "NU_PID": None,
-                    "NA_MESSAGE": (
-                        f"Detected stale running file task (> {busy_timeout_seconds}s) — "
-                        f"resubmitted automatically"
-                    ),
-                }),
-                where={
-                    "FK_HOST": host_id,
-                    "NU_STATUS": k.TASK_RUNNING,
-                    "DT_FILE_TASK__lt": threshold_time,
-                },
-                commit=True,
-            )
-
-            # -----------------------------------------------------------------
-            # 4. Final log
-            # -----------------------------------------------------------------
-            total_resumed = resumed_suspended + resumed_error + resumed_stale_running
-
-            if total_resumed > 0:
-                self._summary_publish_host_scope(
-                    host_id,
-                    reason="file_task_resume_by_host",
-                )
-
-        except Exception as e:
-            self._log_db_error(
-                "db_update_failed",
-                operation="file_task_resume_by_host",
-                table="FILE_TASK",
-                host_id=host_id,
-                error=repr(e),
-            )
-
-    def file_history_suspend_by_host(self, host_id: int, reason: str = None) -> None:
-        """
-        Mirror host-driven suspension into FILE_TASK_HISTORY.
-
-        Only host-dependent phases are touched:
-            - DISCOVERY status
-            - BACKUP status
-
-        Processing history is intentionally left alone because it does not
-        depend on the remote host once the file is already on the server.
-        """
-        try:
-            message = (
-                reason
-                or "Host unreachable — host-dependent history suspended by host_check service"
-            )
-
-            suspended_discovery = self._update_row(
-                table="FILE_TASK_HISTORY",
-                data=self._merge_structured_error_fields({
-                    "NU_STATUS_DISCOVERY": k.TASK_SUSPENDED,
-                    "NA_MESSAGE": message,
-                }),
-                where={
-                    "FK_HOST": host_id,
-                    "NU_STATUS_DISCOVERY__in": (
-                        k.TASK_PENDING,
-                        k.TASK_RUNNING,
-                    ),
-                },
-                commit=True,
-            )
-
-            suspended_backup = self._update_row(
-                table="FILE_TASK_HISTORY",
-                data=self._merge_structured_error_fields({
-                    "NU_STATUS_BACKUP": k.TASK_SUSPENDED,
-                    "NA_MESSAGE": message,
-                }),
-                where={
-                    "FK_HOST": host_id,
-                    "NU_STATUS_BACKUP__in": (
-                        k.TASK_PENDING,
-                        k.TASK_RUNNING,
-                    ),
-                },
-                commit=True,
-            )
-
-            total_suspended = suspended_discovery + suspended_backup
-
-            if total_suspended:
-                self._summary_publish_host_scope(
-                    host_id,
-                    reason="file_history_suspend_by_host",
-                )
-
-        except Exception as e:
-            self._log_db_error(
-                "db_update_failed",
-                operation="file_history_suspend_by_host",
-                table="FILE_TASK_HISTORY",
-                host_id=host_id,
-                error=repr(e),
-            )
-
-    def file_history_resume_by_host(
+    def file_task_list_for_backlog(
         self,
-        host_id: int,
-    ) -> None:
-        """
-        Resume DISCOVERY and BACKUP phases in file history when a host recovers.
-
-        Processing phase is NOT resumed by design. Both TASK_SUSPENDED and
-        TASK_ERROR are reactivated here because both states represent
-        host-dependent work that can continue once connectivity returns.
-        """
-        try:
-            total_resumed = 0
-
-            # -------------------------------------------------------------
-            # 1) Resume DISCOVERY phase (host-dependent)
-            # -------------------------------------------------------------
-            resumed_discovery = self._update_row(
-                table="FILE_TASK_HISTORY",
-                data=self._merge_structured_error_fields({
-                    "NU_STATUS_DISCOVERY": k.TASK_PENDING,
-                    "NA_MESSAGE": (
-                        "Host reachable again — discovery resumed automatically"
-                    ),
-                }),
-                where={
-                    "FK_HOST": host_id,
-                    "NU_STATUS_DISCOVERY__in": (
-                        k.TASK_SUSPENDED,
-                        k.TASK_ERROR,
-                    ),
-                },
-                commit=True,
-            )
-
-            # -------------------------------------------------------------
-            # 2) Resume BACKUP phase (host-dependent)
-            # -------------------------------------------------------------
-            resumed_backup = self._update_row(
-                table="FILE_TASK_HISTORY",
-                data=self._merge_structured_error_fields({
-                    "NU_STATUS_BACKUP": k.TASK_PENDING,
-                    "NA_MESSAGE": (
-                        "Host reachable again — backup resumed automatically"
-                    ),
-                }),
-                where={
-                    "FK_HOST": host_id,
-                    "NU_STATUS_BACKUP__in": (
-                        k.TASK_SUSPENDED,
-                        k.TASK_ERROR,
-                    ),
-                },
-                commit=True,
-            )
-
-            total_resumed = resumed_discovery + resumed_backup
-
-            # -------------------------------------------------------------
-            # 3) Final log
-            # -------------------------------------------------------------
-            if total_resumed > 0:
-                self._summary_publish_host_scope(
-                    host_id,
-                    reason="file_history_resume_by_host",
-                )
-
-        except Exception as e:
-            self._log_db_error(
-                "db_update_failed",
-                operation="file_history_resume_by_host",
-                table="FILE_TASK_HISTORY",
-                host_id=host_id,
-                error=repr(e),
-            )
-
-
-            
-    def update_backlog_by_filter(
-        self,
-        host_id: int,
-        task_filter: Dict[str, Any],
         *,
-        search_type: int,
-        search_status: Union[int, List[int]],
-        new_type: int,
-        new_status: int,
-    ) -> Dict[str, int]:
-        """
-        Promote backlog entries in `FILE_TASK` based on a logical filter.
+        where: Mapping[str, object],
+        order_by: Sequence[tuple[str, str]],
+        limit: int | None = None,
+    ) -> list[DbRow]:
+        """Lock a filtered, ordered queue slice without choosing its volume budget.
 
-        This method performs a single SQL UPDATE on FILE_TASK, transitioning
-        tasks from one type/status to another (e.g. DISCOVERY → BACKUP).
-
-        Architectural contract:
-            - DB-driven only
-            - no filesystem inspection
-            - no per-file Python loops
-            - safe for large CelPlan-style backlogs
+        Args:
+            where (Mapping[str, object]): Prepared FILE_TASK filters, including host.
+            order_by (Sequence[tuple[str, str]]): Validated column/direction pairs
+                using the base's closed ordering vocabulary.
+            limit (int | None): Optional maximum selected rows.
 
         Returns:
-            dict with counters:
-                {
-                    "rows_updated": int,
-                    "moved_to_backup": int,
-                    "moved_to_discovery": int,
-                }
+            list[DbRow]: ID_FILE_TASK and VL_FILE_SIZE_KB_HOST for each selected
+            row, in requested order. Locks last until caller commit or rollback.
+
+        Raises:
+            ValueError: If filters, ordering, or limit are invalid.
+            RuntimeError: If no explicit transaction is active.
+            psycopg.Error: If reading or locking rows fails.
         """
+        columns = ("ID_FILE_TASK", "VL_FILE_SIZE_KB_HOST")
+        return self._select_batch(
+            table="FILE_TASK",
+            where=where,
+            columns=columns,
+            order_by=order_by,
+            limit=limit,
+            for_update=True,
+        )
 
-        summary = {
-            "rows_updated": 0,
-            "moved_to_backup": 0,
-            "moved_to_discovery": 0,
-            "selected_total_kb": 0,
-        }
+    def file_task_update_backlog(
+        self,
+        *,
+        data: Mapping[str, object],
+        where: Mapping[str, object],
+        message_prefix: str,
+    ) -> int:
+        """Apply prepared queue values and compose each row's source-file message.
 
-        self._connect()
+        Args:
+            data (Mapping[str, object]): Nonempty literal FILE_TASK replacements;
+                NA_MESSAGE must be absent because it is composed for each row.
+            where (Mapping[str, object]): Nonempty original filters, optionally
+                restricted to IDs selected and locked by the caller.
+            message_prefix (str): Bound text preceding ' of file path/name'.
 
-        try:
-            filter_obj = filter.Filter(task_filter, log=self.log)
+        Returns:
+            int: PostgreSQL matched-row count. This method does not choose
+            transitions, budgets, transaction boundaries, or Summary publication.
 
-            meta = filter_obj.evaluate_database(
-                host_id=host_id,
-                search_type=search_type,
-                search_status=search_status,
+        Raises:
+            ValueError: If fields/filters are invalid or NA_MESSAGE is supplied.
+            psycopg.Error: If writing the selected rows fails.
+        """
+        if not where or not data or "NA_MESSAGE" in data:
+            raise ValueError(
+                "Backlog update requires filters and data without NA_MESSAGE."
             )
-
-            where = meta.get("where")
-            extra_sql = meta.get("extra_sql", "")
-            order_by = meta.get("order_by")
-            limit = meta.get("limit")
-            max_total_kb = meta.get("max_total_kb")
-            msg_prefix = tools.compose_message(
-                new_type,
-                new_status,
-                prefix_only=True,
+        target, fields = self._get_table_definition("FILE_TASK")
+        self._validate_fields(tuple(data), fields)
+        assignments = [sql.SQL("{} = %s").format(sql.Identifier(name)) for name in data]
+        assignments.append(
+            sql.SQL(
+                """"NA_MESSAGE" = CONCAT(%s, ' of file ', "NA_HOST_FILE_PATH", '/', "NA_HOST_FILE_NAME")"""
             )
+        )
+        filters, values = self._build_where_clause(where, fields)
+        query = (
+            sql.SQL("UPDATE {} SET {}").format(target, sql.SQL(", ").join(assignments))
+            + filters
+        )
+        params = (*data.values(), message_prefix, *values)
+        return self._execute(query=query, params=params)
 
-            # Some filter combinations intentionally resolve to "no-op".
-            if not where:
-                return summary
+    def file_task_suspend_by_host(
+        self, host_id: int, reason: str | None = None
+    ) -> None:
+        """Suspend discovery/backup tasks that require an unreachable host.
 
-            sql_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        Args:
+            host_id (int): Parent host ID.
+            reason (str | None): Optional message; the default describes host loss.
 
-            update_payload = {
-                "NU_TYPE": new_type,
-                "NU_STATUS": new_status,
-                "DT_FILE_TASK": sql_now,
-                "NA_MESSAGE__expr": (
-                    f"CONCAT('{msg_prefix} of file ', "
-                    f"NA_HOST_FILE_PATH, '/', NA_HOST_FILE_NAME)"
-                ),
+        Returns:
+            None. Only PENDING/RUNNING host-dependent tasks are suspended.
+
+        Raises:
+            psycopg.Error: If suspension fails.
+        """
+        with self._unit_of_work():
+            payload = self._merge_structured_error_fields(
+                {
+                    "NU_STATUS": k.TASK_SUSPENDED,
+                    "NA_MESSAGE": reason
+                    or "Host unreachable — HOST-dependent file task suspended by host_check service",
+                }
+            )
+            where_conditions = {
+                "FK_HOST": host_id,
+                "NU_STATUS__in": (k.TASK_PENDING, k.TASK_RUNNING),
+                "NU_TYPE__in": (k.FILE_TASK_DISCOVERY, k.FILE_TASK_BACKUP_TYPE),
             }
-            update_payload = self._merge_structured_error_fields(update_payload)
-
-            if new_type == k.FILE_TASK_BACKUP_TYPE and max_total_kb is not None:
-                candidate_rows = self._select_rows(
-                    table="FILE_TASK",
-                    where=where,
-                    order_by=order_by,
-                    limit=limit,
-                    cols=[
-                        "ID_FILE_TASK",
-                        "VL_FILE_SIZE_KB_HOST",
-                    ],
-                )
-
-                selected_ids: list[int] = []
-                selected_total_kb = 0
-
-                for row in candidate_rows:
-                    file_id = int(row["ID_FILE_TASK"])
-                    file_size_kb = max(0, int(row.get("VL_FILE_SIZE_KB_HOST") or 0))
-
-                    if selected_total_kb + file_size_kb > max_total_kb:
-                        break
-
-                    selected_ids.append(file_id)
-                    selected_total_kb += file_size_kb
-
-                summary["selected_total_kb"] = selected_total_kb
-
-                if not selected_ids:
-                    return summary
-
-                update_where = dict(where)
-                update_where["ID_FILE_TASK__in"] = selected_ids
-
-                rows_updated = self._update_row(
-                    table="FILE_TASK",
-                    data=update_payload,
-                    where=update_where,
-                    commit=True,
-                )
-            else:
-                rows_updated = self._update_row(
-                    table="FILE_TASK",
-                    data=update_payload,
-                    where=where,
-                    extra_sql=extra_sql,
-                    commit=True,
-                )
-
-            summary["rows_updated"] = rows_updated
-
-            if new_type == k.FILE_TASK_BACKUP_TYPE:
-                summary["moved_to_backup"] = rows_updated
-            elif new_type == k.FILE_TASK_DISCOVERY:
-                summary["moved_to_discovery"] = rows_updated
-
-            if rows_updated > 0:
-                self._summary_publish_host_scope(
-                    host_id,
-                    reason="update_backlog_by_filter",
-                )
-
-            return summary
-
-        except Exception as e:
-            self.db_connection.rollback()
-            self._log_db_error(
-                "db_update_failed",
-                operation="update_backlog_by_filter",
+            affected = self._update_batch(
                 table="FILE_TASK",
-                host_id=host_id,
-                error=repr(e),
+                data=payload,
+                where=where_conditions,
             )
-            raise
+            if affected:
+                self._summary_publish_host_scope(
+                    host_id, reason="file_task_suspend_by_host"
+                )
 
-        finally:
-            self._disconnect()
-    
-    def file_history_create(
+    def file_task_resume_by_host(
+        self, host_id: int, busy_timeout_seconds: int = k.HOST_BUSY_TIMEOUT
+    ) -> None:
+        """Resume file tasks using the established host-recovery eligibility rules.
+
+        Args:
+            host_id (int): Recovered host ID.
+            busy_timeout_seconds (int): Age threshold for stale RUNNING queue rows.
+
+        Returns:
+            None. Resume all SUSPENDED/stale RUNNING file tasks, plus ERROR tasks
+            of discovery/backup types; preserve FROZEN and clear resumed PIDs.
+
+        Raises:
+            psycopg.Error: If any resumption update fails.
+        """
+        conditions = (
+            {"NU_STATUS": k.TASK_SUSPENDED},
+            {
+                "NU_STATUS": k.TASK_ERROR,
+                "NU_TYPE__in": (k.FILE_TASK_DISCOVERY, k.FILE_TASK_BACKUP_TYPE),
+            },
+            {
+                "NU_STATUS": k.TASK_RUNNING,
+                "DT_FILE_TASK__lt": datetime.utcnow()
+                - timedelta(seconds=busy_timeout_seconds),
+            },
+        )
+        data = self._merge_structured_error_fields(
+            {
+                "NU_STATUS": k.TASK_PENDING,
+                "NU_PID": None,
+                "NA_MESSAGE": "Host reachable again — task resumed automatically",
+            }
+        )
+        with self._unit_of_work():
+            affected = 0
+            for condition in conditions:
+                where_conditions = {"FK_HOST": host_id, **condition}
+                affected += self._update_batch(
+                    table="FILE_TASK", data=data, where=where_conditions
+                )
+            if affected:
+                self._summary_publish_host_scope(
+                    host_id, reason="file_task_resume_by_host"
+                )
+
+    @staticmethod
+    def _file_task_build_current_year_order(alias: str) -> sql.Composed:
+        """Build the UTC current-year bucket used by fair backup scheduling.
+
+        Args:
+            alias (str): Trusted query alias for the file-task table.
+
+        Returns:
+            sql.Composed: Descending boolean year bucket with undated files last.
+        """
+        return sql.SQL(
+            "COALESCE(EXTRACT(YEAR FROM {}.\"DT_FILE_CREATED_HOST\") = EXTRACT(YEAR FROM (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')), FALSE) DESC"
+        ).format(sql.Identifier(alias))
+
+    def _file_task_build_order_by(
+        self, alias: str, newest: bool, current_year: bool
+    ) -> sql.Composed:
+        """Compose deterministic candidate ordering with explicit NULL placement.
+
+        Args:
+            alias (str): Trusted file-task query alias.
+            newest (bool): Order by newest creation date and descending ID.
+            current_year (bool): Prepend the UTC current-year preference bucket.
+
+        Returns:
+            sql.Composed: Ordering suitable for outer and per-host candidates.
+        """
+        parts: list[sql.Composable] = []
+        if current_year:
+            parts.append(self._file_task_build_current_year_order(alias))
+        if newest:
+            parts.append(
+                sql.SQL('{}."DT_FILE_CREATED_HOST" DESC NULLS LAST').format(
+                    sql.Identifier(alias)
+                )
+            )
+        parts.append(
+            sql.SQL('{}."ID_FILE_TASK" {}').format(
+                sql.Identifier(alias), sql.SQL("DESC" if newest else "ASC")
+            )
+        )
+        return sql.SQL(", ").join(parts)
+
+    # --- FILE_TASK_HISTORY ---
+
+    def file_task_history_create(
         self,
         host_id: int,
         task_type: int,
         task_status: int,
-        file_metadata: list,
+        file_metadata: Sequence[FileMetadata],
     ) -> int:
-        """
-        Create or refresh `FILE_TASK_HISTORY` rows from `FileMetadata` objects.
+        """Upsert discovery history by the schema's host/path/name identity.
 
-        This is the durable audit-table counterpart of `file_task_create()`.
-        Discovery creates the history row once and later phases mutate its
-        timestamps and statuses as the file advances through backup and
-        processing.
-        """
+        Args:
+            host_id (int): Parent host ID.
+            task_type (int): Type used to compose the discovery message.
+            task_status (int): State used to compose the discovery message.
+            file_metadata (Sequence[FileMetadata]): Homogeneous source artifacts.
+                Empty input performs no SQL. Rediscovery replaces supplied fields.
 
+        Returns:
+            int: Inserted/updated rows. Discovery is DONE, later phases are PENDING,
+            and their completion timestamps start unset, matching the legacy flow.
+
+        Raises:
+            psycopg.Error: If history persistence fails; chunks are atomic.
+        """
         if not file_metadata:
             return 0
-
-        self._connect()
-        processed = 0
-
-        try:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            rows: list[dict] = []
-
-            for file in file_metadata:
-                msg = tools.compose_message(
-                    task_type=task_type,
-                    task_status=task_status,
-                    path=file.NA_PATH,
-                    name=file.NA_FILE,
-                )
-
-                row = {
+        now = datetime.utcnow()
+        rows = [
+            self._merge_structured_error_fields(
+                {
+                    **self._file_metadata_payload(file),
                     "FK_HOST": host_id,
-                    "NA_HOST_FILE_PATH": file.NA_PATH,
-                    "NA_HOST_FILE_NAME": file.NA_FILE,
-                    "NA_EXTENSION_HOST": file.NA_EXTENSION,
-                    "VL_FILE_SIZE_KB_HOST": file.VL_FILE_SIZE_KB,
-                    "DT_FILE_CREATED_HOST": file.DT_FILE_CREATED,
-                    "DT_FILE_MODIFIED_HOST": file.DT_FILE_MODIFIED,
-
-                    # Discovery is creating the durable history row, so the
-                    # first phase is immediately DONE while the later phases
-                    # remain pending.
                     "DT_DISCOVERED": now,
                     "DT_BACKUP": None,
                     "DT_PROCESSED": None,
                     "NU_STATUS_DISCOVERY": k.TASK_DONE,
                     "NU_STATUS_BACKUP": k.TASK_PENDING,
                     "NU_STATUS_PROCESSING": k.TASK_PENDING,
-
-                    "NA_MESSAGE": msg,
+                    "NA_MESSAGE": tools.compose_message(
+                        task_type, task_status, file.NA_PATH, file.NA_FILE
+                    ),
                 }
-                rows.append(self._merge_structured_error_fields(row))
-
-            if len(rows) == 1:
-                # FILE_TASK_HISTORY keeps one durable row per host-path artifact.
-                # Size decides rediscovery, but not history identity.
-                self._upsert_row(
-                    table="FILE_TASK_HISTORY",
-                    data=rows[0],
-                    unique_keys=["FK_HOST", "NA_HOST_FILE_NAME", "NA_HOST_FILE_PATH"],
-                    commit=False,
-                    touch_field="DT_DISCOVERED",
-                    log_each=False,
-                )
-                processed = 1
-
-            else:
-                processed = self._upsert_batch(
-                    table="FILE_TASK_HISTORY",
-                    rows=rows,
-                    unique_keys=["FK_HOST", "NA_HOST_FILE_NAME", "NA_HOST_FILE_PATH"],
-                    touch_field="DT_DISCOVERED",
-                    batch_size=1000,
-                    commit=False,
-                )
-
-            self.db_connection.commit()
-
+            )
+            for file in file_metadata
+        ]
+        with self._unit_of_work():
+            count = self._file_upsert_batch(table="FILE_TASK_HISTORY", data=rows)
             self._summary_publish_host_scope(
                 host_id,
-                reference_months=[
-                    getattr(file, "DT_FILE_CREATED", None)
-                    for file in file_metadata
-                ],
-                reason="file_history_create",
+                reference_months=[file.DT_FILE_CREATED for file in file_metadata],
+                reason="file_task_history_create",
             )
+            return count
 
-            return processed
-
-        except Exception as e:
-            self.db_connection.rollback()
-            self._log_db_error(
-                "db_execute_failed",
-                operation="file_history_create",
-                table="FILE_TASK_HISTORY",
-                host_id=host_id,
-                error=repr(e),
-            )
-            raise
-
-        finally:
-            self._disconnect()
-
-
-
-    def file_history_update(
+    def file_task_history_update(
         self,
-        task_type: Optional[int] = None,
+        task_type: int | None = None,
         *,
-        history_id: Optional[int] = None,
-        host_id: Optional[int] = None,
-        host_file_path: Optional[str] = None,
-        host_file_name: Optional[str] = None,
-        server_file_name: Optional[str] = None,
-        **kwargs,
-    ) -> Dict[str, Any]:
+        history_id: int | None = None,
+        host_id: int | None = None,
+        host_file_path: str | None = None,
+        host_file_name: str | None = None,
+        server_file_name: str | None = None,
+        **kwargs: object,
+    ) -> DbRow:
+        """Persist explicit lifecycle changes and their host markers in one transaction.
+
+        Preserve the established distinction between omitted/None values (no change)
+        and constants.SET_NULL (write SQL NULL). Completion timestamps belong to the
+        caller. Successful dated phases advance HOST markers monotonically.
+
+        Args:
+            task_type (int | None): Retained caller context; does not infer phase data.
+            history_id (int | None): Explicit history primary key.
+            host_id (int | None): Host paired with source identity or server name.
+            host_file_path (str | None): Source path used with host_file_name.
+            host_file_name (str | None): Source name used with host_file_path.
+            server_file_name (str | None): Alternate server name within the host.
+            **kwargs (object): Supported history replacements, None to omit a change,
+                or constants.SET_NULL to clear a value explicitly.
+
+        Returns:
+            DbRow: success, rows_affected, updated_fields, and where_used. Empty
+            effective changes succeed with zero rows and no SQL write.
+
+        Raises:
+            ValueError: If fields, empty input, or identity are invalid.
+            psycopg.Error: If updating history or its host markers fails.
         """
-        Update `FILE_TASK_HISTORY` using deterministic identification rules.
-
-        Identification strategies (exactly one required):
-
-            1) history_id
-            2) (host_id, host_file_path, host_file_name)
-            3) (host_id, server_file_name)  -> only when server_file_name IS NOT NULL
-
-        Update semantics:
-            - omitted field   -> not updated
-            - `None`          -> not updated
-            - `SET_NULL`      -> explicit SQL NULL
-            - any other value -> updated
-
-        Timestamp ownership:
-            `DT_BACKUP` and `DT_PROCESSED` are caller-owned. The function keeps
-            `task_type` only for signature compatibility and call-site clarity;
-            it no longer injects implicit timestamps.
-
-        Artifact-deletion semantics:
-            `IS_PAYLOAD_DELETED` / `DT_PAYLOAD_DELETED` refer only to the
-            artifact currently referenced by `FILE_TASK_HISTORY`
-            (`NA_SERVER_FILE_PATH` + `NA_SERVER_FILE_NAME`). They do not
-            represent deletion of superseded leftovers parked in
-            `trash/resolved_files`, because those files are no longer owned by
-            the history row.
-        """
-
-        self._connect()
-        valid_fields = getattr(self, "VALID_FIELDS_FILE_TASK_HISTORY", set())
-
-        # -------------------------------------------------
-        # Validate update fields
-        # -------------------------------------------------
         if not kwargs:
-            raise ValueError("No fields provided for FILE_TASK_HISTORY update.")
-
-        for key in kwargs:
-            if key not in valid_fields:
-                raise ValueError(f"Invalid field '{key}' for FILE_TASK_HISTORY.")
-
-        # -------------------------------------------------
-        # Build deterministic WHERE clause
-        # -------------------------------------------------
-        where_dict: Dict[str, Any] = {}
-
-        # OPTION 1 — Primary Key
-        if history_id is not None:
-            where_dict = {"ID_HISTORY": history_id}
-
-        # OPTION 2 — Unique host composite key
-        elif (
-            host_id is not None
-            and host_file_path is not None
-            and host_file_name is not None
-        ):
-            where_dict = {
-                "FK_HOST": host_id,
-                "NA_HOST_FILE_PATH": host_file_path,
-                "NA_HOST_FILE_NAME": host_file_name,
-            }
-
-        # OPTION 3 — Post-backup unique key
-        elif (
-            host_id is not None
-            and server_file_name is not None
-        ):
-            where_dict = {
-                "FK_HOST": host_id,
-                "NA_SERVER_FILE_NAME": server_file_name,
-            }
-
-        else:
-            raise ValueError(
-                "Invalid identification strategy for FILE_TASK_HISTORY update. "
-                "Use one of:\n"
-                "1) history_id\n"
-                "2) (host_id, host_file_path, host_file_name)\n"
-                "3) (host_id, server_file_name)"
-            )
-
-        # -------------------------------------------------
-        # Build UPDATE payload with explicit NULL semantics
-        # -------------------------------------------------
-        update_data: Dict[str, Any] = {}
-
-        for key, value in kwargs.items():
-            if value is None:
-                continue
-
-            if value is constants.SET_NULL:
-                update_data[key] = None
-            else:
-                update_data[key] = value
-
-        if not update_data:
-            self._disconnect()
+            raise ValueError("History update requires at least one field.")
+        self._validate_fields(tuple(kwargs), self.VALID_FIELDS_FILE_TASK_HISTORY)
+        where_conditions = self._file_identity_filter(
+            "ID_HISTORY",
+            history_id,
+            host_id,
+            host_file_path,
+            host_file_name,
+            server_file_name,
+        )
+        payload = {
+            name: None if value is constants.SET_NULL else value
+            for name, value in kwargs.items()
+            if value is not None
+        }
+        if not payload:
             return {
                 "success": True,
                 "rows_affected": 0,
                 "updated_fields": {},
-                "where_used": where_dict,
+                "where_used": where_conditions,
             }
-
-        update_data = self._merge_structured_error_fields(update_data)
-
-        # -------------------------------------------------
-        # Execute UPDATE
-        # -------------------------------------------------
-        try:
-            host_scope_id = host_id
-            reference_months: List[str] = []
-
-            if history_id is not None or (
-                host_id is not None
-                and host_file_path is not None
-                and host_file_name is not None
-            ):
-                host_scope_id, reference_months = self._summary_lookup_file_history_scope(
-                    history_id=history_id,
-                    host_id=host_id,
-                    host_file_path=host_file_path,
-                    host_file_name=host_file_name,
-                )
-
-            if "DT_FILE_CREATED_HOST" in update_data:
-                override_month = self._normalize_summary_reference_month(
-                    update_data.get("DT_FILE_CREATED_HOST")
-                )
-                if override_month is not None:
-                    reference_months = [override_month]
-            elif "DT_FILE_CREATED_SERVER" in update_data:
-                override_month = self._normalize_summary_reference_month(
-                    update_data.get("DT_FILE_CREATED_SERVER")
-                )
-                if override_month is not None:
-                    reference_months = [override_month]
-
-            affected_rows = self._update_row(
-                table="FILE_TASK_HISTORY",
-                data=update_data,
-                where=where_dict,
-                commit=not getattr(self, "in_transaction", False),
+        payload = self._merge_structured_error_fields(payload)
+        if payload.get("IS_PAYLOAD_DELETED") is not None:
+            payload["IS_PAYLOAD_DELETED"] = self._storage_flag(
+                payload["IS_PAYLOAD_DELETED"]
             )
-
-            if affected_rows != 1:
-                self._log_db_warning(
-                    "db_update_no_match",
-                    operation="file_history_update",
-                    table="FILE_TASK_HISTORY",
-                    rows_affected=affected_rows,
+        with self._unit_of_work():
+            columns = ("FK_HOST", "DT_FILE_CREATED_HOST")
+            rows = self._select_batch(
+                table="FILE_TASK_HISTORY", where=where_conditions, columns=columns
+            )
+            affected = self._update_batch(
+                table="FILE_TASK_HISTORY", data=payload, where=where_conditions
+            )
+            hosts: set[int] = set()
+            months: list[object] = [row["DT_FILE_CREATED_HOST"] for row in rows]
+            if "DT_FILE_CREATED_HOST" in payload:
+                months.append(payload["DT_FILE_CREATED_HOST"])
+            for row in rows:
+                scope = cast(int, row["FK_HOST"])
+                if scope not in hosts:
+                    self._host_update_phase_markers_from_history(
+                        host_id=scope, history_update=payload
+                    )
+                    hosts.add(scope)
+            for scope in hosts:
+                self._summary_publish_host_scope(
+                    scope, reference_months=months, reason="file_task_history_update"
                 )
-            else:
-                try:
-                    self._update_host_phase_markers_from_history(
-                        host_id=host_scope_id,
-                        history_update=update_data,
-                    )
-                except Exception as marker_error:
-                    self._log_db_warning(
-                        "host_phase_marker_update_failed",
-                        operation="file_history_update",
-                        table="HOST",
-                        host_id=host_scope_id,
-                        error=repr(marker_error),
-                    )
-
-                if not getattr(self, "in_transaction", False):
-                    self._summary_publish_host_scope(
-                        host_scope_id,
-                        reference_months=reference_months,
-                        reason="file_history_update",
-                    )
-
             return {
                 "success": True,
-                "rows_affected": affected_rows,
-                "updated_fields": update_data,
-                "where_used": where_dict,
+                "rows_affected": affected,
+                "updated_fields": payload,
+                "where_used": where_conditions,
             }
 
-        except Exception as e:
-            self.db_connection.rollback()
-            self._log_db_error(
-                "db_update_failed",
-                operation="file_history_update",
-                table="FILE_TASK_HISTORY",
-                error=repr(e),
-            )
-            raise
-
-        finally:
-            self._disconnect()
-            
-    def filter_existing_file_batch(
+    def file_task_history_delete(
         self,
-        host_id: int,
-        batch: List["FileMetadata"],
         *,
-        batch_size: int,
-    ) -> List["FileMetadata"]:
-        """
-        Deduplicate a batch of `FileMetadata` objects against file history.
-
-        Identity definition (logical key):
-            (FK_HOST, NA_HOST_FILE_PATH, NA_HOST_FILE_NAME, VL_FILE_SIZE_KB_HOST)
-
-        Why this identity:
-            - path distinguishes same filenames stored in different folders
-            - size distinguishes files that grew in place and must be re-backed-up
-            - host-side timestamps proved too unstable across platforms for
-              rediscovery deduplication
-
-        Returns:
-            List[FileMetadata] containing only files not already
-            present in FILE_TASK_HISTORY under the defined identity.
-        """
-
-        if not batch:
-            return []
-
-        if len(batch) > batch_size:
-            raise ValueError(
-                f"Batch size exceeded: {len(batch)} > {batch_size}"
-            )
-
-        # Build one derived table from the in-memory batch and let SQL perform
-        # the host-path identity comparison in one pass.
-        row_sql = "SELECT %s AS path, %s AS name, %s AS size"
-        union_sql = " UNION ALL ".join([row_sql] * len(batch))
-
-        sql = f"""
-            SELECT f.path, f.name, f.size
-            FROM (
-                {union_sql}
-            ) AS f
-            JOIN FILE_TASK_HISTORY h
-                ON h.FK_HOST = %s
-                AND h.NA_HOST_FILE_PATH = f.path
-                AND h.NA_HOST_FILE_NAME = f.name
-                AND h.VL_FILE_SIZE_KB_HOST = f.size
-        """
-
-        params: list[object] = []
-
-        for m in batch:
-            params.extend([
-                m.NA_PATH,
-                m.NA_FILE,
-                m.VL_FILE_SIZE_KB,
-            ])
-
-        params.append(host_id)
-
-        self._connect()
-        rows = self._select_raw(sql, tuple(params))
-
-        # SQL already matched by host-path identity; mirror the same key
-        # in memory so the Python-side filter stays deterministic.
-        existing_keys = set()
-
-        for row in rows:
-            existing_keys.add((
-                row["path"],
-                row["name"],
-                row["size"],
-            ))
-
-        # ------------------------------------------------------------
-        # Secondary check: CelPlan .zip files already converted to .mat
-        #
-        # For RFEYE .bin files the size-based key is intentional: the same
-        # filename can grow over time, so a different size means the file
-        # must be re-backed-up.
-        #
-        # For CelPlan .zip files the original asset never grows.
-        #
-        # Guard: if FILE_TASK_HISTORY already holds a row for this host +
-        # path + filename where the persisted server-side artifact is `.mat`
-        # and NU_STATUS_PROCESSING is terminal (DONE or ERROR), the `.zip`
-        # is considered done regardless of the primary identity key.
-        #
-        # Server-side extension now lives in `NA_EXTENSION_SERVER`.
-        # ------------------------------------------------------------
-        processed_zip_keys: set[tuple] = set()
-        zip_files = [
-            m for m in batch
-            if getattr(m, "NA_EXTENSION", "").lower() == ".zip"
-        ]
-        if zip_files:
-            placeholders = ", ".join(["%s"] * len(zip_files))
-            secondary_sql = f"""
-                SELECT DISTINCT h.NA_HOST_FILE_NAME, h.NA_HOST_FILE_PATH
-                FROM FILE_TASK_HISTORY h
-                WHERE h.FK_HOST = %s
-                  AND h.NA_HOST_FILE_NAME IN ({placeholders})
-                  AND LOWER(h.NA_EXTENSION_SERVER) = '.mat'
-                  AND h.NU_STATUS_PROCESSING IN (%s, %s)
-            """
-            secondary_params = tuple(
-                [host_id]
-                + [m.NA_FILE for m in zip_files]
-                + [k.TASK_DONE, k.TASK_ERROR]
-            )
-            secondary_rows = self._select_raw(secondary_sql, secondary_params)
-            processed_zip_keys = {
-                (row["NA_HOST_FILE_NAME"], row["NA_HOST_FILE_PATH"])
-                for row in secondary_rows
-            }
-
-        # ------------------------------------------------------------
-        # Filter original batch using host-path-size identity
-        # ------------------------------------------------------------
-        result = []
-
-        for m in batch:
-            key = (
-                m.NA_PATH,
-                m.NA_FILE,
-                m.VL_FILE_SIZE_KB,
-            )
-
-            if key in existing_keys:
-                continue
-
-            # Secondary guard: .zip already processed to .mat in history
-            if (
-                getattr(m, "NA_EXTENSION", "").lower() == ".zip"
-                and (m.NA_FILE, m.NA_PATH) in processed_zip_keys
-            ):
-                continue
-
-            result.append(m)
-
-        return result
-
-
-    # ======================================================================
-    # GARBAGE COLLECTION
-    # ======================================================================
-    def file_history_get_gc_candidates(self, batch_size: int, quarantine_days: int):
-        """
-        Return history rows eligible for garbage collection of the tracked artifact.
-
-        Criteria:
-            - NU_STATUS_PROCESSING = -1
-            - IS_PAYLOAD_DELETED = 0
-            - quarantine anchor older than quarantine_days
-
-        `DT_PROCESSED` is the quarantine anchor because GC starts counting
-        only after the processing lifecycle is terminal. Rows without that
-        timestamp are intentionally excluded: they need manual reconciliation
-        rather than a retention-based deletion decision.
-
-        Scope:
-            This query covers only the artifact still referenced by
-            `FILE_TASK_HISTORY`. Superseded artifacts in `trash/resolved_files`
-            are intentionally excluded and are collected directly from the
-            filesystem by the garbage-collector worker.
+        history_id: int | None = None,
+        host_id: int | None = None,
+        host_file_path: str | None = None,
+        host_file_name: str | None = None,
+    ) -> int:
+        """Delete identified lifecycle rows and invalidate their former host/month.
 
         Args:
-            batch_size (int):
-                Maximum number of records returned.
+            history_id (int | None): Explicit history primary key.
+            host_id (int | None): Host paired with source path and name otherwise.
+            host_file_path (str | None): Exact source path.
+            host_file_name (str | None): Exact source filename.
 
-            quarantine_days (int):
-                Minimum file age in days.
+        Returns:
+            int: Number of deleted history rows; zero when no identity matched.
 
-        Returns rows containing only the identifiers and server paths required
-        by the garbage-collector worker.
+        Raises:
+            ValueError: If neither complete identity strategy is supplied.
+            psycopg.Error: If reading the scope or deleting history fails.
         """
-        self._connect()
-        where = {
-            "NU_STATUS_PROCESSING": -1,
-            "IS_PAYLOAD_DELETED": 0,
-            "#CUSTOM#QUARANTINE": (
-                f"DT_PROCESSED IS NOT NULL AND "
-                f"DT_PROCESSED < NOW() - INTERVAL {quarantine_days} DAY"
+        where_conditions = self._file_identity_filter(
+            "ID_HISTORY", history_id, host_id, host_file_path, host_file_name
+        )
+        with self._unit_of_work():
+            columns = ("FK_HOST", "DT_FILE_CREATED_HOST")
+            rows = self._select_batch(
+                table="FILE_TASK_HISTORY", where=where_conditions, columns=columns
             )
+            affected = self._delete_batch(
+                table="FILE_TASK_HISTORY", where=where_conditions
+            )
+            for row in rows:
+                self._summary_publish_host_scope(
+                    cast(int, row["FK_HOST"]),
+                    reference_months=[row["DT_FILE_CREATED_HOST"]],
+                    reason="file_task_history_delete",
+                )
+            return affected
+
+    def file_task_history_filter_existing_batch(
+        self, host_id: int, batch: list[FileMetadata], *, batch_size: int
+    ) -> list[FileMetadata]:
+        """Keep new file identities while preserving path/name/size deduplication.
+
+        Args:
+            host_id (int): Parent history host.
+            batch (list[FileMetadata]): Source metadata in enumeration order.
+            batch_size (int): Positive maximum accepted input length.
+
+        Returns:
+            list[FileMetadata]: Original objects not present by path/name/size.
+            ZIPs already processed to MAT in DONE/ERROR are also excluded by
+            path/name, preserving the terminal conversion deduplication rule.
+
+        Raises:
+            ValueError: If the input exceeds the positive batch limit.
+            psycopg.Error: If history lookup fails.
+        """
+        if batch_size < 1 or len(batch) > batch_size:
+            raise ValueError("Discovery batch exceeds its positive size limit.")
+        if not batch:
+            return []
+        values = sql.SQL(", ").join(
+            sql.SQL("(%s::text, %s::text, %s::bigint)") for _ in batch
+        )
+        query = sql.SQL(
+            """
+                    SELECT f.path, f.name, f.size FROM (VALUES {}) AS f(path, name, size)
+                                JOIN {} h ON h."FK_HOST" = %s AND h."NA_HOST_FILE_PATH" = f.path
+                                 AND h."NA_HOST_FILE_NAME" = f.name AND h."VL_FILE_SIZE_KB_HOST" = f.size
+                """
+        ).format(values, sql.Identifier(self.schema, "FILE_TASK_HISTORY"))
+        params = tuple(
+            value
+            for file in batch
+            for value in (file.NA_PATH, file.NA_FILE, file.VL_FILE_SIZE_KB)
+        )
+        existing = {
+            (row["path"], row["name"], row["size"])
+            for row in self._select_raw(query=query, params=(*params, host_id))
+        }
+        zip_names = [
+            file.NA_FILE for file in batch if file.NA_EXTENSION.lower() == ".zip"
+        ]
+        converted: set[tuple[object, object]] = set()
+        if zip_names:
+            where_conditions = {
+                "FK_HOST": host_id,
+                "NA_HOST_FILE_NAME__in": zip_names,
+                "NA_EXTENSION_SERVER__ilike": ".mat",
+                "NU_STATUS_PROCESSING__in": (k.TASK_DONE, k.TASK_ERROR),
+            }
+            columns = ("NA_HOST_FILE_PATH", "NA_HOST_FILE_NAME")
+            rows = self._select_batch(
+                table="FILE_TASK_HISTORY",
+                where=where_conditions,
+                columns=columns,
+            )
+            converted = {
+                (row["NA_HOST_FILE_PATH"], row["NA_HOST_FILE_NAME"]) for row in rows
+            }
+        return [
+            file
+            for file in batch
+            if (file.NA_PATH, file.NA_FILE, file.VL_FILE_SIZE_KB) not in existing
+            and not (
+                file.NA_EXTENSION.lower() == ".zip"
+                and (file.NA_PATH, file.NA_FILE) in converted
+            )
+        ]
+
+    def file_task_history_list_gc_candidates(
+        self, batch_size: int, quarantine_days: int
+    ) -> list[DbRow]:
+        """List undeleted errored payloads past their processing-based quarantine.
+
+        Args:
+            batch_size (int): Positive maximum candidate count.
+            quarantine_days (int): Nonnegative elapsed days since DT_PROCESSED.
+
+        Returns:
+            list[DbRow]: ID_HISTORY, NA_SERVER_FILE_PATH, and NA_SERVER_FILE_NAME,
+            ordered by DT_PROCESSED and ID. Missing processing timestamps are excluded.
+
+        Raises:
+            ValueError: If the batch limit or quarantine is invalid.
+            psycopg.Error: If reading retention candidates fails.
+        """
+        if batch_size < 1 or quarantine_days < 0:
+            raise ValueError("GC requires a positive limit and nonnegative retention.")
+        return self._select_raw(
+            query=sql.SQL(
+                """
+                SELECT "ID_HISTORY", "NA_SERVER_FILE_PATH", "NA_SERVER_FILE_NAME" FROM {}
+                WHERE "NU_STATUS_PROCESSING" = %s AND "IS_PAYLOAD_DELETED" = 0
+                  AND "DT_PROCESSED" IS NOT NULL
+                  AND "DT_PROCESSED" < (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') - %s * INTERVAL '1 day'
+                ORDER BY "DT_PROCESSED", "ID_HISTORY" LIMIT %s
+            """
+            ).format(sql.Identifier(self.schema, "FILE_TASK_HISTORY")),
+            params=(k.TASK_ERROR, quarantine_days, batch_size),
+        )
+
+    def file_task_history_suspend_by_host(
+        self, host_id: int, reason: str | None = None
+    ) -> None:
+        """Suspend live discovery/backup history phases after host connectivity loss.
+
+        Args:
+            host_id (int): Parent host ID.
+            reason (str | None): Optional operational message.
+
+        Returns:
+            None. Processing phase and terminal phase states remain unchanged.
+
+        Raises:
+            psycopg.Error: If either phase update fails; standalone writes are atomic.
+        """
+        self._file_task_history_change_host_states(
+            host_id,
+            (k.TASK_PENDING, k.TASK_RUNNING),
+            k.TASK_SUSPENDED,
+            reason
+            or "Host unreachable — host-dependent history suspended by host_check service",
+        )
+
+    def file_task_history_resume_by_host(self, host_id: int) -> None:
+        """Return suspended/errored host-dependent history phases to PENDING.
+
+        Args:
+            host_id (int): Recovered host ID.
+
+        Returns:
+            None. Discovery/backup change together; processing and FROZEN are preserved.
+
+        Raises:
+            psycopg.Error: If either phase update fails.
+        """
+        self._file_task_history_change_host_states(
+            host_id,
+            (k.TASK_SUSPENDED, k.TASK_ERROR),
+            k.TASK_PENDING,
+            "Host reachable again — history phase resumed automatically",
+        )
+
+    def _file_task_history_change_host_states(
+        self, host_id: int, old_states: Sequence[int], new_state: int, message: str
+    ) -> None:
+        """Change host-dependent history phases together without touching processing.
+
+        Args:
+            host_id (int): Parent host ID.
+            old_states (Sequence[int]): Eligible phase states; excludes FROZEN.
+            new_state (int): Target discovery/backup phase state.
+            message (str): Message normalized into compact diagnostic fields.
+
+        Returns:
+            None. Publish one host invalidation if either phase changed.
+
+        Raises:
+            psycopg.Error: If any phase update fails.
+        """
+        with self._unit_of_work():
+            affected = 0
+            for phase in ("NU_STATUS_DISCOVERY", "NU_STATUS_BACKUP"):
+                payload = self._merge_structured_error_fields(
+                    {phase: new_state, "NA_MESSAGE": message}
+                )
+                where_conditions = {
+                    "FK_HOST": host_id,
+                    f"{phase}__in": tuple(old_states),
+                }
+                affected += self._update_batch(
+                    table="FILE_TASK_HISTORY",
+                    data=payload,
+                    where=where_conditions,
+                )
+            if affected:
+                self._summary_publish_host_scope(
+                    host_id, reason="file_task_history_host_states"
+                )
+
+    # --- Shared persistence and Summary publication ---
+
+    @contextmanager
+    def _unit_of_work(self) -> Generator[None, None, None]:
+        """Keep compound domain writes atomic without completing a caller transaction.
+
+        Args:
+            None.
+
+        Returns:
+            Generator[None, None, None]: Context owning a transaction only when
+            none existed. Body failure rolls back only a self-owned transaction.
+            Commit failures propagate without an automatic replay or rollback.
+
+        Raises:
+            Exception: Propagates the original operation or completion failure.
+        """
+        owns_transaction = not self.in_transaction
+        if owns_transaction:
+            self.begin_transaction()
+        try:
+            yield
+        except Exception:
+            if owns_transaction:
+                try:
+                    self.rollback()
+                except psycopg.Error as error:
+                    self._log_error("db_rollback_failed", "rollback", error)
+            raise
+        else:
+            if owns_transaction:
+                self.commit()
+
+    @staticmethod
+    def _storage_flag(value: object) -> int:
+        """Convert an operational flag at the domain input boundary.
+
+        Args:
+            value (object): Boolean or integer 0/1 supplied for a smallint flag.
+
+        Returns:
+            int: Zero or one for PostgreSQL smallint storage.
+
+        Raises:
+            ValueError: If the value is not a boolean or 0/1 integer.
+        """
+        if not isinstance(value, (bool, int)) or value not in (0, 1):
+            raise ValueError("Operational flags require a boolean or 0/1 integer.")
+        return int(value)
+
+    def _merge_structured_error_fields(self, payload: Mapping[str, object]) -> DbRow:
+        """Normalize persisted task messages and their compact diagnostic fields.
+
+        Args:
+            payload (Mapping[str, object]): Operational fields with an optional
+                NA_MESSAGE and explicit NA_ERROR_DETAIL. Legacy redundant error
+                fields are removed rather than written into the current schema.
+
+        Returns:
+            DbRow: Copy with canonical message/code/detail/classifier fields.
+            Explicit detail is retained if message classification provides none.
+        """
+        normalized = {
+            name: value
+            for name, value in payload.items()
+            if name not in ("NA_ERROR_DOMAIN", "NA_ERROR_STAGE", "NA_ERROR_SUMMARY")
+        }
+        if "NA_MESSAGE" in normalized:
+            compact = errors.build_operational_error_payload(
+                cast(str | None, normalized["NA_MESSAGE"])
+            )
+            if compact.get("NA_ERROR_DETAIL") is None and normalized.get(
+                "NA_ERROR_DETAIL"
+            ):
+                compact["NA_ERROR_DETAIL"] = normalized["NA_ERROR_DETAIL"]
+            normalized.update(compact)
+        return normalized
+
+    @staticmethod
+    def _file_identity_filter(
+        id_column: str,
+        record_id: int | None,
+        host_id: int | None,
+        path: str | None,
+        name: str | None,
+        server_name: str | None = None,
+    ) -> DbRow:
+        """Resolve the supported primary/natural/server identity strategies.
+
+        Args:
+            id_column (str): Trusted ID_HISTORY or ID_FILE_TASK column name.
+            record_id (int | None): Preferred explicit primary key.
+            host_id (int | None): Required parent for alternative identities.
+            path (str | None): Source path paired with name.
+            name (str | None): Source filename paired with path.
+            server_name (str | None): Alternative server filename within the host.
+
+        Returns:
+            DbRow: Nonempty equality filters, in identity precedence order.
+
+        Raises:
+            ValueError: If no complete identity is supplied.
+        """
+        if record_id is not None:
+            return {id_column: record_id}
+        if host_id is not None and path is not None and name is not None:
+            return {
+                "FK_HOST": host_id,
+                "NA_HOST_FILE_PATH": path,
+                "NA_HOST_FILE_NAME": name,
+            }
+        if host_id is not None and server_name is not None:
+            return {"FK_HOST": host_id, "NA_SERVER_FILE_NAME": server_name}
+        raise ValueError("Provide a primary key, host/path/name, or host/server name.")
+
+    @staticmethod
+    def _file_metadata_payload(file: FileMetadata) -> DbRow:
+        """Map one source metadata value object to shared queue/history columns.
+
+        Args:
+            file (FileMetadata): Source path, filename, extension, size in KB,
+                and created/modified timestamps.
+
+        Returns:
+            DbRow: Source metadata only, without workflow state or inferred dates.
+        """
+        return {
+            "NA_HOST_FILE_PATH": file.NA_PATH,
+            "NA_HOST_FILE_NAME": file.NA_FILE,
+            "NA_EXTENSION_HOST": file.NA_EXTENSION,
+            "VL_FILE_SIZE_KB_HOST": file.VL_FILE_SIZE_KB,
+            "DT_FILE_CREATED_HOST": file.DT_FILE_CREATED,
+            "DT_FILE_MODIFIED_HOST": file.DT_FILE_MODIFIED,
         }
 
-        return self._select_rows(
-            table="FILE_TASK_HISTORY",
-            where=where,
-            order_by="DT_PROCESSED, ID_HISTORY",
-            limit=batch_size,
-            cols=[
-                "ID_HISTORY",
-                "NA_SERVER_FILE_PATH",
-                "NA_SERVER_FILE_NAME"
-            ]
+    def _file_upsert_batch(
+        self, table: str, data: Sequence[Mapping[str, object]]
+    ) -> int:
+        """Upsert files against the existing expression index for natural identities.
+
+        Args:
+            table (str): FILE_TASK or FILE_TASK_HISTORY with declared fields.
+            data (Sequence[Mapping[str, object]]): Homogeneous supplied columns;
+                FK_HOST, NA_HOST_FILE_PATH, and NA_HOST_FILE_NAME are required.
+
+        Returns:
+            int: PostgreSQL affected-row count. Conflict updates use supplied
+            values, including caller-owned timestamps, without MariaDB's count of two.
+
+        Raises:
+            ValueError: If the table, fields, identities, or batch shapes are invalid.
+            psycopg.Error: If writing any chunk fails.
+        """
+        if table not in ("FILE_TASK", "FILE_TASK_HISTORY"):
+            raise ValueError("Expression-based identities belong to file tables.")
+        if not data:
+            return 0
+        target, fields = self._get_table_definition(table)
+        columns = tuple(data[0])
+        self._validate_fields(columns, fields)
+        identity = ("FK_HOST", "NA_HOST_FILE_PATH", "NA_HOST_FILE_NAME")
+        if not set(identity).issubset(columns):
+            raise ValueError("File UPSERT requires the complete natural identity.")
+        hash_function = sql.Identifier(self.schema, "file_identity_sha256")
+        query = self._build_insert_query(target, columns)
+        query += sql.SQL(
+            ' ON CONFLICT ("FK_HOST", {}("NA_HOST_FILE_PATH"), {}("NA_HOST_FILE_NAME"))'
+        ).format(hash_function, hash_function)
+        updates = [
+            sql.SQL("{} = EXCLUDED.{}").format(
+                sql.Identifier(name), sql.Identifier(name)
+            )
+            for name in columns
+            if name not in identity
+        ]
+        query += (
+            sql.SQL(" DO UPDATE SET ") + sql.SQL(", ").join(updates)
+            if updates
+            else sql.SQL(" DO NOTHING")
         )
-        
-    
+        return self._execute_batch(query=query, values=self._prepare_batch_values(data))
+
+    def _task_read_host_id(self, table: str, task_id: int) -> int | None:
+        """Resolve the parent host of a queue primary key before invalidation.
+
+        Args:
+            table (str): HOST_TASK or FILE_TASK, with its declared primary key.
+            task_id (int): Task primary-key value.
+
+        Returns:
+            int | None: FK_HOST, or None when the queue row is absent/unassigned.
+
+        Raises:
+            psycopg.Error: If scope lookup fails.
+        """
+        key = getattr(self, f"PRIMARY_KEY_{table}")[0]
+        where_conditions = {key: task_id}
+        columns = ("FK_HOST",)
+        row = self._select_row(table=table, where=where_conditions, columns=columns)
+        return cast(int | None, row["FK_HOST"]) if row else None
+
+    @staticmethod
+    def _normalize_summary_reference_month(value: object) -> str | None:
+        """Normalize supported date-like invalidation values to a first-of-month key.
+
+        Args:
+            value (object): datetime, date, YYYY-MM, or ISO date/timestamp text;
+                None or unparseable values are omitted.
+
+        Returns:
+            str | None: YYYY-MM-01, or None when no valid month can be obtained.
+        """
+        if isinstance(value, (datetime, date)):
+            return value.strftime("%Y-%m-01")
+        if not isinstance(value, str):
+            return None
+        text = value.strip()[:10]
+        try:
+            parsed = date.fromisoformat(text + "-01" if len(text) == 7 else text)
+        except ValueError:
+            return None
+        return parsed.strftime("%Y-%m-01")
+
+    def _summary_publish_host_scope(
+        self,
+        host_id: int | None,
+        *,
+        reference_months: Sequence[object] | None = None,
+        full_reconcile: bool = False,
+        reason: str | None = None,
+    ) -> None:
+        """Coalesce host/month invalidations without aborting operational writes.
+
+        Renew the outbox identity on conflict so checkpoint-based consumers see a
+        re-dirtied scope. An active caller transaction retains the event until its
+        own commit. A savepoint isolates publication failures; no SQL text, values,
+        connection details, or raw driver messages are logged on failure.
+
+        Args:
+            host_id (int | None): Host scope, optional for full reconciliation.
+            reference_months (Sequence[object] | None): Date-like month scopes.
+            full_reconcile (bool): Add the configured full-reconcile scope.
+            reason (str | None): Diagnostic label limited to the outbox column size.
+
+        Returns:
+            None. Driver failures are reported as sanitized warnings; periodic
+            reconciliation remains the recovery path for missing invalidations.
+        """
+        if host_id is None and not full_reconcile:
+            return
+        scopes = {
+            (k.SUMMARY_SCOPE_REFERENCE_MONTH, month)
+            for value in (reference_months or ())
+            if (month := self._normalize_summary_reference_month(value)) is not None
+        }
+        if host_id is not None:
+            scopes.add((k.SUMMARY_SCOPE_HOST, str(host_id)))
+        if full_reconcile:
+            scopes.add(
+                (k.SUMMARY_SCOPE_FULL_RECONCILE, k.SUMMARY_SCOPE_FULL_RECONCILE_KEY)
+            )
+        query = sql.SQL(
+            """
+                    INSERT INTO {} ("NA_SCOPE_TYPE", "NA_SCOPE_VALUE", "NA_SOURCE_HANDLER", "NA_REASON")
+                                VALUES (%s, %s, %s, %s)
+                                ON CONFLICT ("NA_SCOPE_TYPE", "NA_SCOPE_VALUE") DO UPDATE SET
+                                  "ID_OUTBOX" = EXCLUDED."ID_OUTBOX", "NA_SOURCE_HANDLER" = EXCLUDED."NA_SOURCE_HANDLER",
+                                  "NA_REASON" = EXCLUDED."NA_REASON", "DT_CREATED_AT" = EXCLUDED."DT_CREATED_AT"
+                """
+        ).format(sql.Identifier(k.SUMMARY_DATABASE_NAME, "SUMMARY_OUTBOX"))
+        try:
+            with self._cursor("summary_publish") as cursor:
+                if (
+                    self.in_transaction
+                    and cursor.connection.info.transaction_status
+                    == TransactionStatus.IDLE
+                ):
+                    # Start the caller transaction before creating a nested savepoint.
+                    cursor.execute(sql.SQL("SELECT 1"))
+                with cursor.connection.transaction():
+                    cursor.executemany(
+                        query,
+                        [
+                            (
+                                kind,
+                                value,
+                                type(self).__name__,
+                                reason[:64] if reason else None,
+                            )
+                            for kind, value in sorted(scopes)
+                        ],
+                    )
+        except psycopg.Error as error:
+            self.log.warning_event(
+                "summary_scope_publish_failed",
+                db_handler=type(self).__name__,
+                operation="summary_publish",
+                error=type(error).__name__,
+                sqlstate=error.sqlstate,
+            )
+
+    def _select_task_with_host(
+        self,
+        table: str,
+        conditions: Sequence[sql.Composable],
+        params: Sequence[object],
+        order_by: sql.Composable,
+    ) -> DbRow | None:
+        """Read one joined queue candidate with the established prefixed row keys.
+
+        Args:
+            table (str): Trusted HOST_TASK or FILE_TASK table name.
+            conditions (Sequence[sql.Composable]): Trusted predicates using t/h aliases.
+            params (Sequence[object]): Bound predicate values in SQL order.
+            order_by (sql.Composable): Trusted queue-specific ordering expression.
+
+        Returns:
+            DbRow | None: One row keyed as TABLE__COLUMN and HOST__COLUMN, or None.
+
+        Raises:
+            ValueError: If a table has no declared fields.
+            psycopg.Error: If candidate lookup fails.
+        """
+        target, fields = self._get_table_definition(table)
+        projection = [
+            sql.SQL("{}.{} AS {}").format(
+                sql.Identifier(alias),
+                sql.Identifier(name),
+                sql.Identifier(f"{prefix}__{name}"),
+            )
+            for alias, prefix, names in (
+                ("t", table, fields),
+                ("h", "HOST", self.VALID_FIELDS_HOST),
+            )
+            for name in sorted(names)
+        ]
+        query = sql.SQL(
+            'SELECT {} FROM {} t JOIN {} h ON h."ID_HOST" = t."FK_HOST"'
+        ).format(
+            sql.SQL(", ").join(projection), target, sql.Identifier(self.schema, "HOST")
+        )
+        if conditions:
+            query += sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conditions)
+        query += sql.SQL(" ORDER BY {} LIMIT 1").format(order_by)
+        rows = self._select_raw(query=query, params=params)
+        return rows[0] if rows else None

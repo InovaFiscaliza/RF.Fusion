@@ -68,7 +68,7 @@ class FakeDbBkp:
         self.history_calls: list[dict] = []
         self.history_updates: list[dict] = []
 
-    def file_history_get_gc_candidates(
+    def file_task_history_list_gc_candidates(
         self,
         *,
         batch_size: int,
@@ -82,7 +82,7 @@ class FakeDbBkp:
         )
         return []
 
-    def file_history_update(self, **kwargs) -> None:
+    def file_task_history_update(self, **kwargs) -> None:
         self.history_updates.append(kwargs)
 
 
@@ -94,7 +94,7 @@ class GarbageCollectorTests(unittest.TestCase):
         handler._connect = Mock()
         handler._select_rows = Mock(return_value=[])
 
-        handler.file_history_get_gc_candidates(batch_size=123, quarantine_days=365)
+        handler.file_task_history_list_gc_candidates(batch_size=123, quarantine_days=365)
 
         kwargs = handler._select_rows.call_args.kwargs
         self.assertEqual(kwargs["order_by"], "DT_PROCESSED, ID_HISTORY")

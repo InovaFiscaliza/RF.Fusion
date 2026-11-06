@@ -204,7 +204,7 @@ def persist_host_connectivity_state(
         """
         db.host_task_suspend_by_host(host_id)
         db.file_task_suspend_by_host(host_id)
-        db.file_history_suspend_by_host(host_id)
+        db.file_task_history_suspend_by_host(host_id)
 
     if online:
         # `(0,1)` and `(1,1)` both land here. In both cases the persisted
@@ -233,7 +233,7 @@ def persist_host_connectivity_state(
             )
             db.host_task_resume_by_host(host_id)
             db.file_task_resume_by_host(host_id)
-            db.file_history_resume_by_host(host_id)
+            db.file_task_history_resume_by_host(host_id)
         elif resume_dependent_tasks:
             # Some failures, such as explicit SSH authentication problems, can
             # suspend work without ever marking the host offline. A later
@@ -249,7 +249,7 @@ def persist_host_connectivity_state(
             )
             db.host_task_resume_by_host(host_id)
             db.file_task_resume_by_host(host_id)
-            db.file_history_resume_by_host(host_id)
+            db.file_task_history_resume_by_host(host_id)
 
         return
 
@@ -568,7 +568,7 @@ def _persist_connectivity_outcome(
             )
 
             if promote_to_processing:
-                db.queue_host_task(
+                db.host_task_enqueue(
                     host_id=task["host_id"],
                     task_type=k.HOST_TASK_PROCESSING_TYPE,
                     task_status=k.TASK_PENDING,

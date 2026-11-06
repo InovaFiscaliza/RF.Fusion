@@ -54,7 +54,7 @@ class FakeDB:
     def host_upsert(self, **kwargs):
         self.host_upserts.append(kwargs)
 
-    def queue_host_task(self, **kwargs):
+    def host_task_enqueue(self, **kwargs):
         self.queued_tasks.append(kwargs)
         return {
             "HOST_TASK__ID_HOST_TASK": 123,
