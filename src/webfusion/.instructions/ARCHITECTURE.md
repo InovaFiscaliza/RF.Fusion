@@ -98,6 +98,14 @@ preservando seus modelos de pesquisa especializados.
 - As métricas operacionais e a divisão de responsabilidades com o Zabbix estão em
   [METRICAS_OPERACIONAIS.md](../../../docs/architecture/METRICAS_OPERACIONAIS.md).
 
+## Relação entre host e equipamento
+
+O cruzamento host/equipamento pertence ao contexto de consulta do WebFusion.
+Na instalação PostgreSQL, seu modelo de leitura e sua materialização pelo
+worker do Summary seguem o [contrato compartilhado](../../../docs/architecture/SUMMARY_POSTGRESQL.md#cruzamento-para-o-webfusion).
+Essa relação permite apresentar o acervo analítico e as localidades por estação;
+não estabelece dependência para coleta, filas ou ingestão do appCataloga.
+
 ## Consultas paginadas do appAnalise
 
 A API mantém integralmente o contrato HTTP do consumidor MATLAB, incluindo

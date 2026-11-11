@@ -41,6 +41,7 @@ CONFIG_PATH = os.path.join(BASE_DIR, "etc", "appCataloga")
 if CONFIG_PATH not in sys.path:
     sys.path.insert(0, CONFIG_PATH)
 
+from db import constants as db_constants
 import config as k  # noqa: E402
 
 # =====================================================================
@@ -276,7 +277,7 @@ def persist_host_connectivity_state(
         _suspend_host_dependent_work()
         update_fields.update(
             IS_BUSY=False,
-            NU_PID=k.HOST_UNLOCKED_PID,
+            NU_PID=db_constants['hosts']['unlocked_pid'],
             NU_HOST_CHECK_ERROR=1,
             DT_LAST_FAIL=now,
         )
@@ -513,13 +514,13 @@ def _persist_connectivity_outcome(
 
             if next_count >= threshold:
                 return (
-                    k.TASK_ERROR,
+                    db_constants['tasks']['states']['error'],
                     f"SSH supervision degraded threshold reached while ICMP still responds ({next_count}/{threshold})",
                     False,
                 )
 
             return (
-                k.TASK_PENDING,
+                db_constants['tasks']['states']['pending'],
                 f"SSH supervision degraded while ICMP still responds | confirmation {next_count}/{threshold}",
                 False,
             )
@@ -547,7 +548,7 @@ def _persist_connectivity_outcome(
                 now=task["now"],
                 resume_dependent_tasks=(task["host_check_error_count"] > 0),
             )
-            return (k.TASK_ERROR, "Host unreachable (connectivity check failed)", False)
+            return (db_constants['tasks']['states']['error'], "Host unreachable (connectivity check failed)", False)
 
         case k.HOST_CONN_ONLINE:
             # A successful supervisory probe reconciles the persisted host state
@@ -570,13 +571,13 @@ def _persist_connectivity_outcome(
             if promote_to_processing:
                 db.host_task_enqueue(
                     host_id=task["host_id"],
-                    task_type=k.HOST_TASK_PROCESSING_TYPE,
-                    task_status=k.TASK_PENDING,
+                    task_type=db_constants['tasks']['host_types']['processing'],
+                    task_status=db_constants['tasks']['states']['pending'],
                     filter_dict=task["host_filter"],
                 )
-                return (k.TASK_DONE, "Host check completed; discovery task queued", True)
+                return (db_constants['tasks']['states']['done'], "Host check completed; discovery task queued", True)
 
-            return (k.TASK_DONE, "Host connectivity reconciliation completed successfully", False)
+            return (db_constants['tasks']['states']['done'], "Host connectivity reconciliation completed successfully", False)
 
         case _:
             raise ValueError(f"Unsupported connectivity state: {connectivity['state']}")
@@ -626,28 +627,28 @@ def _build_interactive_result(
     match connectivity["state"]:
         case k.HOST_CONN_ONLINE:
             return (
-                k.TASK_DONE,
+                db_constants['tasks']['states']['done'],
                 "Teste concluído com sucesso. "
                 "ICMP: a estação respondeu. "
                 "SSH: acesso confirmado.",
             )
         case k.HOST_CONN_OFFLINE:
             return (
-                k.TASK_ERROR,
+                db_constants['tasks']['states']['error'],
                 "Teste concluído com falha. "
                 f"ICMP: {icmp_failure_detail()} "
                 "SSH: não executado porque o ICMP não respondeu.",
             )
         case k.HOST_CONN_AUTH_ERROR:
             return (
-                k.TASK_ERROR,
+                db_constants['tasks']['states']['error'],
                 "Teste concluído com falha. "
                 "ICMP: a estação respondeu. "
                 f"SSH: {ssh_failure_detail()}",
             )
         case k.HOST_CONN_DEGRADED:
             return (
-                k.TASK_ERROR,
+                db_constants['tasks']['states']['error'],
                 "Teste concluído com falha. "
                 "ICMP: a estação respondeu. "
                 f"SSH: {ssh_failure_detail()}",
@@ -762,7 +763,7 @@ def run_check(
             phase="queue_followup",
             elapsed_sec=0.0,
             since_start_sec=since_start_sec,
-            queued_task_type=k.HOST_TASK_PROCESSING_TYPE,
+            queued_task_type=db_constants['tasks']['host_types']['processing'],
         )
 
     return status, message

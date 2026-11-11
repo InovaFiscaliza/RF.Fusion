@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from pathlib import Path
 import sys
@@ -25,6 +25,9 @@ with bind_test_config():
     from server_handler import signal_runtime
     from shared import constants, logging_utils
     from shared.file_metadata import FileMetadata
+
+
+from db import constants as db_constants
 
 
 class BkpPostgresIntegrationTests(unittest.TestCase):
@@ -192,6 +195,32 @@ class BkpPostgresIntegrationTests(unittest.TestCase):
         rows = self.handler.host_list_for_connectivity_check()
         self.assertEqual([row["ID_HOST"] for row in rows], [8, 5, 6, 1, 7])
 
+    def test_shutdown_snapshots_include_unaddressable_hosts_and_only_running_tasks(self) -> None:
+        """Read shutdown ownership from real smallint flags without network access.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.handler.host_update(
+            1, reset=True, IS_BUSY=1, IS_OFFLINE=1, NU_PID=777,
+            NA_HOST_ADDRESS=None,
+        )
+        running = self.handler.host_task_create(
+            FK_HOST=1, NU_TYPE=1, NU_STATUS=db_constants['tasks']['states']['running']
+        )
+        self.handler.host_task_create(FK_HOST=1, NU_TYPE=2)
+        self.handler.file_task_create(1, 1, db_constants['tasks']['states']['running'], [self.file])
+        self.assertEqual(self.handler.host_list_busy(), [{"ID_HOST": 1, "NU_PID": 777}])
+        self.assertEqual(self.handler.host_list_offline(), [{"ID_HOST": 1}])
+        tasks = self.handler.host_task_list_running()
+        self.assertEqual([row["ID_HOST_TASK"] for row in tasks], [running])
+        files = self.handler.file_task_list_running()
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0]["FK_HOST"], 1)
+        self.assertEqual(set(files[0]), {"ID_FILE_TASK", "FK_HOST", "NU_PID"})
+
     def test_flags_hash_identity_and_caller_timestamps(self) -> None:
         """Use the real smallint columns and infer the production expression index.
 
@@ -234,7 +263,7 @@ class BkpPostgresIntegrationTests(unittest.TestCase):
         self.handler.file_task_history_update(
             history_id=1,
             NA_EXTENSION_SERVER=".MaT",
-            NU_STATUS_PROCESSING=bkp_module.k.TASK_DONE,
+            NU_STATUS_PROCESSING=db_constants['tasks']['states']['done'],
         )
         revised = replace(self.file, VL_FILE_SIZE_KB=30)
         other_path = replace(self.file, NA_PATH="/different")
@@ -262,6 +291,28 @@ class BkpPostgresIntegrationTests(unittest.TestCase):
         first = self.handler.host_task_update(task_id, expected_status=1, NU_STATUS=2)
         second = self.handler.host_task_update(task_id, expected_status=1, NU_STATUS=2)
         self.assertEqual((first["rows_affected"], second["rows_affected"]), (1, 0))
+
+    def test_prefixed_queue_reads_include_new_columns_with_native_values(self) -> None:
+        """Expand both table stars without mirrored field lists or JSON conversion.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.handler.begin_transaction()
+        try:
+            self.handler._execute(sql.SQL('ALTER TABLE {}."HOST" ADD COLUMN "EXTRA" jsonb').format(sql.Identifier(self.schema)))
+            self.handler._execute(sql.SQL('ALTER TABLE {}."HOST_TASK" ADD COLUMN "OBSERVED_AT" timestamp').format(sql.Identifier(self.schema)))
+            self.handler._execute(sql.SQL('UPDATE {}."HOST" SET "EXTRA" = %s::jsonb WHERE "ID_HOST" = %s').format(sql.Identifier(self.schema)), ('{"source": "test"}', 1))
+            observed = datetime(2026, 11, 11, 12, 30)
+            task_id = self.handler.host_task_create(FK_HOST=1, NU_TYPE=1, OBSERVED_AT=observed)
+            row = self.handler.host_task_read(task_id=task_id)
+            self.assertEqual(row["HOST__EXTRA"], {"source": "test"})
+            self.assertEqual(row["HOST_TASK__OBSERVED_AT"], observed)
+            self.assertIsInstance(row["HOST_TASK__OBSERVED_AT"], datetime)
+        finally:
+            self.handler.rollback()
 
     def test_history_nulls_markers_and_rollback_with_outbox(self) -> None:
         """Keep lifecycle, host markers, and invalidations inside the caller transaction.
@@ -364,7 +415,7 @@ class BkpPostgresIntegrationTests(unittest.TestCase):
             host_id=1,
             reset=True,
             IS_BUSY=1,
-            NU_PID=bkp_module.k.HOST_TRANSIENT_BUSY_PID,
+            NU_PID=db_constants['hosts']['transient_busy_pid'],
             DT_BUSY=datetime.utcnow(),
         )
         self.handler.host_release_safe(1, os.getpid())
@@ -400,6 +451,122 @@ class BkpPostgresIntegrationTests(unittest.TestCase):
         self.assertEqual(
             self.handler._select_row("FILE_TASK", {"ID_FILE_TASK": 1})["NU_TYPE"], 1
         )
+
+    def test_busy_host_snapshot_does_not_multiply_hosts_with_multiple_tasks(
+        self,
+    ) -> None:
+        """Read one host row even when both task tables contain multiple matches.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.handler.host_update(1, IS_BUSY=1)
+        self.handler.host_upsert(ID_HOST=2, NA_HOST_ADDRESS="other", IS_BUSY=1)
+        files = [self.file, replace(self.file, NA_FILE="other.zip")]
+        self.handler.file_task_create(
+            1, db_constants['tasks']['file_types']['backup'], db_constants['tasks']['states']['running'], files
+        )
+        for _ in range(2):
+            self.handler.host_task_create(
+                FK_HOST=1,
+                NU_TYPE=db_constants['tasks']['host_types']['processing'],
+                NU_STATUS=db_constants['tasks']['states']['running'],
+            )
+        rows = self.handler.host_list_busy_with_task_state(
+            task_status=db_constants['tasks']['states']['running'],
+            host_task_type=db_constants['tasks']['host_types']['processing'],
+        )
+        self.assertEqual(len(rows), 2)
+        by_host = {row["ID_HOST"]: row for row in rows}
+        self.assertTrue(by_host[1]["FILE_RUNNING"])
+        self.assertTrue(by_host[1]["HOST_PROCESSING_RUNNING"])
+        self.assertFalse(by_host[2]["FILE_RUNNING"])
+        self.assertFalse(by_host[2]["HOST_PROCESSING_RUNNING"])
+
+    def test_file_selection_keeps_year_priority_rotation_and_reservation_ttl(
+        self,
+    ) -> None:
+        """Exercise the correlated scheduler against real task/host data.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        current_year = datetime.utcnow().year
+        old_date = datetime(current_year - 1, 3, 1)
+        newer_old_date = datetime(current_year - 1, 4, 1)
+        this_year = datetime(current_year, 3, 1)
+        self.handler.host_upsert(
+            ID_HOST=2, NA_HOST_ADDRESS="other", IS_BUSY=0, IS_OFFLINE=0
+        )
+        self.handler.host_update(2, DT_LAST_BACKUP=this_year)
+        self.handler.file_task_create(
+            1,
+            db_constants['tasks']['file_types']['backup'],
+            db_constants['tasks']['states']['pending'],
+            [
+                replace(self.file, DT_FILE_CREATED=old_date),
+                replace(self.file, NA_FILE="newer.zip", DT_FILE_CREATED=newer_old_date),
+            ],
+        )
+        self.handler.file_task_create(
+            2,
+            db_constants['tasks']['file_types']['backup'],
+            db_constants['tasks']['states']['pending'],
+            [
+                replace(self.file, DT_FILE_CREATED=this_year),
+            ],
+        )
+        options = {
+            "task_type": db_constants['tasks']['file_types']['backup'],
+            "check_host_busy": False,
+            "fair_by_host": True,
+            "newest_first": True,
+        }
+        selected = self.handler.file_task_read(**options)
+        self.assertEqual(selected[1], 1)
+        self.assertEqual(selected[0]["FILE_TASK__NA_HOST_FILE_NAME"], "newer.zip")
+        options["prefer_current_year"] = True
+        self.assertEqual(self.handler.file_task_read(**options)[1], 2)
+        check_id = self.handler.host_task_create(
+            FK_HOST=2,
+            NU_TYPE=db_constants['tasks']['host_types']['check'],
+            NU_STATUS=db_constants['tasks']['states']['running'],
+            DT_HOST_TASK=datetime.utcnow(),
+        )
+        options["reserve_hosts_for_discovery"] = True
+        # Connectivity checks never hold a host back from backup.
+        self.assertEqual(self.handler.file_task_read(**options)[1], 2)
+        self.handler.host_task_update(
+            task_id=check_id, NU_TYPE=db_constants['tasks']['host_types']['backlog_control']
+        )
+        task_id = self.handler.host_task_create(
+            FK_HOST=2,
+            NU_TYPE=db_constants['tasks']['host_types']['processing'],
+            NU_STATUS=db_constants['tasks']['states']['pending'],
+            DT_HOST_TASK=datetime.utcnow(),
+        )
+        self.assertEqual(self.handler.file_task_read(**options)[1], 1)
+        stale = datetime.utcnow() - timedelta(
+            seconds=bkp_module.k.DISCOVERY_RESERVATION_TTL_SEC + 30
+        )
+        self.handler.host_task_update(task_id=task_id, DT_HOST_TASK=stale)
+        self.assertEqual(self.handler.file_task_read(**options)[1], 2)
+        self.handler.host_task_update(
+            task_id=task_id, NU_STATUS=db_constants['tasks']['states']['running']
+        )
+        self.assertEqual(self.handler.file_task_read(**options)[1], 1)
+        self.handler.host_task_update(
+            task_id=task_id, NU_STATUS=db_constants['tasks']['states']['pending'], DT_HOST_TASK=None
+        )
+        self.assertEqual(self.handler.file_task_read(**options)[1], 1)
+        self.handler.host_task_update(
+            task_id=task_id, NU_TYPE=db_constants['tasks']['host_types']['backlog_control']
+        )
+        self.assertEqual(self.handler.file_task_read(**options)[1], 2)
 
     def test_file_selection_keeps_optional_filters_and_hostile_values_as_data(
         self,

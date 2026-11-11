@@ -24,6 +24,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import sys
 
+import psycopg
+from geopy.exc import GeocoderServiceError
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from _support import (
@@ -48,6 +51,9 @@ with bind_real_shared_package():
             )
             processing = worker.processing_bin
             file_utils = worker.file_utils
+
+
+from db import constants as db_constants
 
 
 class FakeWorkerLog:
@@ -242,6 +248,11 @@ class FakeDbRfmIngest:
 
     def update_site(self, **kwargs):
         self.update_site_calls.append(kwargs)
+        return {
+            "longitude": sum(kwargs["longitude_raw"]) / len(kwargs["longitude_raw"]),
+            "latitude": sum(kwargs["latitude_raw"]) / len(kwargs["latitude_raw"]),
+            "altitude": sum(kwargs["altitude_raw"]) / len(kwargs["altitude_raw"]),
+        }
 
     def insert_site(self, data, *, force_create_district=False):
         self.insert_site_calls.append(
@@ -356,7 +367,7 @@ class ShouldExportTests(unittest.TestCase):
 class SiteResolutionTests(unittest.TestCase):
     """Validate per-spectrum SITE resolution and selective discard behavior."""
 
-    def test_upsert_site_refreshes_existing_site_when_district_is_missing(self) -> None:
+    def test_resolve_spectrum_sites_refreshes_existing_site_when_district_is_missing(self) -> None:
         db = FakeDbRfmIngest(site_id=77)
         db.site_geography = {"FK_DISTRICT": None}
         fixed_site = {
@@ -381,9 +392,11 @@ class SiteResolutionTests(unittest.TestCase):
             "reverse_geocode_site_data",
             return_value=enriched_site,
         ):
-            site_id = processing.upsert_site(db, dict(fixed_site))
+            site_ids = processing._resolve_spectrum_sites(
+                db, {"spectrum": [SimpleNamespace(site_data=dict(fixed_site))]}
+            )
 
-        self.assertEqual(site_id, 77)
+        self.assertEqual(site_ids, [77])
         self.assertEqual(db.get_site_geography_calls, [77])
         self.assertEqual(len(db.refresh_site_geography_calls), 1)
         self.assertTrue(
@@ -391,7 +404,7 @@ class SiteResolutionTests(unittest.TestCase):
         )
         self.assertEqual(len(db.update_site_calls), 1)
 
-    def test_upsert_site_inserts_new_site_with_forced_district_creation(self) -> None:
+    def test_resolve_spectrum_sites_inserts_new_site_with_forced_district_creation(self) -> None:
         db = FakeDbRfmIngest(site_id=812)
         db.get_site_id = lambda data: False
         fixed_site = {
@@ -416,17 +429,20 @@ class SiteResolutionTests(unittest.TestCase):
             "reverse_geocode_site_data",
             return_value=enriched_site,
         ):
-            site_id = processing.upsert_site(db, dict(fixed_site))
+            site_ids = processing._resolve_spectrum_sites(
+                db, {"spectrum": [SimpleNamespace(site_data=dict(fixed_site))]}
+            )
 
-        self.assertEqual(site_id, 812)
+        self.assertEqual(site_ids, [812])
         self.assertEqual(len(db.insert_site_calls), 1)
         self.assertTrue(db.insert_site_calls[0]["force_create_district"])
         self.assertEqual(
             db.insert_site_calls[0]["data"]["district"],
             "Campo Belo",
         )
+        self.assertEqual(db.update_site_calls, [])
 
-    def test_upsert_site_rechecks_identity_after_coordinate_correction(self) -> None:
+    def test_resolve_spectrum_sites_rechecks_identity_after_coordinate_correction(self) -> None:
         db = FakeDbRfmIngest(site_id=812)
         fixed_site = {
             "longitude": -49.280111,
@@ -461,9 +477,11 @@ class SiteResolutionTests(unittest.TestCase):
             "reverse_geocode_site_data",
             return_value=corrected_site,
         ):
-            site_id = processing.upsert_site(db, dict(fixed_site))
+            site_ids = processing._resolve_spectrum_sites(
+                db, {"spectrum": [SimpleNamespace(site_data=dict(fixed_site))]}
+            )
 
-        self.assertEqual(site_id, 812)
+        self.assertEqual(site_ids, [812])
         self.assertEqual(seen_latitudes, [16.506472, -16.506472])
         self.assertEqual(len(db.insert_site_calls), 0)
         self.assertEqual(len(db.update_site_calls), 1)
@@ -490,11 +508,12 @@ class SiteResolutionTests(unittest.TestCase):
             ]
         }
 
-        site_ids = processing.resolve_spectrum_sites(db, bin_data)
+        site_ids = processing._resolve_spectrum_sites(db, bin_data)
 
         self.assertEqual(site_ids, [77, 77])
         self.assertEqual(len(db.get_site_id_calls), 1)
         self.assertEqual(len(db.update_site_calls), 1)
+        self.assertEqual(db.update_site_calls[0]["longitude_raw"], [-36.543807])
         self.assertEqual(bin_data["spectrum"][0].site_id, 77)
         self.assertEqual(bin_data["spectrum"][1].site_id, 77)
 
@@ -513,11 +532,132 @@ class SiteResolutionTests(unittest.TestCase):
             "spectrum": [SimpleNamespace(site_data=dict(site_data))]
         }
 
-        site_ids = processing.resolve_spectrum_sites(db, bin_data)
+        site_ids = processing._resolve_spectrum_sites(db, bin_data)
 
         self.assertEqual(site_ids, [91])
         self.assertEqual(len(db.get_site_id_calls), 1)
         self.assertEqual(len(db.update_site_calls), 1)
+
+    def test_resolve_spectrum_sites_merges_distinct_points_once_per_site(self) -> None:
+        """Update a fixed centroid once using each distinct point summary once.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        db = FakeDbRfmIngest(site_id=91)
+        first = {
+            "longitude": -46.0, "latitude": -23.0, "altitude": 10.0,
+            "longitude_raw": [-46.0], "latitude_raw": [-23.0],
+            "altitude_raw": [10.0], "nu_gnss_measurements": 1,
+        }
+        second = {
+            "longitude": -46.0001, "latitude": -23.0001, "altitude": 12.0,
+            "longitude_raw": [-46.0001], "latitude_raw": [-23.0001],
+            "altitude_raw": [12.0], "nu_gnss_measurements": 1,
+        }
+        payload = {"spectrum": [SimpleNamespace(site_data=point) for point in (first, second, first)]}
+        logger = FakeWorkerLog()
+
+        self.assertEqual(processing._resolve_spectrum_sites(db, payload, logger=logger), [91, 91, 91])
+
+        self.assertEqual(len(db.get_site_id_calls), 2)
+        self.assertEqual(db.update_site_calls, [{
+            "site": 91, "longitude_raw": [-46.0, -46.0001],
+            "latitude_raw": [-23.0, -23.0001], "altitude_raw": [10.0, 12.0],
+        }])
+        event, fields = logger.entries[0]
+        self.assertEqual(event, "site_gnss_updated")
+        self.assertEqual(fields["occurrences"], 2)
+        self.assertEqual(fields["gnss_samples"], 2)
+
+    def test_resolve_spectrum_sites_preserves_multiple_sites_and_order(self) -> None:
+        """Keep per-spectrum ownership even when a file contains several sites.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        db = FakeDbRfmIngest()
+        points = [
+            {"longitude": longitude, "latitude": -23.0, "altitude": 10.0,
+             "longitude_raw": [longitude], "latitude_raw": [-23.0], "altitude_raw": [10.0]}
+            for longitude in (-46.0, -47.0, -46.0)
+        ]
+        spectra = [SimpleNamespace(site_data=point) for point in points]
+        payload = {"spectrum": spectra}
+        with patch.object(db, "get_site_id", side_effect=[91, 92]) as lookup:
+            self.assertEqual(processing._resolve_spectrum_sites(db, payload), [91, 92, 91])
+        self.assertEqual(lookup.call_count, 2)
+        self.assertEqual(payload["spectrum"], spectra)
+        self.assertEqual([row["site"] for row in db.update_site_calls], [91, 92])
+
+    def test_resolve_spectrum_sites_keeps_samples_local_after_failure(self) -> None:
+        """Discard pending samples on failure and start the next file with empty state.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        db = FakeDbRfmIngest(site_id=91)
+        points = [
+            {"longitude": longitude, "latitude": -23.0, "altitude": 10.0,
+             "longitude_raw": [longitude], "latitude_raw": [-23.0], "altitude_raw": [10.0]}
+            for longitude in (-46.0, -47.0)
+        ]
+        payload = {"spectrum": [SimpleNamespace(site_data=point) for point in points]}
+        with patch.object(db, "get_site_id", side_effect=[91, RuntimeError("broken lookup")]):
+            with self.assertRaisesRegex(RuntimeError, "broken lookup"):
+                processing._resolve_spectrum_sites(db, payload)
+        self.assertEqual(db.update_site_calls, [])
+        next_file = {"spectrum": [SimpleNamespace(site_data=points[1])]}
+        self.assertEqual(processing._resolve_spectrum_sites(db, next_file), [91])
+        self.assertEqual(db.update_site_calls, [{
+            "site": 91, "longitude_raw": [-47.0],
+            "latitude_raw": [-23.0], "altitude_raw": [10.0],
+        }])
+
+    def test_resolve_spectrum_sites_fails_when_all_localities_are_invalid(self) -> None:
+        """Reject an empty result without publishing centroid updates.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        db = FakeDbRfmIngest()
+        db.get_site_id = lambda data: False
+        spectrum = SimpleNamespace(site_data={"longitude": -46, "latitude": -23, "altitude": 10})
+        payload = {"spectrum": [spectrum]}
+        with patch.object(processing.geolocation_utils, "reverse_geocode_site_data",
+                          side_effect=ValueError("Reverse geocoder returned no location")):
+            with self.assertRaisesRegex(ValueError, "No spectra remained"):
+                processing._resolve_spectrum_sites(db, payload)
+        self.assertEqual(payload["spectrum"], [spectrum])
+        self.assertEqual(db.update_site_calls, [])
+
+    def test_resolve_spectrum_sites_propagates_centroid_write_failure(self) -> None:
+        """Keep centroid persistence errors fatal after successful geography lookup.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        db = FakeDbRfmIngest(site_id=91)
+        point = {
+            "longitude": -46.0, "latitude": -23.0, "altitude": 10.0,
+            "longitude_raw": [-46.0], "latitude_raw": [-23.0], "altitude_raw": [10.0],
+        }
+        payload = {"spectrum": [SimpleNamespace(site_data=point)]}
+        error = psycopg.errors.ForeignKeyViolation("centroid write failed")
+        with patch.object(db, "update_site", side_effect=error):
+            with self.assertRaises(psycopg.errors.ForeignKeyViolation) as raised:
+                processing._resolve_spectrum_sites(db, payload)
+        self.assertIs(raised.exception, error)
 
     def test_resolve_spectrum_sites_discards_only_bad_site_resolution(self) -> None:
         good_site = {
@@ -546,13 +686,13 @@ class SiteResolutionTests(unittest.TestCase):
         }
         fake_log = FakeWorkerLog()
 
-        def fake_upsert_site(db_rfm, site_data):
+        def fake_resolve_fixed_site(db_rfm, site_data, *, site_updates):
             if site_data["latitude"] == bad_site["latitude"]:
                 raise ValueError("State 'Unknown' not found in DIM_SITE_STATE")
             return 77
 
-        with patch.object(processing, "upsert_site", side_effect=fake_upsert_site):
-            site_ids = processing.resolve_spectrum_sites(
+        with patch.object(processing, "_resolve_fixed_site", side_effect=fake_resolve_fixed_site):
+            site_ids = processing._resolve_spectrum_sites(
                 db_rfm=object(),
                 bin_data=bin_data,
                 logger=fake_log,
@@ -581,16 +721,50 @@ class SiteResolutionTests(unittest.TestCase):
 
         with patch.object(
             processing,
-            "upsert_site",
+            "_resolve_fixed_site",
             side_effect=RuntimeError("database connection lost"),
         ):
             with self.assertRaises(RuntimeError) as ctx:
-                processing.resolve_spectrum_sites(
+                processing._resolve_spectrum_sites(
                     db_rfm=object(),
                     bin_data=bin_data,
                 )
 
         self.assertIn("database connection lost", str(ctx.exception))
+
+
+    def test_resolve_spectrum_sites_propagates_unexpected_errors_without_discard(self) -> None:
+        """Keep service, SQL and programming failures visible regardless of text.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        for error_type in (
+            psycopg.errors.ForeignKeyViolation,
+            psycopg.errors.UndefinedFunction,
+            psycopg.OperationalError,
+            GeocoderServiceError,
+            RuntimeError,
+            TypeError,
+        ):
+            with self.subTest(error_type=error_type.__name__):
+                error = error_type("SITE persistence failed")
+                spectra = [
+                    SimpleNamespace(site_data={"longitude": -46, "latitude": -23, "altitude": 10}),
+                    SimpleNamespace(site_data={"longitude": -47, "latitude": -24, "altitude": 20}),
+                ]
+                bin_data = {"spectrum": spectra}
+                logger = FakeWorkerLog()
+                with patch.object(processing, "_resolve_fixed_site", side_effect=error) as upsert:
+                    with self.assertRaises(error_type) as raised:
+                        processing._resolve_spectrum_sites(object(), bin_data, logger=logger)
+                self.assertIs(raised.exception, error)
+                upsert.assert_called_once()
+                self.assertIs(bin_data["spectrum"], spectra)
+                self.assertNotIn("discarded_spectrum_count", bin_data)
+                self.assertEqual(logger.warnings, [])
 
 
 class SpectrumInsertTests(unittest.TestCase):
@@ -614,15 +788,7 @@ class SpectrumInsertTests(unittest.TestCase):
         )
 
     def _resolve_dimensions(self, db, bin_data, *, hostname_db) -> None:
-        processing.resolve_spectrum_procedure(db, bin_data)
-        processing.resolve_spectrum_detector(db, bin_data)
-        processing.resolve_spectrum_equipment(
-            db,
-            bin_data,
-            hostname_db=hostname_db,
-        )
-        processing.resolve_spectrum_trace_types(db, bin_data)
-        processing.resolve_spectrum_measure_units(db, bin_data)
+        processing._resolve_spectrum_dimensions(db, bin_data, hostname_db=hostname_db)
 
     def _register_host_file(self, db, spectrum_ids, *, hostname_db="keysight_mobile") -> None:
         processing._register_spectrum_file_lineage(
@@ -638,6 +804,23 @@ class SpectrumInsertTests(unittest.TestCase):
             dt_modified=datetime(2026, 1, 1, 12, 0, 0),
         )
 
+    def test_insert_rejects_payload_without_resolved_procedure(self) -> None:
+        # The guard must catch a missing payload dimension instead of inserting
+        # FACT rows with a fabricated zero identifier.
+        db = FakeDbRfmIngest()
+        bin_data = {
+            "method": "Drive test",
+            "spectrum": [self._build_spectrum(site_id=10, equipment_name="keysight a")],
+        }
+        self._resolve_dimensions(db, bin_data, hostname_db="keysight_mobile")
+        del bin_data["procedure_id"]
+
+        with self.assertRaises(ValueError) as ctx:
+            processing._insert_spectra_batch(db_rfm=db, bin_data=bin_data)
+
+        self.assertIn("procedure_id", str(ctx.exception))
+        self.assertEqual(db.insert_spectrum_calls, [])
+
     def test_register_host_file_lineage_bridges_existing_spectra(self) -> None:
         db = FakeDbRfmIngest()
         bin_data = {
@@ -649,7 +832,7 @@ class SpectrumInsertTests(unittest.TestCase):
         }
         self._resolve_dimensions(db, bin_data, hostname_db="keysight_mobile")
 
-        spectrum_ids = processing.insert_spectra_batch(
+        spectrum_ids = processing._insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
         )
@@ -670,7 +853,7 @@ class SpectrumInsertTests(unittest.TestCase):
         }
         self._resolve_dimensions(db, bin_data, hostname_db="rfeye002106")
 
-        spectrum_ids = processing.insert_spectra_batch(
+        spectrum_ids = processing._insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
         )
@@ -693,7 +876,7 @@ class SpectrumInsertTests(unittest.TestCase):
         }
         self._resolve_dimensions(db, bin_data, hostname_db="keysight_mobile")
 
-        processing.insert_spectra_batch(
+        processing._insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
         )
@@ -723,7 +906,7 @@ class SpectrumInsertTests(unittest.TestCase):
         }
         self._resolve_dimensions(db, bin_data, hostname_db="rfeye002083")
 
-        spectrum_ids = processing.insert_spectra_batch(
+        spectrum_ids = processing._insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
         )
@@ -751,7 +934,7 @@ class SpectrumInsertTests(unittest.TestCase):
         }
         self._resolve_dimensions(db, bin_data, hostname_db="keysight_mobile")
 
-        spectrum_ids = processing.insert_spectra_batch(
+        spectrum_ids = processing._insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
         )
@@ -768,7 +951,7 @@ class SpectrumInsertTests(unittest.TestCase):
         }
         self._resolve_dimensions(db, bin_data, hostname_db="CWSM211005")
 
-        processing.insert_spectra_batch(
+        processing._insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
         )
@@ -792,7 +975,7 @@ class SpectrumInsertTests(unittest.TestCase):
         }
         self._resolve_dimensions(db, bin_data, hostname_db="CWSM211006")
 
-        processing.insert_spectra_batch(
+        processing._insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
         )
@@ -816,7 +999,7 @@ class SpectrumInsertTests(unittest.TestCase):
         }
         self._resolve_dimensions(db, bin_data, hostname_db="CWSM2110021")
 
-        processing.insert_spectra_batch(
+        processing._insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
         )
@@ -843,7 +1026,7 @@ class SpectrumInsertTests(unittest.TestCase):
         }
         self._resolve_dimensions(db, bin_data, hostname_db="ERMxES03")
 
-        processing.insert_spectra_batch(
+        processing._insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
         )
@@ -870,7 +1053,7 @@ class SpectrumInsertTests(unittest.TestCase):
         }
         self._resolve_dimensions(db, bin_data, hostname_db="ERMXGO01")
 
-        processing.insert_spectra_batch(
+        processing._insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
         )
@@ -897,7 +1080,7 @@ class SpectrumInsertTests(unittest.TestCase):
         }
         self._resolve_dimensions(db, bin_data, hostname_db="UMSDF01")
 
-        processing.insert_spectra_batch(
+        processing._insert_spectra_batch(
             db_rfm=db,
             bin_data=bin_data,
         )
@@ -988,65 +1171,45 @@ class RunProcessingFlowTests(unittest.TestCase):
             return original_reset(**kwargs)
 
         def fake_insert_spectra_batch(*, db_rfm, bin_data):
-            call_order.append(("insert_spectra_batch", len(bin_data["spectrum"])))
+            call_order.append(("_insert_spectra_batch", len(bin_data["spectrum"])))
             return [9001]
 
         with patch.object(
             processing,
-            "resolve_spectrum_sites",
+            "_resolve_spectrum_sites",
             return_value=[219],
         ):
             with patch.object(
                 processing,
-                "resolve_spectrum_procedure",
+                "_resolve_spectrum_dimensions",
                 side_effect=lambda *args, **kwargs: None,
             ):
                 with patch.object(
-                    processing,
-                    "resolve_spectrum_detector",
-                    side_effect=lambda *args, **kwargs: None,
+                    db,
+                    "reset_reprocessed_file_lineage",
+                    side_effect=fake_reset,
                 ):
                     with patch.object(
                         processing,
-                        "resolve_spectrum_equipment",
-                        side_effect=lambda *args, **kwargs: None,
+                        "_insert_spectra_batch",
+                        side_effect=fake_insert_spectra_batch,
                     ):
                         with patch.object(
-                            processing,
-                            "resolve_spectrum_trace_types",
-                            side_effect=lambda *args, **kwargs: None,
+                            processing.file_utils,
+                            "promote_final_artifact",
+                            return_value=promoted_file_meta,
                         ):
-                            with patch.object(
-                                processing,
-                                "resolve_spectrum_measure_units",
-                                side_effect=lambda *args, **kwargs: None,
-                            ):
-                                with patch.object(
-                                    db,
-                                    "reset_reprocessed_file_lineage",
-                                    side_effect=fake_reset,
-                                ):
-                                    with patch.object(
-                                        processing,
-                                        "insert_spectra_batch",
-                                        side_effect=fake_insert_spectra_batch,
-                                    ):
-                                        with patch.object(
-                                            processing.file_utils,
-                                            "promote_final_artifact",
-                                            return_value=promoted_file_meta,
-                                        ):
-                                            result = processing.run_processing_flow(
-                                                db,
-                                                task,
-                                                FakeApp(),
-                                                logger=fake_log,
-                                                service_name="svc",
-                                            )
+                            result = processing.run_processing_flow(
+                                db,
+                                task,
+                                FakeApp(),
+                                logger=fake_log,
+                                service_name="svc",
+                            )
 
         self.assertEqual(result["spectrum_ids"], [9001])
         self.assertEqual(call_order[0][0], "reset_lineage")
-        self.assertEqual(call_order[1][0], "insert_spectra_batch")
+        self.assertEqual(call_order[1][0], "_insert_spectra_batch")
         self.assertEqual(len(db.reset_lineage_calls), 1)
         self.assertEqual(
             db.reset_lineage_calls[0],
@@ -1326,7 +1489,7 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(fake_log.entries[0][1]["previous_error"], "Connection refused")
         self.assertEqual(fake_log.entries[0][1]["suppressed_retries_total"], 1)
 
-    def test_finalize_freeze_freezes_timeout_row_and_history(self) -> None:
+    def test_finalize_error_freezes_freezes_timeout_row_and_history(self) -> None:
         db = FakeDbBkp()
         task = {
             "file_task_id": 321,
@@ -1338,10 +1501,10 @@ class RetryTests(unittest.TestCase):
         err = FakeErr("[ERROR] timeout", triggered=True)
         err.exc = worker.errors.AppAnaliseReadTimeoutError("timeout")
 
-        worker._finalize_freeze(db, task, err)
+        worker._finalize_error(db, task, err)
 
         self.assertEqual(len(db.task_updates), 1)
-        self.assertEqual(db.task_updates[0]["NU_STATUS"], worker.k.TASK_FROZEN)
+        self.assertEqual(db.task_updates[0]["NU_STATUS"], db_constants['tasks']['states']['frozen'])
         self.assertIsNone(db.task_updates[0]["NU_PID"])
         self.assertIn("Processing Frozen", db.task_updates[0]["NA_MESSAGE"])
         self.assertIn("frozen for manual review", db.task_updates[0]["NA_MESSAGE"])
@@ -1349,7 +1512,7 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(len(db.history_updates), 1)
         self.assertEqual(
             db.history_updates[0]["NU_STATUS_PROCESSING"],
-            worker.k.TASK_FROZEN,
+            db_constants['tasks']['states']['frozen'],
         )
         self.assertIn("DT_PROCESSED", db.history_updates[0])
         self.assertIsNotNone(db.history_updates[0]["DT_PROCESSED"])
@@ -1357,7 +1520,28 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(len(db.task_deletes), 0)
         self.assertEqual(len(db.statistics_updates), 1)
 
-    def test_finalize_freeze_freezes_file_unavailable_row_and_history(self) -> None:
+    def test_finalize_error_freeze_rolls_back_when_history_row_is_missing(self) -> None:
+        db = FakeDbBkp()
+        db.history_rows_affected = 0
+        fake_log = FakeWorkerLog()
+        task = {
+            "file_task_id": 322,
+            "host_id": 77,
+            "host_file_name": "sample.bin",
+            "host_path": "/host/path",
+            "filename": "sample.bin",
+        }
+        err = FakeErr("[ERROR] timeout", triggered=True)
+        err.exc = worker.errors.AppAnaliseReadTimeoutError("timeout")
+
+        with patch.object(worker, "log", fake_log):
+            worker._finalize_error(db, task, err)
+
+        self.assertEqual(db.transaction_events, ["begin", "rollback"])
+        self.assertEqual(db.task_updates, [])
+        self.assertEqual(db.statistics_updates, [])
+
+    def test_finalize_error_freezes_freezes_file_unavailable_row_and_history(self) -> None:
         db = FakeDbBkp()
         task = {
             "file_task_id": 654,
@@ -1369,19 +1553,19 @@ class RetryTests(unittest.TestCase):
         err = FakeErr("[ERROR] file unavailable", triggered=True)
         err.exc = worker.errors.AppAnaliseFileUnavailableError("file unavailable")
 
-        worker._finalize_freeze(db, task, err)
+        worker._finalize_error(db, task, err)
 
         self.assertEqual(len(db.task_updates), 1)
-        self.assertEqual(db.task_updates[0]["NU_STATUS"], worker.k.TASK_FROZEN)
+        self.assertEqual(db.task_updates[0]["NU_STATUS"], db_constants['tasks']['states']['frozen'])
         self.assertEqual(len(db.history_updates), 1)
         self.assertEqual(
             db.history_updates[0]["NU_STATUS_PROCESSING"],
-            worker.k.TASK_FROZEN,
+            db_constants['tasks']['states']['frozen'],
         )
         self.assertIn("APP_ANALISE file unavailable", db.task_updates[0]["NA_MESSAGE"])
         self.assertEqual(len(db.statistics_updates), 1)
 
-    def test_finalize_freeze_freezes_service_response_row_and_history(self) -> None:
+    def test_finalize_error_freezes_freezes_service_response_row_and_history(self) -> None:
         db = FakeDbBkp()
         task = {
             "file_task_id": 655,
@@ -1396,14 +1580,14 @@ class RetryTests(unittest.TestCase):
             "server:SSHHandler:AuthenticationFailed"
         )
 
-        worker._finalize_freeze(db, task, err)
+        worker._finalize_error(db, task, err)
 
         self.assertEqual(len(db.task_updates), 1)
-        self.assertEqual(db.task_updates[0]["NU_STATUS"], worker.k.TASK_FROZEN)
+        self.assertEqual(db.task_updates[0]["NU_STATUS"], db_constants['tasks']['states']['frozen'])
         self.assertEqual(len(db.history_updates), 1)
         self.assertEqual(
             db.history_updates[0]["NU_STATUS_PROCESSING"],
-            worker.k.TASK_FROZEN,
+            db_constants['tasks']['states']['frozen'],
         )
         self.assertIn(
             "APP_ANALISE returned service error",
@@ -1426,12 +1610,19 @@ class RetryTests(unittest.TestCase):
             "handlers:FileReadHandler:EmptySpecData"
         )
 
-        with patch.object(worker, "_write_task_error") as write_error:
-            with patch.object(worker, "_finalize_freeze") as finalize_freeze:
-                worker._finalize_error(FakeDbBkp(), task, err)
+        db = FakeDbBkp()
+        server_fields = {"NA_SERVER_FILE_NAME": task["filename"]}
+        with patch.object(
+            worker, "_quarantine_failed_artifact", return_value=(None, server_fields)
+        ):
+            worker._finalize_error(db, task, err)
 
-        write_error.assert_called_once()
-        finalize_freeze.assert_not_called()
+        self.assertEqual(len(db.task_deletes), 1)
+        self.assertEqual(db.task_updates, [])
+        self.assertEqual(
+            db.history_updates[0]["NU_STATUS_PROCESSING"],
+            db_constants['tasks']['states']['error'],
+        )
 
     def test_finalize_error_routes_no_readable_files_to_error_writer(self) -> None:
         task = {
@@ -1447,12 +1638,19 @@ class RetryTests(unittest.TestCase):
             "model:SpecDataBase:NoReadableFilesInZip"
         )
 
-        with patch.object(worker, "_write_task_error") as write_error:
-            with patch.object(worker, "_finalize_freeze") as finalize_freeze:
-                worker._finalize_error(FakeDbBkp(), task, err)
+        db = FakeDbBkp()
+        server_fields = {"NA_SERVER_FILE_NAME": task["filename"]}
+        with patch.object(
+            worker, "_quarantine_failed_artifact", return_value=(None, server_fields)
+        ):
+            worker._finalize_error(db, task, err)
 
-        write_error.assert_called_once()
-        finalize_freeze.assert_not_called()
+        self.assertEqual(len(db.task_deletes), 1)
+        self.assertEqual(db.task_updates, [])
+        self.assertEqual(
+            db.history_updates[0]["NU_STATUS_PROCESSING"],
+            db_constants['tasks']['states']['error'],
+        )
 
 
 class PathRuleTests(unittest.TestCase):
@@ -1602,7 +1800,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
 
         db_bp = FakeDbBkpMain.last_instance
         self.assertEqual(len(db_bp.task_updates), 1)
-        self.assertEqual(db_bp.task_updates[0]["expected_status"], worker.k.TASK_PENDING)
+        self.assertEqual(db_bp.task_updates[0]["expected_status"], db_constants['tasks']['states']['pending'])
         self.assertEqual(len(db_bp.task_deletes), 0)
         self.assertEqual(len(db_bp.history_updates), 0)
         self.assertEqual(len(db_bp.statistics_updates), 0)
@@ -1790,8 +1988,8 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         self.assertEqual(db_rfm.commit_calls, 0)
         self.assertEqual(db_rfm.rollback_calls, 1)
         self.assertEqual(len(db_bp.task_updates), 2)
-        self.assertEqual(db_bp.task_updates[0]["NU_STATUS"], worker.k.TASK_RUNNING)
-        self.assertEqual(db_bp.task_updates[1]["NU_STATUS"], worker.k.TASK_FROZEN)
+        self.assertEqual(db_bp.task_updates[0]["NU_STATUS"], db_constants['tasks']['states']['running'])
+        self.assertEqual(db_bp.task_updates[1]["NU_STATUS"], db_constants['tasks']['states']['frozen'])
         self.assertIsNone(db_bp.task_updates[1]["NU_PID"])
         self.assertIn(
             "Transient filesystem finalization failure",
@@ -1801,7 +1999,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         self.assertEqual(len(db_bp.history_updates), 1)
         self.assertEqual(
             db_bp.history_updates[0]["NU_STATUS_PROCESSING"],
-            worker.k.TASK_FROZEN,
+            db_constants['tasks']['states']['frozen'],
         )
         self.assertEqual(len(db_bp.statistics_updates), 1)
         self.assertEqual(sleep_calls, ["slept"])
@@ -1878,15 +2076,15 @@ class WorkerFlowScenarioTests(unittest.TestCase):
         db_bp = FakeDbBkpMain.last_instance
 
         self.assertEqual(len(db_bp.task_updates), 2)
-        self.assertEqual(db_bp.task_updates[0]["NU_STATUS"], worker.k.TASK_RUNNING)
-        self.assertEqual(db_bp.task_updates[1]["NU_STATUS"], worker.k.TASK_FROZEN)
+        self.assertEqual(db_bp.task_updates[0]["NU_STATUS"], db_constants['tasks']['states']['running'])
+        self.assertEqual(db_bp.task_updates[1]["NU_STATUS"], db_constants['tasks']['states']['frozen'])
         self.assertIsNone(db_bp.task_updates[1]["NU_PID"])
         self.assertIn("Processing Frozen", db_bp.task_updates[1]["NA_MESSAGE"])
         self.assertEqual(len(db_bp.task_deletes), 0)
         self.assertEqual(len(db_bp.history_updates), 1)
         self.assertEqual(
             db_bp.history_updates[0]["NU_STATUS_PROCESSING"],
-            worker.k.TASK_FROZEN,
+            db_constants['tasks']['states']['frozen'],
         )
         self.assertEqual(len(db_bp.statistics_updates), 1)
         self.assertEqual(sleep_calls, ["slept"])
@@ -1929,7 +2127,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 with patch.object(worker.k, "TRASH_FOLDER", "trash"):
                     with patch.object(worker, "log", fake_log):
                         # Step 1: resolve destination path (DB read, no write)
-                        new_path = processing.build_repository_destination_path(
+                        new_path = processing._build_repository_destination_path(
                             db_rfm=db_rfm,
                             bin_data=bin_data,
                             hostname_db=hostname_db,
@@ -1953,7 +2151,6 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                             VL_FILE_SIZE_KB=final_meta["size_kb"],
                             DT_FILE_CREATED=final_meta["dt_created"],
                             DT_FILE_MODIFIED=final_meta["dt_modified"],
-                            log_success=False,
                         )
                         db_rfm.insert_bridge_spectrum_file(spectrum_ids, [server_file_id])
 
@@ -1996,7 +2193,6 @@ class WorkerFlowScenarioTests(unittest.TestCase):
 
             self.assertEqual(len(db_rfm.insert_file_calls), 1)
             self.assertEqual(db_rfm.insert_file_calls[0]["NA_FILE"], "sample_DONE.mat")
-            self.assertFalse(db_rfm.insert_file_calls[0]["log_success"])
             self.assertEqual(len(db_rfm.bridge_calls), 1)
             self.assertEqual(len(db_bp.task_deletes), 1)
             self.assertEqual(len(db_bp.history_updates), 1)
@@ -2011,7 +2207,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             )
             self.assertEqual(
                 db_bp.history_updates[0]["NU_STATUS_PROCESSING"],
-                worker.k.TASK_DONE,
+                db_constants['tasks']['states']['done'],
             )
             self.assertTrue(
                 any(
@@ -2046,7 +2242,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             }
 
             with patch.object(worker.k, "REPO_FOLDER", str(repo_root)):
-                new_path = processing.build_repository_destination_path(
+                new_path = processing._build_repository_destination_path(
                     db_rfm=db_rfm,
                     bin_data=bin_data,
                     hostname_db="EMRx001",
@@ -2100,7 +2296,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             with patch.object(worker.k, "REPO_FOLDER", str(repo_root)):
                 with patch.object(worker.k, "TRASH_FOLDER", "trash"):
                     with patch.object(worker, "log", fake_log):
-                        worker._write_task_error(db_bp, task, err)
+                        worker._finalize_error(db_bp, task, err)
 
             trashed_source = repo_root / "trash" / source_file.name
 
@@ -2130,12 +2326,12 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             )
             self.assertEqual(
                 db_bp.history_updates[0]["NU_STATUS_PROCESSING"],
-                worker.k.TASK_ERROR,
+                db_constants['tasks']['states']['error'],
             )
             self.assertIn("[ERROR] validation failed", db_bp.history_updates[0]["NA_MESSAGE"])
             self.assertEqual(len(db_bp.statistics_updates), 1)
 
-    def test_write_task_error_keeps_resolution_when_statistics_refresh_fails(self) -> None:
+    def test_finalize_error_keeps_resolution_when_statistics_refresh_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_root = Path(tmpdir) / "reposfi"
             source_dir = repo_root / "incoming"
@@ -2177,7 +2373,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             with patch.object(worker.k, "REPO_FOLDER", str(repo_root)):
                 with patch.object(worker.k, "TRASH_FOLDER", "trash"):
                     with patch.object(worker, "log", fake_log):
-                        worker._write_task_error(db_bp, task, err)
+                        worker._finalize_error(db_bp, task, err)
 
             self.assertEqual(db_bp.transaction_events, ["begin", "commit"])
             self.assertEqual(len(db_bp.task_deletes), 1)
@@ -2387,8 +2583,8 @@ class ProcessingPriorityTests(unittest.TestCase):
         db.file_task_read.return_value = None
         self.assertIsNone(worker._read_next_task(db))
         db.file_task_read.assert_called_once_with(
-            task_type=worker.k.FILE_TASK_PROCESS_TYPE,
-            task_status=worker.k.TASK_PENDING,
+            task_type=db_constants['tasks']['file_types']['processing'],
+            task_status=db_constants['tasks']['states']['pending'],
             check_host_busy=False,
             newest_first=True,
         )

@@ -9,10 +9,12 @@ antes de implementação. Remover itens concluídos; o histórico fica no Git.
 
 [Planejamento da migração para PostgreSQL](PLANEJAMENTO_POSTGRESQL.md).
 
-Situação: Fase 1 iniciada pela base PostgreSQL do appCataloga; demais lotes
-pendentes de execução. Divide o trabalho em
-compatibilidade e organização da camada de dados (Fase 1), seguida de migração
-de dados, taxonomia e revisão do SUMMARY e seus consumidores (Fase 2).
+Situação: integração dos workers e consumidores, transferência dos dados e
+medições em PostgreSQL permanecem pendentes. O Summary segue o
+[modelo canônico](../architecture/SUMMARY_POSTGRESQL.md), com seis agregados
+reconstruíveis e restore somente das duas tabelas de uso. O planejamento reúne
+a organização da camada de dados (Fase 1), seguida de migração de dados,
+taxonomia e validação integrada dos consumidores (Fase 2).
 Envolve appCataloga, WebFusion, API appAnalise e integração operacional, com
 MATLAB como consumidor da API e DBeaver para debug. Inclui prova de conceito de
 acesso sem senha nas aplicações ao final da Fase 1.
@@ -49,8 +51,6 @@ Situação: propostas pendentes, sem implementação autorizada por este índice
   e `server_handler/` → `runtime/`, incluindo o destino do transporte do gateway.
 - Definir tipos de tasks distinguindo linhas de banco e contextos normalizados
   pelos workers antes de introduzir `TypedDict`.
-- Substituir `_FIXED_SITE_UPDATE_AGGREGATOR` em `appAnalise/processing_bin.py`
-  por contexto explícito, preservando persistência e comportamento.
 
 ## Vínculos entre domínios e eventos analíticos
 

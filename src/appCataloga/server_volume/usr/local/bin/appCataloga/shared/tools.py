@@ -8,23 +8,10 @@ be reused by workers, maintenance scripts, and database handlers alike.
 from __future__ import annotations
 
 import os
-import sys
 from typing import Optional
 from datetime import datetime
 
-# ---------------------------------------------------------------------
-# Ensure config import path (same pattern used in legacy / host_context)
-# ---------------------------------------------------------------------
-BASE_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../../../../../")
-)
-
-CONFIG_PATH = os.path.join(BASE_DIR, "etc", "appCataloga")
-
-if CONFIG_PATH not in sys.path:
-    sys.path.insert(0, CONFIG_PATH)
-
-import config as k  # noqa: E402
+from db import constants as db_constants
 
 
 def compose_message(
@@ -75,16 +62,16 @@ def compose_message(
     """
 
     task_type_map = {
-        k.FILE_TASK_BACKUP_TYPE: "Backup",
-        k.FILE_TASK_DISCOVERY: "Discovery",
-        k.FILE_TASK_PROCESS_TYPE: "Processing",
+        db_constants['tasks']['file_types']['backup']: "Backup",
+        db_constants['tasks']['file_types']['discovery']: "Discovery",
+        db_constants['tasks']['file_types']['processing']: "Processing",
     }
     status_map = {
-        k.TASK_FROZEN: "Frozen",
-        k.TASK_PENDING: "Pending",
-        k.TASK_DONE: "Done",
-        k.TASK_RUNNING: "Running",
-        k.TASK_ERROR: "Error",
+        db_constants['tasks']['states']['frozen']: "Frozen",
+        db_constants['tasks']['states']['pending']: "Pending",
+        db_constants['tasks']['states']['done']: "Done",
+        db_constants['tasks']['states']['running']: "Running",
+        db_constants['tasks']['states']['error']: "Error",
     }
 
     type_msg = task_type_map.get(task_type, f"TaskType-{task_type}")

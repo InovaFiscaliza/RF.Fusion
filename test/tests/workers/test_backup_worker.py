@@ -38,6 +38,9 @@ with bind_real_shared_package():
         )
 
 
+from db import constants as db_constants
+
+
 class FakeLog:
     """Capture worker log output without pulling the real logging stack."""
 
@@ -273,7 +276,7 @@ class BackupFlowTests(unittest.TestCase):
         self.assertEqual(len(fake_db.file_task_updates), 1)
         update = fake_db.file_task_updates[0]
         self.assertEqual(update["task_id"], 22)
-        self.assertEqual(update["expected_status"], backup_worker.k.TASK_RUNNING)
+        self.assertEqual(update["expected_status"], db_constants['tasks']['states']['running'])
         self.assertFalse(update["publish_summary"])
         self.assertIn("transfer=1536/4096 bytes", update["NA_MESSAGE"])
 
@@ -456,27 +459,68 @@ class BackupFlowTests(unittest.TestCase):
         self.assertEqual(len(fake_db.file_task_updates), 1)
         self.assertEqual(
             fake_db.file_task_updates[0]["NU_STATUS"],
-            backup_worker.k.TASK_ERROR,
+            db_constants['tasks']['states']['error'],
         )
         self.assertIsNone(fake_db.file_task_updates[0]["NU_PID"])
         self.assertEqual(len(fake_db.file_history_updates), 1)
         self.assertEqual(len(fake_db.queued_tasks), 1)
         self.assertEqual(
             fake_db.queued_tasks[0]["task_type"],
-            backup_worker.k.HOST_TASK_CHECK_CONNECTION_TYPE,
+            db_constants['tasks']['host_types']['check_connection'],
         )
 
 
 class BackupPriorityTests(unittest.TestCase):
     """Verify that backup activates rotation and current-year preference together."""
 
+    def test_read_next_task_normalizes_paths_without_losing_discovery_metadata(self) -> None:
+        """Build the transfer context from a prefixed PostgreSQL queue row.
+
+        Args:
+            None.
+        Returns:
+            None. Repository path creation and database access are mocked.
+        """
+        db = MagicMock(spec=backup_worker.dbHandlerBKP)
+        created = datetime(2026, 1, 2, 3, 4, 5)
+        modified = datetime(2026, 1, 2, 3, 5, 6)
+        db.file_task_read.return_value = ({
+            "HOST__NA_HOST_NAME": "RFEye-test",
+            "FILE_TASK__NA_HOST_FILE_PATH": "/remote",
+            "FILE_TASK__NA_HOST_FILE_NAME": "sample.bin",
+            "FILE_TASK__NA_EXTENSION_HOST": ".bin",
+            "FILE_TASK__VL_FILE_SIZE_KB_HOST": 5,
+            "FILE_TASK__DT_FILE_CREATED_HOST": created,
+            "FILE_TASK__DT_FILE_MODIFIED_HOST": modified,
+        }, 11, 22)
+        with patch.object(
+            backup_worker.file_utils, "build_server_filepath", return_value="/repo/tmp/RFEye-test"
+        ) as filepath, patch.object(
+            backup_worker.file_utils, "build_server_filename", return_value="server.bin"
+        ) as filename:
+            task = backup_worker._read_next_task(db)
+        self.assertIsNotNone(task)
+        self.assertEqual(task["host_id"], 11)
+        self.assertEqual(task["file_task_id"], 22)
+        self.assertEqual(task["input_filename"], "/remote/sample.bin")
+        self.assertEqual(task["server_file_path"], "/repo/tmp/RFEye-test")
+        self.assertEqual(task["server_filename"], "server.bin")
+        self.assertEqual(task["discovery_snapshot"], {
+            "extension": ".bin", "size_kb": 5,
+            "dt_created": created, "dt_modified": modified,
+        })
+        filepath.assert_called_once_with("RFEye-test")
+        filename.assert_called_once_with(
+            host_uid="RFEye-test", remote_path="/remote", filename="sample.bin"
+        )
+
     def test_read_next_task_requests_rotating_current_year_backups(self) -> None:
         db = MagicMock(spec=backup_worker.dbHandlerBKP)
         db.file_task_read.return_value = None
         self.assertIsNone(backup_worker._read_next_task(db))
         db.file_task_read.assert_called_once_with(
-            task_status=backup_worker.k.TASK_PENDING,
-            task_type=backup_worker.k.FILE_TASK_BACKUP_TYPE,
+            task_status=db_constants['tasks']['states']['pending'],
+            task_type=db_constants['tasks']['file_types']['backup'],
             check_host_busy=True,
             check_host_offline=True,
             lock_host=True,

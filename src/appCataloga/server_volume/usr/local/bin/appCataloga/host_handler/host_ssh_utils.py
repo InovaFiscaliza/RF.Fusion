@@ -37,17 +37,17 @@ CONFIG_PATH = os.path.join(BASE_DIR, "etc", "appCataloga")
 if CONFIG_PATH not in sys.path:
     sys.path.insert(0, CONFIG_PATH)
 
+from db import constants as db_constants
 import config as k  # noqa: E402  (must be available at runtime)
-from db.dbHandlerSummary import dbHandlerSummary  # noqa: E402
+from db.dbHandlerBKP import dbHandlerBKP  # noqa: E402
 
 if TYPE_CHECKING:
-    from db.dbHandlerBKP import dbHandlerBKP
     from shared.logging_utils import log as logger_type
 
 
 # Probe signals are current-state data, not delayed summary outbox work.
 # Create this connection only in workers that actually execute SSH probes.
-_snapshot_signal_db: dbHandlerSummary | None = None
+_signal_db: dbHandlerBKP | None = None
 
 
 
@@ -152,21 +152,27 @@ def ssh_probe(addr: str, port: int, user: str, password: str) -> ConnectivityPro
         )
 
 
-def _get_snapshot_signal_db(logger: logger_type) -> dbHandlerSummary:
-    """Return the process-local summary connection used for SSH probe signals.
+def _get_signal_db(logger: logger_type) -> dbHandlerBKP:
+    """Return the process-local operational connection used for SSH probe signals.
 
     One worker can evaluate many hosts. Reusing the connection avoids opening
     a new database session for every successful or failed SSH login.
-    """
-    global _snapshot_signal_db
 
-    if _snapshot_signal_db is None:
-        _snapshot_signal_db = dbHandlerSummary(
-            database=k.SUMMARY_DATABASE_NAME,
+    Args:
+        logger (logger_type): Caller application logger.
+    Returns:
+        dbHandlerBKP: Lazily configured, process-owned operational handler.
+    """
+    global _signal_db
+
+    if _signal_db is None:
+        _signal_db = dbHandlerBKP(
+            database=k.BKP_DATABASE_NAME,
+            conninfo=k.PG_CONNINFO,
             log=logger,
             reuse_connection=True,
         )
-    return _snapshot_signal_db
+    return _signal_db
 
 
 def record_ssh_success(
@@ -178,11 +184,18 @@ def record_ssh_success(
     """Clear the active SSH failure signal after one successful login.
 
     The timestamp is updated even when SSH was already available. This keeps
-    the current snapshot distinguishable from a stale previous evaluation.
+    the current state distinguishable from a stale previous evaluation.
+
+    Args:
+        host_id (int): Existing operational host identity.
+        observed_at (datetime): UTC successful SSH observation.
+        logger (logger_type): Caller application logger.
+    Returns:
+        None.
     """
-    # Keep connection acquisition separate from the snapshot write boundary.
-    snapshot_db = _get_snapshot_signal_db(logger)
-    snapshot_db.update_host_current_snapshot_signals(
+    # Keep connection acquisition separate from the host write boundary.
+    signal_db = _get_signal_db(logger)
+    signal_db.host_update_signals(
         host_id=host_id,
         values={
             "IS_SSH_FAILURE": False,
@@ -201,12 +214,21 @@ def record_ssh_failure(
 ) -> None:
     """Persist the latest classified SSH failure for the current host state.
 
-    Only the newest diagnosis is retained in the snapshot. The task and error
+    Only the newest diagnosis is retained in the operational host. The task and error
     history preserve the detailed operational trail.
+
+    Args:
+        host_id (int): Existing operational host identity.
+        observed_at (datetime): UTC failed SSH observation.
+        failure_code (str): Classified failure code.
+        description (str | None): Optional failure evidence.
+        logger (logger_type): Caller application logger.
+    Returns:
+        None.
     """
     # The newest probe replaces old evidence for the same host.
-    snapshot_db = _get_snapshot_signal_db(logger)
-    snapshot_db.update_host_current_snapshot_signals(
+    signal_db = _get_signal_db(logger)
+    signal_db.host_update_signals(
         host_id=host_id,
         values={
             "IS_SSH_FAILURE": True,
@@ -230,7 +252,7 @@ def persist_auth_error(
     """Persist a credential failure and suspend dependent work for one host.
 
     Authentication failures are not transient. The host check counter and
-    current SSH snapshot are updated before the queues are suspended, so the
+    current SSH evidence are updated before the queues are suspended, so the
     interface explains why discovery, backup, and processing stopped. The
     caller receives ``TASK_ERROR`` and remains responsible for its task row.
     """
@@ -263,7 +285,7 @@ def persist_auth_error(
         detail=detail,
     )
 
-    return (k.TASK_ERROR, f"SSH authentication failed during connectivity confirmation | {detail}")
+    return (db_constants['tasks']['states']['error'], f"SSH authentication failed during connectivity confirmation | {detail}")
 
 
 # =====================================================================

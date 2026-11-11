@@ -1,7 +1,8 @@
 # Planejamento da migração para PostgreSQL
 
-Situação: Fase 1 em implementação. Base e handler BKP PostgreSQL implementados;
-integração real, handlers RFM/Summary e conexões dos consumidores permanecem pendentes.
+Situação: validação do fluxo completo com estações e appAnalise, adaptação dos
+consumidores WebFusion e transferência de dados permanecem pendentes. O modelo do Summary
+segue o [contrato PostgreSQL](../architecture/SUMMARY_POSTGRESQL.md).
 A execução dos demais lotes não está autorizada por este documento.
 O desenvolvimento ocorre no branch `postgres-sql`; alterações
 em `main` e a entrada em produção exigem escopo próprio.
@@ -13,7 +14,7 @@ organizar o código preservando o modelo funcional; depois transferir os dados,
 aplicar a taxonomia e revisar os modelos de leitura e seus consumidores.
 
 O ponto de partida são os [scripts PostgreSQL](../../src/postgres/scripts/README.md),
-que reproduzem o modelo MariaDB na medida da compatibilidade entre plataformas.
+que adaptam os dados de origem e usam o modelo canônico revisado para Summary.
 Isso não comprova equivalência de consultas, concorrência ou desempenho.
 
 O [contrato inicial PostgreSQL](../architecture/POSTGRESQL.md) define um único
@@ -124,33 +125,29 @@ coesa e registrar o mapa de módulos na arquitetura antes da implementação.
 Evitar tanto duplicação quanto uma função genérica com muitas opções para
 acomodar comportamentos distintos.
 
-#### Campos permitidos nos handlers específicos
+#### Validação de tabelas e colunas
 
-Preservar o padrão de listas explícitas de campos por entidade, como
-`VALID_FIELDS_FILE_TASK_HISTORY`, nos handlers responsáveis pelo domínio.
-Usar conjuntos simples (`set[str]`), sem exigir `frozenset`, e atualizar as
-declarações junto das migrações que alterem os campos suportados pelo handler.
-Não habilitar novas colunas automaticamente por descoberta do schema.
+A existência de tabelas e colunas e as chaves primárias pertencem ao DDL
+PostgreSQL, sem declarações espelhadas nos handlers. O banco retorna os erros
+de nomes inexistentes e de integridade; a base mantém identificadores
+delimitados, parâmetros separados e validações estruturais de filtros,
+ordenação e escritas. Métodos de domínio preparam filtros que identificam os
+registros das operações individuais, conforme o contrato arquitetural.
+Não consultar nem armazenar o catálogo para repetir essa validação.
+
 Manter a composição genérica de SQL em métodos internos da própria base;
 modularizar apenas responsabilidades que justifiquem um módulo próprio.
-Documentar se cada coleção
-se destina a leitura, filtros, inserção ou atualização; separar permissões por
-operação quando necessário. Uma coluna existente não é automaticamente gravável
-por qualquer operação ou usuário.
+Projeções, colunas de escrita e alvos de conflito descrevem cada consulta,
+sem criar listas genéricas de permissão por tabela. Uma coluna existente não
+é automaticamente gravável por qualquer operação ou usuário: essa autorização
+pertence aos métodos públicos do domínio e aos privilégios SQL.
 
-Validar campos recebidos contra essas listas e rejeitar os desconhecidos.
-Validar também tabelas, aliases, operadores e ordenação quando forem dinâmicos.
-Compor identificadores com a API segura do driver PostgreSQL e passar valores
-por parâmetros; a lista de campos é uma proteção complementar. Não aceitar
-fragmentos SQL provenientes de entrada externa.
+Identificadores usam a API segura do driver; valores são parâmetros separados.
+Não aceitar fragmentos SQL provenientes de entrada externa. Usar sequências
+explícitas quando a ordem de colunas, parâmetros ou resultados for relevante.
+Validar os fluxos e as constraints no PostgreSQL em testes de integração.
 
-Conjuntos não definem ordem de colunas: usar uma sequência explícita quando
-o mapeamento de linhas, parâmetros ou resultados depender de ordem. Essas
-coleções não substituem constraints, tipos nem privilégios no PostgreSQL.
-Verificar sua correspondência com o schema nos testes de integração e
-atualizá-las junto com o mapa de taxonomia na Fase 2.
-
-### 1.3 Concorrência, filas e SUMMARY compatível
+### 1.3 Concorrência, filas e publicação do Summary
 
 Preservar a propriedade do ciclo de vida das tasks nos entrypoints. Claim,
 DONE, ERROR, FROZEN, cooldown e histórico devem manter seus efeitos observáveis.
@@ -161,8 +158,8 @@ proprietária, duração, perda de conexão e liberação. Não reconectar e con
 uma seção crítica como se o lock ou a transação anterior ainda existisse.
 Retries precisam considerar idempotência e resultado de commit desconhecido.
 
-O Summary precisa funcionar no PostgreSQL já nesta fase, com os contratos
-atuais. Adaptar a estratégia de publicação de projeções e locks à plataforma;
+Validar o Summary contra seu contrato PostgreSQL, sem exigir o schema legado.
+Validar a estratégia de publicação e locks da plataforma;
 não traduzir mecanicamente `RENAME TABLE` ou `GET_LOCK`. Provar que leitores
 não veem resultados vazios ou parciais durante a publicação.
 
@@ -171,16 +168,15 @@ escopo, falha no refresh, drenagem e reconcile completo. Uma simples troca de
 `REPLACE` por UPSERT não garante que uma nova invalidação seja observada pelo
 consumidor que avança por ID.
 
-A revisão estrutural dos modelos fica para a Fase 2. Corrigir incompatibilidades
-necessárias à segurança e ao funcionamento não depende dessa revisão futura.
+O redesenho estrutural segue o contrato vigente. Integração com consumidores
+e medições sob carga continuam pendentes, sem ativação automática em produção.
 
 ### 1.4 Conexões e consumidores
 
-Revisar criação, reutilização e fechamento de conexões em workers, domínio,
-utilitários e manutenção. Manter SQL na camada de banco.
-Na conversão de `summary_handler/refresh_engine.py` e `utils/safe_stop.py`,
-substituir os acessos legados a `_connect()` pela API pública `connect()` e
-revisar os demais acessos internos junto com os handlers desses consumidores.
+Validar o ciclo de vida das conexões durante falhas e encerramento do fluxo
+completo com estações e appAnalise. Manter SQL na camada de banco, fornecer
+autenticação PostgreSQL pelo ambiente dos processos e usar
+`RFFUSION_PG_CONNINFO` quando for necessário substituir o destino do `config.py`.
 
 No WebFusion, adaptar `db.py`, autenticação, handlers SQL dos módulos e
 `api/appAnalise_api`. Preservar formatos de linhas, aliases, filtros, paginação,
@@ -256,8 +252,10 @@ A ferramenta será escolhida após o inventário, sem presumir compatibilidade.
 Ensaiar a carga em destino isolado, preservando IDs, vínculos e histórico.
 Definir ordem de tabelas, transformação de tipos, tratamento de dados inválidos,
 ajuste de sequências, validação de constraints e atualização de estatísticas.
-Separar dados autoritativos de projeções reconstruíveis; decidir por objeto
-quais dados do SUMMARY importar e quais recalcular.
+No Summary, restaurar conjuntamente apenas `WEBFUSION_USAGE_LOG_CHECKPOINT` e
+`WEBFUSION_USAGE_METRIC_MONTHLY`; reconstruir os seis agregados canônicos por
+full reconcile. Validar os novos campos de sinais no BPDATA e o cruzamento
+automático de hosts/equipamentos no Summary.
 
 Conferir contagens, totais de controle, integridade referencial, amostras de
 conteúdo, datas, binários, flags, unicidade e IDs seguintes. Medir duração,
@@ -301,28 +299,22 @@ Ensaiar primeiro a equivalência com os nomes atuais e depois as transformaçõe
 de taxonomia, mantendo pontos de validação separados. A sequência de ensaio
 não exige duas trocas em produção; a ordem final depende do procedimento validado.
 
-### 2.3 Revisão estrutural do RFFUSION_SUMMARY
+### 2.3 Validação do modelo canônico do Summary
 
-Tratar redundância e contenção como problemas a medir por objeto, consulta e
-fluxo de escrita. O risco relatado exige diagnóstico antes de escolher a solução.
-
-Construir um catálogo com fonte autoritativa, granularidade, chave, consumidores,
-frequência, custo de refresh, atraso aceitável e política de retenção. Diferenciar
-repetição desnecessária de desnormalização útil aos leitores.
+Usar as fontes, granularidades e chaves do
+[contrato vigente](../architecture/SUMMARY_POSTGRESQL.md). Completar o mapa das
+consultas consumidoras e medir frequência, custo de refresh, atraso aceitável
+e retenção no ambiente de ensaio.
 
 Medir duração de transações, espera por locks, consultas lentas, índices,
-volume de escrita, crescimento e concorrência entre sinais, snapshots, refresh
-incremental e reconcile. Definir metas numéricas de latência, duração de locks
-e defasagem com base nessas medições e na capacidade do ambiente.
+volume de escrita, crescimento e concorrência entre sinais, refresh incremental
+e reconcile. Definir metas numéricas de latência, duração de locks e defasagem
+com base nessas medições e na capacidade do ambiente.
 
-Propor então remoções, consolidações, índices e estratégia de materialização,
-comparando refresh por escopo, publicação transacional e modelos paralelos.
-Não presumir que views materializadas resolvam todos os padrões de atualização.
-
-Renomes, remoções e mudanças de granularidade exigem mapa de consumidores e
-contratos novos ou versionados. Preservar as métricas canônicas e a distinção
-entre estado atual, histórico e contadores; não retornar a responsabilidade
-pelas filas ao SUMMARY. Validar correção e custo sob carga representativa.
+Validar as consultas sem cópias de cadastro e os totais calculados sobre os
+agregados canônicos. Preservar a distinção entre mês de criação de arquivos,
+throughput operacional, estado atual e histórico. Verificar a preservação das
+duas tabelas de uso e dos eventos publicados durante a reconstrução.
 
 ### 2.4 Interfaces, troca de ambiente e retorno
 
@@ -354,9 +346,8 @@ origem só podem ser desativados conforme a política operacional aprovada.
 3. Adaptar consumidores, concluir os testes integrados e validar o acesso sem
    senha nas aplicações ao final da Fase 1, conforme a seção 1.6.
 4. Definir a taxonomia e ensaiar a migração dos dados da Fase 2.
-5. Diagnosticar e redesenhar o SUMMARY, atualizando seus consumidores.
+5. Validar o modelo canônico do Summary e seus consumidores sob carga representativa.
 6. Ensaiar o conjunto final e preparar a decisão de entrada em produção.
 
-O diagnóstico do SUMMARY pode começar antes da Fase 2 para estabelecer a linha
-de base. Isso não antecipa alterações estruturais nem autoriza cargas pesadas
-ou mudanças em produção.
+A implementação do modelo canônico não autoriza cargas pesadas nem mudanças
+em produção. Essas operações dependem do ensaio e do escopo operacional próprio.

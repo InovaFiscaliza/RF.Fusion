@@ -17,6 +17,7 @@ import sys
 import os
 import time
 from datetime import datetime
+from typing import cast
 
 from utils.bootstrap_paths import bootstrap_app_paths
 
@@ -27,6 +28,7 @@ from db.dbHandlerBKP import dbHandlerBKP
 from host_handler import host_connectivity, host_runtime
 from server_handler import signal_runtime, sleep as runtime_sleep
 from shared import errors, logging_utils
+from db import constants as db_constants
 import config as k
 
 
@@ -39,10 +41,10 @@ process_status = {"running": True}
 # then ahead of ordinary pending checks so an operator can validate a change
 # without waiting for the regular queue backlog.
 HOST_TASK_PRIORITY = (
-    k.HOST_TASK_INTERACTIVE_CHECK_TYPE,
-    k.HOST_TASK_CHECK_TYPE,
-    k.HOST_TASK_CHECK_CONNECTION_TYPE,
-    k.HOST_TASK_UPDATE_STATISTICS_TYPE,
+    db_constants['tasks']['host_types']['interactive_check'],
+    db_constants['tasks']['host_types']['check'],
+    db_constants['tasks']['host_types']['check_connection'],
+    db_constants['tasks']['host_types']['update_statistics'],
 )
 
 
@@ -69,7 +71,7 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
     This keeps heavy bootstrap checks ahead of lighter reconciliation work.
     """
     for task_type in HOST_TASK_PRIORITY:
-        task_row = db.host_task_read(task_status=k.TASK_PENDING, task_type=task_type)
+        task_row = db.host_task_read(task_status=db_constants['tasks']['states']['pending'], task_type=task_type)
         if task_row:
             return {
                 "host_id"               : task_row["HOST__ID_HOST"],
@@ -80,8 +82,10 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
                 "user"                  : task_row["HOST__NA_HOST_USER"],
                 "password"              : task_row["HOST__NA_HOST_PASSWORD"],
                 "was_offline"           : bool(task_row.get("HOST__IS_OFFLINE")),
-                "host_check_error_count": int(task_row.get("HOST__NU_HOST_CHECK_ERROR") or 0),
-                "host_filter"           : task_row.get("host_filter") or dict(k.NONE_FILTER),
+                "host_check_error_count": int(
+                    cast(int | None, task_row.get("HOST__NU_HOST_CHECK_ERROR")) or 0
+                ),
+                "host_filter"           : task_row.get("host_filter") or dict(db_constants['tasks']['default_filter']),
                 "now"                   : datetime.now(),
             }
     return None
@@ -95,13 +99,13 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     That case is normal and should not be logged as a failure.
     """
     message = "Host check task running"
-    if task["task_type"] == k.HOST_TASK_INTERACTIVE_CHECK_TYPE:
+    if task["task_type"] == db_constants['tasks']['host_types']['interactive_check']:
         message = "Teste de estação iniciado. Preparando a verificação de conectividade."
 
     result = db.host_task_update(
         task_id=task["task_id"],
-        expected_status=k.TASK_PENDING,
-        NU_STATUS=k.TASK_RUNNING,
+        expected_status=db_constants['tasks']['states']['pending'],
+        NU_STATUS=db_constants['tasks']['states']['running'],
         NU_PID=os.getpid(),
         DT_HOST_TASK=datetime.now(),
         NA_MESSAGE=message,
@@ -128,7 +132,7 @@ def _publish_interactive_progress(db: dbHandlerBKP, task: dict, message: str) ->
     """Publish one real-time progress stage for an interactive station test."""
     db.host_task_update(
         task_id=task["task_id"],
-        expected_status=k.TASK_RUNNING,
+        expected_status=db_constants['tasks']['states']['running'],
         DT_HOST_TASK=datetime.now(),
         NA_MESSAGE=message,
     )
@@ -141,7 +145,7 @@ def _do_work(db: dbHandlerBKP, task: dict) -> tuple[int, str]:
     Domain handlers decide the connectivity or statistics result.
     """
     match task["task_type"]:
-        case k.HOST_TASK_INTERACTIVE_CHECK_TYPE:
+        case _ if task['task_type'] == db_constants['tasks']['host_types']['interactive_check']:
             return host_connectivity.run_interactive_check(
                 db,
                 task,
@@ -154,7 +158,7 @@ def _do_work(db: dbHandlerBKP, task: dict) -> tuple[int, str]:
                 ),
             )
 
-        case k.HOST_TASK_UPDATE_STATISTICS_TYPE:
+        case _ if task['task_type'] == db_constants['tasks']['host_types']['update_statistics']:
             return host_runtime.run_update_statistics(
                 db,
                 task,
@@ -162,7 +166,7 @@ def _do_work(db: dbHandlerBKP, task: dict) -> tuple[int, str]:
                 logger=log,
             )
 
-        case k.HOST_TASK_CHECK_TYPE:
+        case _ if task['task_type'] == db_constants['tasks']['host_types']['check']:
             return host_connectivity.run_check(
                 db,
                 task,
@@ -171,7 +175,7 @@ def _do_work(db: dbHandlerBKP, task: dict) -> tuple[int, str]:
                 promote_to_processing=True,
             )
 
-        case k.HOST_TASK_CHECK_CONNECTION_TYPE:
+        case _ if task['task_type'] == db_constants['tasks']['host_types']['check_connection']:
             return host_connectivity.run_check(
                 db,
                 task,
@@ -191,16 +195,16 @@ def _classify_work_failure(exc: Exception, *, task: dict | None) -> tuple[str, s
     transport errors appear in other workers too.
     """
     if task and task["task_type"] in {
-        k.HOST_TASK_INTERACTIVE_CHECK_TYPE,
-        k.HOST_TASK_CHECK_TYPE,
-        k.HOST_TASK_CHECK_CONNECTION_TYPE,
+        db_constants['tasks']['host_types']['interactive_check'],
+        db_constants['tasks']['host_types']['check'],
+        db_constants['tasks']['host_types']['check_connection'],
     }:
         ssh_failure = errors.classify_ssh_connect_failure(exc)
         if ssh_failure is not None:
             return ssh_failure
         return "Host connectivity check failed", k.STAGE_MAIN
 
-    if task and task["task_type"] == k.HOST_TASK_UPDATE_STATISTICS_TYPE:
+    if task and task["task_type"] == db_constants['tasks']['host_types']['update_statistics']:
         return "Host statistics update failed", k.STAGE_MAIN
 
     return "Host check task failed", k.STAGE_MAIN
@@ -213,7 +217,7 @@ def _finalize_success(
     db.host_task_update(
         task_id=task["task_id"],
         NU_STATUS=status,
-        NU_PID=k.HOST_UNLOCKED_PID,
+        NU_PID=db_constants['hosts']['unlocked_pid'],
         DT_HOST_TASK=task["now"],
         NA_MESSAGE=message,
     )
@@ -242,15 +246,15 @@ def _finalize_error(
 
     try:
         error_message = f"Host Check Error | {err.format_persisted_error()}"
-        if task["task_type"] == k.HOST_TASK_INTERACTIVE_CHECK_TYPE:
+        if task["task_type"] == db_constants['tasks']['host_types']['interactive_check']:
             error_message = (
                 "Teste de estação não pôde ser concluído. "
                 "Consulte o log técnico para detalhes."
             )
         db.host_task_update(
             task_id=task["task_id"],
-            NU_STATUS=k.TASK_ERROR,
-            NU_PID=k.HOST_UNLOCKED_PID,
+            NU_STATUS=db_constants['tasks']['states']['error'],
+            NU_PID=db_constants['hosts']['unlocked_pid'],
             NA_MESSAGE=error_message,
             DT_HOST_TASK=datetime.now(),
         )
@@ -277,7 +281,7 @@ def _finalize_error(
 def _init_db() -> dbHandlerBKP:
     """Create the operational DB handler or stop the process early."""
     try:
-        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log, conninfo=k.PG_CONNINFO)
     except Exception as e:
         log.error_event("db_init_failed", service=SERVICE_NAME, error=e)
         sys.exit(1)

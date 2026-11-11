@@ -68,17 +68,19 @@ def _init_db() -> tuple[dbHandlerSummary, dbHandlerSummary]:
         return (
             dbHandlerSummary(
                 database=k.SUMMARY_DATABASE_NAME,
+                conninfo=k.PG_CONNINFO,
                 log=log,
                 reuse_connection=True,
             ),
             dbHandlerSummary(
                 database=k.SUMMARY_DATABASE_NAME,
+                conninfo=k.PG_CONNINFO,
                 log=log,
                 reuse_connection=True,
             ),
         )
     except Exception as exc:
-        log.error_event("summary_worker_init_failed", service=SERVICE_NAME, error=repr(exc))
+        log.error_event("summary_worker_init_failed", service=SERVICE_NAME, error=type(exc).__name__)
         sys.exit(1)
 
 
@@ -111,11 +113,11 @@ def _needs_startup_reconcile(
     incremental consumption.
     """
     try:
-        state = db.read_worker_state(consumer_name)
+        state = db.worker_state_read(consumer_name)
         last_success = state.get("DT_LAST_SUCCESS")
         return last_success is None or datetime.utcnow() - last_success > stale_threshold
     except Exception as exc:
-        log.warning_event("summary_startup_state_read_failed", error=repr(exc))
+        log.warning_event("summary_startup_state_read_failed", error=type(exc).__name__)
         return True
 
 
@@ -148,13 +150,15 @@ def _run_full_reconcile(
 ) -> datetime:
     """Run the full refresh chain and schedule the next daily rebuild.
 
-    A full reconcile rebuilds every public summary table and then clears the
-    incremental queue because all pending outbox scopes are now represented by
-    the freshly rebuilt read model.
+    Capture the watermark before rebuilding. Events published during the
+    rebuild remain pending even when they coalesce an older dirty scope.
     """
-    db.mark_worker_start(k.SUMMARY_WORKER_CONSUMER_NAME)
+    watermark = db.outbox_read_watermark()
+    db.worker_state_start(k.SUMMARY_WORKER_CONSUMER_NAME)
     engine.refresh_all(reason="scheduled_full_reconcile")
-    db.reset_after_reconcile(k.SUMMARY_WORKER_CONSUMER_NAME)
+    db.worker_state_success(k.SUMMARY_WORKER_CONSUMER_NAME,
+        last_outbox_id=watermark, batch_size=0, event_count=0)
+    db.outbox_delete_consumed(k.SUMMARY_WORKER_CONSUMER_NAME)
     next_reconcile_at = _next_2am_brt(now)
     log.event(
         "summary_next_reconcile_scheduled",
@@ -170,7 +174,7 @@ def _run_incremental_batch(db: dbHandlerSummary, engine: SummaryRefreshEngine) -
         ``True`` when at least one outbox row was processed, otherwise
         ``False`` so the caller can sleep before polling again.
     """
-    batch = db.read_outbox_batch(
+    batch = db.outbox_list_pending(
         k.SUMMARY_WORKER_CONSUMER_NAME,
         batch_size=k.SUMMARY_WORKER_BATCH_SIZE,
     )
@@ -179,22 +183,22 @@ def _run_incremental_batch(db: dbHandlerSummary, engine: SummaryRefreshEngine) -
 
     # Success is checkpointed only after the refresh finishes. Then the
     # consumed rows are drained so the outbox behaves like a real queue.
-    db.mark_worker_start(k.SUMMARY_WORKER_CONSUMER_NAME)
+    db.worker_state_start(k.SUMMARY_WORKER_CONSUMER_NAME)
     engine.refresh_for_events(batch)
-    db.mark_worker_success(
+    db.worker_state_success(
         k.SUMMARY_WORKER_CONSUMER_NAME,
         last_outbox_id=int(batch[-1]["ID_OUTBOX"]),
         batch_size=k.SUMMARY_WORKER_BATCH_SIZE,
         event_count=len(batch),
     )
-    db.drain_consumed_outbox(k.SUMMARY_WORKER_CONSUMER_NAME)
+    db.outbox_delete_consumed(k.SUMMARY_WORKER_CONSUMER_NAME)
     return True
 
 
 def _finalize_error(db: dbHandlerSummary, exc: Exception) -> None:
     """Persist worker failure state and emit the structured error log."""
-    error_message = repr(exc)
-    db.mark_worker_failure(
+    error_message = type(exc).__name__
+    db.worker_state_failure(
         k.SUMMARY_WORKER_CONSUMER_NAME,
         error_message=error_message,
     )
@@ -210,7 +214,7 @@ def main() -> None:
     log.service_start(SERVICE_NAME)
     db, lock_db = _init_db()
 
-    if not lock_db.acquire_worker_lock(WORKER_LOCK_NAME):
+    if not lock_db.worker_lock_acquire(WORKER_LOCK_NAME):
         log.warning_event("summary_worker_lock_busy", service=SERVICE_NAME)
         sys.exit(0)
 
@@ -220,7 +224,7 @@ def main() -> None:
     try:
         try:
             # Apply the low-contention session settings once per process.
-            db.configure_worker_session()
+            db.worker_session_configure()
         except Exception as exc:
             _finalize_error(db, exc)
             sys.exit(1)
@@ -242,7 +246,7 @@ def main() -> None:
                 _finalize_error(db, exc)
                 runtime_sleep.random_jitter_sleep()
     finally:
-        lock_db.release_worker_lock(WORKER_LOCK_NAME)
+        lock_db.worker_lock_release(WORKER_LOCK_NAME)
         db.close()
         log.service_stop(SERVICE_NAME)
 

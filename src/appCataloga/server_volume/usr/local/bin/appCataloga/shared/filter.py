@@ -34,6 +34,7 @@ CONFIG_PATH = os.path.join(BASE_DIR, "etc", "appCataloga")
 if CONFIG_PATH not in sys.path:
     sys.path.insert(0, CONFIG_PATH)
 
+from db import constants as db_constants
 import config as k  # noqa: E402  (must be available at runtime)
 
 
@@ -416,7 +417,7 @@ class Filter:
         max_total_kb = None
         if max_total_gb is not None:
             try:
-                max_total_kb = int(float(max_total_gb) * k.KILOBYTES_PER_GB)
+                max_total_kb = int(float(max_total_gb) * db_constants['persistence']['kilobytes_per_gb'])
             except (TypeError, ValueError):
                 max_total_kb = None
 

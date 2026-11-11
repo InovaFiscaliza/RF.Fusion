@@ -50,7 +50,8 @@ refresh do summary.
 
 ### `tests/db/`
 
-Durante a migração PostgreSQL, `DbHandler` e `dbHandlerBKP` possuem suítes
+Durante a migração PostgreSQL, `DbHandler`, `dbHandlerBKP`, `dbHandlerRFM` e
+`dbHandlerSummary` possuem suítes
 independentes dos handlers MariaDB movidos para `db/backup/`:
 
 ```bash
@@ -71,6 +72,21 @@ orçamento e recuperação de tasks/locks são validadas nas suítes dos workers
 usando métodos públicos do handler e sem executar probes de rede.
 Sua integração usa o DDL operacional em schemas aleatórios e fixtures isoladas
 de outbox. A análise local de binding não substitui execução PostgreSQL.
+O RFM também usa um schema isolado derivado do DDL analítico para verificar
+identidades, espectros, linhagem, rollback e outbox. Quando PostGIS não está
+disponível, a fixture usa uma coluna textual para os testes não espaciais e
+ignora o teste de geometria; ela não valida o tipo espacial nesse caso.
+Os testes cobrem JOIN, EXISTS e ordem dos parâmetros no CRUD, além da consulta
+correlacionada de priorização do BKP. A integração verifica uma linha por host
+com várias tasks, prioridade pelo ano UTC e validade das reservas de discovery.
+
+O Summary cobre binding, o modelo do DDL, checkpoint, rollback, locks e
+retenção de auditoria. Sua integração instala as tabelas do DDL em schema
+aleatório e verifica visibilidade entre sessões, exclusão por advisory locks,
+preservação das duas tabelas de uso e recuperação
+por savepoint. A suíte do motor protege a publicação dos seis agregados,
+escopos incrementais, matching, ambiguidades, erros e passagens sobrepostas.
+Os testes não iniciam daemons nem validam a integração pendente do WebFusion.
 
 Testes de comportamento dos handlers de banco:
 

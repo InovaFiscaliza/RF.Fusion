@@ -12,6 +12,7 @@ for manual review instead of writing a definitive ERROR.
 import os
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
 
 from utils.bootstrap_paths import bootstrap_app_paths
@@ -20,6 +21,7 @@ from utils.bootstrap_paths import bootstrap_app_paths
 PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 # --- internal imports ---
+from db import constants as db_constants
 import config as k
 from appAnalise import processing_bin
 from appAnalise.appAnalise_connection import AppAnaliseConnection
@@ -34,6 +36,8 @@ from db.dbHandlerRFM import dbHandlerRFM
 # --- globals ---
 
 SERVICE_NAME = "appCataloga_file_bin_process_appAnalise"
+PROCESSING_TYPE = db_constants["tasks"]["file_types"]["processing"]
+TASK_STATES = db_constants["tasks"]["states"]
 log = logging_utils.log(target_screen=False)
 process_status = {"running": True}
 
@@ -61,16 +65,14 @@ def _is_current_month_host_file(task: dict, observed_at: datetime) -> bool:
     )
 
 
-def _log_statistics_refresh_failure(task: dict, exc: Exception) -> None:
-    """Keep queue resolution definitive even when summary refresh is blocked."""
-    log.warning_event(
-        "host_statistics_refresh_failed",
-        service=SERVICE_NAME,
-        host_id=task["host_id"],
-        task_id=task["file_task_id"],
-        error_type=type(exc).__name__,
-        exception=repr(exc),
-    )
+def _record_gps_available_if_needed(task: dict, *, observed_at: datetime) -> None:
+    """Mark GPS as available when the processed file is from the current month."""
+    if _is_current_month_host_file(task, observed_at):
+        host_runtime.record_gps_gnss_available(
+            task["host_id"],
+            evaluated_at=observed_at,
+            logger=log,
+        )
 
 
 def _record_gps_failure_if_needed(
@@ -133,8 +135,8 @@ def _read_next_task(db_bp: dbHandlerBKP) -> dict | None:
         Exception: Propagates selection or context construction failures.
     """
     result = db_bp.file_task_read(
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        task_status=k.TASK_PENDING,
+        task_type=PROCESSING_TYPE,
+        task_status=TASK_STATES["pending"],
         check_host_busy=False,
         newest_first=True,
     )
@@ -142,42 +144,34 @@ def _read_next_task(db_bp: dbHandlerBKP) -> dict | None:
         return None
 
     row, host_id, _ = result
-    server_path     = row["FILE_TASK__NA_SERVER_FILE_PATH"]
-    server_name     = row["FILE_TASK__NA_SERVER_FILE_NAME"]
-    hostname_db     = row["HOST__NA_HOST_NAME"]
-    extension       = row["FILE_TASK__NA_EXTENSION_SERVER"]
-    dt_created      = row["FILE_TASK__DT_FILE_CREATED_SERVER"]
-    dt_modified     = row["FILE_TASK__DT_FILE_MODIFIED_SERVER"]
-    host_dt_created = row.get("FILE_TASK__DT_FILE_CREATED_HOST")
-    host_dt_modified = row.get("FILE_TASK__DT_FILE_MODIFIED_HOST")
-    vl_file_size_kb = row["FILE_TASK__VL_FILE_SIZE_KB_SERVER"]
-
-    return {
+    task = {
         "file_task_id"    : row["FILE_TASK__ID_FILE_TASK"],
-        "server_path"     : server_path,
-        "server_name"     : server_name,
+        "host_id"         : host_id,
+        "hostname_db"     : row["HOST__NA_HOST_NAME"],
+        "server_path"     : row["FILE_TASK__NA_SERVER_FILE_PATH"],
+        "server_name"     : row["FILE_TASK__NA_SERVER_FILE_NAME"],
         "host_path"       : row["FILE_TASK__NA_HOST_FILE_PATH"],
         "host_file_name"  : row["FILE_TASK__NA_HOST_FILE_NAME"],
-        "hostname_db"     : hostname_db,
-        "host_id"         : host_id,
-        "extension"       : extension,
-        "dt_created"      : dt_created,
-        "dt_modified"     : dt_modified,
-        "host_dt_created" : host_dt_created,
-        "host_dt_modified": host_dt_modified,
-        "vl_file_size_kb" : vl_file_size_kb,
-        "filename"        : f"{server_path}/{server_name}",
-        "export"          : processing_bin.should_export(hostname_db),
-        "source_file_meta": {
-            "file_path"  : server_path,
-            "file_name"  : server_name,
-            "extension"  : extension,
-            "size_kb"    : vl_file_size_kb,
-            "dt_created" : dt_created,
-            "dt_modified": dt_modified,
-            "full_path"  : os.path.join(server_path, server_name),
-        },
+        "extension"       : row["FILE_TASK__NA_EXTENSION_SERVER"],
+        "vl_file_size_kb" : row["FILE_TASK__VL_FILE_SIZE_KB_SERVER"],
+        "dt_created"      : row["FILE_TASK__DT_FILE_CREATED_SERVER"],
+        "dt_modified"     : row["FILE_TASK__DT_FILE_MODIFIED_SERVER"],
+        "host_dt_created" : row.get("FILE_TASK__DT_FILE_CREATED_HOST"),
+        "host_dt_modified": row.get("FILE_TASK__DT_FILE_MODIFIED_HOST"),
     }
+    full_path = os.path.join(task["server_path"], task["server_name"])
+    task["filename"] = f'{task["server_path"]}/{task["server_name"]}'
+    task["export"] = processing_bin.should_export(task["hostname_db"])
+    task["source_file_meta"] = {
+        "file_path"  : task["server_path"],
+        "file_name"  : task["server_name"],
+        "extension"  : task["extension"],
+        "size_kb"    : task["vl_file_size_kb"],
+        "dt_created" : task["dt_created"],
+        "dt_modified": task["dt_modified"],
+        "full_path"  : full_path,
+    }
+    return task
 
 
 def _claim_task(db_bp: dbHandlerBKP, task: dict) -> bool:
@@ -187,8 +181,8 @@ def _claim_task(db_bp: dbHandlerBKP, task: dict) -> bool:
     That case is normal and should not be treated as a task failure.
     """
     claim_message = tools.compose_message(
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        task_status=k.TASK_RUNNING,
+        task_type=PROCESSING_TYPE,
+        task_status=TASK_STATES["running"],
         path=task["server_path"],
         name=task["server_name"],
         detail=k.APP_ANALISE_WORKER_DETAIL,
@@ -196,26 +190,22 @@ def _claim_task(db_bp: dbHandlerBKP, task: dict) -> bool:
 
     claim_result = db_bp.file_task_update(
         task_id=task["file_task_id"],
-        expected_status=k.TASK_PENDING,
-        NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+        expected_status=TASK_STATES["pending"],
         DT_FILE_TASK=datetime.now(),
-        NU_STATUS=k.TASK_RUNNING,
+        NU_STATUS=TASK_STATES["running"],
         NU_PID=os.getpid(),
         NA_MESSAGE=claim_message,
         **errors.persisted_error_fields_from_handler(message=claim_message),
     )
 
-    rows_affected = 1
-    if isinstance(claim_result, dict):
-        rows_affected = claim_result.get("rows_affected", 0)
-
+    rows_affected = claim_result["rows_affected"]
     if rows_affected != 1:
         log.warning_event(
             "task_claim_race",
             service=SERVICE_NAME,
             host_id=task["host_id"],
             task_id=task["file_task_id"],
-            task_type=k.FILE_TASK_PROCESS_TYPE,
+            task_type=PROCESSING_TYPE,
             rows_affected=rows_affected,
         )
         return False
@@ -224,7 +214,7 @@ def _claim_task(db_bp: dbHandlerBKP, task: dict) -> bool:
         SERVICE_NAME,
         host_id=task["host_id"],
         task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_PROCESS_TYPE,
+        task_type=PROCESSING_TYPE,
         file=task["filename"],
         export=task["export"],
     )
@@ -233,35 +223,22 @@ def _claim_task(db_bp: dbHandlerBKP, task: dict) -> bool:
 
 # --- work ---
 
+WORK_FAILURE_REASONS = (
+    (errors.AppAnaliseReadTimeoutError, "APP_ANALISE read timeout during processing"),
+    (errors.AppAnaliseFileUnavailableError, "APP_ANALISE file unavailable during processing"),
+    (errors.AppAnaliseServiceResponseError, "APP_ANALISE service returned processing error"),
+    (errors.AppAnaliseInvalidSuccessPayloadError, "APP_ANALISE returned invalid success payload"),
+    (errors.ExternalServiceTransientError, "Transient appAnalise processing failure"),
+    (errors.BinValidationError, "Payload validation failed during processing"),
+)
+
+
 def _classify_work_failure(exc: Exception) -> tuple[str, str]:
     """Map a raised exception to the worker error reason and stage."""
-
-    # appAnalise reached the processing phase but timed out while replying.
-    if isinstance(exc, errors.AppAnaliseReadTimeoutError):
-        return "APP_ANALISE read timeout during processing", k.STAGE_PROCESS
-
-    # appAnalise could not find the expected server-side input file.
-    if isinstance(exc, errors.AppAnaliseFileUnavailableError):
-        return "APP_ANALISE file unavailable during processing", k.STAGE_PROCESS
-
-    # appAnalise returned an explicit error identifier for this request.
-    if isinstance(exc, errors.AppAnaliseServiceResponseError):
-        return "APP_ANALISE service returned processing error", k.STAGE_PROCESS
-
-    # appAnalise answered without `Error` but with an unusable success payload.
-    if isinstance(exc, errors.AppAnaliseInvalidSuccessPayloadError):
-        return "APP_ANALISE returned invalid success payload", k.STAGE_PROCESS
-
-    # The remote service started work but failed in a likely transient way.
-    if isinstance(exc, errors.ExternalServiceTransientError):
-        return "Transient appAnalise processing failure", k.STAGE_PROCESS
-
-    # Payload validation already rejected this artifact as invalid input.
-    if isinstance(exc, errors.BinValidationError):
-        return "Payload validation failed during processing", k.STAGE_PROCESS
-
-    # Finalization can fail on short-lived filesystem contention.
-    if processing_bin.is_transient_filesystem_error(exc):
+    for error_type, reason in WORK_FAILURE_REASONS:
+        if isinstance(exc, error_type):
+            return reason, k.STAGE_PROCESS
+    if file_utils.is_transient_filesystem_error(exc):
         return "Transient filesystem finalization failure", k.STAGE_FS
     return "Unexpected processing loop failure", k.STAGE_MAIN
 
@@ -287,6 +264,9 @@ def _do_work(
 
 
 # --- finalization ---
+# DONE and ERROR remove the FILE_TASK row; FROZEN keeps it for manual review.
+# History and queue row change in one transaction; GPS and summary refresh
+# afterwards are best-effort.
 
 def _finalize_success(
     db_bp: dbHandlerBKP,
@@ -295,276 +275,56 @@ def _finalize_success(
     *,
     elapsed_sec: float,
 ) -> None:
-    """Persist DONE state, delete the live queue row, and log completion."""
+    """Record DONE and remove the queue row; failures are only logged.
+
+    Spectra are already committed in RFDATA, so the task never becomes ERROR here.
+    """
     file_meta = result["file_meta"]
     new_path = result["new_path"]
     message = tools.compose_message(
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        task_status=k.TASK_DONE,
+        task_type=PROCESSING_TYPE,
+        task_status=TASK_STATES["done"],
         path=new_path,
         name=file_meta["file_name"],
     )
     processed_at = datetime.now()
+    server_fields = {
+        "NA_SERVER_FILE_NAME": file_meta["file_name"],
+        "NA_SERVER_FILE_PATH": new_path,
+        "NA_EXTENSION_SERVER": file_meta["extension"],
+        "VL_FILE_SIZE_KB_SERVER": file_meta["size_kb"],
+        "DT_FILE_CREATED_SERVER": file_meta["dt_created"],
+        "DT_FILE_MODIFIED_SERVER": file_meta["dt_modified"],
+    }
     try:
-        db_bp.begin_transaction()
-        try:
-            history_result = db_bp.file_task_history_update(
-                host_id=task["host_id"],
-                task_type=k.FILE_TASK_PROCESS_TYPE,
-                host_file_name=task["host_file_name"],
-                host_file_path=task["host_path"],
-                DT_PROCESSED=processed_at,
-                NA_SERVER_FILE_NAME=file_meta["file_name"],
-                NA_SERVER_FILE_PATH=new_path,
-                NA_EXTENSION_SERVER=file_meta["extension"],
-                VL_FILE_SIZE_KB_SERVER=file_meta["size_kb"],
-                DT_FILE_CREATED_SERVER=file_meta["dt_created"],
-                DT_FILE_MODIFIED_SERVER=file_meta["dt_modified"],
-                NU_STATUS_PROCESSING=k.TASK_DONE,
-                NA_MESSAGE=message,
-                **_error_fields(None, message),
-            )
-            if history_result.get("rows_affected") != 1:
-                raise RuntimeError(
-                    "FILE_TASK_HISTORY finalization affected "
-                    f"{history_result.get('rows_affected')} rows "
-                    f"(expected 1 for host={task['host_id']}, "
-                    f"path={task['host_path']}, name={task['host_file_name']})"
-                )
-            deleted_rows = db_bp.file_task_delete(task_id=task["file_task_id"])
-            if deleted_rows != 1:
-                raise RuntimeError(
-                    f"FILE_TASK delete affected {deleted_rows} rows "
-                    f"(expected 1 for task_id={task['file_task_id']})"
-                )
-            db_bp.commit()
-        except Exception:
-            db_bp.rollback()
-            raise
-    except Exception as e:
-        log.error_event(
-            "task_finalization_failed",
-            task_id=task["file_task_id"],
-            host_id=task["host_id"],
-            error_type=type(e).__name__,
-            exception=repr(e),
-        )
-        return
-
-    if _is_current_month_host_file(task, processed_at):
-        try:
-            host_runtime.record_gps_gnss_available(
-                task["host_id"],
-                evaluated_at=processed_at,
-                logger=log,
-            )
-        except Exception as exc:
-            log.warning_event(
-                "gps_metric_update_failed",
-                service=SERVICE_NAME,
-                host_id=task["host_id"],
-                task_id=task["file_task_id"],
-                error=exc,
-            )
-
-    try:
-        db_bp.host_request_summary_refresh(
-            host_id=task["host_id"],
-            reason="processing_completed",
+        _resolve_queue_row(
+            db_bp,
+            task,
+            status=TASK_STATES["done"],
+            message=message,
+            structured=_error_fields(None, message),
+            resolved_at=processed_at,
+            server_fields=server_fields,
+            keep_in_queue=False,
         )
     except Exception as exc:
-        _log_statistics_refresh_failure(task, exc)
+        _log_finalization_failure(task, exc)
+        return
 
+    _after_resolution(
+        db_bp,
+        task,
+        reason="processing_completed",
+        update_gps=lambda: _record_gps_available_if_needed(task, observed_at=processed_at),
+    )
     log.task_done(
         SERVICE_NAME,
         host_id=task["host_id"],
         task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_PROCESS_TYPE,
+        task_type=PROCESSING_TYPE,
         file=task["filename"],
         elapsed_sec=round(elapsed_sec, 3),
         final_file=os.path.join(new_path, file_meta["file_name"]),
-    )
-
-
-def _finalize_freeze(
-    db_bp: dbHandlerBKP,
-    task: dict,
-    err: errors.ErrorHandler,
-) -> None:
-    """Persist FROZEN state for failures that require manual review."""
-    detail = errors.freeze_processing_detail(err.exc)
-    message = tools.compose_message(
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        task_status=k.TASK_FROZEN,
-        detail=detail,
-        error=err.format_persisted_error(),
-    )
-    structured = _error_fields(err, message)
-    frozen_at = datetime.now()
-    db_bp.begin_transaction()
-    try:
-        db_bp.file_task_update(
-            task_id=task["file_task_id"],
-            NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
-            NU_STATUS=k.TASK_FROZEN,
-            NU_PID=None,
-            DT_FILE_TASK=frozen_at,
-            NA_MESSAGE=message,
-            **structured,
-        )
-        db_bp.file_task_history_update(
-            task_type=k.FILE_TASK_PROCESS_TYPE,
-            host_id=task["host_id"],
-            host_file_path=task["host_path"],
-            host_file_name=task["host_file_name"],
-            DT_PROCESSED=frozen_at,
-            NU_STATUS_PROCESSING=k.TASK_FROZEN,
-            NA_MESSAGE=message,
-            **structured,
-        )
-        db_bp.commit()
-    except Exception:
-        db_bp.rollback()
-        raise
-
-    try:
-        _record_gps_failure_if_needed(
-            task,
-            observed_at=frozen_at,
-            structured=structured,
-        )
-    except Exception as exc:
-        log.warning_event(
-            "gps_metric_update_failed",
-            service=SERVICE_NAME,
-            host_id=task["host_id"],
-            task_id=task["file_task_id"],
-            error=exc,
-        )
-
-    try:
-        db_bp.host_request_summary_refresh(
-            host_id=task["host_id"],
-            reason="processing_frozen",
-        )
-    except Exception as exc:
-        _log_statistics_refresh_failure(task, exc)
-
-    log.task_frozen(
-        SERVICE_NAME,
-        host_id=task["host_id"],
-        task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        file=task["filename"],
-        stage=err.stage,
-        error=err.format_error() or detail,
-    )
-
-
-def _write_task_error(
-    db_bp: dbHandlerBKP,
-    task: dict,
-    err: errors.ErrorHandler,
-) -> None:
-    """Quarantine the error artifact and persist ERROR state."""
-    file_meta = getattr(err.exc, "file_meta", None)
-    server_path, history_meta_override = file_utils.quarantine_error_artifact(
-        file_meta=file_meta,
-        source_file_meta=task["source_file_meta"],
-        export=task.get("export"),
-        logger=log,
-    )
-    if history_meta_override:
-        history_name = history_meta_override["name"]
-        history_extension = history_meta_override["extension"]
-        history_size_kb = history_meta_override["size_kb"]
-        history_dt_created = history_meta_override["dt_created"]
-        history_dt_modified = history_meta_override["dt_modified"]
-    else:
-        history_name = task["server_name"]
-        history_extension = task["extension"]
-        history_size_kb = task["vl_file_size_kb"]
-        history_dt_created = task["dt_created"]
-        history_dt_modified = task["dt_modified"]
-    message = tools.compose_message(
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        task_status=k.TASK_ERROR,
-        error=err.format_persisted_error(),
-    )
-    error_at = datetime.now()
-    structured = _error_fields(err, message)
-    db_bp.begin_transaction()
-    try:
-        history_result = db_bp.file_task_history_update(
-            host_id=task["host_id"],
-            task_type=k.FILE_TASK_PROCESS_TYPE,
-            host_file_name=task["host_file_name"],
-            host_file_path=task["host_path"],
-            DT_PROCESSED=error_at,
-            NA_SERVER_FILE_NAME=history_name,
-            NA_SERVER_FILE_PATH=server_path,
-            NA_EXTENSION_SERVER=history_extension,
-            VL_FILE_SIZE_KB_SERVER=history_size_kb,
-            DT_FILE_CREATED_SERVER=history_dt_created,
-            DT_FILE_MODIFIED_SERVER=history_dt_modified,
-            NU_STATUS_PROCESSING=k.TASK_ERROR,
-            NA_MESSAGE=message,
-            **structured,
-        )
-        if history_result.get("rows_affected") != 1:
-            raise RuntimeError(
-                "FILE_TASK_HISTORY finalization affected "
-                f"{history_result.get('rows_affected')} rows "
-                f"(expected 1 for host={task['host_id']}, "
-                f"path={task['host_path']}, name={task['host_file_name']})"
-            )
-        deleted_rows = db_bp.file_task_delete(task_id=task["file_task_id"])
-        if deleted_rows != 1:
-            raise RuntimeError(
-                f"FILE_TASK delete affected {deleted_rows} rows "
-                f"(expected 1 for task_id={task['file_task_id']})"
-            )
-        db_bp.commit()
-    except Exception:
-        db_bp.rollback()
-        raise
-
-    try:
-        _record_gps_failure_if_needed(
-            task,
-            observed_at=error_at,
-            structured=structured,
-        )
-    except Exception as exc:
-        log.warning_event(
-            "gps_metric_update_failed",
-            service=SERVICE_NAME,
-            host_id=task["host_id"],
-            task_id=task["file_task_id"],
-            error=exc,
-        )
-
-    try:
-        db_bp.host_request_summary_refresh(
-            host_id=task["host_id"],
-            reason="processing_error",
-        )
-    except Exception as exc:
-        _log_statistics_refresh_failure(task, exc)
-
-    final_file = (
-        os.path.join(server_path, history_name) if server_path else None
-    )
-    log.task_error(
-        SERVICE_NAME,
-        host_id=task["host_id"],
-        task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_PROCESS_TYPE,
-        file=task["filename"],
-        stage=err.stage,
-        error=err.format_error() or "Processing failed",
-        export=task.get("export"),
-        final_file=final_file,
     )
 
 
@@ -573,23 +333,196 @@ def _finalize_error(
     task: dict | None,
     err: errors.ErrorHandler,
 ) -> None:
-    """Route to freeze or error finalization."""
+    """Keep the queue row FROZEN for review, or quarantine and remove it as ERROR."""
     if task is None:
         return
 
+    frozen = errors.should_freeze_processing_task(err.exc)
+    status = TASK_STATES["frozen"] if frozen else TASK_STATES["error"]
     try:
-        if errors.should_freeze_processing_task(err.exc):
-            _finalize_freeze(db_bp, task, err)
+        if frozen:
+            detail = errors.freeze_processing_detail(err.exc)
+            server_path, server_fields = None, {}
         else:
-            _write_task_error(db_bp, task, err)
-    except Exception as finalize_err:
-        log.error_event(
-            "task_finalization_failed",
-            task_id=task["file_task_id"],
-            host_id=task["host_id"],
-            error_type=type(finalize_err).__name__,
-            exception=repr(finalize_err),
+            detail = None
+            server_path, server_fields = _quarantine_failed_artifact(task, err)
+        message = tools.compose_message(
+            task_type=PROCESSING_TYPE,
+            task_status=status,
+            detail=detail,
+            error=err.format_persisted_error(),
         )
+        structured = _error_fields(err, message)
+        failed_at = datetime.now()
+        _resolve_queue_row(
+            db_bp,
+            task,
+            status=status,
+            message=message,
+            structured=structured,
+            resolved_at=failed_at,
+            server_fields=server_fields,
+            keep_in_queue=frozen,
+        )
+    except Exception as exc:
+        _log_finalization_failure(task, exc)
+        return
+
+    _after_resolution(
+        db_bp,
+        task,
+        reason="processing_frozen" if frozen else "processing_error",
+        update_gps=lambda: _record_gps_failure_if_needed(
+            task, observed_at=failed_at, structured=structured
+        ),
+    )
+    if frozen:
+        log.task_frozen(
+            SERVICE_NAME,
+            host_id=task["host_id"],
+            task_id=task["file_task_id"],
+            task_type=PROCESSING_TYPE,
+            file=task["filename"],
+            stage=err.stage,
+            error=err.format_error() or detail,
+        )
+        return
+
+    server_name = server_fields["NA_SERVER_FILE_NAME"]
+    log.task_error(
+        SERVICE_NAME,
+        host_id=task["host_id"],
+        task_id=task["file_task_id"],
+        task_type=PROCESSING_TYPE,
+        file=task["filename"],
+        stage=err.stage,
+        error=err.format_error() or "Processing failed",
+        export=task.get("export"),
+        final_file=os.path.join(server_path, server_name) if server_path else None,
+    )
+
+
+def _resolve_queue_row(
+    db_bp: dbHandlerBKP,
+    task: dict,
+    *,
+    status: int,
+    message: str,
+    structured: dict,
+    resolved_at: datetime,
+    server_fields: dict,
+    keep_in_queue: bool,
+) -> None:
+    """Update history and delete (or freeze) the queue row in one transaction."""
+    db_bp.begin_transaction()
+    try:
+        history = db_bp.file_task_history_update(
+            host_id=task["host_id"],
+            task_type=PROCESSING_TYPE,
+            host_file_name=task["host_file_name"],
+            host_file_path=task["host_path"],
+            DT_PROCESSED=resolved_at,
+            NU_STATUS_PROCESSING=status,
+            NA_MESSAGE=message,
+            **server_fields,
+            **structured,
+        )
+        _expect_one_row("FILE_TASK_HISTORY update", history.get("rows_affected"), task)
+        if keep_in_queue:
+            queue = db_bp.file_task_update(
+                task_id=task["file_task_id"],
+                NU_STATUS=status,
+                NU_PID=None,
+                DT_FILE_TASK=resolved_at,
+                NA_MESSAGE=message,
+                **structured,
+            )
+            _expect_one_row("FILE_TASK update", queue.get("rows_affected"), task)
+        else:
+            deleted = db_bp.file_task_delete(task_id=task["file_task_id"])
+            _expect_one_row("FILE_TASK delete", deleted, task)
+        db_bp.commit()
+    except Exception:
+        db_bp.rollback()
+        raise
+
+
+def _expect_one_row(operation: str, rows: object, task: dict) -> None:
+    """Abort the finalization when a write did not hit exactly one row."""
+    if rows != 1:
+        raise RuntimeError(
+            f"{operation} affected {rows} rows (expected 1, task_id={task['file_task_id']})"
+        )
+
+
+def _quarantine_failed_artifact(
+    task: dict,
+    err: errors.ErrorHandler,
+) -> tuple[str | None, dict]:
+    """Quarantine the failed artifact; return its directory and history fields."""
+    server_path, moved = file_utils.quarantine_error_artifact(
+        file_meta=getattr(err.exc, "file_meta", None),
+        source_file_meta=task["source_file_meta"],
+        export=task.get("export"),
+        logger=log,
+    )
+    meta = moved or {
+        "name": task["server_name"],
+        "extension": task["extension"],
+        "size_kb": task["vl_file_size_kb"],
+        "dt_created": task["dt_created"],
+        "dt_modified": task["dt_modified"],
+    }
+    return server_path, {
+        "NA_SERVER_FILE_NAME": meta["name"],
+        "NA_SERVER_FILE_PATH": server_path,
+        "NA_EXTENSION_SERVER": meta["extension"],
+        "VL_FILE_SIZE_KB_SERVER": meta["size_kb"],
+        "DT_FILE_CREATED_SERVER": meta["dt_created"],
+        "DT_FILE_MODIFIED_SERVER": meta["dt_modified"],
+    }
+
+
+def _after_resolution(
+    db_bp: dbHandlerBKP,
+    task: dict,
+    *,
+    reason: str,
+    update_gps: Callable[[], None],
+) -> None:
+    """Refresh GPS and summary state; failures here never reopen the task."""
+    try:
+        update_gps()
+    except Exception as exc:
+        log.warning_event(
+            "gps_metric_update_failed",
+            service=SERVICE_NAME,
+            host_id=task["host_id"],
+            task_id=task["file_task_id"],
+            error=exc,
+        )
+    try:
+        db_bp.host_request_summary_refresh(host_id=task["host_id"], reason=reason)
+    except Exception as exc:
+        log.warning_event(
+            "host_statistics_refresh_failed",
+            service=SERVICE_NAME,
+            host_id=task["host_id"],
+            task_id=task["file_task_id"],
+            error_type=type(exc).__name__,
+            exception=repr(exc),
+        )
+
+
+def _log_finalization_failure(task: dict, exc: Exception) -> None:
+    """Report a finalization that could not be persisted."""
+    log.error_event(
+        "task_finalization_failed",
+        task_id=task["file_task_id"],
+        host_id=task["host_id"],
+        error_type=type(exc).__name__,
+        exception=repr(exc),
+    )
 
 
 def _cleanup(db_rfm: dbHandlerRFM, task: dict | None) -> None:  # noqa: ARG001
@@ -605,7 +538,14 @@ def _cleanup(db_rfm: dbHandlerRFM, task: dict | None) -> None:  # noqa: ARG001
 def _init_db() -> tuple[dbHandlerBKP, dbHandlerRFM]:
     """Create the operational and analytical DB handlers or stop early."""
     try:
-        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log), dbHandlerRFM(database=k.RFM_DATABASE_NAME, log=log)
+        return (
+            dbHandlerBKP(
+                database=k.BKP_DATABASE_NAME, log=log, conninfo=k.PG_CONNINFO
+            ),
+            dbHandlerRFM(
+                database=k.RFM_DATABASE_NAME, log=log, conninfo=k.PG_CONNINFO
+            ),
+        )
     except Exception as e:
         log.error_event("db_init_failed", service=SERVICE_NAME, error=e)
         sys.exit(1)

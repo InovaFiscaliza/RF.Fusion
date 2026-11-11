@@ -12,6 +12,7 @@ import time
 import traceback
 from collections.abc import Callable
 from datetime import datetime
+from typing import cast
 
 from utils.bootstrap_paths import bootstrap_app_paths
 
@@ -33,6 +34,7 @@ from shared import (
     logging_utils,
     tools,
 )
+from db import constants as db_constants
 import config as k
 
 
@@ -92,17 +94,17 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     """
     worker_id = process_status["worker"]
     message = tools.compose_message(
-        task_type=k.FILE_TASK_BACKUP_TYPE,
-        task_status=k.TASK_RUNNING,
+        task_type=db_constants['tasks']['file_types']['backup'],
+        task_status=db_constants['tasks']['states']['running'],
         path=task["FILE_TASK__NA_HOST_FILE_PATH"],
         name=task["FILE_TASK__NA_HOST_FILE_NAME"],
     )
 
     result = db.file_task_update(
         task_id=task["file_task_id"],
-        expected_status=k.TASK_PENDING,
+        expected_status=db_constants['tasks']['states']['pending'],
         DT_FILE_TASK=datetime.now(),
-        NU_STATUS=k.TASK_RUNNING,
+        NU_STATUS=db_constants['tasks']['states']['running'],
         NU_PID=os.getpid(),
         NA_MESSAGE=message,
         **errors.persisted_error_fields_from_handler(message=message),
@@ -115,7 +117,7 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
             worker_id=worker_id,
             host_id=task["host_id"],
             task_id=task["file_task_id"],
-            task_type=k.FILE_TASK_BACKUP_TYPE,
+            task_type=db_constants['tasks']['file_types']['backup'],
         )
         return False
 
@@ -124,7 +126,7 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
         worker_id=worker_id,
         host_id=task["host_id"],
         task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_BACKUP_TYPE,
+        task_type=db_constants['tasks']['file_types']['backup'],
         file=task["input_filename"],
     )
 
@@ -165,22 +167,22 @@ def _finalize_success(
     updated_size_kb = result["updated_size_kb"]
     backup_completed_at = datetime.now()
     history_message = tools.compose_message(
-        task_type=k.FILE_TASK_BACKUP_TYPE,
-        task_status=k.TASK_DONE,
+        task_type=db_constants['tasks']['file_types']['backup'],
+        task_status=db_constants['tasks']['states']['done'],
         path=task["FILE_TASK__NA_HOST_FILE_PATH"],
         name=task["FILE_TASK__NA_HOST_FILE_NAME"],
     )
 
     # First write the immutable history snapshot of the completed transfer.
     db.file_task_history_update(
-        task_type=k.FILE_TASK_BACKUP_TYPE,
+        task_type=db_constants['tasks']['file_types']['backup'],
         host_id=host_id,
         host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
         host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
         DT_BACKUP=backup_completed_at,
         NA_SERVER_FILE_NAME=server_filename,
         NA_SERVER_FILE_PATH=server_file_path,
-        NU_STATUS_BACKUP=k.TASK_DONE,
+        NU_STATUS_BACKUP=db_constants['tasks']['states']['done'],
         NA_EXTENSION_HOST=refreshed_metadata.NA_EXTENSION,
         VL_FILE_SIZE_KB_HOST=updated_size_kb,
         DT_FILE_CREATED_HOST=refreshed_metadata.DT_FILE_CREATED,
@@ -197,9 +199,9 @@ def _finalize_success(
     # identity instead of creating a second task row for the same artifact.
     db.file_task_update(
         task_id=file_task_id,
-        NU_TYPE=k.FILE_TASK_PROCESS_TYPE,
+        NU_TYPE=db_constants['tasks']['file_types']['processing'],
         DT_FILE_TASK=backup_completed_at,
-        NU_STATUS=k.TASK_PENDING,
+        NU_STATUS=db_constants['tasks']['states']['pending'],
         NA_SERVER_FILE_PATH=server_file_path,
         NA_SERVER_FILE_NAME=server_filename,
         NA_EXTENSION_HOST=refreshed_metadata.NA_EXTENSION,
@@ -219,7 +221,7 @@ def _finalize_success(
         worker_id=worker_id,
         host_id=host_id,
         task_id=file_task_id,
-        task_type=k.FILE_TASK_BACKUP_TYPE,
+        task_type=db_constants['tasks']['file_types']['backup'],
         file=input_filename,
         final_file=os.path.join(server_file_path, server_filename),
         elapsed_sec=round(elapsed_sec, 3),
@@ -231,14 +233,25 @@ def _finalize_error(
     task: dict | None,
     err: errors.ErrorHandler,
 ) -> None:
-    """Persist backup failure or prune source drift when the file vanished."""
+    """Persist backup failure or prune source drift when the file vanished.
+
+    Args:
+        db (dbHandlerBKP): Operational queue and history handler.
+        task (dict | None): Context normalized by _read_next_task, including
+            required host_id int, file_task_id int, input_filename str,
+            server_filename str, server_file_path str, and prefixed source
+            path/name fields. None means failure before task selection.
+        err (errors.ErrorHandler): Captured failure with stage and exception.
+    Returns:
+        None. Database finalization failures are logged without propagation.
+    """
     worker_id = process_status["worker"]
 
     if task is None:
         err.log_error(worker_id=worker_id)
         return
 
-    host_id = task.get("host_id")
+    host_id = cast(int, task.get("host_id"))
     file_task_id = task.get("file_task_id")
     input_filename = task.get("input_filename")
     server_filename = task.get("server_filename")
@@ -263,7 +276,7 @@ def _finalize_error(
                 worker_id=worker_id,
                 host_id=host_id,
                 task_id=file_task_id,
-                task_type=k.FILE_TASK_BACKUP_TYPE,
+                task_type=db_constants['tasks']['file_types']['backup'],
                 file=input_filename,
                 error=e_db,
             )
@@ -281,7 +294,7 @@ def _finalize_error(
                 worker_id=worker_id,
                 host_id=host_id,
                 task_id=file_task_id,
-                task_type=k.FILE_TASK_BACKUP_TYPE,
+                task_type=db_constants['tasks']['file_types']['backup'],
                 file=input_filename,
                 error=e_db,
             )
@@ -308,8 +321,8 @@ def _finalize_error(
     )
 
     na_message = tools.compose_message(
-        task_type=k.FILE_TASK_BACKUP_TYPE,
-        task_status=k.TASK_ERROR,
+        task_type=db_constants['tasks']['file_types']['backup'],
+        task_status=db_constants['tasks']['states']['error'],
         path=task["FILE_TASK__NA_HOST_FILE_PATH"],
         name=task["FILE_TASK__NA_HOST_FILE_NAME"],
         error=err.format_persisted_error(),
@@ -352,9 +365,9 @@ def _finalize_error(
         # PID once it leaves RUNNING.
         db.file_task_update(
             task_id=file_task_id,
-            NU_TYPE=k.FILE_TASK_BACKUP_TYPE,
+            NU_TYPE=db_constants['tasks']['file_types']['backup'],
             DT_FILE_TASK=error_at,
-            NU_STATUS=k.TASK_ERROR,
+            NU_STATUS=db_constants['tasks']['states']['error'],
             NU_PID=None,
             NA_MESSAGE=na_message,
             **structured_error_fields,
@@ -363,14 +376,14 @@ def _finalize_error(
         # FILE_TASK_HISTORY mirrors the same backup-stage error so audit
         # queries and operational queue state do not diverge.
         db.file_task_history_update(
-            task_type=k.FILE_TASK_BACKUP_TYPE,
+            task_type=db_constants['tasks']['file_types']['backup'],
             host_id=host_id,
             host_file_path=task["FILE_TASK__NA_HOST_FILE_PATH"],
             host_file_name=task["FILE_TASK__NA_HOST_FILE_NAME"],
             DT_BACKUP=error_at,
             NA_SERVER_FILE_NAME=server_filename,
             NA_SERVER_FILE_PATH=server_file_path,
-            NU_STATUS_BACKUP=k.TASK_ERROR,
+            NU_STATUS_BACKUP=db_constants['tasks']['states']['error'],
             NA_MESSAGE=na_message,
             **structured_error_fields,
         )
@@ -380,9 +393,9 @@ def _finalize_error(
         if err.stage in {k.STAGE_AUTH, k.STAGE_CONNECT, k.STAGE_SSH}:
             db.host_task_enqueue(
                 host_id=host_id,
-                task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
-                task_status=k.TASK_PENDING,
-                filter_dict=k.NONE_FILTER,
+                task_type=db_constants['tasks']['host_types']['check_connection'],
+                task_status=db_constants['tasks']['states']['pending'],
+                filter_dict=db_constants['tasks']['default_filter'],
             )
 
     except Exception as e_db:
@@ -392,7 +405,7 @@ def _finalize_error(
             worker_id=worker_id,
             host_id=host_id,
             task_id=file_task_id,
-            task_type=k.FILE_TASK_BACKUP_TYPE,
+            task_type=db_constants['tasks']['file_types']['backup'],
             exception=repr(e_db),
         )
 
@@ -401,7 +414,7 @@ def _finalize_error(
         worker_id=worker_id,
         host_id=host_id,
         task_id=file_task_id,
-        task_type=k.FILE_TASK_BACKUP_TYPE,
+        task_type=db_constants['tasks']['file_types']['backup'],
         file=input_filename,
         stage=err.stage,
         final_file=(
@@ -490,8 +503,8 @@ def _create_transfer_progress_callback(
             return
 
         message = tools.compose_message(
-            task_type=k.FILE_TASK_BACKUP_TYPE,
-            task_status=k.TASK_RUNNING,
+            task_type=db_constants['tasks']['file_types']['backup'],
+            task_status=db_constants['tasks']['states']['running'],
             path=task["host_file_path"],
             name=task["host_file_name"],
             detail=(
@@ -503,7 +516,7 @@ def _create_transfer_progress_callback(
         try:
             db.file_task_update(
                 task_id=task["file_task_id"],
-                expected_status=k.TASK_RUNNING,
+                expected_status=db_constants['tasks']['states']['running'],
                 DT_FILE_TASK=datetime.now(),
                 NA_MESSAGE=message,
                 publish_summary=False,
@@ -546,7 +559,7 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
         worker_id=process_status["worker"],
         host_id=task["host_id"],
         task_id=task["file_task_id"],
-        task_type=k.FILE_TASK_BACKUP_TYPE,
+        task_type=db_constants['tasks']['file_types']['backup'],
         file=task["input_filename"],
         phase="transfer",
         elapsed_sec=transfer_elapsed_sec,
@@ -591,7 +604,7 @@ def _classify_work_failure(
 def _init_db() -> dbHandlerBKP:
     """Create the operational DB handler or stop the process early."""
     try:
-        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log, conninfo=k.PG_CONNINFO)
     except Exception as e:
         log.error_event("db_init_failed", service=SERVICE_NAME, error=e)
         sys.exit(1)
@@ -612,8 +625,8 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
         Exception: Propagates selection or context construction failures.
     """
     row = db.file_task_read(
-        task_status=k.TASK_PENDING,
-        task_type=k.FILE_TASK_BACKUP_TYPE,
+        task_status=db_constants['tasks']['states']['pending'],
+        task_type=db_constants['tasks']['file_types']['backup'],
         check_host_busy=True,
         check_host_offline=True,
         lock_host=True,
@@ -625,9 +638,9 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
     if not row:
         return None
     task_row, host_id, file_task_id = row
-    host_file_path = task_row["FILE_TASK__NA_HOST_FILE_PATH"]
-    host_file_name = task_row["FILE_TASK__NA_HOST_FILE_NAME"]
-    host_uid = task_row["HOST__NA_HOST_NAME"]
+    host_file_path = cast(str, task_row["FILE_TASK__NA_HOST_FILE_PATH"])
+    host_file_name = cast(str, task_row["FILE_TASK__NA_HOST_FILE_NAME"])
+    host_uid = cast(str, task_row["HOST__NA_HOST_NAME"])
     return {
         **task_row,
         "host_id"      : host_id,

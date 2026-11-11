@@ -1,10 +1,17 @@
 # Pod PostgreSQL e pgAdmin
 
 O deploy cria o pod `rffusion-postgres` com dois containers: PostgreSQL 17
-Alpine e pgAdmin 4, a partir das imagens oficiais. A imagem do PostgreSQL é
+Alpine com PostGIS e pgAdmin 4. A imagem PostGIS para PostgreSQL é
 estendida para incluir SSH e identificação de ambiente do RF.Fusion; a imagem
 do pgAdmin também é estendida para incluir SSH. Os dados do banco e as
 configurações do pgAdmin ficam em volumes nomeados separados.
+
+O pod também possui o container de infraestrutura `rffusion-postgres-infra`,
+com imagem `registry.k8s.io/pause:3.10` e comando `/pause`. Ele mantém a rede
+compartilhada e concentra as portas publicadas. PostgreSQL e pgAdmin continuam
+em `rffusion-postgres` e `rffusion-pgadmin`; a listagem completa contém esses
+três containers. O nome, a imagem e o comando do infra são explícitos para
+facilitar a identificação em `podman ps`.
 
 O instalador único é [deploy-postgres.sh](linux/deploy-postgres.sh); as imagens
 e seus entrypoints ficam em [postgres](linux/postgres/) e [pgadmin](linux/pgadmin/).
@@ -33,7 +40,7 @@ outro checkout montado no host. A partir da raiz do repositório:
 install/postgres/linux/deploy-postgres.sh
 ```
 
-O deploy recusa substituir um pod ou container existente. Ele espera o servidor
+Sem opções, o deploy recusa substituir um pod ou container existente. Ele espera o servidor
 PostgreSQL responder por TCP e, se nenhum dos quatro schemas do projeto existir,
 executa os scripts SQL e carrega os CSVs em uma única transação. Se qualquer
 schema já existir, em maiúsculas ou na convenção anterior em minúsculas, a carga
@@ -41,6 +48,8 @@ schema já existir, em maiúsculas ou na convenção anterior em minúsculas, a 
 schemas, tabelas e colunas usando aspas duplas. A recriação do pod com os mesmos
 volumes não altera os nomes de uma instalação existente. Falhas preservam
 pod e volumes para diagnóstico; confira `podman logs rffusion-postgres`.
+Instalações anteriores ainda precisam de atualização planejada para disponibilizar
+PostGIS e migrar os dados espaciais; editar estes arquivos não altera o pod existente.
 Em seguida, o deploy cria o container pgAdmin; confira também
 `podman logs rffusion-pgadmin` e abra `http://IP_DA_VM:9084`.
 
@@ -61,6 +70,61 @@ Os limites desejados do PostgreSQL são 1 CPU, 2 GiB de memória, 3 GiB incluind
 swap e 1024 processos, aplicados conforme os controladores disponíveis. O pgAdmin
 não recebe esses limites. A instalação não migra dados MariaDB e os consumidores
 existentes ainda não foram adaptados para PostgreSQL.
+
+## Recriação com os scripts atuais
+
+No host proprietário do Podman, a partir da raiz do repositório, execute:
+
+```bash
+install/postgres/linux/deploy-postgres.sh --recreate --reset-schemas
+```
+
+`--recreate` faz backup, constrói as imagens antes de parar o pod e substitui
+os containers, preservando os quatro volumes nomeados. A imagem PostgreSQL usa
+PostGIS; o build verifica os arquivos da extensão e o deploy verifica sua
+disponibilidade no servidor antes de qualquer reset.
+
+`--reset-schemas` recria `BPDATA`, `RFDATA`, `RFFUSION_SUMMARY` e `WEBFUSION`
+com os SQLs atuais e recarrega os catálogos CSV. **Os dados de BPDATA, RFDATA e
+WEBFUSION são removidos**; somente as duas tabelas de uso do Summary são
+preservadas automaticamente. Os demais agregados começam vazios para reconcile.
+Use apenas `--recreate` para atualizar o container conservando todos os schemas.
+
+Os backups completos e a exportação das duas tabelas de uso ficam em
+`.env/postgres-backups/recreate_<timestamp>_<sufixo>/`, fora do Git e com acesso
+restrito. O arquivo `postgres-before.dump` tem formato custom do `pg_dump`;
+`archive-list.txt` e `SHA256SUMS` permitem conferir o backup. A recriação com
+reset gera um backup antes da substituição e outro antes da alteração dos schemas.
+Se o backup inicial de um PostgreSQL em execução falhar, o pod existente não
+é removido. Se restar apenas o infra ou o PostgreSQL estiver parado, o deploy
+recria os serviços nos mesmos volumes e faz o backup após o banco ficar pronto,
+antes de qualquer reset de schemas. O download da imagem infra também ocorre
+antes da remoção do pod anterior.
+
+A preservação de `WEBFUSION_USAGE_LOG_CHECKPOINT` e
+`WEBFUSION_USAGE_METRIC_MONTHLY` usa cópias temporárias sob lock, na mesma
+transação que remove e recria os quatro schemas. As duas tabelas são restauradas
+com seus valores atuais, incluindo timestamps e offsets. Qualquer erro no DDL
+ou na restauração desfaz o reset inteiro. Não há remoção de volumes. Schemas
+legados em minúsculas e uma instalação com apenas uma das duas tabelas de uso
+exigem revisão manual antes do reset.
+
+Para corrigir a identificação e recuperar os serviços sem apagar schemas:
+
+```bash
+install/postgres/linux/deploy-postgres.sh --recreate
+podman ps -a --pod --filter pod=rffusion-postgres
+```
+
+Após a recriação, conferir:
+
+```bash
+podman exec -u postgres rffusion-postgres psql -X -U postgres -d postgres -c 'SELECT public.postgis_full_version();'
+podman exec -u postgres rffusion-postgres psql -X -U postgres -d postgres -c "SELECT table_schema, count(*) FROM information_schema.tables WHERE table_schema IN ('BPDATA','RFDATA','RFFUSION_SUMMARY','WEBFUSION') AND table_type = 'BASE TABLE' GROUP BY table_schema ORDER BY table_schema;"
+```
+
+O Summary deve conter onze tabelas. A recriação não inicia workers, não executa
+reconcile e não migra dados MariaDB nem consultas dos consumidores.
 
 ## Containers existentes e persistência
 

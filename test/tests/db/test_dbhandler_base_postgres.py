@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,8 @@ import unittest
 
 import psycopg
 from psycopg import sql
+from psycopg._queries import PostgresQuery
+from psycopg.adapt import Transformer
 from psycopg.pq import TransactionStatus
 
 
@@ -31,10 +34,7 @@ with patch.dict(sys.modules, {"config": load_test_config()}):
 
 
 class ExampleHandler(DbHandler):
-    """Declare one test table independently from production schemas."""
-
-    VALID_FIELDS_SAMPLE = {"ID", "NAME", "UPDATED", "ACTIVE"}
-    PRIMARY_KEY_SAMPLE = ("ID",)
+    """Use the base without duplicating the SQL schema in declarations."""
 
 
 class PostgresBaseTests(unittest.TestCase):
@@ -61,11 +61,42 @@ class PostgresBaseTests(unittest.TestCase):
         self.cursor.rowcount = 1
         self.connection.cursor.return_value.__enter__.return_value = self.cursor
         self.connect_patch = patch.object(
-            psycopg, "connect", return_value=self.connection
+            psycopg.Connection, "connect", return_value=self.connection
         )
         self.connect = self.connect_patch.start()
         self.addCleanup(self.connect_patch.stop)
         self.addCleanup(self.handler.close)
+
+    def test_nearest_point_quotes_identifiers_and_binds_coordinates(self) -> None:
+        """Preserve spherical distance, schema routing and deterministic ties.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        table = 'points"; DROP TABLE sample; --'
+        point_column = 'geo"point'
+        identity_column = 'key"id'
+        setattr(self.handler, f"SCHEMA_{table}", "OTHER")
+        self.cursor.fetchall.return_value = [{"IDENTITY": 9, "DISTANCE": 1.5}]
+        options = {
+            "point_column": point_column,
+            "identity_column": identity_column,
+            "longitude": -46.5,
+            "latitude": -23.2,
+        }
+        self.assertEqual(self.handler._select_nearest_point(table=table, **options), (9, 1.5))
+        query, params = self.cursor.execute.call_args.args
+        statement = query.as_string()
+        self.assertIn('FROM "OTHER"."points""; DROP TABLE sample; --"', statement)
+        self.assertIn('public.ST_SRID("geo""point")', statement)
+        self.assertIn('ORDER BY "DISTANCE" ASC, "key""id" ASC LIMIT %s', statement)
+        self.assertEqual(params, (-46.5, -23.2, 1))
+        self.assertNotIn("-46.5", statement)
+        PostgresQuery(Transformer()).convert(query, params)
+        self.cursor.fetchall.return_value = []
+        self.assertIsNone(self.handler._select_nearest_point(table=table, **options))
 
     def test_construction_is_lazy_and_requires_explicit_database(self) -> None:
         """Require a destination without connecting during construction.
@@ -172,6 +203,197 @@ class PostgresBaseTests(unittest.TestCase):
             sqlstate=None,
         )
 
+    def test_join_binds_values_in_sql_order(self) -> None:
+        """Bind root filters before joined filters and keep hostile text bound.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        hostile = "x'; DROP TABLE SAMPLE; -- %s"
+        self.handler._select_batch(
+            table="SAMPLE",
+            columns={"sample_id": ("SAMPLE", "ID"), "STATE": ("DETAIL", "STATE")},
+            join=("DETAIL", "ID", "FK_SAMPLE"),
+            where={"NAME": hostile},
+            joined_where={"STATE": "joined"},
+            order_by=(("ID", "DESC"),),
+            limit=5,
+        )
+        query, params = self.cursor.execute.call_args.args
+        text = query.as_string()
+        self.assertEqual(params, (hostile, "joined", 5))
+        self.assertIn('JOIN "TEST"."DETAIL" AS "joined"', text)
+        self.assertIn('"base"."ID" AS "sample_id"', text)
+        self.assertIn('"joined"."STATE" FROM', text)
+        self.assertNotIn(hostile, text)
+        PostgresQuery(Transformer()).convert(query, params)
+
+    def test_source_schema_distinct_and_full_delete(self) -> None:
+        """Qualify declared source tables, deduplicate rows and delete all explicitly.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.handler.SCHEMA_DETAIL = "SOURCE"
+        self.handler._select_batch(table="DETAIL", columns=("STATE",), distinct=True)
+        query = self.cursor.execute.call_args.args[0].as_string()
+        self.assertEqual(query, 'SELECT DISTINCT "STATE" FROM "SOURCE"."DETAIL"')
+        with self.assertRaises(ValueError):
+            self.handler.begin_transaction()
+            self.handler._select_batch(table="SAMPLE", distinct=True, for_update=True)
+        self.handler.rollback()
+        with self.assertRaises(ValueError):
+            self.handler._delete_batch(table="SAMPLE", where={})
+        self.handler._delete_all("SAMPLE")
+        self.assertEqual(
+            self.cursor.execute.call_args.args[0].as_string(),
+            'DELETE FROM "TEST"."SAMPLE"',
+        )
+
+    def test_savepoint_owns_a_short_transaction_outside_callers(self) -> None:
+        """Commit an isolated block alone, or join the caller without committing.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        with self.handler._savepoint():
+            self.handler._execute(sql.SQL("SELECT 2"))
+        self.connection.transaction.assert_called_once_with()
+        self.connection.commit.assert_called_once_with()
+        self.connection.commit.reset_mock()
+        self.handler.begin_transaction()
+        with self.handler._savepoint():
+            pass
+        self.connection.commit.assert_not_called()
+        self.assertTrue(self.handler.in_transaction)
+
+    def test_aggregate_uses_closed_functions_filters_and_month_buckets(self) -> None:
+        """Bind per-aggregate filters before row filters and reject other functions.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.handler._select_aggregate(
+            "SAMPLE",
+            {
+                "TOTAL": ("count", None, None),
+                "ACTIVE_SUM": ("sum", "ACTIVE", {"NAME": "x"}),
+            },
+            group_by=("NAME",),
+            month_buckets={"MONTH": "UPDATED"},
+            where={"ID__in": [1, 2]},
+        )
+        query, params = self.cursor.execute.call_args.args
+        self.assertEqual(
+            query.as_string(),
+            'SELECT "NAME", date_trunc(\'month\', "UPDATED")::date AS "MONTH", '
+            'COUNT(*) AS "TOTAL", SUM("ACTIVE") FILTER (WHERE TRUE AND "NAME" = %s) '
+            'AS "ACTIVE_SUM" FROM "TEST"."SAMPLE" WHERE "ID" IN (%s, %s) '
+            'GROUP BY "NAME", date_trunc(\'month\', "UPDATED")::date',
+        )
+        self.assertEqual(params, ("x", 1, 2))
+        PostgresQuery(Transformer()).convert(query, params)
+        for aggregates in (
+            {"X": ("avg", "ACTIVE", None)},
+            {"X": ("sum", None, None)},
+            {"NAME": ("count", None, None)},
+        ):
+            with self.subTest(aggregates=aggregates):
+                with self.assertRaises(ValueError):
+                    self.handler._select_aggregate("SAMPLE", aggregates, group_by=("NAME",))
+
+    def test_session_settings_and_advisory_locks_bind_names(self) -> None:
+        """Keep setting names and lock keys as values and restore local settings.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        with self.assertRaises(RuntimeError):
+            with self.handler._local_setting("statement_timeout", "1s"):
+                pass
+        self.cursor.fetchall.return_value = [{"value": "0", "acquired": True, "released": False}]
+        self.handler.begin_transaction()
+        with self.handler._local_setting("statement_timeout", "1s"):
+            pass
+        calls = [call.args[1] for call in self.cursor.execute.call_args_list]
+        self.assertEqual(
+            calls,
+            [("statement_timeout",), ("statement_timeout", "1s", True), ("statement_timeout", "0", True)],
+        )
+        self.handler.rollback()
+        self.assertTrue(self.handler._advisory_lock_try("worker"))
+        key = self.cursor.execute.call_args.args[1]
+        self.assertFalse(self.handler._advisory_unlock("worker"))
+        self.assertEqual(self.cursor.execute.call_args.args[1], key)
+
+    def test_single_table_select_keeps_unqualified_columns(self) -> None:
+        """Keep single-table SQL free of aliases and projection renames.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.handler._select_batch(table="SAMPLE", columns=("ID", "NAME"))
+        query, params = self.cursor.execute.call_args.args
+        self.assertEqual(
+            query.as_string(), 'SELECT "ID", "NAME" FROM "TEST"."SAMPLE"'
+        )
+        self.assertEqual(params, ())
+
+    def test_relational_select_rejects_invalid_structure_and_sql_values(self) -> None:
+        """Reject invalid query relationships, ordering and raw SQL values.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        operations = (
+            lambda: self.handler._select_batch("SAMPLE", columns={"X": ("UNKNOWN", "ID")}),
+            lambda: self.handler._select_batch("SAMPLE", joined_where={"STATE": 1}),
+            lambda: self.handler._select_batch("SAMPLE", columns={"X": ("DETAIL", "STATE")}),
+            lambda: self.handler._select_batch("SAMPLE", where={"NAME": sql.SQL("1 OR TRUE")}),
+            lambda: self.handler._select_batch("SAMPLE", order_by=(("ID", "DESC; DELETE"),)),
+            lambda: self.handler._select_batch("SAMPLE", prefix_tables=True),
+            lambda: self.handler._select_batch(
+                "SAMPLE", join=("DETAIL", "ID", "FK_SAMPLE"), columns=("ID",), prefix_tables=True
+            ),
+        )
+        for operation in operations:
+            with self.subTest(operation=operation):
+                with self.assertRaises(ValueError):
+                    operation()
+        self.connect.assert_not_called()
+
+    def test_projection_names_remain_quoted_identifiers(self) -> None:
+        """Treat hostile output names as identifiers, never SQL commands.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.handler._select_batch(
+            table="SAMPLE",
+            columns={'output"; DROP TABLE SAMPLE; --': ("SAMPLE", "ID")},
+            where={"ID": 7},
+        )
+        query, params = self.cursor.execute.call_args.args
+        self.assertIn('AS "output""; DROP TABLE SAMPLE; --"', query.as_string())
+        self.assertEqual(params, (7,))
+        PostgresQuery(Transformer()).convert(query, params)
+
     def test_select_keeps_names_quoted_and_values_separate(self) -> None:
         """Bind hostile values without inserting them into generated SQL.
 
@@ -199,10 +421,8 @@ class PostgresBaseTests(unittest.TestCase):
         self.assertEqual(actual, expected)
         self.assertNotIn(value, query.as_string())
 
-    def test_unknown_names_and_sql_fragments_are_rejected_before_connection(
-        self,
-    ) -> None:
-        """Reject undeclared names and the legacy raw-filter escape hatch.
+    def test_malformed_operations_are_rejected_before_connection(self) -> None:
+        """Keep structural guards while PostgreSQL validates SQL names.
 
         Args:
             None.
@@ -210,39 +430,12 @@ class PostgresBaseTests(unittest.TestCase):
             None.
         """
         operations = (
-            lambda: self.handler._select_batch("OTHER"),
-            lambda: self.handler._insert_row("OTHER", {"ID": 1}),
-            lambda: self.handler._insert_batch("OTHER", [{"ID": 1}]),
-            lambda: self.handler._upsert_batch(
-                "OTHER", [{"ID": 1}], conflict_columns=("ID",)
-            ),
             lambda: self.handler._insert_row("SAMPLE", {}),
             lambda: self.handler._insert_batch("SAMPLE", [{}]),
-            lambda: self.handler._upsert_batch(
-                "SAMPLE", [{}], conflict_columns=("ID",)
-            ),
-            lambda: self.handler._insert_row("SAMPLE", {"UNKNOWN": 1}),
-            lambda: self.handler._insert_batch("SAMPLE", [{"UNKNOWN": 1}]),
-            lambda: self.handler._upsert_batch(
-                "SAMPLE", [{"ID": 1, "UNKNOWN": 1}], conflict_columns=("ID",)
-            ),
-            lambda: self.handler._insert_row(
-                "SAMPLE", {"ID": 1}, returning=("UNKNOWN",)
-            ),
-            lambda: self.handler._select_batch("TEST.SAMPLE"),
-            lambda: self.handler._select_batch("SAMPLE", {"#CUSTOM#x": "TRUE"}),
-            lambda: self.handler._select_batch(
-                "SAMPLE", columns=("ID; DROP TABLE SAMPLE",)
-            ),
-            lambda: self.handler._select_batch(
-                "SAMPLE", order_by=(("ID", "DESC; DELETE"),)
-            ),
-            lambda: self.handler._select_batch(
-                "SAMPLE", order_by=(("ID", "ASC NULLS FIRST; DELETE"),)
-            ),
-            lambda: self.handler._update_row(
-                "SAMPLE", {"NAME__expr": "NOW()"}, {"ID": 1}
-            ),
+            lambda: self.handler._upsert_batch("SAMPLE", [{}], conflict_columns=("ID",)),
+            lambda: self.handler._select_batch("SAMPLE", {"ID__expr": "TRUE"}),
+            lambda: self.handler._select_batch("SAMPLE", order_by=(("ID", "DESC; DELETE"),)),
+            lambda: self.handler._select_batch("SAMPLE", order_by=(("ID", "ASC NULLS FIRST; DELETE"),)),
             lambda: self.handler._select_batch("SAMPLE", limit=-1),
             lambda: self.handler._select_batch("SAMPLE", columns=()),
             lambda: self.handler._select_batch("SAMPLE", columns=("ID", "ID")),
@@ -252,6 +445,34 @@ class PostgresBaseTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     operation()
         self.connect.assert_not_called()
+
+    def test_unknown_columns_reach_postgres_and_preserve_its_error(self) -> None:
+        """Propagate the original driver error without a Python schema mirror.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        error = psycopg.errors.UndefinedColumn("missing column")
+        self.cursor.execute.side_effect = error
+        self.cursor.executemany.side_effect = error
+        operations = (
+            lambda: self.handler._select_batch("SAMPLE", columns=("UNKNOWN",)),
+            lambda: self.handler._select_batch("SAMPLE", where={"UNKNOWN": 1}),
+            lambda: self.handler._select_batch("SAMPLE", order_by=(("UNKNOWN", "ASC"),)),
+            lambda: self.handler._insert_row("SAMPLE", {"UNKNOWN": 1}),
+            lambda: self.handler._insert_batch("SAMPLE", [{"UNKNOWN": 1}]),
+            lambda: self.handler._update_batch("SAMPLE", {"UNKNOWN": 1}, {"ID": 1}),
+            lambda: self.handler._delete_batch("SAMPLE", {"UNKNOWN": 1}),
+            lambda: self.handler._upsert_batch("SAMPLE", [{"ID": 1, "UNKNOWN": 1}], conflict_columns=("ID",)),
+            lambda: self.handler._select_aggregate("SAMPLE", {"N": ("count", "UNKNOWN", None)}),
+        )
+        for operation in operations:
+            with self.subTest(operation=operation):
+                with self.assertRaises(psycopg.errors.UndefinedColumn) as raised:
+                    operation()
+                self.assertIs(raised.exception, error)
 
     def test_text_filters_keep_trim_and_case_insensitive_values_bound(self) -> None:
         """Keep text filter values separate from SQL, including hostile operands.
@@ -332,78 +553,52 @@ class PostgresBaseTests(unittest.TestCase):
         query, params = self.cursor.execute.call_args.args
         self.assertEqual(
             query.as_string(),
-            'SELECT "ID", "NAME" FROM "TEST"."SAMPLE" WHERE "ID" = %s',
+            'SELECT "ID", "NAME" FROM "TEST"."SAMPLE" WHERE "ID" = %s LIMIT %s',
         )
-        self.assertEqual(params, (7,))
+        self.assertEqual(params, (7, 1))
         self.cursor.fetchall.return_value = []
         self.assertIsNone(self.handler._select_row("SAMPLE", {"ID": 8}))
 
-    def test_row_operations_reject_broad_or_incomplete_keys_before_sql(self) -> None:
-        """Prevent row APIs from accepting predicates that can affect many records.
+    def test_row_operations_reject_empty_filters_before_sql(self) -> None:
+        """Require an explicit scope without mirroring SQL constraints.
 
         Args:
             None.
         Returns:
             None.
         """
-        for key in (
-            {},
-            {"NAME": "one"},
-            {"ID__in": [1, 2]},
-            {"ID": None},
-            {"ID": 1, "ACTIVE": True},
-        ):
-            for operation in (
-                lambda: self.handler._select_row("SAMPLE", key),
-                lambda: self.handler._update_row("SAMPLE", {"NAME": "new"}, key),
-                lambda: self.handler._delete_row("SAMPLE", key),
-            ):
-                with self.subTest(key=key, operation=operation):
-                    with self.assertRaises(ValueError):
-                        operation()
-        self.connect.assert_not_called()
-
-    def test_composite_primary_keys_require_all_fields_and_keep_declared_order(
-        self,
-    ) -> None:
-        """Use the whole composite key even when input mapping order differs.
-
-        Args:
-            None.
-        Returns:
-            None.
-        """
-        self.handler.PRIMARY_KEY_SAMPLE = ("ID", "NAME")
-        with self.assertRaises(ValueError):
-            self.handler._delete_row("SAMPLE", {"ID": 1})
-        self.handler._delete_row("SAMPLE", {"NAME": "one", "ID": 1})
-        query, params = self.cursor.execute.call_args.args
-        self.assertEqual(
-            query.as_string(),
-            'DELETE FROM "TEST"."SAMPLE" WHERE "ID" = %s AND "NAME" = %s',
+        operations = (
+            lambda: self.handler._select_row("SAMPLE", {}),
+            lambda: self.handler._update_row("SAMPLE", {"NAME": "new"}, {}),
+            lambda: self.handler._delete_row("SAMPLE", {}),
         )
-        self.assertEqual(params, (1, "one"))
+        for operation in operations:
+            with self.subTest(operation=operation):
+                with self.assertRaises(ValueError):
+                    operation()
+        self.connect.assert_not_called()
 
-    def test_invalid_primary_key_declarations_are_rejected_before_sql(self) -> None:
-        """Keep identity validation and column authorization before any writes.
+    def test_row_operations_accept_domain_identity_and_additional_conditions(self) -> None:
+        """Bind explicit identities and optimistic conditions without declarations.
 
         Args:
             None.
         Returns:
             None.
         """
-        for declaration in ((), ("ID", "ID"), ("UNKNOWN",), ("ID__gt",)):
-            self.handler.PRIMARY_KEY_SAMPLE = declaration
-            key = {name: 1 for name in declaration}
-            for operation in (
-                lambda: self.handler._select_row("SAMPLE", key),
-                lambda: self.handler._update_row("SAMPLE", {"NAME": "new"}, key),
-                lambda: self.handler._delete_row("SAMPLE", key),
-            ):
-                with self.subTest(declaration=declaration, operation=operation):
-                    with self.assertRaises(ValueError):
-                        operation()
-        self.connect.assert_not_called()
+        self.cursor.fetchall.return_value = [{"ID": 7, "NAME": "one"}]
+        self.assertEqual(self.handler._select_row("SAMPLE", {"NAME": "one"})["ID"], 7)
+        query, params = self.cursor.execute.call_args.args
+        self.assertEqual(query.as_string(), 'SELECT * FROM "TEST"."SAMPLE" WHERE "NAME" = %s LIMIT %s')
+        self.assertEqual(params, ("one", 1))
+        self.handler._update_row("SAMPLE", {"NAME": "new"}, {"ID": 7, "ACTIVE": True})
+        query, params = self.cursor.execute.call_args.args
+        self.assertEqual(query.as_string(), 'UPDATE "TEST"."SAMPLE" SET "NAME" = %s WHERE "ID" = %s AND "ACTIVE" = %s')
+        self.assertEqual(params, ("new", 7, True))
+        self.handler._delete_row("SAMPLE", {"NAME": "one", "ID": 7})
+        query, params = self.cursor.execute.call_args.args
+        self.assertEqual(query.as_string(), 'DELETE FROM "TEST"."SAMPLE" WHERE "NAME" = %s AND "ID" = %s')
+        self.assertEqual(params, ("one", 7))
 
     def test_batch_update_and_delete_allow_multiple_matching_rows(self) -> None:
         """Apply one filtered set operation instead of pretending it is single-row.
@@ -430,6 +625,69 @@ class PostgresBaseTests(unittest.TestCase):
             self.handler._update_batch("SAMPLE", {"ACTIVE": False}, {})
         with self.assertRaises(ValueError):
             self.handler._delete_batch("SAMPLE", {})
+
+    def test_update_combines_atomic_increments_and_literal_values(self) -> None:
+        """Bind signed deltas and replacements in a single filtered update.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.handler._update_row(
+            table="SAMPLE",
+            data={"NAME": "updated"},
+            where={"ID": 7},
+            increments={"ACTIVE": -2},
+        )
+        query, params = self.cursor.execute.call_args.args
+        self.assertIn('"ACTIVE" = "ACTIVE" + %s', query.as_string())
+        self.assertEqual(params, (-2, "updated", 7))
+        PostgresQuery(Transformer()).convert(query, params)
+        with self.assertRaises(ValueError):
+            self.handler._update_row(
+                table="SAMPLE",
+                data={"ACTIVE": 1},
+                where={"ID": 7},
+                increments={"ACTIVE": 2},
+            )
+        with self.assertRaises(ValueError):
+            self.handler._update_batch(
+                table="SAMPLE",
+                data={},
+                where={"ID": 7},
+                increments={"UPDATED": 1},
+                touch_field="UPDATED",
+            )
+
+    def test_update_maximums_only_advance_values(self) -> None:
+        """Bind monotonic lower bounds with GREATEST and reject repeated columns.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        moment = datetime(2025, 3, 1)
+        self.handler._update_row(
+            table="SAMPLE",
+            data={"NAME": "updated"},
+            where={"ID": 7},
+            increments={"ACTIVE": 1},
+            maximums={"UPDATED": moment},
+        )
+        query, params = self.cursor.execute.call_args.args
+        self.assertIn('"UPDATED" = GREATEST("UPDATED", %s)', query.as_string())
+        self.assertEqual(params, (1, moment, "updated", 7))
+        PostgresQuery(Transformer()).convert(query, params)
+        with self.assertRaises(ValueError):
+            self.handler._update_row(
+                table="SAMPLE",
+                data={},
+                where={"ID": 7},
+                maximums={"UPDATED": moment},
+                touch_field="UPDATED",
+            )
 
     def test_insert_batch_aligns_values_and_shares_one_atomic_executor(self) -> None:
         """Reuse INSERT construction and keep every chunk in the same transaction.
@@ -481,7 +739,7 @@ class PostgresBaseTests(unittest.TestCase):
             )
         self.connect.assert_not_called()
 
-    def test_declared_identifiers_are_quoted_without_custom_name_rules(self) -> None:
+    def test_identifiers_are_quoted_without_custom_name_rules(self) -> None:
         """Keep special characters inside literal identifiers, not executable SQL.
 
         Args:
@@ -490,7 +748,6 @@ class PostgresBaseTests(unittest.TestCase):
             None.
         """
         field = 'NOTE"; DROP TABLE SAMPLE; --'
-        self.handler.VALID_FIELDS_SAMPLE = {"ID", field}
         self.handler.schema = 'TEST"SCHEMA'
         self.handler._select_batch("SAMPLE", columns=(field,))
         query, params = self.cursor.execute.call_args.args
@@ -500,20 +757,18 @@ class PostgresBaseTests(unittest.TestCase):
         )
         self.assertEqual(params, ())
 
-    def test_updated_field_declarations_are_used_without_a_schema_cache(self) -> None:
-        """Use an updated handler contract without requiring frozen collections.
+    def test_default_projection_uses_table_star_without_schema_metadata(self) -> None:
+        """Read default and explicit projections without declaring table fields.
 
         Args:
             None.
         Returns:
             None.
         """
-        with self.assertRaises(ValueError):
-            self.handler._select_batch("SAMPLE", columns=("NOTE",))
-        self.handler.VALID_FIELDS_SAMPLE = {"ID", "NAME", "UPDATED", "ACTIVE", "NOTE"}
+        self.handler._select_batch("NEW_TABLE")
+        self.assertEqual(self.cursor.execute.call_args.args[0].as_string(), 'SELECT * FROM "TEST"."NEW_TABLE"')
         self.handler._select_batch("SAMPLE", columns=("NOTE",))
-        query = self.cursor.execute.call_args.args[0]
-        self.assertEqual(query.as_string(), 'SELECT "NOTE" FROM "TEST"."SAMPLE"')
+        self.assertEqual(self.cursor.execute.call_args.args[0].as_string(), 'SELECT "NOTE" FROM "TEST"."SAMPLE"')
 
     def test_null_ranges_and_empty_membership_share_one_filter_builder(self) -> None:
         """Preserve NULL and empty IN semantics in every CRUD operation.
@@ -531,7 +786,6 @@ class PostgresBaseTests(unittest.TestCase):
                 "ACTIVE__in": [],
                 "ID__not_in": [],
             },
-            ExampleHandler.VALID_FIELDS_SAMPLE,
         )
         self.assertEqual(
             fragment.as_string(),
@@ -563,13 +817,13 @@ class PostgresBaseTests(unittest.TestCase):
         for operator, symbol in cases:
             with self.subTest(operator=operator):
                 query, params = self.handler._build_where_clause(
-                    {f"ID__{operator}": 4}, ExampleHandler.VALID_FIELDS_SAMPLE
+                    {f"ID__{operator}": 4}
                 )
                 self.assertEqual(query.as_string(), f' WHERE "ID" {symbol} %s')
                 self.assertEqual(params, (4,))
         for operator, symbol in (("in", "IN"), ("not_in", "NOT IN")):
             query, params = self.handler._build_where_clause(
-                {f"ID__{operator}": [2, 8]}, ExampleHandler.VALID_FIELDS_SAMPLE
+                {f"ID__{operator}": [2, 8]}
             )
             self.assertEqual(query.as_string(), f' WHERE "ID" {symbol} (%s, %s)')
             self.assertEqual(params, (2, 8))

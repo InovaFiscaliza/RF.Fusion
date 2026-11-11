@@ -32,6 +32,9 @@ with bind_test_config():
         )
 
 
+from db import constants as db_constants
+
+
 class HostMaintenanceTests(unittest.TestCase):
     """Protect cooldown, PID ownership, and per-item recovery isolation.
 
@@ -73,14 +76,14 @@ class HostMaintenanceTests(unittest.TestCase):
         self.db.host_list_busy_with_task_state.return_value = [
             {
                 "ID_HOST": 1,
-                "NU_PID": maintenance.k.HOST_TRANSIENT_BUSY_PID,
+                "NU_PID": db_constants['hosts']['transient_busy_pid'],
                 "DT_BUSY": recent,
                 "FILE_RUNNING": False,
                 "HOST_PROCESSING_RUNNING": False,
             },
             {
                 "ID_HOST": 2,
-                "NU_PID": maintenance.k.HOST_TRANSIENT_BUSY_PID,
+                "NU_PID": db_constants['hosts']['transient_busy_pid'],
                 "DT_BUSY": old,
                 "FILE_RUNNING": False,
                 "HOST_PROCESSING_RUNNING": False,
@@ -91,7 +94,7 @@ class HostMaintenanceTests(unittest.TestCase):
         )
         self.db.host_release_reservation.assert_called_once_with(
             host_id=2,
-            owner_pid=maintenance.k.HOST_TRANSIENT_BUSY_PID,
+            owner_pid=db_constants['hosts']['transient_busy_pid'],
             busy_since=old,
         )
         self.assertEqual(self.db.host_task_enqueue.call_args.kwargs["host_id"], 2)
@@ -185,7 +188,7 @@ class HostMaintenanceTests(unittest.TestCase):
             {
                 "ID_HOST_TASK": 2,
                 "FK_HOST": 1,
-                "NU_STATUS": maintenance.k.TASK_PENDING,
+                "NU_STATUS": db_constants['tasks']['states']['pending'],
                 "DT_HOST_TASK": None,
                 "NU_PID": None,
                 "IS_BUSY": False,
@@ -203,7 +206,7 @@ class HostMaintenanceTests(unittest.TestCase):
         selected = self.db.host_task_list_with_host_state.call_args.kwargs
         self.assertEqual(len(selected["task_types"]), 6)
         self.assertIn(
-            maintenance.k.HOST_TASK_INTERACTIVE_CHECK_TYPE, selected["task_types"]
+            db_constants['tasks']['host_types']['interactive_check'], selected["task_types"]
         )
 
     def test_stale_task_requeues_but_preserves_a_live_foreign_host_owner(self) -> None:
@@ -218,7 +221,7 @@ class HostMaintenanceTests(unittest.TestCase):
             {
                 "ID_HOST_TASK": 2,
                 "FK_HOST": 1,
-                "NU_STATUS": maintenance.k.TASK_RUNNING,
+                "NU_STATUS": db_constants['tasks']['states']['running'],
                 "DT_HOST_TASK": self.now - timedelta(hours=1),
                 "NU_PID": 11,
                 "IS_BUSY": True,
@@ -234,7 +237,7 @@ class HostMaintenanceTests(unittest.TestCase):
             )
         self.assertEqual(
             self.db.host_task_update.call_args.kwargs["NU_STATUS"],
-            maintenance.k.TASK_PENDING,
+            db_constants['tasks']['states']['pending'],
         )
         self.db.host_release_reservation.assert_not_called()
 
@@ -250,7 +253,7 @@ class HostMaintenanceTests(unittest.TestCase):
             {
                 "ID_HOST_TASK": 2,
                 "FK_HOST": 1,
-                "NU_STATUS": maintenance.k.TASK_RUNNING,
+                "NU_STATUS": db_constants['tasks']['states']['running'],
                 "DT_HOST_TASK": None,
                 "NU_PID": 11,
                 "IS_BUSY": True,
@@ -278,7 +281,7 @@ class HostMaintenanceTests(unittest.TestCase):
             {
                 "ID_HOST_TASK": 2,
                 "FK_HOST": 1,
-                "NU_STATUS": maintenance.k.TASK_RUNNING,
+                "NU_STATUS": db_constants['tasks']['states']['running'],
                 "DT_HOST_TASK": self.now - timedelta(hours=1),
                 "NU_PID": 11,
                 "IS_BUSY": True,

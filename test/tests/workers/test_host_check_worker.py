@@ -40,6 +40,9 @@ with bind_real_shared_package():
         )
 
 
+from db import constants as db_constants
+
+
 class FakeLog:
     """Tiny logger double for host-check and maintenance tests."""
 
@@ -350,7 +353,7 @@ class HostConnectivityTests(unittest.TestCase):
         )
         # task close happens at entrypoint (_finalize_success), not inside _persist_degraded
         self.assertEqual(db.host_task_updates, [])
-        self.assertEqual(status, host_check_worker.k.TASK_ERROR)
+        self.assertEqual(status, db_constants['tasks']['states']['error'])
         self.assertFalse(queued_followup)
         self.assertIn("threshold reached", message)
         self.assertIn("3/3", message)
@@ -488,7 +491,7 @@ class HostConnectivityTests(unittest.TestCase):
         task = {
             "task_id": 902,
             "host_id": 41,
-            "task_type": host_check_worker.k.HOST_TASK_INTERACTIVE_CHECK_TYPE,
+            "task_type": db_constants['tasks']['host_types']['interactive_check'],
             "addr": "172.24.1.41",
             "port": 22,
             "user": "root",
@@ -502,7 +505,7 @@ class HostConnectivityTests(unittest.TestCase):
 
         def fake_interactive_check(_db, _task, **kwargs):
             kwargs["progress_reporter"]("ICMP: 172.24.1.41 respondeu em 12.0 ms.")
-            return host_check_worker.k.TASK_ERROR, "SSH não confirmado"
+            return db_constants['tasks']['states']['error'], "SSH não confirmado"
 
         with patch.object(
             host_check_worker.host_connectivity,
@@ -511,7 +514,7 @@ class HostConnectivityTests(unittest.TestCase):
         ):
             status, message = host_check_worker._do_work(db, task)
 
-        self.assertEqual(status, host_check_worker.k.TASK_ERROR)
+        self.assertEqual(status, db_constants['tasks']['states']['error'])
         self.assertEqual(message, "SSH não confirmado")
         self.assertEqual(
             db.host_task_updates[-1]["NA_MESSAGE"],
@@ -519,14 +522,14 @@ class HostConnectivityTests(unittest.TestCase):
         )
         self.assertEqual(
             db.host_task_updates[-1]["expected_status"],
-            host_check_worker.k.TASK_RUNNING,
+            db_constants['tasks']['states']['running'],
         )
 
     def test_interactive_check_turns_degraded_retry_into_terminal_error(self) -> None:
         task = {
             "task_id": 903,
             "host_id": 42,
-            "task_type": host_check_worker.k.HOST_TASK_INTERACTIVE_CHECK_TYPE,
+            "task_type": db_constants['tasks']['host_types']['interactive_check'],
             "addr": "172.24.1.42",
             "port": 22,
             "user": "root",
@@ -552,7 +555,7 @@ class HostConnectivityTests(unittest.TestCase):
         ), patch.object(
             host_check_worker.host_connectivity,
             "_persist_connectivity_outcome",
-            return_value=(host_check_worker.k.TASK_PENDING, "retry", False),
+            return_value=(db_constants['tasks']['states']['pending'], "retry", False),
         ):
             status, message = host_check_worker.host_connectivity.run_interactive_check(
                 FakeDB(hosts=[]),
@@ -562,9 +565,10 @@ class HostConnectivityTests(unittest.TestCase):
                 progress_reporter=lambda _message: None,
             )
 
-        self.assertEqual(status, host_check_worker.k.TASK_ERROR)
+        self.assertEqual(status, db_constants['tasks']['states']['error'])
         self.assertIn("ICMP: a estação respondeu.", message)
-        self.assertIn("SSH: A conexão SSH não respondeu em até 20 segundos.", message)
+        timeout = host_check_worker.k.HOST_CHECK_SSH_PROBE_TIMEOUT_SEC
+        self.assertIn(f"SSH: A conexão SSH não respondeu em até {timeout} segundos.", message)
 
     def test_interactive_result_translates_offline_outcome(self) -> None:
         status, message = host_check_worker.host_connectivity._build_interactive_result(
@@ -576,11 +580,11 @@ class HostConnectivityTests(unittest.TestCase):
                 "ssh_online": False,
                 "error": None,
             },
-            host_check_worker.k.TASK_ERROR,
+            db_constants['tasks']['states']['error'],
             "Host unreachable (connectivity check failed)",
         )
 
-        self.assertEqual(status, host_check_worker.k.TASK_ERROR)
+        self.assertEqual(status, db_constants['tasks']['states']['error'])
         self.assertEqual(
             message,
             "Teste concluído com falha. "

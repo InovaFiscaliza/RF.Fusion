@@ -28,6 +28,7 @@ from host_handler.host_ssh_utils import (
 from server_handler import signal_runtime, sleep as runtime_sleep
 from shared import errors, logging_utils, tools
 from shared.filter import Filter
+from db import constants as db_constants
 import config as k
 
 
@@ -61,8 +62,8 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
     may produce many file rows, but the host still needs one queue owner.
     """
     task_row = db.host_task_read(
-        task_type=k.HOST_TASK_PROCESSING_TYPE,
-        task_status=k.TASK_PENDING,
+        task_type=db_constants['tasks']['host_types']['processing'],
+        task_status=db_constants['tasks']['states']['pending'],
         check_host_busy=True,
         check_host_offline=True,
         lock_host=True,
@@ -74,7 +75,7 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
         "host_id"    : task_row["HOST__ID_HOST"],
         "task_id"    : task_row["HOST_TASK__ID_HOST_TASK"],
         "hostname"   : task_row["HOST__NA_HOST_NAME"],
-        "host_filter": task_row.get("host_filter") or dict(k.NONE_FILTER),
+        "host_filter": task_row.get("host_filter") or dict(db_constants['tasks']['default_filter']),
         "now"        : datetime.now(),
     }
 
@@ -88,8 +89,8 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     """
     result = db.host_task_update(
         task_id=task["task_id"],
-        expected_status=k.TASK_PENDING,
-        NU_STATUS=k.TASK_RUNNING,
+        expected_status=db_constants['tasks']['states']['pending'],
+        NU_STATUS=db_constants['tasks']['states']['running'],
         NU_PID=os.getpid(),
         DT_HOST_TASK=datetime.now(),
         NA_MESSAGE="Discovery task running",
@@ -99,7 +100,7 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
             SERVICE_NAME,
             host_id=task["host_id"],
             task_id=task["task_id"],
-            task_type=k.HOST_TASK_PROCESSING_TYPE,
+            task_type=db_constants['tasks']['host_types']['processing'],
             host=task["hostname"],
         )
         return True
@@ -108,7 +109,7 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
         service=SERVICE_NAME,
         host_id=task["host_id"],
         task_id=task["task_id"],
-        task_type=k.HOST_TASK_PROCESSING_TYPE,
+        task_type=db_constants['tasks']['host_types']['processing'],
     )
     return False
 
@@ -147,14 +148,14 @@ def _stream_discovery_batches(
         db.file_task_create(
             host_id=task["host_id"],
             file_metadata=batch,
-            task_type=k.FILE_TASK_DISCOVERY,
-            task_status=k.TASK_DONE,
+            task_type=db_constants['tasks']['file_types']['discovery'],
+            task_status=db_constants['tasks']['states']['done'],
         )
         db.file_task_history_create(
             host_id=task["host_id"],
             file_metadata=batch,
-            task_type=k.FILE_TASK_DISCOVERY,
-            task_status=k.TASK_DONE,
+            task_type=db_constants['tasks']['file_types']['discovery'],
+            task_status=db_constants['tasks']['states']['done'],
         )
         processed += len(batch)
         discovered_volume_kb += sum(
@@ -183,7 +184,7 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
         SERVICE_NAME,
         host_id=task["host_id"],
         task_id=task["task_id"],
-        task_type=k.HOST_TASK_PROCESSING_TYPE,
+        task_type=db_constants['tasks']['host_types']['processing'],
         phase="scan",
         elapsed_sec=scan_elapsed_sec,
         since_start_sec=scan_elapsed_sec,
@@ -195,8 +196,8 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
     queue_started_at = time.monotonic()
     db.host_task_enqueue(
         host_id=task["host_id"],
-        task_type=k.HOST_TASK_BACKLOG_CONTROL_TYPE,
-        task_status=k.TASK_PENDING,
+        task_type=db_constants['tasks']['host_types']['backlog_control'],
+        task_status=db_constants['tasks']['states']['pending'],
         filter_dict=task["host_filter"],
     )
     queue_elapsed_sec = round(time.monotonic() - queue_started_at, 3)
@@ -205,7 +206,7 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
         SERVICE_NAME,
         host_id=task["host_id"],
         task_id=task["task_id"],
-        task_type=k.HOST_TASK_PROCESSING_TYPE,
+        task_type=db_constants['tasks']['host_types']['processing'],
         phase="queue_backlog",
         elapsed_sec=queue_elapsed_sec,
         since_start_sec=total_elapsed_sec,
@@ -254,12 +255,12 @@ def _finalize_success(
     completed_at = datetime.now()
     db.host_task_update(
         task_id=task["task_id"],
-        NU_STATUS=k.TASK_DONE,
-        NU_PID=k.HOST_UNLOCKED_PID,
+        NU_STATUS=db_constants['tasks']['states']['done'],
+        NU_PID=db_constants['hosts']['unlocked_pid'],
         DT_HOST_TASK=completed_at,
         NA_MESSAGE=tools.compose_message(
-            task_type=k.FILE_TASK_DISCOVERY,
-            task_status=k.TASK_DONE,
+            task_type=db_constants['tasks']['file_types']['discovery'],
+            task_status=db_constants['tasks']['states']['done'],
             detail=f"host_id={task['host_id']} queued_backlog_control={queued_backlog_tasks}",
         ),
     )
@@ -267,7 +268,7 @@ def _finalize_success(
         SERVICE_NAME,
         host_id=task["host_id"],
         task_id=task["task_id"],
-        task_type=k.HOST_TASK_PROCESSING_TYPE,
+        task_type=db_constants['tasks']['host_types']['processing'],
         elapsed_sec=round(elapsed_sec, 3),
         host=task["hostname"],
         discovered_files=processed,
@@ -344,11 +345,11 @@ def _finalize_error(
     try:
         db.host_task_update(
             task_id=task["task_id"],
-            NU_STATUS=k.TASK_ERROR,
-            NU_PID=k.HOST_UNLOCKED_PID,
+            NU_STATUS=db_constants['tasks']['states']['error'],
+            NU_PID=db_constants['hosts']['unlocked_pid'],
             NA_MESSAGE=tools.compose_message(
-                task_type=k.FILE_TASK_DISCOVERY,
-                task_status=k.TASK_ERROR,
+                task_type=db_constants['tasks']['file_types']['discovery'],
+                task_status=db_constants['tasks']['states']['error'],
                 error=err.format_persisted_error(),
             ),
             DT_HOST_TASK=datetime.now(),
@@ -359,7 +360,7 @@ def _finalize_error(
             service=SERVICE_NAME,
             host_id=task["host_id"],
             task_id=task["task_id"],
-            task_type=k.HOST_TASK_PROCESSING_TYPE,
+            task_type=db_constants['tasks']['host_types']['processing'],
             exception=repr(e2),
         )
 
@@ -367,7 +368,7 @@ def _finalize_error(
         SERVICE_NAME,
         host_id=task["host_id"],
         task_id=task["task_id"],
-        task_type=k.HOST_TASK_PROCESSING_TYPE,
+        task_type=db_constants['tasks']['host_types']['processing'],
         stage=err.stage,
         error=err.format_error() or "Discovery failed",
         host=task["hostname"],
@@ -379,9 +380,9 @@ def _finalize_error(
         try:
             db.host_task_enqueue(
                 host_id=task["host_id"],
-                task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
-                task_status=k.TASK_PENDING,
-                filter_dict=k.NONE_FILTER,
+                task_type=db_constants['tasks']['host_types']['check_connection'],
+                task_status=db_constants['tasks']['states']['pending'],
+                filter_dict=db_constants['tasks']['default_filter'],
             )
         except Exception as e:
             log.error_event(
@@ -420,7 +421,7 @@ def _cleanup(
 def _init_db() -> dbHandlerBKP:
     """Create the operational DB handler or stop the process early."""
     try:
-        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log, conninfo=k.PG_CONNINFO)
     except Exception as e:
         log.error_event("db_init_failed", service=SERVICE_NAME, error=e)
         sys.exit(1)

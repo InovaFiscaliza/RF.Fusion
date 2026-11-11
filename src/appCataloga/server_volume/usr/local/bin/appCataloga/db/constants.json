@@ -1,0 +1,328 @@
+{
+  "persistence": {
+    "batch_size": 1000,
+    "kilobytes_per_gb": 1048576
+  },
+  "tasks": {
+    "states": {
+      "pending": 1,
+      "running": 2,
+      "done": 0,
+      "error": -1,
+      "suspended": -2,
+      "frozen": -3
+    },
+    "host_types": {
+      "check": 1,
+      "processing": 2,
+      "update_statistics": 3,
+      "check_connection": 4,
+      "backlog_control": 5,
+      "backlog_rollback": 6,
+      "interactive_check": 7
+    },
+    "file_types": {
+      "backup": 1,
+      "processing": 2,
+      "discovery": 3
+    },
+    "connectivity_host_types": [
+      "check",
+      "processing",
+      "check_connection"
+    ],
+    "default_filter": {
+      "mode": "NONE",
+      "start_date": null,
+      "end_date": null,
+      "last_n_files": null,
+      "extension": null,
+      "file_path": "/mnt/internal/data",
+      "file_name": null
+    },
+    "running_file_status_fields": {
+      "FILE_TASK": [
+        "NU_STATUS"
+      ],
+      "FILE_TASK_HISTORY": [
+        "NU_STATUS_BACKUP",
+        "NU_STATUS_PROCESSING"
+      ]
+    }
+  },
+  "hosts": {
+    "unlocked_pid": 0,
+    "transient_busy_pid": 0,
+    "signal_fields": [
+      "DT_LAST_DISCOVERY_COMPLETED_AT",
+      "DT_LAST_DISCOVERY_WITH_FILES",
+      "DT_LAST_GPS_GNSS_EVALUATED_AT",
+      "DT_LAST_GPS_GNSS_UNAVAILABLE_AT",
+      "DT_LAST_SSH_EVALUATED_AT",
+      "DT_LAST_SSH_FAILURE_AT",
+      "IS_GPS_GNSS_UNAVAILABLE",
+      "IS_SSH_FAILURE",
+      "NA_LAST_GPS_GNSS_UNAVAILABLE_DESCRIPTION",
+      "NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME",
+      "NA_LAST_SSH_FAILURE_CODE",
+      "NA_LAST_SSH_FAILURE_DESCRIPTION",
+      "NU_LAST_DISCOVERY_FILE_COUNT",
+      "VL_LAST_DISCOVERY_KB"
+    ]
+  },
+  "rfm": {
+    "sites": {
+      "match_distance_meters": 70.0,
+      "fixed_type": 1,
+      "auto_create_district": false,
+      "federal_district": {
+        "state_id": 53,
+        "county_id": 5300108
+      },
+      "county_name_aliases": {
+        "assu": "acu",
+        "iguassu": "iguacu"
+      }
+    },
+    "spectrum_identity_fields": [
+      "FK_SITE",
+      "FK_EQUIPMENT",
+      "FK_PROCEDURE",
+      "FK_DETECTOR",
+      "FK_TRACE_TYPE",
+      "FK_MEASURE_UNIT",
+      "NA_DESCRIPTION",
+      "NU_FREQ_START",
+      "NU_FREQ_END",
+      "DT_TIME_START",
+      "NU_TRACE_LENGTH",
+      "NU_RBW",
+      "NU_VBW",
+      "NU_ATT_GAIN"
+    ]
+  },
+  "summary": {
+    "limits": {
+      "lock_timeout_sec": 5,
+      "timeline_query_timeout_sec": 30,
+      "refresh_log_max_rows": 100
+    },
+    "worker_states": {
+      "idle": "idle",
+      "running": "running",
+      "error": "error"
+    },
+    "task_states": {
+      "error": "ERROR",
+      "suspended": "SUSPENDED",
+      "frozen": "FROZEN"
+    },
+    "scopes": {
+      "host": "host",
+      "site": "site",
+      "equipment": "equipment",
+      "reference_month": "reference_month",
+      "full_reconcile": "full_reconcile"
+    },
+    "full_reconcile_key": "*",
+    "error_sources": [
+      {
+        "table": "FILE_TASK_HISTORY",
+        "identity": "ID_HISTORY",
+        "scope": "DISCOVERY",
+        "status_column": "NU_STATUS_DISCOVERY",
+        "timestamps": [
+          "DT_DISCOVERED",
+          "DT_FILE_CREATED_HOST",
+          "DT_FILE_MODIFIED_HOST"
+        ],
+        "states": [
+          "error",
+          "suspended"
+        ]
+      },
+      {
+        "table": "FILE_TASK_HISTORY",
+        "identity": "ID_HISTORY",
+        "scope": "BACKUP",
+        "status_column": "NU_STATUS_BACKUP",
+        "timestamps": [
+          "DT_BACKUP",
+          "DT_DISCOVERED",
+          "DT_FILE_CREATED_HOST",
+          "DT_FILE_MODIFIED_HOST"
+        ],
+        "states": [
+          "error",
+          "suspended"
+        ]
+      },
+      {
+        "table": "FILE_TASK_HISTORY",
+        "identity": "ID_HISTORY",
+        "scope": "PROCESSING",
+        "status_column": "NU_STATUS_PROCESSING",
+        "timestamps": [
+          "DT_PROCESSED",
+          "DT_BACKUP",
+          "DT_DISCOVERED",
+          "DT_FILE_CREATED_HOST"
+        ],
+        "states": [
+          "error",
+          "frozen"
+        ]
+      },
+      {
+        "table": "FILE_TASK",
+        "identity": "ID_FILE_TASK",
+        "scope": "FILE_TASK",
+        "status_column": "NU_STATUS",
+        "timestamps": [
+          "DT_FILE_TASK",
+          "DT_FILE_CREATED_HOST",
+          "DT_FILE_MODIFIED_HOST"
+        ],
+        "states": [
+          "error",
+          "suspended",
+          "frozen"
+        ]
+      },
+      {
+        "table": "HOST_TASK",
+        "identity": "ID_HOST_TASK",
+        "scope": "HOST_TASK",
+        "status_column": "NU_STATUS",
+        "timestamps": [
+          "DT_HOST_TASK"
+        ],
+        "states": [
+          "error",
+          "suspended",
+          "frozen"
+        ]
+      }
+    ],
+    "host_metrics": {
+      "queue": {
+        "backup": {
+          "task_type": "backup",
+          "status_column": "NU_STATUS",
+          "metrics": [
+            {
+              "state": "pending",
+              "count": "NU_BACKUP_QUEUE_FILES_TOTAL",
+              "volume": "VL_BACKUP_QUEUE_GB_TOTAL"
+            },
+            {
+              "state": "running",
+              "count": "NU_BACKUP_QUEUE_RUNNING_FILES_TOTAL",
+              "volume": "VL_BACKUP_QUEUE_RUNNING_GB_TOTAL"
+            },
+            {
+              "state": "suspended",
+              "count": "NU_BACKUP_QUEUE_SUSPENDED_FILES_TOTAL",
+              "volume": "VL_BACKUP_QUEUE_SUSPENDED_GB_TOTAL"
+            }
+          ]
+        },
+        "processing": {
+          "task_type": "processing",
+          "status_column": "NU_STATUS",
+          "metrics": [
+            {
+              "state": "pending",
+              "count": "NU_PROCESSING_QUEUE_FILES_TOTAL",
+              "volume": "VL_PROCESSING_QUEUE_GB_TOTAL"
+            },
+            {
+              "state": "running",
+              "count": "NU_PROCESSING_QUEUE_RUNNING_FILES_TOTAL",
+              "volume": "VL_PROCESSING_QUEUE_RUNNING_GB_TOTAL"
+            },
+            {
+              "state": "frozen",
+              "count": "NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL",
+              "volume": "VL_PROCESSING_QUEUE_FROZEN_GB_TOTAL"
+            }
+          ]
+        }
+      },
+      "history": {
+        "discovery": {
+          "status_column": "NU_STATUS_DISCOVERY",
+          "metrics": [
+            {
+              "state": "done",
+              "count": "NU_DISCOVERED_FILES_TOTAL",
+              "volume": "VL_DISCOVERED_GB_TOTAL"
+            }
+          ]
+        },
+        "backup": {
+          "status_column": "NU_STATUS_BACKUP",
+          "metrics": [
+            {
+              "state": "done",
+              "count": "NU_BACKUP_DONE_FILES_TOTAL",
+              "volume": "VL_BACKUP_DONE_GB_TOTAL"
+            },
+            {
+              "state": "pending",
+              "count": "NU_BACKUP_PENDING_FILES_CURRENT",
+              "volume": "VL_BACKUP_PENDING_GB_CURRENT"
+            },
+            {
+              "state": "error",
+              "count": "NU_BACKUP_ERROR_FILES_CURRENT",
+              "volume": "VL_BACKUP_ERROR_GB_CURRENT"
+            },
+            {
+              "state": "suspended",
+              "count": "NU_BACKUP_SUSPENDED_FILES_CURRENT",
+              "volume": "VL_BACKUP_SUSPENDED_GB_CURRENT"
+            },
+            {
+              "state": "done",
+              "count": "NU_BACKUP_DONE_THIS_MONTH",
+              "volume": "VL_BACKUP_DONE_GB_THIS_MONTH",
+              "month_column": "DT_BACKUP"
+            }
+          ]
+        },
+        "processing": {
+          "status_column": "NU_STATUS_PROCESSING",
+          "metrics": [
+            {
+              "state": "done",
+              "count": "NU_PROCESSING_DONE_FILES_TOTAL",
+              "volume": "VL_PROCESSING_DONE_GB_TOTAL"
+            },
+            {
+              "state": "pending",
+              "count": "NU_PROCESSING_PENDING_FILES_CURRENT",
+              "volume": "VL_PROCESSING_PENDING_GB_CURRENT"
+            },
+            {
+              "state": "error",
+              "count": "NU_PROCESSING_ERROR_FILES_CURRENT",
+              "volume": "VL_PROCESSING_ERROR_GB_CURRENT"
+            },
+            {
+              "state": "frozen",
+              "count": "NU_PROCESSING_FROZEN_FILES_CURRENT",
+              "volume": "VL_PROCESSING_FROZEN_GB_CURRENT"
+            },
+            {
+              "state": "done",
+              "count": "NU_PROCESSING_DONE_THIS_MONTH",
+              "volume": "VL_PROCESSING_DONE_GB_THIS_MONTH",
+              "month_column": "DT_PROCESSED"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

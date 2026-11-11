@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from db import constants as db_constants
 import config as k
 from shared import tools
 
@@ -566,8 +567,8 @@ def cleanup_stale_host_locks(
     """
     now = datetime.utcnow()
     rows = db.host_list_busy_with_task_state(
-        task_status=k.TASK_RUNNING,
-        host_task_type=k.HOST_TASK_PROCESSING_TYPE,
+        task_status=db_constants['tasks']['states']['running'],
+        host_task_type=db_constants['tasks']['host_types']['processing'],
     )
     for row in rows:
         host_id = cast(int, row["ID_HOST"])
@@ -581,16 +582,16 @@ def cleanup_stale_host_locks(
             elapsed = (now - busy_since).total_seconds()
         release = False
         if (
-            pid == k.HOST_TRANSIENT_BUSY_PID
+            pid == db_constants['hosts']['transient_busy_pid']
             and elapsed <= k.SFTP_BUSY_COOLDOWN_SECONDS
         ):
             continue
-        if pid == k.HOST_TRANSIENT_BUSY_PID:
+        if pid == db_constants['hosts']['transient_busy_pid']:
             release = True
         elif not file_running and (not host_processing_running):
             release = elapsed > k.HOST_CLEANUP_NO_TASK_GRACE_SEC
         elif elapsed > threshold_seconds and (
-            pid in (None, k.HOST_UNLOCKED_PID) or not tools.pid_exists(pid)
+            pid in (None, db_constants['hosts']['unlocked_pid']) or not tools.pid_exists(pid)
         ):
             release = True
         elif elapsed > threshold_seconds:
@@ -623,9 +624,9 @@ def cleanup_stale_host_locks(
         try:
             db.host_task_enqueue(
                 host_id=host_id,
-                task_type=k.HOST_TASK_CHECK_CONNECTION_TYPE,
-                task_status=k.TASK_PENDING,
-                filter_dict=k.NONE_FILTER,
+                task_type=db_constants['tasks']['host_types']['check_connection'],
+                task_status=db_constants['tasks']['states']['pending'],
+                filter_dict=db_constants['tasks']['default_filter'],
             )
         except Exception as e:
             log.error_event(
@@ -662,16 +663,16 @@ def cleanup_stale_operational_tasks(
     """
     now = datetime.utcnow()
     task_types = (
-        k.HOST_TASK_CHECK_TYPE,
-        k.HOST_TASK_PROCESSING_TYPE,
-        k.HOST_TASK_CHECK_CONNECTION_TYPE,
-        k.HOST_TASK_BACKLOG_CONTROL_TYPE,
-        k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
-        k.HOST_TASK_INTERACTIVE_CHECK_TYPE,
+        db_constants['tasks']['host_types']['check'],
+        db_constants['tasks']['host_types']['processing'],
+        db_constants['tasks']['host_types']['check_connection'],
+        db_constants['tasks']['host_types']['backlog_control'],
+        db_constants['tasks']['host_types']['backlog_rollback'],
+        db_constants['tasks']['host_types']['interactive_check'],
     )
     rows = db.host_task_list_with_host_state(
         task_types=task_types,
-        task_statuses=(k.TASK_PENDING, k.TASK_RUNNING),
+        task_statuses=(db_constants['tasks']['states']['pending'], db_constants['tasks']['states']['running']),
     )
     for row in rows:
         task_id = cast(int, row["ID_HOST_TASK"])
@@ -681,7 +682,7 @@ def cleanup_stale_operational_tasks(
         task_pid = cast(int | None, row["NU_PID"])
         host_is_busy = bool(row["IS_BUSY"])
         host_owner_pid = cast(int | None, row["HOST_OWNER_PID"])
-        if status == k.TASK_PENDING and task_started_at is None:
+        if status == db_constants['tasks']['states']['pending'] and task_started_at is None:
             try:
                 db.host_task_update(
                     task_id=task_id,
@@ -698,7 +699,7 @@ def cleanup_stale_operational_tasks(
                     error=type(e).__name__,
                 )
             continue
-        if status != k.TASK_RUNNING:
+        if status != db_constants['tasks']['states']['running']:
             continue
         elapsed = (
             float("inf")
@@ -716,15 +717,15 @@ def cleanup_stale_operational_tasks(
         reasons = []
         if not host_is_busy:
             reasons.append("HOST_NOT_BUSY")
-        if task_pid in (None, k.HOST_UNLOCKED_PID):
+        if task_pid in (None, db_constants['hosts']['unlocked_pid']):
             reasons.append("TASK_PID_MISSING")
         elif not task_pid_alive:
             reasons.append("TASK_PID_STALE")
-        if host_is_busy and host_owner_pid not in (None, k.HOST_UNLOCKED_PID):
+        if host_is_busy and host_owner_pid not in (None, db_constants['hosts']['unlocked_pid']):
             if not host_owner_alive:
                 reasons.append("HOST_PID_STALE")
             elif (
-                task_pid not in (None, k.HOST_UNLOCKED_PID)
+                task_pid not in (None, db_constants['hosts']['unlocked_pid'])
                 and host_owner_pid != task_pid
             ):
                 reasons.append("HOST_PID_MISMATCH")
@@ -735,7 +736,7 @@ def cleanup_stale_operational_tasks(
         try:
             db.host_task_update(
                 task_id=task_id,
-                NU_STATUS=k.TASK_PENDING,
+                NU_STATUS=db_constants['tasks']['states']['pending'],
                 DT_HOST_TASK=now,
                 NA_MESSAGE=f"Stale operational HOST_TASK recovered by janitor ({', '.join(reasons)})",
             )
@@ -750,10 +751,10 @@ def cleanup_stale_operational_tasks(
             )
             continue
         should_release_host = host_is_busy and (
-            host_owner_pid in (None, k.HOST_UNLOCKED_PID)
+            host_owner_pid in (None, db_constants['hosts']['unlocked_pid'])
             or not host_owner_alive
             or (
-                task_pid not in (None, k.HOST_UNLOCKED_PID)
+                task_pid not in (None, db_constants['hosts']['unlocked_pid'])
                 and host_owner_pid == task_pid
                 and (not task_pid_alive)
             )

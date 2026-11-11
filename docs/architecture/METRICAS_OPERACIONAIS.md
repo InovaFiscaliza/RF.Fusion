@@ -1,5 +1,14 @@
 # Métricas operacionais e integração com Zabbix
 
+Na instalação PostgreSQL, a localização física segue o
+[modelo revisado](SUMMARY_POSTGRESQL.md): o contrato canônico é o conjunto de
+campos retornado por `host_read_operational`, composto a partir de
+`BPDATA.HOST`, `HOST_METRIC` e agregados analíticos. Não há tabela física
+`HOST_CURRENT_SNAPSHOT` nem cópia persistida de servidor. As menções a essas
+tabelas abaixo descrevem a implementação MariaDB; significados, unidades,
+evidências e responsabilidade do Zabbix continuam válidos. Sinais ficam no
+BPDATA e totais de servidor são calculados sobre os agregados canônicos.
+
 ## Escopo
 
 Definir a semântica das métricas operacionais compartilhadas por appCataloga,

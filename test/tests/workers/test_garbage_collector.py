@@ -10,6 +10,7 @@ artifacts in the production repository.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import os
 import sys
 import tempfile
@@ -91,17 +92,17 @@ class GarbageCollectorTests(unittest.TestCase):
 
     def test_history_candidates_require_processed_timestamp(self) -> None:
         handler = object.__new__(garbage_worker.dbHandlerBKP)
-        handler._connect = Mock()
-        handler._select_rows = Mock(return_value=[])
+        handler._select_batch = Mock(return_value=[])
 
         handler.file_task_history_list_gc_candidates(batch_size=123, quarantine_days=365)
 
-        kwargs = handler._select_rows.call_args.kwargs
-        self.assertEqual(kwargs["order_by"], "DT_PROCESSED, ID_HISTORY")
+        kwargs = handler._select_batch.call_args.kwargs
+        self.assertEqual(kwargs["order_by"], (("DT_PROCESSED", "ASC"), ("ID_HISTORY", "ASC")))
         self.assertEqual(kwargs["limit"], 123)
-        self.assertEqual(
-            kwargs["where"]["#CUSTOM#QUARANTINE"],
-            "DT_PROCESSED IS NOT NULL AND DT_PROCESSED < NOW() - INTERVAL 365 DAY",
+        self.assertAlmostEqual(
+            kwargs["where"]["DT_PROCESSED__lt"],
+            datetime.utcnow() - timedelta(days=365),
+            delta=timedelta(seconds=5),
         )
 
     def test_collect_uses_distinct_retention_windows(self) -> None:

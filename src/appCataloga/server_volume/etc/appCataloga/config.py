@@ -8,6 +8,7 @@ Require additional /etc/appCataloga/.secret file with the following content:
 """
 
 import os, runpy
+from psycopg.conninfo import make_conninfo
 
 #------------------------------------------
 # load base dir
@@ -46,21 +47,33 @@ END_TAG                 = "</json>"
 #------------------------------------------
 # database configuration
 #------------------------------------------
-SERVER_NAME             = r"10.88.0.33"
-DB_PORT                 = 3306
+SERVER_NAME             = "10.88.0.35"
+DB_PORT                 = 5432
+PG_DATABASE_NAME        = "postgres"
+DB_USER_NAME_PG         = secret.get("DB_USER_NAME_PG", "postgres")
+DB_PASSWORD_PG          = secret.get("DB_PASSWORD_PG")
+PG_USER_NAME            = os.environ.get("PGUSER") or DB_USER_NAME_PG
 RFM_DATABASE_NAME       = "RFDATA"
 BKP_DATABASE_NAME       = "BPDATA"
 SUMMARY_DATABASE_NAME   = "RFFUSION_SUMMARY"
+# Legacy reference settings are not used for PostgreSQL authentication.
 DB_USER_NAME            = secret["DB_USER_NAME"]
 DB_PASSWORD             = secret["DB_PASSWORD"]
 DB_LOG_CONNECTION_LIFECYCLE = False   # Log connect/close/reconnect lifecycle only when explicitly debugging DB sessions
-DB_BATCH_SIZE = 1000  # Parameter rows per PostgreSQL executemany chunk
-SUMMARY_HOST_SNAPSHOT_LOCK_NAME = "RFFUSION_SUMMARY_HOST_CURRENT_SNAPSHOT"
-SUMMARY_HOST_SNAPSHOT_LOCK_TIMEOUT_SEC = 5
+PG_CONNINFO = os.environ.get("RFFUSION_PG_CONNINFO") or make_conninfo(
+    host=SERVER_NAME,
+    port=DB_PORT,
+    dbname=PG_DATABASE_NAME,
+    user=PG_USER_NAME,
+    password=os.environ.get("PGPASSWORD", DB_PASSWORD_PG),
+    connect_timeout=5,
+)  # Use dedicated PostgreSQL credentials, never legacy MariaDB settings.
 # =================================================
 # APP_ANALISE remote processing service
 # =================================================
-APP_ANALISE_HOST_ADD        = "WIMATLABPDIN01"
+#APP_ANALISE_HOST_ADD        = "WIMATLABPDIN01"
+APP_ANALISE_HOST_ADD            = "192.168.104.117"
+
 APP_ANALISE_HOST_PORT       = 8910
 APP_ANALISE_BUFFER_SIZE     = 4096
 APP_ANALISE_KEY             = "123456"
@@ -103,17 +116,14 @@ HOST_BUSY_TIMEOUT               = 18000     # 18000 seconds or 5 hours
 HOST_CLEANUP_INTERVAL           = 300       # Interval in seconds to check for and clean up stale host locks
 HOST_CLEANUP_NO_TASK_GRACE_SEC  = 30        # Minimum BUSY age before releasing a host with no running tasks detected
 SFTP_BUSY_COOLDOWN_SECONDS      = 15        # Temporary host cooldown after transient SSH/SFTP init failure
-DISCOVERY_RESERVATION_TTL_SEC   = 300       # Fresh pending CHECK/PROCESSING HOST_TASK reserves the next host window for discovery
+DISCOVERY_RESERVATION_TTL_SEC   = 300       # Fresh pending PROCESSING HOST_TASK reserves the next host window for discovery
 HOST_TASK_OPERATIONAL_STALE_SEC = 300       # Recover stale RUNNING operational HOST_TASK when ownership/liveness no longer matches execution reality
 HOST_CHECK_SSH_PROBE_TIMEOUT_SEC = 40       # Short SSH probe timeout for host_check operational confirmation
 HOST_CHECK_SSH_TIMEOUT_CONFIRMATIONS = 3    # Consecutive SSH timeout confirmations required before suspending a pingable host
-HOST_UNLOCKED_PID               = 0         # HOST.NU_PID used when the host is not owned by a worker
-HOST_TRANSIENT_BUSY_PID         = 0         # HOST.NU_PID used during short transient SFTP cooldown
 BKP_TASK_MAX_WORKERS            = 10        # Number of concurrent backup workers. Set to 1 to avoid overloading the network and SFTP server, which can cause more harm than good when multiple workers are contending for the same resources.
 BKP_TASK_IDLE_EXIT_CYCLES       = 3         # extra workers exit after this many idle polls
 MIN_FILE_SIZE_KB                = 1         # minimum file size to be backed up in KB
 FILE_THRESHOLD_SIZE_KB          = 100       # file size threshold for update file
-KILOBYTES_PER_GB                = 1024 * 1024
 BACKUP_TRANSFER_MAX_SECONDS     = HOST_BUSY_TIMEOUT   # Absolute upper bound for one SFTP transfer
 BACKUP_TRANSFER_STALL_TIMEOUT_SECONDS = 900           # Abort when a transfer makes no progress for too long
 BACKUP_TRANSFER_PROGRESS_POLL_SECONDS = 30           # How often to inspect callback/local file growth
@@ -137,12 +147,6 @@ TRASH_FOLDER    = "trash"
 RESOLVED_FILES_TRASH_SUBDIR = "resolved_files"
 REPO_FOLDER     = "/mnt/reposfi"
 REPO_VOLUME_NAME = "reposfi"
-#------------------------------------------
-# Geographic site definition
-#------------------------------------------
-SITE_MATCH_DISTANCE_METERS = 70.0
-SITE_TYPE_FIXED = 1
-SITE_DISTRICT_AUTO_CREATE = False         # Keep district resolution conservative unless explicitly enabled
 #------------------------------------------
 # Nomintim Geocoding parameters
 #------------------------------------------
@@ -168,51 +172,6 @@ REQUIRED_ADDRESS_FIELD = {
 DEFAULT_DETECTOR            = "RMS"
 DEFAULT_SAMPLE_DURATION     = 0.0
 DEFAULT_ATTENUATION_GAIN    = 0.0
-#------------------------------------------
-# Default None Filter
-#------------------------------------------
-NONE_FILTER = {
-    "mode"          : "NONE",
-    "start_date"    : None,
-    "end_date"      : None,
-    "last_n_files"  : None,
-    "extension"     : None,
-    "file_path"     : "/mnt/internal/data",
-    "file_name"     : None,
-}
-#------------------------------------------
-# Database Tasks Type Constants
-#------------------------------------------
-HOST_TASK_CHECK_TYPE                = 1         # Create a Host Check Task
-HOST_TASK_PROCESSING_TYPE           = 2         # Create a Host Processing Task
-HOST_TASK_UPDATE_STATISTICS_TYPE    = 3         # Create a Host Statistics Update Task
-HOST_TASK_CHECK_CONNECTION_TYPE     = 4         # Create a Host Connectivity Check Task 
-HOST_TASK_BACKLOG_CONTROL_TYPE      = 5         # Promote discovery backlog into backup
-HOST_TASK_BACKLOG_ROLLBACK_TYPE     = 6         # Return backup-pending backlog to discovery
-HOST_TASK_INTERACTIVE_CHECK_TYPE    = 7         # Run an operator-requested connectivity test
-HOST_TASK_CONNECTIVITY_TYPES = (
-    HOST_TASK_CHECK_TYPE,
-    HOST_TASK_PROCESSING_TYPE,
-    HOST_TASK_CHECK_CONNECTION_TYPE,
-)
-FILE_TASK_BACKUP_TYPE               = 1         # Create a backup task
-FILE_TASK_PROCESS_TYPE              = 2         # Process a backup task already stored on the server
-FILE_TASK_DISCOVERY                 = 3         # Create a discovery task to get file metadata
-#------------------------------------------
-# Task Status Constants
-#------------------------------------------
-TASK_SUSPENDED          = -2        # Task suspended by offline node
-TASK_FROZEN             = -3        # Task frozen for manual review / no automatic retry
-TASK_ERROR              = -1        # Task suspended by error manager
-TASK_DONE               = 0         # Task completed successfully
-TASK_PENDING            = 1         # Task pending execution
-TASK_RUNNING            = 2         # Task running
-
-# Summary-state labels used to distinguish actionable task holds from errors.
-SUMMARY_TASK_STATE_ERROR = "ERROR"
-SUMMARY_TASK_STATE_SUSPENDED = "SUSPENDED"
-SUMMARY_TASK_STATE_FROZEN = "FROZEN"
-
 #------------------------------------------
 # Error Stage Constants
 # Used in err.capture(stage=k.STAGE_*) and err.stage comparisons.
@@ -290,14 +249,6 @@ GC_LOOP_SLEEP = 60
 # heavy MariaDB event refresh path.
 SUMMARY_WORKER_CONSUMER_NAME = "rffusion_summary_worker"
 SUMMARY_WORKER_BATCH_SIZE = 500
-SUMMARY_TIMELINE_QUERY_TIMEOUT_SEC = 30
-SUMMARY_REFRESH_LOG_MAX_ROWS = 100
-SUMMARY_SCOPE_HOST = "host"
-SUMMARY_SCOPE_SITE = "site"
-SUMMARY_SCOPE_EQUIPMENT = "equipment"
-SUMMARY_SCOPE_REFERENCE_MONTH = "reference_month"
-SUMMARY_SCOPE_FULL_RECONCILE = "full_reconcile"
-SUMMARY_SCOPE_FULL_RECONCILE_KEY = "*"
 # How long the worker can have been offline before the startup reconcile is
 # considered mandatory.  If DT_LAST_SUCCESS is more recent than this threshold,
 # the startup reconcile is skipped and the worker begins with incremental

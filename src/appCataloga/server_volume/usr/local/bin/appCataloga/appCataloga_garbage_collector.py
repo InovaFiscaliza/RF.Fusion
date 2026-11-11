@@ -56,7 +56,7 @@ signal_runtime.install_shutdown_handlers(
 def _init_db() -> dbHandlerBKP:
     """Create the operational DB handler or stop the process early."""
     try:
-        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log, conninfo=k.PG_CONNINFO)
     except Exception as e:
         log.error_event(
             "db_init_failed",

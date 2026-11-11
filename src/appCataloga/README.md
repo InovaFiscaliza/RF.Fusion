@@ -287,6 +287,15 @@ Os subdiretorios mais importantes do runtime sao:
 As instruções do subprojeto ficam em `src/appCataloga/.instructions/`, fora
 da árvore de runtime; consulte [AGENTS.md](AGENTS.md).
 
+A resolução de SITE do fluxo convencional usa a política de estações fixas em
+`appAnalise/processing_bin.py`. Cache e amostras GNSS pertencem a cada arquivo;
+pontos repetidos são resolvidos uma vez e os centroides existentes recebem uma
+atualização por site. A associação é mantida por espectro, permitindo várias
+localidades no mesmo arquivo. Falhas de serviço ou persistência interrompem o
+arquivo; apenas defeitos de localidade permitem descarte seletivo.
+O cadastro de tipos `Fixed`/`Mobile` não ativa ingestão móvel. A entrada de
+drive test segue o [planejamento próprio](../../docs/planejamento/PLANEJAMENTO_DRIVE_TEST.md).
+
 ### Pastas Do Runtime
 
 No nivel superior de `/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga`,
@@ -370,6 +379,33 @@ O ponto importante e que o filtro e normalizado antes de uso. Cada modo
 mantem apenas os campos semanticamente validos para aquela operacao.
 
 ## Operacao Basica
+
+### Imports no editor
+
+Abra a raiz do repositório no VS Code. O [pyrightconfig.json](../../pyrightconfig.json)
+declara para o Pylance os caminhos de importação do appCataloga, incluindo
+`server_volume/etc/appCataloga/config.py`. Esses caminhos correspondem aos
+adicionados por `utils/bootstrap_paths.py` em execução e se aplicam somente ao
+appCataloga. Preserve `import config as k`; o editor não executa o bootstrap
+para descobrir módulos. Se o diagnóstico persistir após alterar a configuração,
+execute **Python: Restart Language Server** na paleta de comandos.
+
+### Serviços
+
+Os entrypoints e o utilitário `safe_stop.py` recebem `PG_CONNINFO` do `config.py`.
+O destino padrão é `10.88.0.35:5432`, banco de conexão `postgres`.
+O `.secret` existente pode fornecer `DB_USER_NAME_PG` e `DB_PASSWORD_PG`;
+sem usuário dedicado, o padrão é `postgres`. `PGUSER` e `PGPASSWORD` no ambiente
+têm prioridade sobre esses campos. `RFFUSION_PG_CONNINFO` não vazio substitui a
+conexão completa, sem acrescentar as credenciais do `.secret`. Os schemas
+continuam definidos na configuração central; credenciais MariaDB não são
+reutilizadas na conexão PostgreSQL.
+
+Neste workspace, o perfil de depuração **appCataloga: arquivo atual (PostgreSQL)**
+usa o interpretador autorizado e a mesma configuração do aplicativo, incluindo
+os campos PostgreSQL do `.secret`. O arquivo local `.vscode/launch.json` é ignorado pelo
+Git. A validação de inicialização não inicia os workers nem substitui o teste
+do fluxo completo com estações e appAnalise.
 
 Dentro do ambiente onde o runtime esta montado:
 

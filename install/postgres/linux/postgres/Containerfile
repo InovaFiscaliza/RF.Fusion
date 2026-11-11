@@ -1,7 +1,9 @@
-FROM docker.io/library/postgres:17-alpine
+FROM docker.io/postgis/postgis:17-3.7-alpine
 
 RUN apk add --no-cache bash openssh-server openssh-client shadow tini iproute2 iputils netcat-openbsd \
-    && mkdir -p /run/sshd
+    && mkdir -p /run/sshd \
+    && test -s "$(pg_config --sharedir)/extension/postgis.control" \
+    && test -s "$(pg_config --pkglibdir)/postgis-3.so"
 
 COPY docker-entrypoint.sh /usr/local/bin/rffusion-entrypoint.sh
 RUN chmod 755 /usr/local/bin/rffusion-entrypoint.sh

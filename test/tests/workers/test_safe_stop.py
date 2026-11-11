@@ -40,6 +40,9 @@ with bind_real_shared_package():
         )
 
 
+from db import constants as db_constants
+
+
 class FakeLog:
     """Capture cleanup events without touching the production logger."""
 
@@ -69,31 +72,30 @@ class FakeDB:
         self.connected = False
         self.disconnected = False
 
-    def _connect(self) -> None:
+    def connect(self) -> None:
         self.connected = True
 
-    def _disconnect(self) -> None:
+    def close(self) -> None:
         self.disconnected = True
 
-    def _select_rows(self, *, table, where, cols):
-        if table == "FILE_TASK" and where == {"NU_STATUS": safe_stop.k.TASK_RUNNING}:
-            return [
-                {"ID_FILE_TASK": 11, "FK_HOST": 700, "NU_PID": 9991},
-                {"ID_FILE_TASK": 12, "FK_HOST": 701, "NU_PID": 9992},
-            ]
-        if table == "HOST_TASK" and where == {"NU_STATUS": safe_stop.k.TASK_RUNNING}:
-            return [
-                {"ID_HOST_TASK": 21, "FK_HOST": 700, "NU_PID": 8881},
-            ]
-        if table == "HOST" and where == {"IS_BUSY": True}:
-            return [
-                {"ID_HOST": 700, "NU_PID": 9991},
-            ]
-        if table == "HOST" and where == {"IS_OFFLINE": True}:
-            return [
-                {"ID_HOST": 700},
-            ]
-        raise AssertionError(f"Unexpected _select_rows call: {table=} {where=} {cols=}")
+    def file_task_list_running(self) -> list[dict]:
+        """Return file-task ownership marks without database IO."""
+        return [
+            {"ID_FILE_TASK": 11, "FK_HOST": 700, "NU_PID": 9991},
+            {"ID_FILE_TASK": 12, "FK_HOST": 701, "NU_PID": 9992},
+        ]
+
+    def host_task_list_running(self) -> list[dict]:
+        """Return host-task ownership marks without database IO."""
+        return [{"ID_HOST_TASK": 21, "FK_HOST": 700, "NU_PID": 8881}]
+
+    def host_list_busy(self) -> list[dict]:
+        """Return a busy host without database IO."""
+        return [{"ID_HOST": 700, "NU_PID": 9991}]
+
+    def host_list_offline(self) -> list[dict]:
+        """Return an offline host without database IO."""
+        return [{"ID_HOST": 700}]
 
     def file_task_update(self, **kwargs) -> None:
         self.file_task_updates.append(kwargs)
@@ -112,21 +114,6 @@ class FakeDB:
 
     def file_task_history_suspend_by_host(self, host_id: int) -> None:
         self.suspended_hosts.append(("file_history", host_id))
-
-
-class FakeSummaryDB:
-    """Capture summary busy-state cleanup calls."""
-
-    def __init__(self) -> None:
-        self.host_ids = []
-        self.closed = False
-
-    def clear_host_current_snapshot_busy_state(self, *, host_ids: list[int]) -> int:
-        self.host_ids.append(host_ids)
-        return 2
-
-    def close(self) -> None:
-        self.closed = True
 
 
 class SafeStopTmpCleanupTests(unittest.TestCase):
@@ -189,48 +176,65 @@ class SafeStopTmpCleanupTests(unittest.TestCase):
 class SafeStopStateCleanupTests(unittest.TestCase):
     """Validate shutdown reconciliation of offline work queues."""
 
+    def test_failed_database_recovery_closes_session_and_skips_tmp_cleanup(self) -> None:
+        """Keep repository artifacts intact when queue recovery cannot complete.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        fake_db = FakeDB()
+        fake_log = FakeLog()
+        with patch.object(safe_stop, "log", fake_log), patch.object(
+            safe_stop, "dbHandlerBKP", return_value=fake_db
+        ), patch.object(
+            fake_db, "file_task_list_running", side_effect=RuntimeError("read failed")
+        ), patch.object(safe_stop, "cleanup_repository_tmp_files") as cleanup:
+            safe_stop.cleanup_hosts_and_tasks()
+        self.assertTrue(fake_db.connected)
+        self.assertTrue(fake_db.disconnected)
+        self.assertTrue(fake_log.errors)
+        cleanup.assert_not_called()
+
     def test_cleanup_hosts_and_tasks_reasserts_offline_suspension_after_reset(self) -> None:
         fake_log = FakeLog()
         fake_db = FakeDB()
-        fake_summary_db = FakeSummaryDB()
 
         with patch.object(safe_stop, "log", fake_log):
             with patch.object(safe_stop, "dbHandlerBKP", return_value=fake_db):
                 with patch.object(
                     safe_stop,
-                    "dbHandlerSummary",
-                    return_value=fake_summary_db,
+                    "cleanup_repository_tmp_files",
+                    return_value=0,
                 ):
                     with patch.object(
                         safe_stop,
-                        "cleanup_repository_tmp_files",
+                        "prune_empty_repository_tmp_dirs",
                         return_value=0,
                     ):
-                        with patch.object(
-                            safe_stop,
-                            "prune_empty_repository_tmp_dirs",
-                            return_value=0,
-                        ):
-                            safe_stop.cleanup_hosts_and_tasks()
-
+                        safe_stop.cleanup_hosts_and_tasks()
         self.assertTrue(fake_db.connected)
         self.assertTrue(fake_db.disconnected)
         self.assertEqual(len(fake_db.file_task_updates), 2)
         self.assertEqual(
             [item["NU_STATUS"] for item in fake_db.file_task_updates],
-            [safe_stop.k.TASK_PENDING, safe_stop.k.TASK_PENDING],
+            [db_constants['tasks']['states']['pending'], db_constants['tasks']['states']['pending']],
         )
         self.assertEqual(len(fake_db.host_task_updates), 1)
+        for update in fake_db.file_task_updates + fake_db.host_task_updates:
+            self.assertEqual(update["NU_PID"], db_constants['hosts']['unlocked_pid'])
+            self.assertEqual(update["expected_status"], db_constants['tasks']['states']['running'])
         self.assertEqual(
             fake_db.host_task_updates[0]["NU_STATUS"],
-            safe_stop.k.TASK_PENDING,
+            db_constants['tasks']['states']['pending'],
         )
         self.assertEqual(
             fake_db.host_updates,
             [{
                 "host_id": 700,
-                "IS_BUSY": False,
-                "NU_PID": safe_stop.k.HOST_UNLOCKED_PID,
+                "IS_BUSY": 0,
+                "NU_PID": db_constants['hosts']['unlocked_pid'],
                 "DT_BUSY": None,
             }],
         )
@@ -242,8 +246,6 @@ class SafeStopStateCleanupTests(unittest.TestCase):
                 ("file_history", 700),
             ],
         )
-        self.assertEqual(fake_summary_db.host_ids, [[700]])
-        self.assertTrue(fake_summary_db.closed)
         self.assertFalse(fake_log.errors)
 
 

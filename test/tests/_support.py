@@ -30,10 +30,19 @@ STATIONS_LEGACY_ROOT = APP_ROOT / "stations_legacy"
 
 
 def ensure_app_paths() -> None:
-    """Expose the production source tree and config path to the test process."""
+    """Expose runtime paths and keep the test db package from shadowing runtime data.
+
+    Args:
+        None.
+    Returns:
+        None. The production db package is loaded without handlers or connections.
+    """
     for path in (str(CONFIG_ROOT), str(APP_ROOT)):
         if path not in sys.path:
             sys.path.insert(0, path)
+    package = sys.modules.get("db")
+    if package is None or getattr(package, "__file__", None) != str(DB_ROOT / "__init__.py"):
+        load_package_from_dir("db", DB_ROOT)
 
 
 def load_package_from_dir(package_name: str, package_dir: Path):

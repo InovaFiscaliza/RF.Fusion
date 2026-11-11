@@ -128,6 +128,14 @@ Definição do responsável: para CelPlan e RFEye, o próprio nome oficial da un
 `rfeye002095` nesses exemplos, preservando o identificador completo, sem remover
 o prefixo nem extrair somente seus dígitos.
 
+Uma estação CelPlan é identificada pelos dois últimos dígitos: o host
+`CWSM212031` e o equipamento `cwsm21100031` são a mesma estação. Os nomes não
+são reescritos: o host fica em `BPDATA.HOST` e o `Receiver` longo é gravado como
+chega em `DIM_SPECTRUM_EQUIPMENT`. A correlação entre eles é feita em
+`HOST_EQUIPMENT_LINK` comparando os dois últimos dígitos. Só quando o `Receiver`
+vem curto ou malformado o parser usa o host e grava `cwsm211000` + os dois
+últimos dígitos, que é a forma longa dessas estações.
+
 Esses valores não fornecem fabricante, modelo e firmware separados. Não aplicar
 o desmembramento de EB500/SA2500 nem inventar os demais componentes.
 

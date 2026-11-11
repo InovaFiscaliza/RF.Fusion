@@ -43,6 +43,7 @@ from db.dbHandlerBKP import dbHandlerBKP
 from db.dbHandlerBase import DbRow
 from server_handler import signal_runtime, sleep as runtime_sleep
 from shared import errors, filter, logging_utils, tools
+from db import constants as db_constants
 import config as k
 
 
@@ -55,8 +56,8 @@ process_status = {"running": True}
 # Rollback gets priority over promotion on purpose: if an operator requested
 # STOP, we should drain the already-queued backup work before creating more.
 HOST_TASK_PRIORITY = (
-    k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
-    k.HOST_TASK_BACKLOG_CONTROL_TYPE,
+    db_constants['tasks']['host_types']['backlog_rollback'],
+    db_constants['tasks']['host_types']['backlog_control'],
 )
 
 
@@ -89,7 +90,7 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
     """
     for task_type in HOST_TASK_PRIORITY:
         task_row = db.host_task_read(
-            task_status=k.TASK_PENDING,
+            task_status=db_constants['tasks']['states']['pending'],
             task_type=task_type,
         )
         if task_row:
@@ -97,7 +98,7 @@ def _read_next_task(db: dbHandlerBKP) -> dict | None:
                 "host_id"    : task_row["HOST__ID_HOST"],
                 "task_id"    : task_row["HOST_TASK__ID_HOST_TASK"],
                 "task_type"  : task_row["HOST_TASK__NU_TYPE"],
-                "host_filter": task_row.get("host_filter") or dict(k.NONE_FILTER),
+                "host_filter": task_row.get("host_filter") or dict(db_constants['tasks']['default_filter']),
                 "now"        : datetime.now(),
             }
     return None
@@ -112,8 +113,8 @@ def _claim_task(db: dbHandlerBKP, task: dict) -> bool:
     """
     result = db.host_task_update(
         task_id=task["task_id"],
-        expected_status=k.TASK_PENDING,
-        NU_STATUS=k.TASK_RUNNING,
+        expected_status=db_constants['tasks']['states']['pending'],
+        NU_STATUS=db_constants['tasks']['states']['running'],
         NU_PID=os.getpid(),
         DT_HOST_TASK=task["now"],
         NA_MESSAGE="Backlog management task running",
@@ -186,7 +187,7 @@ def _update_backlog(
     budget = cast(int | None, metadata.get("max_total_kb"))
     limit = cast(int | None, metadata.get("limit"))
     bounded = limit is not None or (
-        new_type == k.FILE_TASK_BACKUP_TYPE and budget is not None
+        new_type == db_constants['tasks']['file_types']['backup'] and budget is not None
     )
     owns_transaction = not db.in_transaction
     if owns_transaction:
@@ -215,7 +216,7 @@ def _update_backlog(
             )
             for row in candidates:
                 size = max(0, cast(int, row["VL_FILE_SIZE_KB_HOST"]) or 0)
-                if new_type == k.FILE_TASK_BACKUP_TYPE and budget is not None:
+                if new_type == db_constants['tasks']['file_types']['backup'] and budget is not None:
                     if result["selected_total_kb"] + size > budget:
                         break
                     result["selected_total_kb"] += size
@@ -242,9 +243,9 @@ def _update_backlog(
                 message_prefix=prefix,
             )
             result["rows_updated"] = affected
-            if new_type == k.FILE_TASK_BACKUP_TYPE:
+            if new_type == db_constants['tasks']['file_types']['backup']:
                 result["moved_to_backup"] = affected
-            elif new_type == k.FILE_TASK_DISCOVERY:
+            elif new_type == db_constants['tasks']['file_types']['discovery']:
                 result["moved_to_discovery"] = affected
             if affected:
                 db.host_request_summary_refresh(
@@ -290,10 +291,10 @@ def _promote_backlog(db: dbHandlerBKP, task: DbRow) -> dict[str, int]:
         logger=log,
         host_id=cast(int, task["host_id"]),
         task_filter=cast(Mapping[str, object], task["host_filter"]),
-        search_type=k.FILE_TASK_DISCOVERY,
-        search_status=k.TASK_DONE,
-        new_type=k.FILE_TASK_BACKUP_TYPE,
-        new_status=k.TASK_PENDING,
+        search_type=db_constants['tasks']['file_types']['discovery'],
+        search_status=db_constants['tasks']['states']['done'],
+        new_type=db_constants['tasks']['file_types']['backup'],
+        new_status=db_constants['tasks']['states']['pending'],
     )
 
 
@@ -311,10 +312,10 @@ def _cancel_pending_backlog_promotions(
     db.host_task_update(
         where_dict={
             "FK_HOST": host_id,
-            "NU_TYPE": k.HOST_TASK_BACKLOG_CONTROL_TYPE,
-            "NU_STATUS": k.TASK_PENDING,
+            "NU_TYPE": db_constants['tasks']['host_types']['backlog_control'],
+            "NU_STATUS": db_constants['tasks']['states']['pending'],
         },
-        NU_STATUS=k.TASK_DONE,
+        NU_STATUS=db_constants['tasks']['states']['done'],
         DT_HOST_TASK=now,
         NA_MESSAGE="Pending backlog promotion canceled by rollback request",
     )
@@ -349,10 +350,10 @@ def _rollback_backlog(db: dbHandlerBKP, task: DbRow) -> dict[str, int]:
         logger=log,
         host_id=cast(int, task["host_id"]),
         task_filter=cast(Mapping[str, object], task["host_filter"]),
-        search_type=k.FILE_TASK_BACKUP_TYPE,
-        search_status=k.TASK_PENDING,
-        new_type=k.FILE_TASK_DISCOVERY,
-        new_status=k.TASK_DONE,
+        search_type=db_constants['tasks']['file_types']['backup'],
+        search_status=db_constants['tasks']['states']['pending'],
+        new_type=db_constants['tasks']['file_types']['discovery'],
+        new_status=db_constants['tasks']['states']['done'],
     )
 
 
@@ -385,11 +386,11 @@ def _do_work(db: dbHandlerBKP, task: DbRow) -> DbRow:
     phase_started_at = time.monotonic()
 
     match task["task_type"]:
-        case k.HOST_TASK_BACKLOG_CONTROL_TYPE:
+        case _ if task['task_type'] == db_constants['tasks']['host_types']['backlog_control']:
             result = _promote_backlog(db, task)
             action = "promote"
 
-        case k.HOST_TASK_BACKLOG_ROLLBACK_TYPE:
+        case _ if task['task_type'] == db_constants['tasks']['host_types']['backlog_rollback']:
             result = _rollback_backlog(db, task)
             action = "rollback"
 
@@ -440,8 +441,8 @@ def _finalize_success(
     """Persist TASK_DONE for one completed backlog transition."""
     db.host_task_update(
         task_id=task["task_id"],
-        NU_STATUS=k.TASK_DONE,
-        NU_PID=k.HOST_UNLOCKED_PID,
+        NU_STATUS=db_constants['tasks']['states']['done'],
+        NU_PID=db_constants['hosts']['unlocked_pid'],
         DT_HOST_TASK=task["now"],
         NA_MESSAGE=(
             "Backlog management completed successfully "
@@ -477,8 +478,8 @@ def _finalize_error(
     try:
         db.host_task_update(
             task_id=task["task_id"],
-            NU_STATUS=k.TASK_ERROR,
-            NU_PID=k.HOST_UNLOCKED_PID,
+            NU_STATUS=db_constants['tasks']['states']['error'],
+            NU_PID=db_constants['hosts']['unlocked_pid'],
             DT_HOST_TASK=datetime.now(),
             NA_MESSAGE=f"Backlog management error | {err.format_persisted_error()}",
         )
@@ -509,7 +510,7 @@ def _cleanup(task: dict | None) -> None:  # noqa: ARG001
 def _init_db() -> dbHandlerBKP:
     """Create the operational DB handler or stop the process early."""
     try:
-        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+        return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log, conninfo=k.PG_CONNINFO)
     except Exception as e:
         log.error_event("db_init_failed", service=SERVICE_NAME, error=e)
         sys.exit(1)

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
+import os
 
 import psycopg
 from psycopg import sql
@@ -25,6 +26,9 @@ with bind_test_config():
     from db import dbHandlerBKP as bkp_module
     from shared import constants, logging_utils
     from shared.file_metadata import FileMetadata
+
+
+from db import constants as db_constants
 
 
 class PostgresBkpTests(unittest.TestCase):
@@ -59,7 +63,7 @@ class PostgresBkpTests(unittest.TestCase):
         self.cursor.executemany.side_effect = self._bind_batch
         self.connection.cursor.return_value.__enter__.return_value = self.cursor
         self.connection.transaction.return_value.__exit__.return_value = False
-        connect = patch.object(psycopg, "connect", return_value=self.connection)
+        connect = patch.object(psycopg.Connection, "connect", return_value=self.connection)
         self.connect = connect.start()
         self.addCleanup(connect.stop)
         publisher = patch.object(self.handler, "_summary_publish_host_scope")
@@ -177,6 +181,8 @@ class PostgresBkpTests(unittest.TestCase):
             '"NU_HOST_CHECK_ERROR" = "NU_HOST_CHECK_ERROR" + %s', query.as_string()
         )
         self.assertEqual(params, (2, 1, 1))
+        self.handler.host_update(1, NU_HOST_CHECK_ERROR=("DEC", 3))
+        self.assertEqual(self.cursor.execute.call_args.args[1], (-3, 1))
         self.handler.host_update(1, reset=True, NU_HOST_CHECK_ERROR=3)
         self.assertNotIn(" + ", self.cursor.execute.call_args.args[0].as_string())
 
@@ -200,6 +206,30 @@ class PostgresBkpTests(unittest.TestCase):
         self.assertEqual(params, ("",))
         self.assertNotIn('"IS_BUSY" =', text)
         self.assertNotIn('"IS_OFFLINE" =', text)
+
+    def test_shutdown_snapshots_use_integer_flags_and_running_states(self) -> None:
+        """Read cleanup ownership without filtering out unaddressable hosts.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        for method, table, field, value in (
+            (self.handler.host_list_busy, "HOST", "IS_BUSY", 1),
+            (self.handler.host_list_offline, "HOST", "IS_OFFLINE", 1),
+            (self.handler.host_task_list_running, "HOST_TASK", "NU_STATUS", db_constants['tasks']['states']['running']),
+            (self.handler.file_task_list_running, "FILE_TASK", "NU_STATUS", db_constants['tasks']['states']['running']),
+        ):
+            with self.subTest(table=table, field=field):
+                self.cursor.fetchall.return_value = []
+                self.assertEqual(method(), [])
+                query, params = self.cursor.execute.call_args.args
+                text = query.as_string()
+                self.assertIn(f'FROM "BKP_TEST"."{table}"', text)
+                self.assertIn(f'"{field}" = %s', text)
+                self.assertEqual(params, (value,))
+                self.assertNotIn('"NA_HOST_ADDRESS"', text)
 
     def test_host_task_creation_returns_id_and_adapts_json_objects(self) -> None:
         """Use RETURNING instead of deriving the identity or passing a raw dict.
@@ -233,13 +263,13 @@ class PostgresBkpTests(unittest.TestCase):
         where = {"ID_HOST_TASK": 7}
         result = self.handler.host_task_update(
             where_dict=where,
-            expected_status=self.k.TASK_PENDING,
-            NU_STATUS=self.k.TASK_RUNNING,
+            expected_status=db_constants['tasks']['states']['pending'],
+            NU_STATUS=db_constants['tasks']['states']['running'],
         )
         self.assertEqual(where, {"ID_HOST_TASK": 7})
         self.assertEqual(result["rows_affected"], 0)
         self.assertEqual(
-            self.cursor.execute.call_args.args[1][-2:], (7, self.k.TASK_PENDING)
+            self.cursor.execute.call_args.args[1][-2:], (7, db_constants['tasks']['states']['pending'])
         )
         self.assertTrue(self.handler.in_transaction)
         self.connection.commit.assert_not_called()
@@ -260,9 +290,9 @@ class PostgresBkpTests(unittest.TestCase):
             row = self.handler.host_task_read(task_type=[1, 2])
             self.assertEqual(row["host_filter"], {"mode": "ALL"})
             query = self.cursor.execute.call_args.args[0].as_string()
-            self.assertIn('AS "HOST_TASK__ID_HOST_TASK"', query)
-            self.assertIn('AS "HOST__ID_HOST"', query)
-            self.assertIn("ANY(%s::smallint[])", query)
+            self.assertIn('SELECT "base".*, "joined".*', query)
+            self.assertIsNotNone(self.cursor.row_factory)
+            self.assertIn('"base"."NU_TYPE" IN (%s, %s)', query)
 
     def test_file_upsert_targets_hash_expressions_and_preserves_supplied_dates(
         self,
@@ -303,7 +333,7 @@ class PostgresBkpTests(unittest.TestCase):
             None.
         """
         result = self.handler.file_task_create(
-            1, self.k.FILE_TASK_BACKUP_TYPE, self.k.TASK_PENDING, [self.file]
+            1, db_constants['tasks']['file_types']['backup'], db_constants['tasks']['states']['pending'], [self.file]
         )
         self.assertEqual(result, 1)
         values = self.cursor.executemany.call_args.args[1][0]
@@ -323,13 +353,13 @@ class PostgresBkpTests(unittest.TestCase):
         """
         result = self.handler.file_task_update(
             task_id=7,
-            expected_status=self.k.TASK_PENDING,
-            NU_STATUS=self.k.TASK_RUNNING,
+            expected_status=db_constants['tasks']['states']['pending'],
+            NU_STATUS=db_constants['tasks']['states']['running'],
         )
         self.assertNotIn("DT_FILE_TASK", result["updated_fields"])
         self.assertEqual(result["updated_fields"]["NU_PID"], self.log.pid)
         self.assertEqual(
-            result["where_used"], {"ID_FILE_TASK": 7, "NU_STATUS": self.k.TASK_PENDING}
+            result["where_used"], {"ID_FILE_TASK": 7, "NU_STATUS": db_constants['tasks']['states']['pending']}
         )
 
     def test_history_none_and_set_null_have_distinct_meanings(self) -> None:
@@ -364,13 +394,15 @@ class PostgresBkpTests(unittest.TestCase):
         moved = datetime(2025, 3, 1)
         self.handler.file_task_history_update(
             history_id=4,
-            NU_STATUS_BACKUP=self.k.TASK_DONE,
+            NU_STATUS_BACKUP=db_constants['tasks']['states']['done'],
             DT_BACKUP=moved,
             DT_FILE_CREATED_HOST=moved,
         )
         query, params = self.cursor.execute.call_args.args
-        self.assertIn('"DT_LAST_BACKUP" < %s', query.as_string())
-        self.assertEqual(params, (moved, moved, 1))
+        self.assertIn(
+            '"DT_LAST_BACKUP" = GREATEST("DT_LAST_BACKUP", %s)', query.as_string()
+        )
+        self.assertEqual(params, (moved, 1))
         self.assertEqual(
             self.publisher.call_args.kwargs["reference_months"], [self.created, moved]
         )
@@ -390,14 +422,14 @@ class PostgresBkpTests(unittest.TestCase):
             "private detail"
         )
         with self.assertRaises(psycopg.errors.CheckViolation):
-            self.handler.file_task_update(task_id=7, NU_STATUS=self.k.TASK_DONE)
+            self.handler.file_task_update(task_id=7, NU_STATUS=db_constants['tasks']['states']['done'])
         self.connection.rollback.assert_called_once_with()
         self.connection.commit.assert_not_called()
         self.assertNotIn("private detail", str(self.log.error_event.call_args_list))
         self.connection.rollback.reset_mock()
         self.handler.begin_transaction()
         with self.assertRaises(psycopg.errors.CheckViolation):
-            self.handler.file_task_update(task_id=7, NU_STATUS=self.k.TASK_DONE)
+            self.handler.file_task_update(task_id=7, NU_STATUS=db_constants['tasks']['states']['done'])
         self.assertTrue(self.handler.in_transaction)
         self.connection.rollback.assert_not_called()
 
@@ -433,7 +465,7 @@ class PostgresBkpTests(unittest.TestCase):
             {"HOST__ID_HOST": 1, "FILE_TASK__ID_FILE_TASK": 7}
         ]
         row = self.handler.file_task_read(
-            task_type=self.k.FILE_TASK_BACKUP_TYPE,
+            task_type=db_constants['tasks']['file_types']['backup'],
             check_host_busy=False,
             reserve_hosts_for_discovery=True,
             fair_by_host=True,
@@ -447,6 +479,7 @@ class PostgresBkpTests(unittest.TestCase):
         self.assertIn('"candidate"."DT_FILE_CREATED_HOST" DESC NULLS LAST', text)
         self.assertIn('h."DT_LAST_BACKUP" ASC NULLS FIRST', text)
         self.assertIn("NOT EXISTS", text)
+        self.assertIn('reservation."NU_TYPE" = %s', text)
         self.assertIn(self.k.DISCOVERY_RESERVATION_TTL_SEC, params)
         self.assertNotIn("DATE_SUB", text)
 
@@ -467,9 +500,9 @@ class PostgresBkpTests(unittest.TestCase):
             prefer_current_year=True,
         )
         query, params = self.cursor.execute.call_args.args
-        self.assertEqual(params, [7])
+        self.assertEqual(params, (7, 1))
         self.assertNotIn("EXTRACT", query.as_string())
-        self.assertNotIn('t."NU_TYPE" = ', query.as_string())
+        self.assertNotIn('"base"."NU_TYPE" = ', query.as_string())
 
     def test_file_task_selection_binds_hostile_extension_in_each_queue_mode(
         self,
@@ -482,14 +515,14 @@ class PostgresBkpTests(unittest.TestCase):
             None.
         """
         extension = ".zip' OR TRUE; DROP TABLE FILE_TASK; -- %s"
-        for fair in (False, True):
-            with self.subTest(fair_by_host=fair):
+        for fair, reserve in ((False, False), (False, True), (True, True)):
+            with self.subTest(fair_by_host=fair, reserve_discovery=reserve):
                 self.handler.file_task_read(
-                    task_type=self.k.FILE_TASK_BACKUP_TYPE,
+                    task_type=db_constants['tasks']['file_types']['backup'],
                     check_host_busy=False,
                     extension=extension,
                     fair_by_host=fair,
-                    reserve_hosts_for_discovery=True,
+                    reserve_hosts_for_discovery=reserve,
                     prefer_current_year=True,
                     newest_first=True,
                 )
@@ -500,29 +533,173 @@ class PostgresBkpTests(unittest.TestCase):
                 bound.convert(query, params)
                 self.assertNotIn(extension.encode(), bound.query)
                 if fair:
-                    self.assertEqual(params[-2:], [False, False])
+                    self.assertIn(
+                        'candidate."NA_EXTENSION_HOST" = t."NA_EXTENSION_HOST"',
+                        query.as_string(),
+                    )
 
-    def test_failed_host_reservation_returns_none_without_claiming_task(self) -> None:
-        """Treat a lost conditional host UPDATE as an expected selection race.
+    def test_fair_candidate_uses_only_the_requested_status_and_extension(self) -> None:
+        """Match optional filters in both the outer task and its per-host candidate.
 
         Args:
             None.
         Returns:
             None.
         """
-        self.cursor.fetchall.return_value = [
-            {"HOST__ID_HOST": 1, "FILE_TASK__ID_FILE_TASK": 7}
+        for status in (None, db_constants['tasks']['states']['pending']):
+            for extension in (None, ".zip"):
+                with self.subTest(status=status, extension=extension):
+                    self.handler.file_task_read(
+                        task_type=db_constants['tasks']['file_types']['backup'],
+                        task_status=status,
+                        extension=extension,
+                        fair_by_host=True,
+                        check_host_busy=False,
+                    )
+                    query = self.cursor.execute.call_args.args[0].as_string()
+                    self.assertEqual(
+                        'candidate."NU_STATUS" = t."NU_STATUS"' in query,
+                        status is not None,
+                    )
+                    self.assertEqual(
+                        'candidate."NA_EXTENSION_HOST" = t."NA_EXTENSION_HOST"'
+                        in query,
+                        extension is not None,
+                    )
+
+    def _read_backup_with_host(self, host: dict, *occupancy: list) -> object:
+        """Run one locked backup read with a candidate and the host lock result.
+
+        Args:
+            host (dict): Row returned by the FOR UPDATE host read.
+            *occupancy (list): Rows returned by the HOST_TASK/FILE_TASK checks.
+        Returns:
+            object: The file_task_read result.
+        """
+        self.cursor.fetchall.side_effect = [
+            [{"HOST__ID_HOST": 1, "FILE_TASK__ID_FILE_TASK": 7}],
+            [host],
+            *occupancy,
         ]
-        self.cursor.rowcount = 0
-        self.assertIsNone(
-            self.handler.file_task_read(
-                task_type=1, lock_host=True, check_host_offline=True
-            )
+        return self.handler.file_task_read(
+            task_type=1, lock_host=True, check_host_offline=True
         )
-        query, params = self.cursor.execute.call_args.args
-        self.assertIn('"IS_BUSY" = %s', query.as_string())
-        self.assertIn('"IS_OFFLINE" = %s', query.as_string())
-        self.assertNotIn('UPDATE "BKP_TEST"."FILE_TASK"', query.as_string())
+
+    def _host_writes(self) -> list[str]:
+        """Return reservation UPDATEs, excluding the cooldown sweep.
+
+        Args:
+            None.
+        Returns:
+            list[str]: SQL text of host reservation writes.
+        """
+        return [
+            text
+            for call in self.cursor.execute.call_args_list
+            if (text := call.args[0].as_string()).startswith('UPDATE "BKP_TEST"."HOST"')
+            and "DT_BUSY\" < %s" not in text
+            and '"DT_BUSY" < %s' not in text
+        ]
+
+    def test_failed_host_reservation_returns_none_without_claiming_task(self) -> None:
+        """Treat a host held by another owner as an expected selection race.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        host = {"IS_BUSY": 1, "IS_OFFLINE": 0, "NU_PID": os.getpid() + 1}
+        self.assertIsNone(self._read_backup_with_host(host))
+        query = self.cursor.execute.call_args.args[0].as_string()
+        self.assertTrue(query.endswith("FOR UPDATE"))
+        self.assertEqual(self._host_writes(), [])
+        self.connection.commit.assert_called_once_with()
+
+    def test_live_host_task_blocks_reservation_but_dead_owner_does_not(self) -> None:
+        """Occupy a host only when no other live worker runs host-dependent work.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        host = {"IS_BUSY": 0, "IS_OFFLINE": 0, "NU_PID": 0}
+        with patch.object(bkp_module.tools, "pid_exists", return_value=True):
+            self.assertIsNone(self._read_backup_with_host(host, [{"NU_PID": 4242}]))
+        self.assertEqual(self._host_writes(), [])
+        occupancy = self.cursor.execute.call_args.args
+        self.assertIn('"NU_PID" <> %s', occupancy[0].as_string())
+        self.assertIn(os.getpid(), occupancy[1])
+        self.assertEqual(
+            occupancy[1], (1, db_constants['tasks']['states']['running'], db_constants['tasks']['host_types']['processing'], os.getpid())
+        )
+        self.cursor.execute.reset_mock()
+        with patch.object(bkp_module.tools, "pid_exists", return_value=False):
+            result = self._read_backup_with_host(host, [{"NU_PID": 4242}], [])
+        self.assertEqual(result[1:], (1, 7))
+        self.assertEqual(len(self._host_writes()), 1)
+
+    def test_reservation_is_idempotent_for_the_current_owner(self) -> None:
+        """Let a retry by the same PID keep its host instead of losing it.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        host = {"IS_BUSY": 1, "IS_OFFLINE": 0, "NU_PID": os.getpid()}
+        self.assertIsNotNone(self._read_backup_with_host(host, [], []))
+        (write,) = self._host_writes()
+        self.assertIn('"NU_PID" = %s', write)
+        self.assertNotIn('"IS_BUSY" = %s AND', write)
+
+    def test_rediscovery_upsert_never_resets_running_rows(self) -> None:
+        """Skip conflict updates while queue or history work is RUNNING.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        running = db_constants['tasks']['states']['running']
+        self.handler.file_task_create(1, 1, db_constants['tasks']['states']['pending'], [self.file])
+        self.handler.file_task_history_create(1, 1, db_constants['tasks']['states']['done'], [self.file])
+        queue, history = [
+            call.args[0].as_string()
+            for call in self.cursor.executemany.call_args_list
+        ]
+        self.assertIn(f'WHERE "FILE_TASK"."NU_STATUS" IS DISTINCT FROM {running}', queue)
+        self.assertIn(
+            f'"FILE_TASK_HISTORY"."NU_STATUS_BACKUP" IS DISTINCT FROM {running} AND '
+            f'"FILE_TASK_HISTORY"."NU_STATUS_PROCESSING" IS DISTINCT FROM {running}',
+            history,
+        )
+
+    def test_busy_timeout_release_compares_the_observed_reservation(self) -> None:
+        """Never clear a reservation taken after the timeout read.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        busy_since = datetime.utcnow() - timedelta(days=1)
+        self.cursor.fetchall.return_value = [
+            {"IS_BUSY": 1, "DT_BUSY": busy_since, "NU_PID": 77}
+        ]
+        self.handler.host_update(
+            1, check_busy_timeout=True, IS_BUSY=1, DT_LAST_CHECK=busy_since
+        )
+        release, update = [
+            call.args
+            for call in self.cursor.execute.call_args_list
+            if call.args[0].as_string().startswith("UPDATE")
+        ]
+        self.assertIn('"NU_PID" = %s AND "DT_BUSY" = %s', release[0].as_string())
+        self.assertEqual(release[1][-2:], (77, busy_since))
+        self.assertNotIn('"IS_BUSY"', update[0].as_string())
+        self.assertEqual(update[1], (busy_since, 1))
 
     def test_cooldown_expiry_updates_only_the_sentinel(self) -> None:
         """Keep PID ownership checks and integer storage for transient reservations.
@@ -535,7 +712,7 @@ class PostgresBkpTests(unittest.TestCase):
         self.handler._host_release_expired_cooldowns()
         query, params = self.cursor.execute.call_args.args
         self.assertIn('"DT_BUSY" < %s', query.as_string())
-        self.assertIn(self.k.HOST_TRANSIENT_BUSY_PID, params)
+        self.assertIn(db_constants['hosts']['transient_busy_pid'], params)
 
     def test_safe_release_preserves_cooldown_and_checks_the_observed_reservation(
         self,
@@ -550,7 +727,7 @@ class PostgresBkpTests(unittest.TestCase):
         self.cursor.fetchall.return_value = [
             {
                 "IS_BUSY": 1,
-                "NU_PID": self.k.HOST_TRANSIENT_BUSY_PID,
+                "NU_PID": db_constants['hosts']['transient_busy_pid'],
                 "DT_BUSY": self.created,
             }
         ]
@@ -595,14 +772,30 @@ class PostgresBkpTests(unittest.TestCase):
         Returns:
             None.
         """
-        self.handler.host_list_busy_with_task_state(task_status=2, host_task_type=3)
-        self.assertEqual(self.cursor.execute.call_args.args[1], (2, 2, 3))
+        self.cursor.fetchall.side_effect = [
+            [{"ID_HOST": 1, "DT_BUSY": None, "NU_PID": 9}, {"ID_HOST": 2}],
+            [{"FK_HOST": 2}],
+            [{"FK_HOST": 1}, {"FK_HOST": 1}],
+        ]
+        rows = self.handler.host_list_busy_with_task_state(
+            task_status=2, host_task_type=3
+        )
+        self.assertEqual(
+            [(r["FILE_RUNNING"], r["HOST_PROCESSING_RUNNING"]) for r in rows],
+            [(False, True), (True, False)],
+        )
+        self.assertEqual(
+            [call.args[1] for call in self.cursor.execute.call_args_list],
+            [(1,), (2, 1, 2), (2, 3, 1, 2)],
+        )
+        self.cursor.fetchall.side_effect = None
+        self.cursor.execute.reset_mock()
         self.handler.host_task_list_with_host_state(
             task_types=(1, 2, 3, 6, 7, 8), task_statuses=(1, 2)
         )
         query, params = self.cursor.execute.call_args.args
-        self.assertEqual(params, ([1, 2, 3, 6, 7, 8], [1, 2]))
-        self.assertIn("ANY(%s::smallint[])", query.as_string())
+        self.assertEqual(params, (1, 2, 3, 6, 7, 8, 1, 2))
+        self.assertIn('"base"."NU_TYPE" IN (%s, %s, %s, %s, %s, %s)', query.as_string())
         self.assertTrue(
             all(
                 call.args[0].as_string().lstrip().startswith("SELECT")
@@ -644,10 +837,10 @@ class PostgresBkpTests(unittest.TestCase):
         self.connection.rollback.assert_not_called()
         self.publisher.assert_not_called()
 
-    def test_backlog_primitives_reject_missing_scope_and_expression_fields(
+    def test_backlog_primitives_reject_missing_scope_and_message_assignment(
         self,
     ) -> None:
-        """Reject broad writes and caller-supplied expressions before connecting.
+        """Reject broad writes and overriding the composed message before connecting.
 
         Args:
             None.
@@ -658,7 +851,6 @@ class PostgresBkpTests(unittest.TestCase):
             ({}, {"FK_HOST": 1}),
             ({"NU_TYPE": 1}, {}),
             ({"NA_MESSAGE": "x"}, {"FK_HOST": 1}),
-            ({"NU_TYPE__expr": "1"}, {"FK_HOST": 1}),
         ):
             with self.subTest(data=data, where=where):
                 with self.assertRaises(ValueError):
@@ -680,10 +872,16 @@ class PostgresBkpTests(unittest.TestCase):
             None.
         """
         self.handler.host_task_resume_by_host(1)
-        for call in self.cursor.execute.call_args_list:
+        updates = [
+            call
+            for call in self.cursor.execute.call_args_list
+            if call.args[0].as_string().startswith("UPDATE")
+        ]
+        self.assertEqual(len(updates), 2)
+        for call in updates:
             params = call.args[1]
-            self.assertNotIn(self.k.TASK_FROZEN, params)
-            self.assertEqual(params[0], self.k.TASK_PENDING)
+            self.assertNotIn(db_constants['tasks']['states']['frozen'], params)
+            self.assertEqual(params[0], db_constants['tasks']['states']['pending'])
             self.assertIsNone(params[1])
             text = call.args[0].as_string()
             self.assertIn('"NU_TYPE" IN', text)
@@ -698,18 +896,28 @@ class PostgresBkpTests(unittest.TestCase):
         Returns:
             None.
         """
-        self.handler.file_task_resume_by_host(1)
-        suspended, errored, stale = self.cursor.execute.call_args_list
+        self.cursor.fetchall.return_value = [
+            {"ID_FILE_TASK": 5, "NU_PID": 111},
+            {"ID_FILE_TASK": 6, "NU_PID": 222},
+        ]
+        with patch.object(
+            bkp_module.tools, "pid_exists", side_effect=lambda pid: pid == 222
+        ):
+            self.handler.file_task_resume_by_host(1)
+        candidates, suspended, errored, stale = self.cursor.execute.call_args_list
+        self.assertTrue(candidates.args[0].as_string().startswith("SELECT"))
+        self.assertIn('"ID_FILE_TASK" IN (%s)', stale.args[0].as_string())
+        self.assertEqual(stale.args[1][-1], 5)
         self.assertNotIn('"NU_TYPE" IN', suspended.args[0].as_string())
         self.assertIn('"NU_TYPE" IN', errored.args[0].as_string())
         self.assertEqual(
             errored.args[1][-2:],
-            (self.k.FILE_TASK_DISCOVERY, self.k.FILE_TASK_BACKUP_TYPE),
+            (db_constants['tasks']['file_types']['discovery'], db_constants['tasks']['file_types']['backup']),
         )
         self.assertIn('"DT_FILE_TASK" < %s', stale.args[0].as_string())
         self.assertTrue(
             all(
-                self.k.TASK_FROZEN not in call.args[1]
+                db_constants['tasks']['states']['frozen'] not in call.args[1]
                 for call in self.cursor.execute.call_args_list
             )
         )
@@ -727,20 +935,27 @@ class PostgresBkpTests(unittest.TestCase):
             replace(self.file, VL_FILE_SIZE_KB=30),
             replace(self.file, NA_PATH="/different"),
         ]
-        self.cursor.fetchall.side_effect = [
-            [{"path": "/source", "name": "a.zip", "size": 20}],
-            [],
-        ]
+        history = {
+            "NA_HOST_FILE_PATH": "/source",
+            "NA_HOST_FILE_NAME": "a.zip",
+            "VL_FILE_SIZE_KB_HOST": 20,
+            "NA_EXTENSION_SERVER": None,
+            "NU_STATUS_PROCESSING": db_constants['tasks']['states']['pending'],
+        }
+        self.cursor.fetchall.side_effect = [[history]]
         self.assertEqual(
             self.handler.file_task_history_filter_existing_batch(
                 1, files, batch_size=3
             ),
             files[1:],
         )
-        self.cursor.fetchall.side_effect = [
-            [],
-            [{"NA_HOST_FILE_PATH": "/source", "NA_HOST_FILE_NAME": "a.zip"}],
-        ]
+        converted = {
+            **history,
+            "VL_FILE_SIZE_KB_HOST": 99,
+            "NA_EXTENSION_SERVER": ".MAT",
+            "NU_STATUS_PROCESSING": db_constants['tasks']['states']['done'],
+        }
+        self.cursor.fetchall.side_effect = [[converted]]
         self.assertEqual(
             self.handler.file_task_history_filter_existing_batch(
                 1, files, batch_size=3
@@ -757,11 +972,11 @@ class PostgresBkpTests(unittest.TestCase):
             None.
         """
         self.cursor.fetchall.side_effect = [
-            [{"ID_HOST_TASK": 7, "NU_STATUS": self.k.TASK_RUNNING}],
+            [{"ID_HOST_TASK": 7, "NU_STATUS": db_constants['tasks']['states']['running']}],
             [{"ID_HOST": 1}],
         ]
         result = self.handler.host_task_enqueue(
-            1, self.k.HOST_TASK_CHECK_TYPE, self.k.TASK_PENDING, {"mode": "ALL"}
+            1, db_constants['tasks']['host_types']['check'], db_constants['tasks']['states']['pending'], {"mode": "ALL"}
         )
         self.assertEqual(result["status"], 1)
         self.assertTrue(
@@ -771,6 +986,8 @@ class PostgresBkpTests(unittest.TestCase):
             )
         )
         self.log.warning_event.assert_called_once()
+        self.publisher.assert_not_called()
+        self.connection.commit.assert_called_once_with()
 
     def test_enqueue_reuses_pending_task_before_running_or_terminal_matches(
         self,
@@ -783,9 +1000,9 @@ class PostgresBkpTests(unittest.TestCase):
             None.
         """
         tasks = [
-            {"HOST_TASK__ID_HOST_TASK": 9, "HOST_TASK__NU_STATUS": self.k.TASK_DONE},
-            {"HOST_TASK__ID_HOST_TASK": 8, "HOST_TASK__NU_STATUS": self.k.TASK_RUNNING},
-            {"HOST_TASK__ID_HOST_TASK": 7, "HOST_TASK__NU_STATUS": self.k.TASK_PENDING},
+            {"HOST_TASK__ID_HOST_TASK": 9, "HOST_TASK__NU_STATUS": db_constants['tasks']['states']['done']},
+            {"HOST_TASK__ID_HOST_TASK": 8, "HOST_TASK__NU_STATUS": db_constants['tasks']['states']['running']},
+            {"HOST_TASK__ID_HOST_TASK": 7, "HOST_TASK__NU_STATUS": db_constants['tasks']['states']['pending']},
         ]
         with patch.object(
             self.handler, "host_task_list", return_value=tasks
@@ -795,7 +1012,7 @@ class PostgresBkpTests(unittest.TestCase):
             self.handler, "host_read_status", return_value={"status": 1}
         ):
             self.handler.host_task_enqueue(
-                1, self.k.HOST_TASK_CHECK_TYPE, self.k.TASK_PENDING, {"mode": "ALL"}
+                1, db_constants['tasks']['host_types']['check'], db_constants['tasks']['states']['pending'], {"mode": "ALL"}
             )
         self.assertEqual(update.call_args.kwargs["task_id"], 7)
         create.assert_not_called()
@@ -810,9 +1027,16 @@ class PostgresBkpTests(unittest.TestCase):
         """
         self.handler.file_task_history_list_gc_candidates(10, 7)
         query, params = self.cursor.execute.call_args.args
-        self.assertIn('"DT_PROCESSED" IS NOT NULL', query.as_string())
-        self.assertIn("%s * INTERVAL '1 day'", query.as_string())
-        self.assertEqual(params, (self.k.TASK_ERROR, 7, 10))
+        text = query.as_string()
+        self.assertIn('"DT_PROCESSED" < %s', text)
+        self.assertTrue(text.endswith('ORDER BY "DT_PROCESSED" ASC, "ID_HISTORY" ASC LIMIT %s'))
+        self.assertEqual(params[:2], (db_constants['tasks']['states']['error'], 0))
+        self.assertAlmostEqual(
+            params[2],
+            datetime.utcnow() - timedelta(days=7),
+            delta=timedelta(seconds=5),
+        )
+        self.assertEqual(params[3], 10)
 
     def test_workers_reuse_one_session_across_compound_operations(self) -> None:
         """Avoid reconnecting between iterations or after a successful managed commit.
@@ -846,6 +1070,7 @@ class PostgresBkpTests(unittest.TestCase):
         )
         query, rows = self.cursor.executemany.call_args.args
         self.assertIn('"ID_OUTBOX" = EXCLUDED."ID_OUTBOX"', query.as_string())
+        self.assertIn('"DT_CREATED_AT" = EXCLUDED."DT_CREATED_AT"', query.as_string())
         self.assertEqual(
             {(row[0], row[1]) for row in rows},
             {("host", "1"), ("reference_month", "2025-02-01")},
@@ -862,6 +1087,26 @@ class PostgresBkpTests(unittest.TestCase):
             self.connection.transaction.return_value.__exit__.call_args.args[1], error
         )
         self.assertNotIn("private", str(self.log.warning_event.call_args_list))
+
+    def test_operational_signals_update_only_the_source_host(self) -> None:
+        """Immediate evidence must not write a derived snapshot or invent recovery.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.handler.host_update_signals(8, {"IS_SSH_FAILURE": False, "DT_LAST_SSH_EVALUATED_AT": self.created})
+        query, params = self.cursor.execute.call_args.args
+        rendered = query.as_string()
+        self.assertIn('UPDATE "BKP_TEST"."HOST"', rendered)
+        self.assertIn(0, params)
+        self.assertNotIn('"NA_LAST_SSH_FAILURE_DESCRIPTION"', rendered)
+        self.cursor.executemany.assert_not_called()
+        with self.assertRaises(ValueError):
+            self.handler.host_update_signals(8, {"IS_BUSY": 0})
+        with self.assertRaises(ValueError):
+            self.handler.host_update_signals(8, {})
 
 
 if __name__ == "__main__":

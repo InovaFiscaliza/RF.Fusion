@@ -31,6 +31,9 @@ with bind_real_shared_package():
         )
 
 
+from db import constants as db_constants
+
+
 class FakeLog:
     """Capture discovery events without depending on the production logger."""
 
@@ -105,16 +108,16 @@ class DiscoveryWorkerTests(unittest.TestCase):
         self.assertEqual(len(fake_db.host_task_updates), 1)
         self.assertEqual(
             fake_db.host_task_updates[0]["NU_STATUS"],
-            discovery_worker.k.TASK_ERROR,
+            db_constants['tasks']['states']['error'],
         )
         self.assertEqual(
             fake_db.host_task_updates[0]["NU_PID"],
-            discovery_worker.k.HOST_UNLOCKED_PID,
+            db_constants['hosts']['unlocked_pid'],
         )
         self.assertEqual(len(fake_db.queued_tasks), 1)
         self.assertEqual(
             fake_db.queued_tasks[0]["task_type"],
-            discovery_worker.k.HOST_TASK_CHECK_CONNECTION_TYPE,
+            db_constants['tasks']['host_types']['check_connection'],
         )
 
     def test_finalize_success_marks_task_done(self) -> None:
@@ -144,11 +147,11 @@ class DiscoveryWorkerTests(unittest.TestCase):
         self.assertEqual(len(fake_db.host_task_updates), 1)
         self.assertEqual(
             fake_db.host_task_updates[0]["NU_STATUS"],
-            discovery_worker.k.TASK_DONE,
+            db_constants['tasks']['states']['done'],
         )
         self.assertEqual(
             fake_db.host_task_updates[0]["NU_PID"],
-            discovery_worker.k.HOST_UNLOCKED_PID,
+            db_constants['hosts']['unlocked_pid'],
         )
         self.assertEqual(
             record_discovery_outcome.call_args.kwargs["discovered_volume_kb"],
@@ -179,7 +182,7 @@ class DiscoveryWorkerTests(unittest.TestCase):
         self.assertEqual(len(fake_db.queued_tasks), 1)
         self.assertEqual(
             fake_db.queued_tasks[0]["task_type"],
-            discovery_worker.k.HOST_TASK_BACKLOG_CONTROL_TYPE,
+            db_constants['tasks']['host_types']['backlog_control'],
         )
 
 

@@ -12,6 +12,15 @@ estão em [ARCHITECTURE.md](../../src/appCataloga/.instructions/ARCHITECTURE.md)
 As regras do consumidor web estão na
 [arquitetura do WebFusion](../../src/webfusion/.instructions/ARCHITECTURE.md).
 
+## Instalação PostgreSQL
+
+O [modelo PostgreSQL](SUMMARY_POSTGRESQL.md) é um redesenho autorizado, sem
+retrocompatibilidade física ou SQL com o WebFusion. Somente
+`WEBFUSION_USAGE_LOG_CHECKPOINT` e `WEBFUSION_USAGE_METRIC_MONTHLY` precisam de
+restore no Summary; os agregados são reconstruídos por `full_reconcile`.
+Os contratos legados abaixo descrevem o MariaDB ainda em uso. Não os aplicar
+como restrição ao novo DDL ou à API PostgreSQL dos handlers.
+
 ## Compatibilidade externa
 
 As tabelas abaixo são contratos públicos, também consumidos pelo cliente

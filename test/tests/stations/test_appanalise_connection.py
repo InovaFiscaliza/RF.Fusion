@@ -40,6 +40,35 @@ with bind_real_shared_package():
     )
 AppAnaliseConnection = app_analise_module.AppAnaliseConnection
 AppAnaliseErrors = app_analise_module.errors
+canonicalize_equipment_identifier = sys.modules[
+    app_analise_module.AppAnalisePayloadParser.__module__
+].canonicalize_equipment_identifier
+
+
+class CelPlanIdentifierTests(unittest.TestCase):
+    """CelPlan stations are identified by their last two digits."""
+
+    def test_short_host_forms_map_to_the_long_receiver_form(self) -> None:
+        canonicalize = canonicalize_equipment_identifier
+        for raw, expected in (
+            ("CWSM211014", "cwsm21100014"),
+            ("CWSM2110021", "cwsm21100021"),
+            ("CWSM212031", "cwsm21100031"),
+            ("CWSM220044", "cwsm21100044"),
+            ("CWSM22010045", "cwsm22010045"),
+            ("cwsm21100014", "cwsm21100014"),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(canonicalize(raw), expected)
+
+    def test_malformed_celplan_falls_back_to_the_host(self) -> None:
+        canonicalize = canonicalize_equipment_identifier
+        self.assertEqual(
+            canonicalize("cwsm2110000", fallback_hostname="CWSM211006"),
+            "cwsm21100006",
+        )
+        with self.assertRaises(AppAnaliseErrors.BinValidationError):
+            canonicalize("cwsm21", fallback_hostname="cwsm00")
 
 
 class DetectProtocolErrorTests(unittest.TestCase):
@@ -141,17 +170,19 @@ class DetectProtocolErrorTests(unittest.TestCase):
 
         self.assertIn("absent locally", str(ctx.exception))
 
-    def test_detect_protocol_error_rejects_missing_spectra(self) -> None:
-        # A dict-shaped `Answer` is still invalid if the expected payload body is missing.
+    def test_missing_spectra_passes_protocol_and_fails_normalization(self) -> None:
+        # The protocol check only validates the envelope; a dict-shaped Answer
+        # without Spectra is rejected by payload normalization.
         payload = {
             "Request": {"type": "FileRead"},
             "Answer": {"General": {}},
         }
 
+        self.parser.detect_protocol_error(payload)
         with self.assertRaises(AppAnaliseErrors.BinValidationError) as ctx:
-            self.parser.detect_protocol_error(payload)
+            self.parser.normalize_payload(payload)
 
-        self.assertIn("Answer.Spectra", str(ctx.exception))
+        self.assertIn("empty Spectra list", str(ctx.exception))
 
     def test_detect_protocol_error_freezes_top_level_error_field(self) -> None:
         # The protocol also supports an explicit top-level `Error` field.
@@ -163,6 +194,40 @@ class DetectProtocolErrorTests(unittest.TestCase):
             self.parser.detect_protocol_error(payload)
 
         self.assertIn("tcpServerLib - PortClosed", str(ctx.exception))
+
+    def test_invalid_json_is_a_payload_error_and_is_not_retried(self) -> None:
+        # A complete response with malformed JSON is the service's answer for
+        # this file, not a transport failure: no retry, BinValidationError.
+        attempts = []
+
+        class FakeSocket:
+            def __init__(self, *args, **kwargs) -> None:
+                attempts.append(1)
+
+            def settimeout(self, value) -> None:
+                pass
+
+            def connect(self, address) -> None:
+                pass
+
+            def sendall(self, data) -> None:
+                pass
+
+            def recv(self, size) -> bytes:
+                return b"<JSON>{not json</JSON>"
+
+            def shutdown(self, how) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        with patch.object(app_analise_module.socket, "socket", FakeSocket):
+            with self.assertRaises(AppAnaliseErrors.BinValidationError):
+                self.conn._request_process("/tmp/sample.bin")
+
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(self.conn.last_response_text, "<JSON>{not json</JSON>")
 
     def test_process_rejects_missing_source_before_request(self) -> None:
         # The worker should fail early if the source file is already gone,
@@ -209,7 +274,7 @@ class DetectProtocolErrorTests(unittest.TestCase):
 
         self.assertEqual(payload["Request"]["timeoutSeconds"], 599)
 
-    def test_normalize_response_accepts_single_spectrum_dict(self) -> None:
+    def test_normalize_payload_accepts_single_spectrum_dict(self) -> None:
         payload = {
             "Request": {"type": "FileRead"},
             "Answer": {
@@ -241,15 +306,18 @@ class DetectProtocolErrorTests(unittest.TestCase):
             },
         }
 
-        result = self.parser.normalize_response(payload)
+        result = self.parser.normalize_payload(payload)
 
-        self.assertEqual(result["hostname"], "cwsm21100005")
+        self.assertEqual(result["spectrum"][0].equipment_name, "cwsm21100005")
         self.assertEqual(len(result["spectrum"]), 1)
         self.assertEqual(result["spectrum"][0].trace_length, 720)
+        self.assertEqual(
+            set(result), {"method", "spectrum", "discarded_spectrum_count"}
+        )
         self.assertNotIn("is_mobile", result["spectrum"][0].site_data)
         self.assertNotIn("geographic_path", result["spectrum"][0].site_data)
 
-    def test_normalize_response_accepts_seven_digit_cwsm_receiver(self) -> None:
+    def test_normalize_payload_accepts_seven_digit_cwsm_receiver(self) -> None:
         payload = {
             "Request": {"type": "FileRead"},
             "Answer": {
@@ -281,13 +349,11 @@ class DetectProtocolErrorTests(unittest.TestCase):
             },
         }
 
-        result = self.parser.normalize_response(payload)
+        result = self.parser.normalize_payload(payload)
 
-        self.assertEqual(result["hostname"], "cwsm21100021")
-        self.assertEqual(result["hostnames"], ["cwsm21100021"])
         self.assertEqual(result["spectrum"][0].equipment_name, "cwsm21100021")
 
-    def test_normalize_response_keeps_drive_test_as_point(self) -> None:
+    def test_normalize_payload_keeps_drive_test_as_point(self) -> None:
         payload = {
             "Request": {"type": "FileRead"},
             "Answer": {
@@ -322,7 +388,7 @@ class DetectProtocolErrorTests(unittest.TestCase):
             },
         }
 
-        result = self.parser.normalize_response(payload)
+        result = self.parser.normalize_payload(payload)
         site_data = result["spectrum"][0].site_data
 
         self.assertEqual(site_data["latitude"], -7.230131)
@@ -330,11 +396,11 @@ class DetectProtocolErrorTests(unittest.TestCase):
         self.assertNotIn("is_mobile", site_data)
         self.assertNotIn("geographic_path", site_data)
         self.assertEqual(
-            result["hostnames"],
+            [spectrum.equipment_name for spectrum in result["spectrum"]],
             ["Keysight Technologies,N9936B,MY59221878,A.11.55"],
         )
 
-    def test_normalize_response_discards_invalid_spectrum_and_keeps_valid_metadata(self) -> None:
+    def test_normalize_payload_discards_invalid_spectrum_and_keeps_valid_metadata(self) -> None:
         payload = {
             "Request": {"type": "FileRead"},
             "Answer": {
@@ -399,13 +465,12 @@ class DetectProtocolErrorTests(unittest.TestCase):
             },
         }
 
-        result = self.parser.normalize_response(payload)
+        result = self.parser.normalize_payload(payload)
 
         self.assertEqual(result["discarded_spectrum_count"], 1)
         self.assertEqual(len(result["spectrum"]), 1)
-        self.assertEqual(result["hostname"], "cwsm21100005")
-        self.assertEqual(result["hostnames"], ["cwsm21100005"])
-        self.assertEqual(result["gps"].latitude, -19.782451)
+        self.assertEqual(result["spectrum"][0].equipment_name, "cwsm21100005")
+        self.assertEqual(result["spectrum"][0].site_data["latitude"], -19.782451)
         self.assertEqual(
             result["spectrum"][0].metadata["antenna"]["Name"],
             "RFE-ANT-01",
@@ -415,7 +480,7 @@ class DetectProtocolErrorTests(unittest.TestCase):
             "Built-in",
         )
 
-    def test_normalize_response_discards_invalid_receiver_placeholder(self) -> None:
+    def test_normalize_payload_discards_invalid_receiver_placeholder(self) -> None:
         payload = {
             "Request": {"type": "FileRead"},
             "Answer": {
@@ -475,18 +540,10 @@ class DetectProtocolErrorTests(unittest.TestCase):
             },
         }
 
-        result = self.parser.normalize_response(payload)
+        result = self.parser.normalize_payload(payload)
 
         self.assertEqual(result["discarded_spectrum_count"], 1)
         self.assertEqual(len(result["spectrum"]), 1)
-        self.assertEqual(
-            result["hostname"],
-            "Keysight Technologies,N9936B,MY59221878,A.11.55",
-        )
-        self.assertEqual(
-            result["hostnames"],
-            ["Keysight Technologies,N9936B,MY59221878,A.11.55"],
-        )
         self.assertEqual(
             result["spectrum"][0].equipment_name,
             "Keysight Technologies,N9936B,MY59221878,A.11.55",
@@ -554,21 +611,13 @@ class DetectProtocolErrorTests(unittest.TestCase):
 
         result = self.parser.normalize_payload(payload)
 
-        self.assertIsNone(result["hostname"])
-        self.assertEqual(
-            result["hostnames"],
-            [
-                "cwsm21100005",
-                "Keysight Technologies,N9936B,MY59221878,A.11.55",
-            ],
-        )
         self.assertEqual(result["spectrum"][0].equipment_name, "cwsm21100005")
         self.assertEqual(
             result["spectrum"][1].equipment_name,
             "Keysight Technologies,N9936B,MY59221878,A.11.55",
         )
 
-    def test_normalize_response_rejects_invalid_related_time_when_no_valid_spectra_survive(self) -> None:
+    def test_normalize_payload_rejects_invalid_related_time_when_no_valid_spectra_survive(self) -> None:
         payload = {
             "Request": {"type": "FileRead"},
             "Answer": {
@@ -602,11 +651,11 @@ class DetectProtocolErrorTests(unittest.TestCase):
         }
 
         with self.assertRaises(AppAnaliseErrors.BinValidationError) as ctx:
-            self.parser.normalize_response(payload)
+            self.parser.normalize_payload(payload)
 
         self.assertIn("no valid spectra after per-spectrum validation", str(ctx.exception))
 
-    def test_normalize_response_rejects_invalid_frequency_range_when_no_valid_spectra_survive(self) -> None:
+    def test_normalize_payload_rejects_invalid_frequency_range_when_no_valid_spectra_survive(self) -> None:
         payload = {
             "Request": {"type": "FileRead"},
             "Answer": {
@@ -640,11 +689,11 @@ class DetectProtocolErrorTests(unittest.TestCase):
         }
 
         with self.assertRaises(AppAnaliseErrors.BinValidationError) as ctx:
-            self.parser.normalize_response(payload)
+            self.parser.normalize_payload(payload)
 
         self.assertIn("no valid spectra after per-spectrum validation", str(ctx.exception))
 
-    def test_normalize_response_rejects_payload_when_all_spectra_are_discarded(self) -> None:
+    def test_normalize_payload_rejects_payload_when_all_spectra_are_discarded(self) -> None:
         payload = {
             "Request": {"type": "FileRead"},
             "Answer": {
@@ -705,11 +754,11 @@ class DetectProtocolErrorTests(unittest.TestCase):
         }
 
         with self.assertRaises(AppAnaliseErrors.BinValidationError) as ctx:
-            self.parser.normalize_response(payload)
+            self.parser.normalize_payload(payload)
 
         self.assertIn("no valid spectra after per-spectrum validation", str(ctx.exception))
 
-    def test_normalize_response_reports_all_gps_discards_explicitly(self) -> None:
+    def test_normalize_payload_reports_all_gps_discards_explicitly(self) -> None:
         payload = {
             "Request": {"type": "FileRead"},
             "Answer": {
@@ -770,7 +819,7 @@ class DetectProtocolErrorTests(unittest.TestCase):
         }
 
         with self.assertRaises(AppAnaliseErrors.BinValidationError) as ctx:
-            self.parser.normalize_response(payload)
+            self.parser.normalize_payload(payload)
 
         self.assertIn("Invalid GPS reading: GNSS unavailable sentinel", str(ctx.exception))
         self.assertIn("all spectra in payload failed GPS validation", str(ctx.exception))

@@ -1,10 +1,11 @@
 # Contrato inicial PostgreSQL
 
 O PostgreSQL permanece uma instalação paralela aos bancos MariaDB em produção.
-A adaptação do código inclui a base `DbHandler` e o handler operacional
-`dbHandlerBKP` do appCataloga, conforme seu
+A adaptação do código inclui a base `DbHandler` e os handlers
+`dbHandlerBKP`, `dbHandlerRFM` e `dbHandlerSummary` do appCataloga, conforme seu
 [contrato de migração](../../src/appCataloga/.instructions/ARCHITECTURE.md#23-base-postgresql-e-migração-por-lotes).
-Isso ainda não integra workers ou consumidores existentes. Para manter as
+Os entrypoints recebem conexão PostgreSQL explícita; o fluxo com estações e
+appAnalise e os consumidores WebFusion ainda exigem validação própria. Para manter as
 consultas que relacionam os modelos, os quatro
 bancos lógicos são schemas `"BPDATA"`, `"RFDATA"`, `"RFFUSION_SUMMARY"` e
 `"WEBFUSION"` dentro de um único banco PostgreSQL. Schemas, tabelas, views e
@@ -15,13 +16,21 @@ vez no PostgreSQL. Funções auxiliares, índices e triggers mantêm seus nomes
 técnicos existentes. Instalações anteriores em minúsculas não são renomeadas
 automaticamente; o deploy reconhece ambas as convenções e não mistura modelos.
 
-Os scripts de criação devem preservar tabelas, colunas e granularidade dos
-contratos existentes. Tipos, índices, ordenação, geografia e regras de
+BPDATA, RFDATA e WEBFUSION preservam os contratos de seus dados de origem.
+O Summary segue o [redesenho autorizado](SUMMARY_POSTGRESQL.md), sem obrigação
+de preservar tabelas e colunas de projeções legadas. Tipos, índices, ordenação, geografia e regras de
 atualização são adaptados à plataforma; diferenças relevantes e limitações ficam
 no README dos scripts. Os consumidores MariaDB existentes não são compatíveis
 automaticamente: integração de aplicações, transferência de dados e validação
 funcional são trabalho separado. Os contratos de SUMMARY e métricas continuam
 regendo seu significado quando implementados nesta instalação.
+
+`RFDATA.DIM_SPECTRUM_SITE.GEO_POINT` usa `public.geometry(Point)` do PostGIS,
+com índice GiST. A coluna aceita SRIDs para preservar os dados de origem; o
+futuro restore deve verificar SRID, ordem das coordenadas e sistema de referência
+antes de qualquer conversão. A instalação fornece PostGIS na imagem PostgreSQL
+17 e cria a extensão antes do schema. Bancos existentes não são alterados pelo
+bootstrap e precisam de uma migração específica, sem recriação automática.
 
 O pgAdmin e o PostgreSQL são containers separados no mesmo pod Podman, com
 armazenamento próprio para suas configurações. A porta 9083 da VM acessa o

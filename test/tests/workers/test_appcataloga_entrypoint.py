@@ -29,6 +29,9 @@ with bind_real_shared_package():
         )
 
 
+from db import constants as db_constants
+
+
 class FakeLog:
     """Minimal logger double for entrypoint tests."""
 
@@ -71,7 +74,7 @@ class FakeSummaryDB:
     def __init__(self) -> None:
         self.read_host_ids = []
 
-    def read_host_operational_snapshot(self, host_id: int) -> dict:
+    def host_read_operational(self, host_id: int) -> dict:
         self.read_host_ids.append(host_id)
         return {
             "ID_HOST": host_id,
@@ -109,7 +112,7 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
                 fake_summary_db,
             )
 
-        self.assertEqual(fake_db.queued_tasks[0]["task_type"], appcataloga.k.HOST_TASK_CHECK_TYPE)
+        self.assertEqual(fake_db.queued_tasks[0]["task_type"], db_constants['tasks']['host_types']['check'])
         self.assertEqual(response["status"], 1)
         self.assertEqual(response["metrics"]["ID_HOST"], 77)
         self.assertFalse(fake_db.host_upserts[0]["IS_OFFLINE"])
@@ -130,7 +133,7 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
 
         self.assertEqual(
             fake_db.queued_tasks[0]["task_type"],
-            appcataloga.k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+            db_constants['tasks']['host_types']['backlog_rollback'],
         )
         self.assertEqual(response["status"], 1)
         self.assertEqual(response["metrics"]["ID_HOST"], 77)
@@ -200,7 +203,7 @@ class AppCatalogaEntrypointTests(unittest.TestCase):
 
         self.assertEqual(
             fake_db.queued_tasks[0]["task_type"],
-            appcataloga.k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+            db_constants['tasks']['host_types']['backlog_rollback'],
         )
         self.assertNotIn("IS_OFFLINE", fake_db.host_upserts[0])
         self.assertEqual(response["status"], 1)

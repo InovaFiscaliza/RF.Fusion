@@ -28,97 +28,279 @@ _normalize_key = refresh_engine_module._normalize_key
 
 
 class FakeSummaryDb:
+    """Exercise domain decisions through the real public persistence contract."""
+
     def __init__(self) -> None:
-        self.succeeded = []
-        self.failed = []
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         self.replaced = {}
-        self.upserted = {}
-        self.deleted = []
-        self.host_current_snapshot_sources = {
-            "hosts": [],
-            "signal_rows": [],
-            "queue_rows": [],
-            "history_rows": [],
-            "monthly_rows": [],
-            "link_rows": [],
-            "spectrum_rows": [],
-            "current_location_rows": [],
-            "last_error_rows": [],
-        }
+        self.in_transaction = False
+        self.commits = 0
+        self.rollbacks = 0
+        self.audit = []
 
-    def summary_refresh_success(self, object_name, *, started_at, row_count, high_watermark):
-        self.succeeded.append((object_name, row_count, high_watermark))
+    def begin_transaction(self) -> None:
+        """Support the domain scenario through the public persistence contract.
 
-    def summary_refresh_failure(self, object_name, *, started_at, error_message):
-        self.failed.append((object_name, error_message))
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.in_transaction = True
 
-    def replace_table_rows(self, table, rows):
-        self.replaced[table] = rows
+    def commit(self) -> None:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.commits += 1
+        self.in_transaction = False
+
+    def rollback(self) -> None:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.rollbacks += 1
+        self.in_transaction = False
+
+    def refresh_log_record(self, name: str, **fields: object) -> None:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            name (object): Controlled value supplied by the scenario.
+            **fields (object): Explicit entity scope options.
+        Returns:
+            None.
+        """
+        self.audit.append((name, fields))
+
+    def host_equipment_list_sources(self) -> dict[str, list[dict[str, object]]]:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            None.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
+        return {"hosts": [], "equipment": []}
+
+    def host_equipment_replace(self, rows: list[dict[str, object]]) -> int:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            rows (object): Controlled value supplied by the scenario.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
+        self.replaced["HOST_EQUIPMENT_LINK"] = rows
         return len(rows)
 
-    def upsert_rows(self, *, table, rows, unique_keys):
-        self.upserted[table] = {
-            "rows": rows,
-            "unique_keys": unique_keys,
-        }
-        return len(rows)
+    def site_equipment_list_sources(self, **scope: object) -> list[dict[str, object]]:
+        """Support the domain scenario through the public persistence contract.
 
-    def execute_delete(self, sql, params):
-        self.deleted.append((sql, params))
-        return 0
-
-    def acquire_host_snapshot_lock(self):
-        return True
-
-    def release_host_snapshot_lock(self):
-        pass
-
-    def read_host_current_snapshot_sources(
-        self,
-        *,
-        current_month_start,
-        next_month_start,
-    ):
-        return self.host_current_snapshot_sources
-
-    def read_host_current_snapshot_signals(self):
-        return self.host_current_snapshot_sources.get("signal_rows", [])
-
-    def read_timeline_hosts(self, **kwargs):
+        Args:
+            **scope (object): Explicit entity scope options.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
         return []
+
+    def site_equipment_replace(
+        self, rows: list[dict[str, object]], **scope: object
+    ) -> int:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            rows (object): Controlled value supplied by the scenario.
+            **scope (object): Explicit entity scope options.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
+        self.replaced["SITE_EQUIPMENT_METRIC"] = rows
+        return len(rows)
+
+    def site_equipment_list_affected(self, **scope: object) -> list[int]:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            **scope (object): Explicit entity scope options.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
+        return sorted(scope["equipment_ids"])
+
+    def host_visit_list_hosts(self, **scope: object) -> list[int]:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            **scope (object): Explicit entity scope options.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
+        return []
+
+    def host_monthly_list_sources(self, **scope: object) -> list[dict[str, object]]:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            **scope (object): Explicit entity scope options.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
+        return []
+
+    def host_monthly_replace(
+        self, rows: list[dict[str, object]], **scope: object
+    ) -> int:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            rows (object): Controlled value supplied by the scenario.
+            **scope (object): Explicit entity scope options.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
+        self.replaced["HOST_MONTHLY_METRIC"] = rows
+        return len(rows)
+
+    def host_error_list_sources(self, **scope: object) -> list[dict[str, object]]:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            **scope (object): Explicit entity scope options.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
+        return []
+
+    def host_error_replace(self, rows: list[dict[str, object]], **scope: object) -> int:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            rows (object): Controlled value supplied by the scenario.
+            **scope (object): Explicit entity scope options.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
+        self.replaced["HOST_ERROR_METRIC"] = rows
+        return len(rows)
+
+    def host_metric_list_sources(self, **scope: object) -> list[dict[str, object]]:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            **scope (object): Explicit entity scope options.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
+        return []
+
+    def host_metric_replace(
+        self, rows: list[dict[str, object]], **scope: object
+    ) -> int:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            rows (object): Controlled value supplied by the scenario.
+            **scope (object): Explicit entity scope options.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
+        self.replaced["HOST_METRIC"] = rows
+        return len(rows)
 
 
 class FakeSummaryLog:
     def __init__(self) -> None:
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         self.events = []
         self.warning_events = []
 
     def event(self, event, **fields):
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            event (object): Controlled value supplied by the scenario.
+            **fields (object): Explicit entity scope options.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
         self.events.append((event, fields))
 
     def warning_event(self, event, **fields):
+        """Support the domain scenario through the public persistence contract.
+
+        Args:
+            event (object): Controlled value supplied by the scenario.
+            **fields (object): Explicit entity scope options.
+        Returns:
+            object: Deterministic fixture result consumed by the scenario.
+        """
         self.warning_events.append((event, fields))
 
 
 class SummaryWorkerEngineTests(unittest.TestCase):
     def test_location_timeline_preserves_returns_and_marks_both_overlaps(self) -> None:
+        """Verify location timeline preserves returns and marks both overlaps.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         db = FakeSummaryDb()
         visits = [
-            {"FK_SITE": 48, "DT_FIRST_SEEN_AT": datetime(2024, 1, 1),
-             "DT_LAST_SEEN_AT": datetime(2024, 8, 1)},
-            {"FK_SITE": 58, "DT_FIRST_SEEN_AT": datetime(2024, 8, 26),
-             "DT_LAST_SEEN_AT": datetime(2024, 9, 3)},
-            {"FK_SITE": 171, "DT_FIRST_SEEN_AT": datetime(2024, 9, 17),
-             "DT_LAST_SEEN_AT": datetime(2024, 9, 24)},
-            {"FK_SITE": 170, "DT_FIRST_SEEN_AT": datetime(2024, 9, 21),
-             "DT_LAST_SEEN_AT": datetime(2024, 9, 23)},
-            {"FK_SITE": 48, "DT_FIRST_SEEN_AT": datetime(2025, 1, 1),
-             "DT_LAST_SEEN_AT": datetime(2026, 9, 14)},
+            {
+                "FK_SITE": 48,
+                "DT_FIRST_SEEN_AT": datetime(2024, 1, 1),
+                "DT_LAST_SEEN_AT": datetime(2024, 8, 1),
+            },
+            {
+                "FK_SITE": 58,
+                "DT_FIRST_SEEN_AT": datetime(2024, 8, 26),
+                "DT_LAST_SEEN_AT": datetime(2024, 9, 3),
+            },
+            {
+                "FK_SITE": 171,
+                "DT_FIRST_SEEN_AT": datetime(2024, 9, 17),
+                "DT_LAST_SEEN_AT": datetime(2024, 9, 24),
+            },
+            {
+                "FK_SITE": 170,
+                "DT_FIRST_SEEN_AT": datetime(2024, 9, 21),
+                "DT_LAST_SEEN_AT": datetime(2024, 9, 23),
+            },
+            {
+                "FK_SITE": 48,
+                "DT_FIRST_SEEN_AT": datetime(2025, 1, 1),
+                "DT_LAST_SEEN_AT": datetime(2026, 9, 14),
+            },
         ]
-        db.read_timeline_hosts = lambda **kwargs: [10]
-        db.read_host_location_visits = lambda host_id: visits
+        db.host_visit_list_hosts = lambda **kwargs: [10]
+        db.host_visit_list_sources = lambda host_id: visits
         published = []
-        db.replace_host_location_visits = lambda host_id, rows: published.extend(rows) or len(rows)
+        db.host_visit_replace = lambda host_id, rows: published.extend(rows) or len(
+            rows
+        )
         engine = SummaryRefreshEngine(db=db, logger=FakeSummaryLog())
         count, _ = engine.refresh_location_timeline(host_ids={10})
         self.assertEqual(count, 5)
@@ -127,16 +309,32 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertEqual(published[2]["DT_LAST_SEEN_AT"], datetime(2024, 9, 24))
 
     def test_location_timeline_clears_hosts_without_dated_spectra(self) -> None:
+        """Verify location timeline clears hosts without dated spectra.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         db = FakeSummaryDb()
-        db.read_timeline_hosts = lambda **kwargs: [10]
-        db.read_host_location_visits = lambda host_id: []
+        db.host_visit_list_hosts = lambda **kwargs: [10]
+        db.host_visit_list_sources = lambda host_id: []
         published = []
-        db.replace_host_location_visits = lambda host_id, rows: published.append((host_id, rows)) or 0
+        db.host_visit_replace = (
+            lambda host_id, rows: published.append((host_id, rows)) or 0
+        )
         engine = SummaryRefreshEngine(db=db, logger=FakeSummaryLog())
         self.assertEqual(engine.refresh_location_timeline(host_ids={10})[0], 0)
         self.assertEqual(published, [(10, [])])
 
     def test_dirty_scope_merges_all_outbox_rows(self) -> None:
+        """Verify dirty scope merges all outbox rows.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         scope = DirtyScope.from_outbox_rows(
             [
                 {
@@ -194,6 +392,13 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertTrue(scope.full_reconcile)
 
     def test_dirty_scope_rejects_invalid_outbox_row(self) -> None:
+        """Verify dirty scope rejects invalid outbox row.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         with self.assertRaisesRegex(RuntimeError, "Invalid SUMMARY_OUTBOX row"):
             DirtyScope.from_outbox_rows(
                 [
@@ -205,248 +410,16 @@ class SummaryWorkerEngineTests(unittest.TestCase):
                 ]
             )
 
-    def test_refresh_for_events_runs_dependency_chain_in_order(self) -> None:
-        db = FakeSummaryDb()
-        log = FakeSummaryLog()
-        engine = SummaryRefreshEngine(db=db, logger=log)
+    def test_host_equipment_link_prefers_exact_matches_over_prefixes(
+        self,
+    ) -> None:
+        """Prefer an exact automatic match over a competing prefix candidate.
 
-        call_order = []
-        engine._refresh_site_equipment_obs_summary = lambda **kwargs: call_order.append("SITE_EQUIPMENT_OBS_SUMMARY") or (1, "ok")
-        engine._refresh_host_equipment_link = lambda: call_order.append("HOST_EQUIPMENT_LINK") or (1, "ok")
-        engine._refresh_host_location_summary = lambda: call_order.append("HOST_LOCATION_SUMMARY") or (1, "ok")
-        engine.refresh_location_timeline = lambda **kwargs: call_order.append("HOST_LOCATION_TIMELINE_SUMMARY") or (1, "ok")
-        engine._refresh_map_site_station_summary = lambda: call_order.append("MAP_SITE_STATION_SUMMARY") or (1, "ok")
-        engine._refresh_map_site_summary = lambda: call_order.append("MAP_SITE_SUMMARY") or (1, "ok")
-        engine._refresh_host_monthly_metric = lambda **kwargs: call_order.append("HOST_MONTHLY_METRIC") or (1, "ok")
-        engine._refresh_host_error_summary = lambda **kwargs: call_order.append("HOST_ERROR_SUMMARY") or (1, "ok")
-        engine._refresh_server_error_summary = lambda: call_order.append("SERVER_ERROR_SUMMARY") or (1, "ok")
-        engine._refresh_host_current_snapshot = lambda: call_order.append("HOST_CURRENT_SNAPSHOT") or (1, "ok")
-        engine._refresh_server_current_summary = lambda: call_order.append("SERVER_CURRENT_SUMMARY") or (1, "ok")
-
-        engine.refresh_for_events(
-            [
-                {
-                    "ID_OUTBOX": 10,
-                    "NA_SCOPE_TYPE": "site",
-                    "NA_SCOPE_VALUE": "100",
-                },
-                {
-                    "ID_OUTBOX": 11,
-                    "NA_SCOPE_TYPE": "host",
-                    "NA_SCOPE_VALUE": "10",
-                },
-                {
-                    "ID_OUTBOX": 12,
-                    "NA_SCOPE_TYPE": "reference_month",
-                    "NA_SCOPE_VALUE": "2026-05-01",
-                },
-            ]
-        )
-
-        self.assertEqual(
-            call_order,
-            [
-                "SITE_EQUIPMENT_OBS_SUMMARY",
-                "HOST_EQUIPMENT_LINK",
-                "HOST_LOCATION_SUMMARY",
-                "MAP_SITE_STATION_SUMMARY",
-                "MAP_SITE_SUMMARY",
-                "HOST_LOCATION_TIMELINE_SUMMARY",
-                "HOST_MONTHLY_METRIC",
-                "HOST_ERROR_SUMMARY",
-                "SERVER_ERROR_SUMMARY",
-                "HOST_CURRENT_SNAPSHOT",
-                "SERVER_CURRENT_SUMMARY",
-            ],
-        )
-        self.assertEqual([name for name, _row_count, _watermark in db.succeeded], call_order)
-        self.assertFalse(db.failed)
-
-    def test_refresh_all_uses_full_safe_sequence(self) -> None:
-        db = FakeSummaryDb()
-        log = FakeSummaryLog()
-        engine = SummaryRefreshEngine(db=db, logger=log)
-
-        call_order = []
-        for name in (
-            "SITE_EQUIPMENT_OBS_SUMMARY",
-            "HOST_EQUIPMENT_LINK",
-            "HOST_LOCATION_SUMMARY",
-            "MAP_SITE_STATION_SUMMARY",
-            "MAP_SITE_SUMMARY",
-            "HOST_MONTHLY_METRIC",
-            "HOST_ERROR_SUMMARY",
-            "SERVER_ERROR_SUMMARY",
-            "HOST_CURRENT_SNAPSHOT",
-            "SERVER_CURRENT_SUMMARY",
-        ):
-            setattr(
-                engine,
-                f"_refresh_{name.lower()}",
-                lambda _name=name: call_order.append(_name) or (1, "ok"),
-            )
-
-        engine._refresh_site_equipment_obs_summary = lambda **kwargs: call_order.append("SITE_EQUIPMENT_OBS_SUMMARY") or (1, "ok")
-        engine._refresh_host_equipment_link = lambda: call_order.append("HOST_EQUIPMENT_LINK") or (1, "ok")
-        engine._refresh_host_location_summary = lambda: call_order.append("HOST_LOCATION_SUMMARY") or (1, "ok")
-        engine.refresh_location_timeline = lambda **kwargs: call_order.append("HOST_LOCATION_TIMELINE_SUMMARY") or (1, "ok")
-        engine._refresh_map_site_station_summary = lambda: call_order.append("MAP_SITE_STATION_SUMMARY") or (1, "ok")
-        engine._refresh_map_site_summary = lambda: call_order.append("MAP_SITE_SUMMARY") or (1, "ok")
-        engine._refresh_host_monthly_metric = lambda **kwargs: call_order.append("HOST_MONTHLY_METRIC") or (1, "ok")
-        engine._refresh_host_error_summary = lambda **kwargs: call_order.append("HOST_ERROR_SUMMARY") or (1, "ok")
-        engine._refresh_server_error_summary = lambda: call_order.append("SERVER_ERROR_SUMMARY") or (1, "ok")
-        engine._refresh_host_current_snapshot = lambda: call_order.append("HOST_CURRENT_SNAPSHOT") or (1, "ok")
-        engine._refresh_server_current_summary = lambda: call_order.append("SERVER_CURRENT_SUMMARY") or (1, "ok")
-
-        engine.refresh_all(reason="test")
-
-        self.assertEqual(len(call_order), 11)
-        self.assertEqual(call_order[0], "SITE_EQUIPMENT_OBS_SUMMARY")
-        self.assertEqual(call_order[-1], "SERVER_CURRENT_SUMMARY")
-
-    def test_refresh_error_summaries_refreshes_only_error_read_models(self) -> None:
-        db = FakeSummaryDb()
-        log = FakeSummaryLog()
-        engine = SummaryRefreshEngine(db=db, logger=log)
-
-        call_order = []
-        engine._refresh_host_error_summary = (
-            lambda **kwargs: call_order.append("HOST_ERROR_SUMMARY") or (1, "ok")
-        )
-        engine._refresh_server_error_summary = (
-            lambda: call_order.append("SERVER_ERROR_SUMMARY") or (1, "ok")
-        )
-
-        refreshed = engine.refresh_error_summaries(reason="test")
-
-        self.assertEqual(
-            refreshed,
-            ["HOST_ERROR_SUMMARY", "SERVER_ERROR_SUMMARY"],
-        )
-        self.assertEqual(
-            call_order,
-            ["HOST_ERROR_SUMMARY", "SERVER_ERROR_SUMMARY"],
-        )
-
-    def test_host_current_snapshot_materializes_durable_processing_states(self) -> None:
-        db = FakeSummaryDb()
-        log = FakeSummaryLog()
-        engine = SummaryRefreshEngine(db=db, logger=log)
-        backup_at = datetime(2026, 7, 20, 10, 0, 0)
-        processed_at = datetime(2026, 7, 21, 11, 30, 0)
-        discovery_completed_at = datetime(2026, 7, 22, 9, 45, 0)
-
-        db.host_current_snapshot_sources = {
-            "hosts": [
-                {
-                    "ID_HOST": 7,
-                    "NA_HOST_NAME": "RFeye002007",
-                    "NA_HOST_ADDRESS": "192.0.2.7",
-                    "NA_HOST_PORT": 22,
-                    "IS_OFFLINE": 0,
-                    "IS_BUSY": 0,
-                    "DT_LAST_OFFLINE_AT": datetime(2026, 7, 19, 8, 0, 0),
-                    "NA_LAST_OFFLINE_DESCRIPTION": "ICMP unreachable",
-                }
-            ],
-            "signal_rows": [
-                {
-                    "ID_HOST": 7,
-                    "DT_LAST_DISCOVERY_COMPLETED_AT": discovery_completed_at,
-                    "NU_LAST_DISCOVERY_FILE_COUNT": 7,
-                    "VL_LAST_DISCOVERY_KB": 1280,
-                    "DT_LAST_DISCOVERY_WITH_FILES": discovery_completed_at,
-                    "IS_SSH_FAILURE": 1,
-                    "DT_LAST_SSH_EVALUATED_AT": datetime(2026, 7, 22, 8, 0, 0),
-                    "DT_LAST_SSH_FAILURE_AT": datetime(2026, 7, 22, 8, 0, 0),
-                    "NA_LAST_SSH_FAILURE_CODE": "AUTHENTICATION",
-                    "NA_LAST_SSH_FAILURE_DESCRIPTION": "Authentication failed",
-                    "IS_GPS_GNSS_UNAVAILABLE": 1,
-                    "DT_LAST_GPS_GNSS_EVALUATED_AT": datetime(2026, 7, 21, 11, 0, 0),
-                    "DT_LAST_GPS_GNSS_UNAVAILABLE_AT": datetime(2026, 7, 21, 11, 0, 0),
-                    "NA_LAST_GPS_GNSS_UNAVAILABLE_DESCRIPTION": "GNSS unavailable",
-                    "NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME": "sample.bin",
-                }
-            ],
-            "queue_rows": [
-                {
-                    "FK_HOST": 7,
-                    "NU_BACKUP_QUEUE_FILES_TOTAL": 2,
-                    "VL_BACKUP_QUEUE_GB_TOTAL": 1.5,
-                    "NU_PROCESSING_QUEUE_FILES_TOTAL": 3,
-                    "VL_PROCESSING_QUEUE_GB_TOTAL": 2.25,
-                }
-            ],
-            "history_rows": [
-                {
-                    "FK_HOST": 7,
-                    "DT_LAST_BACKUP": backup_at,
-                    "DT_LAST_PROCESSING": processed_at,
-                    "NU_BACKUP_DONE_THIS_MONTH": 4,
-                    "VL_BACKUP_DONE_GB_THIS_MONTH": 3.75,
-                    "NU_PROCESSING_DONE_THIS_MONTH": 3,
-                    "VL_PROCESSING_DONE_GB_THIS_MONTH": 2.8,
-                    "NU_DISCOVERED_FILES_TOTAL": 10,
-                    "VL_DISCOVERED_GB_TOTAL": 9.5,
-                    "NU_BACKUP_DONE_FILES_TOTAL": 8,
-                    "VL_BACKUP_DONE_GB_TOTAL": 7.25,
-                    "NU_PROCESSING_DONE_FILES_TOTAL": 6,
-                    "VL_PROCESSING_DONE_GB_TOTAL": 5.75,
-                    "NU_BACKUP_PENDING_FILES_CURRENT": 2,
-                    "VL_BACKUP_PENDING_GB_CURRENT": 1.5,
-                    "NU_BACKUP_ERROR_FILES_CURRENT": 1,
-                    "VL_BACKUP_ERROR_GB_CURRENT": 0.75,
-                    "NU_BACKUP_SUSPENDED_FILES_CURRENT": 0,
-                    "VL_BACKUP_SUSPENDED_GB_CURRENT": 0,
-                    "NU_PROCESSING_PENDING_FILES_CURRENT": 3,
-                    "VL_PROCESSING_PENDING_GB_CURRENT": 2.25,
-                    "NU_PROCESSING_ERROR_FILES_CURRENT": 2,
-                    "VL_PROCESSING_ERROR_GB_CURRENT": 1.2,
-                    "NU_PROCESSING_FROZEN_FILES_CURRENT": 1,
-                    "VL_PROCESSING_FROZEN_GB_CURRENT": 0.9,
-                }
-            ],
-            "monthly_rows": [{"FK_HOST": 7, "NU_DISCOVERED_FILES_TOTAL": 10}],
-            "link_rows": [{"FK_HOST": 7, "NU_MATCHED_EQUIPMENT_TOTAL": 1}],
-            "spectrum_rows": [{"FK_HOST": 7, "NU_FACT_SPECTRUM_TOTAL": 2048}],
-            "current_location_rows": [
-                {
-                    "FK_HOST": 7,
-                    "NA_LOCALITY_LABEL": "Sabara/MG",
-                    "NA_SITE_LABEL": "Ravena",
-                    "NA_STATE_CODE": "MG",
-                    "VL_LATITUDE": -19.796391,
-                    "VL_LONGITUDE": -43.718441,
-                }
-            ],
-            "last_error_rows": [],
-        }
-
-        row_count, watermark = engine._refresh_host_current_snapshot()
-
-        self.assertEqual(row_count, 1)
-        self.assertEqual(watermark, "hosts=1")
-        row = db.replaced["HOST_CURRENT_SNAPSHOT"][0]
-        self.assertEqual(row["DT_LAST_BACKUP"], backup_at)
-        self.assertEqual(row["DT_LAST_PROCESSING"], processed_at)
-        self.assertEqual(row["DT_LAST_DISCOVERY_COMPLETED_AT"], discovery_completed_at)
-        self.assertEqual(row["NU_LAST_DISCOVERY_FILE_COUNT"], 7)
-        self.assertEqual(row["VL_LAST_DISCOVERY_KB"], 1280)
-        self.assertEqual(row["IS_SSH_FAILURE"], 1)
-        self.assertEqual(row["NA_LAST_SSH_FAILURE_CODE"], "AUTHENTICATION")
-        self.assertEqual(row["IS_GPS_GNSS_UNAVAILABLE"], 1)
-        self.assertEqual(row["NA_LAST_GPS_GNSS_UNAVAILABLE_HOST_FILE_NAME"], "sample.bin")
-        self.assertEqual(row["NU_PROCESSING_DONE_THIS_MONTH"], 3)
-        self.assertEqual(row["VL_PROCESSING_DONE_GB_THIS_MONTH"], 2.8)
-        self.assertEqual(row["NU_PROCESSING_ERROR_FILES_CURRENT"], 2)
-        self.assertEqual(row["NU_PROCESSING_FROZEN_FILES_CURRENT"], 1)
-        self.assertEqual(row["NU_PROCESSING_QUEUE_FILES_TOTAL"], 3)
-        self.assertEqual(row["NU_BACKUP_QUEUE_FILES_TOTAL"], 2)
-        self.assertEqual(row["NA_CURRENT_LOCALITY_LABEL"], "Sabara/MG")
-        self.assertEqual(row["VL_CURRENT_LATITUDE"], -19.796391)
-        self.assertEqual(row["VL_CURRENT_LONGITUDE"], -43.718441)
-
-    def test_host_equipment_link_prefers_manual_override_and_exact_matches(self) -> None:
+        Args:
+            None.
+        Returns:
+            None.
+        """
         db = FakeSummaryDb()
         log = FakeSummaryLog()
         engine = SummaryRefreshEngine(db=db, logger=log)
@@ -455,38 +428,88 @@ class SummaryWorkerEngineTests(unittest.TestCase):
             "FROM BPDATA.HOST": [
                 {"FK_HOST": 1, "NA_HOST_NAME": "CWSM-22010007"},
                 {"FK_HOST": 2, "NA_HOST_NAME": "rfeye002073"},
+                {"FK_HOST": 3, "NA_HOST_NAME": "rfeye002073-extra"},
             ],
             "FROM RFDATA.DIM_SPECTRUM_EQUIPMENT": [
                 {"FK_EQUIPMENT": 10, "NA_EQUIPMENT": "cwsm211007"},
                 {"FK_EQUIPMENT": 20, "NA_EQUIPMENT": "rfeye002073"},
             ],
-            "FROM HOST_EQUIPMENT_LINK_OVERRIDE": [
-                {"FK_HOST": 2, "FK_EQUIPMENT": 20},
-            ],
         }
 
-        def fake_select(sql, params=()):
-            for marker, rows in datasets.items():
-                if marker in sql:
-                    return rows
-            raise AssertionError(f"Unexpected SQL: {sql}")
-
-        engine._select = fake_select
+        db.host_equipment_list_sources = lambda: {
+            "hosts": [
+                {"ID_HOST": row["FK_HOST"], "NA_HOST_NAME": row["NA_HOST_NAME"]}
+                for row in datasets["FROM BPDATA.HOST"]
+            ],
+            "equipment": [
+                {
+                    "ID_EQUIPMENT": row["FK_EQUIPMENT"],
+                    "NA_EQUIPMENT": row["NA_EQUIPMENT"],
+                }
+                for row in datasets["FROM RFDATA.DIM_SPECTRUM_EQUIPMENT"]
+            ],
+        }
         row_count, watermark = engine._refresh_host_equipment_link()
 
         rows = db.replaced["HOST_EQUIPMENT_LINK"]
-        self.assertEqual(row_count, 2)
-        self.assertIn("hosts=2", watermark)
-        by_equipment = {row["FK_EQUIPMENT"]: row for row in rows if row["IS_PRIMARY_LINK"] == 1}
+        self.assertEqual(row_count, 3)
+        self.assertIn("hosts=3", watermark)
+        by_equipment = {
+            row["FK_EQUIPMENT"]: row for row in rows if row["IS_PRIMARY_LINK"] == 1
+        }
 
         self.assertEqual(by_equipment[10]["FK_HOST"], 1)
         self.assertEqual(by_equipment[10]["NA_MATCH_TYPE"], "cwsm_signature")
         self.assertNotIn("NA_HOST_NAME_NORMALIZED", by_equipment[10])
         self.assertEqual(by_equipment[20]["FK_HOST"], 2)
-        self.assertEqual(by_equipment[20]["NA_MATCH_TYPE"], "manual_override")
-        self.assertEqual(by_equipment[20]["IS_MANUAL_OVERRIDE"], 1)
+        self.assertEqual(by_equipment[20]["NA_MATCH_TYPE"], "exact_normalized")
+        prefix = next(row for row in rows if row["FK_HOST"] == 3)
+        self.assertEqual(prefix["NA_MATCH_TYPE"], "prefix_match")
+        self.assertEqual(prefix["IS_PRIMARY_LINK"], 0)
+
+    def test_host_equipment_link_rebuilds_catalog_matches_without_resolving_ties(self) -> None:
+        """Recompute primary links after catalog changes and retain ambiguous pairs.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        db = FakeSummaryDb()
+        engine = SummaryRefreshEngine(db=db, logger=FakeSummaryLog())
+        sources = {
+            "hosts": [
+                {"ID_HOST": 1, "NA_HOST_NAME": "receiver-001"},
+                {"ID_HOST": 2, "NA_HOST_NAME": "receiver-001"},
+            ],
+            "equipment": [{"ID_EQUIPMENT": 7, "NA_EQUIPMENT": "receiver-001"}],
+        }
+        db.host_equipment_list_sources = lambda: sources
+
+        engine._refresh_host_equipment_link()
+        rows = db.replaced["HOST_EQUIPMENT_LINK"]
+        self.assertEqual({row["FK_HOST"] for row in rows}, {1, 2})
+        self.assertTrue(all(row["IS_PRIMARY_LINK"] == 0 for row in rows))
+
+        sources["hosts"][1]["NA_HOST_NAME"] = "other-receiver"
+        engine._refresh_host_equipment_link()
+        rows = db.replaced["HOST_EQUIPMENT_LINK"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["FK_HOST"], 1)
+        self.assertEqual(rows[0]["IS_PRIMARY_LINK"], 1)
+
+        sources["hosts"] = []
+        engine._refresh_host_equipment_link()
+        self.assertEqual(db.replaced["HOST_EQUIPMENT_LINK"], [])
 
     def test_host_equipment_link_matches_cwsm_family_by_station_suffix(self) -> None:
+        """Verify host equipment link matches cwsm family by station suffix.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         db = FakeSummaryDb()
         log = FakeSummaryLog()
         engine = SummaryRefreshEngine(db=db, logger=log)
@@ -500,312 +523,66 @@ class SummaryWorkerEngineTests(unittest.TestCase):
                 {"FK_EQUIPMENT": 118, "NA_EQUIPMENT": "cwsm21100031"},
                 {"FK_EQUIPMENT": 138, "NA_EQUIPMENT": "cwsm21100044"},
             ],
-            "FROM HOST_EQUIPMENT_LINK_OVERRIDE": [],
         }
 
-        def fake_select(sql, params=()):
-            for marker, rows in datasets.items():
-                if marker in sql:
-                    return rows
-            raise AssertionError(f"Unexpected SQL: {sql}")
-
-        engine._select = fake_select
+        db.host_equipment_list_sources = lambda: {
+            "hosts": [
+                {"ID_HOST": row["FK_HOST"], "NA_HOST_NAME": row["NA_HOST_NAME"]}
+                for row in datasets["FROM BPDATA.HOST"]
+            ],
+            "equipment": [
+                {
+                    "ID_EQUIPMENT": row["FK_EQUIPMENT"],
+                    "NA_EQUIPMENT": row["NA_EQUIPMENT"],
+                }
+                for row in datasets["FROM RFDATA.DIM_SPECTRUM_EQUIPMENT"]
+            ],
+        }
         row_count, watermark = engine._refresh_host_equipment_link()
 
         rows = db.replaced["HOST_EQUIPMENT_LINK"]
         self.assertEqual(row_count, 2)
         self.assertIn("hosts=2", watermark)
-        by_equipment = {row["FK_EQUIPMENT"]: row for row in rows if row["IS_PRIMARY_LINK"] == 1}
+        by_equipment = {
+            row["FK_EQUIPMENT"]: row for row in rows if row["IS_PRIMARY_LINK"] == 1
+        }
 
         self.assertEqual(by_equipment[118]["FK_HOST"], 1)
         self.assertEqual(by_equipment[118]["NA_MATCH_TYPE"], "cwsm_signature")
         self.assertEqual(by_equipment[138]["FK_HOST"], 2)
         self.assertEqual(by_equipment[138]["NA_MATCH_TYPE"], "cwsm_signature")
 
-    def test_site_equipment_obs_summary_preserves_county_and_district_ids(self) -> None:
-        db = FakeSummaryDb()
-        log = FakeSummaryLog()
-        engine = SummaryRefreshEngine(db=db, logger=log)
-
-        engine._select = lambda sql, params=(): [
-            {
-                "FK_SITE": 237,
-                "FK_EQUIPMENT": 133,
-                "NA_SITE_NAME": "Enseada do Sua",
-                "NA_SITE_LABEL": "Enseada do Sua",
-                "FK_COUNTY": 3205309,
-                "FK_DISTRICT": 181,
-                "NA_COUNTY_NAME": "Vitoria",
-                "NA_DISTRICT_NAME": "Enseada do Sua",
-                "ID_STATE": 32,
-                "NA_STATE_NAME": "Espirito Santo",
-                "NA_STATE_CODE": "ES",
-                "VL_LATITUDE": -20.31,
-                "VL_LONGITUDE": -40.29,
-                "VL_ALTITUDE": 3.0,
-                "NU_GNSS_MEASUREMENTS": 12,
-                "NA_EQUIPMENT": "ermxes03",
-                "DT_FIRST_SEEN_AT": datetime(2025, 6, 28, 12, 22, 53),
-                "DT_LAST_SEEN_AT": datetime(2026, 1, 10, 9, 1, 12),
-                "NU_SPECTRUM_COUNT": 1925,
-                "ID_LAST_SPECTRUM": 4219,
-            }
-        ]
-
-        row_count, watermark = engine._refresh_site_equipment_obs_summary()
-
-        self.assertEqual(row_count, 1)
-        self.assertEqual(watermark, "rows=1")
-        rows = db.replaced["SITE_EQUIPMENT_OBS_SUMMARY"]
-        self.assertEqual(rows[0]["FK_COUNTY"], 3205309)
-        self.assertEqual(rows[0]["FK_DISTRICT"], 181)
-
-    def test_site_equipment_obs_summary_site_scope_recomputes_full_equipment_history(self) -> None:
-        db = FakeSummaryDb()
-        log = FakeSummaryLog()
-        engine = SummaryRefreshEngine(db=db, logger=log)
-
-        def fake_select(sql, params=()):
-            if "SELECT DISTINCT FK_EQUIPMENT" in sql and "FROM RFDATA.FACT_SPECTRUM" in sql:
-                self.assertEqual(params, (23,))
-                return [{"FK_EQUIPMENT": 25}]
-
-            if "SELECT DISTINCT FK_EQUIPMENT" in sql and "FROM SITE_EQUIPMENT_OBS_SUMMARY" in sql:
-                self.assertEqual(params, (23,))
-                return [{"FK_EQUIPMENT": 25}]
-
-            if "FROM RFDATA.FACT_SPECTRUM f" in sql:
-                self.assertEqual(params, (25,))
-                return [
-                    {
-                        "FK_SITE": 41,
-                        "FK_EQUIPMENT": 25,
-                        "NA_SITE_NAME": "Chapeco",
-                        "NA_SITE_LABEL": "Chapeco",
-                        "FK_COUNTY": 4204202,
-                        "FK_DISTRICT": None,
-                        "NA_COUNTY_NAME": "Chapeco",
-                        "NA_DISTRICT_NAME": None,
-                        "ID_STATE": 42,
-                        "NA_STATE_NAME": "Santa Catarina",
-                        "NA_STATE_CODE": "SC",
-                        "VL_LATITUDE": -27.10,
-                        "VL_LONGITUDE": -52.61,
-                        "VL_ALTITUDE": 670.0,
-                        "NU_GNSS_MEASUREMENTS": 10,
-                        "NA_EQUIPMENT": "rfeye002134",
-                        "DT_FIRST_SEEN_AT": datetime(2023, 5, 11, 17, 9, 0),
-                        "DT_LAST_SEEN_AT": datetime(2026, 6, 24, 3, 51, 0),
-                        "NU_SPECTRUM_COUNT": 12502,
-                        "ID_LAST_SPECTRUM": 9001,
-                    },
-                    {
-                        "FK_SITE": 23,
-                        "FK_EQUIPMENT": 25,
-                        "NA_SITE_NAME": "Sede",
-                        "NA_SITE_LABEL": "Sede",
-                        "FK_COUNTY": 4205407,
-                        "FK_DISTRICT": None,
-                        "NA_COUNTY_NAME": "Florianopolis",
-                        "NA_DISTRICT_NAME": None,
-                        "ID_STATE": 42,
-                        "NA_STATE_NAME": "Santa Catarina",
-                        "NA_STATE_CODE": "SC",
-                        "VL_LATITUDE": -27.59,
-                        "VL_LONGITUDE": -48.55,
-                        "VL_ALTITUDE": 5.0,
-                        "NU_GNSS_MEASUREMENTS": 8,
-                        "NA_EQUIPMENT": "rfeye002134",
-                        "DT_FIRST_SEEN_AT": datetime(2019, 1, 23, 16, 3, 21),
-                        "DT_LAST_SEEN_AT": datetime(2023, 4, 17, 15, 26, 0),
-                        "NU_SPECTRUM_COUNT": 1347,
-                        "ID_LAST_SPECTRUM": 8123,
-                    },
-                ]
-
-            raise AssertionError(f"Unexpected SQL: {sql}")
-
-        engine._select = fake_select
-
-        row_count, watermark = engine._refresh_site_equipment_obs_summary(site_ids={23})
-
-        self.assertEqual(row_count, 2)
-        self.assertEqual(watermark, "rows=2")
-        self.assertEqual(len(db.deleted), 1)
-        delete_sql, delete_params = db.deleted[0]
-        self.assertIn("FK_EQUIPMENT IN (%s)", delete_sql)
-        self.assertNotIn("FK_SITE IN", delete_sql)
-        self.assertEqual(delete_params, [25])
-
-        upsert_payload = db.upserted["SITE_EQUIPMENT_OBS_SUMMARY"]["rows"]
-        by_site = {row["FK_SITE"]: row for row in upsert_payload}
-        self.assertEqual(by_site[41]["IS_CURRENT_LOCATION"], 1)
-        self.assertEqual(by_site[23]["IS_CURRENT_LOCATION"], 0)
-
-    def test_host_location_summary_propagates_county_and_district_ids(self) -> None:
-        db = FakeSummaryDb()
-        log = FakeSummaryLog()
-        engine = SummaryRefreshEngine(db=db, logger=log)
-
-        engine._select = lambda sql, params=(): [
-            {
-                "FK_HOST": 10845,
-                "FK_SITE": 237,
-                "NA_HOST_NAME": "ERMxES03",
-                "NA_SITE_NAME": "Enseada do Sua",
-                "NA_SITE_LABEL": "Enseada do Sua",
-                "FK_COUNTY": 3205309,
-                "FK_DISTRICT": 181,
-                "NA_COUNTY_NAME": "Vitoria",
-                "NA_DISTRICT_NAME": "Enseada do Sua",
-                "ID_STATE": 32,
-                "NA_STATE_NAME": "Espirito Santo",
-                "NA_STATE_CODE": "ES",
-                "VL_LATITUDE": -20.31,
-                "VL_LONGITUDE": -40.29,
-                "VL_ALTITUDE": 3.0,
-                "DT_FIRST_SEEN_AT": datetime(2025, 6, 28, 12, 22, 53),
-                "DT_LAST_SEEN_AT": datetime(2026, 1, 10, 9, 1, 12),
-                "NU_SPECTRUM_COUNT": 1925,
-                "FK_EQUIPMENT": 133,
-                "IS_CURRENT_LOCATION": 1,
-                "IS_OFFLINE": 0,
-                "VL_MATCH_CONFIDENCE": 1.0,
-            }
-        ]
-
-        row_count, watermark = engine._refresh_host_location_summary()
-
-        self.assertEqual(row_count, 1)
-        self.assertEqual(watermark, "rows=1")
-        rows = db.replaced["HOST_LOCATION_SUMMARY"]
-        self.assertEqual(rows[0]["FK_COUNTY"], 3205309)
-        self.assertEqual(rows[0]["FK_DISTRICT"], 181)
-        self.assertEqual(rows[0]["NA_LOCALITY_LABEL"], "Enseada do Sua · Vitoria/ES")
-
-    def test_map_site_summary_propagates_county_and_district_ids(self) -> None:
-        db = FakeSummaryDb()
-        log = FakeSummaryLog()
-        engine = SummaryRefreshEngine(db=db, logger=log)
-
-        def fake_select(sql, params=()):
-            if "FROM RFDATA.DIM_SPECTRUM_SITE s" in sql:
-                return [
-                    {
-                        "ID_SITE": 237,
-                        "NA_SITE": "Enseada do Sua",
-                        "FK_COUNTY": 3205309,
-                        "FK_DISTRICT": 181,
-                        "NA_COUNTY": "Vitoria",
-                        "NA_DISTRICT": "Enseada do Sua",
-                        "ID_STATE": 32,
-                        "NA_STATE": "Espirito Santo",
-                        "LC_STATE": "ES",
-                        "VL_LATITUDE": -20.31,
-                        "VL_LONGITUDE": -40.29,
-                        "VL_ALTITUDE": 3.0,
-                        "NU_GNSS_MEASUREMENTS": 12,
-                    }
-                ]
-
-            if sql.strip() == "SELECT * FROM MAP_SITE_STATION_SUMMARY":
-                return [
-                    {
-                        "FK_SITE": 237,
-                        "FK_HOST": 10845,
-                        "NA_MAP_STATE": "online_current",
-                        "NU_STATE_PRIORITY": 0,
-                    }
-                ]
-
-            raise AssertionError(f"Unexpected SQL: {sql}")
-
-        engine._select = fake_select
-
-        row_count, watermark = engine._refresh_map_site_summary()
-
-        self.assertEqual(row_count, 1)
-        self.assertEqual(watermark, "rows=1")
-        rows = db.replaced["MAP_SITE_SUMMARY"]
-        self.assertEqual(rows[0]["FK_COUNTY"], 3205309)
-        self.assertEqual(rows[0]["FK_DISTRICT"], 181)
-        self.assertEqual(rows[0]["NA_MARKER_STATE"], "online_current")
-
     def test_normalization_and_cwsm_signature_follow_sql_contract(self) -> None:
+        """Verify normalization and cwsm signature follow sql contract.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         self.assertEqual(_normalize_key(" CWSM-22010007 "), "cwsm22010007")
-        self.assertEqual(_cwsm_signature("cwsm22010007"), "cwsm211007")
-        self.assertEqual(_cwsm_signature("cwsm21100007"), "cwsm211007")
-        self.assertEqual(_cwsm_signature("cwsm21100031"), "cwsm212031")
-        self.assertEqual(_cwsm_signature("cwsm21100044"), "cwsm220044")
+        self.assertEqual(_cwsm_signature("cwsm22010007"), "cwsm07")
+        self.assertEqual(_cwsm_signature("cwsm21100007"), "cwsm07")
+        self.assertEqual(_cwsm_signature("cwsm211007"), "cwsm07")
+        self.assertEqual(_cwsm_signature("cwsm21100031"), "cwsm31")
+        self.assertEqual(_cwsm_signature("cwsm212031"), "cwsm31")
+        self.assertEqual(_cwsm_signature("cwsm2110021"), "cwsm21")
+        self.assertIsNone(_cwsm_signature("cwsm2110000"))
         self.assertIsNone(_cwsm_signature("rfeye002073"))
 
-    def test_host_monthly_metric_skips_invalid_reference_month_rows(self) -> None:
-        db = FakeSummaryDb()
-        log = FakeSummaryLog()
-        engine = SummaryRefreshEngine(db=db, logger=log)
-
-        engine._select = lambda sql, params=(): [
-            {
-                "FK_HOST": 10,
-                "DT_REFERENCE_MONTH": "2026-05-01",
-                "NA_HOST_NAME": "rfeye002010",
-                "NU_DISCOVERED_FILES": 2,
-                "VL_DISCOVERED_GB": 1.25,
-                "NU_BACKUP_DONE_FILES": 1,
-                "VL_BACKUP_DONE_GB": 0.5,
-                "NU_BACKUP_PENDING_FILES": 1,
-                "VL_BACKUP_PENDING_GB": 0.75,
-                "NU_BACKUP_ERROR_FILES": 0,
-                "VL_BACKUP_ERROR_GB": 0,
-                "NU_PROCESSING_DONE_FILES": 0,
-                "VL_PROCESSING_DONE_GB": 0,
-                "NU_PROCESSING_PENDING_FILES": 1,
-                "VL_PROCESSING_PENDING_GB": 0.75,
-                "NU_PROCESSING_ERROR_FILES": 0,
-                "VL_PROCESSING_ERROR_GB": 0,
-            },
-            {
-                "FK_HOST": 11,
-                "DT_REFERENCE_MONTH": None,
-                "NA_HOST_NAME": "rfeye002011",
-                "NU_DISCOVERED_FILES": 1,
-                "VL_DISCOVERED_GB": 0.25,
-                "NU_BACKUP_DONE_FILES": 0,
-                "VL_BACKUP_DONE_GB": 0,
-                "NU_BACKUP_PENDING_FILES": 1,
-                "VL_BACKUP_PENDING_GB": 0.25,
-                "NU_BACKUP_ERROR_FILES": 0,
-                "VL_BACKUP_ERROR_GB": 0,
-                "NU_PROCESSING_DONE_FILES": 0,
-                "VL_PROCESSING_DONE_GB": 0,
-                "NU_PROCESSING_PENDING_FILES": 1,
-                "VL_PROCESSING_PENDING_GB": 0.25,
-                "NU_PROCESSING_ERROR_FILES": 0,
-                "VL_PROCESSING_ERROR_GB": 0,
-            },
-        ]
-
-        row_count, watermark = engine._refresh_host_monthly_metric()
-
-        self.assertEqual(row_count, 1)
-        self.assertIn("skipped_invalid_month=1", watermark)
-        self.assertEqual(len(db.replaced["HOST_MONTHLY_METRIC"]), 1)
-        self.assertEqual(
-            db.replaced["HOST_MONTHLY_METRIC"][0]["DT_REFERENCE_MONTH"],
-            "2026-05-01",
-        )
-        self.assertNotIn("NA_HOST_NAME", db.replaced["HOST_MONTHLY_METRIC"][0])
-        self.assertEqual(
-            log.warning_events[0][0],
-            "summary_host_monthly_metric_invalid_month_skipped",
-        )
-
     def test_host_error_summary_keeps_latest_event_without_audit_bloat(self) -> None:
+        """Verify host error summary keeps latest event without audit bloat.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         db = FakeSummaryDb()
         log = FakeSummaryLog()
         engine = SummaryRefreshEngine(db=db, logger=log)
 
-        engine._read_error_events = lambda host_ids=None: [
+        db.host_error_list_sources = lambda host_ids=None: [
             {
                 "FK_HOST": 10,
                 "NA_ERROR_SCOPE": "PROCESSING",
@@ -832,7 +609,7 @@ class SummaryWorkerEngineTests(unittest.TestCase):
 
         self.assertEqual(row_count, 1)
         self.assertEqual(watermark, "rows=1")
-        row = db.replaced["HOST_ERROR_SUMMARY"][0]
+        row = db.replaced["HOST_ERROR_METRIC"][0]
         self.assertEqual(row["NU_ERROR_COUNT"], 2)
         self.assertEqual(row["NA_TASK_STATE"], "ERROR")
         self.assertEqual(row["DT_LAST_SEEN_AT"], datetime(2026, 5, 20, 12, 30, 0))
@@ -842,11 +619,18 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         self.assertNotIn("DT_REFRESHED_AT", row)
 
     def test_host_error_summary_collapses_known_code_detail_variants(self) -> None:
+        """Verify host error summary collapses known code detail variants.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         db = FakeSummaryDb()
         log = FakeSummaryLog()
         engine = SummaryRefreshEngine(db=db, logger=log)
 
-        engine._read_error_events = lambda host_ids=None: [
+        db.host_error_list_sources = lambda host_ids=None: [
             {
                 "FK_HOST": 10,
                 "NA_ERROR_SCOPE": "PROCESSING",
@@ -874,271 +658,96 @@ class SummaryWorkerEngineTests(unittest.TestCase):
         row_count, _watermark = engine._refresh_host_error_summary()
 
         self.assertEqual(row_count, 1)
-        row = db.replaced["HOST_ERROR_SUMMARY"][0]
+        row = db.replaced["HOST_ERROR_METRIC"][0]
         self.assertEqual(row["NA_ERROR_SUMMARY"], "APP_ANALISE file unavailable")
         self.assertEqual(row["NU_ERROR_COUNT"], 2)
 
-    def test_read_error_events_restores_display_fields_from_raw_message(self) -> None:
-        """Summary rows remain readable after operational payload compaction."""
+    def test_full_reconcile_publishes_only_canonical_aggregates(self) -> None:
+        """Verify full reconcile publishes only canonical aggregates.
 
+        Args:
+            None.
+        Returns:
+            None.
+        """
         db = FakeSummaryDb()
-        log = FakeSummaryLog()
-        engine = SummaryRefreshEngine(db=db, logger=log)
-        engine._select = lambda sql, params=(): [
-            {
-                "NA_ERROR_CODE": "UNCLASSIFIED",
-                "NA_ERROR_SUMMARY": None,
-                "NA_ERROR_DETAIL": "database transport timeout",
-                "NA_RAW_MESSAGE": (
-                    "Processing Error | [ERROR] [stage=DB] "
-                    "[code=UNCLASSIFIED] "
-                    "Failed to persist processed spectra batch"
-                ),
-            }
-        ]
-
-        row = engine._read_error_events()[0]
-
-        self.assertEqual(row["NA_ERROR_CODE"], "UNCLASSIFIED")
+        engine = SummaryRefreshEngine(db, FakeSummaryLog())
+        refreshed = engine.refresh_all(reason="test")
         self.assertEqual(
-            row["NA_ERROR_SUMMARY"],
-            "Failed to persist processed spectra batch",
+            refreshed,
+            [
+                "HOST_EQUIPMENT_LINK",
+                "SITE_EQUIPMENT_METRIC",
+                "HOST_LOCATION_VISIT",
+                "HOST_MONTHLY_METRIC",
+                "HOST_ERROR_METRIC",
+                "HOST_METRIC",
+            ],
         )
-        self.assertEqual(row["NA_ERROR_DETAIL"], "database transport timeout")
+        self.assertEqual(db.commits, 1)
+        self.assertEqual(db.rollbacks, 0)
+        self.assertFalse(
+            any(name.startswith("WEBFUSION_USAGE") for name in db.replaced)
+        )
 
-    def test_server_error_summary_rolls_up_minimal_ui_payload(self) -> None:
+    def test_host_events_avoid_spectra_and_global_matching(self) -> None:
+        """Verify host events avoid spectra and global matching.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
         db = FakeSummaryDb()
-        log = FakeSummaryLog()
-        engine = SummaryRefreshEngine(db=db, logger=log)
+        engine = SummaryRefreshEngine(db, FakeSummaryLog())
+        refreshed = engine.refresh_for_events(
+            [{"NA_SCOPE_TYPE": "host", "NA_SCOPE_VALUE": "10"}]
+        )
+        self.assertEqual(
+            set(refreshed), {"HOST_MONTHLY_METRIC", "HOST_METRIC", "HOST_ERROR_METRIC"}
+        )
+        self.assertNotIn("HOST_EQUIPMENT_LINK", db.replaced)
+        self.assertNotIn("SITE_EQUIPMENT_METRIC", db.replaced)
 
-        engine._select = lambda sql, params=(): [
-            {
-                "NA_ERROR_SCOPE": "BACKUP",
-                "NA_TASK_STATE": "ERROR",
-                "NA_ERROR_CODE": "timeout",
-                "NA_ERROR_SUMMARY_HASH": "abc",
-                "NA_ERROR_SUMMARY": "Connection timeout",
-                "NU_ERROR_COUNT": 2,
-            },
-            {
-                "NA_ERROR_SCOPE": "BACKUP",
-                "NA_TASK_STATE": "ERROR",
-                "NA_ERROR_CODE": "timeout",
-                "NA_ERROR_SUMMARY_HASH": "abc",
-                "NA_ERROR_SUMMARY": "Connection timeout",
-                "NU_ERROR_COUNT": 3,
-            },
-        ]
+    def test_empty_events_do_no_writes(self) -> None:
+        """Verify empty events do no writes.
 
-        row_count, watermark = engine._refresh_server_error_summary()
-
-        self.assertEqual(row_count, 1)
-        self.assertEqual(watermark, "rows=1")
-        row = db.replaced["SERVER_ERROR_SUMMARY"][0]
-        self.assertEqual(row["NU_ERROR_COUNT"], 5)
-        self.assertEqual(row["NA_TASK_STATE"], "ERROR")
-        self.assertNotIn("DT_LAST_SEEN_AT", row)
-        self.assertNotIn("NA_LAST_SOURCE_TABLE", row)
-        self.assertNotIn("DT_REFRESHED_AT", row)
-
-    def test_host_current_snapshot_includes_current_month_backup_throughput(self) -> None:
+        Args:
+            None.
+        Returns:
+            None.
+        """
         db = FakeSummaryDb()
-        log = FakeSummaryLog()
-        engine = SummaryRefreshEngine(db=db, logger=log)
+        self.assertEqual(
+            SummaryRefreshEngine(db, FakeSummaryLog()).refresh_for_events([]), []
+        )
+        self.assertEqual(db.replaced, {})
+        self.assertFalse(db.in_transaction)
 
-        db.host_current_snapshot_sources = {
-            "hosts": [
-                {
-                    "ID_HOST": 10,
-                    "IS_OFFLINE": 0,
-                    "IS_BUSY": 1,
-                    "NA_HOST_NAME": "rfeye010",
-                    "NA_HOST_ADDRESS": "10.0.0.10",
-                    "NA_HOST_PORT": 22,
-                    "NU_PENDING_FILE_BACKUP_TASKS": 2,
-                    "NU_ERROR_FILE_BACKUP_TASKS": 1,
-                    "VL_PENDING_BACKUP_KB": 512000,
-                    "VL_DONE_BACKUP_KB": 1024000,
-                    "NU_PENDING_FILE_PROCESS_TASKS": 4,
-                    "NU_ERROR_FILE_PROCESS_TASKS": 1,
-                    "NU_HOST_FILES": 12,
-                },
-                {
-                    "ID_HOST": 11,
-                    "IS_OFFLINE": 1,
-                    "IS_BUSY": 0,
-                    "NA_HOST_NAME": "rfeye011",
-                    "NA_HOST_ADDRESS": "10.0.0.11",
-                    "NA_HOST_PORT": 22,
-                    "NU_PENDING_FILE_BACKUP_TASKS": 1,
-                    "NU_ERROR_FILE_BACKUP_TASKS": 0,
-                    "VL_PENDING_BACKUP_KB": 256000,
-                    "VL_DONE_BACKUP_KB": 512000,
-                    "NU_PENDING_FILE_PROCESS_TASKS": 2,
-                    "NU_ERROR_FILE_PROCESS_TASKS": 0,
-                    "NU_HOST_FILES": 8,
-                },
-            ],
-            "queue_rows": [
-                {
-                    "FK_HOST": 10,
-                    "NU_BACKUP_QUEUE_FILES_TOTAL": 3,
-                    "VL_BACKUP_QUEUE_GB_TOTAL": 4.25,
-                    "NU_PROCESSING_QUEUE_FILES_TOTAL": 6,
-                    "VL_PROCESSING_QUEUE_GB_TOTAL": 7.75,
-                },
-                {
-                    "FK_HOST": 11,
-                    "NU_BACKUP_QUEUE_FILES_TOTAL": 0,
-                    "VL_BACKUP_QUEUE_GB_TOTAL": 0.0,
-                    "NU_PROCESSING_QUEUE_FILES_TOTAL": 1,
-                    "VL_PROCESSING_QUEUE_GB_TOTAL": 0.25,
-                },
-            ],
-            "history_rows": [
-                {
-                    "FK_HOST": 10,
-                    "NU_BACKUP_DONE_THIS_MONTH": 14,
-                    "VL_BACKUP_DONE_GB_THIS_MONTH": 18.58,
-                },
-                {
-                    "FK_HOST": 11,
-                    "NU_BACKUP_DONE_THIS_MONTH": 4,
-                    "VL_BACKUP_DONE_GB_THIS_MONTH": 1.25,
-                },
-            ],
-            "monthly_rows": [
-                {"FK_HOST": 10, "NU_DISCOVERED_FILES_TOTAL": 12},
-                {"FK_HOST": 11, "NU_DISCOVERED_FILES_TOTAL": 8},
-            ],
-            "link_rows": [
-                {"FK_HOST": 10, "NU_MATCHED_EQUIPMENT_TOTAL": 2},
-                {"FK_HOST": 11, "NU_MATCHED_EQUIPMENT_TOTAL": 1},
-            ],
-            "spectrum_rows": [
-                {"FK_HOST": 10, "NU_FACT_SPECTRUM_TOTAL": 99},
-                {"FK_HOST": 11, "NU_FACT_SPECTRUM_TOTAL": 11},
-            ],
-            "current_location_rows": [],
-            "last_error_rows": [],
-        }
+    def test_rebuild_failure_rolls_back_and_records_sanitized_audit(self) -> None:
+        """Verify rebuild failure rolls back and records sanitized audit.
 
-        row_count, watermark = engine._refresh_host_current_snapshot()
-
-        self.assertEqual(row_count, 2)
-        self.assertEqual(watermark, "hosts=2")
-        rows = db.replaced["HOST_CURRENT_SNAPSHOT"]
-        by_host = {row["ID_HOST"]: row for row in rows}
-        self.assertEqual(by_host[10]["NU_BACKUP_DONE_THIS_MONTH"], 14)
-        self.assertEqual(by_host[10]["VL_BACKUP_DONE_GB_THIS_MONTH"], 18.58)
-        self.assertEqual(by_host[11]["NU_BACKUP_DONE_THIS_MONTH"], 4)
-        self.assertEqual(by_host[11]["VL_BACKUP_DONE_GB_THIS_MONTH"], 1.25)
-        self.assertNotIn("NU_DONE_FILE_BACKUP_TASKS", by_host[10])
-        self.assertNotIn("FK_CURRENT_SITE", by_host[10])
-        self.assertNotIn("DT_REFRESHED_AT", by_host[10])
-
-    def test_server_current_summary_sums_snapshot_current_month_throughput(self) -> None:
+        Args:
+            None.
+        Returns:
+            None.
+        """
         db = FakeSummaryDb()
-        log = FakeSummaryLog()
-        engine = SummaryRefreshEngine(db=db, logger=log)
 
-        def fake_select(sql, params=()):
-            if "FROM HOST_CURRENT_SNAPSHOT" in sql:
-                return [
-                    {
-                        "IS_OFFLINE": 0,
-                        "IS_BUSY": 1,
-                        "NU_DISCOVERED_FILES_TOTAL": 12,
-                        "VL_DISCOVERED_GB_TOTAL": 10.5,
-                        "NU_BACKUP_DONE_FILES_TOTAL": 9,
-                        "VL_BACKUP_DONE_GB_TOTAL": 7.25,
-                        "NU_BACKUP_PENDING_FILES_CURRENT": 2,
-                        "VL_BACKUP_PENDING_GB_CURRENT": 1.5,
-                        "NU_BACKUP_ERROR_FILES_CURRENT": 1,
-                        "VL_BACKUP_ERROR_GB_CURRENT": 0.25,
-                        "NU_BACKUP_SUSPENDED_FILES_CURRENT": 1,
-                        "VL_BACKUP_SUSPENDED_GB_CURRENT": 0.75,
-                        "NU_BACKUP_QUEUE_FILES_TOTAL": 3,
-                        "VL_BACKUP_QUEUE_GB_TOTAL": 4.25,
-                        "NU_PROCESSING_DONE_FILES_TOTAL": 7,
-                        "VL_PROCESSING_DONE_GB_TOTAL": 5.5,
-                        "NU_PROCESSING_PENDING_FILES_CURRENT": 4,
-                        "VL_PROCESSING_PENDING_GB_CURRENT": 2.0,
-                        "NU_PROCESSING_ERROR_FILES_CURRENT": 1,
-                        "VL_PROCESSING_ERROR_GB_CURRENT": 0.5,
-                        "NU_PROCESSING_FROZEN_FILES_CURRENT": 1,
-                        "VL_PROCESSING_FROZEN_GB_CURRENT": 0.25,
-                        "NU_PROCESSING_QUEUE_FILES_TOTAL": 6,
-                        "VL_PROCESSING_QUEUE_GB_TOTAL": 7.75,
-                        "NU_FACT_SPECTRUM_TOTAL": 99,
-                        "NU_BACKUP_DONE_THIS_MONTH": 14,
-                        "VL_BACKUP_DONE_GB_THIS_MONTH": 18.58,
-                    },
-                    {
-                        "IS_OFFLINE": 1,
-                        "IS_BUSY": 0,
-                        "NU_DISCOVERED_FILES_TOTAL": 8,
-                        "VL_DISCOVERED_GB_TOTAL": 6.5,
-                        "NU_BACKUP_DONE_FILES_TOTAL": 5,
-                        "VL_BACKUP_DONE_GB_TOTAL": 4.0,
-                        "NU_BACKUP_PENDING_FILES_CURRENT": 1,
-                        "VL_BACKUP_PENDING_GB_CURRENT": 0.5,
-                        "NU_BACKUP_ERROR_FILES_CURRENT": 0,
-                        "VL_BACKUP_ERROR_GB_CURRENT": 0.0,
-                        "NU_BACKUP_SUSPENDED_FILES_CURRENT": 0,
-                        "VL_BACKUP_SUSPENDED_GB_CURRENT": 0.0,
-                        "NU_BACKUP_QUEUE_FILES_TOTAL": 0,
-                        "VL_BACKUP_QUEUE_GB_TOTAL": 0.0,
-                        "NU_PROCESSING_DONE_FILES_TOTAL": 4,
-                        "VL_PROCESSING_DONE_GB_TOTAL": 3.0,
-                        "NU_PROCESSING_PENDING_FILES_CURRENT": 2,
-                        "VL_PROCESSING_PENDING_GB_CURRENT": 1.0,
-                        "NU_PROCESSING_ERROR_FILES_CURRENT": 0,
-                        "VL_PROCESSING_ERROR_GB_CURRENT": 0.0,
-                        "NU_PROCESSING_FROZEN_FILES_CURRENT": 0,
-                        "VL_PROCESSING_FROZEN_GB_CURRENT": 0.0,
-                        "NU_PROCESSING_QUEUE_FILES_TOTAL": 1,
-                        "VL_PROCESSING_QUEUE_GB_TOTAL": 0.25,
-                        "NU_FACT_SPECTRUM_TOTAL": 11,
-                        "NU_BACKUP_DONE_THIS_MONTH": 4,
-                        "VL_BACKUP_DONE_GB_THIS_MONTH": 1.25,
-                    },
-                ]
+        def fail(**scope: object) -> list[dict[str, object]]:
+            """Support the domain scenario through the public persistence contract.
 
-            raise AssertionError(f"Unexpected SQL: {sql}")
+            Args:
+                **scope (object): Explicit entity scope options.
+            Returns:
+                object: Deterministic fixture result consumed by the scenario.
+            """
+            raise RuntimeError("private")
 
-        class FrozenDateTime(datetime):
-            @classmethod
-            def utcnow(cls):
-                return cls(2026, 5, 20, 17, 8, 30)
-
-        original_datetime = refresh_engine_module.datetime
-        refresh_engine_module.datetime = FrozenDateTime
-        try:
-            engine._select = fake_select
-            row_count, watermark = engine._refresh_server_current_summary()
-        finally:
-            refresh_engine_module.datetime = original_datetime
-
-        self.assertEqual(row_count, 1)
-        self.assertEqual(watermark, "hosts=2;month=2026-05")
-
-        payload = db.replaced["SERVER_CURRENT_SUMMARY"][0]
-        self.assertEqual(payload["NA_CURRENT_MONTH_LABEL"], "2026-05")
-        self.assertEqual(payload["NU_TOTAL_HOSTS"], 2)
-        self.assertEqual(payload["NU_ONLINE_HOSTS"], 1)
-        self.assertEqual(payload["NU_OFFLINE_HOSTS"], 1)
-        self.assertEqual(payload["NU_BUSY_HOSTS"], 1)
-        self.assertEqual(payload["NU_DISCOVERED_FILES_TOTAL"], 20)
-        self.assertEqual(payload["NU_PROCESSING_DONE_FILES_TOTAL"], 11)
-        self.assertEqual(payload["VL_PROCESSING_DONE_GB_TOTAL"], 8.5)
-        self.assertEqual(payload["NU_BACKUP_SUSPENDED_FILES_TOTAL"], 1)
-        self.assertEqual(payload["NU_PROCESSING_FROZEN_FILES_TOTAL"], 1)
-        self.assertEqual(payload["NU_BACKUP_DONE_THIS_MONTH"], 18)
-        self.assertEqual(payload["VL_BACKUP_DONE_GB_THIS_MONTH"], 19.83)
-        self.assertNotIn("NU_BACKUP_ERROR_GROUPS", payload)
-        self.assertNotIn("DT_REFRESHED_AT", payload)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        db.site_equipment_list_sources = fail
+        with self.assertRaises(RuntimeError):
+            SummaryRefreshEngine(db, FakeSummaryLog()).refresh_all(reason="test")
+        self.assertEqual(db.rollbacks, 1)
+        self.assertEqual(db.commits, 0)
+        self.assertFalse(db.audit[-1][1]["success"])
+        self.assertEqual(db.audit[-1][1]["error_message"], "RuntimeError")

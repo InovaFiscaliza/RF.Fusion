@@ -64,13 +64,13 @@ class FakeSummaryDb:
         self.batch = batch or []
         self.calls: list[tuple[str, object]] = []
 
-    def configure_worker_session(self) -> None:
-        self.calls.append(("configure_worker_session", None))
+    def worker_session_configure(self) -> None:
+        self.calls.append(("worker_session_configure", None))
 
-    def read_outbox_batch(self, consumer_name: str, *, batch_size: int):
+    def outbox_list_pending(self, consumer_name: str, *, batch_size: int):
         self.calls.append(
             (
-                "read_outbox_batch",
+                "outbox_list_pending",
                 {
                     "consumer_name": consumer_name,
                     "batch_size": batch_size,
@@ -79,10 +79,10 @@ class FakeSummaryDb:
         )
         return list(self.batch)
 
-    def mark_worker_start(self, consumer_name: str) -> None:
-        self.calls.append(("mark_worker_start", consumer_name))
+    def worker_state_start(self, consumer_name: str) -> None:
+        self.calls.append(("worker_state_start", consumer_name))
 
-    def mark_worker_success(
+    def worker_state_success(
         self,
         consumer_name: str,
         *,
@@ -92,7 +92,7 @@ class FakeSummaryDb:
     ) -> None:
         self.calls.append(
             (
-                "mark_worker_success",
+                "worker_state_success",
                 {
                     "consumer_name": consumer_name,
                     "last_outbox_id": last_outbox_id,
@@ -102,13 +102,13 @@ class FakeSummaryDb:
             )
         )
 
-    def drain_consumed_outbox(self, consumer_name: str) -> None:
-        self.calls.append(("drain_consumed_outbox", consumer_name))
+    def outbox_delete_consumed(self, consumer_name: str) -> None:
+        self.calls.append(("outbox_delete_consumed", consumer_name))
 
-    def mark_worker_failure(self, consumer_name: str, *, error_message: str) -> None:
+    def worker_state_failure(self, consumer_name: str, *, error_message: str) -> None:
         self.calls.append(
             (
-                "mark_worker_failure",
+                "worker_state_failure",
                 {
                     "consumer_name": consumer_name,
                     "error_message": error_message,
@@ -146,14 +146,20 @@ class SummaryDatabaseWorkerTests(unittest.TestCase):
         scheduled_at = datetime(2026, 6, 12, 5, 0, 0)
 
         with patch.object(summary_daemon, "log", fake_log):
-            with patch.object(summary_daemon, "_needs_startup_reconcile", return_value=True):
+            with patch.object(
+                summary_daemon, "_needs_startup_reconcile", return_value=True
+            ):
                 self.assertEqual(
                     summary_daemon._schedule_startup_reconcile(fake_db),
                     datetime.min,
                 )
 
-            with patch.object(summary_daemon, "_needs_startup_reconcile", return_value=False):
-                with patch.object(summary_daemon, "_next_2am_brt", return_value=scheduled_at):
+            with patch.object(
+                summary_daemon, "_needs_startup_reconcile", return_value=False
+            ):
+                with patch.object(
+                    summary_daemon, "_next_2am_brt", return_value=scheduled_at
+                ):
                     self.assertEqual(
                         summary_daemon._schedule_startup_reconcile(fake_db),
                         scheduled_at,
@@ -176,7 +182,9 @@ class SummaryDatabaseWorkerTests(unittest.TestCase):
         )
         fake_engine = FakeEngine()
 
-        with patch.object(summary_daemon.k, "SUMMARY_WORKER_CONSUMER_NAME", "summary_consumer"):
+        with patch.object(
+            summary_daemon.k, "SUMMARY_WORKER_CONSUMER_NAME", "summary_consumer"
+        ):
             with patch.object(summary_daemon.k, "SUMMARY_WORKER_BATCH_SIZE", 500):
                 processed = summary_daemon._run_incremental_batch(fake_db, fake_engine)
 
@@ -187,15 +195,15 @@ class SummaryDatabaseWorkerTests(unittest.TestCase):
             fake_db.calls,
             [
                 (
-                    "read_outbox_batch",
+                    "outbox_list_pending",
                     {
                         "consumer_name": "summary_consumer",
                         "batch_size": 500,
                     },
                 ),
-                ("mark_worker_start", "summary_consumer"),
+                ("worker_state_start", "summary_consumer"),
                 (
-                    "mark_worker_success",
+                    "worker_state_success",
                     {
                         "consumer_name": "summary_consumer",
                         "last_outbox_id": 12,
@@ -203,26 +211,49 @@ class SummaryDatabaseWorkerTests(unittest.TestCase):
                         "event_count": 2,
                     },
                 ),
-                ("drain_consumed_outbox", "summary_consumer"),
+                ("outbox_delete_consumed", "summary_consumer"),
             ],
         )
+
+    def test_full_reconcile_checkpoints_only_events_seen_before_rebuild(self) -> None:
+        """An event arriving during rebuild must survive its final queue drain.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        from unittest.mock import MagicMock
+
+        db = MagicMock()
+        engine = MagicMock()
+        db.outbox_read_watermark.return_value = 12
+        engine.refresh_all.side_effect = lambda **kwargs: setattr(
+            db.outbox_read_watermark, "return_value", 19
+        )
+        now = datetime(2026, 11, 10, 5)
+        summary_daemon._run_full_reconcile(db, engine, now)
+        self.assertEqual(db.worker_state_success.call_args.kwargs["last_outbox_id"], 12)
+        db.outbox_delete_consumed.assert_called_once()
 
     def test_finalize_error_marks_failure_and_logs_structured_event(self) -> None:
         fake_db = FakeSummaryDb()
         fake_log = FakeLog()
 
         with patch.object(summary_daemon, "log", fake_log):
-            with patch.object(summary_daemon.k, "SUMMARY_WORKER_CONSUMER_NAME", "summary_consumer"):
+            with patch.object(
+                summary_daemon.k, "SUMMARY_WORKER_CONSUMER_NAME", "summary_consumer"
+            ):
                 summary_daemon._finalize_error(fake_db, RuntimeError("boom"))
 
         self.assertEqual(
             fake_db.calls,
             [
                 (
-                    "mark_worker_failure",
+                    "worker_state_failure",
                     {
                         "consumer_name": "summary_consumer",
-                        "error_message": "RuntimeError('boom')",
+                        "error_message": "RuntimeError",
                     },
                 )
             ],
@@ -234,11 +265,12 @@ class SummaryDatabaseWorkerTests(unittest.TestCase):
                     "summary_worker_loop_failed",
                     {
                         "service": "appCataloga_summary_database",
-                        "error": "RuntimeError('boom')",
+                        "error": "RuntimeError",
                     },
                 )
             ],
         )
+
 
 if __name__ == "__main__":
     unittest.main()

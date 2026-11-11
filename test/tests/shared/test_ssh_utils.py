@@ -158,6 +158,9 @@ class TransferWatchdogTests(unittest.TestCase):
         conn = ssh_utils.sftpConnection.__new__(ssh_utils.sftpConnection)
         conn.host_uid = "RFEye002158"
         conn.host_addr = "rfeye002158.anatel.gov.br"
+        conn.connect_addr = conn.host_addr
+        conn.port = 22
+        conn.user = "test"
         conn.log = FakeTransferLog()
         conn.sftp = sftp
         conn.ssh_client = ssh_client or FakeSSHClient()

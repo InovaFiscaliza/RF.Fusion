@@ -33,10 +33,8 @@ with patch.dict(sys.modules, {"config": load_test_config()}):
 
 
 class IntegrationHandler(DbHandler):
-    """Declare only the temporary integration table."""
+    """Use isolated SQL tables without declaring their schema in Python."""
 
-    VALID_FIELDS_SAMPLE = {"ID", "NAME", "UPDATED", "ACTIVE"}
-    PRIMARY_KEY_SAMPLE = ("ID",)
 
 
 class PostgresIntegrationTests(unittest.TestCase):
@@ -149,6 +147,108 @@ class PostgresIntegrationTests(unittest.TestCase):
         self.assertEqual(self.handler._delete_batch("SAMPLE", {"ID__in": [1]}), 1)
         self.assertEqual(self.handler._select_batch("SAMPLE"), [])
 
+    def test_unknown_identifiers_raise_original_postgres_errors(self) -> None:
+        """Delegate SQL name validation without weakening identifier quoting.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        operations = (
+            lambda: self.handler._select_batch("SAMPLE", columns=("MISSING",)),
+            lambda: self.handler._select_batch("SAMPLE", where={"MISSING": 1}),
+            lambda: self.handler._select_batch("SAMPLE", order_by=(("MISSING", "ASC"),)),
+            lambda: self.handler._insert_row("SAMPLE", {"MISSING": 1}),
+            lambda: self.handler._insert_row("SAMPLE", {"NAME": "one"}, returning=("MISSING",)),
+            lambda: self.handler._insert_batch("SAMPLE", [{"MISSING": 1}]),
+            lambda: self.handler._update_batch("SAMPLE", {"MISSING": 1}, {"ID": 1}),
+            lambda: self.handler._delete_batch("SAMPLE", {"MISSING": 1}),
+            lambda: self.handler._upsert_row("SAMPLE", {"NAME": "one", "MISSING": 1}, conflict_columns=("NAME",)),
+            lambda: self.handler._select_aggregate("SAMPLE", {"N": ("count", "MISSING", None)}),
+            lambda: self.handler._select_batch("SAMPLE", columns=('NAME"; DROP TABLE "SAMPLE"; --',)),
+        )
+        for operation in operations:
+            with self.subTest(operation=operation):
+                with self.assertRaises(psycopg.errors.UndefinedColumn) as raised:
+                    operation()
+                self.assertEqual(raised.exception.sqlstate, "42703")
+        for table in ("MISSING", 'SAMPLE"; DROP TABLE "SAMPLE"; --'):
+            with self.subTest(table=table):
+                with self.assertRaises(psycopg.errors.UndefinedTable) as raised:
+                    self.handler._select_batch(table)
+                self.assertEqual(raised.exception.sqlstate, "42P01")
+        self.assertEqual(self.handler._select_batch("SAMPLE"), [])
+
+    def test_new_columns_work_without_python_schema_changes(self) -> None:
+        """Use a new SQL column immediately and keep explicit failures caller-owned.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.handler.begin_transaction()
+        try:
+            self.handler._execute(sql.SQL('ALTER TABLE {} ADD COLUMN "NOTE" text').format(sql.Identifier(self.schema, "SAMPLE")))
+            self.handler._insert_row("SAMPLE", {"NAME": "one", "NOTE": "added in SQL"})
+            self.assertEqual(self.handler._select_row("SAMPLE", {"ID": 1})["NOTE"], "added in SQL")
+            self.handler._update_row("SAMPLE", {"NOTE": "updated"}, {"ID": 1})
+            self.assertEqual(self.handler._select_batch("SAMPLE", columns=("NOTE",)), [{"NOTE": "updated"}])
+            with self.assertRaises(psycopg.errors.UndefinedColumn):
+                self.handler._select_batch("SAMPLE", columns=("MISSING",))
+            self.assertTrue(self.handler.in_transaction)
+            with self.assertRaises(psycopg.errors.InFailedSqlTransaction):
+                self.handler._select_batch("SAMPLE")
+        finally:
+            self.handler.rollback()
+        self.assertEqual(self.handler._select_batch("SAMPLE"), [])
+
+    def test_row_operations_use_database_unique_identity_without_declarations(self) -> None:
+        """Use an alternate unique key and conditional writes with engine errors.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.handler._insert_row("SAMPLE", {"ID": 1, "NAME": "one", "ACTIVE": True})
+        self.assertEqual(self.handler._select_row("SAMPLE", {"NAME": "one"})["ID"], 1)
+        self.assertEqual(self.handler._update_row("SAMPLE", {"ACTIVE": False}, {"NAME": "one", "ACTIVE": False}), 0)
+        self.assertEqual(self.handler._update_row("SAMPLE", {"ACTIVE": False}, {"NAME": "one", "ACTIVE": True}), 1)
+        with self.assertRaises(psycopg.errors.UniqueViolation) as raised:
+            self.handler._insert_row("SAMPLE", {"ID": 1, "NAME": "two"})
+        self.assertEqual(raised.exception.sqlstate, "23505")
+        for operation in (
+            lambda: self.handler._select_row("SAMPLE", {"MISSING": 1}),
+            lambda: self.handler._update_row("SAMPLE", {"ACTIVE": True}, {"MISSING": 1}),
+            lambda: self.handler._delete_row("SAMPLE", {"MISSING": 1}),
+        ):
+            with self.assertRaises(psycopg.errors.UndefinedColumn):
+                operation()
+        self.assertEqual(self.handler._delete_row("SAMPLE", {"NAME": "one"}), 1)
+        self.assertIsNone(self.handler._select_row("SAMPLE", {"NAME": "one"}))
+
+    def test_composite_identity_is_defined_only_in_postgres(self) -> None:
+        """Operate on a composite SQL key without registering it in the handler.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.handler.begin_transaction()
+        try:
+            self.handler._execute(sql.SQL('CREATE TABLE {} ("A" int, "B" int, "VALUE" text, PRIMARY KEY ("A", "B"))').format(sql.Identifier(self.schema, "PAIR")))
+            self.handler._insert_batch("PAIR", [{"A": 1, "B": 2, "VALUE": "first"}, {"A": 1, "B": 3, "VALUE": "second"}])
+            self.assertEqual(self.handler._select_row("PAIR", {"B": 2, "A": 1})["VALUE"], "first")
+            self.assertEqual(self.handler._update_row("PAIR", {"VALUE": "changed"}, {"A": 1, "B": 2}), 1)
+            self.assertEqual(self.handler._select_row("PAIR", {"A": 1, "B": 3})["VALUE"], "second")
+            self.assertEqual(self.handler._delete_row("PAIR", {"B": 2, "A": 1}), 1)
+            self.assertEqual(len(self.handler._select_batch("PAIR")), 1)
+        finally:
+            self.handler.rollback()
+
     def test_locked_select_blocks_another_session_until_rollback(self) -> None:
         """Hold actual PostgreSQL row locks until the owning transaction completes.
 
@@ -214,8 +314,6 @@ class PostgresIntegrationTests(unittest.TestCase):
         row = self.handler._select_row("SAMPLE", {"ID": 1})
         self.assertEqual(row["NAME"], "one")
         self.assertIsNone(self.handler._select_row("SAMPLE", {"ID": 99}))
-        with self.assertRaises(ValueError):
-            self.handler._delete_row("SAMPLE", {"ACTIVE": True})
         self.assertEqual(
             self.handler._update_row("SAMPLE", {"NAME": "renamed"}, {"ID": 1}), 1
         )

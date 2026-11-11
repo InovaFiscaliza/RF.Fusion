@@ -14,8 +14,8 @@ PROJECT_ROOT = bootstrap_app_paths(__file__)
 
 # Import customized libs
 from db.dbHandlerBKP import dbHandlerBKP
-from db.dbHandlerSummary import dbHandlerSummary
 from shared import  logging_utils
+from db import constants as db_constants
 import config as k
 
 log = logging_utils.log()
@@ -96,31 +96,28 @@ def prune_empty_repository_tmp_dirs(*, repo_tmp_root: str) -> int:
     return removed
 
 
-def _clear_snapshot_busy_hosts(host_ids: list[int]) -> int:
-    """Clear busy state mirrors after BPDATA host locks are released."""
-    db_summary = dbHandlerSummary(database=k.SUMMARY_DATABASE_NAME, log=log)
-    try:
-        return db_summary.clear_host_current_snapshot_busy_state(host_ids=host_ids)
-    finally:
-        db_summary.close()
-
-
 def cleanup_hosts_and_tasks() -> None:
+    """Recover queue and host ownership after all workers have stopped.
+
+    Args:
+        None.
+    Returns:
+        None. Failures are logged; the owned database session is always closed.
+        Repository TMP cleanup runs only after database recovery succeeds.
+    """
     log.entry("[CLEANUP] Starting forced cleanup (HOST + HOST_TASK + FILE_TASK)")
 
     db = None
     try:
-        db = dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
-        db._connect()
+        db = dbHandlerBKP(
+            database=k.BKP_DATABASE_NAME, log=log, conninfo=k.PG_CONNINFO
+        )
+        db.connect()
 
         # ---------------------------------------------------------
         # 1) Reset RUNNING FILE_TASKs → PENDING
         # ---------------------------------------------------------
-        rows = db._select_rows(
-            table="FILE_TASK",
-            where={"NU_STATUS": k.TASK_RUNNING},
-            cols=["ID_FILE_TASK", "FK_HOST", "NU_PID"],
-        )
+        rows = db.file_task_list_running()
 
         for row in rows:
             task_id = row["ID_FILE_TASK"]
@@ -134,7 +131,9 @@ def cleanup_hosts_and_tasks() -> None:
 
             db.file_task_update(
                 task_id=task_id,
-                NU_STATUS=k.TASK_PENDING,
+                expected_status=db_constants['tasks']['states']['running'],
+                NU_STATUS=db_constants['tasks']['states']['pending'],
+                NU_PID=db_constants['hosts']['unlocked_pid'],
                 DT_FILE_TASK=datetime.now(),
                 NA_MESSAGE="Task reset to PENDING due to controlled shutdown",
             )
@@ -144,11 +143,7 @@ def cleanup_hosts_and_tasks() -> None:
         # ---------------------------------------------------------
         # 2) Reset RUNNING HOST_TASKs → PENDING   (NEW)
         # ---------------------------------------------------------
-        host_tasks = db._select_rows(
-            table="HOST_TASK",
-            where={"NU_STATUS": k.TASK_RUNNING},
-            cols=["ID_HOST_TASK", "FK_HOST", "NU_PID"],
-        )
+        host_tasks = db.host_task_list_running()
 
         for row in host_tasks:
             host_task_id = row["ID_HOST_TASK"]
@@ -162,7 +157,9 @@ def cleanup_hosts_and_tasks() -> None:
 
             db.host_task_update(
                 task_id=host_task_id,
-                NU_STATUS=k.TASK_PENDING,
+                expected_status=db_constants['tasks']['states']['running'],
+                NU_STATUS=db_constants['tasks']['states']['pending'],
+                NU_PID=db_constants['hosts']['unlocked_pid'],
                 DT_HOST_TASK=None,
                 NA_MESSAGE="Host task reset to PENDING due to controlled shutdown",
             )
@@ -172,12 +169,7 @@ def cleanup_hosts_and_tasks() -> None:
         # ---------------------------------------------------------
         # 3) Force release BUSY HOSTs
         # ---------------------------------------------------------
-        hosts = db._select_rows(
-            table="HOST",
-            where={"IS_BUSY": True},
-            cols=["ID_HOST", "NU_PID"],
-        )
-        released_host_ids = []
+        hosts = db.host_list_busy()
 
         for row in hosts:
             host_id = row["ID_HOST"]
@@ -190,35 +182,17 @@ def cleanup_hosts_and_tasks() -> None:
 
             db.host_update(
                 host_id=host_id,
-                IS_BUSY=False,
-                NU_PID=k.HOST_UNLOCKED_PID,
+                IS_BUSY=0,
+                NU_PID=db_constants['hosts']['unlocked_pid'],
                 DT_BUSY=None,
             )
-            released_host_ids.append(host_id)
 
         log.entry(f"[CLEANUP] Released {len(hosts)} BUSY hosts")
-
-        if released_host_ids:
-            try:
-                updated_rows = _clear_snapshot_busy_hosts(released_host_ids)
-                log.entry(
-                    "[CLEANUP] Cleared IS_BUSY in host snapshot tables "
-                    f"for {len(released_host_ids)} host(s), rows={updated_rows}"
-                )
-            except Exception as exc:
-                log.error(
-                    "[CLEANUP] Failed to clear IS_BUSY in host snapshot tables: "
-                    f"{exc}"
-                )
 
         # ---------------------------------------------------------
         # 4) Reassert OFFLINE suspension invariants after the reset
         # ---------------------------------------------------------
-        offline_hosts = db._select_rows(
-            table="HOST",
-            where={"IS_OFFLINE": True},
-            cols=["ID_HOST"],
-        )
+        offline_hosts = db.host_list_offline()
 
         for row in offline_hosts:
             host_id = row["ID_HOST"]
@@ -247,7 +221,7 @@ def cleanup_hosts_and_tasks() -> None:
 
     finally:
         if db:
-            db._disconnect()
+            db.close()
 
     log.entry("[CLEANUP] Forced cleanup finished")
 

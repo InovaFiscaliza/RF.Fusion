@@ -24,6 +24,7 @@ PROJECT_ROOT = bootstrap_app_paths(__file__)
 # =================================================
 # Internal modules
 # =================================================
+from db import constants as db_constants
 import config as k
 from db.dbHandlerBKP import dbHandlerBKP
 from db.dbHandlerSummary import dbHandlerSummary
@@ -38,8 +39,8 @@ SERVICE_NAME = "appCataloga"
 SCRIPT_NAME = "appCataloga.py"
 SHUTDOWN_PAYLOAD = {"status": 0, "message": "Server shutting down"}
 COMMAND_TASK_MAP = {
-    k.BACKUP_QUERY_TAG: k.HOST_TASK_CHECK_TYPE,
-    k.STOP_QUERY_TAG: k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+    k.BACKUP_QUERY_TAG: db_constants['tasks']['host_types']['check'],
+    k.STOP_QUERY_TAG: db_constants['tasks']['host_types']['backlog_rollback'],
     k.METRICS_QUERY_TAG: None,
 }
 
@@ -69,12 +70,12 @@ def _stop_service_siblings() -> None:
 
 def _init_db() -> dbHandlerBKP:
     """Create the BPDATA handler owned by this gateway process."""
-    return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log)
+    return dbHandlerBKP(database=k.BKP_DATABASE_NAME, log=log, conninfo=k.PG_CONNINFO)
 
 
 def _init_summary_db() -> dbHandlerSummary:
     """Create the summary handler used by the metrics gateway command."""
-    return dbHandlerSummary(database=k.SUMMARY_DATABASE_NAME, log=log)
+    return dbHandlerSummary(database=k.SUMMARY_DATABASE_NAME, log=log, conninfo=k.PG_CONNINFO)
 
 
 def _init_server_socket() -> socket.socket:
@@ -195,7 +196,7 @@ def _queue_host_task(
         return db.host_task_enqueue(
             host_id=host_id,
             task_type=task_type,
-            task_status=k.TASK_PENDING,
+            task_status=db_constants['tasks']['states']['pending'],
             filter_dict=host_filter,
         )
     except Exception as exc:
@@ -253,13 +254,13 @@ def _read_host_metrics(
     host_id: int,
     err: errors.ErrorHandler,
 ) -> dict[str, Any]:
-    """Read one materialized host snapshot without creating a HOST_TASK."""
+    """Read one host projection without creating a HOST_TASK."""
     if db_summary is None:
         err.capture("Summary handler is unavailable", stage=k.STAGE_DB, host_id=host_id)
         raise RuntimeError("Summary handler is unavailable")
 
     try:
-        snapshot = db_summary.read_host_operational_snapshot(host_id=host_id)
+        snapshot = db_summary.host_read_operational(host_id=host_id)
     except Exception as exc:
         err.capture(
             "Failed to read host operational metrics",
@@ -362,7 +363,7 @@ def _serve_client_connection(
             client_socket=client_socket,
             logger=log,
             err=err,
-            none_filter=k.NONE_FILTER,
+            none_filter=db_constants['tasks']['default_filter'],
         )
         host_id, response_payload = _process_host_request(
             host,

@@ -26,6 +26,9 @@ with bind_test_config():
         )
 
 
+from db import constants as db_constants
+
+
 class BacklogManagementWorkerTests(unittest.TestCase):
     """Protect volume, ordering, and transaction ownership in the worker.
 
@@ -60,10 +63,10 @@ class BacklogManagementWorkerTests(unittest.TestCase):
             logger=self.log,
             host_id=1,
             task_filter=task_filter,
-            search_type=worker.k.FILE_TASK_DISCOVERY,
-            search_status=worker.k.TASK_DONE,
-            new_type=worker.k.FILE_TASK_BACKUP_TYPE,
-            new_status=worker.k.TASK_PENDING,
+            search_type=db_constants['tasks']['file_types']['discovery'],
+            search_status=db_constants['tasks']['states']['done'],
+            new_type=db_constants['tasks']['file_types']['backup'],
+            new_status=db_constants['tasks']['states']['pending'],
         )
 
     def test_budget_selects_only_the_ordered_prefix_and_publishes_before_commit(
@@ -82,14 +85,14 @@ class BacklogManagementWorkerTests(unittest.TestCase):
             {"ID_FILE_TASK": 3, "VL_FILE_SIZE_KB_HOST": 1},
         ]
         result = self.promote(
-            {"mode": "ALL", "max_total_gb": 50 / worker.k.KILOBYTES_PER_GB}
+            {"mode": "ALL", "max_total_gb": 50 / db_constants['persistence']['kilobytes_per_gb']}
         )
         self.assertEqual(result["selected_total_kb"], 20)
         self.assertEqual(result["moved_to_backup"], 1)
         update = self.db.file_task_update_backlog.call_args.kwargs
         self.assertEqual(update["where"]["ID_FILE_TASK__in"], [1])
-        self.assertEqual(update["where"]["NU_TYPE"], worker.k.FILE_TASK_DISCOVERY)
-        self.assertEqual(update["where"]["NU_STATUS"], worker.k.TASK_DONE)
+        self.assertEqual(update["where"]["NU_TYPE"], db_constants['tasks']['file_types']['discovery'])
+        self.assertEqual(update["where"]["NU_STATUS"], db_constants['tasks']['states']['done'])
         self.assertIsNone(update["data"]["NA_ERROR_CODE"])
         self.db.host_request_summary_refresh.assert_called_once_with(
             host_id=1, reason="backlog_transition"
@@ -135,7 +138,7 @@ class BacklogManagementWorkerTests(unittest.TestCase):
             {"ID_FILE_TASK": 1, "VL_FILE_SIZE_KB_HOST": 80}
         ]
         result = self.promote(
-            {"mode": "ALL", "max_total_gb": 50 / worker.k.KILOBYTES_PER_GB}
+            {"mode": "ALL", "max_total_gb": 50 / db_constants['persistence']['kilobytes_per_gb']}
         )
         self.assertEqual(result["rows_updated"], 0)
         self.db.file_task_update_backlog.assert_not_called()
@@ -207,8 +210,8 @@ class BacklogManagementWorkerTests(unittest.TestCase):
             None.
         """
         for task_type in (
-            worker.k.HOST_TASK_BACKLOG_CONTROL_TYPE,
-            worker.k.HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+            db_constants['tasks']['host_types']['backlog_control'],
+            db_constants['tasks']['host_types']['backlog_rollback'],
         ):
             with self.subTest(task_type=task_type):
                 self.db.reset_mock()
@@ -223,15 +226,15 @@ class BacklogManagementWorkerTests(unittest.TestCase):
                     result = worker._do_work(self.db, task)
                 self.db.host_request_summary_refresh.assert_called_once()
                 update = self.db.file_task_update_backlog.call_args.kwargs
-                if task_type == worker.k.HOST_TASK_BACKLOG_CONTROL_TYPE:
+                if task_type == db_constants['tasks']['host_types']['backlog_control']:
                     self.assertEqual(result["action"], "promote")
                     self.assertEqual(
-                        update["data"]["NU_TYPE"], worker.k.FILE_TASK_BACKUP_TYPE
+                        update["data"]["NU_TYPE"], db_constants['tasks']['file_types']['backup']
                     )
                 else:
                     self.assertEqual(result["action"], "rollback")
                     self.assertEqual(
-                        update["data"]["NU_TYPE"], worker.k.FILE_TASK_DISCOVERY
+                        update["data"]["NU_TYPE"], db_constants['tasks']['file_types']['discovery']
                     )
                     self.assertEqual(self.db.mock_calls[0][0], "host_task_update")
 
