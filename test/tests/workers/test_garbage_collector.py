@@ -74,11 +74,15 @@ class FakeDbBkp:
         *,
         batch_size: int,
         quarantine_days: int,
+        trash_root: str,
+        resolved_root: str,
     ) -> list[dict]:
         self.history_calls.append(
             {
                 "batch_size": batch_size,
                 "quarantine_days": quarantine_days,
+                "trash_root": trash_root,
+                "resolved_root": resolved_root,
             }
         )
         return []
@@ -92,18 +96,23 @@ class GarbageCollectorTests(unittest.TestCase):
 
     def test_history_candidates_require_processed_timestamp(self) -> None:
         handler = object.__new__(garbage_worker.dbHandlerBKP)
-        handler._select_batch = Mock(return_value=[])
+        handler.schema = "BPDATA"
+        handler._select_raw = Mock(return_value=[])
 
-        handler.file_task_history_list_gc_candidates(batch_size=123, quarantine_days=365)
+        handler.file_task_history_list_gc_candidates(
+            batch_size=123,
+            quarantine_days=365,
+            trash_root="/repo/trash",
+            resolved_root="/repo/trash/resolved_files",
+        )
 
-        kwargs = handler._select_batch.call_args.kwargs
-        self.assertEqual(kwargs["order_by"], (("DT_PROCESSED", "ASC"), ("ID_HISTORY", "ASC")))
-        self.assertEqual(kwargs["limit"], 123)
+        _, params = handler._select_raw.call_args.args
         self.assertAlmostEqual(
-            kwargs["where"]["DT_PROCESSED__lt"],
+            params[2],
             datetime.utcnow() - timedelta(days=365),
             delta=timedelta(seconds=5),
         )
+        self.assertEqual(params[-1], 123)
 
     def test_collect_uses_distinct_retention_windows(self) -> None:
         fake_db = FakeDbBkp()
@@ -134,6 +143,8 @@ class GarbageCollectorTests(unittest.TestCase):
                     ):
                         history_rows, resolved_rows = gc_maintenance.collect_gc_candidates(
                             fake_db,
+                            trash_root="/repo/trash",
+                            resolved_root="/repo/trash/resolved_files",
                             logger=fake_log,
                         )
 
@@ -141,7 +152,14 @@ class GarbageCollectorTests(unittest.TestCase):
         self.assertEqual(resolved_rows, [])
         self.assertEqual(
             fake_db.history_calls,
-            [{"batch_size": 123, "quarantine_days": 365}],
+            [
+                {
+                    "batch_size": 123,
+                    "quarantine_days": 365,
+                    "trash_root": "/repo/trash",
+                    "resolved_root": "/repo/trash/resolved_files",
+                }
+            ],
         )
         self.assertEqual(
             resolved_calls,

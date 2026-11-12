@@ -12,7 +12,7 @@ APP_PATH="/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/$APP
 PYTHON_BIN="/opt/conda/envs/appdata/bin/python"
 
 PID_DIR="/var/run/appCataloga"
-LOG_DIR="/var/log/appCataloga"
+LOG_DIR="/var/log"
 LOG_FILE="$LOG_DIR/appCataloga_discovery.log"
 
 mkdir -p "$PID_DIR" "$LOG_DIR"

@@ -6,7 +6,7 @@ How to run:
 
 What is covered here:
     - default "one entrypoint, one log file" naming
-    - per-file rotation and retention behavior
+    - per-file in-place trimming without backup files
 """
 
 from __future__ import annotations
@@ -42,8 +42,9 @@ class LoggingUtilsTests(unittest.TestCase):
             logger.log_file_name.endswith("/appCataloga_discovery.log")
         )
 
-    def test_rotation_is_applied_per_log_file(self) -> None:
-        # Rotating one daemon log must not touch another daemon's file.
+    def test_trim_keeps_one_bounded_file_with_newest_lines(self) -> None:
+        # Trimming one daemon log must keep only that file, drop the oldest
+        # lines, and leave other daemon logs untouched.
         with tempfile.TemporaryDirectory() as tmpdir:
             discovery_path = os.path.join(tmpdir, "appCataloga_discovery.log")
             maintenance_path = os.path.join(
@@ -66,12 +67,10 @@ class LoggingUtilsTests(unittest.TestCase):
                 log_file_name=maintenance_path,
             )
 
-            discovery_logger.max_file_size_bytes = 250
-            discovery_logger.max_backup_files = 2
+            discovery_logger.max_file_size_bytes = 1_000
             maintenance_logger.max_file_size_bytes = 10_000
-            maintenance_logger.max_backup_files = 2
 
-            for index in range(12):
+            for index in range(40):
                 discovery_logger.entry(
                     f"discovery iteration={index} payload={'x' * 80}"
                 )
@@ -81,13 +80,19 @@ class LoggingUtilsTests(unittest.TestCase):
             discovery_logger.close()
             maintenance_logger.close()
 
-            self.assertTrue(os.path.exists(discovery_path))
-            self.assertTrue(os.path.exists(f"{discovery_path}.1"))
-            self.assertTrue(os.path.exists(f"{discovery_path}.2"))
-            self.assertFalse(os.path.exists(f"{discovery_path}.3"))
+            self.assertEqual(
+                sorted(os.listdir(tmpdir)),
+                ["appCataloga_discovery.log", "appCataloga_host_maintenance.log"],
+            )
+            with open(discovery_path, encoding="utf-8") as fh:
+                content = fh.read()
+            self.assertLessEqual(len(content.encode("utf-8")), 1_000)
+            self.assertTrue(content.endswith("discovery iteration=39 payload=" + "x" * 80 + "\n"))
+            self.assertNotIn("iteration=0 ", content)
+            self.assertTrue(all("| level=" in line for line in content.splitlines()))
 
-            self.assertTrue(os.path.exists(maintenance_path))
-            self.assertFalse(os.path.exists(f"{maintenance_path}.1"))
+            with open(maintenance_path, encoding="utf-8") as fh:
+                self.assertIn("logger initialized", fh.read())
 
 
 if __name__ == "__main__":

@@ -27,8 +27,7 @@ LOG_TARGET_SCREEN = (
 LOG_DIR = "/var/log"
 LOG_FILE_TEMPLATE = "{logger_name}.log"
 LOG_FILE = "/var/log/appCataloga.log"
-LOG_MAX_FILE_SIZE_MB = 100        # Rotate one log file after it reaches this size (MB)
-LOG_MAX_BACKUP_FILES = 5          # Keep at most this many rotated log generations per file
+LOG_MAX_FILE_SIZE_MB = 100        # Per-entrypoint limit; oldest lines are dropped in place, keeping the newest half (MB)
 
 #------------------------------------------
 # appCataloga socket service configuration
@@ -49,7 +48,7 @@ END_TAG                 = "</json>"
 #------------------------------------------
 SERVER_NAME             = "10.88.0.35"
 DB_PORT                 = 5432
-PG_DATABASE_NAME        = "rffusion_test_migracao"  # DEV: database loaded from the MariaDB dump
+PG_DATABASE_NAME        = "RFFUSION"
 DB_USER_NAME_PG         = secret.get("DB_USER_NAME_PG", "postgres")
 DB_PASSWORD_PG          = secret.get("DB_PASSWORD_PG")
 PG_USER_NAME            = os.environ.get("PGUSER") or DB_USER_NAME_PG
@@ -71,8 +70,8 @@ PG_CONNINFO = os.environ.get("RFFUSION_PG_CONNINFO") or make_conninfo(
 # =================================================
 # APP_ANALISE remote processing service
 # =================================================
-#APP_ANALISE_HOST_ADD        = "WIMATLABPDIN01"
-APP_ANALISE_HOST_ADD            = "192.168.104.117"
+APP_ANALISE_HOST_ADD        = "WIMATLABPDIN01"
+#APP_ANALISE_HOST_ADD            = "192.168.104.117"
 
 APP_ANALISE_HOST_PORT       = 8910
 APP_ANALISE_BUFFER_SIZE     = 4096

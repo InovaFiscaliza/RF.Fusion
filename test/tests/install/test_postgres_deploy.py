@@ -20,6 +20,10 @@ with (root / "calls.jsonl").open("a") as stream:
     stream.write(json.dumps(args) + "\n")
 state = root / "existing"
 if args[:2] in (["pod", "exists"], ["container", "exists"]):
+    if args[:2] == ["pod", "exists"]:
+        pod_name = "rffusion-postgres" if os.environ.get("RFF_TEST_LEGACY_POD") == "1" else "rffusion-postgres-pod"
+        if args[-1] != pod_name:
+            sys.exit(1)
     if args[:2] == ["container", "exists"] and os.environ.get("RFF_TEST_INFRA_ONLY") == "1":
         sys.exit(1)
     sys.exit(0 if state.exists() else 1)
@@ -27,9 +31,9 @@ if args[:2] == ["pod", "rm"]:
     state.unlink(missing_ok=True)
     sys.exit(0)
 if args[:2] == ["pod", "create"]:
-    pass
+    (root / "pod-name").write_text(args[args.index("--name") + 1])
 elif args[0] == "info":
-    print("false v2 cpu memory pids")
+    print(os.environ.get("RFF_TEST_CGROUPS", "false v2 cpu memory pids"))
 elif args[0] == "inspect":
     print(os.environ.get("RFF_TEST_RUNNING", "true"))
 elif args[0] == "pull":
@@ -37,6 +41,14 @@ elif args[0] == "pull":
 elif args[0] in ("build", "network", "volume"):
     pass
 elif args[0] == "run":
+    if "--pod" in args and "--name" in args:
+        if args[args.index("--name") + 1] == args[args.index("--pod") + 1]:
+            print("name is in use: pod already exists", file=sys.stderr)
+            sys.exit(125)
+    if os.environ.get("RFF_TEST_CGROUPS", "").startswith("true v1"):
+        if any(arg.startswith(("--cpus", "--memory", "--pids-limit")) for arg in args):
+            print("Resource limits are not supported on cgroups V1 rootless systems", file=sys.stderr)
+            sys.exit(125)
     if "--rm" in args:
         # Helper that seeds the data directory from the former named volume.
         print(os.environ.get("RFF_TEST_SEED", "copied"))
@@ -185,7 +197,7 @@ class PostgresDeployTests(unittest.TestCase):
         self.assertFalse((self.root / "reset.sql").exists())
         self.assertFalse(any(call[:2] == ["volume", "rm"] for call in calls))
 
-    def test_data_moves_to_repository_directory_before_the_new_server(self) -> None:
+    def test_explicit_directory_is_seeded_before_the_new_server(self) -> None:
         """Seed the bind-mounted cluster only after the old server is gone.
 
         Args:
@@ -193,7 +205,9 @@ class PostgresDeployTests(unittest.TestCase):
         Returns:
             None.
         """
-        result = self._run("--recreate")
+        result = self._run(
+            "--recreate", RFFUSION_POSTGRES_DATA_DIR=str(self.root / ".env/postgres-data")
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self._calls()
         removal = next(i for i, call in enumerate(calls) if call[:2] == ["pod", "rm"])
@@ -205,11 +219,106 @@ class PostgresDeployTests(unittest.TestCase):
         self.assertIn(f"{self.root}/.env/postgres-data:/var/lib/postgresql/data:z", calls[server])
         self.assertTrue((self.root / ".env/postgres-data").is_dir())
 
-        failed = self._run("--recreate", RFF_TEST_SEED="")
+        failed = self._run(
+            "--recreate", RFF_TEST_SEED="",
+            RFFUSION_POSTGRES_DATA_DIR=str(self.root / ".env/postgres-data"),
+        )
         self.assertNotEqual(failed.returncode, 0)
         self.assertIn("volume rffusion-postgres-data is unchanged", failed.stderr)
         later = self._calls()[len(calls):]
         self.assertFalse(any(call[:2] == ["pod", "create"] for call in later))
+
+    def test_default_uses_named_storage_and_selected_database(self) -> None:
+        """Keep cluster files out of the checkout and all SQL in the selected database.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        for database in ("RFFUSION", "legacy_database"):
+            with self.subTest(database=database):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                settings = {} if database == "RFFUSION" else {"POSTGRES_DB": database}
+                result = self._run("--recreate", "--reset-schemas", **settings)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = self._calls()
+                server = next(call for call in calls if call[0] == "run" and "rffusion-postgres" in call)
+                self.assertIn("rffusion-postgres-data:/var/lib/postgresql/data", server)
+                self.assertIn("POSTGRES_DB", server)
+                self.assertFalse((self.root / ".env/postgres-data").exists())
+                self.assertFalse(any(call[0] == "run" and "--rm" in call for call in calls))
+                queries = [call for call in calls if any(tool in call for tool in ("psql", "pg_dump", "pg_isready"))]
+                self.assertTrue(queries)
+                for call in queries:
+                    self.assertEqual(call[call.index("-d") + 1], database)
+
+    def test_copy_rejects_metadata_mismatch_even_when_cp_returns_success(self) -> None:
+        """Reject and clear an initial copy whose root directory metadata was lost.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        result = self._run(
+            "--recreate", RFFUSION_POSTGRES_DATA_DIR=str(self.root / "cluster")
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        helper = next(call for call in self._calls() if call[0] == "run" and "--rm" in call)
+        source = self.root / "source"
+        target = self.root / "target"
+        source.mkdir(mode=0o700)
+        target.mkdir(mode=0o700)
+        (source / "PG_VERSION").write_text("17\n")
+        copier = self.root / "bin/cp"
+        copier.write_text(
+            '#!/bin/sh\n/bin/cp "$2/PG_VERSION" "$3/PG_VERSION" || exit 1\n'
+            'chmod 755 "$3"\nexit 0\n'
+        )
+        copier.chmod(0o755)
+        script = helper[-1].replace("/source", str(source)).replace("/target", str(target))
+        copied = subprocess.run(
+            ["sh", "-c", script], env=self.environment, capture_output=True,
+            text=True, timeout=10,
+        )
+        self.assertEqual(copied.stdout.strip(), "failed", copied.stderr)
+        self.assertFalse(list(target.iterdir()))
+        self.assertEqual((source / "PG_VERSION").read_text(), "17\n")
+
+    def test_repository_cluster_requires_explicit_storage_selection(self) -> None:
+        """Reject starting another cluster when the previous bind mount was omitted.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        cluster = self.root / ".env/postgres-data"
+        cluster.mkdir()
+        (cluster / "PG_VERSION").write_text("17\n")
+        result = self._run("--recreate")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Repository cluster found", result.stderr)
+        self.assertFalse((self.root / "calls.jsonl").exists())
+        self.assertTrue((self.root / "existing").exists())
+
+    def test_local_storage_path_survives_recreation_without_environment_override(self) -> None:
+        """Reuse the persisted host directory instead of the previous named volume.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        directory = self.root / "postgres-cluster"
+        (self.root / ".env/postgres-data-dir").write_text(str(directory) + "\n")
+        result = self._run("--recreate")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self._calls()
+        server = next(call for call in calls if call[0] == "run" and "rffusion-postgres" in call)
+        self.assertIn(f"{directory}:/var/lib/postgresql/data:z", server)
+        self.assertTrue(directory.is_dir())
 
     def test_reset_preserves_current_usage_inside_the_same_transaction(self) -> None:
         """Capture usage under lock, rebuild all schemas and restore it atomically.
@@ -303,6 +412,31 @@ class PostgresDeployTests(unittest.TestCase):
         pull = next(i for i, call in enumerate(calls) if call[0] == "pull")
         removal = next(i for i, call in enumerate(calls) if call[:2] == ["pod", "rm"])
         self.assertLess(pull, removal)
+
+    def test_rootless_cgroups_v1_recovers_the_legacy_partial_pod(self) -> None:
+        """Recover legacy names without unsupported limits or volume removal.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        result = self._run(
+            "--recreate", RFF_TEST_LEGACY_POD="1", RFF_TEST_INFRA_ONLY="1",
+            RFF_TEST_CGROUPS="true v1 cpu memory pids",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self._calls()
+        removal = next(i for i, call in enumerate(calls) if call[:2] == ["pod", "rm"])
+        self.assertEqual(calls[removal][-1], "rffusion-postgres")
+        creation = next(call for call in calls if call[:2] == ["pod", "create"])
+        self.assertEqual(creation[creation.index("--name") + 1], "rffusion-postgres-pod")
+        server = next(call for call in calls if call[0] == "run" and "rffusion-postgres" in call)
+        self.assertEqual(server[server.index("--pod") + 1], "rffusion-postgres-pod")
+        self.assertFalse(any(call[:2] == ["volume", "rm"] for call in calls))
+        backup = next(i for i, call in enumerate(calls) if "pg_dump" in call)
+        self.assertLess(removal, backup)
+        self.assertFalse((self.root / "reset.sql").exists())
 
     def test_infra_pull_failure_keeps_existing_pod(self) -> None:
         """A registry failure must not leave the previous installation removed.

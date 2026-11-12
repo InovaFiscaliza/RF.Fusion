@@ -475,8 +475,10 @@ Uma nova extração de módulo exige decisão arquitetural explícita.
 Os entrypoints e `utils/safe_stop.py` passam `k.PG_CONNINFO` aos handlers
 PostgreSQL. O `config.py` compõe a conexão com `SERVER_NAME`, `DB_PORT`,
 `PG_DATABASE_NAME` e `PG_USER_NAME`; `RFFUSION_PG_CONNINFO`, quando não vazio,
-sobrescreve essa conexão completa. O destino padrão explícito é a instalação
-PostgreSQL de desenvolvimento documentada, sem inferência por branch ou troca
+sobrescreve essa conexão completa. O destino padrão explícito é o banco
+`RFFUSION` em `10.88.0.35:5432`, conforme o contrato PostgreSQL compartilhado.
+O DEV existente seleciona `rffusion_test_migracao` por conexão explícita,
+sem inferência por branch ou troca
 automática de backend. O `.secret` existente pode fornecer `DB_USER_NAME_PG` e
 `DB_PASSWORD_PG`, específicos do PostgreSQL. `PGUSER` e `PGPASSWORD` têm prioridade
 sobre esses campos na conexão composta; a sobrescrita completa por

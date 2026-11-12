@@ -34,7 +34,7 @@ class PostgresConfigTests(unittest.TestCase):
                     os.environ["RFFUSION_PG_CONNINFO"] = override
                 config = load_test_config()
                 self.assertEqual(conninfo_to_dict(config.PG_CONNINFO), {
-                    "host": "10.88.0.35", "port": "5432", "dbname": "postgres",
+                    "host": "10.88.0.35", "port": "5432", "dbname": "RFFUSION",
                     "user": "postgres", "connect_timeout": "5",
                 })
 

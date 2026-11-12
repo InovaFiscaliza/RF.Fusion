@@ -13,9 +13,13 @@ bancos lógicos são schemas `"BPDATA"`, `"RFDATA"`, `"RFFUSION_SUMMARY"` e
 colunas usam identificadores delimitados por aspas duplas para preservar as
 maiúsculas. Consultas e referências devem usar a mesma caixa e as aspas duplas.
 O WebFusion usa Psycopg e consultas adaptadas ao modelo canônico, preservando
-os payloads externos do Zabbix e appAnalise. O banco de conexão do bootstrap é `postgres`;
-no DEV, appCataloga e WebFusion usam `rffusion_test_migracao`, carregado do dump MariaDB
-pela ferramenta de migração. A conexão só acessa um banco por
+os payloads externos do Zabbix e appAnalise;
+o destino de produção e o padrão dos novos deploys e do appCataloga é `RFFUSION`,
+preservando as maiúsculas no nome do banco. O deploy usa `POSTGRES_DB` para
+selecionar explicitamente outro banco; essa variável deve ser mantida nas
+recriações e seleciona também os backups e o bootstrap. Instalações DEV existentes
+em `rffusion_test_migracao` usam conexão explícita nas aplicações e na ferramenta
+de migração. O deploy não renomeia bancos existentes. A conexão só acessa um banco por
 vez no PostgreSQL. Funções auxiliares, índices e triggers mantêm seus nomes
 técnicos existentes. Instalações anteriores em minúsculas não são renomeadas
 automaticamente; o deploy reconhece ambas as convenções e não mistura modelos.
@@ -44,9 +48,35 @@ antes de qualquer conversão. A instalação fornece PostGIS na imagem PostgreSQ
 bootstrap e precisam de uma migração específica, sem recriação automática.
 
 O pgAdmin e o PostgreSQL são containers separados no mesmo pod Podman, com
-armazenamento próprio para suas configurações. A porta 9083 da VM acessa o
+armazenamento próprio para suas configurações. O pod se chama
+`rffusion-postgres-pod`; os containers mantêm `rffusion-postgres` e
+`rffusion-pgadmin`. Os nomes são distintos para compatibilidade com o registro
+compartilhado de nomes do backend BoltDB. `--recreate` reconhece também o pod
+antigo `rffusion-postgres`, conserva os volumes e faz backup do banco quando
+disponível antes da substituição. Em cgroups v1 rootless, nenhum argumento de
+limite de CPU, memória ou processos é enviado ao Podman. A porta 9083 da VM acessa o
 PostgreSQL; a 9084 acessa a interface web do pgAdmin. O SSH do PostgreSQL
 é publicado na porta 2226 e o SSH do pgAdmin na 2227; dentro do pod usam,
 respectivamente, as portas 22 e 2222. O deploy inicial só cria
 os schemas quando nenhum dos quatro existe e executa a carga em uma transação.
 Uma instalação existente não é recriada nem atualizada automaticamente.
+
+O armazenamento padrão do cluster é o volume nomeado `rffusion-postgres-data`,
+administrado pelo Podman do usuário proprietário. Em produção rootless, conferir
+no host o `graphRoot` e o mountpoint do volume sob `/home`; o caminho do
+repositório não é o destino padrão dos dados. `RFFUSION_POSTGRES_DATA_DIR` permite
+selecionar um bind mount explícito, inclusive o diretório `.env/postgres-data`
+usado no DEV por restrição de espaço. O arquivo local não versionado
+`.env/postgres-data-dir` pode persistir esse caminho absoluto no host, em uma
+única linha; a variável de ambiente tem prioridade. Em produção, esse mecanismo
+permite usar `/var/lib/rffusion/postgres-data` no filesystem de `/var`, fora do
+repositório, quando `/home` não comportar a migração. Se esse diretório legado contiver um
+cluster e nenhum caminho for informado, o deploy recusa iniciar outro cluster
+no volume padrão. Nenhum cluster existente é transferido automaticamente de
+volta para o volume nomeado.
+
+A preparação de bind mounts rootless deve atribuir tanto usuário quanto grupo
+ao proprietário do Podman. Na cópia inicial de um volume parado, o deploy
+confere dono, grupo e modo do diretório raiz copiado, além de `PG_VERSION`;
+avisos de preservação de metadados não podem resultar em uma cópia aceita com
+metadados divergentes. Uma falha limpa apenas a cópia nova, preservando a origem.

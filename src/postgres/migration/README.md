@@ -59,6 +59,11 @@ do DDL e aparecem no relatório.
        --disk-guard-path / --min-free-gb <reserva> --report /tmp/load.json
    ```
 
+   Em produção, selecione `--database RFFUSION` explicitamente. O deploy inicial
+   pode já ter criado seus schemas; a ferramenta rejeita esse destino preenchido.
+   Prepare o banco de migração sem os quatro schemas antes da carga, preservando
+   qualquer dado existente. Não execute a carga contra o banco de manutenção `postgres`.
+
    Sem `--create-database`, o banco já deve existir e não pode conter nenhum
    dos schemas `BPDATA`, `RFDATA`, `RFFUSION_SUMMARY` e `WEBFUSION`. Ensaios
    usam bancos descartáveis com prefixo `rffusion_test_`.
@@ -94,12 +99,12 @@ valores das linhas.
 
 ## Pendências
 
-- **Espaço em disco.** A carga completa do backup de 05/11/2026 (≈19 milhões de
-  linhas) levou 12 minutos e resultou em um banco de 4,8 GiB; durante a carga, o
-  WAL ocupa espaço adicional. O cluster deve estar em `.env/postgres-data`, no
-  sistema de arquivos do repositório, conforme o [deploy](../../../install/postgres/README.md);
-  o antigo volume nomeado dividia 20 GiB com os overlays dos containers. Ao
-  carregar, use `--disk-guard-path` em um caminho desse sistema de arquivos.
+- **Espaço em disco.** Verifique a capacidade para dados, índices e WAL no
+  filesystem efetivamente usado pelo cluster. Em produção, o padrão é o volume
+  nomeado do Podman sob `/home`; o DEV pode usar um diretório explícito, conforme
+  o [deploy](../../../install/postgres/README.md). Ao carregar, aponte
+  `--disk-guard-path` para um caminho desse mesmo filesystem visível no container
+  appCataloga. Não use `/` se ele representar apenas o overlay do appCataloga.
 - `DIM_SITE_TYPE` do dump usa os rótulos legados `'Fixed'` e `'Mobile'`, com
   aspas, enquanto o bootstrap grava `Fixed` e `Mobile`. A carga preserva a
   origem; a normalização é uma decisão de dados separada.

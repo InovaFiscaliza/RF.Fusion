@@ -262,13 +262,20 @@ Os principais sao:
 
 O garbage collector opera em lotes limitados. Ele remove apenas o artefato
 referenciado por registros de `FILE_TASK_HISTORY` com processamento em erro,
-`DT_PROCESSED` preenchido e quarentena vencida. Arquivos que nao atendem a esse
-contrato, caminhos fora de `trash/` e entradas ambiguas permanecem preservados
-para reconciliacao manual.
+`DT_PROCESSED` preenchido, quarentena vencida e caminho dentro de `trash/`,
+marcando `IS_PAYLOAD_DELETED`. A propria selecao exclui registros fora de
+`trash/` ou em `trash/resolved_files/`; eles permanecem preservados para
+reconciliacao manual sem ocupar os lotes. `trash/resolved_files/` nao tem
+registro no banco e e limpo apenas pelo `mtime` dos arquivos.
 - `tool_stop_all.sh`
 
 Eles iniciam, consultam e encerram o conjunto normal de servicos do
 `appCataloga`.
+
+Cada entrypoint grava em um unico arquivo, `/var/log/<entrypoint>.log`, que
+tambem recebe a saida do launcher. Ao atingir `LOG_MAX_FILE_SIZE_MB`, as linhas
+mais antigas sao descartadas no proprio arquivo e a metade mais recente e
+preservada; nao ha copias `.1`, `.2` nem arquivo `.lock`.
 
 ## Estrutura Interna Relevante
 
@@ -393,7 +400,7 @@ execute **Python: Restart Language Server** na paleta de comandos.
 ### Serviços
 
 Os entrypoints e o utilitário `safe_stop.py` recebem `PG_CONNINFO` do `config.py`.
-O destino padrão é `10.88.0.35:5432`, banco de conexão `postgres`.
+O destino padrão é `10.88.0.35:5432`, banco de conexão `RFFUSION`.
 O `.secret` existente pode fornecer `DB_USER_NAME_PG` e `DB_PASSWORD_PG`;
 sem usuário dedicado, o padrão é `postgres`. `PGUSER` e `PGPASSWORD` no ambiente
 têm prioridade sobre esses campos. `RFFUSION_PG_CONNINFO` não vazio substitui a

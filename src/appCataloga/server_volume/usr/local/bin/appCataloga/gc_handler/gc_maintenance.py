@@ -168,15 +168,20 @@ def log_gc_configuration(
 def collect_gc_candidates(
     db_bp: dbHandlerBKP,
     *,
+    trash_root: str,
+    resolved_root: str,
     logger: logger_type,
 ) -> tuple[list[dict], list[str]]:
     """Gather the next batch from both GC channels.
 
-    One channel is backed by `FILE_TASK_HISTORY`. The other is filesystem-only.
+    One channel is backed by `FILE_TASK_HISTORY` and only selects rows inside
+    `trash_root` but outside `resolved_root`. The other is filesystem-only.
     """
     history_rows = db_bp.file_task_history_list_gc_candidates(
         batch_size=k.GC_BATCH_SIZE,
         quarantine_days=k.GC_QUARANTINE_DAYS,
+        trash_root=trash_root,
+        resolved_root=resolved_root,
     )
     resolved_rows = get_resolved_files_gc_candidates(
         batch_size=k.GC_BATCH_SIZE,

@@ -26,6 +26,21 @@ if TYPE_CHECKING:
     from shared import logging_utils
 
 
+def _like_prefix(directory: str) -> str:
+    """Return a LIKE pattern matching descendants of one literal directory.
+
+    Args:
+        directory (str): Directory without a trailing separator.
+
+    Returns:
+        str: Pattern with PostgreSQL's default escape for ``\\``, ``%``, and ``_``.
+    """
+    escaped = (
+        directory.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+    return f"{escaped}/%"
+
+
 class dbHandlerBKP(DbHandler):
 
     """Own PostgreSQL persistence for the operational BKP domain.
@@ -1817,38 +1832,63 @@ class dbHandlerBKP(DbHandler):
         ]
 
     def file_task_history_list_gc_candidates(
-        self, batch_size: int, quarantine_days: int
+        self,
+        batch_size: int,
+        quarantine_days: int,
+        *,
+        trash_root: str,
+        resolved_root: str,
     ) -> list[DbRow]:
-        """List undeleted errored payloads past their processing-based quarantine.
+        """List undeleted errored trash payloads past their processing quarantine.
 
         Args:
             batch_size (int): Positive maximum candidate count.
             quarantine_days (int): Nonnegative elapsed days since DT_PROCESSED.
+            trash_root (str): Quarantine root; NA_SERVER_FILE_PATH must be inside it.
+            resolved_root (str): Filesystem-only quarantine excluded from history GC.
 
         Returns:
             list[DbRow]: ID_HISTORY, NA_SERVER_FILE_PATH, and NA_SERVER_FILE_NAME,
-            ordered by DT_PROCESSED and ID. Missing processing timestamps are excluded.
+            ordered by DT_PROCESSED and ID. Missing processing timestamps and
+            paths outside the history-owned trash are excluded, so rows kept for
+            manual reconciliation cannot occupy every batch.
 
         Raises:
-            ValueError: If the batch limit or quarantine is invalid.
+            ValueError: If the batch limit, quarantine, or roots are invalid.
             psycopg.Error: If reading retention candidates fails.
         """
         if batch_size < 1 or quarantine_days < 0:
             raise ValueError("GC requires a positive limit and nonnegative retention.")
+        trash_root = trash_root.rstrip("/")
+        resolved_root = resolved_root.rstrip("/")
+        if not trash_root or not resolved_root:
+            raise ValueError("GC requires non-root quarantine directories.")
         where_conditions = {
             "NU_STATUS_PROCESSING": db_constants['tasks']['states']['error'],
             "IS_PAYLOAD_DELETED": 0,
             "DT_PROCESSED__lt": datetime.utcnow() - timedelta(days=quarantine_days),
         }
-        columns = ("ID_HISTORY", "NA_SERVER_FILE_PATH", "NA_SERVER_FILE_NAME")
-        order_by = (("DT_PROCESSED", "ASC"), ("ID_HISTORY", "ASC"))
-        return self._select_batch(
-            table="FILE_TASK_HISTORY",
-            where=where_conditions,
-            columns=columns,
-            order_by=order_by,
-            limit=batch_size,
+        filters, params = self._build_where_clause(where_conditions)
+        path = sql.Identifier("NA_SERVER_FILE_PATH")
+        query = (
+            sql.SQL(
+                'SELECT "ID_HISTORY", "NA_SERVER_FILE_PATH", "NA_SERVER_FILE_NAME" FROM {}'
+            ).format(sql.Identifier(self.schema, "FILE_TASK_HISTORY"))
+            + filters
+            + sql.SQL(
+                " AND ({path} = %s OR {path} LIKE %s)"
+                " AND NOT ({path} = %s OR {path} LIKE %s)"
+                ' ORDER BY "DT_PROCESSED" ASC, "ID_HISTORY" ASC LIMIT %s'
+            ).format(path=path)
         )
+        params += (
+            trash_root,
+            _like_prefix(trash_root),
+            resolved_root,
+            _like_prefix(resolved_root),
+            batch_size,
+        )
+        return self._select_raw(query, params)
 
     def file_task_history_suspend_by_host(
         self, host_id: int, reason: str | None = None

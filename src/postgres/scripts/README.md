@@ -6,8 +6,8 @@ instalação nova em PostgreSQL 17. O Summary usa o
 sem copiar as projeções físicas do MariaDB. A decisão de usar quatro schemas dentro de um único banco e os
 limites da instalação paralela estão no [contrato](../../../docs/architecture/POSTGRESQL.md).
 Schemas, tabelas, views e colunas usam aspas duplas para preservar maiúsculas,
-por exemplo `SELECT "ID_HOST" FROM "BPDATA"."HOST"`. O banco de conexão continua
-sendo `postgres`. Funções auxiliares, índices e triggers mantêm os nomes técnicos
+por exemplo `SELECT "ID_HOST" FROM "BPDATA"."HOST"`. O banco de conexão padrão
+é `RFFUSION`. Funções auxiliares, índices e triggers mantêm os nomes técnicos
 existentes. O deploy do container
 [PostgreSQL](../../../install/postgres/README.md) executa o bootstrap apenas
 quando nenhum dos quatro schemas existe.
@@ -15,16 +15,16 @@ quando nenhum dos quatro schemas existe.
 ## Criação inicial
 
 Conecte-se ao container PostgreSQL com o repositório montado em `/RFFusion`,
-como descrito no deploy, e execute os comandos abaixo em um banco `postgres`
+como descrito no deploy, e execute os comandos abaixo em um banco `RFFUSION`
 vazio, com um usuário autorizado a criar schemas e a extensão PostGIS. O `psql`
 precisa ler os CSVs locais do repositório. `--single-transaction` desfaz cada script individual em
 caso de erro, mas scripts anteriores já concluídos permanecem no banco.
 
 ```bash
-psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 --single-transaction -f /RFFusion/src/postgres/scripts/createProcessingDB.sql
-psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 --single-transaction -f /RFFusion/src/postgres/scripts/createMeasureDB.sql
-psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 --single-transaction -f /RFFusion/src/postgres/scripts/createFusionSummaryDB.sql
-psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 --single-transaction -f /RFFusion/src/postgres/scripts/createWebFusionDB.sql
+psql -X -U postgres -d RFFUSION -v ON_ERROR_STOP=1 --single-transaction -f /RFFusion/src/postgres/scripts/createProcessingDB.sql
+psql -X -U postgres -d RFFUSION -v ON_ERROR_STOP=1 --single-transaction -f /RFFusion/src/postgres/scripts/createMeasureDB.sql
+psql -X -U postgres -d RFFUSION -v ON_ERROR_STOP=1 --single-transaction -f /RFFusion/src/postgres/scripts/createFusionSummaryDB.sql
+psql -X -U postgres -d RFFUSION -v ON_ERROR_STOP=1 --single-transaction -f /RFFusion/src/postgres/scripts/createWebFusionDB.sql
 ```
 
 Os scripts não atualizam instalações existentes nem migram dados; a transferência
@@ -44,7 +44,7 @@ Instalações PostgreSQL criadas antes desse cadastro podem receber apenas o
 um usuário autorizado a escrever no catálogo e ajustar sua sequência:
 
 ```bash
-psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 -f /RFFusion/src/postgres/scripts/ensureSiteTypes.sql
+psql -X -U postgres -d RFFUSION -v ON_ERROR_STOP=1 -f /RFFusion/src/postgres/scripts/ensureSiteTypes.sql
 ```
 
 O reparo é repetível, preserva os demais tipos e não modifica sites. Rejeita

@@ -36,6 +36,10 @@ Somente este README e `runtime.env.example` são versionados. O arquivo
 Isso inclui `postgres-data/`, o cluster do PostgreSQL, e `postgres-backups/`;
 ambos têm acesso restrito e são administrados pelo
 [deploy do PostgreSQL](../install/postgres/README.md).
+O arquivo local `postgres-data-dir` contém, em uma única linha, o caminho
+absoluto no host do bind mount PostgreSQL, quando selecionado. Ele não contém
+credenciais e evita voltar ao volume padrão nas recriações. A variável
+`RFFUSION_POSTGRES_DATA_DIR` tem prioridade sobre esse arquivo.
 Ao copiar ou clonar o projeto para outra VM, preencha novamente o ambiente;
 não reutilize automaticamente a configuração da VM de origem.
 

@@ -10,7 +10,7 @@ APP_NAME="appCataloga_file_bkp.py"
 APP_PATH="/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/$APP_NAME"
 PYTHON_BIN="/opt/conda/envs/appdata/bin/python"
 
-LOG_DIR="/var/log/appCataloga"
+LOG_DIR="/var/log"
 LOG_FILE="$LOG_DIR/appCataloga_file_bkp.log"
 
 mkdir -p "$LOG_DIR" /var/run/appCataloga

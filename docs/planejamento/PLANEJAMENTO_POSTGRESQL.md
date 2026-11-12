@@ -18,7 +18,7 @@ que adaptam os dados de origem e usam o modelo canônico revisado para Summary.
 Isso não comprova equivalência de consultas, concorrência ou desempenho.
 
 O [contrato inicial PostgreSQL](../architecture/POSTGRESQL.md) define um único
-banco de conexão, `postgres`, com quatro schemas: `"BPDATA"`, `"RFDATA"`,
+banco de conexão, `RFFUSION`, com quatro schemas: `"BPDATA"`, `"RFDATA"`,
 `"RFFUSION_SUMMARY"` e `"WEBFUSION"`. Identificadores preservam maiúsculas
 com aspas duplas. `RFFUSION_SUMMARY` é um schema com vários modelos de leitura,
 não uma única tabela.
@@ -247,10 +247,10 @@ inclui mudanças em produção nem eliminação de credenciais de outras integra
 Preparar backup consistente e testar sua restauração no MariaDB. O dump SQL
 MariaDB não é diretamente restaurável no PostgreSQL. A extração, transformação
 e carga usam a [ferramenta de migração](../../src/postgres/migration/README.md),
-que lê o dump lógico em fluxo e aplica o DDL PostgreSQL validado. A carga completa
-do backup de 05/11/2026 depende do cluster em `.env/postgres-data`, no sistema de
-arquivos do repositório: o volume nomeado anterior dividia 20 GiB com os
-overlays dos containers e não comportava dados, índices e WAL.
+que lê o dump lógico em fluxo e aplica o DDL PostgreSQL validado. O filesystem
+do cluster deve comportar dados, índices e WAL. Em produção,
+usar o volume nomeado do Podman sob `/home`; o diretório `.env/postgres-data`
+continua disponível como seleção explícita no DEV, conforme o deploy.
 
 Ensaiar a carga em destino isolado, preservando IDs, vínculos e histórico.
 Definir ordem de tabelas, transformação de tipos, tratamento de dados inválidos,

@@ -3,7 +3,7 @@ Shared structured logger for appCataloga services and utility scripts.
 
 The logger is intentionally lightweight: it formats deterministic log lines,
 resolves one log file per entrypoint (for example `appCataloga_discovery.log`),
-rotates oversized files, and offers a small structured-event API without
+trims its oldest lines in place when it grows too large, and offers a small structured-event API without
 depending on Python's heavier logging configuration machinery.
 """
 
@@ -31,7 +31,7 @@ class log:
         1. produce one deterministic line format across scripts
         2. keep the public API tiny (`entry`, `warning`, `error`, `event`, ...)
         3. keep each entrypoint writing to its own log file by default
-        4. stay safe for long-running daemons by rotating oversized files
+        4. stay bounded for long-running daemons without backup files
         5. remain simple enough to use from utility scripts without extra setup
     """
 
@@ -71,10 +71,6 @@ class log:
         self.max_file_size_bytes = max(
             0,
             int(getattr(k, "LOG_MAX_FILE_SIZE_MB", 0) * 1024 * 1024),
-        )
-        self.max_backup_files = max(
-            0,
-            int(getattr(k, "LOG_MAX_BACKUP_FILES", 0)),
         )
 
         if isinstance(verbose, dict):
@@ -148,9 +144,8 @@ class log:
         """
         Open or reopen the active log file in append mode.
 
-        This helper is reused after external rotation as well as after this
-        logger rotates its own file. Reopening keeps each process attached to
-        the current active path instead of writing forever to a renamed inode.
+        This helper is reused when the active log path was deleted or replaced,
+        keeping each process attached to the current file.
         """
         log_dir = os.path.dirname(self.log_file_name) or "."
         os.makedirs(log_dir, exist_ok=True)
@@ -165,13 +160,13 @@ class log:
 
     def _sync_file_handle(self) -> None:
         """
-        Reattach the file handle if another process already rotated this log.
+        Reattach the file handle if the active log path was replaced or removed.
 
         The normal contract is "one entrypoint -> one log file". Even so, the
         same daemon can run multiple instances or worker processes that append
-        to that one per-script file. If one instance rotates it, the others
-        must reopen the active path or they would keep writing to the renamed
-        backup file.
+        to that one per-script file. If an operator deletes or replaces it,
+        each process must reopen the active path instead of writing to an
+        unlinked inode.
         """
         if not self.target_file:
             return
@@ -190,67 +185,49 @@ class log:
         except Exception:
             self._reopen_file_handle()
 
-    def _rotate_logs_if_needed(self, incoming_bytes: int) -> None:
+    def _trim_log_if_needed(self, incoming_bytes: int) -> None:
         """
-        Rotate the active log file when the next write would exceed the limit.
+        Drop the oldest lines when the next write would exceed the limit.
 
-        Rotation is best-effort but process-safe:
-            - rotation happens independently for each log file / script
-            - an exclusive lock serializes concurrent rotations
-            - backups shift to `.1`, `.2`, ... up to the configured retention
-            - the oldest generation is deleted first when retention is exceeded
+        The caller must hold the exclusive lock on the log file. The newest
+        half of the limit is kept in the same file, starting at a line
+        boundary, so each entrypoint never has backup generations.
         """
-        if (
-            not self.target_file
-            or self.max_file_size_bytes <= 0
-            or self.max_backup_files <= 0
-        ):
+        if self.max_file_size_bytes <= 0:
             return
 
-        lock_path = f"{self.log_file_name}.lock"
-        os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+        current_size = os.fstat(self._fh.fileno()).st_size
+        if current_size + incoming_bytes <= self.max_file_size_bytes:
+            return
 
-        with open(lock_path, "a", encoding="utf-8") as lock_fh:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        keep_bytes = self.max_file_size_bytes // 2
+        with open(self.log_file_name, "r+b") as fh:
+            read_pos = max(0, current_size - keep_bytes)
+            if read_pos:
+                fh.seek(read_pos - 1)
+                fh.readline()
+                read_pos = fh.tell()
 
-            self._sync_file_handle()
-
-            try:
-                current_size = os.path.getsize(self.log_file_name)
-            except FileNotFoundError:
-                current_size = 0
-
-            if current_size + incoming_bytes <= self.max_file_size_bytes:
-                return
-
-            if self._fh:
-                try:
-                    self._fh.flush()
-                except Exception:
-                    pass
-
-            oldest_backup = f"{self.log_file_name}.{self.max_backup_files}"
-            if os.path.exists(oldest_backup):
-                os.remove(oldest_backup)
-
-            for index in range(self.max_backup_files - 1, 0, -1):
-                src = f"{self.log_file_name}.{index}"
-                dst = f"{self.log_file_name}.{index + 1}"
-                if os.path.exists(src):
-                    os.replace(src, dst)
-
-            if os.path.exists(self.log_file_name):
-                os.replace(self.log_file_name, f"{self.log_file_name}.1")
-
-            self._reopen_file_handle()
+            # Copy forward in chunks; the destination always trails the source.
+            write_pos = 0
+            while True:
+                fh.seek(read_pos)
+                chunk = fh.read(1024 * 1024)
+                if not chunk:
+                    break
+                read_pos += len(chunk)
+                fh.seek(write_pos)
+                fh.write(chunk)
+                write_pos += len(chunk)
+            fh.truncate(write_pos)
 
     def _write(self, level: str, msg: str) -> None:
         """
         Write one fully formatted line to the configured targets.
 
         The logger writes plain UTF-8 lines so log files stay easy to inspect
-        with shell tools. File rotation happens immediately before the write so
-        recurring daemons cannot grow logs without bound.
+        with shell tools. Trimming and writing share one lock on the log file
+        itself, so concurrent writers never lose lines during a trim.
         """
         self.last_update = datetime.now()
         self.last_msg = msg
@@ -262,9 +239,15 @@ class log:
 
         if self.target_file and self._fh:
             try:
-                self._rotate_logs_if_needed(len(line.encode("utf-8")))
                 self._sync_file_handle()
-                self._fh.write(line)
+                fd = self._fh.fileno()
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                try:
+                    self._trim_log_if_needed(len(line.encode("utf-8")))
+                    self._fh.write(line)
+                    self._fh.flush()
+                finally:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
             except Exception:
                 self.target_file = False
                 print(line, end="")

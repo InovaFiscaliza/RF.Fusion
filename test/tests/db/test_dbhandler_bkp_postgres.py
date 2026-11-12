@@ -1025,10 +1025,20 @@ class PostgresBkpTests(unittest.TestCase):
         Returns:
             None.
         """
-        self.handler.file_task_history_list_gc_candidates(10, 7)
+        self.handler.file_task_history_list_gc_candidates(
+            10,
+            7,
+            trash_root="/repo/trash/",
+            resolved_root="/repo/trash/resolved_files",
+        )
         query, params = self.cursor.execute.call_args.args
         text = query.as_string()
         self.assertIn('"DT_PROCESSED" < %s', text)
+        self.assertIn(
+            ' AND ("NA_SERVER_FILE_PATH" = %s OR "NA_SERVER_FILE_PATH" LIKE %s)'
+            ' AND NOT ("NA_SERVER_FILE_PATH" = %s OR "NA_SERVER_FILE_PATH" LIKE %s)',
+            text,
+        )
         self.assertTrue(text.endswith('ORDER BY "DT_PROCESSED" ASC, "ID_HISTORY" ASC LIMIT %s'))
         self.assertEqual(params[:2], (db_constants['tasks']['states']['error'], 0))
         self.assertAlmostEqual(
@@ -1036,7 +1046,16 @@ class PostgresBkpTests(unittest.TestCase):
             datetime.utcnow() - timedelta(days=7),
             delta=timedelta(seconds=5),
         )
-        self.assertEqual(params[3], 10)
+        self.assertEqual(
+            params[3:],
+            (
+                "/repo/trash",
+                "/repo/trash/%",
+                "/repo/trash/resolved_files",
+                "/repo/trash/resolved\\_files/%",
+                10,
+            ),
+        )
 
     def test_workers_reuse_one_session_across_compound_operations(self) -> None:
         """Avoid reconnecting between iterations or after a successful managed commit.

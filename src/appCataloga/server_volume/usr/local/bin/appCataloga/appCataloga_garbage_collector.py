@@ -79,7 +79,12 @@ def _read_next_cycle(*, now: datetime, trash_root: str, resolved_root: str) -> d
 
 def _do_maintenance(db_bp: dbHandlerBKP, cycle: dict) -> dict:
     """Run one GC pass and return a compact batch summary."""
-    history_rows, resolved_rows = gc_maintenance.collect_gc_candidates(db_bp, logger=log)
+    history_rows, resolved_rows = gc_maintenance.collect_gc_candidates(
+        db_bp,
+        trash_root=cycle["trash_root"],
+        resolved_root=cycle["resolved_root"],
+        logger=log,
+    )
 
     if not history_rows and not resolved_rows:
         return {
