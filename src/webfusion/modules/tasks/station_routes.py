@@ -17,15 +17,24 @@ delegates durable task reuse or creation to ``modules.tasks.station_service``.
 import json
 import re
 from typing import Any
-from flask import (
-    current_app,
-    jsonify,
-    redirect,
-    render_template,
-    request,
-    url_for,
+
+from flask import current_app, jsonify, redirect, render_template, request, url_for
+
+from db.connection import get_connection_bpdata as get_connection
+from modules.configuration.service import (
+    TARGET_KIND_HOST,
+    ZabbixApiError,
+    ZabbixConfigurationError,
+    get_configuration,
+    get_hosts_backup_defaults,
 )
+from modules.server.usage_metrics import record_page_view
 from modules.tasks.blueprints import tasks_api_bp, tasks_bp
+from db.tasks import (
+    list_station_prefixes,
+    list_builder_hosts,
+    list_collective_hosts,
+)
 from modules.tasks.station_service import (
     EXPOSED_TASK_TYPES,
     HOST_TASK_BACKLOG_ROLLBACK_TYPE,
@@ -34,15 +43,6 @@ from modules.tasks.station_service import (
     create_task,
     queue_interactive_connectivity_test,
 )
-from modules.server.usage_metrics import record_page_view
-from modules.configuration.service import (
-    TARGET_KIND_HOST,
-    ZabbixApiError,
-    ZabbixConfigurationError,
-    get_configuration,
-    get_hosts_backup_defaults,
-)
-from db import get_connection_bpdata as get_connection
 
 
 DEFAULT_LINUX_FILE_PATH = "/mnt/internal/data"
@@ -500,266 +500,223 @@ def task_builder():
     """
 
     db = get_connection()
-    cursor = db.cursor()
-    selected_host = request.args.get("host_id")
-    legacy_task_type = _normalize_selected_task_type(request.args.get("task_type"))
-    legacy_mode = _normalize_filter_mode(request.args.get("mode", "NONE"))
-    selected_action = _normalize_task_action(
-        request.args.get("action")
-        or _action_from_legacy_selection(legacy_task_type, legacy_mode)
-    )
-    selected_action_definition = _resolve_task_action(selected_action)
-    selected_task_type = str(selected_action_definition["task_type"])
-    selected_execution_type = request.args.get("execution_type", "individual")
-    selected_host_filter = request.args.get("host_filter", "ALL")
-    selected_mode = _resolve_action_mode(
-        selected_action_definition,
-        legacy_mode,
-    )
-    selected_start_date = request.args.get("start_date", "")
-    selected_end_date = request.args.get("end_date", "")
-    selected_last_n_files = request.args.get("last_n_files", "")
-    selected_extension = request.args.get("extension", "")
-    selected_file_path = request.args.get("file_path", "/mnt/internal/data")
-    selected_file_name = request.args.get("file_name", "")
-    selected_max_total_gb = request.args.get("max_total_gb", "")
-    selected_sort_order = request.args.get("sort_order", "newest_first")
-    selected_collective_host_ids = [
-        value
-        for value in request.args.getlist("collective_host_ids")
-        if str(value).strip()
-    ]
-    selected_collective_host_search = request.args.get("collective_host_search", "")
+    try:
+        selected_host = request.args.get("host_id")
+        legacy_task_type = _normalize_selected_task_type(request.args.get("task_type"))
+        legacy_mode = _normalize_filter_mode(request.args.get("mode", "NONE"))
+        selected_action = _normalize_task_action(
+            request.args.get("action")
+            or _action_from_legacy_selection(legacy_task_type, legacy_mode)
+        )
+        selected_action_definition = _resolve_task_action(selected_action)
+        selected_task_type = str(selected_action_definition["task_type"])
+        selected_execution_type = request.args.get("execution_type", "individual")
+        selected_host_filter = request.args.get("host_filter", "ALL")
+        selected_mode = _resolve_action_mode(
+            selected_action_definition,
+            legacy_mode,
+        )
+        selected_start_date = request.args.get("start_date", "")
+        selected_end_date = request.args.get("end_date", "")
+        selected_last_n_files = request.args.get("last_n_files", "")
+        selected_extension = request.args.get("extension", "")
+        selected_file_path = request.args.get("file_path", "/mnt/internal/data")
+        selected_file_name = request.args.get("file_name", "")
+        selected_max_total_gb = request.args.get("max_total_gb", "")
+        selected_sort_order = request.args.get("sort_order", "newest_first")
+        selected_collective_host_ids = [
+            value
+            for value in request.args.getlist("collective_host_ids")
+            if str(value).strip()
+        ]
+        selected_collective_host_search = request.args.get("collective_host_search", "")
 
-    if not _selection_supports_backlog_budget(selected_task_type, selected_mode):
-        selected_max_total_gb = ""
-        selected_sort_order = "newest_first"
+        if not _selection_supports_backlog_budget(selected_task_type, selected_mode):
+            selected_max_total_gb = ""
+            selected_sort_order = "newest_first"
 
-    selected_filter_defaults_custom = not _looks_like_auto_filter_defaults(
-        {
-            "file_path": selected_file_path,
-            "extension": selected_extension,
-        }
-    )
+        selected_filter_defaults_custom = not _looks_like_auto_filter_defaults(
+            {
+                "file_path": selected_file_path,
+                "extension": selected_extension,
+            }
+        )
 
-    # --- station-family discovery ---
-    cursor.execute("""
-        SELECT
-            CASE
-                WHEN UPPER(NA_HOST_NAME) LIKE 'UMS%' THEN 'UMS300'
-                WHEN UPPER(NA_HOST_NAME) LIKE 'ERMX%' THEN 'ERMX'
-                ELSE REGEXP_SUBSTR(UPPER(NA_HOST_NAME), '^[A-Z]+')
-            END AS PREFIX,
-            COUNT(*) AS HOSTS
-        FROM HOST
-        GROUP BY PREFIX
-        ORDER BY PREFIX
-    """)
-    host_prefixes = cursor.fetchall()
-    station_profile_rows = _build_station_profile_rows(
-        host_prefix_rows=host_prefixes,
-        selected_values=request.args,
-    )
+        # --- station-family discovery ---
+        host_prefixes = list_station_prefixes(db)
+        station_profile_rows = _build_station_profile_rows(
+            host_prefix_rows=host_prefixes,
+            selected_values=request.args,
+        )
 
-    # --- host visibility ---
-    if request.method == "POST":
-        online_only = request.form.get("online_only") == "1"
-    else:
-        # Default behavior: show only online hosts, but allow the page
-        # filter to explicitly request the full HOST list.
-        online_only = request.args.get("online_only", "1") == "1"
+        # --- host visibility ---
+        if request.method == "POST":
+            online_only = request.form.get("online_only") == "1"
+        else:
+            # Default behavior: show only online hosts, but allow the page
+            # filter to explicitly request the full HOST list.
+            online_only = request.args.get("online_only", "1") == "1"
 
-    # --- individual host selection ---
-    query = """
-        SELECT ID_HOST, NA_HOST_NAME, DT_LAST_DISCOVERY
-        FROM HOST
-    """
+        # --- individual host selection ---
+        hosts = list_builder_hosts(db, online_only)
 
-    if online_only:
-        query += " WHERE IS_OFFLINE = 0"
+        # --- submitted task request ---
+        if request.method == "POST":
 
-    query += " ORDER BY NA_HOST_NAME"
+            selected_action = _normalize_task_action(request.form.get("action"))
+            action_definition = _resolve_task_action(selected_action)
+            task_type = int(action_definition["task_type"])
+            execution_type = request.form.get("execution_type")
 
-    cursor.execute(query)
-    hosts = cursor.fetchall()
+            if selected_action == TASK_ACTION_CONNECTIVITY_TEST:
+                raw_host_id = request.form.get("host_id")
+                try:
+                    host_id = int(raw_host_id)
+                except (TypeError, ValueError):
+                    host_id = None
 
-    # --- submitted task request ---
-    if request.method == "POST":
+                if execution_type != "individual" or not host_id:
+                    return redirect(url_for("tasks.task_builder", action=selected_action))
 
-        selected_action = _normalize_task_action(request.form.get("action"))
-        action_definition = _resolve_task_action(selected_action)
-        task_type = int(action_definition["task_type"])
-        execution_type = request.form.get("execution_type")
+                queue_interactive_connectivity_test(db, host_id)
+                return redirect(
+                    url_for(
+                        "tasks.station_tasks",
+                        host_task_load=1,
+                        host_task_host_id=host_id,
+                    )
+                )
 
-        if selected_action == TASK_ACTION_CONNECTIVITY_TEST:
-            raw_host_id = request.form.get("host_id")
-            try:
-                host_id = int(raw_host_id)
-            except (TypeError, ValueError):
-                host_id = None
+            mode = _resolve_action_mode(
+                action_definition,
+                request.form.get("mode"),
+            )
 
-            if execution_type != "individual" or not host_id:
-                return redirect(url_for("tasks.task_builder", action=selected_action))
+            # The worker expects a complete filter dictionary for every task.
+            filter_data = {
+                "start_date": request.form.get("start_date") or None,
+                "end_date": request.form.get("end_date") or None,
+                "last_n_files": request.form.get("last_n_files") or None,
+                "extension": request.form.get("extension") or None,
+                "file_path": request.form.get("file_path") or None,
+                "file_name": request.form.get("file_name") or None,
+                "max_total_gb": request.form.get("max_total_gb") or None,
+                "sort_order": request.form.get("sort_order") or "newest_first",
+            }
 
-            queue_interactive_connectivity_test(db, host_id)
+            if not _selection_supports_backlog_budget(task_type, mode):
+                filter_data["max_total_gb"] = None
+                filter_data["sort_order"] = None
+
+            # --- collective task creation ---
+            created_host_id = None
+            if execution_type == "collective":
+
+                host_filter = request.form.get("host_filter", "ALL")
+                selected_collective_host_ids = {
+                    int(value)
+                    for value in request.form.getlist("collective_host_ids")
+                    if str(value).strip()
+                }
+
+                candidate_hosts = list_collective_hosts(db, online_only, host_filter)
+                if selected_collective_host_ids:
+                    selected_hosts = [
+                        host_row
+                        for host_row in candidate_hosts
+                        if host_row["ID_HOST"] in selected_collective_host_ids
+                    ]
+                else:
+                    selected_hosts = candidate_hosts
+
+                creation_summary = {"queued_count": 0, "skipped_count": 0}
+                if selected_hosts:
+                    profile_overrides = None
+                    if host_filter == "ALL":
+                        profile_overrides = _extract_station_profile_overrides(
+                            request.form,
+                            station_profile_rows,
+                        )
+
+                    zabbix_defaults_by_host = {}
+                    if task_type == HOST_TASK_CHECK_TYPE:
+                        zabbix_defaults_by_host = _parse_collective_zabbix_defaults(
+                            request.form.get("collective_zabbix_defaults"),
+                            [host_row["ID_HOST"] for host_row in selected_hosts],
+                        )
+
+                    for batch in _build_collective_task_batches(
+                        host_rows=selected_hosts,
+                        filter_data=filter_data,
+                        profile_overrides=profile_overrides,
+                        zabbix_defaults_by_host=zabbix_defaults_by_host,
+                    ):
+                        batch_summary = create_task(
+                            db=db,
+                            hosts=batch["hosts"],
+                            task_type=task_type,
+                            mode=mode,
+                            filter_data=batch["filter_data"],
+                        )
+                        creation_summary["queued_count"] += batch_summary["queued_count"]
+                        creation_summary["skipped_count"] += batch_summary["skipped_count"]
+
+            # --- individual task creation ---
+            else:
+
+                host_id = request.form.get("host_id")
+                creation_summary = {"queued_count": 0, "skipped_count": 0}
+
+                if host_id:
+                    created_host_id = int(host_id)
+                    creation_summary = create_task(
+                        db=db,
+                        hosts=[created_host_id],
+                        task_type=task_type,
+                        mode=mode,
+                        filter_data=filter_data,
+                    )
+
             return redirect(
                 url_for(
                     "tasks.station_tasks",
                     host_task_load=1,
-                    host_task_host_id=host_id,
+                    host_task_host_id=created_host_id,
                 )
             )
 
-        mode = _resolve_action_mode(
-            action_definition,
-            request.form.get("mode"),
+        # --- page response ---
+        record_page_view()
+        return render_template(
+            "tasks/builder.html",
+            hosts=hosts,
+            host_prefixes=host_prefixes,
+            online_only=online_only,
+            selected_host=selected_host,
+            selected_action=selected_action,
+            selected_task_type=selected_task_type,
+            selected_execution_type=selected_execution_type,
+            selected_host_filter=selected_host_filter,
+            selected_mode=selected_mode,
+            selected_start_date=selected_start_date,
+            selected_end_date=selected_end_date,
+            selected_last_n_files=selected_last_n_files,
+            selected_extension=selected_extension,
+            selected_file_path=selected_file_path,
+            selected_file_name=selected_file_name,
+            selected_max_total_gb=selected_max_total_gb,
+            selected_sort_order=selected_sort_order,
+            selected_filter_defaults_custom=selected_filter_defaults_custom,
+            selected_collective_host_ids=selected_collective_host_ids,
+            selected_collective_host_search=selected_collective_host_search,
+            station_profile_rows=station_profile_rows,
+            task_actions=TASK_ACTIONS,
+            backup_task_type=HOST_TASK_CHECK_TYPE,
+            stop_task_type=HOST_TASK_BACKLOG_ROLLBACK_TYPE,
         )
 
-        # The worker expects a complete filter dictionary for every task.
-        filter_data = {
-            "start_date": request.form.get("start_date") or None,
-            "end_date": request.form.get("end_date") or None,
-            "last_n_files": request.form.get("last_n_files") or None,
-            "extension": request.form.get("extension") or None,
-            "file_path": request.form.get("file_path") or None,
-            "file_name": request.form.get("file_name") or None,
-            "max_total_gb": request.form.get("max_total_gb") or None,
-            "sort_order": request.form.get("sort_order") or "newest_first",
-        }
-
-        if not _selection_supports_backlog_budget(task_type, mode):
-            filter_data["max_total_gb"] = None
-            filter_data["sort_order"] = None
-
-        # --- collective task creation ---
-        created_host_id = None
-        if execution_type == "collective":
-
-            host_filter = request.form.get("host_filter", "ALL")
-            selected_collective_host_ids = {
-                int(value)
-                for value in request.form.getlist("collective_host_ids")
-                if str(value).strip()
-            }
-
-            query = """
-                SELECT ID_HOST, NA_HOST_NAME
-                FROM HOST
-                WHERE 1 = 1
-            """
-            params = []
-
-            if online_only:
-                query += " AND IS_OFFLINE = 0"
-
-            # Apply the selected station family before creating a batch.
-            if host_filter != "ALL":
-                if str(host_filter).upper() == "UMS300":
-                    query += " AND UPPER(NA_HOST_NAME) LIKE %s"
-                    params.append("UMS%")
-                else:
-                    query += " AND NA_HOST_NAME LIKE %s"
-                    params.append(f"{host_filter}%")
-
-            query += " ORDER BY NA_HOST_NAME"
-
-            cursor.execute(query, tuple(params))
-
-            candidate_hosts = cursor.fetchall()
-            if selected_collective_host_ids:
-                selected_hosts = [
-                    host_row
-                    for host_row in candidate_hosts
-                    if host_row["ID_HOST"] in selected_collective_host_ids
-                ]
-            else:
-                selected_hosts = candidate_hosts
-
-            creation_summary = {"queued_count": 0, "skipped_count": 0}
-            if selected_hosts:
-                profile_overrides = None
-                if host_filter == "ALL":
-                    profile_overrides = _extract_station_profile_overrides(
-                        request.form,
-                        station_profile_rows,
-                    )
-
-                zabbix_defaults_by_host = {}
-                if task_type == HOST_TASK_CHECK_TYPE:
-                    zabbix_defaults_by_host = _parse_collective_zabbix_defaults(
-                        request.form.get("collective_zabbix_defaults"),
-                        [host_row["ID_HOST"] for host_row in selected_hosts],
-                    )
-
-                for batch in _build_collective_task_batches(
-                    host_rows=selected_hosts,
-                    filter_data=filter_data,
-                    profile_overrides=profile_overrides,
-                    zabbix_defaults_by_host=zabbix_defaults_by_host,
-                ):
-                    batch_summary = create_task(
-                        db=db,
-                        hosts=batch["hosts"],
-                        task_type=task_type,
-                        mode=mode,
-                        filter_data=batch["filter_data"],
-                    )
-                    creation_summary["queued_count"] += batch_summary["queued_count"]
-                    creation_summary["skipped_count"] += batch_summary["skipped_count"]
-
-        # --- individual task creation ---
-        else:
-
-            host_id = request.form.get("host_id")
-            creation_summary = {"queued_count": 0, "skipped_count": 0}
-
-            if host_id:
-                created_host_id = int(host_id)
-                creation_summary = create_task(
-                    db=db,
-                    hosts=[created_host_id],
-                    task_type=task_type,
-                    mode=mode,
-                    filter_data=filter_data,
-                )
-
-        return redirect(
-            url_for(
-                "tasks.station_tasks",
-                host_task_load=1,
-                host_task_host_id=created_host_id,
-            )
-        )
-
-    # --- page response ---
-    record_page_view()
-    return render_template(
-        "tasks/builder.html",
-        hosts=hosts,
-        host_prefixes=host_prefixes,
-        online_only=online_only,
-        selected_host=selected_host,
-        selected_action=selected_action,
-        selected_task_type=selected_task_type,
-        selected_execution_type=selected_execution_type,
-        selected_host_filter=selected_host_filter,
-        selected_mode=selected_mode,
-        selected_start_date=selected_start_date,
-        selected_end_date=selected_end_date,
-        selected_last_n_files=selected_last_n_files,
-        selected_extension=selected_extension,
-        selected_file_path=selected_file_path,
-        selected_file_name=selected_file_name,
-        selected_max_total_gb=selected_max_total_gb,
-        selected_sort_order=selected_sort_order,
-        selected_filter_defaults_custom=selected_filter_defaults_custom,
-        selected_collective_host_ids=selected_collective_host_ids,
-        selected_collective_host_search=selected_collective_host_search,
-        station_profile_rows=station_profile_rows,
-        task_actions=TASK_ACTIONS,
-        backup_task_type=HOST_TASK_CHECK_TYPE,
-        stop_task_type=HOST_TASK_BACKLOG_ROLLBACK_TYPE,
-    )
+    finally:
+        db.close()
 
 
 @tasks_api_bp.route("/host/<int:host_id>/backup-defaults", methods=["GET"])

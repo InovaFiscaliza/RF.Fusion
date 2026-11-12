@@ -292,7 +292,7 @@ def _persist_operational_host_connection(
     value: int | str,
 ) -> None:
     """Load the WebFusion database helper only for a write operation."""
-    from db import update_host_connection_value
+    from db.host import update_host_connection_value
 
     update_host_connection_value(
         host_id=host_id,

@@ -4,28 +4,33 @@ Keep query differences from the WebFusion UI intentional: these methods form
 the compatibility boundary for the external client, including empty fallbacks.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
-from pymysql.cursors import SSDictCursor
-
-from db import get_connection_bpdata, get_connection_rfdata, get_connection_summary
+from psycopg import sql as pg_sql
 
 from . import config as k
-from .filters import Filters
+from .connection import get_connection_bpdata, get_connection_rfdata, get_connection_summary
+from .summary import host_locations_query, site_observations_query
+
+if TYPE_CHECKING:
+    from api.appAnalise_api.filters import Filters
 
 
-LOCALITY_SQL = """COALESCE(NULLIF(s.NA_SITE, ''), NULLIF(d.NA_DISTRICT, ''),
-    c.NA_COUNTY, CONCAT('Site ', s.ID_SITE))"""
-FILE_JOINS = """FROM RFDATA.FACT_SPECTRUM f
-JOIN RFDATA.BRIDGE_SPECTRUM_FILE b ON b.FK_SPECTRUM = f.ID_SPECTRUM
-JOIN RFDATA.DIM_SPECTRUM_FILE repos ON repos.ID_FILE = b.FK_FILE
-"""
-GEO_JOINS = """JOIN RFDATA.DIM_SPECTRUM_SITE s ON s.ID_SITE = f.FK_SITE
-LEFT JOIN RFDATA.DIM_SITE_DISTRICT d ON d.ID_DISTRICT = s.FK_DISTRICT
-LEFT JOIN RFDATA.DIM_SITE_COUNTY c ON c.ID_COUNTY = s.FK_COUNTY
-LEFT JOIN RFDATA.DIM_SITE_STATE st ON st.ID_STATE = s.FK_STATE
-"""
-EQUIPMENT_JOIN = "JOIN RFDATA.DIM_SPECTRUM_EQUIPMENT e ON e.ID_EQUIPMENT = f.FK_EQUIPMENT"
+_LOCALITY_SQL = '''COALESCE(NULLIF(s."NA_SITE", ''), NULLIF(d."NA_DISTRICT", ''),
+    c."NA_COUNTY", CONCAT('Site ', s."ID_SITE"))'''
+_FILE_JOINS = '''FROM "RFDATA"."FACT_SPECTRUM" f
+JOIN "RFDATA"."BRIDGE_SPECTRUM_FILE" b ON b."FK_SPECTRUM" = f."ID_SPECTRUM"
+JOIN "RFDATA"."DIM_SPECTRUM_FILE" repos ON repos."ID_FILE" = b."FK_FILE"
+'''
+_GEO_JOINS = '''JOIN "RFDATA"."DIM_SPECTRUM_SITE" s ON s."ID_SITE" = f."FK_SITE"
+LEFT JOIN "RFDATA"."DIM_SITE_DISTRICT" d ON d."ID_DISTRICT" = s."FK_DISTRICT"
+LEFT JOIN "RFDATA"."DIM_SITE_COUNTY" c ON c."ID_COUNTY" = s."FK_COUNTY"
+LEFT JOIN "RFDATA"."DIM_SITE_STATE" st ON st."ID_STATE" = s."FK_STATE"
+'''
+_EQUIPMENT_JOIN = 'JOIN "RFDATA"."DIM_SPECTRUM_EQUIPMENT" e ON e."ID_EQUIPMENT" = f."FK_EQUIPMENT"'
 
 
 @dataclass
@@ -56,6 +61,7 @@ def _conditions(filters: Filters, fields: dict[str, str]) -> tuple[str, list[obj
     clauses = []
     params = []
     for name, column in fields.items():
+        column = pg_sql.Identifier(*(part.strip('"') for part in column.split('.'))).as_string()
         value = getattr(filters, name)
         if value is None or value == ():
             continue
@@ -81,19 +87,19 @@ def _spectrum_conditions(filters: Filters) -> tuple[str, list[object]]:
         and state alias st when state_code is supplied.
     """
     sql, params = _conditions(filters, {
-        "equipment_id": "f.FK_EQUIPMENT", "site_id": "f.FK_SITE",
-        "state_code": "st.LC_STATE", "district_ids": "s.FK_DISTRICT",
+        "equipment_id": 'f."FK_EQUIPMENT"', "site_id": 'f."FK_SITE"',
+        "state_code": "st.LC_STATE", "district_ids": 's."FK_DISTRICT"',
     })
     for value, expression in (
-        (filters.start_date, "f.DT_TIME_END >= %s"),
-        (filters.end_date, "f.DT_TIME_START <= %s"),
+        (filters.start_date, 'f."DT_TIME_END" >= %s'),
+        (filters.end_date, 'f."DT_TIME_START" <= %s'),
     ):
         if value is not None:
             sql += f" AND {expression}"
             params.append(value)
     for value, expression in (
-        (filters.freq_start, "f.NU_FREQ_START >= %s"),
-        (filters.freq_end, "f.NU_FREQ_END <= %s"),
+        (filters.freq_start, 'f."NU_FREQ_START" >= %s'),
+        (filters.freq_end, 'f."NU_FREQ_END" <= %s'),
     ):
         # Negative bounds mean absent in MATLAB, but still select the fact path.
         if value is not None and value >= 0:
@@ -103,7 +109,7 @@ def _spectrum_conditions(filters: Filters) -> tuple[str, list[object]]:
         pattern = filters.description
         if "%" not in pattern and "_" not in pattern:
             pattern = f"%{pattern}%"
-        sql += " AND UPPER(COALESCE(f.NA_DESCRIPTION, '')) LIKE UPPER(%s)"
+        sql += ' AND UPPER(COALESCE(f."NA_DESCRIPTION", \'\')) ILIKE UPPER(%s)'
         params.append(pattern)
     return sql, params
 
@@ -153,13 +159,13 @@ class AppAnaliseDB:
         Returns:
             HOST_LOCATION_SUMMARY columns and rows (TableResult).
         """
-        return self._fetch(k.SUMMARY_SCHEMA, """
-            SELECT * FROM HOST_LOCATION_SUMMARY
-            WHERE VL_LATITUDE IS NOT NULL AND VL_LONGITUDE IS NOT NULL
-            ORDER BY IS_CURRENT_LOCATION DESC, IS_OFFLINE_SNAPSHOT ASC,
-                DT_LAST_SEEN_AT DESC, NA_STATE_CODE ASC,
-                NA_LOCALITY_LABEL ASC, NA_HOST_NAME ASC
-        """)
+        return self._fetch(k.SUMMARY_SCHEMA, f'''
+            SELECT "FK_HOST", "FK_SITE", "NA_HOST_NAME", "NA_LOCALITY_LABEL", "NA_SITE_LABEL", "FK_COUNTY", "FK_DISTRICT", "NA_COUNTY_NAME", "NA_DISTRICT_NAME", "ID_STATE", "NA_STATE_NAME", "NA_STATE_CODE", "VL_LATITUDE", "VL_LONGITUDE", "VL_ALTITUDE", "DT_FIRST_SEEN_AT", "DT_LAST_SEEN_AT", "NU_SPECTRUM_COUNT", "NU_MATCHED_EQUIPMENT_TOTAL", "IS_CURRENT_LOCATION", "IS_OFFLINE_SNAPSHOT", "VL_MAX_MATCH_CONFIDENCE", "DT_REFRESHED_AT" FROM ({host_locations_query()}) locations
+            WHERE "VL_LATITUDE" IS NOT NULL AND "VL_LONGITUDE" IS NOT NULL
+            ORDER BY "IS_CURRENT_LOCATION" DESC, "IS_OFFLINE_SNAPSHOT" ASC,
+                "DT_LAST_SEEN_AT" DESC NULLS LAST, "NA_STATE_CODE" ASC,
+                "NA_LOCALITY_LABEL" ASC, "NA_HOST_NAME" ASC
+        ''')
 
     def get_host_stats(self, host_id: int) -> TableResult:
         """Reconstruct removed HOST counters from their original history source.
@@ -173,26 +179,26 @@ class AppAnaliseDB:
             Counts use the legacy status predicates; pending volume remains KB.
         """
         # HOST no longer stores these counters. Rounded summary GB cannot recover exact KB.
-        return self._fetch(k.HOST_SCHEMA, """
-            SELECT h.ID_HOST, h.NA_HOST_NAME, h.NA_HOST_ADDRESS, h.NA_HOST_PORT,
-                h.IS_OFFLINE, h.IS_BUSY, h.DT_LAST_CHECK, h.DT_LAST_DISCOVERY,
-                h.DT_LAST_BACKUP, h.DT_LAST_PROCESSING,
-                COALESCE(stats.NU_HOST_FILES, 0) AS NU_HOST_FILES,
-                COALESCE(stats.NU_PENDING_FILE_BACKUP_TASKS, 0) AS NU_PENDING_FILE_BACKUP_TASKS,
-                COALESCE(stats.NU_DONE_FILE_BACKUP_TASKS, 0) AS NU_DONE_FILE_BACKUP_TASKS,
-                COALESCE(stats.VL_PENDING_BACKUP_KB, 0) AS VL_PENDING_BACKUP_KB
-            FROM BPDATA.HOST h
+        return self._fetch(k.HOST_SCHEMA, '''
+            SELECT h."ID_HOST", h."NA_HOST_NAME", h."NA_HOST_ADDRESS", h."NA_HOST_PORT",
+                h."IS_OFFLINE", h."IS_BUSY", h."DT_LAST_CHECK", h."DT_LAST_DISCOVERY",
+                h."DT_LAST_BACKUP", h."DT_LAST_PROCESSING",
+                COALESCE(stats."NU_HOST_FILES", 0) AS "NU_HOST_FILES",
+                COALESCE(stats."NU_PENDING_FILE_BACKUP_TASKS", 0) AS "NU_PENDING_FILE_BACKUP_TASKS",
+                COALESCE(stats."NU_DONE_FILE_BACKUP_TASKS", 0) AS "NU_DONE_FILE_BACKUP_TASKS",
+                COALESCE(stats."VL_PENDING_BACKUP_KB", 0) AS "VL_PENDING_BACKUP_KB"
+            FROM "BPDATA"."HOST" h
             LEFT JOIN (
-                SELECT FK_HOST,
-                    SUM(NU_STATUS_DISCOVERY = %s) AS NU_HOST_FILES,
-                    SUM(NU_STATUS_BACKUP = %s) AS NU_PENDING_FILE_BACKUP_TASKS,
-                    SUM(NU_STATUS_BACKUP = %s) AS NU_DONE_FILE_BACKUP_TASKS,
-                    SUM(CASE WHEN NU_STATUS_DISCOVERY = %s AND NU_STATUS_BACKUP = %s
-                        THEN VL_FILE_SIZE_KB_HOST ELSE 0 END) AS VL_PENDING_BACKUP_KB
-                FROM BPDATA.FILE_TASK_HISTORY WHERE FK_HOST = %s GROUP BY FK_HOST
-            ) stats ON stats.FK_HOST = h.ID_HOST
-            WHERE h.ID_HOST = %s
-        """, [k.TASK_DONE, k.TASK_PENDING, k.TASK_DONE, k.TASK_DONE,
+                SELECT "FK_HOST",
+                    SUM(CASE WHEN "NU_STATUS_DISCOVERY" = %s THEN 1 ELSE 0 END)::numeric AS "NU_HOST_FILES",
+                    SUM(CASE WHEN "NU_STATUS_BACKUP" = %s THEN 1 ELSE 0 END)::numeric AS "NU_PENDING_FILE_BACKUP_TASKS",
+                    SUM(CASE WHEN "NU_STATUS_BACKUP" = %s THEN 1 ELSE 0 END)::numeric AS "NU_DONE_FILE_BACKUP_TASKS",
+                    SUM(CASE WHEN "NU_STATUS_DISCOVERY" = %s AND "NU_STATUS_BACKUP" = %s
+                        THEN "VL_FILE_SIZE_KB_HOST" ELSE 0 END)::numeric AS "VL_PENDING_BACKUP_KB"
+                FROM "BPDATA"."FILE_TASK_HISTORY" WHERE "FK_HOST" = %s GROUP BY "FK_HOST"
+            ) stats ON stats."FK_HOST" = h."ID_HOST"
+            WHERE h."ID_HOST" = %s
+        ''', [k.TASK_DONE, k.TASK_PENDING, k.TASK_DONE, k.TASK_DONE,
               k.TASK_PENDING, host_id, host_id])
 
     def get_spectrum_equipments(self, filters: Filters) -> TableResult:
@@ -209,31 +215,31 @@ class AppAnaliseDB:
             "state_code": "NA_STATE_CODE", "site_id": "FK_SITE",
             "district_ids": "FK_DISTRICT",
         })
-        result = self._fetch(k.SUMMARY_SCHEMA, f"""
-            SELECT DISTINCT FK_EQUIPMENT AS ID_EQUIPMENT, NA_EQUIPMENT
-            FROM SITE_EQUIPMENT_OBS_SUMMARY
-            WHERE NA_EQUIPMENT IS NOT NULL AND NA_EQUIPMENT <> '' {where}
-            ORDER BY NA_EQUIPMENT
-        """, params)
+        result = self._fetch(k.SUMMARY_SCHEMA, f'''
+            SELECT DISTINCT "FK_EQUIPMENT" AS "ID_EQUIPMENT", "NA_EQUIPMENT"
+            FROM ({site_observations_query()}) observations
+            WHERE "NA_EQUIPMENT" IS NOT NULL AND "NA_EQUIPMENT" <> '' {where}
+            ORDER BY "NA_EQUIPMENT"
+        ''', params)
         if result.rows:
             return result
         # Keep the legacy fallback scope; fixing its missing district filter is separate.
         where, params = _conditions(filters, {
-            "state_code": "steq.LC_STATE", "site_id": "f.FK_SITE",
+            "state_code": "steq.LC_STATE", "site_id": 'f."FK_SITE"',
         })
-        state_join = """
-            JOIN RFDATA.DIM_SPECTRUM_SITE seq ON seq.ID_SITE = f.FK_SITE
-            LEFT JOIN RFDATA.DIM_SITE_STATE steq ON steq.ID_STATE = seq.FK_STATE
-        """ if filters.state_code else ""
+        state_join = '''
+            JOIN "RFDATA"."DIM_SPECTRUM_SITE" seq ON seq."ID_SITE" = f."FK_SITE"
+            LEFT JOIN "RFDATA"."DIM_SITE_STATE" steq ON steq."ID_STATE" = seq."FK_STATE"
+        ''' if filters.state_code else ""
         # Membership needs one matching spectrum, not all rows followed by DISTINCT.
-        return self._fetch(k.SPECTRUM_SCHEMA, f"""
-            SELECT e.ID_EQUIPMENT, e.NA_EQUIPMENT
-            FROM RFDATA.DIM_SPECTRUM_EQUIPMENT e
+        return self._fetch(k.SPECTRUM_SCHEMA, f'''
+            SELECT e."ID_EQUIPMENT", e."NA_EQUIPMENT"
+            FROM "RFDATA"."DIM_SPECTRUM_EQUIPMENT" e
             WHERE EXISTS (
-                SELECT 1 FROM RFDATA.FACT_SPECTRUM f {state_join}
-                WHERE f.FK_EQUIPMENT = e.ID_EQUIPMENT {where}
-            ) ORDER BY e.NA_EQUIPMENT
-        """, params)
+                SELECT 1 FROM "RFDATA"."FACT_SPECTRUM" f {state_join}
+                WHERE f."FK_EQUIPMENT" = e."ID_EQUIPMENT" {where}
+            ) ORDER BY e."NA_EQUIPMENT"
+        ''', params)
 
     def get_spectrum_states(self, filters: Filters) -> TableResult:
         """Read observed states, falling back only when the summary is empty.
@@ -247,22 +253,22 @@ class AppAnaliseDB:
         where, params = _conditions(filters, {
             "equipment_id": "FK_EQUIPMENT", "site_id": "FK_SITE",
         })
-        result = self._fetch(k.SUMMARY_SCHEMA, f"""
-            SELECT DISTINCT NA_STATE_CODE AS LC_STATE FROM SITE_EQUIPMENT_OBS_SUMMARY
-            WHERE NA_STATE_CODE IS NOT NULL AND NA_STATE_CODE <> '' {where}
-            ORDER BY NA_STATE_CODE
-        """, params)
+        result = self._fetch(k.SUMMARY_SCHEMA, f'''
+            SELECT DISTINCT "NA_STATE_CODE" AS "LC_STATE" FROM ({site_observations_query()}) observations
+            WHERE "NA_STATE_CODE" IS NOT NULL AND "NA_STATE_CODE" <> '' {where}
+            ORDER BY "NA_STATE_CODE"
+        ''', params)
         if result.rows:
             return result
         where, params = _conditions(filters, {
-            "equipment_id": "f.FK_EQUIPMENT", "site_id": "f.FK_SITE",
+            "equipment_id": 'f."FK_EQUIPMENT"', "site_id": 'f."FK_SITE"',
         })
-        return self._fetch(k.SPECTRUM_SCHEMA, f"""
-            SELECT DISTINCT st.LC_STATE FROM RFDATA.FACT_SPECTRUM f
-            JOIN RFDATA.DIM_SPECTRUM_SITE s ON s.ID_SITE = f.FK_SITE
-            LEFT JOIN RFDATA.DIM_SITE_STATE st ON st.ID_STATE = s.FK_STATE
-            WHERE st.LC_STATE IS NOT NULL {where} ORDER BY st.LC_STATE
-        """, params)
+        return self._fetch(k.SPECTRUM_SCHEMA, f'''
+            SELECT DISTINCT st."LC_STATE" FROM "RFDATA"."FACT_SPECTRUM" f
+            JOIN "RFDATA"."DIM_SPECTRUM_SITE" s ON s."ID_SITE" = f."FK_SITE"
+            LEFT JOIN "RFDATA"."DIM_SITE_STATE" st ON st."ID_STATE" = s."FK_STATE"
+            WHERE st."LC_STATE" IS NOT NULL {where} ORDER BY st."LC_STATE"
+        ''', params)
 
     def get_spectrum_localities(self, filters: Filters) -> TableResult:
         """Read district options using the MATLAB summary/fact selection rules.
@@ -286,37 +292,37 @@ class AppAnaliseDB:
             where, params = _conditions(filters, {
                 "equipment_id": "FK_EQUIPMENT", "state_code": "NA_STATE_CODE",
             })
-            result = self._fetch(k.SUMMARY_SCHEMA, f"""
-                SELECT sm.FK_DISTRICT AS ID_DISTRICT,
-                    sm.NA_DISTRICT_NAME AS LOCALITY_LABEL,
-                    sm.NA_COUNTY_NAME AS COUNTY_NAME, sm.NA_STATE_CODE AS STATE_CODE,
-                    COUNT(DISTINCT sm.FK_SITE) AS SITE_COUNT,
-                    SUM(sm.NU_SPECTRUM_COUNT) AS SPECTRUM_COUNT,
-                    MIN(sm.DT_FIRST_SEEN_AT) AS DATE_START,
-                    MAX(sm.DT_LAST_SEEN_AT) AS DATE_END
-                FROM SITE_EQUIPMENT_OBS_SUMMARY sm
-                WHERE sm.FK_DISTRICT IS NOT NULL {where}
-                GROUP BY sm.FK_DISTRICT, sm.NA_DISTRICT_NAME,
-                    sm.NA_COUNTY_NAME, sm.NA_STATE_CODE
-                ORDER BY sm.NA_DISTRICT_NAME ASC, sm.NA_COUNTY_NAME ASC, sm.NA_STATE_CODE ASC
-            """, params)
+            result = self._fetch(k.SUMMARY_SCHEMA, f'''
+                SELECT sm."FK_DISTRICT" AS "ID_DISTRICT",
+                    sm."NA_DISTRICT_NAME" AS "LOCALITY_LABEL",
+                    sm."NA_COUNTY_NAME" AS "COUNTY_NAME", sm."NA_STATE_CODE" AS "STATE_CODE",
+                    COUNT(DISTINCT sm."FK_SITE") AS "SITE_COUNT",
+                    SUM(sm."NU_SPECTRUM_COUNT") AS "SPECTRUM_COUNT",
+                    MIN(sm."DT_FIRST_SEEN_AT") AS "DATE_START",
+                    MAX(sm."DT_LAST_SEEN_AT") AS "DATE_END"
+                FROM ({site_observations_query()}) sm
+                WHERE sm."FK_DISTRICT" IS NOT NULL {where}
+                GROUP BY sm."FK_DISTRICT", sm."NA_DISTRICT_NAME",
+                    sm."NA_COUNTY_NAME", sm."NA_STATE_CODE"
+                ORDER BY sm."NA_DISTRICT_NAME" ASC, sm."NA_COUNTY_NAME" ASC, sm."NA_STATE_CODE" ASC
+            ''', params)
             if result.rows:
                 return result
         where, params = _spectrum_conditions(replace(filters, site_id=None))
-        return self._fetch(k.SPECTRUM_SCHEMA, f"""
-            SELECT d.ID_DISTRICT, d.NA_DISTRICT AS LOCALITY_LABEL,
-                c.NA_COUNTY AS COUNTY_NAME, st.LC_STATE AS STATE_CODE,
-                COUNT(DISTINCT s.ID_SITE) AS SITE_COUNT, COUNT(*) AS SPECTRUM_COUNT,
-                MIN(f.DT_TIME_START) AS DATE_START, MAX(f.DT_TIME_END) AS DATE_END
-            FROM RFDATA.FACT_SPECTRUM f
-            JOIN RFDATA.DIM_SPECTRUM_SITE s ON s.ID_SITE = f.FK_SITE
-            JOIN RFDATA.DIM_SITE_DISTRICT d ON d.ID_DISTRICT = s.FK_DISTRICT
-            LEFT JOIN RFDATA.DIM_SITE_COUNTY c ON c.ID_COUNTY = s.FK_COUNTY
-            LEFT JOIN RFDATA.DIM_SITE_STATE st ON st.ID_STATE = s.FK_STATE
-            WHERE s.FK_DISTRICT IS NOT NULL {where}
-            GROUP BY d.ID_DISTRICT, d.NA_DISTRICT, c.NA_COUNTY, st.LC_STATE
-            ORDER BY d.NA_DISTRICT ASC, c.NA_COUNTY ASC, st.LC_STATE ASC
-        """, params)
+        return self._fetch(k.SPECTRUM_SCHEMA, f'''
+            SELECT d."ID_DISTRICT", d."NA_DISTRICT" AS "LOCALITY_LABEL",
+                c."NA_COUNTY" AS "COUNTY_NAME", st."LC_STATE" AS "STATE_CODE",
+                COUNT(DISTINCT s."ID_SITE") AS "SITE_COUNT", COUNT(*) AS "SPECTRUM_COUNT",
+                MIN(f."DT_TIME_START") AS "DATE_START", MAX(f."DT_TIME_END") AS "DATE_END"
+            FROM "RFDATA"."FACT_SPECTRUM" f
+            JOIN "RFDATA"."DIM_SPECTRUM_SITE" s ON s."ID_SITE" = f."FK_SITE"
+            JOIN "RFDATA"."DIM_SITE_DISTRICT" d ON d."ID_DISTRICT" = s."FK_DISTRICT"
+            LEFT JOIN "RFDATA"."DIM_SITE_COUNTY" c ON c."ID_COUNTY" = s."FK_COUNTY"
+            LEFT JOIN "RFDATA"."DIM_SITE_STATE" st ON st."ID_STATE" = s."FK_STATE"
+            WHERE s."FK_DISTRICT" IS NOT NULL {where}
+            GROUP BY d."ID_DISTRICT", d."NA_DISTRICT", c."NA_COUNTY", st."LC_STATE"
+            ORDER BY d."NA_DISTRICT" ASC, c."NA_COUNTY" ASC, st."LC_STATE" ASC
+        ''', params)
 
     def get_spectrum_file_data(self, filters: Filters) -> TableResult:
         """Read an uncached page using the same index and metadata stages.
@@ -349,33 +355,34 @@ class AppAnaliseDB:
         where, params = _spectrum_conditions(filters)
         connection = get_connection_rfdata()
         try:
-            with connection.cursor(SSDictCursor) as cursor:
+            with connection.cursor() as cursor:
                 # Evaluate spectrum filters once, independently of file joins.
                 # The table and cursor belong exclusively to this connection.
-                cursor.execute(f"""
+                cursor.execute(f'''
                     CREATE TEMPORARY TABLE {k.FILE_FILTER_TEMP_TABLE}
-                    (PRIMARY KEY (ID_SPECTRUM)) ENGINE=InnoDB AS
-                    SELECT f.ID_SPECTRUM
-                    FROM RFDATA.FACT_SPECTRUM f {EQUIPMENT_JOIN} {GEO_JOINS}
+                    AS
+                    SELECT f."ID_SPECTRUM"
+                    FROM "RFDATA"."FACT_SPECTRUM" f {_EQUIPMENT_JOIN} {_GEO_JOINS}
                     WHERE 1 = 1 {where}
-                """, params)
-                cursor.execute(f"""
-                    SELECT STRAIGHT_JOIN matched_files.ID_FILE
+                ''', params)
+            with connection.cursor(name="appanalise_file_ids") as cursor:
+                cursor.execute(f'''
+                    SELECT matched_files."ID_FILE"
                     FROM (
-                        SELECT DISTINCT repos.ID_FILE
+                        SELECT DISTINCT repos."ID_FILE"
                         FROM {k.FILE_FILTER_TEMP_TABLE} filtered
-                        JOIN RFDATA.BRIDGE_SPECTRUM_FILE bf
-                            ON bf.FK_SPECTRUM = filtered.ID_SPECTRUM
-                        JOIN RFDATA.DIM_SPECTRUM_FILE repos ON repos.ID_FILE = bf.FK_FILE
-                        WHERE repos.NA_VOLUME = %s
+                        JOIN "RFDATA"."BRIDGE_SPECTRUM_FILE" bf
+                            ON bf."FK_SPECTRUM" = filtered."ID_SPECTRUM"
+                        JOIN "RFDATA"."DIM_SPECTRUM_FILE" repos ON repos."ID_FILE" = bf."FK_FILE"
+                        WHERE repos."NA_VOLUME" = %s
                     ) matched_files
-                    JOIN RFDATA.BRIDGE_SPECTRUM_FILE b ON b.FK_FILE = matched_files.ID_FILE
-                    JOIN RFDATA.FACT_SPECTRUM f ON f.ID_SPECTRUM = b.FK_SPECTRUM
-                    {EQUIPMENT_JOIN}
-                    JOIN RFDATA.DIM_SPECTRUM_SITE s ON s.ID_SITE = f.FK_SITE
-                    GROUP BY matched_files.ID_FILE
-                    ORDER BY MIN(f.DT_TIME_START) DESC, matched_files.ID_FILE DESC
-                """, [k.REPOSITORY_VOLUME])
+                    JOIN "RFDATA"."BRIDGE_SPECTRUM_FILE" b ON b."FK_FILE" = matched_files."ID_FILE"
+                    JOIN "RFDATA"."FACT_SPECTRUM" f ON f."ID_SPECTRUM" = b."FK_SPECTRUM"
+                    {_EQUIPMENT_JOIN}
+                    JOIN "RFDATA"."DIM_SPECTRUM_SITE" s ON s."ID_SITE" = f."FK_SITE"
+                    GROUP BY matched_files."ID_FILE"
+                    ORDER BY MIN(f."DT_TIME_START") DESC NULLS LAST, matched_files."ID_FILE" DESC
+                ''', [k.REPOSITORY_VOLUME])
                 return tuple(row["ID_FILE"] for row in cursor)
         finally:
             connection.close()
@@ -397,24 +404,22 @@ class AppAnaliseDB:
         if not file_ids:
             return TableResult(list(k.FILE_COLUMNS), [])
         placeholders = ", ".join(["%s"] * len(file_ids))
-        result = self._fetch(k.SPECTRUM_SCHEMA, f"""
-            SELECT STRAIGHT_JOIN repos.ID_FILE, repos.NA_PATH, repos.NA_FILE, repos.NA_EXTENSION,
-                repos.VL_FILE_SIZE_KB, MIN(f.DT_TIME_START) AS DT_TIME_START,
-                MAX(f.DT_TIME_END) AS DT_TIME_END, MIN(f.NU_FREQ_START) AS NU_FREQ_START,
-                MAX(f.NU_FREQ_END) AS NU_FREQ_END, COUNT(DISTINCT f.ID_SPECTRUM) AS NU_SPECTRA,
-                COUNT(DISTINCT s.ID_SITE) AS LOCALITY_COUNT,
-                GROUP_CONCAT(DISTINCT {LOCALITY_SQL} ORDER BY {LOCALITY_SQL}
-                    SEPARATOR ' | ') AS LOCALITY_LABELS,
-                GROUP_CONCAT(DISTINCT e.NA_EQUIPMENT ORDER BY e.NA_EQUIPMENT
-                    SEPARATOR ' | ') AS EQUIPMENT_LABELS
-            FROM RFDATA.DIM_SPECTRUM_FILE repos
-            JOIN RFDATA.BRIDGE_SPECTRUM_FILE b ON b.FK_FILE = repos.ID_FILE
-            JOIN RFDATA.FACT_SPECTRUM f ON f.ID_SPECTRUM = b.FK_SPECTRUM
-            {EQUIPMENT_JOIN} {GEO_JOINS}
-            WHERE repos.ID_FILE IN ({placeholders})
-            GROUP BY repos.ID_FILE, repos.NA_PATH, repos.NA_FILE,
-                repos.NA_EXTENSION, repos.VL_FILE_SIZE_KB
-        """, list(file_ids))
+        result = self._fetch(k.SPECTRUM_SCHEMA, f'''
+            SELECT repos."ID_FILE", repos."NA_PATH", repos."NA_FILE", repos."NA_EXTENSION",
+                repos."VL_FILE_SIZE_KB", MIN(f."DT_TIME_START") AS "DT_TIME_START",
+                MAX(f."DT_TIME_END") AS "DT_TIME_END", MIN(f."NU_FREQ_START") AS "NU_FREQ_START",
+                MAX(f."NU_FREQ_END") AS "NU_FREQ_END", COUNT(DISTINCT f."ID_SPECTRUM") AS "NU_SPECTRA",
+                COUNT(DISTINCT s."ID_SITE") AS "LOCALITY_COUNT",
+                STRING_AGG(DISTINCT {_LOCALITY_SQL}, ' | ' ORDER BY {_LOCALITY_SQL}) AS "LOCALITY_LABELS",
+                STRING_AGG(DISTINCT e."NA_EQUIPMENT", ' | ' ORDER BY e."NA_EQUIPMENT") AS "EQUIPMENT_LABELS"
+            FROM "RFDATA"."DIM_SPECTRUM_FILE" repos
+            JOIN "RFDATA"."BRIDGE_SPECTRUM_FILE" b ON b."FK_FILE" = repos."ID_FILE"
+            JOIN "RFDATA"."FACT_SPECTRUM" f ON f."ID_SPECTRUM" = b."FK_SPECTRUM"
+            {_EQUIPMENT_JOIN} {_GEO_JOINS}
+            WHERE repos."ID_FILE" IN ({placeholders})
+            GROUP BY repos."ID_FILE", repos."NA_PATH", repos."NA_FILE",
+                repos."NA_EXTENSION", repos."VL_FILE_SIZE_KB"
+        ''', list(file_ids))
         positions = {file_id: index for index, file_id in enumerate(file_ids)}
         result.rows.sort(key=lambda row: positions[row["ID_FILE"]])
         return result
@@ -429,15 +434,15 @@ class AppAnaliseDB:
             Spectrum identifiers, descriptions, ranges, geography and equipment
             names (TableResult). Unknown files return no rows.
         """
-        return self._fetch(k.SPECTRUM_SCHEMA, f"""
-            SELECT f.ID_SPECTRUM, f.NA_DESCRIPTION, f.NU_FREQ_START, f.NU_FREQ_END,
-                f.DT_TIME_START, f.DT_TIME_END, f.FK_SITE AS ID_SITE,
-                {LOCALITY_SQL} AS LOCALITY_LABEL, c.NA_COUNTY AS COUNTY_NAME,
-                st.LC_STATE AS STATE_CODE, e.NA_EQUIPMENT
-            {FILE_JOINS} {EQUIPMENT_JOIN} {GEO_JOINS}
-            WHERE repos.NA_VOLUME = %s AND repos.ID_FILE = %s
-            ORDER BY f.DT_TIME_START DESC, f.ID_SPECTRUM DESC
-        """, [k.REPOSITORY_VOLUME, file_id])
+        return self._fetch(k.SPECTRUM_SCHEMA, f'''
+            SELECT f."ID_SPECTRUM", f."NA_DESCRIPTION", f."NU_FREQ_START", f."NU_FREQ_END",
+                f."DT_TIME_START", f."DT_TIME_END", f."FK_SITE" AS "ID_SITE",
+                {_LOCALITY_SQL} AS "LOCALITY_LABEL", c."NA_COUNTY" AS "COUNTY_NAME",
+                st."LC_STATE" AS "STATE_CODE", e."NA_EQUIPMENT"
+            {_FILE_JOINS} {_EQUIPMENT_JOIN} {_GEO_JOINS}
+            WHERE repos."NA_VOLUME" = %s AND repos."ID_FILE" = %s
+            ORDER BY f."DT_TIME_START" DESC NULLS LAST, f."ID_SPECTRUM" DESC
+        ''', [k.REPOSITORY_VOLUME, file_id])
 
     def get_spectrum_file_data_count(self, filters: Filters) -> int:
         """Count files using the original count query's join scope.
@@ -452,12 +457,12 @@ class AppAnaliseDB:
         # Add only joins required by active geography filters.
         geo_join = ""
         if filters.state_code or filters.district_ids:
-            geo_join = "JOIN RFDATA.DIM_SPECTRUM_SITE s ON s.ID_SITE = f.FK_SITE"
+            geo_join = 'JOIN "RFDATA"."DIM_SPECTRUM_SITE" s ON s."ID_SITE" = f."FK_SITE"'
         if filters.state_code:
-            geo_join += " LEFT JOIN RFDATA.DIM_SITE_STATE st ON st.ID_STATE = s.FK_STATE"
-        result = self._fetch(k.SPECTRUM_SCHEMA, f"""
-            SELECT COUNT(DISTINCT repos.ID_FILE) AS TOTAL_COUNT
-            {FILE_JOINS} {geo_join}
-            WHERE repos.NA_VOLUME = %s {where}
-        """, [k.REPOSITORY_VOLUME, *params])
+            geo_join += ' LEFT JOIN "RFDATA"."DIM_SITE_STATE" st ON st."ID_STATE" = s."FK_STATE"'
+        result = self._fetch(k.SPECTRUM_SCHEMA, f'''
+            SELECT COUNT(DISTINCT repos."ID_FILE") AS "TOTAL_COUNT"
+            {_FILE_JOINS} {geo_join}
+            WHERE repos."NA_VOLUME" = %s {where}
+        ''', [k.REPOSITORY_VOLUME, *params])
         return int(result.rows[0]["TOTAL_COUNT"])

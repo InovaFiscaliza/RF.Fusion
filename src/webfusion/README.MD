@@ -106,35 +106,12 @@ atributos já cadastrados para o mesmo e-mail. O e-mail em minúsculas é a chav
 inequívoca da identidade.
 
 As páginas de criação e manutenção de tarefas, administração de usuários e
-configuração de estações exigem que o e-mail encaminhado esteja ativo em
-`WEBFUSION.ADMINS` ou `WEBFUSION.DEVELOPERS`. A tabela `ADMINS` tem precedência
-quando um e-mail estiver nas duas listas. Os demais módulos permanecem
-disponíveis em modo de consulta, inclusive quando o acesso ocorre sem F5 e,
-portanto, sem cabeçalhos: nesse caso a interface identifica o visitante como
-`Anônimo`.
-
-Antes de publicar o controle, aplique o schema
-`src/mariadb/scripts/createWebFusionDB.sql` no MariaDB e cadastre os usuários
-autorizados. O e-mail deve ser normalizado em minúsculas, pois é a chave usada
-na autorização. Exemplo de cadastro:
-
-```sql
-USE WEBFUSION;
-
-INSERT INTO DEVELOPERS (
-    NA_USER_NAME,
-    NA_USER_EMAIL,
-    NA_JOB_TITLE,
-    NA_DEPARTMENT,
-    NA_LOCATION
-) VALUES (
-    'Nome do usuário',
-    'nome.usuario@anatel.gov.br',
-    'Cargo',
-    'Unidade',
-    'Brasília'
-);
-```
+configuração de estações exigem usuário ativo com papel `admin` ou `developer`
+em `WEBFUSION.USER_ROLES`, relacionado a `WEBFUSION.USERS`. O papel `admin`
+tem precedência. Os demais módulos continuam disponíveis para consulta anônima.
+A criação inicial usa [createWebFusionDB.sql](../postgres/scripts/createWebFusionDB.sql)
+em um banco PostgreSQL vazio. Cadastros e concessões de privilégios pertencem
+ao módulo de usuários; a mudança de backend não concede privilégios.
 
 O proxy público deve remover quaisquer cabeçalhos `X-User-*` recebidos do
 cliente e encaminhar somente os valores produzidos pelo F5. Sem essa regra, um
@@ -275,8 +252,9 @@ apenas o ping do appAnalise mantém cache de 15 segundos, separado dos totais.
 Os resultados continuam dependendo da atualização do SUMMARY pelo appCataloga.
 A tabela de estações inclui o volume em GB e a quantidade de arquivos
 transferidos no mês, lidos de `VL_BACKUP_DONE_GB_THIS_MONTH` e
-`NU_BACKUP_DONE_THIS_MONTH` em `HOST_CURRENT_SNAPSHOT`. O recorte considera a
-conclusão do backup (`DT_BACKUP`), conforme o snapshot operacional.
+`NU_BACKUP_DONE_THIS_MONTH` em `HOST_METRIC`, combinados com o cadastro em
+`BPDATA.HOST`. O recorte usa a conclusão do backup (`DT_BACKUP`) e só inclui
+throughput cujo `DT_REFERENCE_MONTH` corresponde ao mês corrente.
 A listagem usa o visual padrão das tabelas, com cabeçalho único e o nome da
 estação fixo na rolagem horizontal. No desktop, o cabeçalho também fica fixo
 na rolagem vertical interna. No celular, a rolagem vertical acompanha a página.
@@ -287,75 +265,20 @@ Respostas do servidor não devem ser armazenadas pelo navegador ou por proxies.
 As métricas de uso ficam fora da atualização periódica, pois sua leitura também
 ingere os logs do NGINX.
 
-O card "Saúde dos Containers" é consultado manualmente e não depende de
-BPDATA, RFDATA ou RFFUSION_SUMMARY. A cada clique, o WebFusion verifica o seu
-Nginx, Waitress e endpoint interno; em paralelo, chama por SSH os scripts
-somente-leitura do appCataloga e do MariaDB. O resultado usa um cache curto no processo, descrito abaixo; ele não é
-um histórico persistido de disponibilidade.
+O card "Saúde dos Containers" é consultado manualmente e não lê tabelas
+de BPDATA, RFDATA ou RFFUSION_SUMMARY. O WebFusion verifica Nginx e Waitress
+localmente, consulta o appCataloga por SSH com chave de comando forçado e
+executa `SELECT 1` na conexão PostgreSQL configurada. A consulta SQL e a conexão
+possuem timeouts curtos e as respostas nunca incluem dados de autenticação.
 
-Os scripts executados diretamente pelos volumes montados são:
-
-- src/webfusion/scripts/webfusion_runtime_health.sh
-- src/appCataloga/server_volume/usr/local/bin/appCataloga/shell/appCataloga_runtime_health.sh
-- src/mariadb/scripts/mariadb_runtime_health.sh
-
-O acesso remoto usa uma chave exclusiva com comando forçado. Essa chave não
-recebe terminal, encaminhamento de portas, agente SSH nem permissão para
-executar outros comandos. O WebFusion não recebe acesso ao socket ou à CLI do
-Podman.
-
-Para habilitar a verificação remota na VM já em operação, gere a chave fora do
-repositório:
-
-    install -d -m 700 /RFFusion-dev/.secrets
-    ssh-keygen -t ed25519 -f /RFFusion-dev/.secrets/rffusion_runtime_health_ed25519 -N '' -C rffusion-runtime-health
-    chmod 600 /RFFusion-dev/.secrets/rffusion_runtime_health_ed25519
-    export RUNTIME_HEALTH_SSH_PUBLIC_KEY="$(cat /RFFusion-dev/.secrets/rffusion_runtime_health_ed25519.pub)"
-
-Não use os scripts de deploy apenas para habilitar esta leitura: eles podem
-recriar containers e não são necessários para a configuração inicial. Com os
-containers em execução, instale a chave pública restrita por `podman exec` e
-recarregue somente o SSHD. Depois, atualize o arquivo de chaves dos hosts
-internos:
-
-    podman exec -e "RUNTIME_HEALTH_SSH_PUBLIC_KEY=${RUNTIME_HEALTH_SSH_PUBLIC_KEY}" debian12-python bash -lc '
-      install -d -m 700 /root/.ssh
-      health_key="restrict,command=\"/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shell/appCataloga_runtime_health.sh\" ${RUNTIME_HEALTH_SSH_PUBLIC_KEY}"
-      touch /root/.ssh/authorized_keys
-      grep -Fqx "${health_key}" /root/.ssh/authorized_keys || printf "%s\n" "${health_key}" >> /root/.ssh/authorized_keys
-      chmod 600 /root/.ssh/authorized_keys
-      sshd -t && pkill -HUP sshd
-    '
-    podman exec -e "RUNTIME_HEALTH_SSH_PUBLIC_KEY=${RUNTIME_HEALTH_SSH_PUBLIC_KEY}" debian12-mariadb bash -lc '
-      install -d -m 700 /root/.ssh
-      health_key="restrict,command=\"/RFFusion/src/mariadb/scripts/mariadb_runtime_health.sh\" ${RUNTIME_HEALTH_SSH_PUBLIC_KEY}"
-      touch /root/.ssh/authorized_keys
-      grep -Fqx "${health_key}" /root/.ssh/authorized_keys || printf "%s\n" "${health_key}" >> /root/.ssh/authorized_keys
-      chmod 600 /root/.ssh/authorized_keys
-      sshd -t && pkill -HUP sshd
-    '
-    ssh-keyscan -H 10.88.0.2 > /RFFusion-dev/.secrets/rffusion_runtime_health_known_hosts
-    ssh-keyscan -H -p 2828 10.88.0.33 >> /RFFusion-dev/.secrets/rffusion_runtime_health_known_hosts
-    chmod 600 /RFFusion-dev/.secrets/rffusion_runtime_health_known_hosts
-
-Copie a chave privada e o `known_hosts` para `/run/secrets` do container
-WebFusion em execução, com permissão `0600`. Em um deploy futuro, os scripts
-de deploy aceitam RUNTIME_HEALTH_SSH_PUBLIC_KEY,
-RUNTIME_HEALTH_SSH_PRIVATE_KEY_PATH e RUNTIME_HEALTH_SSH_KNOWN_HOSTS_PATH para
-reaplicar a mesma configuração sem incluir segredos na imagem.
-
-    podman exec rffusion-web mkdir -p /run/secrets
-    podman cp /RFFusion-dev/.secrets/rffusion_runtime_health_ed25519 rffusion-web:/run/secrets/rffusion_runtime_health_ed25519
-    podman cp /RFFusion-dev/.secrets/rffusion_runtime_health_known_hosts rffusion-web:/run/secrets/rffusion_runtime_health_known_hosts
-    podman exec rffusion-web sh -c 'chmod 600 /run/secrets/rffusion_runtime_health_ed25519 /run/secrets/rffusion_runtime_health_known_hosts'
-
-Os endereços e portas acima correspondem à rede Podman atual. Caso sejam
-alterados, o WebFusion aceita as variáveis
-WEBFUSION_RUNTIME_HEALTH_APPCATALOGA_HOST,
-WEBFUSION_RUNTIME_HEALTH_APPCATALOGA_PORT,
-WEBFUSION_RUNTIME_HEALTH_MARIADB_HOST e
-WEBFUSION_RUNTIME_HEALTH_MARIADB_PORT. O timeout pode ser limitado entre um e
-cinco segundos por WEBFUSION_RUNTIME_HEALTH_TIMEOUT_SECONDS.
+O check local usa `scripts/webfusion_runtime_health.sh`. O check do appCataloga
+usa `shell/appCataloga_runtime_health.sh` no runtime desse aplicativo.
+O SSH continua exigindo chave restrita e known_hosts em `/run/secrets`, conforme
+as variáveis `WEBFUSION_RUNTIME_HEALTH_SSH_KEY_PATH` e
+`WEBFUSION_RUNTIME_HEALTH_KNOWN_HOSTS_PATH`. Host e porta do appCataloga são
+configuráveis por `WEBFUSION_RUNTIME_HEALTH_APPCATALOGA_HOST` e
+`WEBFUSION_RUNTIME_HEALTH_APPCATALOGA_PORT`. O PostgreSQL utiliza o mesmo
+conninfo dos demais acessos, sem uma credencial ou destino paralelo.
 
 Para evitar rodadas repetidas de SSH, o último snapshot é reutilizado por 15
 segundos. Ajuste esse intervalo entre cinco e 60 segundos com
@@ -363,7 +286,7 @@ WEBFUSION_RUNTIME_HEALTH_CACHE_SECONDS. Durante uma atualização, novas
 consultas recebem o último snapshot disponível sem abrir novos checks.
 
 Os deploys dos containers recriam as chaves de host SSH. Por isso, depois de
-reimplantar appCataloga ou MariaDB, gere novamente o arquivo known_hosts e
+reimplantar appCataloga, gere novamente o arquivo known_hosts e
 copie-o novamente para o WebFusion antes de voltar a consultar o card.
 
 ### Métricas de uso
@@ -413,7 +336,7 @@ acompanha seu progresso sem executar ICMP ou SSH no WebFusion.
 
 - GET /api/host/<host_id>/activity: consulta a atividade e as flags a cada
   três segundos. `IS_BUSY` e `IS_OFFLINE` vêm diretamente de `BPDATA.HOST`;
-  sinais SSH e GPS/GNSS vêm do snapshot canônico no SUMMARY, sem cache de
+  sinais SSH e GPS/GNSS vêm de BPDATA.HOST, sem cache de
   exibição. Uma tarefa aguardando não implica lock ocupado. Sinais ausentes
   e falhas de consulta aparecem como estado indisponível.
 - GET /api/host/<host_id>/statistics: cards, marcos operacionais e tabelas
@@ -495,8 +418,8 @@ informa um novo valor, sem recuperar o segredo armazenado no Zabbix.
 ```text
 src/webfusion/
 ├── app.py                 montagem Flask e registro dos blueprints
-├── db.py                  fábricas de conexão MariaDB
-├── auth/                  identidade, perfis e persistência de usuários
+├── db/                    conexões, handlers e projeções SQL por domínio
+├── auth/                  identidade e regras de acesso
 ├── api/
 │   ├── appAnalise_api/     contrato de consulta para o cliente MATLAB
 │   ├── map_api/            mapa compartilhado
@@ -522,19 +445,48 @@ uma requisição HTTP do Flask para ele próprio.
 O padrão de cada feature é:
 
 1. routes.py recebe a requisição, valida a entrada e monta a resposta HTTP;
-2. service.py contém consultas, normalização e regras da feature;
-3. templates renderizam o shell inicial;
-4. JavaScript carrega detalhes, filtros e tabelas sob demanda.
+2. service.py coordena regras, caches, normalização e montagem dos dados;
+3. o handler em db/ concentra SQL, adaptação dos resultados e persistência;
+4. config.py mantém constantes compartilhadas do domínio;
+5. templates e JavaScript apresentam o shell e carregam detalhes sob demanda.
+
+O acesso ao banco está organizado por domínio:
+
+| Handler | Responsabilidade |
+|---|---|
+| [host](db/host.py) | Estações, atividade, diagnósticos, localidades, métricas do servidor e sincronização das credenciais operacionais |
+| [spectrum](db/spectrum.py) | Arquivos, espectros, SQL dos filtros e seleção temporária da interface |
+| [tasks](db/tasks.py) | Consultas das filas, criação de tarefas, transições de estado, histórico e outbox |
+| [usage_metrics](db/usage_metrics.py) | Contadores mensais de uso e checkpoints do NGINX |
+| [map](db/map.py) | Sites e estações do mapa compartilhado |
+| [users](db/users.py) | Identidades e privilégios |
+| [appanalise](db/appanalise.py) | Consultas do contrato MATLAB |
+| [summary](db/summary.py) | Composição das projeções compartilhadas do Summary |
+
+[db/connection.py](db/connection.py) fornece as conexões PostgreSQL. Handlers de leitura
+fecham suas sessões também em falhas. Nas operações de fila e checkpoint, a
+conexão ou o cursor pode vir do chamador para preservar a transação existente.
+O outbox continua independente do commit da manutenção; contadores do NGINX e
+seu checkpoint continuam gravados juntos. As projeções SQL compartilhadas
+pertencem a [db/summary.py](db/summary.py), com funções tipadas por projeção.
+O [README do pacote de banco](db/README.md) detalha essa organização.
 
 ## Configuração e execução no container
 
 ### Configuração local do banco
 
-Antes de iniciar o WebFusion, crie `src/webfusion/.secret`. O arquivo é
-ignorado pelo Git e deve conter os quatro dicionários `DB_CFG_RFDATA`,
-`DB_CFG_BPDATA`, `DB_CFG_RFFUSION_SUMMARY` e `DB_CFG_WEBFUSION`. Cada
-dicionário requer as chaves `host`, `port`, `user`, `password` e `database`.
-Não versione, publique ou registre os valores desse arquivo.
+O WebFusion usa Psycopg 3.3.8 e PostgreSQL exclusivamente. Configure
+`RFFUSION_PG_CONNINFO` no ambiente ou `PG_CONNINFO` no arquivo local `.secret`
+existente. O conninfo precisa informar o banco e a autenticação; não há fallback
+para MariaDB. No DEV, o destino é `10.88.0.35:5432`, banco `postgres`.
+Os quatro schemas são `RFDATA`, `BPDATA`, `RFFUSION_SUMMARY` e `WEBFUSION`.
+As fábricas de `db/connection.py` abrem uma conexão por operação, com UTC e search_path
+explícitos, sem conexão no import. Nunca versione ou registre credenciais.
+
+`db/summary.py` combina os seis agregados canônicos com os cadastros.
+Não é necessário recriar as tabelas legadas do Summary. A migração preserva os
+payloads do Zabbix e appAnalise; o modelo físico segue
+[SUMMARY_POSTGRESQL.md](../../docs/architecture/SUMMARY_POSTGRESQL.md).
 
 O entrypoint é [app.py](app.py). As variáveis aceitas
 em execução direta são:

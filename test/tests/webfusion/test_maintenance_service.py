@@ -102,9 +102,9 @@ class TestMaintenanceService(unittest.TestCase):
                         def execute(self, sql, params=None):
                             sql = " ".join(sql.split())
                             events.append((sql, params))
-                            if sql.startswith("UPDATE FILE_TASK_HISTORY"):
+                            if sql.startswith('UPDATE "FILE_TASK_HISTORY"'):
                                 self.rowcount = 0 if failure == "history" else 1
-                            elif sql.startswith("UPDATE FILE_TASK"):
+                            elif sql.startswith('UPDATE "FILE_TASK"'):
                                 self.rowcount = 0 if failure == "queue" else 1
 
                         def fetchall(self):
@@ -135,11 +135,10 @@ class TestMaintenanceService(unittest.TestCase):
                             self.assertEqual(events[-1][0], "commit")
                             publish.assert_called_once()
 
-                    self.assertEqual(events[0][0], "START TRANSACTION")
-                    self.assertIn("FOR UPDATE", events[1][0])
+                    self.assertIn("FOR UPDATE", events[0][0])
                     self.assertFalse(any(sql.startswith("INSERT") for sql, _ in events))
-                    sql, params = events[2]
-                    self.assertIn("WHERE ID_FILE_TASK = %s AND NU_STATUS = %s", sql)
+                    sql, params = events[1]
+                    self.assertIn('WHERE "ID_FILE_TASK" = %s AND "NU_STATUS" = %s', sql)
                     self.assertEqual(params[-2:], (30, service.TASK_FROZEN))
                     self.assertEqual(params[1], service.TASK_PENDING)
                     if stage == service.HISTORY_TARGET_BACKUP:
@@ -147,7 +146,7 @@ class TestMaintenanceService(unittest.TestCase):
                     else:
                         self.assertEqual(params[2:4], ("/repository", "sample.bin"))
                     if not failure:
-                        self.assertIn("NA_ERROR_CODE = NULL", events[3][0])
+                        self.assertIn('"NA_ERROR_CODE" = NULL', events[2][0])
 
     def test_format_brazil_datetime_converts_utc_to_brazil_time(self):
         rendered = self.module._format_brazil_datetime(
@@ -375,7 +374,7 @@ class TestMaintenanceService(unittest.TestCase):
                 executed.append((sql, params))
 
             def fetchall(self):
-                if "information_schema.statistics" in executed[-1][0]:
+                if "pg_catalog.pg_indexes" in executed[-1][0]:
                     return [{"present": 1}]
                 return []
 
@@ -401,15 +400,15 @@ class TestMaintenanceService(unittest.TestCase):
         )
 
         sql, params = executed[-1]
-        self.assertIn("ORDER BY h.DT_PROCESSED DESC, h.ID_HISTORY DESC", sql)
+        self.assertIn('ORDER BY h."DT_PROCESSED" DESC NULLS LAST, h."ID_HISTORY" DESC', sql)
         self.assertEqual(params, (200,))
 
     def test_apply_history_action_rejects_unknown_target_before_querying(self):
         service = self.module
-        original_loader = service._load_history_rows_for_action
+        original_loader = self.module._load_history_rows_for_action
 
         try:
-            service._load_history_rows_for_action = lambda db, history_ids: self.fail(
+            self.module._load_history_rows_for_action = lambda db, history_ids: self.fail(
                 "The history loader must not run for an invalid target."
             )
             with self.assertRaisesRegex(ValueError, "etapa de destino"):
@@ -420,7 +419,7 @@ class TestMaintenanceService(unittest.TestCase):
                     target_status=service.TASK_PENDING,
                 )
         finally:
-            service._load_history_rows_for_action = original_loader
+            self.module._load_history_rows_for_action = original_loader
 
     def test_list_history_uses_exact_identity_filters(self):
         executed = []
@@ -454,15 +453,15 @@ class TestMaintenanceService(unittest.TestCase):
         )
 
         sql, params = executed[-1]
-        self.assertIn("h.FK_HOST = %s", sql)
-        self.assertIn("h.NA_HOST_FILE_NAME = %s", sql)
-        self.assertIn("h.NA_SERVER_FILE_NAME = %s", sql)
-        self.assertIn("h.NU_STATUS_DISCOVERY = %s", sql)
-        self.assertIn("h.NU_STATUS_BACKUP = %s", sql)
-        self.assertIn("h.NU_STATUS_PROCESSING = %s", sql)
-        self.assertNotIn("host.NA_HOST_NAME = %s", sql)
-        self.assertNotIn("h.NA_HOST_FILE_NAME LIKE %s", sql)
-        self.assertNotIn("h.NA_SERVER_FILE_NAME LIKE %s", sql)
+        self.assertIn('h."FK_HOST" = %s', sql)
+        self.assertIn('h."NA_HOST_FILE_NAME" = %s', sql)
+        self.assertIn('h."NA_SERVER_FILE_NAME" = %s', sql)
+        self.assertIn('h."NU_STATUS_DISCOVERY" = %s', sql)
+        self.assertIn('h."NU_STATUS_BACKUP" = %s', sql)
+        self.assertIn('h."NU_STATUS_PROCESSING" = %s', sql)
+        self.assertNotIn('host."NA_HOST_NAME" = %s', sql)
+        self.assertNotIn('h."NA_HOST_FILE_NAME" LIKE %s', sql)
+        self.assertNotIn('h."NA_SERVER_FILE_NAME" LIKE %s', sql)
         self.assertIn(241, params)
         self.assertIn("sample.zip", params)
         self.assertIn("p-1200--sample.zip", params)
@@ -502,7 +501,7 @@ class TestMaintenanceService(unittest.TestCase):
         )
 
         sql, _ = executed[-1]
-        self.assertIn("ORDER BY h.ID_HISTORY DESC", sql)
+        self.assertIn('ORDER BY h."ID_HISTORY" DESC', sql)
 
     def test_list_history_does_not_limit_rows_to_one_operation(self):
         executed = []
@@ -533,8 +532,8 @@ class TestMaintenanceService(unittest.TestCase):
         )
 
         sql, params = executed[-1]
-        self.assertNotIn("h.NU_STATUS_BACKUP = %s", sql)
-        self.assertNotIn("h.NU_STATUS_PROCESSING = %s", sql)
+        self.assertNotIn('h."NU_STATUS_BACKUP" = %s', sql)
+        self.assertNotIn('h."NU_STATUS_PROCESSING" = %s', sql)
         self.assertIn(241, params)
 
     def test_list_host_tasks_applies_selected_host(self):
@@ -563,7 +562,7 @@ class TestMaintenanceService(unittest.TestCase):
         )
 
         sql, params = executed[0]
-        self.assertIn("ht.FK_HOST = %s", sql)
+        self.assertIn('ht."FK_HOST" = %s', sql)
         self.assertIn(241, params)
 
     def test_list_file_tasks_applies_the_selected_date_range(self):
@@ -596,14 +595,14 @@ class TestMaintenanceService(unittest.TestCase):
         )
 
         sql, params = executed[0]
-        self.assertIn("ft.NA_HOST_FILE_NAME = %s", sql)
-        self.assertIn("ft.DT_FILE_TASK >= %s", sql)
-        self.assertIn("ft.DT_FILE_TASK < %s", sql)
+        self.assertIn('ft."NA_HOST_FILE_NAME" = %s', sql)
+        self.assertIn('ft."DT_FILE_TASK" >= %s', sql)
+        self.assertIn('ft."DT_FILE_TASK" < %s', sql)
         self.assertIn("sample.zip", params)
         self.assertIn("2026-08-01", params)
         self.assertIn("2026-08-02", params)
 
-    def test_list_file_task_hosts_uses_the_queue_host_index(self):
+    def test_list_file_task_hosts_uses_queue_membership(self):
         executed = []
 
         class FakeCursor:
@@ -620,8 +619,7 @@ class TestMaintenanceService(unittest.TestCase):
         self.module.list_file_task_hosts(FakeDB())
 
         sql, params = executed[0]
-        self.assertIn("FILE_TASK ft USE INDEX (FK_FILE_TASK_HOST)", sql)
-        self.assertIn("ft.FK_HOST = h.ID_HOST", sql)
+        self.assertIn('ft."FK_HOST" = h."ID_HOST"', sql)
         self.assertIsNone(params)
 
     def test_apply_bulk_action_rejects_unknown_action_before_querying(self):
@@ -886,7 +884,7 @@ class TestMaintenanceService(unittest.TestCase):
 
     def test_apply_history_action_reports_blocked_and_missing_rows(self):
         service = self.module
-        original_loader = service._load_history_rows_for_action
+        original_loader = self.module._load_history_rows_for_action
         original_applier = service._apply_history_process_with_cursor
         original_publish = service._publish_summary_scope
 
@@ -908,7 +906,7 @@ class TestMaintenanceService(unittest.TestCase):
                 return None
 
         try:
-            service._load_history_rows_for_action = lambda db, history_ids: [
+            self.module._load_history_rows_for_action = lambda db, history_ids: [
                 {
                     "ID_HISTORY": 20,
                     "FK_HOST": 201,
@@ -942,7 +940,7 @@ class TestMaintenanceService(unittest.TestCase):
                 target_status=service.TASK_PENDING,
             )
         finally:
-            service._load_history_rows_for_action = original_loader
+            self.module._load_history_rows_for_action = original_loader
             service._apply_history_process_with_cursor = original_applier
             service._publish_summary_scope = original_publish
 
@@ -958,7 +956,7 @@ class TestMaintenanceService(unittest.TestCase):
 
     def test_apply_history_action_reprocesses_validated_file(self):
         service = self.module
-        original_loader = service._load_history_rows_for_action
+        original_loader = self.module._load_history_rows_for_action
         original_applier = service._apply_history_process_with_cursor
         original_publish = service._publish_summary_scope
         reprocessed_history_ids = []
@@ -979,7 +977,7 @@ class TestMaintenanceService(unittest.TestCase):
                 return None
 
         try:
-            service._load_history_rows_for_action = lambda db, history_ids: [
+            self.module._load_history_rows_for_action = lambda db, history_ids: [
                 {
                     "ID_HISTORY": 30,
                     "FK_HOST": 301,
@@ -1004,7 +1002,7 @@ class TestMaintenanceService(unittest.TestCase):
                 target_status=service.TASK_PENDING,
             )
         finally:
-            service._load_history_rows_for_action = original_loader
+            self.module._load_history_rows_for_action = original_loader
             service._apply_history_process_with_cursor = original_applier
             service._publish_summary_scope = original_publish
 
@@ -1019,7 +1017,7 @@ class TestMaintenanceService(unittest.TestCase):
 
     def test_apply_history_action_preserves_selected_initial_status(self):
         service = self.module
-        original_loader = service._load_history_rows_for_action
+        original_loader = self.module._load_history_rows_for_action
         original_applier = service._apply_history_process_with_cursor
         original_publish = service._publish_summary_scope
         applied_statuses = []
@@ -1039,7 +1037,7 @@ class TestMaintenanceService(unittest.TestCase):
                 return None
 
         try:
-            service._load_history_rows_for_action = lambda db, history_ids: [
+            self.module._load_history_rows_for_action = lambda db, history_ids: [
                 {
                     "ID_HISTORY": 40,
                     "FK_HOST": 401,
@@ -1064,7 +1062,7 @@ class TestMaintenanceService(unittest.TestCase):
                 target_status=service.TASK_FROZEN,
             )
         finally:
-            service._load_history_rows_for_action = original_loader
+            self.module._load_history_rows_for_action = original_loader
             service._apply_history_process_with_cursor = original_applier
             service._publish_summary_scope = original_publish
 

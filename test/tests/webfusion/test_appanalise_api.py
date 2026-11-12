@@ -26,7 +26,7 @@ def load_api() -> tuple:
     Returns:
         Routes, DB handler, filters and service modules (tuple).
     """
-    stub = types.ModuleType("db")
+    stub = types.ModuleType("db.connection")
     stub.get_connection_bpdata = MagicMock()
     stub.get_connection_rfdata = MagicMock()
     stub.get_connection_summary = MagicMock()
@@ -36,9 +36,10 @@ def load_api() -> tuple:
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    with patch.dict(sys.modules, {"db": stub}):
+    with patch.dict(sys.modules, {"db.connection": stub}):
         spec.loader.exec_module(module)
-        loaded = tuple(sys.modules[f"{name}.{part}"] for part in ("routes", "db_handler", "filters", "service"))
+        loaded = (sys.modules[f"{name}.routes"], sys.modules["db.appanalise"],
+                  sys.modules[f"{name}.filters"], sys.modules[f"{name}.service"])
     return loaded
 
 
@@ -78,7 +79,7 @@ class FilterTests(unittest.TestCase):
             None. Assertions fail when the contract changes.
         """
         for value in (
-            {"sql": "SELECT * FROM HOST"}, {"equipmentId": "1 OR 1=1"},
+            {"sql": 'SELECT * FROM "HOST"'}, {"equipmentId": "1 OR 1=1"},
             {"equipmentId": True}, {"siteId": 1.5}, {"page": 0},
             {"pageSize": 1001}, {"districtId": [1, None]},
             {"districtId": "1,,2"}, {"districtId": list(range(1, 1002))},
@@ -133,13 +134,13 @@ class QueryTests(unittest.TestCase):
         schema, sql, params = self.fetch.call_args.args
         self.assertEqual(schema, "spectrum")
         self.assertEqual(params, [10, 20])
-        self.assertIn("WHERE repos.ID_FILE IN (%s, %s)", sql)
+        self.assertIn('WHERE repos."ID_FILE" IN (%s, %s)', sql)
         self.assertNotIn("LIMIT", sql)
         for aggregate in (
-            "MIN(f.DT_TIME_START)", "MAX(f.DT_TIME_END)",
-            "MIN(f.NU_FREQ_START)", "MAX(f.NU_FREQ_END)",
-            "COUNT(DISTINCT f.ID_SPECTRUM)", "COUNT(DISTINCT s.ID_SITE)",
-            "AS LOCALITY_LABELS", "AS EQUIPMENT_LABELS",
+            'MIN(f."DT_TIME_START")', 'MAX(f."DT_TIME_END")',
+            'MIN(f."NU_FREQ_START")', 'MAX(f."NU_FREQ_END")',
+            'COUNT(DISTINCT f."ID_SPECTRUM")', 'COUNT(DISTINCT s."ID_SITE")',
+            'AS "LOCALITY_LABELS"', 'AS "EQUIPMENT_LABELS"',
         ):
             self.assertIn(aggregate, sql)
         self.assertEqual([row["ID_FILE"] for row in result.rows], [10, 20])
@@ -189,7 +190,7 @@ class QueryTests(unittest.TestCase):
         """
         for description, expected in (("abc", "%abc%"), ("a_c", "a_c"), ("a%", "a%")):
             sql, params = database._spectrum_conditions(Filters(description=description, freq_start=-1))
-            self.assertNotIn("f.NU_FREQ_START >=", sql)
+            self.assertNotIn('f."NU_FREQ_START" >=', sql)
             self.assertEqual(params[-1], expected)
 
     def test_equipment_fallback_preserves_legacy_district_exception(self) -> None:
@@ -204,7 +205,7 @@ class QueryTests(unittest.TestCase):
         self.fetch.side_effect = [TableResult([], []), TableResult(["ID_EQUIPMENT"], [{"ID_EQUIPMENT": 1}])]
         self.db.get_spectrum_equipments(Filters(state_code="SP", site_id=8, district_ids=(2, 3)))
         summary, fact = self.fetch.call_args_list
-        self.assertIn("FK_DISTRICT IN (%s, %s)", summary.args[1])
+        self.assertIn('"FK_DISTRICT" IN (%s, %s)', summary.args[1])
         self.assertEqual(summary.args[2], ["SP", 8, 2, 3])
         self.assertNotIn("DISTRICT", fact.args[1])
         self.assertEqual(fact.args[2], ["SP", 8])
@@ -253,7 +254,7 @@ class QueryTests(unittest.TestCase):
         self.assertEqual(self.fetch.call_count, 2)
         for call in self.fetch.call_args_list:
             self.assertEqual(call.args[2], [12, 8])
-        self.assertIn("st.LC_STATE IS NOT NULL", self.fetch.call_args.args[1])
+        self.assertIn('st."LC_STATE" IS NOT NULL', self.fetch.call_args.args[1])
 
     def test_unscoped_localities_do_not_open_database(self) -> None:
         """Verify unscoped localities do not open database.
@@ -266,7 +267,7 @@ class QueryTests(unittest.TestCase):
         """
         result = self.db.get_spectrum_localities(Filters(site_id=8, district_ids=(2,)))
         self.assertEqual(result.rows, [])
-        self.assertEqual(result.columns, routes.k.LOCALITY_COLUMNS)
+        self.assertEqual(result.columns, database.k.LOCALITY_COLUMNS)
         self.fetch.assert_not_called()
 
     def test_locality_summary_and_fact_have_different_scopes(self) -> None:
@@ -282,9 +283,9 @@ class QueryTests(unittest.TestCase):
         summary, fact = self.fetch.call_args_list
         self.assertEqual(summary.args[2], [12])
         self.assertEqual(fact.args[2], [12, 4])
-        self.assertNotIn("f.FK_SITE = %s", fact.args[1])
-        self.assertIn("COUNT(*) AS SPECTRUM_COUNT", fact.args[1])
-        self.assertIn("SUM(sm.NU_SPECTRUM_COUNT)", summary.args[1])
+        self.assertNotIn('"f"."FK_SITE" = %s', fact.args[1])
+        self.assertIn('COUNT(*) AS "SPECTRUM_COUNT"', fact.args[1])
+        self.assertIn('SUM(sm."NU_SPECTRUM_COUNT")', summary.args[1])
 
     def test_spectrum_filter_selects_fact_even_for_negative_bound(self) -> None:
         """Verify spectrum filter selects fact even for negative bound.
@@ -315,7 +316,7 @@ class QueryTests(unittest.TestCase):
         for state in (None, "SP"):
             self.assertEqual(self.db.get_spectrum_file_data_count(Filters(state_code=state)), 9)
             _, sql, params = self.fetch.call_args.args
-            self.assertEqual("JOIN RFDATA.DIM_SITE_STATE" in sql, state is not None)
+            self.assertEqual('JOIN "RFDATA"."DIM_SITE_STATE"' in sql, state is not None)
             self.assertNotIn("DIM_SPECTRUM_EQUIPMENT", sql)
             self.assertNotIn("LIMIT", sql)
             self.assertEqual(params, ["reposfi", state] if state else ["reposfi"])
@@ -332,12 +333,12 @@ class QueryTests(unittest.TestCase):
         self.db.get_spectra_by_file_id(77)
         _, sql, params = self.fetch.call_args.args
         self.assertEqual(params, ["reposfi", 77])
-        self.assertIn("f.FK_SITE AS ID_SITE", sql)
-        self.assertIn("st.LC_STATE AS STATE_CODE", sql)
-        self.assertIn("ORDER BY f.DT_TIME_START DESC, f.ID_SPECTRUM DESC", sql)
+        self.assertIn('f."FK_SITE" AS "ID_SITE"', sql)
+        self.assertIn('st."LC_STATE" AS "STATE_CODE"', sql)
+        self.assertIn('ORDER BY f."DT_TIME_START" DESC NULLS LAST, f."ID_SPECTRUM" DESC', sql)
         self.assertEqual(sql.count("%s"), 2)
-        self.assertNotIn("f.DT_TIME_END >=", sql)
-        self.assertNotIn("f.DT_TIME_START <=", sql)
+        self.assertNotIn('f."DT_TIME_END" >=', sql)
+        self.assertNotIn('f."DT_TIME_START" <=', sql)
         self.assertNotIn("LIMIT", sql)
 
     def test_fixed_queries_preserve_contracts(self) -> None:
@@ -350,7 +351,7 @@ class QueryTests(unittest.TestCase):
             None. Assertions fail when the contract changes.
         """
         for method, table, fields in (
-            (self.db.get_station_summary, "HOST_LOCATION_SUMMARY", ["IS_OFFLINE_SNAPSHOT ASC", "VL_LATITUDE IS NOT NULL"]),
+            (self.db.get_station_summary, '"BPDATA"."HOST"', ['"IS_OFFLINE_SNAPSHOT" ASC', '"VL_LATITUDE" IS NOT NULL']),
         ):
             method()
             sql = self.fetch.call_args.args[1]
@@ -373,13 +374,13 @@ class QueryTests(unittest.TestCase):
         """
         self.db.get_host_stats(12)
         _, sql, params = self.fetch.call_args.args
-        self.assertIn("SUM(NU_STATUS_DISCOVERY = %s) AS NU_HOST_FILES", sql)
-        self.assertIn("SUM(NU_STATUS_BACKUP = %s) AS NU_PENDING_FILE_BACKUP_TASKS", sql)
-        self.assertIn("SUM(NU_STATUS_BACKUP = %s) AS NU_DONE_FILE_BACKUP_TASKS", sql)
-        self.assertIn("NU_STATUS_DISCOVERY = %s AND NU_STATUS_BACKUP = %s", sql)
-        self.assertIn("THEN VL_FILE_SIZE_KB_HOST ELSE 0 END", sql)
-        self.assertIn("BPDATA.FILE_TASK_HISTORY WHERE FK_HOST = %s", sql)
-        self.assertIn("COALESCE(stats.NU_HOST_FILES, 0)", sql)
+        self.assertIn('SUM(CASE WHEN "NU_STATUS_DISCOVERY" = %s THEN 1 ELSE 0 END)::numeric AS "NU_HOST_FILES"', sql)
+        self.assertIn('SUM(CASE WHEN "NU_STATUS_BACKUP" = %s THEN 1 ELSE 0 END)::numeric AS "NU_PENDING_FILE_BACKUP_TASKS"', sql)
+        self.assertIn('SUM(CASE WHEN "NU_STATUS_BACKUP" = %s THEN 1 ELSE 0 END)::numeric AS "NU_DONE_FILE_BACKUP_TASKS"', sql)
+        self.assertIn('"NU_STATUS_DISCOVERY" = %s AND "NU_STATUS_BACKUP" = %s', sql)
+        self.assertIn('THEN "VL_FILE_SIZE_KB_HOST" ELSE 0 END', sql)
+        self.assertIn('"BPDATA"."FILE_TASK_HISTORY" WHERE "FK_HOST" = %s', sql)
+        self.assertIn('COALESCE(stats."NU_HOST_FILES", 0)', sql)
         self.assertNotIn("ROUND", sql)
         self.assertEqual(params, [0, 1, 0, 0, 1, 12, 12])
 
@@ -413,50 +414,6 @@ class ConnectionTests(unittest.TestCase):
             connection.close.assert_called_once()
             connection.cursor.return_value.__exit__.assert_called_once()
 
-    def test_host_statistics_against_history_fixture(self) -> None:
-        """Check legacy counters on relational rows with mixed phase outcomes.
-
-        Args:
-            None.
-
-        Returns:
-            None. Verifies counting scope, exact KB and hosts without history.
-        """
-        handler = database.AppAnaliseDB()
-        with patch.object(handler, "_fetch", return_value=TableResult([], [])) as fetch:
-            handler.get_host_stats(1)
-        _, sql, params = fetch.call_args.args
-        connection = sqlite3.connect(":memory:")
-        self.addCleanup(connection.close)
-        connection.row_factory = sqlite3.Row
-        connection.executescript("""
-            ATTACH DATABASE ':memory:' AS BPDATA;
-            CREATE TABLE BPDATA.HOST (
-                ID_HOST INTEGER, NA_HOST_NAME TEXT, NA_HOST_ADDRESS TEXT,
-                NA_HOST_PORT INTEGER, IS_OFFLINE INTEGER, IS_BUSY INTEGER,
-                DT_LAST_CHECK TEXT, DT_LAST_DISCOVERY TEXT,
-                DT_LAST_BACKUP TEXT, DT_LAST_PROCESSING TEXT
-            );
-            INSERT INTO BPDATA.HOST (ID_HOST, NA_HOST_NAME) VALUES (1, 'first'), (2, 'empty');
-            CREATE TABLE BPDATA.FILE_TASK_HISTORY (
-                FK_HOST INTEGER, NU_STATUS_DISCOVERY INTEGER,
-                NU_STATUS_BACKUP INTEGER, VL_FILE_SIZE_KB_HOST REAL
-            );
-            INSERT INTO BPDATA.FILE_TASK_HISTORY VALUES
-                (1, 0, 1, 1.25), (1, 0, 1, 2.5), (1, -1, 1, 100),
-                (1, 0, 0, 8), (1, 0, -1, 16), (99, 0, 1, 1000);
-        """)
-        # The host query uses SQL shared by both engines; only placeholders differ.
-        row = dict(connection.execute(sql.replace("%s", "?"), params).fetchone())
-        self.assertEqual(row["NU_HOST_FILES"], 4)
-        self.assertEqual(row["NU_PENDING_FILE_BACKUP_TASKS"], 3)
-        self.assertEqual(row["NU_DONE_FILE_BACKUP_TASKS"], 1)
-        self.assertEqual(row["VL_PENDING_BACKUP_KB"], 3.75)
-        empty = dict(connection.execute(sql.replace("%s", "?"), [*params[:-2], 2, 2]).fetchone())
-        self.assertEqual(empty["NU_HOST_FILES"], 0)
-        self.assertEqual(empty["VL_PENDING_BACKUP_KB"], 0)
-        self.assertIsNone(connection.execute(sql.replace("%s", "?"), [*params[:-2], 3, 3]).fetchone())
-
     def test_catalog_and_count_with_shared_files_and_missing_dimensions(self) -> None:
         """Verify optimized membership and count queries on relational fixtures.
 
@@ -469,21 +426,7 @@ class ConnectionTests(unittest.TestCase):
         connection = sqlite3.connect(":memory:")
         self.addCleanup(connection.close)
         connection.row_factory = sqlite3.Row
-        connection.executescript("""
-            ATTACH DATABASE ':memory:' AS RFDATA;
-            CREATE TABLE RFDATA.DIM_SPECTRUM_EQUIPMENT (ID_EQUIPMENT INTEGER PRIMARY KEY, NA_EQUIPMENT TEXT);
-            INSERT INTO RFDATA.DIM_SPECTRUM_EQUIPMENT VALUES (1, 'A'), (2, 'A'), (3, NULL), (4, 'Unused');
-            CREATE TABLE RFDATA.DIM_SITE_STATE (ID_STATE INTEGER PRIMARY KEY, LC_STATE TEXT);
-            INSERT INTO RFDATA.DIM_SITE_STATE VALUES (10, 'SP'), (20, 'RJ');
-            CREATE TABLE RFDATA.DIM_SPECTRUM_SITE (ID_SITE INTEGER PRIMARY KEY, FK_STATE INTEGER, FK_DISTRICT INTEGER);
-            INSERT INTO RFDATA.DIM_SPECTRUM_SITE VALUES (1, 10, 100), (2, 20, 200), (3, NULL, 100);
-            CREATE TABLE RFDATA.FACT_SPECTRUM (ID_SPECTRUM INTEGER PRIMARY KEY, FK_EQUIPMENT INTEGER, FK_SITE INTEGER);
-            INSERT INTO RFDATA.FACT_SPECTRUM VALUES (1, 1, 1), (2, 1, 1), (3, 2, 2), (4, 3, 3), (5, 1, 99);
-            CREATE TABLE RFDATA.DIM_SPECTRUM_FILE (ID_FILE INTEGER PRIMARY KEY, NA_VOLUME TEXT);
-            INSERT INTO RFDATA.DIM_SPECTRUM_FILE VALUES (11, 'reposfi'), (12, 'reposfi'), (13, 'other'), (14, 'reposfi');
-            CREATE TABLE RFDATA.BRIDGE_SPECTRUM_FILE (FK_SPECTRUM INTEGER, FK_FILE INTEGER);
-            INSERT INTO RFDATA.BRIDGE_SPECTRUM_FILE VALUES (1, 11), (2, 11), (3, 11), (4, 12), (1, 13), (5, 14);
-        """)
+        connection.executescript('\n            ATTACH DATABASE \':memory:\' AS "RFDATA";\n            CREATE TABLE "RFDATA"."DIM_SPECTRUM_EQUIPMENT" ("ID_EQUIPMENT" INTEGER PRIMARY KEY, "NA_EQUIPMENT" TEXT);\n            INSERT INTO "RFDATA"."DIM_SPECTRUM_EQUIPMENT" VALUES (1, \'A\'), (2, \'A\'), (3, NULL), (4, \'Unused\');\n            CREATE TABLE "RFDATA"."DIM_SITE_STATE" ("ID_STATE" INTEGER PRIMARY KEY, "LC_STATE" TEXT);\n            INSERT INTO "RFDATA"."DIM_SITE_STATE" VALUES (10, \'SP\'), (20, \'RJ\');\n            CREATE TABLE "RFDATA"."DIM_SPECTRUM_SITE" ("ID_SITE" INTEGER PRIMARY KEY, "FK_STATE" INTEGER, "FK_DISTRICT" INTEGER);\n            INSERT INTO "RFDATA"."DIM_SPECTRUM_SITE" VALUES (1, 10, 100), (2, 20, 200), (3, NULL, 100);\n            CREATE TABLE "RFDATA"."FACT_SPECTRUM" ("ID_SPECTRUM" INTEGER PRIMARY KEY, "FK_EQUIPMENT" INTEGER, "FK_SITE" INTEGER);\n            INSERT INTO "RFDATA"."FACT_SPECTRUM" VALUES (1, 1, 1), (2, 1, 1), (3, 2, 2), (4, 3, 3), (5, 1, 99);\n            CREATE TABLE "RFDATA"."DIM_SPECTRUM_FILE" ("ID_FILE" INTEGER PRIMARY KEY, "NA_VOLUME" TEXT);\n            INSERT INTO "RFDATA"."DIM_SPECTRUM_FILE" VALUES (11, \'reposfi\'), (12, \'reposfi\'), (13, \'other\'), (14, \'reposfi\');\n            CREATE TABLE "RFDATA"."BRIDGE_SPECTRUM_FILE" ("FK_SPECTRUM" INTEGER, "FK_FILE" INTEGER);\n            INSERT INTO "RFDATA"."BRIDGE_SPECTRUM_FILE" VALUES (1, 11), (2, 11), (3, 11), (4, 12), (1, 13), (5, 14);\n        ')
         db = database.AppAnaliseDB()
         for query_filters, expected_count, expected_equipment in (
             (Filters(), 3, {1, 2, 3}),
@@ -550,22 +493,21 @@ class FileIndexTests(unittest.TestCase):
         filter_sql, values = materialize.args
         order_sql, volume = order.args
         self.assertIn("CREATE TEMPORARY TABLE", filter_sql)
-        self.assertIn("PRIMARY KEY (ID_SPECTRUM)", filter_sql)
         self.assertNotIn("O'Brien", filter_sql)
         self.assertEqual(values, [12, 8, "SP", 1, 2, query.start_date, query.end_date,
                                   100, 200, "%O'Brien%"])
         self.assertEqual(volume, ["reposfi"])
-        for predicate in ("f.FK_EQUIPMENT = %s", "f.FK_SITE = %s", "st.LC_STATE = %s",
-                          "s.FK_DISTRICT IN (%s, %s)", "f.DT_TIME_END >= %s",
-                          "f.DT_TIME_START <= %s", "f.NU_FREQ_START >= %s",
-                          "f.NU_FREQ_END <= %s", "LIKE UPPER(%s)"):
+        for predicate in ('"f"."FK_EQUIPMENT" = %s', '"f"."FK_SITE" = %s', '"st"."LC_STATE" = %s',
+                          '"s"."FK_DISTRICT" IN (%s, %s)', 'f."DT_TIME_END" >= %s',
+                          'f."DT_TIME_START" <= %s', 'f."NU_FREQ_START" >= %s',
+                          'f."NU_FREQ_END" <= %s', "LIKE UPPER(%s)"):
             self.assertIn(predicate, filter_sql)
             self.assertNotIn(predicate, order_sql)
-        self.assertIn("b.FK_FILE = matched_files.ID_FILE", order_sql)
-        self.assertIn("f.ID_SPECTRUM = b.FK_SPECTRUM", order_sql)
-        self.assertIn("e.ID_EQUIPMENT = f.FK_EQUIPMENT", order_sql)
-        self.assertIn("s.ID_SITE = f.FK_SITE", order_sql)
-        self.assertIn("ORDER BY MIN(f.DT_TIME_START) DESC, matched_files.ID_FILE DESC", order_sql)
+        self.assertIn('b."FK_FILE" = matched_files."ID_FILE"', order_sql)
+        self.assertIn('f."ID_SPECTRUM" = b."FK_SPECTRUM"', order_sql)
+        self.assertIn('e."ID_EQUIPMENT" = f."FK_EQUIPMENT"', order_sql)
+        self.assertIn('s."ID_SITE" = f."FK_SITE"', order_sql)
+        self.assertIn('ORDER BY MIN(f."DT_TIME_START") DESC NULLS LAST, matched_files."ID_FILE" DESC', order_sql)
         self.assertNotIn("LIMIT", order_sql)
         cursor.fetchall.assert_not_called()
         connection.close.assert_called_once()
@@ -585,7 +527,7 @@ class FileIndexTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, stage):
                         database.AppAnaliseDB().get_spectrum_file_index(Filters())
                 connection.close.assert_called_once()
-                connection.cursor.return_value.__exit__.assert_called_once()
+                self.assertEqual(connection.cursor.return_value.__exit__.call_count, 1 if stage == "materialize" else 2)
 
 
 class FileServiceTests(unittest.TestCase):

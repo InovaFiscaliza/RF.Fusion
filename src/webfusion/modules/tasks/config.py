@@ -1,0 +1,112 @@
+"""Configure maintenance queues, labels, filters and status contracts."""
+
+from zoneinfo import ZoneInfo
+
+QUEUE_HOST_TASK = "host"
+QUEUE_FILE_TASK = "file"
+
+ACTION_RESTART = "restart"
+ACTION_SUSPEND = "suspend"
+ACTION_MOVE_TO_BACKUP = "move_to_backup"
+ACTION_REDO_BACKUP = "redo_backup"
+ACTION_REPROCESS = "reprocess"
+
+TASK_ERROR = -1
+TASK_SUSPENDED = -2
+TASK_FROZEN = -3
+TASK_DONE = 0
+TASK_PENDING = 1
+TASK_RUNNING = 2
+
+HOST_TASK_CHECK_TYPE = 1
+HOST_TASK_PROCESSING_TYPE = 2
+HOST_TASK_UPDATE_STATISTICS_TYPE = 3
+HOST_TASK_CHECK_CONNECTION_TYPE = 4
+HOST_TASK_BACKLOG_CONTROL_TYPE = 5
+HOST_TASK_BACKLOG_ROLLBACK_TYPE = 6
+HOST_TASK_INTERACTIVE_CHECK_TYPE = 7
+
+FILE_TASK_BACKUP_TYPE = 1
+FILE_TASK_PROCESS_TYPE = 2
+FILE_TASK_DISCOVERY_TYPE = 3
+
+HOST_DEPENDENT_HOST_TASK_TYPES = {
+    HOST_TASK_CHECK_TYPE,
+    HOST_TASK_PROCESSING_TYPE,
+    HOST_TASK_CHECK_CONNECTION_TYPE,
+}
+SUSPENDABLE_HOST_TASK_TYPES = set(HOST_DEPENDENT_HOST_TASK_TYPES)
+SUSPENDABLE_FILE_TASK_TYPES = {FILE_TASK_BACKUP_TYPE}
+
+QUEUE_OPTIONS = {
+    QUEUE_HOST_TASK: "Tarefas de Estação",
+    QUEUE_FILE_TASK: "Fila de Arquivos",
+}
+
+ACTION_OPTIONS = {
+    ACTION_RESTART: "Reiniciar",
+    ACTION_SUSPEND: "Suspender",
+}
+
+FILE_TASK_ACTION_OPTIONS = {
+    ACTION_RESTART: "Reiniciar etapa atual",
+    ACTION_SUSPEND: "Suspender",
+    ACTION_MOVE_TO_BACKUP: "Mover para backup",
+    ACTION_REDO_BACKUP: "Refazer backup",
+    ACTION_REPROCESS: "Reprocessar",
+}
+
+HOST_TASK_TYPE_LABELS = {
+    HOST_TASK_CHECK_TYPE: "Solicitar backup",
+    HOST_TASK_PROCESSING_TYPE: "Descoberta",
+    HOST_TASK_UPDATE_STATISTICS_TYPE: "Atualizar estatísticas",
+    HOST_TASK_CHECK_CONNECTION_TYPE: "Verificar conexão",
+    HOST_TASK_BACKLOG_CONTROL_TYPE: "Promover backlog",
+    HOST_TASK_BACKLOG_ROLLBACK_TYPE: "Retirar da fila",
+    HOST_TASK_INTERACTIVE_CHECK_TYPE: "Teste de estação",
+}
+
+FILE_TASK_TYPE_LABELS = {
+    FILE_TASK_BACKUP_TYPE: "Backup",
+    FILE_TASK_PROCESS_TYPE: "Processamento",
+    FILE_TASK_DISCOVERY_TYPE: "Descoberta",
+}
+
+TASK_STATUS_LABELS = {
+    TASK_ERROR: "Erro",
+    TASK_SUSPENDED: "Suspensa",
+    TASK_DONE: "Concluída",
+    TASK_PENDING: "Pendente",
+    TASK_RUNNING: "Em execução",
+    TASK_FROZEN: "Congelada",
+}
+
+DEFAULT_PAGE_LIMIT = 200
+MAX_PAGE_LIMIT = 500
+DEFAULT_HISTORY_PAGE_LIMIT = 50
+HISTORY_PAGE_LIMIT_OPTIONS = (50, 100, 200)
+BRAZIL_TIMEZONE = ZoneInfo("America/Sao_Paulo")
+
+HISTORY_TARGET_BACKUP = "backup"
+HISTORY_TARGET_PROCESS = "process"
+
+HISTORY_TARGET_STAGE_OPTIONS = {
+    HISTORY_TARGET_BACKUP: "Backup",
+    HISTORY_TARGET_PROCESS: "Processamento",
+}
+
+HISTORY_TARGET_STATUS_OPTIONS = {
+    TASK_PENDING: "Aguardando",
+    TASK_SUSPENDED: "Suspensa",
+    TASK_FROZEN: "Congelada",
+}
+
+
+# Creation preserves the existing positive suspended code; maintenance uses -2.
+STATION_TASK_SUSPENDED = 3
+EXPOSED_TASK_TYPES = {
+    HOST_TASK_CHECK_TYPE: "Solicitar Backup",
+    HOST_TASK_BACKLOG_ROLLBACK_TYPE: "Retirar da Fila de Backup",
+}
+
+

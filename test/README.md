@@ -60,6 +60,13 @@ independentes dos handlers MariaDB movidos para `db/backup/`:
 /opt/conda/envs/appdata/bin/python -m unittest discover -s test/tests/workers -p 'test_host_maintenance_postgres.py' -v
 ```
 
+A conversão da [ferramenta de migração](../src/postgres/migration/README.md) é
+coberta sem acesso a bancos:
+
+```bash
+/opt/conda/envs/appdata/bin/python -m unittest discover -s test/tests/db -p 'test_mariadb_dump_migration.py' -v
+```
+
 Os testes unitários verificam composição SQL, validação, sessões e transações
 com doubles do driver. A integração real é selecionada explicitamente por
 `RFFUSION_TEST_PG_CONNINFO`, com banco descartável `rffusion_test_*`, conforme
@@ -97,6 +104,20 @@ Testes de comportamento dos handlers de banco:
 ### `tests/webfusion/`
 
 Testes direcionados para services e partes das rotas do `webfusion`.
+
+Os testes de integração PostgreSQL do WebFusion usam os quatro DDLs em um
+banco vazio e descartável, selecionado explicitamente por
+`RFFUSION_TEST_PG_CONNINFO`, cujo nome deve começar com `rffusion_test_`.
+Execute-os no webserver com `/usr/local/bin/python` e `PYTHONPATH` apontando
+para `/RF.Fusion/src/webfusion`. A suíte valida autenticação, filas, uso/offsets
+e os payloads do Zabbix e appAnalise, incluindo unidades e linha adicional.
+Também verifica rollback entre a escrita na fila e no histórico e entre os
+contadores do NGINX e seu checkpoint. Os doubles de conexão dos unitários
+devem substituir as fábricas no handler responsável pelo SQL; mocks de regras
+e caches permanecem nos serviços. Execute os arquivos de testes separadamente
+quando seus loaders substituírem módulos globais como `flask` ou `db`.
+Não aponte essa variável para bancos compartilhados. Sem configuração, a
+integração é ignorada.
 
 ### `tests/_support.py`
 

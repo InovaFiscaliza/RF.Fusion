@@ -66,11 +66,12 @@ def load_task_routes():
     )
     fake_flask.url_for = lambda *args, **kwargs: ""
 
-    fake_db = ModuleType("db")
+    fake_db = ModuleType("db.connection")
     fake_db.get_connection_bpdata = lambda: None
+    fake_db.get_connection_summary = lambda: None
 
     sys.modules["flask"] = fake_flask
-    sys.modules["db"] = fake_db
+    sys.modules["db.connection"] = fake_db
     sys.modules.pop("modules.tasks.blueprints", None)
     sys.modules.pop("modules.tasks.station_routes", None)
     return importlib.import_module("modules.tasks.station_routes")

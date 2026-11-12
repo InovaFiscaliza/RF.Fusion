@@ -45,7 +45,7 @@ def load_host_routes():
     fake_flask.render_template = lambda *args, **kwargs: None
     fake_flask.request = SimpleNamespace(authorization=None, args={})
 
-    fake_db = ModuleType("db")
+    fake_db = ModuleType("db.connection")
     fake_db.get_connection_bpdata = lambda: None
 
     fake_service = ModuleType("modules.host.service")
@@ -80,7 +80,7 @@ def load_host_routes():
     fake_task_service.queue_interactive_connectivity_test = lambda connection, host_id: {}
 
     sys.modules["flask"] = fake_flask
-    sys.modules["db"] = fake_db
+    sys.modules["db.connection"] = fake_db
     sys.modules["modules.host.service"] = fake_service
     sys.modules["modules.server.usage_metrics"] = fake_usage_metrics
     sys.modules["modules.tasks.station_service"] = fake_task_service

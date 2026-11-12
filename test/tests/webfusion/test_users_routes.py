@@ -49,7 +49,7 @@ def load_users_routes():
     fake_flask.url_for = lambda endpoint, **kwargs: f"/{endpoint}"
 
     importlib.import_module("auth")
-    fake_db_users = ModuleType("auth.db_users")
+    fake_db_users = ModuleType("db.users")
     fake_db_users.create_webfusion_user = lambda **kwargs: None
     fake_db_users.delete_webfusion_user = lambda **kwargs: None
     fake_users_service = ModuleType("modules.users.service")
@@ -71,7 +71,7 @@ def load_users_routes():
     fake_usage_metrics.record_page_view = lambda: None
 
     sys.modules["flask"] = fake_flask
-    sys.modules["auth.db_users"] = fake_db_users
+    sys.modules["db.users"] = fake_db_users
     sys.modules["modules.users.service"] = fake_users_service
     sys.modules["modules.server.usage_metrics"] = fake_usage_metrics
     sys.modules.pop("modules.users.routes", None)

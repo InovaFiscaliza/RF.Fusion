@@ -11,7 +11,11 @@ linear and much easier to debug in production.
 
 from datetime import datetime, timedelta
 
-from db import get_connection_summary
+from db.map import (
+    load_summary_site_rows as _load_summary_site_rows,
+    load_summary_station_rows as _load_summary_station_rows,
+)
+
 
 # The landing page communicates two independent ideas through marker state:
 # online/offline and current/historical locality. Keeping the state taxonomy
@@ -63,72 +67,6 @@ def _parse_map_date_range(start_date=None, end_date=None):
 
     end_before = end_dt + timedelta(days=1) if end_dt else None
     return start_dt, end_before
-
-
-def _load_summary_site_rows():
-    """Load one consolidated row per mapped site from ``MAP_SITE_SUMMARY``."""
-
-    conn = get_connection_summary()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT
-            FK_SITE AS ID_SITE,
-            FK_COUNTY AS ID_COUNTY,
-            FK_DISTRICT AS ID_DISTRICT,
-            NA_SITE_LABEL AS SITE_LABEL,
-            NA_COUNTY_NAME AS COUNTY_NAME,
-            NA_DISTRICT_NAME AS DISTRICT_NAME,
-            ID_STATE,
-            NA_STATE_NAME AS NA_STATE,
-            NA_STATE_CODE AS LC_STATE,
-            VL_LATITUDE,
-            VL_LONGITUDE,
-            VL_ALTITUDE,
-            NU_GNSS_MEASUREMENTS,
-            NA_MARKER_STATE,
-            HAS_ONLINE_STATION,
-            HAS_ONLINE_HOST,
-            HAS_KNOWN_HOST
-        FROM MAP_SITE_SUMMARY
-        ORDER BY FK_SITE
-        """
-    )
-
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-def _load_summary_station_rows():
-    """Load per-station rows that enrich each site popup from summary tables."""
-
-    conn = get_connection_summary()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT
-            FK_SITE AS ID_SITE,
-            FK_EQUIPMENT AS ID_EQUIPMENT,
-            FK_HOST AS ID_HOST,
-            NA_EQUIPMENT,
-            NA_HOST_NAME,
-            IS_OFFLINE,
-            IS_CURRENT_LOCATION,
-            NA_MAP_STATE,
-            DT_FIRST_SEEN_AT AS FIRST_SEEN_AT,
-            DT_LAST_SEEN_AT AS LAST_SEEN_AT,
-            NU_SPECTRUM_COUNT
-        FROM MAP_SITE_STATION_SUMMARY
-        ORDER BY FK_SITE, NU_STATE_PRIORITY, NA_HOST_NAME, NA_EQUIPMENT
-        """
-    )
-
-    rows = cur.fetchall()
-    conn.close()
-    return rows
 
 
 def _build_default_site_detail(site_id):

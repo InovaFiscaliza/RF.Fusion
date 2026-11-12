@@ -51,7 +51,7 @@ Consulte a [documentação da Microsoft](https://learn.microsoft.com/en-us/graph
   tenta atualizá-la no máximo a cada seis horas por usuário e processo. Em falha
   ou ausência de configuração, tenta novamente após cinco minutos. Não há
   consulta em segundo plano: a próxima navegação dispara uma consulta vencida.
-- `auth/db_users.py`: atualiza somente `NA_URL_PROFILE_IMG`, sem alterar nome
+- [db/users.py](../../db/users.py): atualiza somente `NA_URL_PROFILE_IMG`, sem alterar nome
   ou permissões. A atualização ocorre somente após uma foto válida e diferente.
 
 Um cabeçalho válido `X-User-Avatar-Url` continua tendo precedência sobre o Graph.

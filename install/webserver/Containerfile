@@ -39,8 +39,7 @@ RUN /usr/local/bin/python -m pip install --no-cache-dir \
     flask \
     waitress \
     requests \
-    pymysql \
-    mysql-connector-python
+    "psycopg[binary]==3.3.8"
 
 # -------------------------------------------------
 # Diretórios RF.Fusion

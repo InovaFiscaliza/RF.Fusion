@@ -33,6 +33,9 @@ chaves são rejeitadas. O modelo com `CHANGE_ME` não permite fazer deploy.
 
 Somente este README e `runtime.env.example` são versionados. O arquivo
 `runtime.env` e os demais arquivos locais desta pasta são ignorados pelo Git.
+Isso inclui `postgres-data/`, o cluster do PostgreSQL, e `postgres-backups/`;
+ambos têm acesso restrito e são administrados pelo
+[deploy do PostgreSQL](../install/postgres/README.md).
 Ao copiar ou clonar o projeto para outra VM, preencha novamente o ambiente;
 não reutilize automaticamente a configuração da VM de origem.
 

@@ -36,7 +36,10 @@ infraName="${podName}-infra"
 infraImage="registry.k8s.io/pause:3.10"
 containerName="rffusion-postgres"
 imageName="rffusion-postgres:17-postgis-alpine"
-volumeName="rffusion-postgres-data"
+# The cluster lives on the repository filesystem, outside Git. The former named
+# volume is only read once to seed an empty directory and is kept for rollback.
+dataDir="${RFFUSION_POSTGRES_DATA_DIR:-${repoRoot}/.env/postgres-data}"
+legacyVolumeName="rffusion-postgres-data"
 sshVolumeName="rffusion-postgres-ssh"
 pgadminContainer="rffusion-pgadmin"
 pgadminImage="rffusion-pgadmin:9.18"
@@ -109,10 +112,26 @@ if [[ "$existing" == true ]]; then
         if podman container exists "$existingContainer"; then podman rm -f "$existingContainer"; fi
     done
 fi
-podman volume exists "$volumeName" || podman volume create "$volumeName" >/dev/null
 podman volume exists "$sshVolumeName" || podman volume create "$sshVolumeName" >/dev/null
 podman volume exists "$pgadminVolume" || podman volume create "$pgadminVolume" >/dev/null
 podman volume exists "$pgadminSshVolume" || podman volume create "$pgadminSshVolume" >/dev/null
+umask 077
+mkdir -p "$dataDir"
+if podman volume exists "$legacyVolumeName"; then
+    # Runs inside the image so ownership and permissions survive in rootful and
+    # rootless Podman. A non-empty directory is never overwritten, and a failed
+    # copy is emptied so a partial cluster is never started.
+    seedResult="$(podman run --rm --user 0 --entrypoint sh \
+        -v "${legacyVolumeName}:/source:ro" -v "${dataDir}:/target:z" "$imageName" -c '
+        if [ -n "$(ls -A /target)" ]; then echo kept; exit 0; fi
+        if cp -a /source/. /target/ && test -f /target/PG_VERSION; then echo copied
+        else find /target -mindepth 1 -delete; echo failed; fi')" || seedResult="failed"
+    case "$seedResult" in
+        copied) printf 'PostgreSQL data copied from volume %s to %s; the volume was kept.\n' "$legacyVolumeName" "$dataDir" ;;
+        kept) printf 'Using existing PostgreSQL data in %s.\n' "$dataDir" ;;
+        *) echo "ERROR: PostgreSQL data copy failed; the volume ${legacyVolumeName} is unchanged." >&2; exit 1 ;;
+    esac
+fi
 podman pod create --name "$podName" \
     --infra-name "$infraName" \
     --infra-image "$infraImage" \
@@ -127,7 +146,7 @@ podman run -d \
     "${resourceArgs[@]}" \
     -e POSTGRES_PASSWORD -e SSH_PASSWORD \
     -v "${repoRoot}:/RFFusion:z" \
-    -v "${volumeName}:/var/lib/postgresql/data" \
+    -v "${dataDir}:/var/lib/postgresql/data:z" \
     -v "${sshVolumeName}:/var/lib/rffusion-ssh" \
     "$imageName"
 

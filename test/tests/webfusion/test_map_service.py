@@ -16,13 +16,13 @@ MODULE_PATH = Path(__file__).resolve().parents[3] / "src/webfusion/api/map_api/s
 
 def load_map_service():
     """Import the map service with lightweight DB stubs only."""
-    stub_db = types.ModuleType("db")
+    stub_db = types.ModuleType("db.connection")
     stub_db.get_connection_bpdata = lambda: None
     stub_db.get_connection_rfdata = lambda: None
     stub_db.get_connection_summary = lambda: None
 
-    previous_db = sys.modules.get("db")
-    sys.modules["db"] = stub_db
+    previous_db = sys.modules.get("db.connection")
+    sys.modules["db.connection"] = stub_db
 
     try:
         spec = importlib.util.spec_from_file_location(
@@ -37,9 +37,9 @@ def load_map_service():
         return module
     finally:
         if previous_db is not None:
-            sys.modules["db"] = previous_db
+            sys.modules["db.connection"] = previous_db
         else:
-            sys.modules.pop("db", None)
+            sys.modules.pop("db.connection", None)
 
 
 class TestMapService(unittest.TestCase):
@@ -48,6 +48,7 @@ class TestMapService(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_map_service()
+        cls.handler = sys.modules["db.map"]
 
     def test_summarize_site_marker_state_prefers_current_online_marker(self):
         stations = [

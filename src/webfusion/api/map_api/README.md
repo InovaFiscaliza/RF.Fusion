@@ -12,8 +12,8 @@ marcadores para o WebFusion e para clientes externos, incluindo o appAnalise.
 | VPN/rede interna, hostname | `http://rhfisnspdex02.anatel.gov.br:9082/rffusion/api/map` |
 
 O blueprint usa `/api/map`; `/rffusion` é o prefixo acrescentado pelo proxy.
-Não há segmento `/v1`. O serviço consulta `MAP_SITE_SUMMARY` e
-`MAP_SITE_STATION_SUMMARY`, em `RFFUSION_SUMMARY`, pelas fábricas de conexão
+Não há segmento `/v1`. O serviço combina `SITE_EQUIPMENT_METRIC` e `HOST_EQUIPMENT_LINK` com os
+cadastros de sites, equipamentos e hosts, pelas fábricas de conexão PostgreSQL
 existentes. O dataset é reconstruído a cada chamada, sem cache de processo
 neste pacote. A página inicial usa o mesmo serviço para incluir os pontos no HTML.
 
@@ -106,7 +106,10 @@ registrados no servidor. A política de acesso existente também foi mantida.
 ## Organização e migração
 
 - `routes.py`: blueprint HTTP, preservando as URLs existentes do mapa.
-- `service.py`: consultas ao summary, filtros e montagem compartilhada.
+- `service.py`: filtros e montagem compartilhada dos pontos e detalhes.
+- [db/map.py](../../db/map.py): consultas às projeções de sites e estações; abre
+  e fecha as conexões de [db/connection.py](../../db/connection.py), inclusive em
+  falhas. A composição compartilhada fica em [db/summary.py](../../db/summary.py).
 - `config.py`: prefixo HTTP do mapa.
 
 As rotas de mapa dentro de `appAnalise_api` foram removidas, assim como seus

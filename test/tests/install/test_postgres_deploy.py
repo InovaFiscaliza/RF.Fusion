@@ -37,7 +37,11 @@ elif args[0] == "pull":
 elif args[0] in ("build", "network", "volume"):
     pass
 elif args[0] == "run":
-    state.touch()
+    if "--rm" in args:
+        # Helper that seeds the data directory from the former named volume.
+        print(os.environ.get("RFF_TEST_SEED", "copied"))
+    else:
+        state.touch()
 elif args[0] == "exec":
     if "pg_dump" in args:
         if os.environ.get("RFF_TEST_BACKUP_FAIL") == "1":
@@ -181,6 +185,32 @@ class PostgresDeployTests(unittest.TestCase):
         self.assertFalse((self.root / "reset.sql").exists())
         self.assertFalse(any(call[:2] == ["volume", "rm"] for call in calls))
 
+    def test_data_moves_to_repository_directory_before_the_new_server(self) -> None:
+        """Seed the bind-mounted cluster only after the old server is gone.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        result = self._run("--recreate")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self._calls()
+        removal = next(i for i, call in enumerate(calls) if call[:2] == ["pod", "rm"])
+        seed = next(i for i, call in enumerate(calls) if call[0] == "run" and "--rm" in call)
+        server = next(i for i, call in enumerate(calls) if call[0] == "run" and "rffusion-postgres" in call)
+        self.assertLess(removal, seed)
+        self.assertLess(seed, server)
+        self.assertIn("rffusion-postgres-data:/source:ro", calls[seed])
+        self.assertIn(f"{self.root}/.env/postgres-data:/var/lib/postgresql/data:z", calls[server])
+        self.assertTrue((self.root / ".env/postgres-data").is_dir())
+
+        failed = self._run("--recreate", RFF_TEST_SEED="")
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("volume rffusion-postgres-data is unchanged", failed.stderr)
+        later = self._calls()[len(calls):]
+        self.assertFalse(any(call[:2] == ["pod", "create"] for call in later))
+
     def test_reset_preserves_current_usage_inside_the_same_transaction(self) -> None:
         """Capture usage under lock, rebuild all schemas and restore it atomically.
 
@@ -248,7 +278,7 @@ class PostgresDeployTests(unittest.TestCase):
         self.assertTrue(
             list((self.root / ".env/postgres-backups").glob("*/postgres-before.dump"))
         )
-        runs = [call for call in self._calls() if call[0] == "run"]
+        runs = [call for call in self._calls() if call[0] == "run" and "--rm" not in call]
         self.assertEqual(len(runs), 1)
 
     def test_infra_has_readable_identity_image_and_command(self) -> None:

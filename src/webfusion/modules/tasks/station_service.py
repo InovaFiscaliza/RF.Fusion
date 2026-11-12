@@ -7,58 +7,31 @@ contract. In practice that means turning normalized form input into durable
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
+from psycopg import Connection
+
 from .builder import build_filter
-
-
-HOST_TASK_CHECK_TYPE = 1
-HOST_TASK_PROCESSING_TYPE = 2
-HOST_TASK_UPDATE_STATISTICS_TYPE = 3
-HOST_TASK_CHECK_CONNECTION_TYPE = 4
-HOST_TASK_BACKLOG_CONTROL_TYPE = 5
-HOST_TASK_BACKLOG_ROLLBACK_TYPE = 6
-HOST_TASK_INTERACTIVE_CHECK_TYPE = 7
-
-TASK_ERROR = -1
-TASK_DONE = 0
-TASK_PENDING = 1
-TASK_RUNNING = 2
-TASK_SUSPENDED = 3
-
-EXPOSED_TASK_TYPES = {
-    HOST_TASK_CHECK_TYPE: "Solicitar Backup",
-    HOST_TASK_BACKLOG_ROLLBACK_TYPE: "Retirar da Fila de Backup",
-}
-
-
-def _serialize_filter(filter_value: Any) -> str:
-    """Return a deterministic JSON representation for HOST_TASK.FILTER."""
-    if isinstance(filter_value, str):
-        try:
-            filter_value = json.loads(filter_value)
-        except json.JSONDecodeError:
-            return filter_value
-
-    return json.dumps(filter_value, sort_keys=True, ensure_ascii=False)
-
-
-def _select_candidate_host_tasks(db, host_id, task_type):
-    """Load reusable HOST_TASK candidates for the requested exact type."""
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        SELECT ID_HOST_TASK, NU_TYPE, NU_STATUS, FILTER
-        FROM HOST_TASK
-        WHERE FK_HOST = %s
-          AND NU_TYPE = %s
-        ORDER BY DT_HOST_TASK DESC, ID_HOST_TASK DESC
-        """,
-        (host_id, task_type),
-    )
-
-    return cursor.fetchall() or []
+from modules.tasks.config import (
+    HOST_TASK_CHECK_TYPE,
+    HOST_TASK_PROCESSING_TYPE,
+    HOST_TASK_UPDATE_STATISTICS_TYPE,
+    HOST_TASK_CHECK_CONNECTION_TYPE,
+    HOST_TASK_BACKLOG_CONTROL_TYPE,
+    HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+    HOST_TASK_INTERACTIVE_CHECK_TYPE,
+    TASK_ERROR,
+    TASK_DONE,
+    TASK_PENDING,
+    TASK_RUNNING,
+    EXPOSED_TASK_TYPES,
+    STATION_TASK_SUSPENDED as TASK_SUSPENDED,
+)
+from db.tasks import (
+    select_candidate_host_tasks as _select_candidate_host_tasks,
+    refresh_host_task as _refresh_host_task,
+    create_host_task as _create_host_task,
+)
 
 
 def _find_reusable_singleton_host_task(tasks):
@@ -84,60 +57,36 @@ def _find_reusable_singleton_host_task(tasks):
     return tasks[0] if tasks else None
 
 
-def _refresh_host_task(db, task_id, task_type, filter_dict, message):
-    """Refresh an existing HOST_TASK row in place."""
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        UPDATE HOST_TASK
-        SET NU_TYPE = %s,
-            NU_STATUS = %s,
-            DT_HOST_TASK = NOW(),
-            FILTER = %s,
-            NA_MESSAGE = %s
-        WHERE ID_HOST_TASK = %s
-        """,
-        (
-            task_type,
-            TASK_PENDING,
-            _serialize_filter(filter_dict),
-            f"Refreshed by WebFusion | {message}",
-            task_id,
-        ),
-    )
-    db.commit()
-
-
-def _create_host_task(db, host_id, task_type, filter_dict, message):
-    """Insert a new HOST_TASK row."""
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        INSERT INTO HOST_TASK
-        (FK_HOST, NU_TYPE, DT_HOST_TASK, NU_STATUS, FILTER, NA_MESSAGE)
-        VALUES (%s, %s, NOW(), %s, %s, %s)
-        """,
-        (
-            host_id,
-            task_type,
-            TASK_PENDING,
-            _serialize_filter(filter_dict),
-            message,
-        ),
-    )
-    db.commit()
-    return cursor.lastrowid
-
-
-def queue_host_task_safe(db, host_id, task_type, filter_dict, message):
-    """
-    Create or refresh a HOST_TASK without creating duplicate logical work.
+def queue_host_task_safe(
+    db: Connection[dict[str, object]],
+    host_id: int,
+    task_type: int,
+    filter_dict: dict[str, object] | str,
+    message: str,
+) -> str:
+    """Create or refresh a HOST_TASK without creating duplicate logical work.
 
     WebFusion now mirrors appCataloga's durable HOST_TASK contract:
         - one reusable row per `FK_HOST + NU_TYPE`
         - PENDING rows are refreshed in place
         - RUNNING rows are preserved
         - terminal rows are reactivated instead of creating infinite inserts
+
+    Args:
+        db (Connection[dict[str, object]]): Caller-owned operational dictionary
+            connection.
+        host_id (int): Operational station identifier.
+        task_type (int): Task type already supported by the worker.
+        filter_dict (dict[str, object] | str): Worker filter dictionary or serialized
+            JSON.
+        message (str): Audit message for the queued task.
+
+    Returns:
+        str: One of created, refreshed or skipped_active. Existing running tasks are
+            preserved; created/refreshed writes are committed.
+
+    Raises:
+        Exception: Invalid task input or a database operation fails.
     """
 
     tasks = _select_candidate_host_tasks(db, host_id, task_type)
@@ -169,8 +118,24 @@ def queue_host_task_safe(db, host_id, task_type, filter_dict, message):
     return "created"
 
 
-def queue_interactive_connectivity_test(db, host_id):
-    """Create or reuse one high-priority manual connectivity test per host."""
+def queue_interactive_connectivity_test(
+    db: Connection[dict[str, object]],
+    host_id: int,
+) -> dict[str, int | bool]:
+    """Create or reuse one high-priority manual connectivity test per host.
+
+    Args:
+        db (Connection[dict[str, object]]): Caller-owned operational dictionary
+            connection.
+        host_id (int): Operational station identifier.
+
+    Returns:
+        dict[str, int | bool]: Required task_id (int), created (bool) and active (bool),
+            identifying the existing or newly committed interactive task.
+
+    Raises:
+        Exception: Invalid task input or a database operation fails.
+    """
     tasks = _select_candidate_host_tasks(
         db,
         host_id,
@@ -217,11 +182,34 @@ def _build_task_action_name(task_type, mode):
     raise ValueError(f"Unsupported task type for WebFusion: {task_type}")
 
 
-def create_task(db, hosts, task_type, mode, filter_data):
+def create_task(
+    db: Connection[dict[str, object]],
+    hosts: list[int],
+    task_type: int,
+    mode: str,
+    filter_data: dict[str, object],
+) -> dict[str, int]:
     """Create or refresh one or more HOST_TASK rows exposed by the UI.
 
     A single browser submission can fan out into multiple host-specific queue
     updates, especially for collective execution.
+
+    Args:
+        db (Connection[dict[str, object]]): Caller-owned operational dictionary
+            connection.
+        hosts (list[int]): Operational station identifiers selected by the operator.
+        task_type (int): Task type already supported by the worker.
+        mode (str): Validated worker filter mode.
+        filter_data (dict[str, object]): Optional start_date/end_date, last_n_files,
+            extension, file_path/file_name, max_total_gb and sort_order values used by
+            build_filter.
+
+    Returns:
+        dict[str, int]: Required queued_count and skipped_count integers across the
+            selected hosts. Each station retains its existing commit boundary.
+
+    Raises:
+        Exception: Invalid task input or a database operation fails.
     """
 
     if task_type not in EXPOSED_TASK_TYPES:

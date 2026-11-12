@@ -24,8 +24,9 @@ vezes. O registro está em `src/webfusion/app.py`.
 
 - `routes.py`: blueprint, leitura dos parâmetros, validação HTTP e respostas.
 - `filters.py`: filtros tipados e validação de valores recebidos.
-- `db_handler.py`: classe `AppAnaliseDB`, consultas SQL parametrizadas e
-  fechamento das conexões, usando as fábricas existentes de `webfusion/db.py`.
+- [db/appanalise.py](../../db/appanalise.py): classe `AppAnaliseDB`, consultas SQL
+  parametrizadas e fechamento das conexões, usando as fábricas de
+  [db/connection.py](../../db/connection.py).
 - `service.py`: paginação sobre índices reutilizáveis, contagem e serialização.
 - `file_cache.py`: cache limitado por validade, memória e quantidade de entradas;
   coordena construções concorrentes sem compartilhar recursos de banco.
@@ -43,11 +44,10 @@ interface web permanecem independentes porque seus campos e regras já diferem
 das consultas MATLAB. O mapa é compartilhado em `api/map_api`; este pacote
 não contém uma implementação paralela do mapa.
 
-Depois da migração dos consumidores, a estrutura interna do summary poderá
-evoluir por trás destes métodos, preservando campos, ordenação e significado
-das respostas. Até lá, as tabelas consumidas diretamente pelo MATLAB continuam
-sujeitas ao contrato existente. Alterações incompatíveis da API precisam de
-uma nova versão.
+O backend usa PostgreSQL e os construtores de [db/summary.py](../../db/summary.py), sem exigir
+as tabelas físicas legadas. Campos, tipos, ordenação, filtros e significado das
+respostas permanecem iguais ao contrato MATLAB. Alterações incompatíveis da API
+continuam exigindo uma nova versão.
 
 ## Operações
 
@@ -112,9 +112,9 @@ mesmo struct, mas cada operação usa os campos que o método MATLAB usava:
 Equipamentos, estados e localidades usam o fallback somente quando a consulta
 ao summary retorna vazia. Erro no banco não é convertido em resultado vazio.
 
-### Adaptação necessária nas estatísticas de host
+### Estatísticas de host
 
-A validação do SQL no MariaDB confirmou que `BPDATA.HOST` já não contém
+`BPDATA.HOST` não contém
 `NU_HOST_FILES`, `NU_PENDING_FILE_BACKUP_TASKS`, `NU_DONE_FILE_BACKUP_TASKS` e
 `VL_PENDING_BACKUP_KB`, embora o arquivo MATLAB ainda consulte esses campos.
 
@@ -203,7 +203,8 @@ prefixo appAnalise foram removidas. Não há aliases ou consultas duplicadas.
 Os métodos MATLAB que buscavam linhas brutas de sites e estações devem passar
 para o dataset comum, que já monta os pontos e detalhes. O endpoint
 `/stations/summary` deste pacote continua existindo: ele consulta
-`HOST_LOCATION_SUMMARY`, com finalidade distinta do mapa por site.
+uma projeção de localidades calculada a partir dos agregados canônicos e
+dos cadastros, com as mesmas colunas HTTP e finalidade distinta do mapa por site.
 
 Consulte o [contrato do mapa](../map_api/README.md) para filtros, campos e datas.
 As regras de marcadores passam a ser as mesmas da interface WebFusion.
@@ -297,7 +298,7 @@ pelo ID, ambos decrescentes. `page` e `pageSize` não entram na chave; listas de
 distritos são normalizadas para desconsiderar ordem e repetições.
 
 A seleção materializa os IDs dos espectros compatíveis em tabela temporária
-InnoDB. O cálculo das datas usa o conteúdo completo dos arquivos selecionados.
+PostgreSQL. O cálculo das datas usa o conteúdo completo dos arquivos selecionados.
 A conexão é fechada também em falhas, removendo a tabela temporária. Os IDs
 ordenados são lidos com cursor sem buffer de linhas. Cada página consulta apenas
 os metadados completos de seus IDs, incluindo a linha de antecipação. O índice

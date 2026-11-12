@@ -53,6 +53,16 @@ class FakeCursor:
     def fetchall(self):
         return list(self._last_result)
 
+    def fetchone(self):
+        """Return the identity produced by INSERT RETURNING.
+
+        Args:
+            None.
+        Returns:
+            dict[str, int]: Generated HOST_TASK identity.
+        """
+        return {"ID_HOST_TASK": self.db.next_task_id}
+
 
 class FakeDB:
     """DB double that records SQL shape and commit behavior."""
@@ -111,11 +121,11 @@ class TestTaskService(unittest.TestCase):
         self.assertEqual(result, "refreshed")
         self.assertEqual(db.commit_calls, 1)
         self.assertEqual(len(db.executions), 2)
-        self.assertIn("NU_TYPE = %s", db.executions[0][0])
-        self.assertNotIn("NU_TYPE IN", db.executions[0][0])
+        self.assertIn('"NU_TYPE" = %s', db.executions[0][0])
+        self.assertNotIn('"NU_TYPE" IN', db.executions[0][0])
 
         update_sql, update_params = db.executions[1]
-        self.assertTrue(update_sql.startswith("UPDATE HOST_TASK"))
+        self.assertTrue(update_sql.startswith('UPDATE "HOST_TASK"'))
         self.assertEqual(update_params[0], self.module.HOST_TASK_CHECK_TYPE)
         self.assertEqual(update_params[1], self.module.TASK_PENDING)
         self.assertEqual(update_params[-1], 77)
@@ -181,9 +191,9 @@ class TestTaskService(unittest.TestCase):
         self.assertEqual(result, "created")
         self.assertEqual(db.commit_calls, 1)
         self.assertEqual(len(db.executions), 2)
-        self.assertIn("NU_TYPE = %s", db.executions[0][0])
+        self.assertIn('"NU_TYPE" = %s', db.executions[0][0])
         insert_sql, insert_params = db.executions[1]
-        self.assertTrue(insert_sql.startswith("INSERT INTO HOST_TASK"))
+        self.assertTrue(insert_sql.startswith('INSERT INTO "HOST_TASK"'))
         self.assertEqual(insert_params[1], self.module.HOST_TASK_CHECK_TYPE)
 
     def test_create_task_rejects_internal_only_task_types(self):
@@ -224,7 +234,7 @@ class TestTaskService(unittest.TestCase):
         )
 
         self.assertEqual(summary, {"queued_count": 2, "skipped_count": 0})
-        inserts = [row for row in db.executions if row[0].startswith("INSERT INTO HOST_TASK")]
+        inserts = [row for row in db.executions if row[0].startswith('INSERT INTO "HOST_TASK"')]
         self.assertEqual(len(inserts), 2)
         self.assertTrue(all(params[1] == self.module.HOST_TASK_CHECK_TYPE for _, params in inserts))
         self.assertTrue(all("Host Check | Backup (LAST_N_FILES)" in params[-1] for _, params in inserts))
@@ -248,10 +258,10 @@ class TestTaskService(unittest.TestCase):
         )
 
         self.assertEqual(summary, {"queued_count": 1, "skipped_count": 0})
-        inserts = [row for row in db.executions if row[0].startswith("INSERT INTO HOST_TASK")]
+        inserts = [row for row in db.executions if row[0].startswith('INSERT INTO "HOST_TASK"')]
         self.assertEqual(len(inserts), 1)
         insert_sql, insert_params = inserts[0]
-        self.assertTrue(insert_sql.startswith("INSERT INTO HOST_TASK"))
+        self.assertTrue(insert_sql.startswith('INSERT INTO "HOST_TASK"'))
         self.assertEqual(insert_params[1], self.module.HOST_TASK_BACKLOG_ROLLBACK_TYPE)
         self.assertIn("Backlog Rollback | Stop (RANGE)", insert_params[-1])
 
@@ -276,9 +286,9 @@ class TestTaskService(unittest.TestCase):
         )
 
         insert_sql, insert_params = next(
-            row for row in db.executions if row[0].startswith("INSERT INTO HOST_TASK")
+            row for row in db.executions if row[0].startswith('INSERT INTO "HOST_TASK"')
         )
-        self.assertTrue(insert_sql.startswith("INSERT INTO HOST_TASK"))
+        self.assertTrue(insert_sql.startswith('INSERT INTO "HOST_TASK"'))
         self.assertIn('"max_total_gb": "30"', insert_params[3])
         self.assertIn('"sort_order": "newest_first"', insert_params[3])
 
@@ -295,7 +305,7 @@ class TestTaskService(unittest.TestCase):
             {"task_id": 901, "created": True, "active": False},
         )
         insert_sql, insert_params = db.executions[-1]
-        self.assertTrue(insert_sql.startswith("INSERT INTO HOST_TASK"))
+        self.assertTrue(insert_sql.startswith('INSERT INTO "HOST_TASK"'))
         self.assertEqual(
             insert_params[1],
             self.module.HOST_TASK_INTERACTIVE_CHECK_TYPE,

@@ -43,7 +43,7 @@ com o Zabbix tem configuração técnica separada, documentada no seu pacote.
 - `map_api` é a única montagem de pontos e detalhes. A página inicial chama
   seu serviço diretamente; o MATLAB usa o endpoint compartilhado.
 - `appAnalise_api` aceita operações nomeadas e filtros. SQL e conexões ao
-  MariaDB ficam no servidor; não há endpoint para executar SQL arbitrário.
+  PostgreSQL ficam no servidor; não há endpoint para executar SQL arbitrário.
 - `zabbix_api` centraliza JSON-RPC e configuração de conexão. Os módulos
   `configuration`, `tasks` e `alarms` mantêm suas regras de funcionalidade.
 

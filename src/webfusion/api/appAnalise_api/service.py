@@ -6,7 +6,7 @@ from decimal import Decimal
 import math
 from typing import cast
 
-from .db_handler import AppAnaliseDB, TableResult
+from db.appanalise import AppAnaliseDB, TableResult
 from .file_cache import FileQueryCache
 from .filters import Filters
 

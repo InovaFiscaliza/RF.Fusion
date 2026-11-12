@@ -22,7 +22,7 @@ from auth.config import (
     PROFILE_IMAGE_URL_MAX_LENGTH, PROFILE_IMAGE_REFRESH_SECONDS,
     PROFILE_IMAGE_RETRY_SECONDS, PROFILE_IMAGE_CACHE_LIMIT,
 )
-from auth.db_users import (
+from db.users import (
     get_access_role, get_profile_image_url, register_observed_user, update_profile_image_url,
 )
 

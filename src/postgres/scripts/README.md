@@ -27,7 +27,8 @@ psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 --single-transaction -f /RFFu
 psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 --single-transaction -f /RFFusion/src/postgres/scripts/createWebFusionDB.sql
 ```
 
-Os scripts não atualizam instalações existentes nem migram dados. Recriar apenas
+Os scripts não atualizam instalações existentes nem migram dados; a transferência
+a partir de um dump MariaDB usa a [ferramenta de migração](../migration/README.md). Recriar apenas
 o pod preserva os volumes e, portanto, os nomes em minúsculas já existentes.
 A alteração de caixa em uma instalação existente exige migração própria ou uma
 nova instalação em banco vazio, com preservação prévia dos dados necessários.

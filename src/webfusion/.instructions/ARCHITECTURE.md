@@ -14,7 +14,7 @@ efetivo. Ausência de vínculo ativo mantém o acesso comum, sem privilégios.
 As tabelas `ADMINS` e `DEVELOPERS` não fazem parte do modelo ativo. Scripts
 de migração que as usam como origem não devem ser repetidos após sua remoção.
 
-O SQL desse domínio permanece em `src/webfusion/auth/db_users.py`.
+O SQL desse domínio pertence a `src/webfusion/db/users.py`.
 `auth/service.py` normaliza a identidade encaminhada pelo proxy confiável.
 `USERS.NA_URL_PROFILE_IMG` armazena uma URL opcional de foto, sem tokens.
 O cabeçalho `X-User-Avatar-Url`, quando presente e válido, atualiza esse campo;
@@ -27,7 +27,7 @@ autenticada própria; não derivar uma URL pública apenas do e-mail.
 O conector `src/webfusion/api/microsoft_api` recebe o e-mail de login do Entra
 (UPN), consulta a foto com token do servidor e retorna a URL local versionada
 pelo conteúdo. O conector não executa SQL. `auth/service.py` limita a frequência
-de consulta e solicita a atualização de `NA_URL_PROFILE_IMG` a `auth/db_users.py`
+de consulta e solicita a atualização de `NA_URL_PROFILE_IMG` a `db/users.py`
 somente após obter uma foto válida. Ausência de token ou falha do Graph mantém
 a foto armazenada. O token nunca aparece no navegador ou na URL persistida.
 Quando o e-mail recebido não coincidir com o UPN, a integração deve fornecer
@@ -76,6 +76,64 @@ ficam visíveis como fallback até a inicialização dos menus.
 
 ## Separação de responsabilidades
 
+### Persistência PostgreSQL
+
+O WebFusion usa exclusivamente PostgreSQL com Psycopg 3.3.8. `db/connection.py` fornece
+conexões por requisição com linhas em dicionário, timezone UTC e `search_path`
+explícito por schema. `config.py` lê `RFFUSION_PG_CONNINFO` ou `PG_CONNINFO` no
+`.secret` local existente; não usa credenciais MariaDB nem fallback de backend.
+O destino DEV autorizado é `10.88.0.35:5432`, banco `rffusion_test_migracao`.
+
+SQL pertence ao pacote `db/`, organizado por domínio. `db/summary.py` compõe
+projeções SQL compartilhadas que combinam os agregados canônicos do Summary com
+BPDATA e RFDATA. Seus construtores são funções tipadas, sem consultas ou montagem
+de projeções no import. Não cria tabelas ou views de compatibilidade.
+Identificadores são delimitados preservando maiúsculas; valores são parâmetros.
+Conexões e transações não são compartilhadas entre requisições.
+
+O pacote não importa handlers em `__init__.py`. Os consumidores importam o módulo
+responsável explicitamente, sem abrir conexões ou carregar todos os domínios ao
+importar `db`. Não manter handlers ou aliases nos caminhos antigos em `auth/`,
+`api/`, `modules/` ou na raiz do WebFusion.
+
+| Domínio | Persistência |
+|---|---|
+| Conexões e tipos comuns | `db/connection.py` |
+| Projeções compartilhadas do Summary | `db/summary.py` |
+| Estações e consultas do servidor | `db/host.py` |
+| Arquivos, espectros e filtros analíticos da interface | `db/spectrum.py` |
+| Filas, histórico e criação de tarefas | `db/tasks.py` |
+| Contadores de uso e checkpoints do NGINX | `db/usage_metrics.py` |
+| Mapa compartilhado | `db/map.py` |
+| Identidades e privilégios | `db/users.py` |
+| Contrato MATLAB | `db/appanalise.py` |
+
+`db/connection.py` cuida somente das fábricas de conexão e dos tipos comuns. Handlers de
+leitura abrem e fecham suas conexões, inclusive em falhas. Operações de fila e
+checkpoint podem receber conexão ou cursor tipado do chamador para manter a
+mesma transação. Os limites de commit, rollback, locks e publicação do outbox
+são preservados: mudar a localização do SQL não muda sua atomicidade.
+
+Serviços mantêm validação de negócio, caches, sondagens externas e montagem das
+respostas; rotas mantêm HTTP. Nenhum handler importa serviços ou rotas. Helpers
+de construção de SQL ficam no handler do domínio. Constantes exclusivas de
+persistência ficam em `db/config.py`; configurações das funcionalidades continuam
+no respectivo `config.py`. Os filtros HTTP do appAnalise permanecem na API; o
+handler usa sua anotação somente para tipagem, sem carregar o blueprint.
+As consultas da interface e do appAnalise
+continuam independentes. A sondagem `SELECT 1` de saúde permanece no componente
+de infraestrutura, com seus timeouts próprios.
+
+Totais de servidor são agregados por consulta; cadastros e sinais são lidos
+diretamente do BPDATA. Métricas mensais respeitam `DT_REFERENCE_MONTH`. Mapas,
+localidades e visitas usam os agregados canônicos e dimensões autoritativas.
+Tabelas de uso e checkpoints pertencem ao DDL, sem criação na requisição HTTP;
+contadores e offsets continuam atômicos. Tabelas temporárias de seleção de
+espectros pertencem à conexão e usam PostgreSQL, sem InnoDB ou hints MariaDB.
+
+A migração preserva integralmente os payloads do Zabbix e appAnalise, incluindo
+colunas, tipos, unidades, filtros, ordenação, paginação e linha adicional.
+
 Todos os seletores simples usam o componente do shell em
 `static/js/base_page.js` e os estilos de `static/css/webfusion_base.css`.
 Os controladores das páginas mantêm os catálogos, filtros e regras de negócio;
@@ -88,7 +146,7 @@ Campos de busca do mapa e de Usuários compartilham a aparência dos menus,
 preservando seus modelos de pesquisa especializados.
 
 - Rotas tratam HTTP; serviços orquestram regras; handlers de banco concentram SQL.
-- Reutilizar as fábricas de conexão de `db.py` e os contratos dos módulos existentes.
+- Reutilizar as fábricas de conexão de `db/connection.py` e os contratos dos módulos existentes.
   Não aplicar ao WebFusion os nomes de workers ou handlers do appCataloga.
 - APIs e serviços chamam métodos públicos dos handlers. Não abrir conexões no import
   nem compartilhá-las entre requisições.
@@ -115,7 +173,7 @@ cliente. Não reutilizar diretamente as consultas de `/spectrum`: suas fontes
 geográficas, rótulos e regras de consistência têm diferenças intencionais.
 
 O handler de banco materializa os IDs dos espectros compatíveis em tabela
-temporária InnoDB, exclusiva da conexão. A partir deles, calcula uma única vez
+temporária PostgreSQL, exclusiva da conexão. A partir deles, calcula uma única vez
 os IDs dos arquivos ordenados pelo conteúdo completo, com os JOINs obrigatórios
 existentes. A conexão é fechada também em falhas, removendo a tabela temporária.
 Metadados completos são consultados somente para os IDs da página solicitada.

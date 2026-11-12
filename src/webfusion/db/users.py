@@ -1,20 +1,30 @@
 """Persist WebFusion users and access roles in the WEBFUSION database.
 
-This module owns the authentication package SQL for user profiles in `USERS`
+This module owns SQL for user profiles in `USERS`
 and active access roles in `USER_ROLES`.
 """
 
 from __future__ import annotations
 
 import re
-import pymysql
-from db import get_connection_webfusion
+import psycopg
+from .connection import get_connection_webfusion
 from auth.config import (
     ADMIN_ROLE, DEVELOPER_ROLE, USER_ROLES, USER_LIST_LIMIT, USER_ROLE_FILTERS,
 )
 
 
 WEBFUSION_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# Role names are server constants; these predicates expect the USERS alias `u`.
+_IS_ADMIN_SQL = (
+    'EXISTS(SELECT 1 FROM "USER_ROLES" r WHERE r."ID_USER" = u."ID_USER" '
+    f'AND r."NA_ROLE" = \'{ADMIN_ROLE}\' AND r."IS_ACTIVE" = 1)'
+)
+_IS_DEVELOPER_SQL = (
+    'EXISTS(SELECT 1 FROM "USER_ROLES" r WHERE r."ID_USER" = u."ID_USER" '
+    f'AND r."NA_ROLE" = \'{DEVELOPER_ROLE}\' AND r."IS_ACTIVE" = 1)'
+)
 
 
 def get_profile_image_url(user_email: str) -> str | None:
@@ -30,7 +40,7 @@ def get_profile_image_url(user_email: str) -> str | None:
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT NA_URL_PROFILE_IMG FROM USERS WHERE NA_USER_EMAIL = %s",
+                'SELECT "NA_URL_PROFILE_IMG" FROM "USERS" WHERE "NA_USER_EMAIL" = %s',
                 (user_email,),
             )
             row = cursor.fetchone()
@@ -61,12 +71,12 @@ def update_profile_image_url(user_email: str, image_url: str) -> None:
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                "UPDATE USERS SET NA_URL_PROFILE_IMG = %s "
-                "WHERE NA_USER_EMAIL = %s AND NOT (NA_URL_PROFILE_IMG <=> %s)",
+                'UPDATE "USERS" SET "NA_URL_PROFILE_IMG" = %s '
+                'WHERE "NA_USER_EMAIL" = %s AND "NA_URL_PROFILE_IMG" IS DISTINCT FROM %s',
                 (image_url, user_email, image_url),
             )
             if not cursor.rowcount:
-                cursor.execute("SELECT ID_USER FROM USERS WHERE NA_USER_EMAIL = %s", (user_email,))
+                cursor.execute('SELECT "ID_USER" FROM "USERS" WHERE "NA_USER_EMAIL" = %s', (user_email,))
                 if cursor.fetchone() is None:
                     raise LookupError("O usuário informado não está cadastrado no WebFusion.")
         connection.commit()
@@ -91,10 +101,10 @@ def get_access_role(user_email: str) -> str | None:
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT r.NA_ROLE FROM USER_ROLES r "
-                "JOIN USERS u ON u.ID_USER = r.ID_USER "
-                "WHERE u.NA_USER_EMAIL = %s AND r.IS_ACTIVE = 1 "
-                "ORDER BY CASE r.NA_ROLE WHEN %s THEN 0 ELSE 1 END LIMIT 1",
+                'SELECT r."NA_ROLE" FROM "USER_ROLES" r '
+                'JOIN "USERS" u ON u."ID_USER" = r."ID_USER" '
+                'WHERE u."NA_USER_EMAIL" = %s AND r."IS_ACTIVE" = 1 '
+                'ORDER BY CASE r."NA_ROLE" WHEN %s THEN 0 ELSE 1 END LIMIT 1',
                 (user_email, ADMIN_ROLE),
             )
             row = cursor.fetchone()
@@ -126,44 +136,28 @@ def get_webfusion_user(user_email: str) -> dict[str, object] | None:
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                """
+                f'''
                 SELECT
-                    u.ID_USER,
-                    u.NA_USER_NAME,
-                    u.NA_USER_EMAIL,
-                    u.NA_JOB_TITLE,
-                    u.NA_DEPARTMENT,
-                    u.NA_LOCATION,
-                    u.NA_URL_PROFILE_IMG,
-                    u.DT_CREATED_AT,
-                    u.DT_UPDATED_AT,
+                    u."ID_USER",
+                    u."NA_USER_NAME",
+                    u."NA_USER_EMAIL",
+                    u."NA_JOB_TITLE",
+                    u."NA_DEPARTMENT",
+                    u."NA_LOCATION",
+                    u."NA_URL_PROFILE_IMG",
+                    u."DT_CREATED_AT",
+                    u."DT_UPDATED_AT",
                     CASE
-                        WHEN EXISTS(
-                            SELECT 1 FROM USER_ROLES a
-                            WHERE a.ID_USER = u.ID_USER AND a.NA_ROLE = 'admin'
-                              AND a.IS_ACTIVE = 1
-                        ) THEN 'admin'
-                        WHEN EXISTS(
-                            SELECT 1 FROM USER_ROLES d
-                            WHERE d.ID_USER = u.ID_USER AND d.NA_ROLE = 'developer'
-                              AND d.IS_ACTIVE = 1
-                        ) THEN 'developer'
+                        WHEN {_IS_ADMIN_SQL} THEN '{ADMIN_ROLE}'
+                        WHEN {_IS_DEVELOPER_SQL} THEN '{DEVELOPER_ROLE}'
                         ELSE NULL
-                    END AS NA_ROLE,
-                    EXISTS(
-                        SELECT 1 FROM USER_ROLES a
-                        WHERE a.ID_USER = u.ID_USER AND a.NA_ROLE = 'admin'
-                          AND a.IS_ACTIVE = 1
-                    ) AS IS_ADMIN,
-                    EXISTS(
-                        SELECT 1 FROM USER_ROLES d
-                        WHERE d.ID_USER = u.ID_USER AND d.NA_ROLE = 'developer'
-                          AND d.IS_ACTIVE = 1
-                    ) AS IS_DEVELOPER
-                FROM USERS u
-                WHERE u.NA_USER_EMAIL = %s
+                    END AS "NA_ROLE",
+                    {_IS_ADMIN_SQL} AS "IS_ADMIN",
+                    {_IS_DEVELOPER_SQL} AS "IS_DEVELOPER"
+                FROM "USERS" u
+                WHERE u."NA_USER_EMAIL" = %s
                 LIMIT 1
-                """,
+                ''',
                 (normalized_email,),
             )
             return cursor.fetchone()
@@ -248,49 +242,39 @@ def list_webfusion_users(
     normalized_job_title = str(job_title or "").strip()
     normalized_department = str(department or "").strip()
     normalized_role_filter = _normalize_role_filter(role)
-    query = """
+    query = f'''
         SELECT
-            u.ID_USER,
-            u.NA_USER_NAME,
-            u.NA_USER_EMAIL,
-            u.NA_JOB_TITLE,
-            u.NA_DEPARTMENT,
-            u.NA_LOCATION,
-            u.NA_URL_PROFILE_IMG,
-            u.DT_CREATED_AT,
-            u.DT_UPDATED_AT,
-            EXISTS(
-                SELECT 1
-                FROM USER_ROLES a
-                WHERE a.ID_USER = u.ID_USER AND a.NA_ROLE = 'admin'
-                  AND a.IS_ACTIVE = 1
-            ) AS IS_ADMIN,
-            EXISTS(
-                SELECT 1
-                FROM USER_ROLES d
-                WHERE d.ID_USER = u.ID_USER AND d.NA_ROLE = 'developer'
-                  AND d.IS_ACTIVE = 1
-            ) AS IS_DEVELOPER
-        FROM USERS u
-    """
+            u."ID_USER",
+            u."NA_USER_NAME",
+            u."NA_USER_EMAIL",
+            u."NA_JOB_TITLE",
+            u."NA_DEPARTMENT",
+            u."NA_LOCATION",
+            u."NA_URL_PROFILE_IMG",
+            u."DT_CREATED_AT",
+            u."DT_UPDATED_AT",
+            {_IS_ADMIN_SQL} AS "IS_ADMIN",
+            {_IS_DEVELOPER_SQL} AS "IS_DEVELOPER"
+        FROM "USERS" u
+    '''
     filters: list[str] = []
     params: list[object] = []
     if normalized_email:
-        filters.append("u.NA_USER_EMAIL = %s")
+        filters.append('u."NA_USER_EMAIL" = %s')
         params.append(normalized_email)
 
     if normalized_job_title:
-        filters.append("COALESCE(u.NA_JOB_TITLE, '') = %s")
+        filters.append('COALESCE(u."NA_JOB_TITLE", \'\') = %s')
         params.append(normalized_job_title)
 
     if normalized_department:
-        filters.append("COALESCE(u.NA_DEPARTMENT, '') = %s")
+        filters.append('COALESCE(u."NA_DEPARTMENT", \'\') = %s')
         params.append(normalized_department)
 
     role_conditions = {
-        "admin": "EXISTS(SELECT 1 FROM USER_ROLES a WHERE a.ID_USER = u.ID_USER AND a.NA_ROLE = 'admin' AND a.IS_ACTIVE = 1)",
-        "developer": "EXISTS(SELECT 1 FROM USER_ROLES d WHERE d.ID_USER = u.ID_USER AND d.NA_ROLE = 'developer' AND d.IS_ACTIVE = 1)",
-        "none": "NOT EXISTS(SELECT 1 FROM USER_ROLES a WHERE a.ID_USER = u.ID_USER AND a.NA_ROLE = 'admin' AND a.IS_ACTIVE = 1) AND NOT EXISTS(SELECT 1 FROM USER_ROLES d WHERE d.ID_USER = u.ID_USER AND d.NA_ROLE = 'developer' AND d.IS_ACTIVE = 1)",
+        ADMIN_ROLE: _IS_ADMIN_SQL,
+        DEVELOPER_ROLE: _IS_DEVELOPER_SQL,
+        "none": f"NOT {_IS_ADMIN_SQL} AND NOT {_IS_DEVELOPER_SQL}",
     }
     if normalized_role_filter in role_conditions:
         filters.append(role_conditions[normalized_role_filter])
@@ -298,10 +282,10 @@ def list_webfusion_users(
     if filters:
         query += " WHERE " + " AND ".join(filters)
 
-    query += """
-        ORDER BY COALESCE(u.NA_USER_NAME, u.NA_USER_EMAIL), u.NA_USER_EMAIL
+    query += '''
+        ORDER BY COALESCE(u."NA_USER_NAME", u."NA_USER_EMAIL"), u."NA_USER_EMAIL"
         LIMIT %s
-    """
+    '''
     connection = get_connection_webfusion()
     try:
         with connection.cursor() as cursor:
@@ -327,19 +311,19 @@ def list_user_filter_options() -> dict[str, list[dict[str, str]]]:
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT NA_USER_EMAIL AS value, "
-                "CONCAT(COALESCE(NULLIF(NA_USER_NAME, ''), NA_USER_EMAIL), ' - ', NA_USER_EMAIL) AS label "
-                "FROM USERS ORDER BY COALESCE(NULLIF(NA_USER_NAME, ''), NA_USER_EMAIL), NA_USER_EMAIL"
+                'SELECT "NA_USER_EMAIL" AS value, '
+                'CONCAT(COALESCE(NULLIF("NA_USER_NAME", \'\'), "NA_USER_EMAIL"), \' - \', "NA_USER_EMAIL") AS label '
+                'FROM "USERS" ORDER BY COALESCE(NULLIF("NA_USER_NAME", \'\'), "NA_USER_EMAIL"), "NA_USER_EMAIL"'
             )
             users = list(cursor.fetchall())
             cursor.execute(
-                "SELECT DISTINCT NA_JOB_TITLE AS value, NA_JOB_TITLE AS label "
-                "FROM USERS WHERE NULLIF(NA_JOB_TITLE, '') IS NOT NULL ORDER BY NA_JOB_TITLE"
+                'SELECT DISTINCT "NA_JOB_TITLE" AS value, "NA_JOB_TITLE" AS label '
+                'FROM "USERS" WHERE NULLIF("NA_JOB_TITLE", \'\') IS NOT NULL ORDER BY "NA_JOB_TITLE"'
             )
             job_titles = list(cursor.fetchall())
             cursor.execute(
-                "SELECT DISTINCT NA_DEPARTMENT AS value, NA_DEPARTMENT AS label "
-                "FROM USERS WHERE NULLIF(NA_DEPARTMENT, '') IS NOT NULL ORDER BY NA_DEPARTMENT"
+                'SELECT DISTINCT "NA_DEPARTMENT" AS value, "NA_DEPARTMENT" AS label '
+                'FROM "USERS" WHERE NULLIF("NA_DEPARTMENT", \'\') IS NOT NULL ORDER BY "NA_DEPARTMENT"'
             )
             departments = list(cursor.fetchall())
             return {
@@ -385,7 +369,7 @@ def create_webfusion_user(
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT ID_USER FROM USERS WHERE NA_USER_EMAIL = %s",
+                'SELECT "ID_USER" FROM "USERS" WHERE "NA_USER_EMAIL" = %s',
                 (normalized_email,),
             )
             if cursor.fetchone() is not None:
@@ -445,7 +429,7 @@ def update_webfusion_user_privileges(
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT ID_USER FROM USERS WHERE NA_USER_EMAIL = %s",
+                'SELECT "ID_USER" FROM "USERS" WHERE "NA_USER_EMAIL" = %s',
                 (normalized_email,),
             )
             if cursor.fetchone() is None:
@@ -490,14 +474,14 @@ def delete_webfusion_user(*, user_email: str) -> None:
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT ID_USER FROM USERS WHERE NA_USER_EMAIL = %s",
+                'SELECT "ID_USER" FROM "USERS" WHERE "NA_USER_EMAIL" = %s',
                 (normalized_email,),
             )
             if cursor.fetchone() is None:
                 raise LookupError("O usuário informado não está cadastrado no WebFusion.")
 
             cursor.execute(
-                "DELETE FROM USERS WHERE NA_USER_EMAIL = %s",
+                'DELETE FROM "USERS" WHERE "NA_USER_EMAIL" = %s',
                 (normalized_email,),
             )
         connection.commit()
@@ -510,7 +494,7 @@ def delete_webfusion_user(*, user_email: str) -> None:
 
 def _upsert_webfusion_user(
     *,
-    cursor: pymysql.cursors.Cursor,
+    cursor: psycopg.Cursor,
     user_name: str | None,
     user_email: str,
     job_title: str | None,
@@ -522,7 +506,7 @@ def _upsert_webfusion_user(
 
     Args:
         cursor: Open cursor for a WEBFUSION transaction. Type:
-            pymysql.cursors.Cursor.
+            psycopg.Cursor.
         user_name: Display name to persist. Type: str | None.
         user_email: Normalized email that identifies the profile. Type: str.
         job_title: Job title to persist. Type: str | None.
@@ -536,15 +520,14 @@ def _upsert_webfusion_user(
         already exists.
     """
     cursor.execute(
-        "INSERT INTO USERS ("
-        "NA_USER_NAME, NA_USER_EMAIL, NA_JOB_TITLE, NA_DEPARTMENT, NA_LOCATION, NA_URL_PROFILE_IMG"
-        ") VALUES (%s, %s, %s, %s, %s, %s) "
-        "ON DUPLICATE KEY UPDATE "
-        "NA_USER_NAME = VALUES(NA_USER_NAME), "
-        "NA_JOB_TITLE = VALUES(NA_JOB_TITLE), "
-        "NA_DEPARTMENT = VALUES(NA_DEPARTMENT), "
-        "NA_LOCATION = VALUES(NA_LOCATION), "
-        "NA_URL_PROFILE_IMG = COALESCE(VALUES(NA_URL_PROFILE_IMG), NA_URL_PROFILE_IMG)",
+        'INSERT INTO "USERS" ("NA_USER_NAME", "NA_USER_EMAIL", "NA_JOB_TITLE", '
+        '"NA_DEPARTMENT", "NA_LOCATION", "NA_URL_PROFILE_IMG") VALUES (%s, %s, %s, %s, %s, %s) '
+        'ON CONFLICT ("NA_USER_EMAIL") DO UPDATE SET '
+        '"NA_USER_NAME" = EXCLUDED."NA_USER_NAME", '
+        '"NA_JOB_TITLE" = EXCLUDED."NA_JOB_TITLE", '
+        '"NA_DEPARTMENT" = EXCLUDED."NA_DEPARTMENT", '
+        '"NA_LOCATION" = EXCLUDED."NA_LOCATION", '
+        '"NA_URL_PROFILE_IMG" = COALESCE(EXCLUDED."NA_URL_PROFILE_IMG", "USERS"."NA_URL_PROFILE_IMG")',
         (user_name, user_email, job_title, department, location, profile_image_url),
     )
 
@@ -597,7 +580,7 @@ def _normalize_role_filter(role_filter: str) -> str:
 
 def _set_webfusion_role(
     *,
-    cursor: pymysql.cursors.Cursor,
+    cursor: psycopg.Cursor,
     user_email: str,
     role: str,
     is_active: bool,
@@ -605,7 +588,7 @@ def _set_webfusion_role(
     """Set one privilege without duplicating identity attributes.
 
     Args:
-        cursor: Open transaction cursor. Type: pymysql.cursors.Cursor.
+        cursor: Open transaction cursor. Type: psycopg.Cursor.
         user_email: Normalized email of an existing user. Type: str.
         role: Either `admin` or `developer`. Type: str.
         is_active: Whether the privilege is enabled. Type: bool.
@@ -621,15 +604,13 @@ def _set_webfusion_role(
 
     if not is_active:
         cursor.execute(
-            "UPDATE USER_ROLES r JOIN USERS u ON u.ID_USER = r.ID_USER "
-            "SET r.IS_ACTIVE = 0 WHERE u.NA_USER_EMAIL = %s AND r.NA_ROLE = %s",
+            'UPDATE "USER_ROLES" r '
+            'SET "IS_ACTIVE" = 0 FROM "USERS" u WHERE u."ID_USER" = r."ID_USER" AND u."NA_USER_EMAIL" = %s AND r."NA_ROLE" = %s',
             (user_email, role),
         )
         return
 
     cursor.execute(
-        "INSERT INTO USER_ROLES (ID_USER, NA_ROLE, IS_ACTIVE) "
-        "SELECT ID_USER, %s, 1 FROM USERS WHERE NA_USER_EMAIL = %s "
-        "ON DUPLICATE KEY UPDATE IS_ACTIVE = 1",
+        'INSERT INTO "USER_ROLES" ("ID_USER", "NA_ROLE", "IS_ACTIVE") SELECT "ID_USER", %s, 1 FROM "USERS" WHERE "NA_USER_EMAIL" = %s ON CONFLICT ("ID_USER", "NA_ROLE") DO UPDATE SET "IS_ACTIVE" = 1',
         (role, user_email),
     )

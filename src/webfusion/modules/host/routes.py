@@ -13,12 +13,13 @@ because monitoring polls are not operator navigation.
 
 from __future__ import annotations
 
-import re
 from datetime import date, datetime
 from decimal import Decimal
+import re
 
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
-from db import get_connection_bpdata
+
+from db.connection import get_connection_bpdata
 from modules.host.service import (
     FILE_TASK_DISCOVERY_TYPE,
     FILE_TASK_PROCESS_TYPE,
@@ -34,6 +35,10 @@ from modules.host.service import (
     get_host_statistics,
 )
 from modules.server.usage_metrics import record_page_view
+from db.tasks import (
+    read_connectivity_test_row as _read_connectivity_test_row,
+    host_exists,
+)
 from modules.tasks.station_service import (
     HOST_TASK_BACKLOG_CONTROL_TYPE,
     HOST_TASK_BACKLOG_ROLLBACK_TYPE,
@@ -48,6 +53,7 @@ from modules.tasks.station_service import (
     TASK_RUNNING,
     queue_interactive_connectivity_test,
 )
+
 
 host_bp = Blueprint("host", __name__)
 
@@ -271,29 +277,6 @@ def _build_host_zabbix_metrics_payload(snapshot: dict) -> dict:
             for field, value in snapshot.items()
         },
     }
-
-
-def _read_connectivity_test_row(cursor, host_id: int, task_id: int) -> dict | None:
-    """Read one interactive task without loading the broader host queue."""
-    cursor.execute(
-        """
-        SELECT
-            HT.ID_HOST_TASK,
-            HT.FK_HOST,
-            HT.NU_STATUS,
-            HT.NA_MESSAGE,
-            HT.DT_HOST_TASK,
-            H.NA_HOST_NAME
-        FROM HOST_TASK HT
-        JOIN HOST H ON H.ID_HOST = HT.FK_HOST
-        WHERE HT.ID_HOST_TASK = %s
-          AND HT.FK_HOST = %s
-          AND HT.NU_TYPE = %s
-        LIMIT 1
-        """,
-        (task_id, host_id, HOST_TASK_INTERACTIVE_CHECK_TYPE),
-    )
-    return cursor.fetchone()
 
 
 @host_bp.route("/host", methods=["GET"])
@@ -617,11 +600,7 @@ def start_connectivity_test(host_id: int) -> tuple[Response, int]:
     try:
         connection = get_connection_bpdata()
         cursor = connection.cursor()
-        cursor.execute(
-            "SELECT ID_HOST FROM HOST WHERE ID_HOST = %s LIMIT 1",
-            (host_id,),
-        )
-        if not cursor.fetchone():
+        if not host_exists(cursor, host_id):
             return jsonify({"error": "Estação não encontrada no catálogo operacional."}), 404
 
         queued = queue_interactive_connectivity_test(connection, host_id)

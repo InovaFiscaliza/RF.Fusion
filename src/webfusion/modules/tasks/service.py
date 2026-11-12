@@ -6,7 +6,7 @@ cross-table view seen by workers and summary metrics. A summary outbox message i
 published only after the queue mutation succeeds, so a refresh failure cannot
 undo the operator action.
 
-Routes own HTTP input and presentation. This service owns validation, SQL, and
+Routes own HTTP input and presentation. This service owns validation and
 the compact action summary returned to the interface.
 """
 
@@ -14,131 +14,71 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
 
-from pymysql.connections import Connection
-from pymysql.cursors import DictCursor
+from psycopg import Connection
 
-
-QUEUE_HOST_TASK = "host"
-QUEUE_FILE_TASK = "file"
-
-ACTION_RESTART = "restart"
-ACTION_SUSPEND = "suspend"
-ACTION_MOVE_TO_BACKUP = "move_to_backup"
-ACTION_REDO_BACKUP = "redo_backup"
-ACTION_REPROCESS = "reprocess"
-
-TASK_ERROR = -1
-TASK_SUSPENDED = -2
-TASK_FROZEN = -3
-TASK_DONE = 0
-TASK_PENDING = 1
-TASK_RUNNING = 2
-
-HOST_TASK_CHECK_TYPE = 1
-HOST_TASK_PROCESSING_TYPE = 2
-HOST_TASK_UPDATE_STATISTICS_TYPE = 3
-HOST_TASK_CHECK_CONNECTION_TYPE = 4
-HOST_TASK_BACKLOG_CONTROL_TYPE = 5
-HOST_TASK_BACKLOG_ROLLBACK_TYPE = 6
-HOST_TASK_INTERACTIVE_CHECK_TYPE = 7
-
-FILE_TASK_BACKUP_TYPE = 1
-FILE_TASK_PROCESS_TYPE = 2
-FILE_TASK_DISCOVERY_TYPE = 3
-
-HOST_DEPENDENT_HOST_TASK_TYPES = {
+from modules.tasks.config import (
+    QUEUE_HOST_TASK,
+    QUEUE_FILE_TASK,
+    ACTION_RESTART,
+    ACTION_SUSPEND,
+    ACTION_MOVE_TO_BACKUP,
+    ACTION_REDO_BACKUP,
+    ACTION_REPROCESS,
+    TASK_ERROR,
+    TASK_SUSPENDED,
+    TASK_FROZEN,
+    TASK_DONE,
+    TASK_PENDING,
+    TASK_RUNNING,
     HOST_TASK_CHECK_TYPE,
     HOST_TASK_PROCESSING_TYPE,
+    HOST_TASK_UPDATE_STATISTICS_TYPE,
     HOST_TASK_CHECK_CONNECTION_TYPE,
-}
-SUSPENDABLE_HOST_TASK_TYPES = set(HOST_DEPENDENT_HOST_TASK_TYPES)
-SUSPENDABLE_FILE_TASK_TYPES = {FILE_TASK_BACKUP_TYPE}
-
-QUEUE_OPTIONS = {
-    QUEUE_HOST_TASK: "Tarefas de Estação",
-    QUEUE_FILE_TASK: "Fila de Arquivos",
-}
-
-ACTION_OPTIONS = {
-    ACTION_RESTART: "Reiniciar",
-    ACTION_SUSPEND: "Suspender",
-}
-
-FILE_TASK_ACTION_OPTIONS = {
-    ACTION_RESTART: "Reiniciar etapa atual",
-    ACTION_SUSPEND: "Suspender",
-    ACTION_MOVE_TO_BACKUP: "Mover para backup",
-    ACTION_REDO_BACKUP: "Refazer backup",
-    ACTION_REPROCESS: "Reprocessar",
-}
-
-HOST_TASK_TYPE_LABELS = {
-    HOST_TASK_CHECK_TYPE: "Solicitar backup",
-    HOST_TASK_PROCESSING_TYPE: "Descoberta",
-    HOST_TASK_UPDATE_STATISTICS_TYPE: "Atualizar estatísticas",
-    HOST_TASK_CHECK_CONNECTION_TYPE: "Verificar conexão",
-    HOST_TASK_BACKLOG_CONTROL_TYPE: "Promover backlog",
-    HOST_TASK_BACKLOG_ROLLBACK_TYPE: "Retirar da fila",
-    HOST_TASK_INTERACTIVE_CHECK_TYPE: "Teste de estação",
-}
-
-FILE_TASK_TYPE_LABELS = {
-    FILE_TASK_BACKUP_TYPE: "Backup",
-    FILE_TASK_PROCESS_TYPE: "Processamento",
-    FILE_TASK_DISCOVERY_TYPE: "Descoberta",
-}
-
-TASK_STATUS_LABELS = {
-    TASK_ERROR: "Erro",
-    TASK_SUSPENDED: "Suspensa",
-    TASK_DONE: "Concluída",
-    TASK_PENDING: "Pendente",
-    TASK_RUNNING: "Em execução",
-    TASK_FROZEN: "Congelada",
-}
-
-DEFAULT_PAGE_LIMIT = 200
-MAX_PAGE_LIMIT = 500
-DEFAULT_HISTORY_PAGE_LIMIT = 50
-HISTORY_PAGE_LIMIT_OPTIONS = (50, 100, 200)
-HISTORY_PROCESSED_RECENT_INDEX = "idx_fth_processed_recent"
-HISTORY_ORDER_BY_ID = "h.ID_HISTORY DESC"
-HISTORY_ORDER_BY_PROCESSED = "h.DT_PROCESSED DESC, h.ID_HISTORY DESC"
-BRAZIL_TIMEZONE = ZoneInfo("America/Sao_Paulo")
-
-HISTORY_TARGET_BACKUP = "backup"
-HISTORY_TARGET_PROCESS = "process"
-
-HISTORY_TARGET_STAGE_OPTIONS = {
-    HISTORY_TARGET_BACKUP: "Backup",
-    HISTORY_TARGET_PROCESS: "Processamento",
-}
-
-HISTORY_TARGET_STATUS_OPTIONS = {
-    TASK_PENDING: "Aguardando",
-    TASK_SUSPENDED: "Suspensa",
-    TASK_FROZEN: "Congelada",
-}
-
-HISTORY_DATE_FIELDS = {
-    "DT_FILE_CREATED_HOST": "h.DT_FILE_CREATED_HOST",
-    "DT_DISCOVERED": "h.DT_DISCOVERED",
-    "DT_BACKUP": "h.DT_BACKUP",
-    "DT_PROCESSED": "h.DT_PROCESSED",
-}
-
-FILE_TASK_DATE_FIELDS = {
-    "DT_FILE_TASK": "ft.DT_FILE_TASK",
-    "DT_FILE_CREATED_HOST": "ft.DT_FILE_CREATED_HOST",
-}
-
-HISTORY_PHASE_STATUS_FIELDS = {
-    "discovery_status": "h.NU_STATUS_DISCOVERY",
-    "backup_status": "h.NU_STATUS_BACKUP",
-    "processing_status": "h.NU_STATUS_PROCESSING",
-}
+    HOST_TASK_BACKLOG_CONTROL_TYPE,
+    HOST_TASK_BACKLOG_ROLLBACK_TYPE,
+    HOST_TASK_INTERACTIVE_CHECK_TYPE,
+    FILE_TASK_BACKUP_TYPE,
+    FILE_TASK_PROCESS_TYPE,
+    FILE_TASK_DISCOVERY_TYPE,
+    HOST_DEPENDENT_HOST_TASK_TYPES,
+    SUSPENDABLE_HOST_TASK_TYPES,
+    SUSPENDABLE_FILE_TASK_TYPES,
+    QUEUE_OPTIONS,
+    ACTION_OPTIONS,
+    FILE_TASK_ACTION_OPTIONS,
+    HOST_TASK_TYPE_LABELS,
+    FILE_TASK_TYPE_LABELS,
+    TASK_STATUS_LABELS,
+    DEFAULT_PAGE_LIMIT,
+    MAX_PAGE_LIMIT,
+    DEFAULT_HISTORY_PAGE_LIMIT,
+    HISTORY_PAGE_LIMIT_OPTIONS,
+    BRAZIL_TIMEZONE,
+    HISTORY_TARGET_BACKUP,
+    HISTORY_TARGET_PROCESS,
+    HISTORY_TARGET_STAGE_OPTIONS,
+    HISTORY_TARGET_STATUS_OPTIONS,
+)
+from db.config import FILE_TASK_DATE_FIELDS, HISTORY_DATE_FIELDS
+from db.tasks import (
+    list_maintenance_hosts,
+    list_file_task_hosts,
+    load_host_tasks_for_action as _load_host_tasks_for_action,
+    load_file_tasks_for_action as _load_file_tasks_for_action,
+    publish_summary_scope as _publish_summary_scope,
+    apply_history_backup_with_cursor as _apply_history_backup_with_cursor,
+    apply_history_process_with_cursor as _apply_history_process_with_cursor,
+    history_phase_field as _history_phase_field,
+    load_host_tasks,
+    load_file_tasks,
+    load_file_history,
+    update_host_task_status,
+    reset_file_task_backup,
+    reset_file_task_process,
+    update_file_task_status,
+    load_history_rows_for_action as _load_history_rows_for_action,
+)
 
 
 def _format_brazil_datetime(value: datetime | str | None) -> str:
@@ -371,11 +311,6 @@ def _validate_date_filters(
         raise ValueError("A data final exclusiva deve ser posterior a data inicial.")
 
 
-def _build_like_value(search: str) -> str:
-    """Wrap one plain-text search token for SQL LIKE matching."""
-    return f"%{search}%"
-
-
 def _build_file_task_message(*, task_type: int, detail: str, path: str | None, name: str | None) -> str:
     """Compose a human-readable audit message without importing appCataloga helpers."""
     task_label = FILE_TASK_TYPE_LABELS.get(int(task_type), str(task_type))
@@ -385,115 +320,10 @@ def _build_file_task_message(*, task_type: int, detail: str, path: str | None, n
     return f"Manutenção WebFusion | {task_label} | Pendente{location} | {detail}"
 
 
-def _apply_common_filters(
-    sql_parts: list[str],
-    params: list[Any],
-    *,
-    alias: str,
-    host_id: int | None,
-    search: str,
-    task_type: int | None,
-    status: int | None,
-    search_columns: tuple[str, ...],
-) -> None:
-    """Append shared search, type, and status filters to one query."""
-    if host_id is not None:
-        sql_parts.append(f"{alias}.FK_HOST = %s")
-        params.append(int(host_id))
-
-    if task_type is not None:
-        sql_parts.append(f"{alias}.NU_TYPE = %s")
-        params.append(int(task_type))
-
-    if status is not None:
-        sql_parts.append(f"{alias}.NU_STATUS = %s")
-        params.append(int(status))
-
-    if not search:
-        return
-
-    like_value = _build_like_value(search)
-    clauses = [f"{column} LIKE %s" for column in search_columns]
-    sql_parts.append("(" + " OR ".join(clauses) + ")")
-    params.extend([like_value] * len(search_columns))
-
-
-def list_maintenance_hosts(db) -> list[dict[str, Any]]:
-    """Return the small host catalog used by maintenance selectors."""
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        SELECT
-            ID_HOST,
-            NA_HOST_NAME,
-            IS_OFFLINE
-        FROM HOST
-        ORDER BY NA_HOST_NAME ASC, ID_HOST ASC
-        """
-    )
-    return cursor.fetchall() or []
-
-
-def list_file_task_hosts(db) -> list[dict[str, Any]]:
-    """Return only hosts that currently have at least one file task."""
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        SELECT
-            h.ID_HOST,
-            h.NA_HOST_NAME,
-            h.IS_OFFLINE
-        FROM HOST h
-        WHERE EXISTS (
-            SELECT 1
-            FROM FILE_TASK ft USE INDEX (FK_FILE_TASK_HOST)
-            WHERE ft.FK_HOST = h.ID_HOST
-        )
-        ORDER BY h.NA_HOST_NAME ASC, h.ID_HOST ASC
-        """
-    )
-    return cursor.fetchall() or []
-
-
-def list_host_tasks(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
+def list_host_tasks(db: Connection[dict[str, object]], filters: dict[str, Any]) -> list[dict[str, Any]]:
     """Return one filtered maintenance table for HOST_TASK rows."""
-    sql_parts = ["1 = 1"]
-    params: list[Any] = []
-    _apply_common_filters(
-        sql_parts,
-        params,
-        alias="ht",
-        host_id=filters["host_id"],
-        search=filters["search"],
-        task_type=filters["task_type"],
-        status=filters["status"],
-        search_columns=("h.NA_HOST_NAME", "ht.NA_MESSAGE"),
-    )
+    rows = load_host_tasks(db=db, filters=filters)
 
-    cursor = db.cursor()
-    cursor.execute(
-        f"""
-        SELECT
-            ht.ID_HOST_TASK,
-            ht.FK_HOST,
-            ht.NU_TYPE,
-            ht.NU_STATUS,
-            ht.NU_PID,
-            ht.DT_HOST_TASK,
-            ht.NA_MESSAGE,
-            h.NA_HOST_NAME,
-            h.IS_OFFLINE,
-            h.IS_BUSY
-        FROM HOST_TASK ht
-        JOIN HOST h
-          ON h.ID_HOST = ht.FK_HOST
-        WHERE {" AND ".join(sql_parts)}
-        ORDER BY ht.DT_HOST_TASK DESC, ht.ID_HOST_TASK DESC
-        LIMIT %s
-        """,
-        tuple(params + [filters["limit"]]),
-    )
-    rows = cursor.fetchall() or []
     for row in rows:
         row["TYPE_LABEL"] = HOST_TASK_TYPE_LABELS.get(row["NU_TYPE"], str(row["NU_TYPE"]))
         row["STATUS_LABEL"] = TASK_STATUS_LABELS.get(row["NU_STATUS"], str(row["NU_STATUS"]))
@@ -502,76 +332,11 @@ def list_host_tasks(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def list_file_tasks(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
+def list_file_tasks(db: Connection[dict[str, object]], filters: dict[str, Any]) -> list[dict[str, Any]]:
     """Return one filtered maintenance table for FILE_TASK rows."""
     validate_file_task_filters(filters)
-    sql_parts = ["1 = 1"]
-    params: list[Any] = []
-    _apply_common_filters(
-        sql_parts,
-        params,
-        alias="ft",
-        host_id=filters["host_id"],
-        search=filters["search"],
-        task_type=filters["task_type"],
-        status=filters["status"],
-        search_columns=(
-            "h.NA_HOST_NAME",
-            "ft.NA_HOST_FILE_NAME",
-            "ft.NA_SERVER_FILE_NAME",
-            "ft.NA_MESSAGE",
-        ),
-    )
+    rows = load_file_tasks(db=db, filters=filters)
 
-    if filters.get("host_file_name"):
-        sql_parts.append("ft.NA_HOST_FILE_NAME = %s")
-        params.append(filters["host_file_name"])
-
-    date_field = filters.get("date_field")
-    if date_field in FILE_TASK_DATE_FIELDS:
-        sql_field = FILE_TASK_DATE_FIELDS[date_field]
-        if filters.get("date_from"):
-            sql_parts.append(f"{sql_field} >= %s")
-            params.append(filters["date_from"])
-        if filters.get("date_to"):
-            sql_parts.append(f"{sql_field} < %s")
-            params.append(filters["date_to"])
-
-    cursor = db.cursor()
-    cursor.execute(
-        f"""
-        SELECT
-            ft.ID_FILE_TASK,
-            ft.FK_HOST,
-            ft.NU_TYPE,
-            ft.NU_STATUS,
-            ft.NU_PID,
-            ft.DT_FILE_TASK,
-            ft.NA_MESSAGE,
-            ft.NA_HOST_FILE_PATH,
-            ft.NA_HOST_FILE_NAME,
-            ft.NA_SERVER_FILE_PATH,
-            ft.NA_SERVER_FILE_NAME,
-            h.NA_HOST_NAME,
-            h.IS_OFFLINE,
-            h.IS_BUSY,
-            fh.ID_HISTORY,
-            fh.NA_SERVER_FILE_PATH AS HISTORY_SERVER_FILE_PATH,
-            fh.NA_SERVER_FILE_NAME AS HISTORY_SERVER_FILE_NAME
-        FROM FILE_TASK ft
-        JOIN HOST h
-          ON h.ID_HOST = ft.FK_HOST
-        LEFT JOIN FILE_TASK_HISTORY fh
-          ON fh.FK_HOST = ft.FK_HOST
-         AND fh.NA_HOST_FILE_PATH = ft.NA_HOST_FILE_PATH
-         AND fh.NA_HOST_FILE_NAME = ft.NA_HOST_FILE_NAME
-        WHERE {" AND ".join(sql_parts)}
-        ORDER BY ft.DT_FILE_TASK DESC, ft.ID_FILE_TASK DESC
-        LIMIT %s
-        """,
-        tuple(params + [filters["limit"]]),
-    )
-    rows = cursor.fetchall() or []
     for row in rows:
         row["TYPE_LABEL"] = FILE_TASK_TYPE_LABELS.get(row["NU_TYPE"], str(row["NU_TYPE"]))
         row["STATUS_LABEL"] = TASK_STATUS_LABELS.get(row["NU_STATUS"], str(row["NU_STATUS"]))
@@ -580,97 +345,11 @@ def list_file_tasks(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _history_order_by(db) -> str:
-    """Use processing recency only after its supporting index is available."""
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        SELECT 1
-        FROM information_schema.statistics
-        WHERE table_schema = DATABASE()
-          AND table_name = 'FILE_TASK_HISTORY'
-          AND index_name = %s
-        LIMIT 1
-        """,
-        (HISTORY_PROCESSED_RECENT_INDEX,),
-    )
-    return HISTORY_ORDER_BY_PROCESSED if cursor.fetchall() else HISTORY_ORDER_BY_ID
-
-
-def list_file_history(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
+def list_file_history(db: Connection[dict[str, object]], filters: dict[str, Any]) -> list[dict[str, Any]]:
     """Return a bounded view of the durable file history."""
     validate_history_filters(filters)
-    sql_parts = ["1 = 1"]
-    params: list[Any] = []
+    rows = load_file_history(db=db, filters=filters)
 
-    if filters["host_id"] is not None:
-        sql_parts.append("h.FK_HOST = %s")
-        params.append(int(filters["host_id"]))
-
-    if filters["host_file_name"]:
-        sql_parts.append("h.NA_HOST_FILE_NAME = %s")
-        params.append(filters["host_file_name"])
-
-    if filters["server_file_name"]:
-        sql_parts.append("h.NA_SERVER_FILE_NAME = %s")
-        params.append(filters["server_file_name"])
-
-    if filters["message"]:
-        sql_parts.append("h.NA_MESSAGE LIKE %s")
-        params.append(_build_like_value(filters["message"]))
-
-    for filter_name, sql_field in HISTORY_PHASE_STATUS_FIELDS.items():
-        status = filters.get(filter_name)
-        if status is not None:
-            sql_parts.append(f"{sql_field} = %s")
-            params.append(int(status))
-
-    date_field = filters["date_field"]
-    if date_field in HISTORY_DATE_FIELDS:
-        sql_field = HISTORY_DATE_FIELDS[date_field]
-        if filters["date_from"]:
-            sql_parts.append(f"{sql_field} >= %s")
-            params.append(filters["date_from"])
-        if filters["date_to"]:
-            sql_parts.append(f"{sql_field} < %s")
-            params.append(filters["date_to"])
-
-    order_by = _history_order_by(db)
-    cursor = db.cursor()
-    cursor.execute(
-        f"""
-        SELECT
-            h.ID_HISTORY,
-            h.FK_HOST,
-            host.NA_HOST_NAME,
-            host.IS_OFFLINE,
-            h.NU_STATUS_DISCOVERY,
-            h.NU_STATUS_BACKUP,
-            h.NU_STATUS_PROCESSING,
-            h.NA_HOST_FILE_NAME,
-            h.NA_SERVER_FILE_PATH,
-            h.NA_SERVER_FILE_NAME,
-            h.DT_DISCOVERED,
-            h.DT_BACKUP,
-            h.DT_PROCESSED,
-            h.NA_MESSAGE,
-            t.ID_FILE_TASK,
-            t.NU_TYPE AS ACTIVE_TASK_TYPE,
-            t.NU_STATUS AS ACTIVE_TASK_STATUS
-        FROM FILE_TASK_HISTORY h
-        JOIN HOST host
-          ON host.ID_HOST = h.FK_HOST
-        LEFT JOIN FILE_TASK t USE INDEX (idx_file_task_identity)
-          ON t.FK_HOST = h.FK_HOST
-         AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
-         AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
-        WHERE {" AND ".join(sql_parts)}
-        ORDER BY {order_by}
-        LIMIT %s
-        """,
-        tuple(params + [filters["limit"]]),
-    )
-    rows = cursor.fetchall() or []
     for row in rows:
         row["DISCOVERY_STATUS_LABEL"] = TASK_STATUS_LABELS.get(
             row["NU_STATUS_DISCOVERY"], str(row["NU_STATUS_DISCOVERY"])
@@ -695,92 +374,6 @@ def list_file_history(db, filters: dict[str, Any]) -> list[dict[str, Any]]:
         _add_display_datetime(row, "DT_BACKUP")
         _add_display_datetime(row, "DT_PROCESSED")
     return rows
-
-
-def _load_host_tasks_for_action(db, task_ids: list[int]) -> list[dict[str, Any]]:
-    """Load the HOST_TASK rows targeted by one bulk action."""
-    if not task_ids:
-        return []
-
-    placeholders = ", ".join(["%s"] * len(task_ids))
-    cursor = db.cursor()
-    cursor.execute(
-        f"""
-        SELECT
-            ht.ID_HOST_TASK,
-            ht.FK_HOST,
-            ht.NU_TYPE,
-            ht.NU_STATUS,
-            ht.NU_PID,
-            h.NA_HOST_NAME,
-            h.IS_OFFLINE,
-            h.IS_BUSY
-        FROM HOST_TASK ht
-        JOIN HOST h
-          ON h.ID_HOST = ht.FK_HOST
-        WHERE ht.ID_HOST_TASK IN ({placeholders})
-        """,
-        tuple(task_ids),
-    )
-    return cursor.fetchall() or []
-
-
-def _load_file_tasks_for_action(db, task_ids: list[int]) -> list[dict[str, Any]]:
-    """Load the FILE_TASK rows targeted by one bulk action."""
-    if not task_ids:
-        return []
-
-    placeholders = ", ".join(["%s"] * len(task_ids))
-    cursor = db.cursor()
-    cursor.execute(
-        f"""
-        SELECT
-            ft.ID_FILE_TASK,
-            ft.FK_HOST,
-            ft.NU_TYPE,
-            ft.NU_STATUS,
-            ft.NU_PID,
-            ft.NA_HOST_FILE_PATH,
-            ft.NA_HOST_FILE_NAME,
-            ft.NA_SERVER_FILE_PATH,
-            ft.NA_SERVER_FILE_NAME,
-            fh.ID_HISTORY,
-            fh.NA_SERVER_FILE_PATH AS HISTORY_SERVER_FILE_PATH,
-            fh.NA_SERVER_FILE_NAME AS HISTORY_SERVER_FILE_NAME,
-            fh.DT_BACKUP AS HISTORY_DT_BACKUP,
-            h.NA_HOST_NAME,
-            h.IS_OFFLINE,
-            h.IS_BUSY
-        FROM FILE_TASK ft
-        JOIN HOST h
-          ON h.ID_HOST = ft.FK_HOST
-        LEFT JOIN FILE_TASK_HISTORY fh
-          ON fh.FK_HOST = ft.FK_HOST
-         AND fh.NA_HOST_FILE_PATH = ft.NA_HOST_FILE_PATH
-         AND fh.NA_HOST_FILE_NAME = ft.NA_HOST_FILE_NAME
-        WHERE ft.ID_FILE_TASK IN ({placeholders})
-        """,
-        tuple(task_ids),
-    )
-    return cursor.fetchall() or []
-
-
-def _publish_summary_scope(db, host_id: int, reason: str) -> None:
-    """Request a later host-summary refresh after a committed maintenance action.
-
-    The outbox insert uses its own commit on purpose. A refresh request is useful
-    but must never roll back the queue state already accepted by the operator.
-    """
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        REPLACE INTO RFFUSION_SUMMARY.SUMMARY_OUTBOX
-            (NA_SCOPE_TYPE, NA_SCOPE_VALUE, NA_SOURCE_HANDLER, NA_REASON)
-        VALUES (%s, %s, %s, %s)
-        """,
-        ("host", str(host_id), "webfusion_maintenance", reason),
-    )
-    db.commit()
 
 
 def _status_message(prefix: str, action_label: str) -> str:
@@ -865,34 +458,13 @@ def _validate_file_task_target(
     raise ValueError(f"Unsupported file task target stage: {target_stage}")
 
 
-def _apply_host_task_action(db, row: dict[str, Any], action: str) -> None:
+def _apply_host_task_action(db: Connection[dict[str, object]], row: dict[str, Any], action: str) -> None:
     """Persist one safe HOST_TASK status change."""
     status = TASK_PENDING if action == ACTION_RESTART else TASK_SUSPENDED
     action_label = ACTION_OPTIONS[action]
     message = _status_message("Tarefas do Host", action_label)
 
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        UPDATE HOST_TASK
-        SET NU_STATUS = %s,
-            NU_PID = NULL,
-            DT_HOST_TASK = NOW(),
-            NA_MESSAGE = %s
-        WHERE ID_HOST_TASK = %s
-        """,
-        (
-            status,
-            message,
-            int(row["ID_HOST_TASK"]),
-        ),
-    )
-    if int(cursor.rowcount or 0) != 1:
-        raise RuntimeError(
-            f"HOST_TASK update affected {cursor.rowcount} rows "
-            f"(expected 1 for task_id={row['ID_HOST_TASK']})"
-        )
-    db.commit()
+    update_host_task_status(db=db, row=row, status=status, message=message)
 
     try:
         _publish_summary_scope(
@@ -902,71 +474,6 @@ def _apply_host_task_action(db, row: dict[str, Any], action: str) -> None:
         )
     except Exception:
         db.rollback()
-
-
-def _history_phase_field(task_type: int) -> str:
-    """Return the FILE_TASK_HISTORY phase column owned by one FILE_TASK type."""
-    if int(task_type) == FILE_TASK_BACKUP_TYPE:
-        return "NU_STATUS_BACKUP"
-    return "NU_STATUS_PROCESSING"
-
-
-def _load_history_rows_for_action(db: Connection, history_ids: list[int]) -> list[dict[str, Any]]:
-    """Lock history and matching queue rows within the caller's transaction.
-
-    Args:
-        db: Operational database connection with an active transaction.
-        history_ids: History IDs selected for manual intervention.
-
-    Returns:
-        Dictionary rows containing history metadata and ACTIVE_TASK_STATUS.
-    """
-    if not history_ids:
-        return []
-
-    placeholders = ", ".join(["%s"] * len(history_ids))
-    cursor = db.cursor()
-    cursor.execute(
-        f"""
-        SELECT
-            h.ID_HISTORY,
-            h.FK_HOST,
-            host.NA_HOST_NAME,
-            host.IS_OFFLINE,
-            h.NA_HOST_FILE_PATH,
-            h.NA_HOST_FILE_NAME,
-            h.NA_EXTENSION_HOST,
-            h.VL_FILE_SIZE_KB_HOST,
-            h.DT_FILE_CREATED_HOST,
-            h.DT_FILE_MODIFIED_HOST,
-            h.NA_SERVER_FILE_PATH,
-            h.NA_SERVER_FILE_NAME,
-            h.NA_EXTENSION_SERVER,
-            h.VL_FILE_SIZE_KB_SERVER,
-            h.DT_FILE_CREATED_SERVER,
-            h.DT_FILE_MODIFIED_SERVER,
-            h.DT_BACKUP,
-            h.DT_PROCESSED,
-            h.NU_STATUS_DISCOVERY,
-            h.NU_STATUS_BACKUP,
-            h.NU_STATUS_PROCESSING,
-            h.NA_MESSAGE,
-            t.ID_FILE_TASK,
-            t.NU_STATUS AS ACTIVE_TASK_STATUS
-        FROM FILE_TASK_HISTORY h
-        JOIN HOST host
-          ON host.ID_HOST = h.FK_HOST
-        LEFT JOIN FILE_TASK t
-          ON t.FK_HOST = h.FK_HOST
-         AND t.NA_HOST_FILE_PATH = h.NA_HOST_FILE_PATH
-         AND t.NA_HOST_FILE_NAME = h.NA_HOST_FILE_NAME
-        WHERE h.ID_HISTORY IN ({placeholders})
-        ORDER BY h.ID_HISTORY
-        FOR UPDATE
-        """,
-        tuple(history_ids),
-    )
-    return cursor.fetchall() or []
 
 
 def _validate_history_action(
@@ -1002,120 +509,7 @@ def _validate_history_action(
     raise ValueError(f"Unsupported history target stage: {target_stage}")
 
 
-def _prepare_history_file_task(
-    cursor: DictCursor,
-    row: dict[str, Any],
-    *,
-    task_type: int,
-    task_status: int,
-    message: str,
-) -> None:
-    """Create a queue task or reset its frozen row from durable history.
-
-    Args:
-        cursor: Dictionary cursor within the caller's transaction.
-        row: History metadata, including ID_FILE_TASK when a task exists.
-        task_type: Backup or processing stage code.
-        task_status: Validated initial status code.
-        message: Audit message describing the manual action.
-
-    Returns:
-        None. Existing task IDs are preserved.
-
-    Raises:
-        RuntimeError: The queue row changed or the write did not affect one row.
-    """
-    server_path = row["NA_SERVER_FILE_PATH"] if task_type == FILE_TASK_PROCESS_TYPE else None
-    server_name = row["NA_SERVER_FILE_NAME"] if task_type == FILE_TASK_PROCESS_TYPE else None
-    server_extension = row["NA_EXTENSION_SERVER"] if task_type == FILE_TASK_PROCESS_TYPE else None
-    server_size = row["VL_FILE_SIZE_KB_SERVER"] if task_type == FILE_TASK_PROCESS_TYPE else None
-    server_created = row["DT_FILE_CREATED_SERVER"] if task_type == FILE_TASK_PROCESS_TYPE else None
-    server_modified = row["DT_FILE_MODIFIED_SERVER"] if task_type == FILE_TASK_PROCESS_TYPE else None
-
-    if row.get("ID_FILE_TASK") is not None:
-        # Preserve the task identity and reject concurrent state changes.
-        cursor.execute(
-            """
-            UPDATE FILE_TASK
-            SET NU_TYPE = %s, NU_STATUS = %s, NU_PID = NULL,
-                DT_FILE_TASK = NOW(),
-                NA_SERVER_FILE_PATH = %s, NA_SERVER_FILE_NAME = %s,
-                NA_EXTENSION_SERVER = %s, VL_FILE_SIZE_KB_SERVER = %s,
-                DT_FILE_CREATED_SERVER = %s, DT_FILE_MODIFIED_SERVER = %s,
-                NA_MESSAGE = %s, NA_ERROR_CODE = NULL, NA_ERROR_DETAIL = NULL,
-                NU_ERROR_CLASSIFIER_VERSION = NULL
-            WHERE ID_FILE_TASK = %s AND NU_STATUS = %s
-            """,
-            (
-                task_type, task_status, server_path, server_name,
-                server_extension, server_size, server_created, server_modified,
-                message, int(row["ID_FILE_TASK"]), TASK_FROZEN,
-            ),
-        )
-        _assert_single_row(cursor, table="FILE_TASK", task_id=int(row["ID_FILE_TASK"]))
-        return
-
-    cursor.execute(
-        """
-        INSERT INTO FILE_TASK (
-            FK_HOST,
-            NA_HOST_FILE_PATH,
-            NA_HOST_FILE_NAME,
-            NA_EXTENSION_HOST,
-            VL_FILE_SIZE_KB_HOST,
-            DT_FILE_CREATED_HOST,
-            DT_FILE_MODIFIED_HOST,
-            NU_PID,
-            NU_TYPE,
-            NU_STATUS,
-            DT_FILE_TASK,
-            NA_SERVER_FILE_PATH,
-            NA_SERVER_FILE_NAME,
-            NA_EXTENSION_SERVER,
-            VL_FILE_SIZE_KB_SERVER,
-            DT_FILE_CREATED_SERVER,
-            DT_FILE_MODIFIED_SERVER,
-            NA_MESSAGE
-        ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s
-        )
-        """,
-        (
-            int(row["FK_HOST"]),
-            row["NA_HOST_FILE_PATH"],
-            row["NA_HOST_FILE_NAME"],
-            row["NA_EXTENSION_HOST"],
-            row["VL_FILE_SIZE_KB_HOST"],
-            row["DT_FILE_CREATED_HOST"],
-            row["DT_FILE_MODIFIED_HOST"],
-            int(task_type),
-            task_status,
-            server_path,
-            server_name,
-            server_extension,
-            server_size,
-            server_created,
-            server_modified,
-            message,
-        ),
-    )
-    if int(cursor.rowcount or 0) != 1:
-        raise RuntimeError(
-            f"FILE_TASK recreation affected {cursor.rowcount} rows "
-            f"(expected 1 for history_id={row['ID_HISTORY']})"
-        )
-
-
-def _assert_single_row(cursor, *, table: str, task_id: int) -> None:
-    """Raise when a maintenance transition lost its optimistic status check."""
-    if int(cursor.rowcount or 0) != 1:
-        raise RuntimeError(
-            f"{table} update affected {cursor.rowcount} rows "
-            f"(expected 1 for task_id={task_id})"
-        )
-
-
-def _publish_file_task_action(db, row: dict[str, Any], action: str) -> None:
+def _publish_file_task_action(db: Connection[dict[str, object]], row: dict[str, Any], action: str) -> None:
     """Publish the committed maintenance mutation without reopening its transaction."""
     try:
         _publish_summary_scope(
@@ -1128,7 +522,7 @@ def _publish_file_task_action(db, row: dict[str, Any], action: str) -> None:
 
 
 def _apply_file_task_backup_transition(
-    db,
+    db: Connection[dict[str, object]],
     row: dict[str, Any],
     *,
     task_status: int,
@@ -1140,80 +534,13 @@ def _apply_file_task_backup_transition(
     The live task and durable history are one operational transition, so both
     updates share a transaction and an optimistic status check.
     """
-    cursor = db.cursor()
-
-    try:
-        # A partial reset would make the queue and history disagree.
-        cursor.execute("START TRANSACTION")
-        cursor.execute(
-            """
-            UPDATE FILE_TASK
-            SET NU_TYPE = %s,
-                NU_STATUS = %s,
-                NU_PID = NULL,
-                DT_FILE_TASK = NOW(),
-                NA_SERVER_FILE_PATH = NULL,
-                NA_SERVER_FILE_NAME = NULL,
-                NA_EXTENSION_SERVER = NULL,
-                VL_FILE_SIZE_KB_SERVER = NULL,
-                DT_FILE_CREATED_SERVER = NULL,
-                DT_FILE_MODIFIED_SERVER = NULL,
-                NA_MESSAGE = %s,
-                NA_ERROR_CODE = NULL,
-                NA_ERROR_DETAIL = NULL,
-                NU_ERROR_CLASSIFIER_VERSION = NULL
-            WHERE ID_FILE_TASK = %s
-              AND NU_STATUS = %s
-            """,
-            (
-                FILE_TASK_BACKUP_TYPE,
-                task_status,
-                message,
-                int(row["ID_FILE_TASK"]),
-                int(row["NU_STATUS"]),
-            ),
-        )
-        _assert_single_row(cursor, table="FILE_TASK", task_id=int(row["ID_FILE_TASK"]))
-
-        cursor.execute(
-            """
-            UPDATE FILE_TASK_HISTORY
-            SET DT_BACKUP = NULL,
-                DT_PROCESSED = NULL,
-                NU_STATUS_BACKUP = %s,
-                NU_STATUS_PROCESSING = %s,
-                NA_SERVER_FILE_PATH = NULL,
-                NA_SERVER_FILE_NAME = NULL,
-                NA_EXTENSION_SERVER = NULL,
-                VL_FILE_SIZE_KB_SERVER = NULL,
-                DT_FILE_CREATED_SERVER = NULL,
-                DT_FILE_MODIFIED_SERVER = NULL,
-                IS_PAYLOAD_DELETED = 0,
-                DT_PAYLOAD_DELETED = NULL,
-                NA_MESSAGE = %s,
-                NA_ERROR_CODE = NULL,
-                NA_ERROR_DETAIL = NULL,
-                NU_ERROR_CLASSIFIER_VERSION = NULL
-            WHERE ID_HISTORY = %s
-            """,
-            (
-                task_status,
-                TASK_PENDING,
-                message,
-                int(row["ID_HISTORY"]),
-            ),
-        )
-        _assert_single_row(cursor, table="FILE_TASK_HISTORY", task_id=int(row["ID_FILE_TASK"]))
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
+    reset_file_task_backup(db=db, row=row, task_status=task_status, message=message)
 
     _publish_file_task_action(db, row, publish_reason)
 
 
 def _apply_file_task_process_transition(
-    db,
+    db: Connection[dict[str, object]],
     row: dict[str, Any],
     *,
     task_status: int,
@@ -1225,64 +552,7 @@ def _apply_file_task_process_transition(
     The server identity comes from history. Both records change together so the
     processor and summary reader observe the same processing state.
     """
-    cursor = db.cursor()
-
-    try:
-        # A partial reset would make the queue and history disagree.
-        cursor.execute("START TRANSACTION")
-        cursor.execute(
-            """
-            UPDATE FILE_TASK
-            SET NU_TYPE = %s,
-                NU_STATUS = %s,
-                NU_PID = NULL,
-                DT_FILE_TASK = NOW(),
-                NA_SERVER_FILE_PATH = %s,
-                NA_SERVER_FILE_NAME = %s,
-                NA_MESSAGE = %s,
-                NA_ERROR_CODE = NULL,
-                NA_ERROR_DETAIL = NULL,
-                NU_ERROR_CLASSIFIER_VERSION = NULL
-            WHERE ID_FILE_TASK = %s
-              AND NU_STATUS = %s
-            """,
-            (
-                FILE_TASK_PROCESS_TYPE,
-                task_status,
-                row["HISTORY_SERVER_FILE_PATH"],
-                row["HISTORY_SERVER_FILE_NAME"],
-                message,
-                int(row["ID_FILE_TASK"]),
-                int(row["NU_STATUS"]),
-            ),
-        )
-        _assert_single_row(cursor, table="FILE_TASK", task_id=int(row["ID_FILE_TASK"]))
-
-        cursor.execute(
-            """
-            UPDATE FILE_TASK_HISTORY
-            SET DT_BACKUP = COALESCE(DT_BACKUP, NOW()),
-                DT_PROCESSED = NULL,
-                NU_STATUS_BACKUP = %s,
-                NU_STATUS_PROCESSING = %s,
-                NA_MESSAGE = %s,
-                NA_ERROR_CODE = NULL,
-                NA_ERROR_DETAIL = NULL,
-                NU_ERROR_CLASSIFIER_VERSION = NULL
-            WHERE ID_HISTORY = %s
-            """,
-            (
-                TASK_DONE,
-                task_status,
-                message,
-                int(row["ID_HISTORY"]),
-            ),
-        )
-        _assert_single_row(cursor, table="FILE_TASK_HISTORY", task_id=int(row["ID_FILE_TASK"]))
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
+    reset_file_task_process(db=db, row=row, task_status=task_status, message=message)
 
     _publish_file_task_action(db, row, publish_reason)
 
@@ -1311,7 +581,7 @@ def _apply_file_task_reprocess_action(db, row: dict[str, Any]) -> None:
     )
 
 
-def _apply_file_task_action(db, row: dict[str, Any], action: str) -> None:
+def _apply_file_task_action(db: Connection[dict[str, object]], row: dict[str, Any], action: str) -> None:
     """Persist one atomic FILE_TASK and FILE_TASK_HISTORY maintenance action.
 
     Stage-changing actions use their dedicated reset paths. Restart and suspend
@@ -1327,48 +597,7 @@ def _apply_file_task_action(db, row: dict[str, Any], action: str) -> None:
     status = TASK_PENDING if action == ACTION_RESTART else TASK_SUSPENDED
     message = _status_message("Fila de Arquivos", FILE_TASK_ACTION_OPTIONS[action])
     history_phase = _history_phase_field(int(row["NU_TYPE"]))
-    cursor = db.cursor()
-
-    try:
-        # A partial status change would distort the materialized summaries.
-        cursor.execute("START TRANSACTION")
-        cursor.execute(
-            """
-            UPDATE FILE_TASK
-            SET NU_STATUS = %s,
-                NU_PID = NULL,
-                DT_FILE_TASK = NOW(),
-                NA_MESSAGE = %s
-            WHERE ID_FILE_TASK = %s
-              AND NU_STATUS = %s
-            """,
-            (
-                status,
-                message,
-                int(row["ID_FILE_TASK"]),
-                int(row["NU_STATUS"]),
-            ),
-        )
-        _assert_single_row(cursor, table="FILE_TASK", task_id=int(row["ID_FILE_TASK"]))
-
-        cursor.execute(
-            f"""
-            UPDATE FILE_TASK_HISTORY
-            SET {history_phase} = %s,
-                NA_MESSAGE = %s
-            WHERE ID_HISTORY = %s
-            """,
-            (
-                status,
-                message,
-                int(row["ID_HISTORY"]),
-            ),
-        )
-        _assert_single_row(cursor, table="FILE_TASK_HISTORY", task_id=int(row["ID_FILE_TASK"]))
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
+    update_file_task_status(db=db, row=row, status=status, message=message, history_phase=history_phase)
 
     _publish_file_task_action(db, row, action)
 
@@ -1566,98 +795,6 @@ def parse_selected_history_ids(form_data: Any) -> list[int]:
     return parsed
 
 
-def _apply_history_backup_with_cursor(
-    cursor,
-    row: dict[str, Any],
-    *,
-    task_status: int,
-    message: str,
-) -> None:
-    """Create one backup task and reset history to the selected status."""
-    _prepare_history_file_task(
-        cursor,
-        row,
-        task_type=FILE_TASK_BACKUP_TYPE,
-        task_status=task_status,
-        message=message,
-    )
-    cursor.execute(
-        """
-        UPDATE FILE_TASK_HISTORY
-        SET DT_BACKUP = NULL,
-            DT_PROCESSED = NULL,
-            NU_STATUS_BACKUP = %s,
-            NU_STATUS_PROCESSING = %s,
-            NA_SERVER_FILE_PATH = NULL,
-            NA_SERVER_FILE_NAME = NULL,
-            NA_EXTENSION_SERVER = NULL,
-            VL_FILE_SIZE_KB_SERVER = NULL,
-            DT_FILE_CREATED_SERVER = NULL,
-            DT_FILE_MODIFIED_SERVER = NULL,
-            NA_MESSAGE = %s,
-            NA_ERROR_CODE = NULL,
-            NA_ERROR_DETAIL = NULL,
-            NU_ERROR_CLASSIFIER_VERSION = NULL
-        WHERE ID_HISTORY = %s
-        """,
-        (
-            task_status,
-            TASK_PENDING,
-            message,
-            int(row["ID_HISTORY"]),
-        ),
-    )
-    if int(cursor.rowcount or 0) != 1:
-        raise RuntimeError(
-            f"FILE_TASK_HISTORY backup recreation affected {cursor.rowcount} rows "
-            f"(expected 1 for history_id={row['ID_HISTORY']})"
-        )
-
-
-def _apply_history_process_with_cursor(
-    cursor,
-    row: dict[str, Any],
-    *,
-    task_status: int,
-    message: str,
-    backup_at: Any,
-) -> None:
-    """Create one processing task and reset history to the selected status."""
-    _prepare_history_file_task(
-        cursor,
-        row,
-        task_type=FILE_TASK_PROCESS_TYPE,
-        task_status=task_status,
-        message=message,
-    )
-    cursor.execute(
-        """
-        UPDATE FILE_TASK_HISTORY
-        SET DT_BACKUP = %s,
-            DT_PROCESSED = NULL,
-            NU_STATUS_BACKUP = %s,
-            NU_STATUS_PROCESSING = %s,
-            NA_MESSAGE = %s,
-            NA_ERROR_CODE = NULL,
-            NA_ERROR_DETAIL = NULL,
-            NU_ERROR_CLASSIFIER_VERSION = NULL
-        WHERE ID_HISTORY = %s
-        """,
-        (
-            backup_at,
-            TASK_DONE,
-            task_status,
-            message,
-            int(row["ID_HISTORY"]),
-        ),
-    )
-    if int(cursor.rowcount or 0) != 1:
-        raise RuntimeError(
-            f"FILE_TASK_HISTORY processing recreation affected {cursor.rowcount} rows "
-            f"(expected 1 for history_id={row['ID_HISTORY']})"
-        )
-
-
 def _history_action_label(target_stage: str, target_status: int) -> str:
     """Build one concise summary label for a history queue action."""
     return (
@@ -1694,7 +831,6 @@ def apply_history_action(
 
     try:
         # Queue creation and history reset must either both persist or neither does.
-        cursor.execute("START TRANSACTION")
         rows = _load_history_rows_for_action(db, unique_ids)
         row_ids = {int(row["ID_HISTORY"]) for row in rows}
         missing_ids = [history_id for history_id in unique_ids if history_id not in row_ids]

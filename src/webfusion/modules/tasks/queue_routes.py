@@ -12,7 +12,7 @@ from typing import Any
 
 from flask import jsonify, redirect, render_template, request, url_for
 
-from db import get_connection_bpdata as get_connection
+from db.connection import get_connection_bpdata as get_connection
 from modules.tasks.blueprints import tasks_api_bp, tasks_bp
 from modules.tasks.service import (
     ACTION_OPTIONS,

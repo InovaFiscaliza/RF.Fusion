@@ -19,13 +19,13 @@ def load_host_service():
     root = str(MODULE_PATH.parents[2])
     if root not in sys.path:
         sys.path.insert(0, root)
-    stub_db = types.ModuleType("db")
+    stub_db = types.ModuleType("db.connection")
     stub_db.get_connection_bpdata = lambda: None
     stub_db.get_connection_rfdata = lambda: None
     stub_db.get_connection_summary = lambda: None
 
-    previous_db = sys.modules.get("db")
-    sys.modules["db"] = stub_db
+    previous_db = sys.modules.get("db.connection")
+    sys.modules["db.connection"] = stub_db
 
     try:
         spec = importlib.util.spec_from_file_location(
@@ -40,9 +40,9 @@ def load_host_service():
         return module
     finally:
         if previous_db is not None:
-            sys.modules["db"] = previous_db
+            sys.modules["db.connection"] = previous_db
         else:
-            sys.modules.pop("db", None)
+            sys.modules.pop("db.connection", None)
 
 
 class TestHostService(unittest.TestCase):
@@ -51,6 +51,7 @@ class TestHostService(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_host_service()
+        cls.handler = sys.modules["db.host"]
 
     def test_current_flags_read_live_host_instead_of_stale_summary_flags(self):
         operational = MagicMock()
@@ -63,8 +64,8 @@ class TestHostService(unittest.TestCase):
             {"IS_BUSY": 0, "IS_OFFLINE": 0, "IS_SSH_FAILURE": 1, "IS_GPS_GNSS_UNAVAILABLE": 1},
             {"IS_BUSY": 1, "IS_OFFLINE": 1, "IS_SSH_FAILURE": 0, "IS_GPS_GNSS_UNAVAILABLE": 0},
         ]
-        with patch.object(self.module, "get_connection_bpdata", return_value=operational), patch.object(
-            self.module, "get_connection_summary", return_value=summary,
+        with patch.object(self.handler, "get_connection_bpdata", return_value=operational), patch.object(
+            self.handler, "get_connection_summary", return_value=summary,
         ):
             first = self.module.get_host_current_flags(73)
             second = self.module.get_host_current_flags(73)
@@ -79,8 +80,8 @@ class TestHostService(unittest.TestCase):
         summary = MagicMock()
         operational.cursor.return_value.fetchone.return_value = {"IS_BUSY": 0, "IS_OFFLINE": 1}
         summary.cursor.return_value.fetchone.return_value = None
-        with patch.object(self.module, "get_connection_bpdata", return_value=operational), patch.object(
-            self.module, "get_connection_summary", return_value=summary,
+        with patch.object(self.handler, "get_connection_bpdata", return_value=operational), patch.object(
+            self.handler, "get_connection_summary", return_value=summary,
         ):
             flags = self.module.get_host_current_flags(73)
 
@@ -92,8 +93,8 @@ class TestHostService(unittest.TestCase):
     def test_missing_operational_host_returns_no_flags(self):
         operational = MagicMock()
         operational.cursor.return_value.fetchone.return_value = None
-        with patch.object(self.module, "get_connection_bpdata", return_value=operational), patch.object(
-            self.module, "get_connection_summary",
+        with patch.object(self.handler, "get_connection_bpdata", return_value=operational), patch.object(
+            self.handler, "get_connection_summary",
         ) as summary:
             self.assertIsNone(self.module.get_host_current_flags(73))
         operational.close.assert_called_once()
@@ -107,8 +108,8 @@ class TestHostService(unittest.TestCase):
                 operational.cursor.return_value.fetchone.return_value = {"IS_BUSY": 0, "IS_OFFLINE": 0}
                 failing = operational if failing_source == "operational" else summary
                 failing.cursor.return_value.execute.side_effect = RuntimeError("read failed")
-                with patch.object(self.module, "get_connection_bpdata", return_value=operational), patch.object(
-                    self.module, "get_connection_summary", return_value=summary,
+                with patch.object(self.handler, "get_connection_bpdata", return_value=operational), patch.object(
+                    self.handler, "get_connection_summary", return_value=summary,
                 ), self.assertRaises(RuntimeError):
                     self.module.get_host_current_flags(73)
                 operational.close.assert_called_once()
@@ -197,11 +198,21 @@ class TestHostService(unittest.TestCase):
             [{"ID_HOST": 73, "NA_HOST_NAME": "Station", "IS_OFFLINE": 1}],
             [{"ID_HOST": 73, "NA_HOST_NAME": "Station", "IS_OFFLINE": 0}],
         ]
-        with patch.object(self.module, "get_connection_summary", return_value=connection):
+        with patch.object(self.handler, "get_connection_summary", return_value=connection):
             first = self.module.get_all_hosts()
             second = self.module.get_all_hosts()
         self.assertEqual(first[0]["IS_OFFLINE"], 1)
         self.assertEqual(second[0]["IS_OFFLINE"], 0)
+
+    def test_host_picker_filters_use_quoted_postgresql_columns(self):
+        connection = MagicMock()
+        connection.cursor.return_value.fetchall.return_value = []
+        with patch.object(self.handler, "get_connection_summary", return_value=connection):
+            self.module.get_all_hosts(online_only=True, search="RFEye")
+
+        sql, params = connection.cursor.return_value.execute.call_args.args
+        self.assertIn('WHERE "IS_OFFLINE" = 0 AND "NA_HOST_NAME" ILIKE %s', sql)
+        self.assertEqual(params, ["%RFEye%"])
 
     def test_host_diagnostics_observe_resolved_errors_on_consecutive_reads(self):
         for phase in ("backup", "processing"):
@@ -266,7 +277,7 @@ class TestHostService(unittest.TestCase):
                 self.closed = True
 
         connection = FakeConnection()
-        with patch.object(self.module, "get_connection_bpdata", return_value=connection):
+        with patch.object(self.handler, "get_connection_bpdata", return_value=connection):
             activity = self.module.get_host_current_activity(73)
 
         self.assertEqual(activity["source"], "host-task")
@@ -312,7 +323,7 @@ class TestHostService(unittest.TestCase):
                 pass
 
         with patch.object(
-            self.module,
+            self.handler,
             "get_connection_bpdata",
             return_value=FakeConnection(),
         ):
@@ -358,7 +369,7 @@ class TestHostService(unittest.TestCase):
                 pass
 
         with patch.object(
-            self.module,
+            self.handler,
             "get_connection_bpdata",
             return_value=FakeConnection(),
         ):
@@ -409,7 +420,7 @@ class TestHostService(unittest.TestCase):
                 pass
 
         with patch.object(
-            self.module,
+            self.handler,
             "get_connection_bpdata",
             return_value=FakeConnection(),
         ):
@@ -449,7 +460,7 @@ class TestHostService(unittest.TestCase):
                 pass
 
         connection = FakeConnection()
-        with patch.object(self.module, "get_connection_bpdata", return_value=connection):
+        with patch.object(self.handler, "get_connection_bpdata", return_value=connection):
             activity = self.module.get_host_activity_detail(73, "backup-file", 55)
 
         self.assertEqual(activity["task_type"], 2)
@@ -457,7 +468,7 @@ class TestHostService(unittest.TestCase):
             activity["message"],
             "Backup concluído para capture_20260826.zip.",
         )
-        self.assertEqual(connection.cursor_instance.execution[1], (55, 73))
+        self.assertEqual(connection.cursor_instance.executions[0][1], (55, 73))
 
     def test_file_activity_detail_reads_processing_result_from_history_after_delete(self):
         class FakeCursor:
@@ -492,7 +503,7 @@ class TestHostService(unittest.TestCase):
                 pass
 
         connection = FakeConnection()
-        with patch.object(self.module, "get_connection_bpdata", return_value=connection):
+        with patch.object(self.handler, "get_connection_bpdata", return_value=connection):
             activity = self.module.get_host_activity_detail(
                 73,
                 "file-task",
@@ -512,10 +523,10 @@ class TestHostService(unittest.TestCase):
     def test_processed_file_spectrum_metadata_uses_the_repository_file_name(self):
         class FakeCursor:
             def __init__(self):
-                self.execution = None
+                self.executions = []
 
             def execute(self, query, params):
-                self.execution = (query, params)
+                self.executions.append((query, params))
 
             def fetchone(self):
                 return {"ID_FILE": 41, "SPECTRUM_COUNT": 15}
@@ -534,7 +545,7 @@ class TestHostService(unittest.TestCase):
                 pass
 
         connection = FakeConnection()
-        with patch.object(self.module, "get_connection_rfdata", return_value=connection):
+        with patch.object(self.handler, "get_connection_rfdata", return_value=connection):
             metadata = self.module.get_processed_file_spectrum_metadata("p-123--capture.bin")
 
         self.assertEqual(metadata["ID_FILE"], 41)
@@ -545,7 +556,7 @@ class TestHostService(unittest.TestCase):
         )
         self.assertEqual(
             connection.cursor_instance.executions[1][1],
-            (41, self.module.PROCESSED_FILE_SPECTRUM_METADATA_LIMIT),
+            (41, self.handler.PROCESSED_FILE_SPECTRUM_METADATA_LIMIT),
         )
 
     def test_format_structured_error_bucket_renders_code_and_summary(self):
@@ -832,7 +843,7 @@ class TestHostService(unittest.TestCase):
 
         with patch.object(self.module.time, "monotonic", return_value=100.0):
             with patch.object(
-                self.module,
+                self.handler,
                 "get_connection_summary",
                 return_value=summary_connection,
             ):
@@ -854,7 +865,7 @@ class TestHostService(unittest.TestCase):
         self.assertEqual(summary["FACT_SPECTRUM_TOTAL"], 987)
         self.assertTrue(summary_connection.closed)
         self.assertEqual(len(summary_cursor.executed), 1)
-        self.assertIn("FROM SERVER_CURRENT_SUMMARY", summary_cursor.executed[0][0])
+        self.assertIn('FROM "RFFUSION_SUMMARY"."HOST_METRIC"', summary_cursor.executed[0][0])
 
     def test_get_server_processing_error_overview_reads_summary_only(self):
         class FakeCursor:
@@ -897,7 +908,7 @@ class TestHostService(unittest.TestCase):
 
         with patch.object(self.module.time, "monotonic", return_value=100.0):
             with patch.object(
-                self.module,
+                self.handler,
                 "get_connection_summary",
                 return_value=summary_connection,
             ):
@@ -908,7 +919,7 @@ class TestHostService(unittest.TestCase):
         self.assertEqual(payload["rows"][0]["ERROR_COUNT"], 5)
         self.assertEqual(payload["rows"][0]["TASK_STATE"], "FROZEN")
         self.assertIn("NO_VALID_SPECTRA", payload["rows"][0]["ERROR_MESSAGE"])
-        self.assertIn("NA_TASK_STATE AS TASK_STATE", summary_cursor.executed[0][0])
+        self.assertIn('"NA_TASK_STATE" AS "TASK_STATE"', summary_cursor.executed[0][0])
         self.assertTrue(summary_connection.closed)
 
     def test_get_server_overview_reads_materialized_host_totals(self):
@@ -952,7 +963,7 @@ class TestHostService(unittest.TestCase):
 
         with patch.object(self.module.time, "monotonic", return_value=100.0):
             with patch.object(
-                self.module,
+                self.handler,
                 "get_connection_summary",
                 return_value=summary_connection,
             ):
@@ -1104,7 +1115,7 @@ class TestHostService(unittest.TestCase):
 
         with patch.object(self.module.time, "monotonic", return_value=100.0):
             with patch.object(
-                self.module,
+                self.handler,
                 "get_connection_summary",
                 side_effect=[snapshot_connection, monthly_connection],
             ):
@@ -1136,14 +1147,14 @@ class TestHostService(unittest.TestCase):
         self.assertTrue(snapshot_connection.closed)
         self.assertTrue(monthly_connection.closed)
         self.assertEqual(len(snapshot_cursor.executed), 1)
-        self.assertIn("FROM HOST_CURRENT_SNAPSHOT", snapshot_cursor.executed[0][0])
+        self.assertIn('FROM "BPDATA"."HOST"', snapshot_cursor.executed[0][0])
         self.assertIn("IS_SSH_FAILURE", snapshot_cursor.executed[0][0])
         self.assertIn("VL_LAST_DISCOVERY_KB", snapshot_cursor.executed[0][0])
         self.assertIn("NU_PROCESSING_QUEUE_FROZEN_FILES_TOTAL", snapshot_cursor.executed[0][0])
         self.assertNotIn("DT_LAST_DISCOVERY,", snapshot_cursor.executed[0][0])
         self.assertEqual(snapshot_cursor.executed[0][1], (42,))
         self.assertEqual(len(monthly_cursor.executed), 1)
-        self.assertIn("FROM HOST_MONTHLY_METRIC", monthly_cursor.executed[0][0])
+        self.assertIn('FROM "HOST_MONTHLY_METRIC"', monthly_cursor.executed[0][0])
         self.assertEqual(monthly_cursor.executed[0][1], (42,))
 
     def test_get_hosts_reads_summary_snapshot_rows(self):
@@ -1197,7 +1208,7 @@ class TestHostService(unittest.TestCase):
 
         with patch.object(self.module.time, "monotonic", return_value=100.0):
             with patch.object(
-                self.module,
+                self.handler,
                 "get_connection_summary",
                 return_value=summary_connection,
             ):
@@ -1210,7 +1221,7 @@ class TestHostService(unittest.TestCase):
         self.assertEqual(rows[0]["BUSY_LABEL"], "Busy")
         self.assertTrue(summary_connection.closed)
         self.assertEqual(len(summary_cursor.executed), 1)
-        self.assertIn("FROM HOST_CURRENT_SNAPSHOT", summary_cursor.executed[0][0])
+        self.assertIn('FROM "BPDATA"."HOST"', summary_cursor.executed[0][0])
         self.assertEqual(summary_cursor.executed[0][1], ["%rfeye%"])
 
     def test_get_host_location_history_exposes_county_and_district_ids(self):
@@ -1275,7 +1286,7 @@ class TestHostService(unittest.TestCase):
 
         with patch.object(self.module.time, "monotonic", return_value=100.0):
             with patch.object(
-                self.module,
+                self.handler,
                 "get_connection_summary",
                 return_value=summary_connection,
             ):
@@ -1292,8 +1303,8 @@ class TestHostService(unittest.TestCase):
         self.assertEqual(payload["location_history"][0]["SPECTRUM_COUNT"], 1925)
         self.assertTrue(summary_connection.closed)
         self.assertEqual(len(summary_cursor.executed), 2)
-        self.assertIn("FROM HOST_LOCATION_TIMELINE_SUMMARY", summary_cursor.executed[1][0])
-        self.assertIn("ORDER BY visit.DT_FIRST_SEEN_AT DESC", summary_cursor.executed[1][0])
+        self.assertIn('FROM "HOST_LOCATION_VISIT"', summary_cursor.executed[1][0])
+        self.assertIn('ORDER BY visit."DT_FIRST_SEEN_AT" DESC NULLS LAST', summary_cursor.executed[1][0])
 
 
 if __name__ == "__main__":

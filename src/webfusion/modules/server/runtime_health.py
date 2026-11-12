@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import psycopg
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -215,6 +216,28 @@ def _read_port(environment_name: str, default: int) -> int:
     return port if 1 <= port <= 65535 else default
 
 
+def _run_postgres_health(*, timeout_seconds: float) -> dict[str, Any]:
+    """Check the configured PostgreSQL service without reading application tables.
+
+    Args:
+        timeout_seconds (float): Maximum connection and statement duration.
+    Returns:
+        dict[str, Any]: PostgreSQL component, status and a list of check
+            dictionaries with name, status and detail strings. No secrets.
+    """
+    from config import PG_CONNINFO
+
+    try:
+        with psycopg.connect(PG_CONNINFO, connect_timeout=max(1, int(timeout_seconds)),
+                             options=f"-c statement_timeout={int(timeout_seconds * 1000)}") as connection:
+            connection.execute("SELECT 1")
+        status, detail = "healthy", "Consulta PostgreSQL respondida."
+    except (psycopg.Error, ValueError):
+        status, detail = "unavailable", "PostgreSQL indisponível na conexão configurada."
+    return {"component": "postgres", "label": "PostgreSQL", "status": status,
+            "checks": [{"name": "Resposta SQL", "status": status, "detail": detail}]}
+
+
 def _overall_status(components: list[dict[str, Any]]) -> str:
     """Summarize the current component states without retaining stale values."""
     statuses = {component.get("status") for component in components}
@@ -246,13 +269,6 @@ def _collect_runtime_health_snapshot() -> dict[str, Any]:
             "port": _read_port("WEBFUSION_RUNTIME_HEALTH_APPCATALOGA_PORT", 22),
             "remote_script": "/RFFusion/src/appCataloga/server_volume/usr/local/bin/appCataloga/shell/appCataloga_runtime_health.sh",
         },
-        {
-            "component": "mariadb",
-            "label": "MariaDB",
-            "host": os.getenv("WEBFUSION_RUNTIME_HEALTH_MARIADB_HOST", "10.88.0.33").strip(),
-            "port": _read_port("WEBFUSION_RUNTIME_HEALTH_MARIADB_PORT", 2828),
-            "remote_script": "/RFFusion/src/mariadb/scripts/mariadb_runtime_health.sh",
-        },
     )
 
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="runtime-health") as executor:
@@ -266,6 +282,7 @@ def _collect_runtime_health_snapshot() -> dict[str, Any]:
             )
             for component in remote_components
         ]
+        futures.append(executor.submit(_run_postgres_health, timeout_seconds=timeout_seconds))
         local_component = _run_local_webfusion_health(timeout_seconds=timeout_seconds)
         remote_results = [future.result() for future in futures]
 

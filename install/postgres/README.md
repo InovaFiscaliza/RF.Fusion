@@ -3,8 +3,9 @@
 O deploy cria o pod `rffusion-postgres` com dois containers: PostgreSQL 17
 Alpine com PostGIS e pgAdmin 4. A imagem PostGIS para PostgreSQL é
 estendida para incluir SSH e identificação de ambiente do RF.Fusion; a imagem
-do pgAdmin também é estendida para incluir SSH. Os dados do banco e as
-configurações do pgAdmin ficam em volumes nomeados separados.
+do pgAdmin também é estendida para incluir SSH. O cluster PostgreSQL fica em
+`.env/postgres-data`, no sistema de arquivos do repositório e fora do Git; as
+chaves SSH e as configurações do pgAdmin ficam em volumes nomeados separados.
 
 O pod também possui o container de infraestrutura `rffusion-postgres-infra`,
 com imagem `registry.k8s.io/pause:3.10` e comando `/pause`. Ele mantém a rede
@@ -80,7 +81,7 @@ install/postgres/linux/deploy-postgres.sh --recreate --reset-schemas
 ```
 
 `--recreate` faz backup, constrói as imagens antes de parar o pod e substitui
-os containers, preservando os quatro volumes nomeados. A imagem PostgreSQL usa
+os containers, preservando o diretório de dados e os volumes nomeados. A imagem PostgreSQL usa
 PostGIS; o build verifica os arquivos da extensão e o deploy verifica sua
 disponibilidade no servidor antes de qualquer reset.
 
@@ -128,10 +129,25 @@ reconcile e não migra dados MariaDB nem consultas dos consumidores.
 
 ## Containers existentes e persistência
 
-Os volumes `rffusion-postgres-data`, `rffusion-postgres-ssh`,
-`rffusion-pgadmin-data` e `rffusion-pgadmin-ssh` guardam os dados, as chaves de
-host SSH separadas e a configuração do pgAdmin. Preserve e valide um backup
-antes de alterar uma instalação existente.
+O cluster fica em `${RFFUSION_REPO_ROOT}/.env/postgres-data`, ou no caminho
+indicado por `RFFUSION_POSTGRES_DATA_DIR`. O volume nomeado ocupava o sistema de
+arquivos dos overlays dos containers, insuficiente para a carga dos dados
+MariaDB. Os volumes `rffusion-postgres-ssh`, `rffusion-pgadmin-data` e
+`rffusion-pgadmin-ssh` guardam as chaves de host SSH e a configuração do pgAdmin.
+Preserve e valide um backup antes de alterar uma instalação existente.
+
+Instalações criadas com o volume `rffusion-postgres-data` são transferidas por
+`--recreate`: depois de remover o pod, e portanto com o servidor parado, um
+container auxiliar da própria imagem copia o volume para o diretório, preservando
+dono e permissões. A cópia só ocorre com o diretório vazio; dados existentes
+nunca são sobrescritos. O volume é mantido para retorno e só deve ser removido
+manualmente, com `podman volume rm rffusion-postgres-data`, após validar o novo
+servidor. Para voltar ao volume, recrie o pod com uma versão anterior deste script.
+
+O diretório de dados pertence ao usuário `postgres` do container, com modo 700,
+e recebe o rótulo SELinux compartilhado `:z`, como o restante do repositório.
+Os demais containers que montam o repositório também enxergam esse caminho.
+Não versione, copie ou edite seus arquivos com o servidor em execução.
 Um container criado antes deste pod pode ocupar o IP e a porta 9084; o deploy
 não o remove. Sua substituição exige planejamento e verificação dos volumes.
 A recriação também altera a senha SSH para o valor do novo deploy.

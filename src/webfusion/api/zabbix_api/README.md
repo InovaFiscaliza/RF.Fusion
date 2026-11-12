@@ -20,7 +20,7 @@ Os consumidores importam `api.zabbix_api`:
 
 Validação da intenção do operador e sincronização de macros com `BPDATA.HOST`
 pertencem aos serviços desses módulos. O cliente não decide estados de tasks
-nem escreve no MariaDB.
+nem escreve no PostgreSQL.
 
 ## Configuração
 

@@ -81,11 +81,12 @@ Observacoes importantes:
 
 O arquivo `.secret` é ignorado pelo Git e precisa ser provisionado por um meio
 seguro no repositório do host antes do deploy. Ele é um arquivo Python que
-define os dicionários `DB_CFG_RFDATA`, `DB_CFG_BPDATA`,
-`DB_CFG_RFFUSION_SUMMARY` e `DB_CFG_WEBFUSION`, consumidos por
-[db.py](../../src/webfusion/db.py). Cada dicionário contém os parâmetros de
-conexão PyMySQL do banco correspondente, como `host`, `port`, `user`, `password`
-e `database`. As credenciais devem apontar para o ambiente sendo instalado.
+define `PG_CONNINFO`, consumido pela configuração de
+[db/connection.py](../../src/webfusion/db/connection.py). É um conninfo libpq explícito para PostgreSQL,
+incluindo banco e autenticação. `RFFUSION_PG_CONNINFO` no ambiente tem prioridade.
+O destino DEV é `10.88.0.35:5432`, banco `postgres`, com os quatro schemas do
+projeto. A imagem instala `psycopg[binary]==3.3.8`; não usa drivers MySQL.
+As credenciais devem apontar para o ambiente sendo instalado.
 O deploy valida a presença, a leitura e o tamanho do arquivo sem executar nem
 exibir seu conteúdo. Essa validação não comprova a validade das conexões.
 

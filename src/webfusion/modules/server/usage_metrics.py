@@ -13,20 +13,34 @@ local development.
 
 from __future__ import annotations
 
+from collections import defaultdict
+from datetime import date, datetime
 import hashlib
 import os
 import re
-from collections import defaultdict
-from datetime import date, datetime
 from threading import RLock
 from typing import BinaryIO
 
-from .config import NGINX_CHECKPOINT_HASH_PREFIX, NGINX_CHECKPOINT_READ_BYTES
+from .config import (
+    NGINX_CHECKPOINT_HASH_PREFIX,
+    NGINX_CHECKPOINT_READ_BYTES,
+    NGINX_DOWNLOAD_LOG_SOURCE as _NGINX_DOWNLOAD_LOG_SOURCE,
+    NGINX_DOWNLOAD_METRIC as _NGINX_DOWNLOAD_METRIC,
+)
+from db.connection import get_connection_summary
+from db.usage_metrics import (
+    load_month_rows_from_db as _load_month_rows_from_db,
+    increment_counter_by_month_in_db as _increment_counter_by_month_in_db,
+    save_checkpoint_with_cursor as _save_checkpoint_with_cursor,
+    lock_checkpoint_for_update as _lock_checkpoint_for_update,
+    increment_nginx_months_with_cursor as _increment_nginx_months_with_cursor,
+    replace_nginx_months_with_cursor as _replace_nginx_months_with_cursor,
+    normalize_reference_month as _normalize_reference_month,
+    reset_persisted_usage_metrics,
+)
 
 
 _COUNTER_LOCK = RLock()
-_COUNTER_TABLE = "WEBFUSION_USAGE_METRIC_MONTHLY"
-_CHECKPOINT_TABLE = "WEBFUSION_USAGE_LOG_CHECKPOINT"
 _METRIC_NAMES = (
     "page_view_count",
     "spectrum_query_count",
@@ -35,8 +49,6 @@ _METRIC_NAMES = (
 )
 _MONTHLY_COUNTERS: dict[tuple[str, str], int] = {}
 _CHECKPOINTS_MEMORY: dict[str, dict[str, object]] = {}
-_NGINX_DOWNLOAD_METRIC = "nginx_download_count"
-_NGINX_DOWNLOAD_LOG_SOURCE = "nginx_access_downloads"
 _NGINX_DOWNLOAD_LOG_PATH = "/var/log/nginx/access.log"
 _NGINX_DOWNLOAD_PATH_PREFIXES = (
     "/downloads/",
@@ -62,14 +74,6 @@ def _ensure_counter_name(counter_name: str) -> None:
 
     if counter_name not in _METRIC_NAMES:
         raise ValueError(f"Unknown usage metric: {counter_name}")
-
-
-def _get_summary_connection():
-    """Open one summary-schema connection only when persistence is needed."""
-
-    from db import get_connection_summary
-
-    return get_connection_summary()
 
 
 def _get_nginx_download_log_path() -> str:
@@ -113,16 +117,6 @@ def _format_reference_month(reference_month: date) -> str:
     """Return the normalized `YYYY-MM-01` storage key for one month."""
 
     return reference_month.replace(day=1).isoformat()
-
-
-def _normalize_reference_month(value) -> date:
-    """Normalize one database or memory month reference into a date object."""
-
-    if isinstance(value, date):
-        return value.replace(day=1)
-
-    parsed = datetime.strptime(str(value or "").strip()[:10], "%Y-%m-%d")
-    return parsed.date().replace(day=1)
 
 
 def _build_metric_row(period_key: str, period_field: str, values: dict[str, int]) -> dict[str, int | str]:
@@ -190,68 +184,6 @@ def _build_snapshot_from_month_rows(month_rows: list[dict[str, object]]) -> dict
     }
 
 
-def _create_metrics_table(cursor) -> None:
-    """Create the persistence table lazily for upgraded environments."""
-
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS `{_COUNTER_TABLE}` (
-          `NA_METRIC_NAME` varchar(64) NOT NULL,
-          `DT_REFERENCE_MONTH` date NOT NULL,
-          `NU_VALUE` bigint(20) NOT NULL DEFAULT 0,
-          `DT_UPDATED_AT` datetime NOT NULL DEFAULT current_timestamp()
-            ON UPDATE current_timestamp(),
-          PRIMARY KEY (`NA_METRIC_NAME`, `DT_REFERENCE_MONTH`),
-          KEY `IX_WEBFUSION_USAGE_MONTH` (`DT_REFERENCE_MONTH`, `NA_METRIC_NAME`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
-        """
-    )
-
-
-def _create_checkpoint_table(cursor) -> None:
-    """Create the NGINX ingestion checkpoint table lazily."""
-
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS `{_CHECKPOINT_TABLE}` (
-          `NA_SOURCE_NAME` varchar(64) NOT NULL,
-          `NA_LOG_PATH` varchar(255) NOT NULL,
-          `NA_FILE_SIGNATURE` varchar(128) DEFAULT NULL,
-          `NU_LAST_OFFSET` bigint(20) NOT NULL DEFAULT 0,
-          `NU_LAST_SIZE` bigint(20) NOT NULL DEFAULT 0,
-          `NU_LAST_MTIME_NS` bigint(20) NOT NULL DEFAULT 0,
-          `DT_UPDATED_AT` datetime NOT NULL DEFAULT current_timestamp()
-            ON UPDATE current_timestamp(),
-          PRIMARY KEY (`NA_SOURCE_NAME`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
-        """
-    )
-
-
-def _load_month_rows_from_db() -> list[dict[str, object]]:
-    """Read all persisted monthly metric rows from ``RFFUSION_SUMMARY``."""
-
-    conn = _get_summary_connection()
-    try:
-        cursor = conn.cursor()
-        _create_metrics_table(cursor)
-        _create_checkpoint_table(cursor)
-        conn.commit()
-        cursor.execute(
-            f"""
-            SELECT
-                `NA_METRIC_NAME` AS metric_name,
-                `DT_REFERENCE_MONTH` AS reference_month,
-                `NU_VALUE` AS value
-            FROM `{_COUNTER_TABLE}`
-            ORDER BY `DT_REFERENCE_MONTH` DESC, `NA_METRIC_NAME`
-            """
-        )
-        return cursor.fetchall() or []
-    finally:
-        conn.close()
-
-
 def _increment_counter_in_db(counter_name: str) -> int:
     """Increase one durable metric and return its all-time total."""
 
@@ -261,42 +193,6 @@ def _increment_counter_in_db(counter_name: str) -> int:
         reference_month=reference_month,
         amount=1,
     )
-
-
-def _increment_counter_by_month_in_db(
-    *,
-    counter_name: str,
-    reference_month: date,
-    amount: int,
-) -> int:
-    """Increase one durable metric for one specific month."""
-
-    normalized_month = reference_month.replace(day=1)
-    conn = _get_summary_connection()
-    try:
-        cursor = conn.cursor()
-        _create_metrics_table(cursor)
-        cursor.execute(
-            f"""
-            INSERT INTO `{_COUNTER_TABLE}` (`NA_METRIC_NAME`, `DT_REFERENCE_MONTH`, `NU_VALUE`)
-            VALUES (%s, %s, %s)
-            ON DUPLICATE KEY UPDATE `NU_VALUE` = `NU_VALUE` + VALUES(`NU_VALUE`)
-            """,
-            (counter_name, normalized_month, int(amount)),
-        )
-        cursor.execute(
-            f"""
-            SELECT COALESCE(SUM(`NU_VALUE`), 0) AS total_value
-            FROM `{_COUNTER_TABLE}`
-            WHERE `NA_METRIC_NAME` = %s
-            """,
-            (counter_name,),
-        )
-        row = cursor.fetchone() or {}
-        conn.commit()
-        return int(row.get("total_value") or 0)
-    finally:
-        conn.close()
 
 
 def _load_month_rows_from_memory() -> list[dict[str, object]]:
@@ -344,137 +240,6 @@ def _increment_counter_by_month_in_memory(
             value
             for (metric_name, _), value in _MONTHLY_COUNTERS.items()
             if metric_name == counter_name
-        )
-
-
-def _save_checkpoint_with_cursor(
-    cursor,
-    *,
-    source_name: str,
-    log_path: str,
-    file_signature: str,
-    last_offset: int,
-    last_size: int,
-    last_mtime_ns: int,
-) -> None:
-    """Save one checkpoint inside an existing transaction."""
-
-    cursor.execute(
-        f"""
-        INSERT INTO `{_CHECKPOINT_TABLE}` (
-            `NA_SOURCE_NAME`,
-            `NA_LOG_PATH`,
-            `NA_FILE_SIGNATURE`,
-            `NU_LAST_OFFSET`,
-            `NU_LAST_SIZE`,
-            `NU_LAST_MTIME_NS`
-        )
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            `NA_LOG_PATH` = VALUES(`NA_LOG_PATH`),
-            `NA_FILE_SIGNATURE` = VALUES(`NA_FILE_SIGNATURE`),
-            `NU_LAST_OFFSET` = VALUES(`NU_LAST_OFFSET`),
-            `NU_LAST_SIZE` = VALUES(`NU_LAST_SIZE`),
-            `NU_LAST_MTIME_NS` = VALUES(`NU_LAST_MTIME_NS`)
-        """,
-        (
-            source_name,
-            log_path,
-            file_signature,
-            int(last_offset),
-            int(last_size),
-            int(last_mtime_ns),
-        ),
-    )
-
-
-def _lock_checkpoint_for_update(cursor, *, log_path: str) -> dict[str, object]:
-    """Lock the NGINX checkpoint before reading its unseen log range."""
-
-    _create_checkpoint_table(cursor)
-    cursor.execute(
-        f"""
-        INSERT INTO `{_CHECKPOINT_TABLE}` (`NA_SOURCE_NAME`, `NA_LOG_PATH`)
-        VALUES (%s, %s)
-        ON DUPLICATE KEY UPDATE `NA_SOURCE_NAME` = VALUES(`NA_SOURCE_NAME`)
-        """,
-        (_NGINX_DOWNLOAD_LOG_SOURCE, log_path),
-    )
-    cursor.execute(
-        f"""
-        SELECT
-            `NA_SOURCE_NAME` AS source_name,
-            `NA_LOG_PATH` AS log_path,
-            `NA_FILE_SIGNATURE` AS file_signature,
-            `NU_LAST_OFFSET` AS last_offset,
-            `NU_LAST_SIZE` AS last_size,
-            `NU_LAST_MTIME_NS` AS last_mtime_ns
-        FROM `{_CHECKPOINT_TABLE}`
-        WHERE `NA_SOURCE_NAME` = %s
-        FOR UPDATE
-        """,
-        (_NGINX_DOWNLOAD_LOG_SOURCE,),
-    )
-    checkpoint = cursor.fetchone() or {}
-    signature = str(checkpoint.get("file_signature") or "")
-    if signature and not signature.startswith(NGINX_CHECKPOINT_HASH_PREFIX):
-        cursor.execute(
-            f"SELECT DT_REFERENCE_MONTH, NU_VALUE FROM `{_COUNTER_TABLE}` WHERE NA_METRIC_NAME = %s",
-            (_NGINX_DOWNLOAD_METRIC,),
-        )
-        checkpoint["legacy_month_counts"] = {
-            _normalize_reference_month(row["DT_REFERENCE_MONTH"]): int(row["NU_VALUE"])
-            for row in cursor.fetchall()
-        }
-    return checkpoint
-
-
-def _increment_nginx_months_with_cursor(
-    cursor,
-    counts_by_month: dict[date, int],
-) -> None:
-    """Add parsed download counts inside the checkpoint transaction."""
-
-    for reference_month, value in counts_by_month.items():
-        cursor.execute(
-            f"""
-            INSERT INTO `{_COUNTER_TABLE}` (`NA_METRIC_NAME`, `DT_REFERENCE_MONTH`, `NU_VALUE`)
-            VALUES (%s, %s, %s)
-            ON DUPLICATE KEY UPDATE `NU_VALUE` = `NU_VALUE` + VALUES(`NU_VALUE`)
-            """,
-            (
-                _NGINX_DOWNLOAD_METRIC,
-                reference_month.replace(day=1),
-                int(value),
-            ),
-        )
-
-
-def _replace_nginx_months_with_cursor(
-    cursor,
-    counts_by_month: dict[date, int],
-) -> None:
-    """Replace durable download counts with one complete log reconciliation."""
-
-    cursor.execute(
-        f"""
-        DELETE FROM `{_COUNTER_TABLE}`
-        WHERE `NA_METRIC_NAME` = %s
-        """,
-        (_NGINX_DOWNLOAD_METRIC,),
-    )
-
-    for reference_month, value in counts_by_month.items():
-        cursor.execute(
-            f"""
-            INSERT INTO `{_COUNTER_TABLE}` (`NA_METRIC_NAME`, `DT_REFERENCE_MONTH`, `NU_VALUE`)
-            VALUES (%s, %s, %s)
-            """,
-            (
-                _NGINX_DOWNLOAD_METRIC,
-                reference_month.replace(day=1),
-                int(value),
-            ),
         )
 
 
@@ -691,11 +456,10 @@ def _read_nginx_download_counts(
 def _sync_nginx_download_metrics_in_db(log_path: str) -> None:
     """Commit new download counts and their checkpoint together."""
 
-    conn = _get_summary_connection()
+    conn = get_connection_summary()
     try:
         cursor = conn.cursor()
-        _create_metrics_table(cursor)
-        conn.begin()
+
         checkpoint = _lock_checkpoint_for_update(cursor, log_path=log_path)
         counts_by_month, next_checkpoint = _read_nginx_download_counts(
             log_path,
@@ -762,11 +526,10 @@ def sync_nginx_download_metrics() -> None:
 def _reconcile_nginx_download_metrics_in_db(log_path: str) -> dict[str, int]:
     """Replace download metrics with a complete read of the active log."""
 
-    conn = _get_summary_connection()
+    conn = get_connection_summary()
     try:
         cursor = conn.cursor()
-        _create_metrics_table(cursor)
-        conn.begin()
+
         _lock_checkpoint_for_update(cursor, log_path=log_path)
         counts_by_month, next_checkpoint = _read_nginx_download_counts(log_path, None)
 
@@ -894,15 +657,6 @@ def reset_usage_metrics() -> None:
         return
 
     try:
-        conn = _get_summary_connection()
-        try:
-            cursor = conn.cursor()
-            _create_metrics_table(cursor)
-            _create_checkpoint_table(cursor)
-            cursor.execute(f"DELETE FROM `{_COUNTER_TABLE}`")
-            cursor.execute(f"DELETE FROM `{_CHECKPOINT_TABLE}`")
-            conn.commit()
-        finally:
-            conn.close()
+        reset_persisted_usage_metrics()
     except Exception:
         return

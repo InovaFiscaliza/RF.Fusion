@@ -85,7 +85,7 @@ def load_maintenance_routes():
         method="GET",
     )
 
-    fake_db = ModuleType("db")
+    fake_db = ModuleType("db.connection")
     fake_db.get_connection_bpdata = lambda: FakeDB()
 
     fake_service = ModuleType("modules.tasks.service")
@@ -268,7 +268,7 @@ def load_maintenance_routes():
     fake_usage_metrics.record_page_view = lambda: None
 
     sys.modules["flask"] = fake_flask
-    sys.modules["db"] = fake_db
+    sys.modules["db.connection"] = fake_db
     sys.modules["modules.tasks.service"] = fake_service
     sys.modules["modules.server.usage_metrics"] = fake_usage_metrics
     sys.modules.pop("modules.tasks.blueprints", None)

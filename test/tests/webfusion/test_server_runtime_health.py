@@ -1,6 +1,7 @@
 """Unit tests for the database-independent container health collector."""
 
 import importlib
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -88,6 +89,28 @@ class TestRuntimeHealth(unittest.TestCase):
         )
 
         self.assertEqual(status, "degraded")
+
+    def test_postgres_probe_is_bounded_and_does_not_expose_driver_details(self):
+        """Keep database health independent from tables and raw error messages.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        configuration = SimpleNamespace(PG_CONNINFO="dbname=unit_test")
+        with patch.dict(sys.modules, {"config": configuration}):
+            with patch.object(self.health.psycopg, "connect") as connect:
+                result = self.health._run_postgres_health(timeout_seconds=2)
+                self.assertEqual(result["component"], "postgres")
+                self.assertEqual(result["status"], "healthy")
+                self.assertEqual(connect.call_args.kwargs["connect_timeout"], 2)
+                connect.return_value.__enter__.return_value.execute.assert_called_once_with("SELECT 1")
+            with patch.object(self.health.psycopg, "connect",
+                              side_effect=self.health.psycopg.OperationalError("private driver detail")):
+                result = self.health._run_postgres_health(timeout_seconds=2)
+                self.assertEqual(result["status"], "unavailable")
+                self.assertNotIn("private driver detail", json.dumps(result))
 
     def test_snapshot_cache_reuses_one_collector_result(self):
         snapshot = {

@@ -4,7 +4,7 @@ from flask import Blueprint, Response, current_app, jsonify, request
 from werkzeug.exceptions import BadRequest, HTTPException, UnsupportedMediaType
 
 from . import config as k
-from .db_handler import AppAnaliseDB
+from db.appanalise import AppAnaliseDB
 from .filters import Filters, parse_filters
 from .service import get_file_count, get_file_page, table_payload
 

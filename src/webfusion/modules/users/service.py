@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from auth.db_users import (
+from db.users import (
     create_webfusion_user,
     delete_webfusion_user,
     get_webfusion_user,

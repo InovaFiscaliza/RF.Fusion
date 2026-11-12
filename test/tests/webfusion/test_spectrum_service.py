@@ -27,12 +27,12 @@ MODULE_PATH = Path(__file__).resolve().parents[3] / "src/webfusion/modules/spect
 
 def load_spectrum_service():
     """Import the spectrum service with lightweight DB stubs only."""
-    stub_db = types.ModuleType("db")
+    stub_db = types.ModuleType("db.connection")
     stub_db.get_connection_rfdata = lambda: None
     stub_db.get_connection_summary = lambda: None
 
-    previous_db = sys.modules.get("db")
-    sys.modules["db"] = stub_db
+    previous_db = sys.modules.get("db.connection")
+    sys.modules["db.connection"] = stub_db
 
     try:
         spec = importlib.util.spec_from_file_location(
@@ -47,9 +47,9 @@ def load_spectrum_service():
         return module
     finally:
         if previous_db is not None:
-            sys.modules["db"] = previous_db
+            sys.modules["db.connection"] = previous_db
         else:
-            sys.modules.pop("db", None)
+            sys.modules.pop("db.connection", None)
 
 
 class TestSpectrumService(unittest.TestCase):
@@ -58,6 +58,7 @@ class TestSpectrumService(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_spectrum_service()
+        cls.handler = sys.modules["db.spectrum"]
 
     def test_selection_snapshot_keeps_hierarchy_and_exact_detail_filters(self) -> None:
         """Keep broad menus and narrowly scoped availability in one snapshot.
@@ -105,7 +106,7 @@ class TestSpectrumService(unittest.TestCase):
         connection = MagicMock()
         cursor = connection.cursor.return_value
         cursor.fetchall.return_value = []
-        with patch.object(self.module, "get_connection", return_value=connection):
+        with patch.object(self.handler, "get_connection_rfdata", return_value=connection):
             self.assertEqual(self.module._load_selection_matches(
                 state_id="35", start_date="2025-01-01", end_date="2025-12-31",
                 freq_start=70, freq_end=110, description="PMRD",
@@ -113,13 +114,13 @@ class TestSpectrumService(unittest.TestCase):
         sql, params = cursor.execute.call_args.args
         self.assertIn("LIMIT 1) IS NOT NULL", sql)
         self.assertNotIn("COUNT(", sql)
-        self.assertIn("f.NU_FREQ_START >= %s", sql)
-        self.assertIn("f.NU_FREQ_END <= %s", sql)
+        self.assertIn('f."NU_FREQ_START" >= %s', sql)
+        self.assertIn('f."NU_FREQ_END" <= %s', sql)
         self.assertEqual(params, ["35", "2025-01-01", "2025-12-31 23:59:59", 70, 110, "%PMRD%"])
         connection.close.assert_called_once()
         connection.reset_mock()
         cursor.execute.side_effect = RuntimeError("Unavailable")
-        with patch.object(self.module, "get_connection", return_value=connection), self.assertRaises(RuntimeError):
+        with patch.object(self.handler, "get_connection_rfdata", return_value=connection), self.assertRaises(RuntimeError):
             self.module._load_selection_matches(state_id="35")
         connection.close.assert_called_once()
 
@@ -197,8 +198,14 @@ class TestSpectrumService(unittest.TestCase):
             for summary in summaries:
                 summary.assert_called_once()
 
+    def test_fact_locality_label_quotes_the_state_code_column(self):
+        sql = self.handler._build_locality_display_sql()
+
+        self.assertNotIn("st.LC_STATE", sql)
+        self.assertEqual(sql.count('st."LC_STATE"'), 4)
+
     def test_build_fact_filters_uses_containment_for_full_frequency_interval(self):
-        where_clauses, params = self.module._build_fact_filters(
+        where_clauses, params = self.handler._build_fact_filters(
             freq_start=100.0,
             freq_end=200.0,
             fact_alias="f",
@@ -207,32 +214,32 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(
             where_clauses,
             [
-                "f.NU_FREQ_START >= %s",
-                "f.NU_FREQ_END <= %s",
+                'f."NU_FREQ_START" >= %s',
+                'f."NU_FREQ_END" <= %s',
             ],
         )
         self.assertEqual(params, [100.0, 200.0])
 
     def test_build_fact_filters_uses_containment_with_single_frequency_limit(self):
-        lower_where, lower_params = self.module._build_fact_filters(
+        lower_where, lower_params = self.handler._build_fact_filters(
             freq_start=100.0,
             fact_alias="f",
         )
-        upper_where, upper_params = self.module._build_fact_filters(
+        upper_where, upper_params = self.handler._build_fact_filters(
             freq_end=200.0,
             fact_alias="f",
         )
 
-        self.assertEqual(lower_where, ["f.NU_FREQ_START >= %s"])
+        self.assertEqual(lower_where, ['f."NU_FREQ_START" >= %s'])
         self.assertEqual(lower_params, [100.0])
-        self.assertEqual(upper_where, ["f.NU_FREQ_END <= %s"])
+        self.assertEqual(upper_where, ['f."NU_FREQ_END" <= %s'])
         self.assertEqual(upper_params, [200.0])
 
     def test_append_summary_geo_filters_uses_materialized_district_id(self):
         where_clauses = []
         params = []
 
-        self.module._append_summary_geo_filters(
+        self.handler._append_summary_geo_filters(
             where_clauses,
             params,
             equipment_id=133,
@@ -240,16 +247,15 @@ class TestSpectrumService(unittest.TestCase):
             district_id=181,
             site_id=237,
             summary_alias="sm",
-            site_alias="unused_alias",
         )
 
         self.assertEqual(
             where_clauses,
             [
-                "sm.FK_EQUIPMENT = %s",
-                "sm.ID_STATE = %s",
-                "sm.FK_DISTRICT = %s",
-                "sm.FK_SITE = %s",
+                'sm."FK_EQUIPMENT" = %s',
+                'sm."ID_STATE" = %s',
+                'sm."FK_DISTRICT" = %s',
+                'sm."FK_SITE" = %s',
             ],
         )
         self.assertEqual(params, [133, 32, 181, 237])
@@ -272,7 +278,7 @@ class TestSpectrumService(unittest.TestCase):
         connection = MagicMock()
         connection.cursor.return_value = cursor
         with ExitStack() as stack:
-            stack.enter_context(patch.object(self.module, "get_connection", return_value=connection))
+            stack.enter_context(patch.object(self.handler, "get_connection_rfdata", return_value=connection))
             stack.enter_context(patch.object(self.module, "_get_cached_query", return_value=None))
             stack.enter_context(patch.object(self.module, "_set_cached_query"))
             stack.enter_context(patch.object(self.module, "_set_cached_query_with_ttl"))
@@ -283,20 +289,20 @@ class TestSpectrumService(unittest.TestCase):
 
         filter_query, filter_params = cursor.execute.call_args_list[0].args
         metadata_query, metadata_params = cursor.execute.call_args_list[1].args
-        self.assertIn("fs.DT_TIME_START <= %s", filter_query)
+        self.assertIn('fs."DT_TIME_START" <= %s', filter_query)
         self.assertIn("2026-10-01 23:59:59", filter_params)
-        self.assertEqual(metadata_params, ())
+        self.assertEqual(metadata_params, ("reposfi",))
         # Only file selection reads the filtered set. Aggregates must use the
         # unfiltered fact rows reached through every link of a matching file.
-        self.assertEqual(metadata_query.count(self.module.FILE_FILTER_TEMP_TABLE), 1)
-        self.assertIn("ON b.FK_FILE = repos.ID_FILE", metadata_query)
-        self.assertIn("JOIN FACT_SPECTRUM f", metadata_query)
-        self.assertIn("ON f.ID_SPECTRUM = b.FK_SPECTRUM", metadata_query)
-        self.assertIn("MIN(f.DT_TIME_START)", metadata_query)
-        self.assertIn("MAX(f.DT_TIME_END)", metadata_query)
-        self.assertIn("MAX(f.NU_FREQ_END)", metadata_query)
-        self.assertIn("COUNT(DISTINCT b.FK_SPECTRUM) AS NU_SPECTRA", metadata_query)
-        self.assertIn("ORDER BY ctx.NU_SPECTRA DESC", metadata_query)
+        self.assertEqual(metadata_query.count(self.handler.SPECTRUM_FILTER_TEMP_TABLE), 1)
+        self.assertIn('ON b."FK_FILE" = repos."ID_FILE"', metadata_query)
+        self.assertIn('JOIN "FACT_SPECTRUM" f', metadata_query)
+        self.assertIn('ON f."ID_SPECTRUM" = b."FK_SPECTRUM"', metadata_query)
+        self.assertIn('MIN(f."DT_TIME_START")', metadata_query)
+        self.assertIn('MAX(f."DT_TIME_END")', metadata_query)
+        self.assertIn('MAX(f."NU_FREQ_END")', metadata_query)
+        self.assertIn('COUNT(DISTINCT b."FK_SPECTRUM") AS "NU_SPECTRA"', metadata_query)
+        self.assertIn('ORDER BY ctx."NU_SPECTRA" DESC', metadata_query)
         self.assertEqual(total, 1)
         self.assertEqual(rows[0]["DT_TIME_END"], "05-10-2026 05:44:26")
         self.assertEqual(rows[0]["NU_FREQ_END"], 410.0)
@@ -360,7 +366,7 @@ class TestSpectrumService(unittest.TestCase):
 
         fake_cursor = FakeCursor()
         fake_connection = FakeConnection(fake_cursor)
-        self.module.get_connection = lambda: fake_connection
+        self.handler.get_connection_rfdata = lambda: fake_connection
         self.module._SPECTRUM_QUERY_CACHE.clear()
 
         rows, total = self.module.get_spectrum_file_data(
@@ -378,15 +384,15 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(len(fake_cursor.executed), 2)
         self.assertIn("CREATE TEMPORARY TABLE", fake_cursor.executed[0][0])
         self.assertIn("tmp_webfusion_filtered_spectra", fake_cursor.executed[0][0])
-        self.assertIn("RFFUSION_SUMMARY.SITE_EQUIPMENT_OBS_SUMMARY", fake_cursor.executed[0][0])
-        self.assertNotIn("JOIN DIM_SPECTRUM_SITE", fake_cursor.executed[0][0])
+        self.assertIn('"RFFUSION_SUMMARY"."SITE_EQUIPMENT_METRIC"', fake_cursor.executed[0][0])
+        self.assertNotIn('JOIN "DIM_SPECTRUM_SITE"', fake_cursor.executed[0][0])
         self.assertEqual(
             fake_cursor.executed[0][1],
             [338, 50.0, 120.0],
         )
         self.assertNotIn("LIMIT %s OFFSET %s", fake_cursor.executed[1][0])
         self.assertNotIn("FACT_SPECTRUM fs", fake_cursor.executed[1][0])
-        self.assertEqual(fake_cursor.executed[1][1], ())
+        self.assertEqual(fake_cursor.executed[1][1], ("reposfi",))
 
         cached_rows, cached_total = self.module.get_spectrum_file_data(
             equipment_id=338,
@@ -448,7 +454,7 @@ class TestSpectrumService(unittest.TestCase):
 
         fake_cursor = FakeCursor()
         fake_connection = FakeConnection(fake_cursor)
-        self.module.get_connection = lambda: fake_connection
+        self.handler.get_connection_rfdata = lambda: fake_connection
         self.module._SPECTRUM_QUERY_CACHE.clear()
 
         rows = self.module.get_spectrum_locality_options(
@@ -461,11 +467,13 @@ class TestSpectrumService(unittest.TestCase):
 
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["ID_SITE"], 12)
+        self.assertEqual(rows[0]["DATE_START"], "01-01-2024")
+        self.assertEqual(rows[0]["DATE_END"], "31-01-2024 23:59:59")
         self.assertEqual(rows[0]["OPTION_LABEL"], "Brasilia (site 12)")
         self.assertEqual(rows[1]["OPTION_LABEL"], "Brasilia (site 13)")
         self.assertIn("FACT_SPECTRUM", fake_cursor.executed[0][0])
-        self.assertIn("RFFUSION_SUMMARY.SITE_EQUIPMENT_OBS_SUMMARY", fake_cursor.executed[0][0])
-        self.assertNotIn("JOIN DIM_SPECTRUM_SITE", fake_cursor.executed[0][0])
+        self.assertIn('"RFFUSION_SUMMARY"."SITE_EQUIPMENT_METRIC"', fake_cursor.executed[0][0])
+        self.assertNotIn('JOIN "DIM_SPECTRUM_SITE"', fake_cursor.executed[0][0])
         self.assertEqual(
             fake_cursor.executed[0][1],
             [99, "2024-01-01", 70.0, 120.0, "%PMEC%"],
@@ -505,7 +513,7 @@ class TestSpectrumService(unittest.TestCase):
 
         fake_cursor = FakeCursor()
         fake_connection = FakeConnection(fake_cursor)
-        self.module.get_connection_summary = lambda: fake_connection
+        self.handler.get_connection_summary = lambda: fake_connection
 
         row = self.module.get_spectrum_site_option(237)
 
@@ -513,7 +521,7 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(row["ID_DISTRICT"], 181)
         self.assertEqual(row["ID_STATE"], 32)
         self.assertEqual(row["STATE_CODE"], "ES")
-        self.assertIn("RFFUSION_SUMMARY.MAP_SITE_SUMMARY", fake_cursor.executed[0][0])
+        self.assertIn('"RFDATA"."DIM_SPECTRUM_SITE"', fake_cursor.executed[0][0])
         self.assertEqual(fake_cursor.executed[0][1], (237,))
         self.assertTrue(fake_connection.closed)
 
@@ -552,7 +560,7 @@ class TestSpectrumService(unittest.TestCase):
                 pass
 
         fake_cursor = FakeCursor()
-        self.module.get_connection = lambda: FakeConnection(fake_cursor)
+        self.handler.get_connection_rfdata = lambda: FakeConnection(fake_cursor)
         self.module._SPECTRUM_QUERY_CACHE.clear()
 
         rows = self.module.get_spectra_by_file_id(
@@ -567,8 +575,8 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(rows[0]["IS_MATCH"], 1)
         self.assertIn("CASE", fake_cursor.executed[0][0])
         self.assertIn("IS_MATCH", fake_cursor.executed[0][0])
-        self.assertIn("RFFUSION_SUMMARY.SITE_EQUIPMENT_OBS_SUMMARY", fake_cursor.executed[0][0])
-        self.assertNotIn("JOIN DIM_SPECTRUM_SITE", fake_cursor.executed[0][0])
+        self.assertIn('"RFFUSION_SUMMARY"."SITE_EQUIPMENT_METRIC"', fake_cursor.executed[0][0])
+        self.assertNotIn('JOIN "DIM_SPECTRUM_SITE"', fake_cursor.executed[0][0])
         self.assertEqual(
             fake_cursor.executed[0][1],
             [338, 50.0, 120.0, "%PMRD%", 436239],
@@ -602,7 +610,7 @@ class TestSpectrumService(unittest.TestCase):
                 pass
 
         fake_cursor = FakeCursor()
-        self.module.get_connection_summary = lambda: FakeConnection(fake_cursor)
+        self.handler.get_connection_summary = lambda: FakeConnection(fake_cursor)
         self.module._SPECTRUM_QUERY_CACHE.clear()
 
         row = self.module.get_spectrum_site_availability_range(equipment_id=7, site_id=44)
@@ -610,7 +618,7 @@ class TestSpectrumService(unittest.TestCase):
         self.assertEqual(row["ID_SITE"], 44)
         self.assertEqual(row["LOCALITY_LABEL"], "Manaus/AM")
         self.assertEqual(row["SPECTRUM_COUNT"], 7)
-        self.assertIn("SITE_EQUIPMENT_OBS_SUMMARY", fake_cursor.executed[0][0])
+        self.assertIn('"RFFUSION_SUMMARY"."SITE_EQUIPMENT_METRIC"', fake_cursor.executed[0][0])
         self.assertEqual(fake_cursor.executed[0][1], (7, 44))
 
 

@@ -1,7 +1,7 @@
 # Planejamento da migração para PostgreSQL
 
 Situação: validação do fluxo completo com estações e appAnalise, adaptação dos
-consumidores WebFusion e transferência de dados permanecem pendentes. O modelo do Summary
+consumidores WebFusion e carga completa dos dados permanecem pendentes. O modelo do Summary
 segue o [contrato PostgreSQL](../architecture/SUMMARY_POSTGRESQL.md).
 A execução dos demais lotes não está autorizada por este documento.
 O desenvolvimento ocorre no branch `postgres-sql`; alterações
@@ -178,7 +178,7 @@ completo com estações e appAnalise. Manter SQL na camada de banco, fornecer
 autenticação PostgreSQL pelo ambiente dos processos e usar
 `RFFUSION_PG_CONNINFO` quando for necessário substituir o destino do `config.py`.
 
-No WebFusion, adaptar `db.py`, autenticação, handlers SQL dos módulos e
+No WebFusion, adaptar `db/connection.py`, autenticação, handlers SQL de `db/` e
 `api/appAnalise_api`. Preservar formatos de linhas, aliases, filtros, paginação,
 ordenação e respostas HTTP/MATLAB. Revisar cache, tabelas temporárias e SQL
 entre schemas, além da fábrica de conexão.
@@ -245,9 +245,12 @@ inclui mudanças em produção nem eliminação de credenciais de outras integra
 ### 2.1 Dump, conversão e carga de dados
 
 Preparar backup consistente e testar sua restauração no MariaDB. O dump SQL
-MariaDB não é diretamente restaurável no PostgreSQL: selecionar um processo
-reproduzível de extração, transformação e carga, usando o DDL PostgreSQL validado.
-A ferramenta será escolhida após o inventário, sem presumir compatibilidade.
+MariaDB não é diretamente restaurável no PostgreSQL. A extração, transformação
+e carga usam a [ferramenta de migração](../../src/postgres/migration/README.md),
+que lê o dump lógico em fluxo e aplica o DDL PostgreSQL validado. A carga completa
+do backup de 05/11/2026 depende do cluster em `.env/postgres-data`, no sistema de
+arquivos do repositório: o volume nomeado anterior dividia 20 GiB com os
+overlays dos containers e não comportava dados, índices e WAL.
 
 Ensaiar a carga em destino isolado, preservando IDs, vínculos e histórico.
 Definir ordem de tabelas, transformação de tipos, tratamento de dados inválidos,

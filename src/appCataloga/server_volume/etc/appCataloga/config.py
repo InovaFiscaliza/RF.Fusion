@@ -49,7 +49,7 @@ END_TAG                 = "</json>"
 #------------------------------------------
 SERVER_NAME             = "10.88.0.35"
 DB_PORT                 = 5432
-PG_DATABASE_NAME        = "postgres"
+PG_DATABASE_NAME        = "rffusion_test_migracao"  # DEV: database loaded from the MariaDB dump
 DB_USER_NAME_PG         = secret.get("DB_USER_NAME_PG", "postgres")
 DB_PASSWORD_PG          = secret.get("DB_PASSWORD_PG")
 PG_USER_NAME            = os.environ.get("PGUSER") or DB_USER_NAME_PG
