@@ -201,7 +201,8 @@ class AppAnaliseConnection:
         last_response_text (str | None): Latest decoded socket response.
         last_payload (dict[str, Any] | None): Latest decoded protocol payload.
         last_answer (dict[str, Any] | None): Latest accepted ``Answer`` object.
-        last_output_meta (dict[str, Any] | None): Latest resolved artifact metadata.
+        last_output_meta (dict[str, Any] | None): Latest resolved artifact
+            metadata, including its content MD5; initially None.
         _outage_tracker (_OutageTracker): State for preflight warning throttling.
     """
 
@@ -286,10 +287,17 @@ class AppAnaliseConnection:
             tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
                 Normalized ``bin_data``, output metadata, accepted ``Answer``,
                 and the decoded protocol payload, in that order.
+                Output metadata includes required file_path, file_name,
+                extension, full_path (str), size_kb (int), dt_created and
+                dt_modified (datetime), and md5 (str, 32 lowercase hexadecimal
+                characters) of the resolved source or exported artifact.
 
         Raises:
             errors.BinValidationError: If the file, protocol, or payload is invalid.
             errors.ExternalServiceTransientError: If socket transport fails.
+            errors.AppAnaliseFileUnavailableError: If the output is unavailable.
+            OSError: If output checksum reading fails; ``file_meta`` on the
+                exception identifies the resolved artifact for quarantine.
         """
         full_path = os.path.join(file_path, file_name)
         self._reset_last_result()
@@ -316,7 +324,8 @@ class AppAnaliseConnection:
 
         # Phase 4: resolve and stabilize the filesystem artifact owned by this
         # request. Export mode points to `Answer.General`; otherwise the source
-        # BIN itself remains the authoritative file.
+        # BIN itself remains the authoritative file. The parser computes the
+        # MD5 of that resolved artifact after its size has stabilized.
         self.last_output_meta = self.payload_parser.resolve_output_file(
             answer=self.last_answer,
             file_path=file_path,

@@ -34,6 +34,13 @@ POSTGRES_ONLY_UNIQUE_KEYS = {
     ("RFDATA", "DIM_SPECTRUM_FILE"): (("NA_VOLUME", "NA_PATH", "NA_FILE"), False),
 }
 
+# Dump columns removed from the PostgreSQL schema. They are not loaded and must
+# be NULL in every row; any stored value blocks the migration for review.
+# File checksums live only in FILE_TASK_HISTORY in PostgreSQL.
+DROPPED_COLUMNS = {
+    ("BPDATA", "FILE_TASK"): frozenset({"NU_HOST_FILE_MD5", "NA_SERVER_FILE_MD5"}),
+}
+
 COPY_BUFFER_CHARS = 8 * 1024 * 1024
 PROGRESS_ROWS = 1_000_000
 GUARD_CHECK_ROWS = 250_000

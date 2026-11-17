@@ -12,6 +12,7 @@ What is covered here:
 
 from __future__ import annotations
 
+import hashlib
 import io
 import signal
 import tempfile
@@ -359,6 +360,10 @@ class BackupFlowTests(unittest.TestCase):
             )
             self.assertEqual(final_file.stat().st_size, 5 * 1024)
             self.assertEqual(
+                transfer_result["host_md5"],
+                hashlib.md5(b"x" * (5 * 1024)).hexdigest(),
+            )
+            self.assertEqual(
                 fake_sftp.transfer_kwargs["max_seconds"],
                 backup_worker.k.BACKUP_TRANSFER_MAX_SECONDS,
             )
@@ -407,10 +412,22 @@ class BackupFlowTests(unittest.TestCase):
                 "refreshed_metadata": refreshed_metadata,
                 "updated_size_kb": 7.0,
                 "elapsed_sec": 1.23,
+                "host_md5": "0123456789abcdef0123456789abcdef",
             },
             elapsed_sec=1.23,
         )
 
+        # Checksums belong to the history only; the live queue never stores them.
+        self.assertEqual(
+            fake_db.file_history_updates[0]["NU_HOST_FILE_MD5"],
+            "0123456789abcdef0123456789abcdef",
+        )
+        self.assertEqual(
+            fake_db.file_history_updates[0]["NU_SERVER_FILE_MD5"],
+            "0123456789abcdef0123456789abcdef",
+        )
+        self.assertNotIn("NU_HOST_FILE_MD5", fake_db.file_task_updates[0])
+        self.assertNotIn("NU_SERVER_FILE_MD5", fake_db.file_task_updates[0])
         self.assertEqual(fake_db.file_history_updates[0]["NA_EXTENSION_HOST"], ".zip")
         self.assertEqual(fake_db.file_history_updates[0]["VL_FILE_SIZE_KB_HOST"], 7.0)
         self.assertEqual(
@@ -431,6 +448,128 @@ class BackupFlowTests(unittest.TestCase):
             fake_db.file_task_updates[0]["DT_FILE_MODIFIED_HOST"],
             refreshed_metadata.DT_FILE_MODIFIED,
         )
+
+    def test_do_work_returns_checksum_from_sftp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sftp = MagicMock()
+            sftp.transfer_file_task.return_value = {
+                "refreshed_metadata": MagicMock(),
+                "updated_size_kb": 1,
+                "file_was_transferred": True,
+                "host_md5": hashlib.md5(b"zip payload").hexdigest(),
+            }
+            task = {
+                "host_id": 11,
+                "file_task_id": 22,
+                "input_filename": "/remote/sample.zip",
+                "host_file_path": "/remote",
+                "host_file_name": "sample.zip",
+                "server_file_path": tmpdir,
+                "server_filename": "server.zip",
+                "discovery_snapshot": {},
+            }
+
+            with patch.object(backup_worker, "log", FakeLog()):
+                result = backup_worker._do_work(FakeTaskDB(), sftp, task)
+
+        self.assertEqual(result["host_md5"], hashlib.md5(b"zip payload").hexdigest())
+
+    def test_transfer_hashes_downloaded_and_reused_copies_once(self) -> None:
+        """Return a content checksum for both successful transfer paths.
+
+        Args:
+            None.
+        Returns:
+            None. Files are isolated in temporary staging directories.
+        """
+        ssh_module = sys.modules[backup_worker.sftpConnection.__module__]
+        payload = b"x" * 1024
+        for reuse_copy in (False, True):
+            with self.subTest(reuse_copy=reuse_copy), tempfile.TemporaryDirectory() as tmpdir:
+                final_file = Path(tmpdir, "server.bin")
+                if reuse_copy:
+                    final_file.write_bytes(payload)
+                sftp = MagicMock(spec=backup_worker.sftpConnection)
+                sftp.log = FakeLog()
+                sftp._base_log_fields.return_value = {}
+                sftp._has_discovery_metadata_drift.return_value = False
+                sftp.read_file_metadata.return_value = MagicMock(
+                    spec=FileMetadata, VL_FILE_SIZE_KB=1,
+                )
+                sftp.size.return_value = len(payload)
+                sftp.transfer.side_effect = (
+                    lambda remote, local, **kwargs: Path(local).write_bytes(payload)
+                )
+
+                with patch.object(
+                    ssh_module.file_utils,
+                    "compute_file_md5",
+                    wraps=ssh_module.file_utils.compute_file_md5,
+                ) as compute_md5:
+                    result = backup_worker.sftpConnection.transfer_file_task(
+                        sftp, "/remote", "sample.bin", tmpdir, "server.bin", {},
+                    )
+
+                compute_md5.assert_called_once_with(str(final_file))
+                self.assertEqual(result["host_md5"], hashlib.md5(payload).hexdigest())
+                self.assertTrue(result["file_was_transferred"])
+                self.assertEqual(sftp.transfer.call_count, 0 if reuse_copy else 1)
+                self.assertEqual(final_file.read_bytes(), payload)
+
+    def test_transfer_checksum_failure_preserves_local_copy(self) -> None:
+        """Wrap local checksum failures so the worker retains source history.
+
+        Args:
+            None.
+        Returns:
+            None. Network operations are mocked and files are temporary.
+        """
+        ssh_module = sys.modules[backup_worker.sftpConnection.__module__]
+        for reuse_copy in (False, True):
+            for failure in (FileNotFoundError("server.bin"), PermissionError("server.bin")):
+                with self.subTest(reuse_copy=reuse_copy, failure=type(failure)), tempfile.TemporaryDirectory() as tmpdir:
+                    final_file = Path(tmpdir, "server.bin")
+                    if reuse_copy:
+                        final_file.write_bytes(b"x" * 1024)
+                    sftp = MagicMock(spec=backup_worker.sftpConnection)
+                    sftp.log = FakeLog()
+                    sftp._base_log_fields.return_value = {}
+                    sftp._has_discovery_metadata_drift.return_value = False
+                    sftp.read_file_metadata.return_value = MagicMock(
+                        spec=FileMetadata, VL_FILE_SIZE_KB=1,
+                    )
+                    sftp.size.return_value = 1024
+                    sftp.transfer.side_effect = (
+                        lambda remote, local, **kwargs: Path(local).write_bytes(b"x" * 1024)
+                    )
+
+                    with patch.object(
+                        ssh_module.file_utils, "compute_file_md5", side_effect=failure,
+                    ) as compute_md5:
+                        with self.assertRaises(backup_worker.errors.FileChecksumError) as raised:
+                            backup_worker.sftpConnection.transfer_file_task(
+                                sftp, "/remote", "sample.bin", tmpdir, "server.bin", {},
+                            )
+
+                    compute_md5.assert_called_once_with(str(final_file))
+                    self.assertIs(raised.exception.__cause__, failure)
+                    self.assertTrue(final_file.exists())
+
+    def test_checksum_failure_is_finalize_error_not_vanished_source(self) -> None:
+        # A missing local copy raises FileNotFoundError inside the checksum. It
+        # must not reach the TRANSFER branch, which prunes the task and history.
+        exc = backup_worker.errors.FileChecksumError("Host file MD5 failed")
+        exc.__cause__ = FileNotFoundError("server.zip")
+
+        reason, stage = backup_worker._classify_work_failure(
+            exc,
+            task={"host_id": 11},
+            sftp_conn=MagicMock(),
+            result={"file_was_transferred": False},
+        )
+
+        self.assertEqual(stage, backup_worker.k.STAGE_FINALIZE)
+        self.assertEqual(reason, "Post-transfer update failed")
 
     def test_finalize_error_clears_pid_and_queues_host_check_for_auth(self) -> None:
         fake_db = FakeTaskDB()

@@ -478,8 +478,7 @@ O [README do pacote de banco](db/README.md) detalha essa organização.
 O WebFusion usa Psycopg 3.3.8 e PostgreSQL exclusivamente. Configure
 `RFFUSION_PG_CONNINFO` no ambiente ou `PG_CONNINFO` no arquivo local `.secret`
 existente. O conninfo precisa informar o banco e a autenticação; não há fallback
-para MariaDB. Em produção, selecione `dbname=RFFUSION` em `10.88.0.35:5432`.
-No DEV existente, mantenha a conexão explícita com `rffusion_test_migracao`.
+para MariaDB. Em produção e no DEV, selecione `dbname=RFFUSION` em `10.88.0.35:5432`.
 Os quatro schemas são `RFDATA`, `BPDATA`, `RFFUSION_SUMMARY` e `WEBFUSION`.
 As fábricas de `db/connection.py` abrem uma conexão por operação, com UTC e search_path
 explícitos, sem conexão no import. Nunca versione ou registre credenciais.

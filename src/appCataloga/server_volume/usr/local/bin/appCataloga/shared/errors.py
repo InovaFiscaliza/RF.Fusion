@@ -1054,6 +1054,17 @@ class AppAnaliseInvalidSuccessPayloadError(Exception):
     pass
 
 
+class FileChecksumError(Exception):
+    """
+    Raised when a local artifact cannot be read to compute its checksum.
+
+    The original ``OSError`` is chained as ``__cause__``. Workers wrap it so a
+    failure on the server copy is not mistaken for a transfer failure or for a
+    remote file that disappeared.
+    """
+    pass
+
+
 PROCESSING_FREEZE_DETAILS = {
     AppAnaliseServiceResponseError: "APP_ANALISE returned service error, task frozen for manual review",
     AppAnaliseReadTimeoutError: "APP_ANALISE read timeout, task frozen for manual review",

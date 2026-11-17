@@ -71,6 +71,22 @@ class TestMariaDbDumpMigration(unittest.TestCase):
         self.assertEqual(converter.stats.rows, 2)
         self.assertEqual(converter.stats.first_column_sum, -1)
 
+    def test_dropped_columns_are_skipped_only_when_null(self) -> None:
+        table = migration.DumpTable(
+            "BPDATA", "FILE_TASK", ["ID_FILE_TASK", "NU_HOST_FILE_MD5", "NA_HOST_FILE_NAME"],
+            ["number", "text", "text"], None,
+        )
+        statement = migration.InsertStatement(
+            "BPDATA", "FILE_TASK", None, "(1,NULL,'a.zip'),\n(2,'abc','b.zip');\n", 1,
+        )
+        converter = migration.RowConverter(table, validate_json=True, unique_key=None, keep_rows=False)
+
+        lines = [converter.convert(tokens, 1) for tokens in migration.iter_rows(statement)]
+
+        self.assertEqual(migration._loaded_columns(table), ["ID_FILE_TASK", "NA_HOST_FILE_NAME"])
+        self.assertEqual(lines, ["1\ta.zip\n", None])
+        self.assertEqual(dict(converter.stats.issues), {"value in dropped column NU_HOST_FILE_MD5": 1})
+
     def test_point_keeps_coordinates_order_and_known_srid(self) -> None:
         plain, srid, x, y = migration.mysql_geometry_to_ewkb(mysql_point(-48.8, -26.3))
         self.assertEqual((srid, x, y), (0, -48.8, -26.3))

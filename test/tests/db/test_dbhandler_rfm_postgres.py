@@ -215,6 +215,23 @@ class PostgresRfmTests(unittest.TestCase):
         self.assertEqual(select_params[:3], ("vol", "/data", "a.bin"))
         self.connection.commit.assert_called_once_with()
 
+    def test_insert_file_writes_supplied_md5(self) -> None:
+        """Persist NU_MD5 when supplied, like the other refreshable metadata.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.cursor.fetchall.return_value = [{"ID_FILE": 7}]
+        with patch.object(self.handler, "get_file_type_id_by_hostname", return_value=3):
+            self.handler.insert_file(
+                "CWSM21100011", "/repo", "a.mat", "reposfi", NU_MD5="b" * 32
+            )
+        query, params = self.cursor.execute.call_args.args
+        self.assertIn('"NU_MD5"', query.as_string())
+        self.assertEqual(params, (3, "b" * 32, 7))
+
     def _spectrum(self, end: datetime) -> dict:
         """Build one resolved spectrum payload.
 

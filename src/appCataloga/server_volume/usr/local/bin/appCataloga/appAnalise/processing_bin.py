@@ -96,13 +96,15 @@ def run_processing_flow(
     Args:
         db_rfm (dbHandlerRFM): RFDATA handler used for analytical persistence.
         task (dict[str, Any]): Claimed queue task and source artifact metadata.
-        app_analise (AppAnaliseConnection): Client that processes the source file.
+        app_analise (AppAnaliseConnection): Client that processes the source file
+            and returns resolved artifact metadata including its md5 (str).
         logger (logger_type): Structured event logger.
         service_name (str): Worker service name.
 
     Returns:
         dict[str, Any]: File metadata, destination, normalized payload, SITE ids,
-            spectrum ids, accepted answer, and raw decoded payload.
+            spectrum ids, accepted answer, and raw decoded payload. ``file_meta``
+            describes the promoted artifact and includes ``md5`` (str).
 
     Raises:
         Exception: If processing, resolution, persistence, or artifact promotion fails.
@@ -170,6 +172,7 @@ def run_processing_flow(
         size_kb=task["vl_file_size_kb"],
         dt_created=task["dt_created"],
         dt_modified=task["dt_modified"],
+        md5=task.get("host_md5"),
     )
     db_elapsed_sec = round(time.monotonic() - phase_started_at, 3)
 
@@ -197,6 +200,7 @@ def run_processing_flow(
         size_kb=file_meta["size_kb"],
         dt_created=file_meta["dt_created"],
         dt_modified=file_meta["dt_modified"],
+        md5=file_meta["md5"],
     )
 
     db_rfm.commit()
@@ -869,6 +873,7 @@ def _register_spectrum_file_lineage(
     size_kb: int,
     dt_created: datetime,
     dt_modified: datetime,
+    md5: str | None,
 ) -> None:
     """Register one analytical file artifact and link it to spectra.
 
@@ -893,6 +898,8 @@ def _register_spectrum_file_lineage(
         size_kb (int): Artifact size in kilobytes.
         dt_created (datetime): Artifact creation timestamp.
         dt_modified (datetime): Artifact modification timestamp.
+        md5 (str | None): Content MD5 of this artifact; None keeps the stored
+            value, as for host files backed up before checksum recording.
 
     Returns:
         None.
@@ -906,6 +913,7 @@ def _register_spectrum_file_lineage(
         VL_FILE_SIZE_KB=size_kb,
         DT_FILE_CREATED=dt_created,
         DT_FILE_MODIFIED=dt_modified,
+        NU_MD5=md5,
     )
     db_rfm.insert_bridge_spectrum_file(spectrum_ids, [file_id])
 

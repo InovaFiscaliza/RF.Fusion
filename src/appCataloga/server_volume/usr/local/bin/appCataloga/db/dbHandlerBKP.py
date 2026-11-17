@@ -1726,6 +1726,39 @@ class dbHandlerBKP(DbHandler):
                 "where_used": where_conditions,
             }
 
+    def file_task_history_read_host_md5(
+        self,
+        *,
+        host_id: int,
+        host_file_path: str,
+        host_file_name: str,
+    ) -> str | None:
+        """Read the host-file MD5 recorded by the backup for one source file.
+
+        Args:
+            host_id (int): Parent host ID.
+            host_file_path (str): Exact source path on the host.
+            host_file_name (str): Exact source filename on the host.
+
+        Returns:
+            str | None: 32-character lowercase hexadecimal MD5, or None when the
+            history row is missing or the backup predates checksum recording.
+
+        Raises:
+            ValueError: If the source identity is incomplete.
+            psycopg.Error: If reading the history fails.
+        """
+        where_conditions = self._file_identity_filter(
+            "ID_HISTORY", None, host_id, host_file_path, host_file_name
+        )
+        rows = self._select_batch(
+            table="FILE_TASK_HISTORY",
+            where=where_conditions,
+            columns=("NU_HOST_FILE_MD5",),
+            limit=1,
+        )
+        return cast(str | None, rows[0]["NU_HOST_FILE_MD5"]) if rows else None
+
     def file_task_history_delete(
         self,
         *,

@@ -11,6 +11,7 @@ What is covered here:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 import unittest
@@ -245,6 +246,90 @@ class DetectProtocolErrorTests(unittest.TestCase):
 
         self.assertIn("source file unavailable before request", str(ctx.exception))
         self.assertFalse(called["value"])
+
+    def test_process_returns_md5_of_resolved_artifact(self) -> None:
+        """Hash the CelPlan export or the source selected without export.
+
+        Args:
+            None.
+        Returns:
+            None. Socket responses are mocked and file contents are real.
+        """
+        parser_module = sys.modules[type(self.parser).__module__]
+        for export in (False, True):
+            with self.subTest(export=export), tempfile.TemporaryDirectory() as tmpdir:
+                source = Path(tmpdir, "source.zip")
+                source.write_bytes(b"zip payload")
+                artifact = Path(tmpdir, "output.mat")
+                artifact.write_bytes(b"mat payload")
+                payload = {
+                    "Answer": {
+                        "General": {"FilePath": tmpdir, "FileName": artifact.name},
+                        "Spectra": [],
+                    },
+                }
+
+                with (
+                    patch.object(self.conn, "_request_process", return_value=payload),
+                    patch.object(self.parser, "normalize_payload", return_value={}),
+                    patch.object(parser_module.time, "sleep"),
+                    patch.object(
+                        parser_module.file_utils,
+                        "compute_file_md5",
+                        wraps=parser_module.file_utils.compute_file_md5,
+                    ) as compute_md5,
+                ):
+                    _, file_meta, answer, raw_payload = self.conn.process(
+                        tmpdir, source.name, export=export,
+                    )
+
+                selected = artifact if export else source
+                compute_md5.assert_called_once_with(str(selected))
+                self.assertEqual(file_meta["md5"], hashlib.md5(selected.read_bytes()).hexdigest())
+                self.assertEqual(file_meta["full_path"], str(selected))
+                self.assertIs(self.conn.last_output_meta, file_meta)
+                self.assertIs(answer, payload["Answer"])
+                self.assertIs(raw_payload, payload)
+
+    def test_output_checksum_failure_keeps_metadata_for_quarantine(self) -> None:
+        """Preserve the exported artifact and the original checksum error.
+
+        Args:
+            None.
+        Returns:
+            None. Files are temporary and no service is contacted.
+        """
+        parser_module = sys.modules[type(self.parser).__module__]
+        for failure in (FileNotFoundError("output.mat"), PermissionError("output.mat")):
+            with self.subTest(failure=type(failure)), tempfile.TemporaryDirectory() as tmpdir:
+                source = Path(tmpdir, "source.zip")
+                source.write_bytes(b"zip payload")
+                artifact = Path(tmpdir, "output.mat")
+                artifact.write_bytes(b"mat payload")
+                payload = {
+                    "Answer": {
+                        "General": {"FilePath": tmpdir, "FileName": artifact.name},
+                    },
+                }
+                self.conn.last_output_meta = {"full_path": "previous.mat"}
+
+                with (
+                    patch.object(self.conn, "_request_process", return_value=payload),
+                    patch.object(self.parser, "normalize_payload") as normalize,
+                    patch.object(parser_module.time, "sleep"),
+                    patch.object(
+                        parser_module.file_utils, "compute_file_md5", side_effect=failure,
+                    ),
+                ):
+                    with self.assertRaises(OSError) as raised:
+                        self.conn.process(tmpdir, source.name, export=True)
+
+                self.assertIs(raised.exception, failure)
+                self.assertEqual(failure.file_meta["full_path"], str(artifact))
+                self.assertEqual(failure.file_meta["extension"], ".mat")
+                self.assertNotIn("md5", failure.file_meta)
+                self.assertIsNone(self.conn.last_output_meta)
+                normalize.assert_not_called()
 
     def test_build_request_payload_includes_configured_timeout_seconds(self) -> None:
         with patch.object(

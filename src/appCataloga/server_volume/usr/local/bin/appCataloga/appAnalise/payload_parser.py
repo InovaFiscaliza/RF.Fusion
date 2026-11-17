@@ -22,7 +22,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from shared import errors
+from shared import errors, file_utils
 
 
 RFEYE_CANONICAL_RE = re.compile(r"(rfeye\d{6})", re.IGNORECASE)
@@ -250,7 +250,8 @@ class AppAnalisePayloadParser:
 
         appAnalise can finish the socket response slightly before the output
         file stops growing on disk. This helper waits for the artifact size to
-        stabilize so the worker does not capture half-written metadata.
+        stabilize before capturing metadata and hashing its content. Exported
+        artifacts, including CelPlan .mat files, get their own checksum.
 
         Args:
             answer (dict): Accepted appAnalise ``Answer`` object.
@@ -259,12 +260,15 @@ class AppAnalisePayloadParser:
             export (bool): Whether appAnalise produced an output artifact.
 
         Returns:
-            dict: Artifact metadata with path, name, extension, size, timestamps,
-                and ``full_path``.
+            dict: Required keys file_path, file_name, extension, full_path (str),
+                size_kb (int), dt_created and dt_modified (datetime), and md5
+                (str, 32 lowercase hexadecimal characters).
 
         Raises:
             errors.AppAnaliseFileUnavailableError: If the artifact is unavailable.
             errors.BinValidationError: If the artifact is empty or fields are invalid.
+            OSError: If checksum reading fails. The exception carries artifact
+                metadata in ``file_meta`` so the worker can quarantine it.
         """
         path, name, full_path = self._resolve_output_location(
             answer=answer,
@@ -292,7 +296,7 @@ class AppAnalisePayloadParser:
                 f"APP_ANALISE output artifact is empty: {full_path}"
             )
 
-        return {
+        file_meta = {
             "file_path": path,
             "file_name": name,
             "extension": os.path.splitext(name)[1].lower(),
@@ -301,6 +305,15 @@ class AppAnalisePayloadParser:
             "dt_modified": datetime.fromtimestamp(stat.st_mtime),
             "full_path": full_path,
         }
+        try:
+            file_meta["md5"] = file_utils.compute_file_md5(full_path)
+        except OSError as exc:
+            # Resolution succeeded, so preserve the artifact for quarantine
+            # even though process() cannot publish last_output_meta yet.
+            exc.file_meta = file_meta
+            raise
+
+        return file_meta
 
     def normalize_payload(self, payload: Dict) -> Dict:
         """Convert an accepted appAnalise payload into canonical ``bin_data``.

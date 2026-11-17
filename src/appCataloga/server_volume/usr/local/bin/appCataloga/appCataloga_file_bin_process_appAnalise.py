@@ -127,7 +127,8 @@ def _read_next_task(db_bp: dbHandlerBKP) -> dict | None:
 
     Returns:
         dict | None: Task IDs, host/server paths and names, timestamps, extension,
-            size, export flag, and source_file_meta for processing;
+            size, export flag, host_md5 (str | None, recorded by the backup in
+            FILE_TASK_HISTORY), and source_file_meta for processing;
             None when no pending task exists. source_file_meta contains file_path,
             file_name, extension, size_kb, dt_created, dt_modified, and full_path.
 
@@ -162,6 +163,11 @@ def _read_next_task(db_bp: dbHandlerBKP) -> dict | None:
     full_path = os.path.join(task["server_path"], task["server_name"])
     task["filename"] = f'{task["server_path"]}/{task["server_name"]}'
     task["export"] = processing_bin.should_export(task["hostname_db"])
+    task["host_md5"] = db_bp.file_task_history_read_host_md5(
+        host_id=host_id,
+        host_file_path=task["host_path"],
+        host_file_name=task["host_file_name"],
+    )
     task["source_file_meta"] = {
         "file_path"  : task["server_path"],
         "file_name"  : task["server_name"],
@@ -295,6 +301,7 @@ def _finalize_success(
         "VL_FILE_SIZE_KB_SERVER": file_meta["size_kb"],
         "DT_FILE_CREATED_SERVER": file_meta["dt_created"],
         "DT_FILE_MODIFIED_SERVER": file_meta["dt_modified"],
+        "NU_SERVER_FILE_MD5": file_meta["md5"],
     }
     try:
         _resolve_queue_row(

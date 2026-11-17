@@ -156,6 +156,23 @@ def _finalize_success(
     `(FK_HOST, NA_HOST_FILE_PATH, NA_HOST_FILE_NAME)` is the logical identity
     of the source file, so the FILE_TASK row is updated in place rather than
     creating a second row for the same artifact.
+
+    Args:
+        db (dbHandlerBKP): Operational queue and history handler.
+        task (dict): Required host_id and file_task_id (int), input_filename,
+            server_filename, server_file_path, FILE_TASK__NA_HOST_FILE_PATH,
+            and FILE_TASK__NA_HOST_FILE_NAME (str).
+        result (dict): Required refreshed_metadata (FileMetadata),
+            updated_size_kb (int), file_was_transferred (bool), and host_md5
+            (str, 32 lowercase hexadecimal characters) from `_do_work`.
+            The digest initializes both host and server checksums in history.
+        elapsed_sec (float): Total elapsed work time in seconds.
+
+    Returns:
+        None.
+
+    Raises:
+        Exception: Propagates persistence failures to the worker error handler.
     """
     worker_id = process_status["worker"]
     host_id = task["host_id"]
@@ -165,6 +182,7 @@ def _finalize_success(
     server_file_path = task["server_file_path"]
     refreshed_metadata = result["refreshed_metadata"]
     updated_size_kb = result["updated_size_kb"]
+    file_md5 = result["host_md5"]
     backup_completed_at = datetime.now()
     history_message = tools.compose_message(
         task_type=db_constants['tasks']['file_types']['backup'],
@@ -182,6 +200,8 @@ def _finalize_success(
         DT_BACKUP=backup_completed_at,
         NA_SERVER_FILE_NAME=server_filename,
         NA_SERVER_FILE_PATH=server_file_path,
+        NU_HOST_FILE_MD5=file_md5,
+        NU_SERVER_FILE_MD5=file_md5,
         NU_STATUS_BACKUP=db_constants['tasks']['states']['done'],
         NA_EXTENSION_HOST=refreshed_metadata.NA_EXTENSION,
         VL_FILE_SIZE_KB_HOST=updated_size_kb,
@@ -541,7 +561,24 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
     Transfer one remote file to the repository and return backup artifacts.
 
     The entrypoint measures total `_do_work()` duration for `task_done`.
-    This function emits only the completed `transfer` phase.
+    This function emits only the completed `transfer` phase. The SFTP operation
+    returns the MD5 computed on the received or reused server copy.
+
+    Args:
+        db (dbHandlerBKP): Operational handler used by transfer progress updates.
+        sftp (sftpConnection): Open SFTP session to the task host.
+        task (dict): Context from `_read_next_task`, including host_file_path,
+            host_file_name, server_file_path, server_filename, and
+            discovery_snapshot.
+
+    Returns:
+        dict: ``refreshed_metadata`` (FileMetadata), ``updated_size_kb`` (int),
+            ``file_was_transferred`` (bool), and ``host_md5`` (str, 32-character
+            lowercase hexadecimal digest).
+
+    Raises:
+        errors.FileChecksumError: If the received copy cannot be read for MD5.
+        Exception: Propagates transfer failures from the SFTP session.
     """
     transfer_started_at = time.monotonic()
     transfer_result = sftp.transfer_file_task(
@@ -553,6 +590,7 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
         progress_callback=_create_transfer_progress_callback(db, task),
     )
     transfer_elapsed_sec = round(time.monotonic() - transfer_started_at, 3)
+    local_file = os.path.join(task["server_file_path"], task["server_filename"])
 
     log.task_phase(
         SERVICE_NAME,
@@ -564,16 +602,14 @@ def _do_work(db: dbHandlerBKP, sftp: sftpConnection, task: dict) -> dict:
         phase="transfer",
         elapsed_sec=transfer_elapsed_sec,
         since_start_sec=transfer_elapsed_sec,
-        final_file=os.path.join(
-            task["server_file_path"],
-            task["server_filename"],
-        ),
+        final_file=local_file,
     )
 
     return {
         "refreshed_metadata": transfer_result["refreshed_metadata"],
         "updated_size_kb": transfer_result["updated_size_kb"],
         "file_was_transferred": transfer_result["file_was_transferred"],
+        "host_md5": transfer_result["host_md5"],
     }
 
 
@@ -593,6 +629,11 @@ def _classify_work_failure(
         ssh_failure = errors.classify_ssh_connect_failure(exc)
         if ssh_failure is not None:
             return ssh_failure
+
+    # The copy is already on the server; never route this to the transfer
+    # branch, where FileNotFoundError prunes the task as a vanished source.
+    if isinstance(exc, errors.FileChecksumError):
+        return "Post-transfer update failed", k.STAGE_FINALIZE
 
     if task is not None and not result["file_was_transferred"]:
         return "Backup worker failure", k.STAGE_TRANSFER

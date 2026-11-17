@@ -35,8 +35,12 @@ comandos, logs ou arquivos versionados.
 
 As colunas são associadas por nome, conforme o `CREATE TABLE` do dump. Colunas
 do dump ausentes no PostgreSQL ou com tipo incompatível interrompem a migração.
-Colunas novas do PostgreSQL, como os sinais de `BPDATA.HOST`, recebem o default
-do DDL e aparecem no relatório.
+A exceção são as colunas removidas, declaradas em `DROPPED_COLUMNS` do
+[config.py](config.py): `NU_HOST_FILE_MD5` e `NA_SERVER_FILE_MD5` de
+`BPDATA.FILE_TASK`. Elas não são carregadas e precisam estar vazias (`NULL`) em
+todas as linhas; um valor preenchido é problema bloqueante no `inspect` e no `load`.
+Colunas novas do PostgreSQL, como os sinais de `BPDATA.HOST` e os MD5 de
+`BPDATA.FILE_TASK_HISTORY`, recebem o default do DDL e aparecem no relatório.
 
 ## Uso
 

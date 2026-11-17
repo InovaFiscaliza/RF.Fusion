@@ -355,6 +355,8 @@ class RowConverter:
         validate_json (bool): Parse JSON locally instead of leaving it to PostgreSQL.
         unique_key (tuple[list[int], bool] | None): Key column positions and whether
             duplicated values may be reported.
+        dropped (dict[int, str]): Dump positions and names of columns removed from
+            PostgreSQL; they must be NULL and are left out of the COPY line.
         seen_keys (dict[bytes, str]): Digest of each unique key and its first row ID.
         keep_rows (list[tuple[str | None, ...]] | None): Decoded rows retained
             for comparison with bootstrap seed rows.
@@ -385,6 +387,8 @@ class RowConverter:
         self.kinds = table.kinds
         self.stats = TableStats(first_column_sum=0 if table.kinds and table.kinds[0] == "number" else None)
         self.validate_json = validate_json
+        dropped = k.DROPPED_COLUMNS.get((table.database, table.name), frozenset())
+        self.dropped = {index: column for index, column in enumerate(table.columns) if column in dropped}
         self.unique_key = None
         if unique_key:
             missing = [column for column in unique_key[0] if column not in table.columns]
@@ -410,6 +414,10 @@ class RowConverter:
             return self._issue("column count", line)
         fields: list[str] = []
         for index, (kind, (quote, text, null, hex_marker, hex_digits, number)) in enumerate(zip(self.kinds, tokens)):
+            if index in self.dropped:
+                if not null:
+                    return self._issue(f"value in dropped column {self.dropped[index]}", line)
+                continue
             if null:
                 fields.append("\\N")
             elif number:
@@ -488,7 +496,9 @@ class RowConverter:
             elif not tokens[0][2]:
                 stats.first_column_sum = None
         if self.keep_rows is not None:
-            self.keep_rows.append(tuple(_decoded(token) for token in tokens))
+            self.keep_rows.append(tuple(
+                _decoded(token) for index, token in enumerate(tokens) if index not in self.dropped
+            ))
         if self.unique_key:
             positions, reportable = self.unique_key
             values = [_decoded(tokens[position]) for position in positions]
@@ -908,8 +918,24 @@ def _drop_foreign_keys(connection: psycopg.Connection) -> list[tuple[str, str, s
     return keys
 
 
+def _loaded_columns(table: DumpTable) -> list[str]:
+    """Return the dump columns written to PostgreSQL, in dump order.
+
+    Args:
+        table (DumpTable): Dumped table structure.
+
+    Returns:
+        list[str]: Dump columns without those listed in `config.DROPPED_COLUMNS`.
+    """
+    dropped = k.DROPPED_COLUMNS.get((table.database, table.name), frozenset())
+    return [column for column in table.columns if column not in dropped]
+
+
 def _check_target_columns(table: DumpTable, catalog: dict[tuple[str, str], dict[str, object]]) -> list[str]:
-    """Check that each dumped column exists in PostgreSQL with a compatible kind.
+    """Check that each loaded dump column exists in PostgreSQL with a compatible kind.
+
+    Columns listed in `config.DROPPED_COLUMNS` are not checked; their values are
+    validated by `RowConverter`.
 
     Args:
         table (DumpTable): Dumped table structure.
@@ -925,7 +951,10 @@ def _check_target_columns(table: DumpTable, catalog: dict[tuple[str, str], dict[
     if entry is None:
         raise MigrationError(f"{table.database}.{table.name} does not exist in PostgreSQL")
     target_columns: dict[str, str] = entry["columns"]
+    loaded = set(_loaded_columns(table))
     for column, kind in zip(table.columns, table.kinds):
+        if column not in loaded:
+            continue
         if column not in target_columns:
             raise MigrationError(f"{table.database}.{table.name}.{column} does not exist in PostgreSQL")
         target_kind = _target_kind(target_columns[column])
@@ -944,9 +973,10 @@ def _read_seed_rows(connection: psycopg.Connection, table: DumpTable) -> list[tu
         table (DumpTable): Dumped table structure.
 
     Returns:
-        list[tuple[str | None, ...]]: Seed rows; empty when the DDL inserted none.
+        list[tuple[str | None, ...]]: Seed rows over the loaded columns; empty
+            when the DDL inserted none.
     """
-    columns = sql.SQL(", ").join(sql.SQL("{}::text").format(sql.Identifier(column)) for column in table.columns)
+    columns = sql.SQL(", ").join(sql.SQL("{}::text").format(sql.Identifier(column)) for column in _loaded_columns(table))
     return connection.execute(sql.SQL("SELECT {} FROM {}.{}").format(
         columns, sql.Identifier(table.database), sql.Identifier(table.name))).fetchall()
 
@@ -1040,7 +1070,7 @@ def load_dump(
                                                    keep_rows=bool(seed_rows))
                     copy_sql[key] = sql.SQL("COPY {}.{} ({}) FROM STDIN").format(
                         sql.Identifier(item.database), sql.Identifier(item.name),
-                        sql.SQL(", ").join(sql.Identifier(column) for column in item.columns))
+                        sql.SQL(", ").join(sql.Identifier(column) for column in _loaded_columns(item)))
                     continue
 
                 key = (item.database, item.table)

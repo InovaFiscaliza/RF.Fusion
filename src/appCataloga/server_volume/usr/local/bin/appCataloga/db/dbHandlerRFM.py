@@ -275,6 +275,7 @@ class dbHandlerRFM(DbHandler):
         VL_FILE_SIZE_KB: int | None = None,
         DT_FILE_CREATED: datetime | None = None,
         DT_FILE_MODIFIED: datetime | None = None,
+        NU_MD5: str | None = None,
     ) -> int:
         """Create or refresh a file identified by volume, path and filename.
 
@@ -287,6 +288,7 @@ class dbHandlerRFM(DbHandler):
             VL_FILE_SIZE_KB (int | None): Optional file size in KiB.
             DT_FILE_CREATED (datetime | None): Optional creation timestamp.
             DT_FILE_MODIFIED (datetime | None): Optional modification timestamp.
+            NU_MD5 (str | None): Optional 32-character hexadecimal content MD5.
         Returns:
             int: Existing or newly generated file identity.
         Raises:
@@ -310,6 +312,7 @@ class dbHandlerRFM(DbHandler):
                 ("VL_FILE_SIZE_KB", VL_FILE_SIZE_KB),
                 ("DT_FILE_CREATED", DT_FILE_CREATED),
                 ("DT_FILE_MODIFIED", DT_FILE_MODIFIED),
+                ("NU_MD5", NU_MD5),
             )
             if value is not None
         }

@@ -362,6 +362,28 @@ class PostgresBkpTests(unittest.TestCase):
             result["where_used"], {"ID_FILE_TASK": 7, "NU_STATUS": db_constants['tasks']['states']['pending']}
         )
 
+    def test_history_read_host_md5_selects_only_the_checksum_by_source_identity(self) -> None:
+        """Return the backup checksum, or None when no history row exists.
+
+        Args:
+            None.
+        Returns:
+            None.
+        """
+        self.cursor.fetchall.return_value = [{"NU_HOST_FILE_MD5": "a" * 32}]
+        md5 = self.handler.file_task_history_read_host_md5(
+            host_id=3, host_file_path="/data", host_file_name="a.zip"
+        )
+        self.assertEqual(md5, "a" * 32)
+        query = self.cursor.execute.call_args.args[0].as_string()
+        self.assertIn('SELECT "NU_HOST_FILE_MD5" FROM "BKP_TEST"."FILE_TASK_HISTORY"', query)
+        self.cursor.fetchall.return_value = []
+        self.assertIsNone(
+            self.handler.file_task_history_read_host_md5(
+                host_id=3, host_file_path="/data", host_file_name="a.zip"
+            )
+        )
+
     def test_history_none_and_set_null_have_distinct_meanings(self) -> None:
         """Retain the established history API for ignored fields and explicit SQL NULL.
 

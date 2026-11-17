@@ -468,8 +468,8 @@ própria. Conclusões concorrentes devem conservar a maior cobertura.
   por espectro. Encaminhá-las antes de decidir contexto, sites e equipamento.
 - A regra atual ERMx/UMS força hostname operacional. No fluxo futuro, resolver
   classe e hardware antes dessa associação, preservando o comportamento fixo válido.
-- `DIM_SPECTRUM_FILE.NU_MD5` existe, mas `insert_file()` não o preenche e resolve
-  tipo pelo hostname. Incluir identificação explícita de formato para ROMES/RNI.
+- `insert_file()` grava `DIM_SPECTRUM_FILE.NU_MD5`, mas resolve o tipo pelo
+  hostname. Incluir identificação explícita de formato para ROMES/RNI.
 - Reprocessamento convencional mantém `reset_reprocessed_file_lineage()`.
   Novo upload não apaga FACTS existentes antes de comparar por presumir linhagem.
 - Falha entre gravar arquivo, registrar trabalho e publicar exige recuperação

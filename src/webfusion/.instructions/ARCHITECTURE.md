@@ -82,8 +82,8 @@ O WebFusion usa exclusivamente PostgreSQL com Psycopg 3.3.8. `db/connection.py` 
 conexões por requisição com linhas em dicionário, timezone UTC e `search_path`
 explícito por schema. `config.py` lê `RFFUSION_PG_CONNINFO` ou `PG_CONNINFO` no
 `.secret` local existente; não usa credenciais MariaDB nem fallback de backend.
-O destino DEV autorizado é `10.88.0.35:5432`, banco `rffusion_test_migracao`.
-Em produção, a conexão explícita deve selecionar o banco `RFFUSION` no mesmo
+O destino DEV autorizado é `10.88.0.35:5432`, banco `RFFUSION`.
+Em produção, a conexão explícita também deve selecionar o banco `RFFUSION` no mesmo
 endereço e porta; editar o deploy não modifica o `.secret` nem ativa essa conexão.
 
 SQL pertence ao pacote `db/`, organizado por domínio. `db/summary.py` compõe

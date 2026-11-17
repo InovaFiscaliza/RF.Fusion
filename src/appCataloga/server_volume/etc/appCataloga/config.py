@@ -144,6 +144,7 @@ TRASH_FOLDER    = "trash"
 # Those files are quarantined here and garbage-collected directly from the
 # filesystem instead of through FILE_TASK_HISTORY lookups.
 RESOLVED_FILES_TRASH_SUBDIR = "resolved_files"
+FILE_HASH_CHUNK_SIZE_BYTES = 1024 * 1024  # Read block used to hash large payloads
 REPO_FOLDER     = "/mnt/reposfi"
 REPO_VOLUME_NAME = "reposfi"
 #------------------------------------------

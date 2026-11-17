@@ -17,9 +17,9 @@ os payloads externos do Zabbix e appAnalise;
 o destino de produção e o padrão dos novos deploys e do appCataloga é `RFFUSION`,
 preservando as maiúsculas no nome do banco. O deploy usa `POSTGRES_DB` para
 selecionar explicitamente outro banco; essa variável deve ser mantida nas
-recriações e seleciona também os backups e o bootstrap. Instalações DEV existentes
-em `rffusion_test_migracao` usam conexão explícita nas aplicações e na ferramenta
-de migração. O deploy não renomeia bancos existentes. A conexão só acessa um banco por
+recriações e seleciona também os backups e o bootstrap. O DEV também usa o banco
+`RFFUSION`, com os mesmos schemas de produção, para que scripts de alteração
+sejam ensaiados com os nomes reais. O deploy não renomeia bancos existentes. A conexão só acessa um banco por
 vez no PostgreSQL. Funções auxiliares, índices e triggers mantêm seus nomes
 técnicos existentes. Instalações anteriores em minúsculas não são renomeadas
 automaticamente; o deploy reconhece ambas as convenções e não mistura modelos.

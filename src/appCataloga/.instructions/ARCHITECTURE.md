@@ -51,6 +51,33 @@ O entrypoint é dono das transições de `HOST_TASK`, `FILE_TASK` e
 não finaliza essas linhas em nome do worker. Escritas analíticas em RFDATA
 podem ser orquestradas pelo domínio quando integram o processamento do artefato.
 
+O MD5 do conteúdo dos arquivos é guardado em `FILE_TASK_HISTORY`. A fila
+`FILE_TASK` não guarda checksums.
+
+- `NU_HOST_FILE_MD5` é gravado pelo backup DONE. O valor é calculado com
+  `file_utils.compute_file_md5` em `sftpConnection.transfer_file_task`, uma vez
+  sobre a cópia recebida no servidor ou sobre a cópia local válida reaproveitada.
+  O método retorna `host_md5` ao worker, que persiste o histórico. Uma falha
+  nesse cálculo é falha de finalização do backup e não indica que o arquivo
+  remoto deixou de existir.
+- `NU_SERVER_FILE_MD5` recebe o mesmo `host_md5` no backup DONE, pois a cópia
+  local ainda corresponde ao conteúdo recebido. O processamento DONE atualiza
+  esse campo a partir do artefato canônico promovido ao repositório. Para
+  CelPlan, que exporta `.mat`, os dois valores passam a diferir; nas demais
+  famílias, coincidem. ERROR e FROZEN não alteram esse valor.
+- `AppAnalisePayloadParser.resolve_output_file` calcula o MD5 após verificar
+  a estabilidade e o tamanho do artefato selecionado. Com exportação, usa o
+  arquivo de `Answer.General`; sem exportação, usa a origem processada.
+  `AppAnaliseConnection.process` entrega esse valor em `last_output_meta["md5"]`.
+  O fluxo de processamento preserva o checksum na promoção e na persistência,
+  sem calculá-lo novamente. Falhas de leitura propagam como `OSError` com os
+  metadados do artefato em `file_meta`, usados pelo tratamento de quarentena.
+- O processamento lê `NU_HOST_FILE_MD5` do histórico e o grava em
+  `DIM_SPECTRUM_FILE.NU_MD5` na linha do volume do host. A linha do volume do
+  repositório recebe o MD5 do artefato canônico. Um MD5 ausente não apaga o
+  valor já registrado.
+- O MD5 descreve o conteúdo e não substitui a identidade natural dos arquivos.
+
 `HOST_TASK_UPDATE_STATISTICS_TYPE` continua atendido pelo host-check, com a
 prioridade existente em relação às verificações de conectividade. Essas tasks
 legadas solicitam refresh de escopo do summary; não reintroduzir contadores
@@ -476,9 +503,8 @@ Os entrypoints e `utils/safe_stop.py` passam `k.PG_CONNINFO` aos handlers
 PostgreSQL. O `config.py` compõe a conexão com `SERVER_NAME`, `DB_PORT`,
 `PG_DATABASE_NAME` e `PG_USER_NAME`; `RFFUSION_PG_CONNINFO`, quando não vazio,
 sobrescreve essa conexão completa. O destino padrão explícito é o banco
-`RFFUSION` em `10.88.0.35:5432`, conforme o contrato PostgreSQL compartilhado.
-O DEV existente seleciona `rffusion_test_migracao` por conexão explícita,
-sem inferência por branch ou troca
+`RFFUSION` em `10.88.0.35:5432`, conforme o contrato PostgreSQL compartilhado,
+também usado pelo DEV, sem inferência por branch ou troca
 automática de backend. O `.secret` existente pode fornecer `DB_USER_NAME_PG` e
 `DB_PASSWORD_PG`, específicos do PostgreSQL. `PGUSER` e `PGPASSWORD` têm prioridade
 sobre esses campos na conexão composta; a sobrescrita completa por

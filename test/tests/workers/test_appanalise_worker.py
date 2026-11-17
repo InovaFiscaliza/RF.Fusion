@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import errno
+import hashlib
 import os
 import tempfile
 import unittest
@@ -120,6 +121,8 @@ class FakeDbBkp:
         self.history_rows_affected = 1
         self.delete_rows_affected = 1
         self.host_update_error = None
+        self.host_md5 = None
+        self.host_md5_reads = []
 
     def begin_transaction(self) -> None:
         self.in_transaction = True
@@ -152,6 +155,10 @@ class FakeDbBkp:
             "rows_affected": self.history_rows_affected,
             "updated_fields": kwargs,
         }
+
+    def file_task_history_read_host_md5(self, **kwargs):
+        self.host_md5_reads.append(kwargs)
+        return self.host_md5
 
     def host_update(self, **kwargs) -> None:
         if self.host_update_error is not None:
@@ -802,6 +809,7 @@ class SpectrumInsertTests(unittest.TestCase):
             size_kb=1,
             dt_created=datetime(2026, 1, 1, 12, 0, 0),
             dt_modified=datetime(2026, 1, 1, 12, 0, 0),
+            md5="host-md5",
         )
 
     def test_insert_rejects_payload_without_resolved_procedure(self) -> None:
@@ -839,6 +847,7 @@ class SpectrumInsertTests(unittest.TestCase):
         self._register_host_file(db, spectrum_ids)
 
         self.assertEqual(len(db.insert_file_calls), 1)
+        self.assertEqual(db.insert_file_calls[0]["NU_MD5"], "host-md5")
         self.assertEqual(len(db.bridge_calls), 1)
         self.assertEqual(db.bridge_calls[0][1], [901])
         self.assertEqual(len(spectrum_ids), 2)
@@ -1119,6 +1128,7 @@ class RunProcessingFlowTests(unittest.TestCase):
             "vl_file_size_kb": 12345,
             "filename": "/mnt/reposfi/trash/source.zip",
             "export": True,
+            "host_md5": "zip-md5",
             "source_file_meta": {
                 "file_path": "/mnt/reposfi/trash",
                 "file_name": "source.zip",
@@ -1152,6 +1162,7 @@ class RunProcessingFlowTests(unittest.TestCase):
             "dt_created": source_created,
             "dt_modified": source_modified,
             "full_path": "/mnt/reposfi/tmp/CWSM21100011/sample_DONE.mat",
+            "md5": "mat-md5",
         }
         promoted_file_meta = dict(process_file_meta)
 
@@ -1225,6 +1236,13 @@ class RunProcessingFlowTests(unittest.TestCase):
             },
         )
         self.assertEqual(len(db.insert_file_calls), 2)
+        # CelPlan: the host row keeps the .zip checksum from the backup history,
+        # and the repository row receives the checksum of the exported .mat.
+        self.assertEqual(
+            [(call["NA_FILE"], call["NU_MD5"]) for call in db.insert_file_calls],
+            [("source.zip", "zip-md5"), ("sample_DONE.mat", "mat-md5")],
+        )
+        self.assertEqual(result["file_meta"]["md5"], "mat-md5")
         self.assertEqual(len(db.bridge_calls), 2)
         self.assertEqual(db.begin_calls, 1)
         self.assertEqual(db.commit_calls, 1)
@@ -2141,6 +2159,11 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                             filename=str(source_file),
                             logger=fake_log,
                         )
+                        # The worker receives the promoted .mat with its own checksum.
+                        final_meta = {
+                            **final_meta,
+                            "md5": file_utils.compute_file_md5(final_meta["full_path"]),
+                        }
                         # Step 3: register the moved artifact in RFDATA
                         server_file_id = db_rfm.insert_file(
                             hostname=hostname_db,
@@ -2204,6 +2227,14 @@ class WorkerFlowScenarioTests(unittest.TestCase):
             self.assertEqual(
                 db_bp.history_updates[0]["NA_SERVER_FILE_NAME"],
                 "sample_DONE.mat",
+            )
+            self.assertEqual(
+                db_bp.history_updates[0]["NU_SERVER_FILE_MD5"],
+                hashlib.md5(b"mat payload").hexdigest(),
+            )
+            self.assertNotEqual(
+                db_bp.history_updates[0]["NU_SERVER_FILE_MD5"],
+                hashlib.md5(b"zip payload").hexdigest(),
             )
             self.assertEqual(
                 db_bp.history_updates[0]["NU_STATUS_PROCESSING"],
@@ -2407,6 +2438,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 "dt_created": datetime(2026, 1, 1, 0, 0, 0),
                 "dt_modified": datetime(2026, 1, 1, 0, 0, 0),
                 "full_path": "/mnt/reposfi/2026/DF/1/2/sample_DONE.mat",
+                "md5": "0123456789abcdef0123456789abcdef",
             },
             "new_path": "/mnt/reposfi/2026/DF/1/2",
             "bin_data": None,
@@ -2445,6 +2477,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 "dt_created": datetime(2026, 1, 1, 0, 0, 0),
                 "dt_modified": datetime(2026, 1, 1, 0, 0, 0),
                 "full_path": "/mnt/reposfi/2026/DF/1/2/sample_DONE.mat",
+                "md5": "0123456789abcdef0123456789abcdef",
             },
             "new_path": "/mnt/reposfi/2026/DF/1/2",
             "bin_data": None,
@@ -2497,6 +2530,7 @@ class WorkerFlowScenarioTests(unittest.TestCase):
                 "dt_created": datetime(2026, 1, 1, 0, 0, 0),
                 "dt_modified": datetime(2026, 1, 1, 0, 0, 0),
                 "full_path": "/mnt/reposfi/2026/DF/1/2/sample_DONE.mat",
+                "md5": "0123456789abcdef0123456789abcdef",
             },
             "new_path": "/mnt/reposfi/2026/DF/1/2",
             "bin_data": None,

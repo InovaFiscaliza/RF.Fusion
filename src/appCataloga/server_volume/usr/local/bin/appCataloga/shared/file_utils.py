@@ -87,6 +87,33 @@ def build_server_filepath(host_uid: str) -> str:
     return path
 
 
+def compute_file_md5(file_path: str) -> str:
+    """
+    Compute the MD5 checksum of one file's content.
+
+    The file is read in blocks of ``k.FILE_HASH_CHUNK_SIZE_BYTES`` so large
+    payloads are hashed without being loaded entirely into memory. The
+    digest depends only on the bytes, so renamed copies of the same payload
+    (for example, the server-side ``p-<hash>--<name>`` backup) produce the
+    same checksum as the original file.
+
+    Args:
+        file_path (str): Path of the file to hash.
+
+    Returns:
+        str: Lowercase hexadecimal MD5 digest with 32 characters.
+
+    Raises:
+        OSError: If the file cannot be opened or read, including
+            ``FileNotFoundError`` and ``IsADirectoryError``.
+    """
+    digest = hashlib.md5(usedforsecurity=False)
+    with open(file_path, "rb") as fh:
+        while chunk := fh.read(k.FILE_HASH_CHUNK_SIZE_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def is_transient_filesystem_error(exc: Exception) -> bool:
     """Return whether one filesystem failure is worth retrying."""
     return isinstance(exc, OSError) and exc.errno in TRANSIENT_FILESYSTEM_ERRNOS

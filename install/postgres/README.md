@@ -178,7 +178,7 @@ RFFUSION_POSTGRES_DATA_DIR="$PWD/.env/postgres-data" POSTGRES_DB=postgres \
 ```
 
 Nesse exemplo, `postgres` é o banco usado pelo bootstrap antigo; selecione o banco
-real da instalação. O banco de ensaio `rffusion_test_migracao` é independente.
+real da instalação. O DEV usa o banco `RFFUSION`, como produção.
 Se o diretório legado do repositório contiver `PG_VERSION` e o caminho não for
 informado, o deploy aborta antes de alterar containers. Ele não transfere esse
 cluster de volta ao volume nomeado.

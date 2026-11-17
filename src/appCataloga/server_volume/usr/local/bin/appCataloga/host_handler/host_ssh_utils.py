@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterator
 from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
 
-from shared import errors, tools
+from shared import errors, file_utils, tools
 from shared.file_metadata import FileMetadata
 
 
@@ -1212,21 +1212,30 @@ class sftpConnection:
             - the existing local payload still matches the current remote size, and
             - the current remote metadata still matches the old discovery snapshot
 
-        Returns
-        -------
-        dict
-            Result payload with transfer status and refreshed metadata.
+        Args:
+            remote_dir (str): Directory of the source file on the host.
+            remote_filename (str): Source filename on the host.
+            local_path (str): Existing local staging directory.
+            server_filename (str): Filename of the received local copy.
+            discovery_snapshot (dict): Discovery metadata with optional keys
+                extension (str), size_kb (int), dt_created (datetime), and
+                dt_modified (datetime), used to detect source drift.
+            progress_callback (Callable[[int, int], None] | None): Optional
+                callback receiving transferred and total bytes.
 
-        Raises
-        ------
-        FileNotFoundError
-            If the remote file does not exist.
+        Returns:
+            dict: Required keys updated_size_kb (int), refreshed_metadata
+                (FileMetadata), file_was_transferred (bool, True for downloaded
+                or reused copies), and host_md5 (str, 32 lowercase hexadecimal
+                characters). MD5 is computed once on the validated local copy.
 
-        RuntimeError
-            If integrity validation fails.
-
-        TimeoutError
-            If the transfer stalls or exceeds the configured watchdog limits.
+        Raises:
+            FileNotFoundError: If the remote file does not exist.
+            RuntimeError: If integrity validation fails.
+            TimeoutError: If the transfer stalls or exceeds watchdog limits.
+            errors.FileChecksumError: If the validated copy cannot be read for
+                MD5. This is a local finalization failure, not a missing source.
+            OSError: If other filesystem or SFTP operations fail.
         """
 
         remote_path = f"{remote_dir}/{remote_filename}"
@@ -1259,6 +1268,7 @@ class sftpConnection:
         # ---------------------------------------------------------
         # 0) Local file pre-check (skip download if already valid)
         # ---------------------------------------------------------
+        file_already_present = False
         if os.path.exists(final_file):
             local_size_bytes = os.path.getsize(final_file)
 
@@ -1279,11 +1289,7 @@ class sftpConnection:
                         server_file=server_filename,
                     )
 
-                    return {
-                        "updated_size_kb": local_size_kb,
-                        "refreshed_metadata": remote_metadata,
-                        "file_was_transferred": True,
-                    }
+                    file_already_present = True
                 else:
                     self.log.warning_event(
                         "backup_transfer_redownload",
@@ -1307,81 +1313,90 @@ class sftpConnection:
                 except Exception:
                     pass
 
-        # ---------------------------------------------------------
-        # Remove leftover tmp from previous crash
-        # ---------------------------------------------------------
-        if os.path.exists(tmp_file):
-            try:
-                os.remove(tmp_file)
-            except Exception:
-                pass
+        if not file_already_present:
+            # ---------------------------------------------------------
+            # Remove leftover tmp from previous crash
+            # ---------------------------------------------------------
+            if os.path.exists(tmp_file):
+                try:
+                    os.remove(tmp_file)
+                except Exception:
+                    pass
 
-        # ---------------------------------------------------------
-        # 1) Transfer to temporary file
-        # ---------------------------------------------------------
-        self.transfer(
-            remote_path,
-            tmp_file,
-            max_seconds=k.BACKUP_TRANSFER_MAX_SECONDS,
-            stall_timeout_seconds=k.BACKUP_TRANSFER_STALL_TIMEOUT_SECONDS,
-            progress_poll_seconds=k.BACKUP_TRANSFER_PROGRESS_POLL_SECONDS,
-            heartbeat_seconds=k.BACKUP_TRANSFER_HEARTBEAT_SECONDS,
-            progress_callback=progress_callback,
-        )
-
-        # ---------------------------------------------------------
-        # 2) Validate local existence
-        # ---------------------------------------------------------
-        if not os.path.exists(tmp_file):
-            raise RuntimeError(
-                "Backup failed: local file not created after transfer"
+            # ---------------------------------------------------------
+            # 1) Transfer to temporary file
+            # ---------------------------------------------------------
+            self.transfer(
+                remote_path,
+                tmp_file,
+                max_seconds=k.BACKUP_TRANSFER_MAX_SECONDS,
+                stall_timeout_seconds=k.BACKUP_TRANSFER_STALL_TIMEOUT_SECONDS,
+                progress_poll_seconds=k.BACKUP_TRANSFER_PROGRESS_POLL_SECONDS,
+                heartbeat_seconds=k.BACKUP_TRANSFER_HEARTBEAT_SECONDS,
+                progress_callback=progress_callback,
             )
 
-        local_size_bytes = os.path.getsize(tmp_file)
+            # ---------------------------------------------------------
+            # 2) Validate local existence
+            # ---------------------------------------------------------
+            if not os.path.exists(tmp_file):
+                raise RuntimeError(
+                    "Backup failed: local file not created after transfer"
+                )
 
-        if local_size_bytes <= 0:
-            raise RuntimeError(
-                "Backup failed: local file size is 0 bytes"
-            )
+            local_size_bytes = os.path.getsize(tmp_file)
 
-        local_size_kb = local_size_bytes // 1024
+            if local_size_bytes <= 0:
+                raise RuntimeError(
+                    "Backup failed: local file size is 0 bytes"
+                )
 
-        # ---------------------------------------------------------
-        # 3) Must not be smaller than remote
-        # ---------------------------------------------------------
-        # Remote size is the authoritative source during transfer.
-        # If the local file is smaller, the transfer is considered corrupted.
-        if local_size_bytes < remote_size_bytes:
-            raise RuntimeError(
-                f"Backup corrupted: local size ({local_size_bytes} bytes) "
-                f"is smaller than remote size ({remote_size_bytes} bytes)"
-            )
+            local_size_kb = local_size_bytes // 1024
 
-        # ---------------------------------------------------------
-        # 4) Accept remote growth (informational only)
-        # ---------------------------------------------------------
-        if local_size_bytes > remote_size_bytes:
-            self.log.warning_event(
-                "backup_remote_growth",
-                **self._base_log_fields(),
-                component="host_backup",
-                operation="transfer_file_task",
-                remote_size_bytes=remote_size_bytes,
-                local_size_bytes=local_size_bytes,
-            )
+            # ---------------------------------------------------------
+            # 3) Must not be smaller than remote
+            # ---------------------------------------------------------
+            # Remote size is the authoritative source during transfer.
+            # If the local file is smaller, the transfer is considered corrupted.
+            if local_size_bytes < remote_size_bytes:
+                raise RuntimeError(
+                    f"Backup corrupted: local size ({local_size_bytes} bytes) "
+                    f"is smaller than remote size ({remote_size_bytes} bytes)"
+                )
 
-        # ---------------------------------------------------------
-        # 5) Atomic rename
-        # ---------------------------------------------------------
-        # `os.rename()` moves only the file entry and does not prune empty source
-        # directories, which keeps TMP folders stable even when the last file in a
-        # batch is finalized here.
-        os.rename(tmp_file, final_file)
+            # ---------------------------------------------------------
+            # 4) Accept remote growth (informational only)
+            # ---------------------------------------------------------
+            if local_size_bytes > remote_size_bytes:
+                self.log.warning_event(
+                    "backup_remote_growth",
+                    **self._base_log_fields(),
+                    component="host_backup",
+                    operation="transfer_file_task",
+                    remote_size_bytes=remote_size_bytes,
+                    local_size_bytes=local_size_bytes,
+                )
+
+            # ---------------------------------------------------------
+            # 5) Atomic rename
+            # ---------------------------------------------------------
+            # `os.rename()` moves only the file entry and does not prune empty source
+            # directories, which keeps TMP folders stable even when the last file in a
+            # batch is finalized here.
+            os.rename(tmp_file, final_file)
+
+        try:
+            host_md5 = file_utils.compute_file_md5(final_file)
+        except OSError as exc:
+            raise errors.FileChecksumError(
+                f"Host file MD5 failed after transfer: {final_file}"
+            ) from exc
 
         return {
             "updated_size_kb": local_size_kb,
             "refreshed_metadata": remote_metadata,
             "file_was_transferred": True,
+            "host_md5": host_md5,
         }
     
     

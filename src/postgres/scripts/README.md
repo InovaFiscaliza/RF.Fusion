@@ -54,6 +54,21 @@ externas (`'Fixed'` e `'Mobile'`); novas linhas armazenam `Fixed` e `Mobile`.
 Nesse caso, revisar os tipos e suas referências antes de corrigir os dados.
 Não executar novamente o script de criação em uma instalação existente.
 
+Instalações criadas com os checksums em `FILE_TASK` recebem a
+[mudança dos MD5 para o histórico](moveFileMd5ToHistory.sql), no container
+PostgreSQL e com um usuário autorizado a alterar as tabelas do BPDATA:
+
+```bash
+psql -X -U postgres -d RFFUSION -v ON_ERROR_STOP=1 -f /RFFusion/src/postgres/scripts/moveFileMd5ToHistory.sql
+```
+
+O script é repetível. Ele adiciona `NU_HOST_FILE_MD5` e `NU_SERVER_FILE_MD5` em
+`FILE_TASK_HISTORY` e remove `NU_HOST_FILE_MD5` e `NA_SERVER_FILE_MD5` de
+`FILE_TASK`. Se alguma dessas colunas da fila tiver valor, a execução é
+interrompida sem alterar nada. Arquivos já processados não recebem MD5
+retroativo. As colunas são preenchidas apenas nos próximos backups e
+processamentos, conforme a [arquitetura do appCataloga](../../appCataloga/.instructions/ARCHITECTURE.md#21-propriedade-dos-dados).
+
 O backfill [backfillFixedSiteType.sql](backfillFixedSiteType.sql) só deve ser
 executado quando os sites sem classificação forem comprovadamente fixos e o tipo
 1 for `Fixed`. O relatório [postgres_runtime_health.sh](postgres_runtime_health.sh)
