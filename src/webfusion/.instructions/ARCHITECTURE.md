@@ -43,6 +43,33 @@ como fotos reais no banco.
 
 ---
 
+## Integração de identidade com o appEventos
+
+`GET /api/users/login_eventos` e `/api/users/login_evento`, publicados sob
+`/rffusion`, usam exclusivamente a identidade normalizada do proxy e o perfil
+persistido. Exigem identidade e cadastro e retornam uma página do shell com
+formulário de envio automático pelo navegador, na mesma aba, para o destino
+fixo `http://rhfisnsdsin01:9088/api/usuarios/login-evento`.
+
+O POST usa `application/x-www-form-urlencoded`, com os campos `NA_USER_EMAIL`,
+`NA_USER_NAME`, `NA_DEPARTMENT`, `NA_JOB_TITLE` e `NA_LOCATION` no corpo.
+Campos opcionais ausentes ou nulos são enviados como strings vazias. Não envia
+IDs, privilégios, token Bearer ou header `X-User-Profile`. O formulário mantém
+um botão de envio manual caso JavaScript esteja indisponível. Parâmetros do
+cliente não alteram os campos nem o destino. O template escapa valores HTML.
+
+O WebFusion não faz POST pelo backend, não processa a resposta remota e não
+correlaciona IDs entre aplicações. O appEventos é responsável por processar o
+POST, definir sua sessão e retornar a navegação para sua página inicial; se
+responder JSON, o navegador exibirá esse JSON. O envio de perfil não constitui
+prova de autenticação: o destinatário precisa de validação própria para usá-lo
+como login. O destino HTTP interno não protege os dados em trânsito e pode
+provocar aviso do navegador por envio de formulário HTTPS para HTTP.
+
+Sem identidade, cadastro ou com falha de consulta, a rota retorna 401, 404 ou
+500. Todas as respostas desabilitam cache e o envio de Referer. Os contratos
+de `/api/users/login` e `/api/users/me` são preservados.
+
 ## Upload de arquivos no WebFusion
 
 O módulo `src/webfusion/modules/upload/` recebe arquivos de usuários com e-mail
