@@ -45,30 +45,24 @@ como fotos reais no banco.
 
 ## Integração de identidade com o appEventos
 
-`GET /api/users/login_eventos` e `/api/users/login_evento`, publicados sob
-`/rffusion`, usam exclusivamente a identidade normalizada do proxy e o perfil
-persistido. Exigem identidade e cadastro e retornam uma página do shell com
-formulário de envio automático pelo navegador, na mesma aba, para o destino
-fixo `http://rhfisnsdsin01:9088/api/usuarios/login-evento`.
+O NGINX publica `/rffusion/eventos/` como proxy direto para
+`http://rhfisnsdsin01:9088/`, removendo esse prefixo antes de encaminhar a
+requisição. O caminho exato `/rffusion/eventos` redireciona com HTTP 308 para
+`/rffusion/eventos/`. O cabeçalho `X-User-Profile` recebido do F5 é encaminhado
+sem transformação; os demais cabeçalhos de requisição seguem as regras padrão
+do proxy NGINX. Esse fluxo não consulta o Flask nem o perfil persistido e não
+usa o cabeçalho de resposta de `/api/users/login`.
 
-O POST usa `application/x-www-form-urlencoded`, com os campos `NA_USER_EMAIL`,
-`NA_USER_NAME`, `NA_DEPARTMENT`, `NA_JOB_TITLE` e `NA_LOCATION` no corpo.
-Campos opcionais ausentes ou nulos são enviados como strings vazias. Não envia
-IDs, privilégios, token Bearer ou header `X-User-Profile`. O formulário mantém
-um botão de envio manual caso JavaScript esteja indisponível. Parâmetros do
-cliente não alteram os campos nem o destino. O template escapa valores HTML.
-
-O WebFusion não faz POST pelo backend, não processa a resposta remota e não
-correlaciona IDs entre aplicações. O appEventos é responsável por processar o
-POST, definir sua sessão e retornar a navegação para sua página inicial; se
-responder JSON, o navegador exibirá esse JSON. O envio de perfil não constitui
-prova de autenticação: o destinatário precisa de validação própria para usá-lo
-como login. O destino HTTP interno não protege os dados em trânsito e pode
-provocar aviso do navegador por envio de formulário HTTPS para HTTP.
-
-Sem identidade, cadastro ou com falha de consulta, a rota retorna 401, 404 ou
-500. Todas as respostas desabilitam cache e o envio de Referer. Os contratos
-de `/api/users/login` e `/api/users/me` são preservados.
+O F5 deve aplicar sua política de identidade também ao caminho de eventos.
+O appEventos deve interpretar os cabeçalhos apenas quando recebidos pela
+cadeia confiável de proxies. O proxy informa o prefixo público por
+`X-Forwarded-Prefix`; a conexão com o destino continua em HTTP interno.
+Como o appEventos gera URLs absolutas com a origem interna, o NGINX substitui
+`http://rhfisnsdsin01:9088/` por `/rffusion/eventos/` nas respostas HTML, CSS e
+JavaScript, solicitando conteúdo sem compressão ao destino para permitir essa
+substituição. Redirecionamentos absolutos dessa origem também são reescritos
+pelo `proxy_redirect` padrão. URLs relativas à raiz geradas pelo appEventos
+devem incluir o prefixo público; não há reescrita genérica de caminhos.
 
 ## Upload de arquivos no WebFusion
 

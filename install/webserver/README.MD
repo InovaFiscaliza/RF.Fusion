@@ -37,6 +37,27 @@ Fluxo HTTP:
 
 `cliente -> nginx:80/rffusion/ -> webfusion:127.0.0.1:8000`
 
+Fluxo do appEventos:
+
+`cliente -> F5 -> nginx:80/rffusion/eventos/ -> http://rhfisnsdsin01:9088/`
+
+O NGINX remove `/rffusion/eventos/` ao encaminhar a requisição: por exemplo,
+`/rffusion/eventos/api/usuarios` chega ao destino como `/api/usuarios`.
+O caminho sem barra final redireciona com HTTP 308 para a versão com barra.
+O cabeçalho `X-User-Profile` recebido do F5 é encaminhado sem transformação;
+os demais cabeçalhos seguem o encaminhamento padrão do NGINX. Não há consulta
+ao Flask nem ao banco nesse fluxo.
+
+O F5 deve enviar os cabeçalhos de identidade também para esse caminho.
+O NGINX informa `X-Forwarded-Prefix: /rffusion/eventos` e substitui a origem
+`http://rhfisnsdsin01:9088/` por `/rffusion/eventos/` nas respostas HTML, CSS e
+JavaScript, para manter links e recursos no endereço público. Para isso, pede
+respostas sem compressão ao destino e usa o módulo `http_sub_module` do NGINX.
+Redirecionamentos absolutos dessa origem seguem o `proxy_redirect` padrão.
+URLs relativas à raiz precisam ser geradas pelo appEventos com o prefixo público.
+O container precisa resolver e acessar `rhfisnsdsin01:9088`. Esse acesso usa
+HTTP interno, e a validação da cadeia confiável de proxies cabe ao appEventos.
+
 A raiz direta `/` nao publica conteudo e responde com HTTP 404, mesmo que a
 imagem base contenha arquivos de boas-vindas fornecidos pelos pacotes do Nginx.
 

@@ -94,40 +94,18 @@ mesmo formato retornado no body de `GET /api/users/me`, incluindo `NA_ROLE`,
 `IS_ADMIN` e `IS_DEVELOPER`. Sem identidade ou perfil persistido, o valor do
 cabeçalho é `{}`.
 
-### Envio de identidade ao appEventos
+### Acesso ao appEventos
 
-`GET /rffusion/api/users/login_eventos` (também disponível como
-`/rffusion/api/users/login_evento`) recebe a identidade do F5, consulta o
-perfil persistido e entrega um formulário com envio automático na mesma aba:
+O appEventos é publicado em `/rffusion/eventos/` pelo NGINX, que encaminha
+as requisições para `http://rhfisnsdsin01:9088/`. O cabeçalho `X-User-Profile`
+recebido do F5 é encaminhado sem transformação, junto dos demais cabeçalhos
+conforme as regras padrão do proxy. Esse fluxo não consulta o perfil persistido
+no WebFusion nem envia formulários de login pelo navegador.
 
-```http
-POST http://rhfisnsdsin01:9088/api/usuarios/login-evento
-Content-Type: application/x-www-form-urlencoded
-
-NA_USER_EMAIL=fiscal%40example.test&NA_USER_NAME=Fiscal+Teste&NA_DEPARTMENT=&NA_JOB_TITLE=&NA_LOCATION=
-```
-
-Os campos anteriormente previstos no `X-User-Profile` são parâmetros do corpo
-do POST. Não há header `X-User-Profile` nem token Bearer no navegador. Nulos
-opcionais são enviados como strings vazias; IDs e privilégios não são enviados.
-O destino é fixo e os dados vêm exclusivamente do perfil persistido do usuário
-identificado pelo proxy. Sem JavaScript, o botão permite o envio manual.
-
-A aba passa para o appEventos assim que o navegador envia o formulário. O
-appEventos precisa aceitar os campos de formulário e, após processá-los e
-estabelecer sua sessão, redirecionar para sua página inicial. Se a rota remota
-continuar retornando `{"id_fiscal": 123}`, esse JSON aparecerá na aba. O
-WebFusion não recebe essa resposta nem relaciona o ID remoto ao usuário local.
-
-Este é um transporte de dados de perfil, não uma prova verificável de login.
-O destinatário deve validar a origem para autenticar usuários. O navegador
-precisa resolver e acessar `rhfisnsdsin01:9088`. O destino HTTP não protege os
-dados em trânsito; navegadores podem avisar sobre envio de formulário de uma
-página HTTPS para HTTP.
-
-Sem identidade, cadastro ou com falha de consulta local, retorna 401, 404 ou
-500. Todas as respostas desabilitam cache e Referer. Parâmetros de URL e
-headers do cliente não alteram os dados do formulário nem seu destino.
+O NGINX reescreve a origem interna nas respostas HTML, CSS e JavaScript para
+manter os recursos e links sob `/rffusion/eventos/`. O appEventos é responsável
+por validar a cadeia confiável de proxies e estabelecer sua sessão. Consulte o
+[README do container](../../install/webserver/README.MD) para o fluxo operacional.
 
 ### Controle de acesso
 

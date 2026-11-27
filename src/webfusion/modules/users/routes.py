@@ -17,7 +17,6 @@ from flask import (
 )
 from modules.server.usage_metrics import record_page_view
 from modules.users import service
-from modules.users.config import EVENTOS_LOGIN_URL, EVENTOS_PROFILE_FIELDS
 
 
 users_bp = Blueprint("users", __name__, url_prefix="/users")
@@ -147,63 +146,6 @@ def login_probe() -> Response:
     response.headers[USER_PROFILE_HEADER] = current_app.json.dumps(profile or {})
     response.headers["Cache-Control"] = "no-store"
     return response
-
-
-@users_api_bp.route("/login_evento", methods=["GET"])
-@users_api_bp.route("/login_eventos", methods=["GET"])
-def login_eventos() -> Response:
-    """Navigate the browser to appEventos by posting the stored profile.
-
-    Args:
-        None. Uses the normalized proxy email in `g.webfusion_user`.
-        Client profile, token, and destination parameters are ignored.
-
-    Returns:
-        Response. Type: flask.Response. Returns HTTP 200 with an auto-submitting
-        HTML form containing the five configured profile fields. The browser
-        posts form data in the same tab; optional nulls become empty strings.
-        No authorization token or local ID is sent. Errors are JSON: 401 without
-        identity, 404 without a profile, or 500 on a local lookup failure.
-        All responses disable caching and Referer. The destination handles its
-        own response, session, and subsequent navigation.
-    """
-    response = _eventos_login_response()
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return response
-
-
-def _eventos_login_response() -> Response:
-    """Resolve the proxy profile and render the appEventos browser form.
-
-    Args:
-        None. Uses `g.webfusion_user["email"]` as the identity source.
-
-    Returns:
-        Response. Type: flask.Response. An HTML form with escaped stored values
-        and a fixed destination, or JSON with an `error` string and HTTP status
-        401, 404, or 500. No external HTTP requests are performed by this helper.
-    """
-    user_email = g.webfusion_user["email"]
-    if not user_email:
-        response = jsonify({"error": "proxy_identity_required"})
-        response.status_code = HTTPStatus.UNAUTHORIZED
-        return response
-    try:
-        profile = service.get_current_user_profile(user_email)
-    except Exception:
-        current_app.logger.exception("webfusion_eventos_profile_lookup_failed")
-        response = jsonify({"error": "current_user_lookup_failed"})
-        response.status_code = HTTPStatus.INTERNAL_SERVER_ERROR
-        return response
-    if profile is None:
-        response = jsonify({"error": "user_not_found"})
-        response.status_code = HTTPStatus.NOT_FOUND
-        return response
-    fields = {name: profile.get(name) or "" for name in EVENTOS_PROFILE_FIELDS}
-    return Response(render_template(
-        "users/login_eventos.html", action_url=EVENTOS_LOGIN_URL, fields=fields,
-    ), mimetype="text/html")
 
 
 @users_api_bp.route("/me", methods=["GET"])
